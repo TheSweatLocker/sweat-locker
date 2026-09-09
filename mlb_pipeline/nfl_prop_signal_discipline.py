@@ -45,25 +45,164 @@ KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
 H_R = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_W = {**H_R, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
-# 2026-09-08 hard cap. Remove ONCE per-signal hit-rate calibration lands
-# for NFL props (signal_sources sport=NFL class=prop rows populated with
-# real hit_rate + n from graded outcomes). Until then, STRONG is unearned.
-PROP_TIER_CAP_NFL = 'LEAN'
+# 2026-09-08 v2: real multi-signal confluence gate. Replaces the flat
+# LEAN cap. Uses signals already populated on the prop row (l4, l5, l10,
+# season_avg, _stat_last10 hit rate) to grade tier by CONFLUENCE not just
+# edge_pct. Every "STRONG" now has to earn it via multi-signal agreement.
 TIER_ORDER = {'PRIME': 4, 'STRONG': 3, 'LEAN': 2, 'LIGHT': 1, 'COVERAGE': 0, 'SKIP': -1, 'PASS': -2}
 
 
-def _cap_tier(tier: str, cap: str) -> str:
-    """Return min(tier, cap) by ranking. Preserves lower tiers unchanged."""
-    if TIER_ORDER.get(tier, 0) > TIER_ORDER.get(cap, 0):
-        return cap
-    return tier
+def _agrees_with_pick(avg_val, line, direction) -> bool | None:
+    """Does the historical average sit on the pick's side of the line?
+    over pick + avg > line = agrees. under pick + avg < line = agrees.
+    Returns None if we can't compute (missing data)."""
+    if avg_val is None or line is None or direction not in ('over', 'under'):
+        return None
+    try:
+        avg = float(avg_val); ln = float(line)
+    except (TypeError, ValueError):
+        return None
+    if direction == 'over':  return avg > ln
+    if direction == 'under': return avg < ln
+    return None
+
+
+def _player_l10_hit_pct(last10: list, line, direction) -> tuple[float | None, int]:
+    """From _stat_last10 array of {value, opp, week, season}, count how
+    many games the player's actual stat landed on the pick's side of the
+    current line. Returns (hit_pct, n) or (None, 0) if unusable."""
+    if not isinstance(last10, list) or not last10 or line is None:
+        return (None, 0)
+    if direction not in ('over', 'under'):
+        return (None, 0)
+    try: ln = float(line)
+    except (TypeError, ValueError): return (None, 0)
+    n = 0; hits = 0
+    for g in last10:
+        v = g.get('value') if isinstance(g, dict) else None
+        if v is None: continue
+        try: val = float(v)
+        except (TypeError, ValueError): continue
+        n += 1
+        if direction == 'over' and val > ln: hits += 1
+        elif direction == 'under' and val < ln: hits += 1
+    if n == 0: return (None, 0)
+    return (hits / n, n)
+
+
+def compute_confluence_tier(prop: dict) -> tuple[str, int, dict]:
+    """Multi-signal confluence gate WITH RECENCY WEIGHTING.
+
+    Rolling week-by-week: every signal comes from windows that shift as
+    new games play. `_stat_last10` rolls, l4/l5/l10 averages shift each
+    week. Runs every workflow cron post-game so tier assignments always
+    reflect the freshest data.
+
+    Signal weights (favor recent form — a hot player in L4 matters more
+    than season-long baseline for prop picking):
+      L4 avg agree     → 1.5 pts   (recent form, weighted heaviest)
+      L5 avg agree     → 1.25 pts  (rolling week window)
+      L10 avg agree    → 1.0 pt    (medium-term stability)
+      Season avg agree → 0.75 pts  (old data, dampened)
+      L10 hit ≥60%     → 1.25 pts  (direct pick-side historical hit rate)
+    Total possible: 5.75 pts
+
+    Tier ladder (edge_pct floor + weighted-agree score):
+      PRIME:  edge ≥15% AND score ≥4.25 AND L10 hit ≥65%
+      STRONG: edge ≥10% AND score ≥3.0
+      LEAN:   edge ≥7%  AND score ≥2.0
+      LIGHT:  edge ≥5%  (bare edge, no confluence)
+      SKIP:   below LIGHT threshold or insufficient valid signals
+    """
+    signals = prop.get('signals') or {}
+    if not isinstance(signals, dict):
+        return ('SKIP', 0, {'reason': 'no_signals_dict'})
+
+    direction = (prop.get('direction') or '').lower()
+    line = prop.get('book_line')
+    edge_pct_raw = signals.get('edge_pct')
+    try: edge_pct = abs(float(edge_pct_raw)) if edge_pct_raw is not None else 0.0
+    except (TypeError, ValueError): edge_pct = 0.0
+
+    l4     = signals.get('l4')
+    l5     = signals.get('_stat_avg_l5')
+    l10    = signals.get('_stat_avg_l10')
+    season = signals.get('_stat_avg_season')
+    last10 = signals.get('_stat_last10') or []
+
+    a_l4 = _agrees_with_pick(l4, line, direction)
+    a_l5 = _agrees_with_pick(l5, line, direction)
+    a_l10 = _agrees_with_pick(l10, line, direction)
+    a_season = _agrees_with_pick(season, line, direction)
+    hit_pct, hit_n = _player_l10_hit_pct(last10, line, direction)
+    a_hit = (hit_pct is not None and hit_pct >= 0.60 and hit_n >= 5)
+
+    # Recency-weighted score. Higher weight on L4/L5 (freshest signal).
+    weights = {'l4': 1.5, 'l5': 1.25, 'l10': 1.0, 'season': 0.75, 'hit': 1.25}
+    checks = {'l4': a_l4, 'l5': a_l5, 'l10': a_l10, 'season': a_season, 'hit': a_hit}
+    score = sum(weights[k] for k, v in checks.items() if v is True)
+    max_score = sum(weights[k] for k, v in checks.items() if v is not None)
+    valid_ct = sum(1 for v in checks.values() if v is not None)
+
+    breakdown = {
+        'edge_pct': edge_pct,
+        'l4_agree': a_l4, 'l5_agree': a_l5, 'l10_agree': a_l10,
+        'season_agree': a_season, 'hit_agree': a_hit,
+        'l10_hit_pct': round(hit_pct, 3) if hit_pct is not None else None,
+        'l10_hit_n': hit_n,
+        'weighted_score': round(score, 2),
+        'max_possible': round(max_score, 2),
+        'valid_ct': valid_ct,
+    }
+
+    if valid_ct < 2:
+        return ('SKIP', 0, {**breakdown, 'reason': f'insufficient_signal_valid={valid_ct}'})
+
+    # 2026-09-08 EXTREME-EDGE GUARD. Edge_pct > 40 is almost always data
+    # noise — small-sample player, role misclassification (backup rated
+    # as bulk), team mis-attribution, unusually low line vs an outlier
+    # projection. Cap at LEAN when edge is implausible, so downstream
+    # never PRIME-promotes obvious garbage. Real +18% edges (which do
+    # exist and are the model's bread and butter) still land PRIME.
+    if edge_pct > 40:
+        return ('LEAN', min(65, 40 + int(min(edge_pct, 60))),
+                {**breakdown, 'reason': 'extreme_edge_data_noise_guard'})
+
+    # 2026-09-08 team-assignment guard. If player_team is null, we can't
+    # trust the pick belongs on this game. Downgrade to LEAN max.
+    if not prop.get('player_team'):
+        base_tier = 'LEAN' if edge_pct >= 7 else ('LIGHT' if edge_pct >= 5 else 'SKIP')
+        return (base_tier, min(60, 40 + int(edge_pct)),
+                {**breakdown, 'reason': 'null_player_team_guard'})
+
+    # PRIME: extreme confluence — season-avg must confirm (season stability
+    # anchors against recent-form noise), high edge, high hit rate, meaningful
+    # sample. Deliberately conservative — Week 1 signals mostly draw from
+    # LAST season's game logs; PRIME needs to survive that staleness.
+    if (edge_pct >= 18 and score >= 4.5 and a_season is True
+        and hit_pct is not None and hit_pct >= 0.70 and hit_n >= 7):
+        return ('PRIME', min(95, 80 + int(edge_pct)),
+                {**breakdown, 'reason': 'prime_gate'})
+    # STRONG: solid edge + strong confluence
+    if edge_pct >= 12 and score >= 3.25:
+        return ('STRONG', min(85, 65 + int(edge_pct)),
+                {**breakdown, 'reason': 'strong_gate'})
+    # LEAN: moderate edge + some agreement
+    if edge_pct >= 8 and score >= 2.25:
+        return ('LEAN', min(75, 50 + int(edge_pct)),
+                {**breakdown, 'reason': 'lean_gate'})
+    # LIGHT: bare edge, no confluence
+    if edge_pct >= 5:
+        return ('LIGHT', min(60, 35 + int(edge_pct)),
+                {**breakdown, 'reason': 'light_bare_edge'})
+    return ('SKIP', 0, {**breakdown, 'reason': 'below_light_threshold'})
 
 
 def _fetch_props(date_from: str, date_to: str) -> list:
     url = (f'{SB}/rest/v1/nfl_pipeline_props'
            f'?game_date=gte.{date_from}&game_date=lte.{date_to}'
            f'&select=id,game_id,player_name,prop_type,direction,tier,'
-           f'conviction,book_line,player_team,opp_team')
+           f'conviction,book_line,player_team,opp_team,signals')
     r = requests.get(url, headers=H_R, timeout=30)
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
@@ -174,19 +313,31 @@ def main():
     # Filter these out of downstream so we don't dedupe/cap them separately
     props = [p for p in props if p['id'] not in leak_ids]
 
-    # ── Fix 1: tier cap ──────────────────────────────────
-    tier_capped = 0
+    # ── Fix 1: confluence-gate tier reassignment ─────────
+    # Reassign every prop's tier + conviction via multi-signal confluence
+    # (recency-weighted). Uses signals already on the row — no external
+    # fetch. Fully rolling: as new games play, L4/L5/L10/_stat_last10
+    # shift automatically so tier assignments track player form.
+    from collections import Counter
+    new_tiers = Counter(); orig_tiers = Counter()
+    reassigned = 0
     for p in props:
-        cur_tier = p.get('tier') or ''
-        new_tier = _cap_tier(cur_tier, PROP_TIER_CAP_NFL)
-        if new_tier != cur_tier:
+        orig = p.get('tier') or ''
+        orig_tiers[orig] += 1
+        new_tier, new_conv, breakdown = compute_confluence_tier(p)
+        new_tiers[new_tier] += 1
+        if new_tier != orig or (p.get('conviction') or 0) != new_conv:
             p['_new_tier'] = new_tier
-            tier_capped += 1
+            p['_new_conviction'] = new_conv
+            p['_confluence_breakdown'] = breakdown
+            reassigned += 1
 
     # ── Fix 2: dedupe alt-line conflicts ────────────────
     demotions = dedupe_alt_lines(props)
     print(f'  cross-team leaks to SKIP: {len(leaks)}')
-    print(f'  tier caps needed: {tier_capped}')
+    print(f'  tier reassignments (confluence gate): {reassigned}')
+    print(f'  before: {dict(orig_tiers)}')
+    print(f'  after:  {dict(new_tiers)}')
     print(f'  alt-line duplicates to demote to SKIP: {len(demotions)}')
 
     # ── Write ─────────────────────────────────────────────
@@ -207,14 +358,16 @@ def main():
     for p in leaks:
         if _patch(p['id'], {'tier': 'SKIP', 'conviction': 0}): written += 1
         else: fails += 1
-    # Apply cap
+    # Apply confluence-gate reassignments (tier + conviction)
     for p in props:
         if p.get('_new_tier'):
-            if _patch(p['id'], {'tier': p['_new_tier']}): written += 1
+            if _patch(p['id'], {'tier': p['_new_tier'],
+                                'conviction': p['_new_conviction']}):
+                written += 1
             else: fails += 1
-    # Apply demotions (skip if row already got tier-capped to something below)
+    # Apply alt-line demotions (loser rows already patched above but tier may
+    # need to drop further to SKIP so composer never surfaces them)
     for loser, keeper in demotions:
-        # Demote loser to SKIP so composers ignore it
         if _patch(loser['id'], {'tier': 'SKIP', 'conviction': 0}):
             written += 1
         else: fails += 1

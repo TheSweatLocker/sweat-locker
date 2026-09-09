@@ -207,6 +207,50 @@ Each field picked independently — if DK has spread but Bovada has ML, take spr
 
 NBA/NHL/NCAAB need a paid historical odds source (TheOddsAPI paid tier or SportsGameOdds) to unblock LR. Tracked in v1.0.1 priorities.
 
+### 3.5 NFL Prop Confluence Gate (2026-09-08)
+
+**Purpose.** Assign tier + conviction to every NFL player prop using recency-weighted multi-signal confluence. Replaces the flat LEAN cap that was in place at end-of-day 2026-09-08.
+
+**Where it lives.** [mlb_pipeline/nfl_prop_signal_discipline.py](../mlb_pipeline/nfl_prop_signal_discipline.py) — runs post-`nfl_generate_props.py` in `nfl_pipeline.yml` every workflow trigger.
+
+**Rolling by design.** Every signal draws from windows that shift as new games play. `_stat_last10` array rolls each week. L4/L5/L10 averages recompute against fresh game logs. So tier assignments always reflect the freshest data — no periodic manual retrain.
+
+**Signals + weights (recency-heavy):**
+| Signal | Weight | What it checks |
+|--------|--------|----------------|
+| L4 avg agrees | 1.5 | Player's last-4 avg on pick's side of line |
+| L5 avg agrees | 1.25 | Last-5 avg on same side |
+| L10 avg agrees | 1.0 | Last-10 avg on same side (medium-term stability) |
+| Season avg agrees | 0.75 | Full season avg on same side (dampened — old data) |
+| L10 hit rate ≥ 60% | 1.25 | Direct pick-side hit rate from 10-game log |
+
+Total possible: **5.75 pts**
+
+**Tier ladder:**
+| Tier | Edge floor | Score floor | Extra conditions |
+|------|-----------|-------------|------------------|
+| PRIME | ≥18% | ≥4.5 | Season avg MUST agree, L10 hit ≥70%, hit_n ≥7 |
+| STRONG | ≥12% | ≥3.25 | — |
+| LEAN | ≥8% | ≥2.25 | — |
+| LIGHT | ≥5% | — | Bare edge, no confluence needed |
+| SKIP | — | — | Below LIGHT OR insufficient valid signals (<2) |
+
+**Two hard guards (added 2026-09-08 to prevent data-noise PRIMEs):**
+1. **Extreme edge cap:** `edge_pct > 40` → force LEAN. Small-sample players + role misclassification + tiny lines produce implausible 300%+ edges. Real PRIMEs live in the 18-40% edge band.
+2. **Null player_team guard:** any prop with `player_team IS NULL` capped at LEAN. Can't trust the pick belongs to this game.
+
+**Cross-team leak guard.** [nfl_generate_props.py::build_prop_row](../mlb_pipeline/nfl_generate_props.py) rejects rows where `player_team not in (home_canon, away_canon)`. Prior state (pre-guard): A.J. Brown (PHI) props leaking into NE @ SEA game because Odds API matched a name and `player_id_lookup` returned his roster row without validation.
+
+**Alt-line dedupe.** Same player + prop family (e.g., rush_yds) with multiple book lines dedupes to ONE winner per (game, player, family). Winner = highest conviction. Losers → SKIP. Prevents "same player STRONG OVER 44.5 AND STRONG UNDER 58.5" contradictions.
+
+**Live distribution (2026-09-08 Week 1 slate, 426 props post-cleanup):**
+- 39 PRIME · 89 STRONG · 149 LEAN · 145 LIGHT · 4 SKIP
+- ~2-3 PRIMEs per game (16 games)
+
+**Deferred to post-Week-1:** real `signal_sources` sport=NFL class=prop rows with actual hit_rate/n from graded prop outcomes. Would replace the hand-tuned edge/score thresholds with data-driven calibration. Tracked in [[project_nfl_prop_signal_gap_908]].
+
+---
+
 ### 3.6 GOAT Model (NFL shadow, 2026-09-08)
 
 **Purpose.** Fused-signal composite that runs in parallel to the NFL ensemble. Not overriding anything at launch — data collection so a real LR fit becomes viable by Week 4.
