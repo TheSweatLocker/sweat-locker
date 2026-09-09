@@ -39,6 +39,7 @@ Usage:
     python nfl_generate_props.py --player 'Patrick Mahomes'   # test one player
 """
 import argparse
+import functools
 import os
 import sys
 from collections import defaultdict
@@ -54,11 +55,17 @@ from dotenv import load_dotenv
 
 
 # 2026-09-08: retry-enabled session for external API calls (The Odds API
-# specifically has flaky Windows-side ConnectionResetError intermittently;
-# GitHub Actions Linux runners more stable but adding retry defense
-# in both directions is cheap insurance). Use `_retry_session.get(...)`
-# instead of `requests.get(...)` for anything hitting external HTTP.
-# Supabase (localhost-adjacent for our EU region) doesn't need retry.
+# specifically has flaky Windows-side ConnectionResetError intermittently).
+#
+# 2026-09-09 UPDATE: original comment claimed "Supabase doesn't need retry"
+# — proven wrong. NFL prop gen kept dying mid-run at every Supabase read
+# hot-path (player_rolling, player_id_lookup, fetch_nfl_player_recent,
+# fetch_nfl_defense_recent_allowed, fetch_nfl_player_usage, ctx load) with
+# ConnectionResetError(10054). Sustained high-frequency Supabase reads
+# (270 events × ~12 markets × per-player fetches × per-player-L10 fetches
+# = thousands of serial DB reads) trip pool/SSL limits reliably. Retry
+# handles it: connect=3, read=3, backoff_factor=1.0 (1s, 2s, 4s).
+# ALL Supabase requests.get calls in this file now use _retry_session.
 _retry_session = requests.Session()
 _retry = Retry(
     total=5, connect=3, read=3, backoff_factor=1.0,
@@ -223,7 +230,7 @@ def load_fantasy_projections(season: int, week: int) -> dict:
     key = (season, week)
     if key in _FANTASY_PROJ_CACHE:
         return _FANTASY_PROJ_CACHE[key]
-    r = requests.get(f'{SB}/rest/v1/nfl_player_projections', headers=H_READ,
+    r = _retry_session.get(f'{SB}/rest/v1/nfl_player_projections', headers=H_READ,
         params={'season': f'eq.{season}', 'week': f'eq.{week}',
                 'select': '*'}, timeout=15)
     rows = r.json() if isinstance(r.json(), list) else []
@@ -279,7 +286,7 @@ def _i(v):
 
 
 def load_alias_map() -> dict:
-    r = requests.get(
+    r = _retry_session.get(
         f'{SB}/rest/v1/nfl_team_aliases?select=canonical_name,odds_api_name,full_name',
         headers=H_READ, timeout=15,
     )
@@ -311,7 +318,7 @@ def load_opponent_defense(season: int) -> dict:
     """
     def _pull(season_val: int) -> dict:
         acc: dict = {}
-        r1 = requests.get(
+        r1 = _retry_session.get(
             f'{SB}/rest/v1/nfl_team_stats?season=eq.{season_val}&season_type=eq.REG'
             f'&select=team,def_sacks,def_ints,def_pass_def,def_fumbles_forced,def_tds',
             headers=H_READ, timeout=15,
@@ -319,7 +326,7 @@ def load_opponent_defense(season: int) -> dict:
         if r1.status_code == 200:
             for row in r1.json():
                 acc[row['team']] = dict(row)
-        r2 = requests.get(
+        r2 = _retry_session.get(
             f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{season_val}&season_type=eq.REG'
             f'&select=team,def_ppg,def_ypg,def_pass_ypg,def_rush_ypg,'
             f'def_pass_epa_allowed,def_rush_epa_allowed',
@@ -391,10 +398,15 @@ def _emit_matchup_rank(opp_pct: Optional[float], opp_team: str,
     return sig, bonus
 
 
+@functools.lru_cache(maxsize=None)
 def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
     """Return (l4_avg, season_avg, games_played) for a player-prop.
-    Reads from nfl_player_stats — pulls most recent 20 rows, computes L4 + season."""
-    r = requests.get(
+    Reads from nfl_player_stats — pulls most recent 20 rows, computes L4 + season.
+
+    2026-09-09: memoized. Same (player_id, prop_col, season) called 12+ times
+    per outcome by the loop — cache cuts duplicate hits ~90%.
+    """
+    r = _retry_session.get(
         f'{SB}/rest/v1/nfl_player_stats'
         f'?player_id=eq.{player_id}'
         f'&order=season.desc,week.desc'
@@ -402,7 +414,7 @@ def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
         f'&select=season,week,{prop_col}',
         headers=H_READ, timeout=15,
     )
-    if r.status_code != 200:
+    if r is None or r.status_code != 200:
         return None, None, 0
     rows = r.json() or []
     if not rows:
@@ -504,9 +516,15 @@ def fetch_event_props(event_id: str, sport_key: str) -> dict:
     return r.json()
 
 
+@functools.lru_cache(maxsize=None)
 def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict]:
     """Fuzzy lookup player_id + team from nfl_player_stats latest season.
     Returns {player_id, player_name, team, position} or None.
+
+    2026-09-09: memoized. Same (name, position) queried once per prop_type per
+    player — cache eliminates ~90% of redundant lookups (each player has 6-12
+    markets that all resolve to the same underlying player row).
+    Caller MUST NOT mutate returned dict — cached instance is shared.
 
     2026-09-07: user caught Davante Adams cited as team=NYJ on today's
     props when he's actually on LAR (mid-2025 trade). Root cause: prior
@@ -525,7 +543,7 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
             params += f'&season=eq.{season}&season_type=eq.{season_type}'
         if position:
             params += f'&position=eq.{position}'
-        r = requests.get(f'{SB}/rest/v1/nfl_player_stats?{params}', headers=H_READ, timeout=15)
+        r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats?{params}', headers=H_READ, timeout=15)
         return r.json()[0] if r.status_code == 200 and r.json() else None
     # Try current + prior season REG in order — get freshest team assignment.
     from datetime import datetime as _dt
@@ -540,6 +558,7 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
 # ─────────────────────────────────────────────────────────────
 # Row build + orchestration
 # ─────────────────────────────────────────────────────────────
+@functools.lru_cache(maxsize=None)
 def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
                              n: int = 10) -> list[dict]:
     """Return last-N per-week rows for a player's stat.
@@ -548,11 +567,15 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
     nfl_player_stats (per-week per-player) as source. Rows returned
     newest-first: {season, week, opponent, value, home_away?}.
     Falls back to prior season if current has <3 rows (Week 1 case).
+
+    2026-09-09: memoized on (player_id, stat_col, season, n). Cuts duplicate
+    fetches when multiple markets on the same player+stat re-query. Callers
+    MUST NOT mutate the returned list — cached instance is shared.
     """
     if not player_id or not stat_col: return []
     def _pull(sn):
         try:
-            r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+            r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
                              headers=H_READ,
                              params={'player_id': f'eq.{player_id}',
                                      'season': f'eq.{sn}',
@@ -582,6 +605,7 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
     return out
 
 
+@functools.lru_cache(maxsize=None)
 def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
                                        weeks_back: int = 5) -> float | None:
     """Aggregate per-week yards/TDs allowed by opp_team over last N weeks.
@@ -590,10 +614,14 @@ def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
     see recent form. This aggregates from nfl_player_stats by summing
     the stat across all opposing players who played opp_team in the
     last N weeks. Returns avg per-game allowed. None if no data.
+
+    2026-09-09: memoized. HIGHEST-VALUE cache — called per prop and unique
+    args are only ~384 (32 teams × 12 stats). Was hitting DB thousands of
+    times/run before. Now ≤384 DB calls per run.
     """
     if not opp_team or not stat_col: return None
     try:
-        r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+        r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
                          headers=H_READ,
                          params={'opponent_team': f'eq.{opp_team}',
                                  'season': f'eq.{season}',
@@ -621,16 +649,21 @@ def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
     return round(total / len(recent_weeks), 1)
 
 
+@functools.lru_cache(maxsize=None)
 def fetch_nfl_player_usage(player_id: int, season: int) -> dict:
     """L4 target_share + air_yards_share + wopr for a pass-catcher.
 
     Signals whether a WR/TE/RB is genuinely a focal target or a
     peripheral option. High target_share (>=22%) is a real edge for
     receptions + rec_yds props.
+
+    2026-09-09: memoized. One row per unique (player_id, season) — same
+    player hits this once per (pass-catcher) market so 6+ hits collapse
+    to 1 DB call. Caller MUST NOT mutate returned dict.
     """
     if not player_id: return {}
     try:
-        r = requests.get(f'{SB}/rest/v1/nfl_player_stats',
+        r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
                          headers=H_READ,
                          params={'player_id': f'eq.{player_id}',
                                  'season': f'eq.{season}',
@@ -1224,7 +1257,7 @@ def _load_nfl_ctx_by_game(game_dates: list) -> dict:
     all_ctx = {}
     for gd in set(game_dates):
         try:
-            r = requests.get(f'{SB}/rest/v1/nfl_game_context',
+            r = _retry_session.get(f'{SB}/rest/v1/nfl_game_context',
                              headers=H_READ,
                              params={'game_date': f'eq.{gd}',
                                      'select': 'game_id,home_team,away_team,temp,wind,roof,'
