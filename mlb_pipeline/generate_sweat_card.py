@@ -1027,11 +1027,35 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         if p.get('prop_type') not in PROP_TYPES_SUPPRESSED_FROM_CARD
     ]
 
+    # 2026-09-09 UNIFIED TIER LOCK. When today's Sharp Card cache row
+    # exists, its items already reflect calibrated tiers. Re-running
+    # apply_calibration here in Sweat Card causes tier drift:
+    # same play (e.g., WAS/SD UN 8.0) shows PRIME on Sharp Card items
+    # list but LEAN on Sweat Card top_8. Kills user trust ("6-2 vs 12-12
+    # discrepancy" 9/8). Skip re-calibration when Sharp Card composer
+    # has already run for today.
+    _skip_recal = False
+    try:
+        import requests as _rq
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        _today = (_dt.now(_tz.utc) - _td(hours=4)).date().isoformat()
+        _r = _rq.get(f"{SUPABASE_URL}/rest/v1/jerry_cache",
+                     headers=HEADERS,
+                     params={'cache_key': f'eq.sharp_card_{_today}', 'select': 'cache_key'},
+                     timeout=8)
+        if _r.status_code == 200 and _r.json():
+            _skip_recal = True
+            print('  🔒 tier-lock: Sharp Card cache present, skipping re-calibration')
+    except Exception:
+        pass
+
     # Tier calibration (2026-08-03 v2) — FADE historical losers (flip
     # direction), cap juice traps, promote goldmine SKIPs. Per user
     # directive 2026-08-03: don't suppress garbage — Jerry should FADE
     # the other side ("market has priced it in").
     try:
+        if _skip_recal:
+            raise ImportError('tier-lock active — no re-calibration')
         from prop_tier_calibration import apply_calibration
         pre = len(props)
         calibrated = []

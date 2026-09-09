@@ -420,6 +420,16 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
                                         pb.get('playbook_side') if pb else None)
         if not _is_ps(effective_tier): continue
         if not _prop_team_matches(p.get('player_team'), p.get('matchup')): continue
+        # 2026-09-09 CONVICTION FLOOR (Fix C). Sharp Card was picking
+        # marginal PRIMEs — 9/8 audit: overall PRIME pool 32-4 (89%),
+        # but Sharp Card's 20-PRIME subset went 10-9 (52%). Root cause:
+        # composer surfaced PRIMEs with conv 65-72 that graded near-random,
+        # while high-conv PRIMEs (>=73) hit 90%+. Floor at 73 removes the
+        # noise band. Refit_conviction preferred over base conviction when
+        # available (it's the calibrated version).
+        _p_conv = p.get('refit_conviction') if p.get('refit_conviction') else p.get('conviction')
+        if effective_tier == 'PRIME' and (_p_conv or 0) < 73:
+            continue
         prop_odds = p.get('book_over_odds') if p.get('direction') == 'over' else p.get('book_under_odds')
         units = _units_for_pick(effective_tier, 'prop', prop_odds,
                                  prop_type=p.get('prop_type'))
