@@ -299,6 +299,120 @@ def build_hits_parlay(hit_legs: list[dict],
     return None
 
 
+def fetch_prime_props(game_date: str, sport: str = 'MLB') -> list[dict]:
+    """Pull PRIME/STRONG props at published lines for chalk-mode parlays.
+
+    2026-09-09: adds prop content to the Ledger per surface walkthrough.
+    Previously the Ledger only touched sides (chalk trio, teased spreads,
+    hits_parlay). Chalk-mode prop parlay = 2-4 PRIME/STRONG props at
+    PUBLISHED lines, target combined +100 to +400 (chalkier than the
+    hits_parlay's +100 to +400 range). Uses real book odds — no alt-line
+    synthesis. Alt-line prop pulls are queued (needs pull_alt_lines.py
+    extension to support alternate_player_* markets from Odds API).
+    """
+    tbl_by_sport = {
+        'MLB': 'mlb_pipeline_props',
+        'NFL': 'nfl_pipeline_props',
+    }
+    tbl = tbl_by_sport.get(sport)
+    if not tbl: return []
+    r = requests.get(
+        f'{SB}/rest/v1/{tbl}',
+        headers=H_READ,
+        params={'game_date': f'eq.{game_date}',
+                'tier': 'in.(PRIME,STRONG)',
+                'select': ('game_id,player_name,player_team,matchup,prop_type,'
+                           'direction,prop_line,book_over_odds,book_under_odds,'
+                           'tier,conviction,refit_conviction'),
+                'order': 'conviction.desc.nullslast',
+                'limit': '30'},
+        timeout=15)
+    if r.status_code != 200: return []
+    out = []
+    for row in (r.json() or []):
+        if not isinstance(row, dict): continue
+        direction = str(row.get('direction') or '').upper()
+        odds = (row.get('book_over_odds') if direction == 'OVER'
+                else row.get('book_under_odds'))
+        if odds is None: continue
+        try:
+            odds_i = int(odds)
+        except (TypeError, ValueError): continue
+        # Chalk-mode filter: skip picks juicier than -300 (heavy dog anchor)
+        # AND skip picks that are unpriced dogs (+300 or higher — those
+        # belong in Daily Degen, not the chalk-mode Ledger).
+        if odds_i < -300 or odds_i > 300: continue
+        conv = int(row.get('refit_conviction') or row.get('conviction') or 0)
+        out.append({
+            'game_id': row.get('game_id'),
+            'sport': sport,
+            'matchup': row.get('matchup') or '',
+            'player_name': row.get('player_name'),
+            'player_team': row.get('player_team'),
+            'market': 'prop',
+            'tier': row.get('tier'),
+            'conviction': conv,
+            'prop_type': row.get('prop_type'),
+            'direction': direction,
+            'pick': f"{row.get('player_name')} {direction.title()} {row.get('prop_line')} {row.get('prop_type')}",
+            'original_line': row.get('prop_line'),
+            'original_odds': odds_i,
+            'teased_line': None,
+            'teased_odds': None,
+        })
+    return out
+
+
+def build_chalk_prop_parlay(props: list[dict], exclude_games: set = None,
+                             target_odds_range: tuple = (100, 400),
+                             max_legs: int = 4) -> Optional[dict]:
+    """Combine PRIME/STRONG props into a chalk-mode parlay targeting +100 to +400.
+
+    2026-09-09 per user directive from surface walkthrough:
+      "The Ledger needs to be more chalkier in some varieties... for ncaab
+      its going to be alot of alternates and juiced for sure MLs."
+
+    Prefers multi-game legs (avoid single-game correlation risk); allows
+    same-game if slate forces it (e.g., single-pitcher day). Sorts props
+    by conviction desc, picks top N that fit the odds range.
+    """
+    if len(props) < 2: return None
+    exclude_games = exclude_games or set()
+    eligible = [p for p in props if p.get('game_id') not in exclude_games]
+    if len(eligible) < 2: return None
+
+    # Try 4 → 2 legs, take the highest-conviction combo that fits target range
+    for n in (max_legs, 3, 2):
+        if len(eligible) < n: continue
+        # Prefer multi-game — enforce distinct games where possible
+        seen_games = set()
+        slots = []
+        for p in eligible:  # already sorted by conviction desc
+            gid = p.get('game_id')
+            if gid in seen_games and len(slots) < n - 1:
+                # Allow same game only when we can't fill without it
+                continue
+            slots.append(p); seen_games.add(gid)
+            if len(slots) == n: break
+        if len(slots) < n: continue
+        combined = combined_american_odds([s['original_odds'] for s in slots])
+        if not (target_odds_range[0] <= combined <= target_odds_range[1]):
+            continue
+        return {
+            'kind': 'chalk_prop_parlay',
+            'sport_scope': slots[0].get('sport', 'MLB'),
+            'legs': slots,
+            'combined_odds': combined,
+            'combined_prob': None,
+            'reasoning': (
+                f'{n}-leg chalk prop parlay from PRIME/STRONG picks at published '
+                f'lines. Combined payout {combined:+d} on high-probability legs — '
+                f'chalk-mode Ledger content per surface walkthrough.'),
+            'auto_generated': True,
+        }
+    return None
+
+
 def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
     """Pull all PRIME/STRONG picks with a real primary_play across sports.
     Returns list of leg-shaped dicts."""
@@ -899,6 +1013,20 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
                 suggestions.append(hits_parlay)
                 print(f'  ✓ HITS PARLAY: {hits_parlay["combined_odds"]:+d} · '
                       f'{len(hits_parlay["legs"])} legs')
+
+    # 6. Chalk PROP parlay (MLB + NFL) — 2026-09-09 per surface walkthrough
+    # "Ledger needs to be more chalkier in some varieties." Same conceptual
+    # cousin to chalk-trio but built from props at PUBLISHED lines instead
+    # of ML favorites. Uses real book odds so combined payout is accurate.
+    for prop_sport in ('MLB', 'NFL'):
+        if prop_sport not in sports: continue
+        prime_props = fetch_prime_props(gd, sport=prop_sport)
+        if not prime_props: continue
+        chalk_prop = build_chalk_prop_parlay(prime_props, exclude_games=used_games)
+        if chalk_prop:
+            suggestions.append(chalk_prop); register(chalk_prop)
+            print(f'  ✓ {prop_sport} CHALK PROP PARLAY: {chalk_prop["combined_odds"]:+d} · '
+                  f'{len(chalk_prop["legs"])} legs')
 
     written = 0
     for i, sugg in enumerate(suggestions, 1):
