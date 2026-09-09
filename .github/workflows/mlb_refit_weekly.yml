@@ -44,6 +44,20 @@ jobs:
           cd mlb_pipeline
           python refit_train_v2.py
 
+      # 2026-09-08: NCAAF historical odds backfill BEFORE LR retrain.
+      # CFBD /lines endpoint returns free historical betting lines; this
+      # pulls current-year (in-season) fills so training set grows week
+      # over week as more games resolve. Runs BEFORE ncaaf_ml_logreg_train
+      # so the fresh rows are in the training corpus. Non-fatal.
+      - name: NCAAF historical odds backfill (CFBD)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_historical_odds_backfill.py --year 2026 || echo "ncaaf odds backfill non-fatal"
+
       # 2026-09-03: LR predictors are trained from resolved outcomes and
       # drift as data grows. Weekly retrain keeps coefficients calibrated.
       # Non-fatal per model — one failure doesn't kill the others.
