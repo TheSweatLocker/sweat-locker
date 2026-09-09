@@ -110,6 +110,24 @@ def compute_sport(sport: str, window: str = 'lifetime') -> None:
 
     # Try game_id join first (works for MLB), fall back to natural key join
     # (works for NFL / NCAAF / NCAAB where ID formats differ between tables).
+    #
+    # 2026-09-09: was using a "try-with-run_line_result then fallback on 42703"
+    # pattern that functionally worked but every first-attempt logged a 42703
+    # error to postgres for non-MLB sports (~10 spam entries per day since
+    # non-MLB results tables never had that column). Dispatch column list
+    # per-sport upfront — same convention as grade_jerry_reads.py + aggregate
+    # _daily_records.py. Only MLB has `run_line_result`; others use
+    # `spread_result`. Both aliased downstream where needed.
+    _RESULT_COLS = {
+        'MLB':   'game_id,home_score,away_score,run_line_result,total_result,home_team,away_team,game_date',
+        'NFL':   'game_id,home_score,away_score,spread_result,total_result,home_team,away_team,game_date',
+        'NCAAF': 'game_id,home_score,away_score,spread_result,total_result,home_team,away_team,game_date',
+        'NCAAB': 'game_id,home_score,away_score,spread_result,total_result,home_team,away_team,game_date',
+        'NBA':   'game_id,home_score,away_score,spread_result,total_result,home_team,away_team,game_date',
+    }
+    result_select = _RESULT_COLS.get(sport,
+        'game_id,home_score,away_score,home_team,away_team,game_date')
+
     gids = [c['game_id'] for c in ctx_all if isinstance(c, dict) and c.get('game_id')]
     results = {}
     for i in range(0, len(gids), 100):
@@ -119,17 +137,17 @@ def compute_sport(sport: str, window: str = 'lifetime') -> None:
             r = requests.get(f'{SB}/rest/v1/{res_table}',
                              headers=H_READ,
                              params={'game_id': f'in.({in_clause})',
-                                     'select': 'game_id,home_score,away_score,run_line_result,total_result,home_team,away_team,game_date',
+                                     'select': result_select,
                                      'limit': '500'}, timeout=15).json()
-            if isinstance(r, dict) and r.get('code') == '42703':
-                r = requests.get(f'{SB}/rest/v1/{res_table}',
-                                 headers=H_READ,
-                                 params={'game_id': f'in.({in_clause})',
-                                         'select': 'game_id,home_score,away_score,home_team,away_team,game_date',
-                                         'limit': '500'}, timeout=15).json()
         except Exception:
             r = []
         for x in (r if isinstance(r, list) else []):
+            # Alias spread_result → run_line_result for uniform downstream reads
+            if sport != 'MLB' and isinstance(x, dict) and x.get('spread_result') is not None:
+                sp = str(x['spread_result']).lower()
+                if 'home' in sp and 'covered' in sp:  x['run_line_result'] = 'home'
+                elif 'away' in sp and 'covered' in sp: x['run_line_result'] = 'away'
+                elif 'push' in sp:                     x['run_line_result'] = 'push'
             results[x['game_id']] = x
 
     # Natural-key fallback: for context rows without a game_id match, look up
@@ -151,15 +169,15 @@ def compute_sport(sport: str, window: str = 'lifetime') -> None:
                 r = requests.get(f'{SB}/rest/v1/{res_table}',
                                  headers=H_READ,
                                  params={'game_date': f'in.({in_dates})',
-                                         'select': 'game_id,home_score,away_score,run_line_result,total_result,home_team,away_team,game_date',
+                                         'select': result_select,
                                          'limit': '2000'}, timeout=20).json()
-                if isinstance(r, dict) and r.get('code') == '42703':
-                    r = requests.get(f'{SB}/rest/v1/{res_table}',
-                                     headers=H_READ,
-                                     params={'game_date': f'in.({in_dates})',
-                                             'select': 'game_id,home_score,away_score,home_team,away_team,game_date',
-                                             'limit': '2000'}, timeout=20).json()
                 for x in (r if isinstance(r, list) else []):
+                    # Alias spread_result → run_line_result for non-MLB (uniform reads)
+                    if sport != 'MLB' and isinstance(x, dict) and x.get('spread_result') is not None:
+                        sp = str(x['spread_result']).lower()
+                        if 'home' in sp and 'covered' in sp:  x['run_line_result'] = 'home'
+                        elif 'away' in sp and 'covered' in sp: x['run_line_result'] = 'away'
+                        elif 'push' in sp:                     x['run_line_result'] = 'push'
                     k = (str(x.get('game_date')), (x.get('home_team') or '').upper(), (x.get('away_team') or '').upper())
                     by_natural[k] = x
             except Exception: pass

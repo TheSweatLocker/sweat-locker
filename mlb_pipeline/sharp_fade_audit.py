@@ -75,25 +75,27 @@ def today_et() -> str:
 # ==================================================================
 
 def _upsert_audit(rows):
-    """Idempotent upsert into sharp_fade_audit_trail using UNIQUE(sport, game_id)."""
+    """Idempotent upsert into sharp_fade_audit_trail using UNIQUE(sport, game_id).
+
+    2026-09-09: was "try INSERT, catch 409, fall back to PATCH" — functional but
+    every duplicate produced a postgres 23505 log entry (10+/day spam). Switched
+    to PostgREST native upsert via Prefer: resolution=merge-duplicates + on_conflict.
+    Postgres INSERT ... ON CONFLICT is atomic + silent on duplicates.
+    """
     if not rows: return 0
-    written = 0
-    for row in rows:
-        # Try INSERT first; if 23505 (duplicate), do PATCH
-        wr = requests.post(f'{SB}/rest/v1/sharp_fade_audit_trail',
-                           headers=H_W, data=json.dumps(row, default=str), timeout=15)
-        if wr.status_code in (200, 201, 204):
-            written += 1
-        elif wr.status_code == 409:
-            # duplicate — patch existing row (except id)
-            filt = f'sport=eq.{row["sport"]}&game_id=eq.{row["game_id"]}'
-            patch = {k: v for k, v in row.items() if k != 'id'}
-            pr = requests.patch(f'{SB}/rest/v1/sharp_fade_audit_trail?{filt}',
-                                headers=H_W, data=json.dumps(patch, default=str), timeout=15)
-            if pr.status_code in (200, 204): written += 1
-            else: print(f'  ⚠ patch {pr.status_code}: {pr.text[:150]}')
-        else:
-            print(f'  ⚠ insert {wr.status_code}: {wr.text[:150]}')
+    upsert_headers = {
+        **H_W,
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+    }
+    # Batch-friendly — PostgREST accepts a JSON array for upsert
+    wr = requests.post(
+        f'{SB}/rest/v1/sharp_fade_audit_trail?on_conflict=sport,game_id',
+        headers=upsert_headers, data=json.dumps(rows, default=str), timeout=30,
+    )
+    if wr.status_code in (200, 201, 204):
+        return len(rows)
+    print(f'  ⚠ upsert {wr.status_code}: {wr.text[:200]}')
+    return 0
     return written
 
 

@@ -192,13 +192,19 @@ serve(async (req: Request) => {
   if (supabase && upstreamStatus === 200 && upstreamJson !== null) {
     try {
       const expiresAt = new Date(Date.now() + ttl * 1000).toISOString();
+      // 2026-09-09: pass onConflict explicitly. Without it the JS client
+      // upsert defaults to PRIMARY KEY conflict resolution, but our unique
+      // constraint on odds_cache is odds_cache_cache_key_key (on cache_key)
+      // — not the PK. Result was a 23505 postgres log entry every ~5min
+      // when cache_key already existed. onConflict: 'cache_key' routes the
+      // upsert through the correct unique constraint (silent, atomic).
       await supabase.from("odds_cache").upsert({
         cache_key: key,
         endpoint,
         data: upstreamJson,
         fetched_at: nowIso,
         expires_at: expiresAt,
-      });
+      }, { onConflict: "cache_key" });
     } catch (e) {
       console.warn("[odds-proxy] cache write failed:", (e as Error).message);
     }
