@@ -266,11 +266,29 @@ def _blend_pg(stats: dict, field: str, per_game: bool = True) -> Optional[float]
                     average directly.
 
     Returns None if neither side has usable data.
+
+    2026-09-09 DATA-GAP GUARD: CFBD reports 0.0 for defense stats
+    (def_pass_ypg / def_rush_ypg) even after games are played until its
+    aggregation cron runs. Verified against Kansas 2026: def_pass_ypg=0.0
+    with games=2 — real teams don't allow literally 0 passing yards.
+    Treat cur_val==0 as unpopulated when field is a defense stat OR when
+    the yardage is implausibly zero across ≥1 game. Falls through to
+    prior-only for those cases.
     """
     cur_games = stats.get('_cur_games') or 0
     pri_games = stats.get('_pri_games') or 0
     cur_val = stats.get(f'_cur_{field}')
     pri_val = stats.get(f'_pri_{field}')
+
+    # Treat exact-zero as unpopulated for stats that shouldn't ever be
+    # actually zero across ≥1 game played (all yardage, all PPG). Only
+    # counters like def_ints / turnovers can legitimately be 0.
+    _NEVER_ZERO_FIELDS = {
+        'pass_yards', 'rush_yards', 'penalty_yards', 'possession_time_sec',
+        'def_ppg', 'def_pass_ypg', 'def_rush_ypg',
+    }
+    if cur_val == 0 and field in _NEVER_ZERO_FIELDS:
+        cur_val = None
 
     if per_game:
         cur_pg = (cur_val / cur_games) if (cur_games and cur_val is not None) else None
