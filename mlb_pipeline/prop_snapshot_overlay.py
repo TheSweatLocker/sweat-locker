@@ -38,15 +38,21 @@ _SB = os.environ.get('SUPABASE_URL')
 _KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_KEY')
 _H = {'apikey': _KEY, 'Authorization': f'Bearer {_KEY}'} if _KEY else None
 
-# Fields the snapshot is authoritative on. Everything else = live row wins.
+# 2026-09-09 v2: SNAPSHOT LOCKS ODDS ONLY, NOT TIER.
+# Rationale: snapshot fires at ~11am ET to lock accountability odds so
+# grader PnL uses the price users actually saw. But snapshot captures
+# whatever tier existed at snapshot time — and tier calibration runs
+# LATER in the day (refit + apply_calibration + playbook). If we overlay
+# tier from snapshot, we DOWNGRADE PRIMEs back to LEAN because calibration
+# hadn't run yet at snapshot time (verified 9/9: all 16 live PRIMEs were
+# snapshotted as LEAN conv=55 default). Composers then displayed STRONG
+# props instead of the actual PRIMEs.
+# Fix: overlay only book_line + book_over_odds + book_under_odds. Tier
+# and conviction stay on the live row (post-calibration truth).
 _LOCK_FIELDS = {
-    'legacy_tier':          'tier',
-    'legacy_conviction':    'conviction',
-    'refit_conviction':     'refit_conviction',
     'book_line':            'book_line',
     'book_over_odds':       'book_over_odds',
     'book_under_odds':      'book_under_odds',
-    'prop_line':            'prop_line',
 }
 
 
