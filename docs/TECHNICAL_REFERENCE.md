@@ -17,12 +17,12 @@ Canonical technical reference for how the engine works. Written the way a manual
 
 1. [Predictive Engine — Ensemble, Defensive Gates, LR Override](#1-predictive-engine)
 2. [Logistic Regression System (Per Sport)](#2-logistic-regression-system-per-sport)
-3. [NCAAF LR Deep Dive](#3-ncaaf-lr-deep-dive) ← 2026-09-08 build-out
+3. [NCAAF LR Deep Dive · NFL Prop Confluence Gate · GOAT Model](#3-ncaaf-lr-deep-dive) ← 2026-09-08 build-outs
 4. [Historical Odds Backfill (CFBD)](#4-historical-odds-backfill-cfbd)
-5. [Pipeline Map _(stub — pending buildout)_](#5-pipeline-map)
-6. [Tier Engine _(stub)_](#6-tier-engine)
-7. [Grading + Surface Records _(stub)_](#7-grading--surface-records)
-8. [How to Add a New Sport _(stub)_](#8-how-to-add-a-new-sport)
+5. [Pipeline Map](#5-pipeline-map)
+6. [Pick Generation Across Sports](#6-pick-generation-across-sports) ← 2026-09-09 build-out
+7. [Grading + Surface Records](#7-grading--surface-records)
+8. [How to Add a New Sport _(covered inline in §6.7)_](#67-adding-a-new-sport-post-launch-cheatsheet)
 
 ---
 
@@ -413,9 +413,119 @@ WHERE start.event = 'start' AND e.run_id IS NULL
 
 ---
 
-## 6. Tier Engine
+## 6. Pick Generation Across Sports
 
-_Stub._ The canonical tier assignment path, tier thresholds by sport, publish gate rules.
+**How a game becomes a pick.** Every sport uses the same 4-stage generation pattern; only the sources and calibration data differ. This section maps the flow for each sport so you can trace any published pick back to its source.
+
+### 6.1 The universal flow
+
+```
+1. INGEST     — schedule + odds + player/team stats land in <sport>_game_context
+2. ENRICH     — team form, tendencies, injuries, splits, matchup data patched in
+3. SCORE      — ensemble_scorer + defensive_gates + LR override write primary_play
+4. BRIDGE     — sync_jerry_reads_from_ctx copies primary_play → jerry_reads (app read)
+```
+
+Every sport follows this shape. The differences: which data sources fill stage 1, which signals fire in stage 3, whether LR/GOAT are active. Sport-by-sport map below.
+
+### 6.2 Sport-by-sport pick sources
+
+| Sport | Ingest source | Scorer | LR? | GOAT? | Prop model? |
+|-------|---------------|--------|-----|-------|-------------|
+| **MLB** | Odds API + Fangraphs + savant + weather | ensemble_v2 + refit + LR ML/prop/total | ✅ ML + Total + Prop | — | `nfl_generate_props`-equivalent = `mlb_props_pipeline` w/ playbook + refit + apply_prop_refit |
+| **NFL** | Odds API + nflverse + Sleeper projections + Madden 27 | ensemble_v2 + defensive_gates | ✅ ML (+total shadow) | ✅ shadow-mode (§3.6) | `nfl_generate_props` → confluence gate (§3.5) |
+| **NCAAF** | Odds API + CFBD + SP+ + returning production | ensemble_v2 + defensive_gates | ✅ ML + Total (demote-only) | — | *(none — college football props not surfaced per feedback_college_sports_no_props)* |
+| **NBA** | Odds API + ESPN + BasketballRef | ensemble_v2 + defensive_gates | ⛔ blocked (0 historical odds) | — | `nba_generate_props` (scaffolded, minimal signal calibration) |
+| **NHL** | Odds API + NHL API + MoneyPuck | ensemble_v2 + defensive_gates | ⛔ blocked | — | `nhl_generate_props` (scaffolded) |
+| **NCAAB** | Odds API + KenPom + ESPN | ensemble_v2 + defensive_gates | ⛔ blocked | — | *(none — college)* |
+| **UFC** | UFCStats + odds + isotonic calibrator | `ufc_compute_ev` (bespoke — different model class) | ⛔ n/a | — | *(handled inline in ufc_picks table)* |
+
+### 6.3 Stage 3 deep dive — the ensemble → gates → LR chain
+
+The heart of the engine. Every game's `primary_play` goes through this exact sequence:
+
+**Step 1: ensemble_scorer.score_game(sport, row)**
+- Loads `signal_sources` rows for the sport
+- Each signal fires if its precondition matches the game (e.g., `mc_ml_high_conf` fires when `mc_probabilities.home_prob > 0.58`)
+- Signals cast votes on each of 3 markets (ml, rl/spread, total) with weight × contribution
+- Winner per market picked; top market chosen as `primary_play`
+- Emits `_ensemble_sources` (attribution) + `_ensemble_all_markets` (side-by-side picks)
+
+**Step 2: ML reroute (juice trap)**
+- If picked market is ML and juice exceeds sport threshold (MLB -200, NCAAF/NFL -300, NBA/NCAAB -400), swap to spread or total
+- Prevents shipping heavy-chalk ML picks the LR override won't be able to save
+
+**Step 3: apply_all_defensive_gates(pp, ctx, sport)**
+1. `oc_flip_gate` — OddsChatter sharp side; flip pick.side if OC contradicts strongly
+2. `mc_dissent_gate` — Monte Carlo disagrees → demote
+3. `juice_trap_gate` — sport-specific juice cap → demote to LEAN
+4. `ncaaf_large_spread_gate` — NCAAF only, catches "+24.5 dog" fade cases
+5. `apply_ml_lr_override` — sport-specific supervised model; overrides ensemble on ML
+6. `apply_total_lr_override` — sport-specific supervised model on Total
+7. `publish_gate` — final tier ceiling based on signal count + refit backing
+
+**Step 4: LR shadow backfill (always stamps)**
+- Even when LR doesn't override, `_lr_ml_shadow` and `_lr_total_shadow` fields written
+- Enables retroactive "would LR have picked this?" audits without changing the pick
+
+**Step 5 (NFL only, post-2026-09-08): GOAT composite**
+- `nfl_goat_composite.py` fuses ensemble + LR + Madden + panel + injuries + rest + weather
+- Writes `primary_play._goat_shadow` — never overrides pick; feeds `align.chips_extra` for user visibility
+
+### 6.4 Stage 4 — Bridge to app read path
+
+`sync_jerry_reads_from_ctx.py --sport X` runs post-scoring:
+- Reads `<sport>_game_context.primary_play` for the window
+- Writes/updates `jerry_reads` rows keyed by `(sport, game_id, game_date)`
+- App queries `jerry_reads` for every surface — Sharp Card, Receipts, POTD anchoring, Game Detail
+
+**Why jerry_reads instead of the app reading primary_play directly:** decouples app schema from pipeline schema, enables sport-agnostic surfaces (Sharp Card composes across sports from jerry_reads shape), supports historical replay (jerry_reads carries `created_at` for provenance).
+
+### 6.5 Prop pipelines — sport-specific
+
+Props follow a different sub-flow. Common shape:
+```
+Odds API player-prop markets
+  → nfl_generate_props / mlb_props_pipeline pulls outcomes
+  → build_prop_row: player_id lookup + projection + edge calc + tier
+  → (post-cleanup) prop_signal_discipline: confluence gate + cross-team + alt-line dedupe
+  → prop_ensemble_scorer: playbook signals fired
+  → apply_prop_refit (MLB only): refit weights adjust conviction
+  → Sharp Card + Prop Jerry compose from mlb_pipeline_props / nfl_pipeline_props
+```
+
+**Cross-sport gaps documented tonight (2026-09-08):**
+- **NFL prop signal_sources: 0 rows** — every prop defaulted STRONG until `nfl_prop_signal_discipline.py` shipped tonight (§3.5). Discipline uses signals already on the row (l4/l5/l10/hit_rate) not signal_sources; proper calibration is post-Week-4 work.
+- **MLB props: refit calibration validated** (81.2% PRIME hit rate 30d) — pattern for other sports to follow
+- **NCAAF/NCAAB props: not surfaced** — per `feedback_college_sports_no_props`, we don't publish player props for college sports
+
+### 6.6 What determines each surface's picks
+
+| Surface | Reads from | Filter |
+|---------|-----------|--------|
+| **POTD** | `daily_best_bet_history` (auto-selected from top jerry_reads) | Highest LR-confidence pick per day + [[project_potd_selection_redesign_908]] rules |
+| **Sharp Card** | jerry_cache `sharp_card_YYYY-MM-DD` (composed by `generate_sharp_card.py`) | Cross-sport PRIME/STRONG/LEAN sides + top props |
+| **Ladder** | jerry_cache `ladder_YYYY-MM-DD` | Single-play/day roll-winnings track (MLB only) |
+| **Ledger** | jerry_cache `ledger_YYYY-MM-DD` | Teasers + chalk parlays built by `generate_ledger.py` |
+| **Dawg of the Day** | `daily_dawg` (auto-selected by `generate_dawg_of_day.py`) | Best contrarian dog play across the day |
+| **Daily Degen** | `daily_degen` (composed by `generate_daily_degen.py`) | 4-6 leg lottery ticket |
+| **Prop Jerry** | `prop_jerry_reads` (synthesized from `mlb_pipeline_props`) | Every PRIME/STRONG prop with LLM prose |
+| **Game Detail** | `<sport>_game_context` directly | Everything the engine knows about the game |
+
+### 6.7 Adding a new sport (post-launch cheatsheet)
+
+Every wired sport went through this checklist. Same order for the next:
+
+1. **Data ingest** — write `<sport>_data_client.py` (schedule + scores) and `<sport>_game_context.py` (per-day slate + odds + primary_play write)
+2. **signal_sources rows** — SEED entries for the sport with initial weights (borrow from MLB defaults; recalibrate after 100+ graded games)
+3. **defensive_gates whitelist** — add to sport-scoped branches (juice cap, LR override sport map)
+4. **`<sport>_pipeline.yml` workflow** — mirror an existing sport's YAML; adjust cron cadence to sport's schedule
+5. **`sync_jerry_reads_from_ctx.py` SPORT_CONFIG entry** — enables the bridge to the app
+6. **LR trainer** — `<sport>_ml_logreg_train.py` + `<sport>_total_logreg_train.py` (need historical corpus with close lines)
+7. **`compute_surface_records.py` picker** — `pick_<sport>_sides()` (mirror `_pick_generic_sides`)
+8. **Grading + resolver** — `resolve_<sport>_results.py` writes to `<sport>_game_results`; `grade_jerry_reads.py` RESULTS_TABLE map entry
+
+Once these are wired, every existing surface (Sharp Card, Receipts, POTD, etc) automatically picks up the sport with no per-surface code change — that's the payoff of stages 1-4 being cross-sport uniform.
 
 ---
 
@@ -579,3 +689,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 | 2026-09-08 | pipeline map | Section 5 filled in: full workflow inventory (19 files), trigger chain, concurrency + heartbeat pattern, symptom → check-here debug table. |
 | 2026-09-08 | grading + surfaces | Section 7 filled in: 4-stage flow (resolve → grade → compose → aggregate), 19-surface registry, client read pattern, current metrics snapshot, symptom → check debug table. |
 | 2026-09-08 | GOAT NFL | Section 3.6 added: fused-signal composite shipped shadow-only. Composite formula, chip payload, backend-driven `chips_extra` pattern, promotion path documented. |
+| 2026-09-09 | pick generation | Section 6 filled in: universal 4-stage flow (ingest → enrich → score → bridge), sport-by-sport source map, ensemble → gates → LR chain deep-dive, prop pipeline sub-flow, surface → source table, add-a-sport 8-step checklist. |
