@@ -1577,6 +1577,24 @@ jobs:
           cd mlb_pipeline
           python play_of_day_multi_sport.py || echo "cross-sport POTD non-fatal"
 
+      # 2026-09-09 CONSOLIDATION: snapshot_pick_lock moved FROM the tail
+      # to right before generate_sharp_card so composers can READ the
+      # locked values. Prior state (fixed): snapshot ran at position 2189
+      # (after both composers) so cache was built from live drifting
+      # mlb_pipeline_props while snapshot captured different end-of-day
+      # values. This caused the "same play, different tier" bug users
+      # saw on 9/8 (WAS/SD Under 8.0 was PRIME on Sharp tab but LEAN on
+      # Sweat Card top_8). Snapshot uses ignore-duplicates so first run
+      # of the day locks tiers; subsequent runs no-op.
+      - name: Snapshot picks at card-lock (accountability + read lock)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python snapshot_pick_lock.py --sport MLB --source card_lock || echo "snapshot non-fatal"
+
       # 2026-09-03 SERVER-SIDE SHARP CARD (launch blocker):
       # generate_sharp_card.py replaces client-side item composition
       # in fetchSharpTab. Writes ONE jerry_cache.sharp_card_{today}
@@ -1585,6 +1603,9 @@ jobs:
       # writes are settled so cache reflects final tier decisions.
       # Every user reads the same row = same Sharp Card. Threshold
       # changes = single Python commit, no App Store ship.
+      # 2026-09-09: composer now overlays prop_pick_snapshots (locked
+      # tier + odds) on live mlb_pipeline_props — see generate_sharp_card
+      # _fetch_all. Snapshot MUST fire before this step.
       - name: Generate Sharp Card (server-side item cache)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -2182,18 +2203,11 @@ jobs:
       # 2026-08-18: prop_pick_snapshots — IMMUTABLE snapshot of every
       # shipping pick's odds/tier at card-lock time. Fixes the accountability
       # gap where book_over_odds on mlb_pipeline_props can be overwritten by
-      # later cron runs, so historical PnL was using flat -110 fallback and
-      # overstating results by ~46%. Runs LAST so we capture the final
-      # settled state the user actually sees. Requires migration
-      # 20260818_prop_pick_snapshots.sql to have been applied.
-      - name: Snapshot picks at card-lock (accountability)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python snapshot_pick_lock.py --sport MLB --source card_lock || echo "snapshot non-fatal"
+      # 2026-09-09 CONSOLIDATION: snapshot_pick_lock step MOVED earlier
+      # (before generate_sharp_card at line ~1588) so composers can READ
+      # from the locked snapshot. Previously ran here at the tail — after
+      # composers had already built cache from live drifting values.
+      # This position now intentionally empty (removed) — see step above.
 
       # ─── Steam Room (2026-08-13) ───────────────────────────────────
       # write_line_history: per-book odds snapshot (fuels sparklines)
