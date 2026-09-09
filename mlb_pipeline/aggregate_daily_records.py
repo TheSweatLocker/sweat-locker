@@ -718,6 +718,146 @@ def agg_prop_by_tier(date: str) -> list:
     return out
 
 
+def agg_split_antipublic(date: str) -> list[dict] | None:
+    """The Split · Anti-Public sub-lens (2026-09-09).
+
+    A pick qualifies as "anti-public" when public tickets (bets_pct) heavily
+    favor ONE side (≥ 70%) BUT sharp money (handle_pct) is on the OTHER
+    side (≤ 40% on the public side = ≥ 60% on the anti-public side).
+    Signal: the market is siding with the money, not the tickets.
+
+    Grade the anti-public (sharp) side against actual market winner.
+    Records under surface='split_antipublic'. -110 vig assumed.
+
+    Multi-sport per game_context table. Handles ml/spread/total markets.
+    """
+    from collections import defaultdict as _dd
+    SPORT_CTX = {
+        'MLB':   ('mlb_game_context',   'mlb_game_results'),
+        'NFL':   ('nfl_game_context',   'nfl_game_results'),
+        'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
+        'NBA':   ('nba_game_context',   'nba_game_results'),
+        'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
+        'NHL':   ('nhl_game_context',   'nhl_game_results'),
+    }
+    out_records: list[dict] = []
+    for sport, (ctx_tbl, res_tbl) in SPORT_CTX.items():
+        try:
+            r = requests.get(
+                f'{SB}/rest/v1/{ctx_tbl}',
+                headers=H_READ,
+                params={'game_date': f'eq.{date}',
+                        'splits_summary': 'not.is.null',
+                        'select': 'game_id,home_team,away_team,splits_summary'},
+                timeout=15)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            continue
+        if not rows:
+            continue
+
+        # Pull results in bulk
+        gids = [row['game_id'] for row in rows]
+        ids_csv = ','.join(f'"{g}"' for g in gids)
+        try:
+            res_r = requests.get(
+                f'{SB}/rest/v1/{res_tbl}',
+                headers=H_READ,
+                params={'game_id': f'in.({ids_csv})',
+                        'select': 'game_id,home_score,away_score,close_spread,close_total'},
+                timeout=15)
+            res_by_gid = {r['game_id']: r for r in (res_r.json() or [])
+                          if isinstance(r, dict) and r.get('game_id')}
+        except Exception:
+            res_by_gid = {}
+
+        agg = {'w': 0, 'l': 0, 'p': 0}
+        for row in rows:
+            ss = row.get('splits_summary') or {}
+            if not isinstance(ss, dict):
+                continue
+            res = res_by_gid.get(row['game_id']) or {}
+            hs = res.get('home_score'); as_ = res.get('away_score')
+            if hs is None or as_ is None:
+                continue
+
+            for market in ('ml', 'spread', 'total'):
+                mkt_data = ss.get(market) or {}
+                if not isinstance(mkt_data, dict): continue
+                # Detect anti-public: any side with bets_pct >= 70 AND handle_pct
+                # on that side <= 40 (money on OTHER side by 30+pp divergence)
+                for public_side in list(mkt_data.keys()):
+                    side_data = mkt_data.get(public_side)
+                    if not isinstance(side_data, dict): continue
+                    bets = side_data.get('bets_pct_avg')
+                    handle = side_data.get('handle_pct_avg')
+                    if bets is None or handle is None: continue
+                    try:
+                        bets_f = float(bets); handle_f = float(handle)
+                    except (TypeError, ValueError): continue
+                    if bets_f < 70 or handle_f > 40: continue
+                    # Anti-public trigger — sharp side is the OPPOSITE
+                    sharp_side = ('AWAY' if public_side == 'HOME'
+                                  else 'HOME' if public_side == 'AWAY'
+                                  else 'UNDER' if public_side == 'OVER'
+                                  else 'OVER' if public_side == 'UNDER'
+                                  else None)
+                    if sharp_side is None: continue
+                    # Grade sharp side against actual result
+                    result = _grade_side(market, sharp_side, hs, as_,
+                                          res.get('close_spread'), res.get('close_total'))
+                    if result not in ('W','L','P'): continue
+                    if result == 'P': agg['p'] += 1
+                    else: agg[result.lower()] += 1
+
+        if agg['w'] + agg['l'] + agg['p'] == 0:
+            continue
+        w, l, p = agg['w'], agg['l'], agg['p']
+        stake = 1.0
+        units_won = round((w * (100/110)) - l, 2) if (w or l) else 0
+        out_records.append({
+            'surface': 'split_antipublic',
+            'sport': sport,
+            'record_date': date,
+            'wins': w, 'losses': l, 'pushes': p,
+            'units_bet': float(w + l + p) * stake,
+            'units_won': units_won,
+            'pick_count': w + l + p,
+            'detail': {'lens': 'anti_public', 'triggers': 'bets_pct>=70 & handle_pct<=40',
+                       'assumed_odds': -110},
+        })
+    return out_records or None
+
+
+def _grade_side(market: str, sharp_side: str, hs: int, as_: int,
+                 close_spread, close_total) -> str | None:
+    """Grade a sharp side (HOME/AWAY/OVER/UNDER) against final result.
+    Returns 'W' | 'L' | 'P' | None (unresolved)."""
+    m = str(market or '').lower()
+    ss = str(sharp_side or '').upper()
+    if m == 'ml':
+        if hs > as_: return 'W' if ss == 'HOME' else 'L'
+        if as_ > hs: return 'W' if ss == 'AWAY' else 'L'
+        return None  # regular-season MLB rare tie
+    if m == 'spread':
+        if close_spread is None: return None
+        try: cs = float(close_spread)
+        except (TypeError, ValueError): return None
+        margin = hs - as_ + cs
+        if abs(margin) < 0.01: return 'P'
+        home_covers = margin > 0
+        return 'W' if (ss == 'HOME' and home_covers) or (ss == 'AWAY' and not home_covers) else 'L'
+    if m == 'total':
+        if close_total is None: return None
+        try: ct = float(close_total)
+        except (TypeError, ValueError): return None
+        total = hs + as_
+        if abs(total - ct) < 0.01: return 'P'
+        went_over = total > ct
+        return 'W' if (ss == 'OVER' and went_over) or (ss == 'UNDER' and not went_over) else 'L'
+    return None
+
+
 AGGREGATORS = [
     ('sharp_card', agg_sharp_card),
     ('ledger', agg_ledger),        # returns LIST
@@ -726,6 +866,7 @@ AGGREGATORS = [
     ('dawg_of_day', agg_dawg_of_day),
     ('daily_degen', agg_daily_degen),
     ('split', agg_split),          # returns LIST — 2026-08-22
+    ('split_antipublic', agg_split_antipublic),  # 2026-09-09 — Anti-Public sub-lens
     ('ncaaf_card', agg_ncaaf_card), # 2026-08-30 — NCAAF picks graded
     ('prop_by_tier', agg_prop_by_tier), # 2026-09-09 — per-tier prop records
 ]
