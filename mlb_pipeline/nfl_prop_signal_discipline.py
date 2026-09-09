@@ -318,15 +318,21 @@ def main():
     # (recency-weighted). Uses signals already on the row — no external
     # fetch. Fully rolling: as new games play, L4/L5/L10/_stat_last10
     # shift automatically so tier assignments track player form.
+    #
+    # 2026-09-08 traffic optimization: only stage PATCH for rows where
+    # the outcome ACTUALLY changed. Previously ran ~424 idempotent
+    # patches every cron; connection pooler dropped mid-batch under load.
+    # Cutting to only-when-changed reduces steady-state writes ~70%.
     from collections import Counter
     new_tiers = Counter(); orig_tiers = Counter()
     reassigned = 0
     for p in props:
         orig = p.get('tier') or ''
+        orig_conv = p.get('conviction') or 0
         orig_tiers[orig] += 1
         new_tier, new_conv, breakdown = compute_confluence_tier(p)
         new_tiers[new_tier] += 1
-        if new_tier != orig or (p.get('conviction') or 0) != new_conv:
+        if new_tier != orig or new_conv != orig_conv:
             p['_new_tier'] = new_tier
             p['_new_conviction'] = new_conv
             p['_confluence_breakdown'] = breakdown
@@ -354,8 +360,11 @@ def main():
 
     written = 0
     fails = 0
-    # Cross-team leaks first — demote to SKIP (safer than delete; preserves audit trail)
+    # Cross-team leaks first — demote to SKIP (safer than delete; preserves audit trail).
+    # Only patch if not already SKIP (idempotent traffic reduction).
     for p in leaks:
+        if p.get('tier') == 'SKIP' and (p.get('conviction') or 0) == 0:
+            continue  # already SKIP, no-op
         if _patch(p['id'], {'tier': 'SKIP', 'conviction': 0}): written += 1
         else: fails += 1
     # Apply confluence-gate reassignments (tier + conviction)
@@ -365,9 +374,10 @@ def main():
                                 'conviction': p['_new_conviction']}):
                 written += 1
             else: fails += 1
-    # Apply alt-line demotions (loser rows already patched above but tier may
-    # need to drop further to SKIP so composer never surfaces them)
+    # Apply alt-line demotions (only if not already SKIP)
     for loser, keeper in demotions:
+        if loser.get('tier') == 'SKIP' and (loser.get('conviction') or 0) == 0:
+            continue
         if _patch(loser['id'], {'tier': 'SKIP', 'conviction': 0}):
             written += 1
         else: fails += 1
