@@ -814,6 +814,19 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
                          'prose': c.display_prose}
                         for c in top.contributions[:8]
                     ],
+                    # 2026-09-08 mirror NFL/NHL/NBA: capture all three
+                    # market picks so retrospective "what if we'd played
+                    # spread instead of ML" backtest is possible. Loss of
+                    # this field on NCAAF made cross-market pattern
+                    # discovery blind for the sport.
+                    '_ensemble_all_markets': {
+                        'ml':    {'pick': decision.ml.pick, 'label': decision.ml.display_label,
+                                  'tier': decision.ml.tier, 'conviction': decision.ml.conviction},
+                        'rl':    {'pick': decision.rl.pick, 'label': decision.rl.display_label,
+                                  'tier': decision.rl.tier, 'conviction': decision.rl.conviction},
+                        'total': {'pick': decision.total.pick, 'label': decision.total.display_label,
+                                  'tier': decision.total.tier, 'conviction': decision.total.conviction},
+                    },
                 }
                 if _reroute:
                     ensemble_pp['_ml_reroute'] = _reroute
