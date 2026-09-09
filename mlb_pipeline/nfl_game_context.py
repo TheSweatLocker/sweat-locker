@@ -122,6 +122,88 @@ def load_team_def_stats(season: int) -> dict:
     return {}
 
 
+def load_team_games_played(season: int) -> dict:
+    """2026-09-09 BLEND: Return {team: games_completed} for current season
+    from nfl_game_results. NFL's `games` field on nfl_team_stats can lag
+    behind actual games played (nflverse aggregates at week-end). Counting
+    completed rows in game_results gives the authoritative per-team sample
+    that drives _blend_pg weighting Wks 1-3.
+    """
+    out: dict = {}
+    r = requests.get(
+        f'{SB}/rest/v1/nfl_game_results',
+        headers=H_READ,
+        params={'season': f'eq.{season}',
+                'home_score': 'not.is.null',
+                'select': 'home_team,away_team',
+                'limit': '1500'},
+        timeout=15,
+    )
+    if r.status_code != 200: return out
+    for row in (r.json() or []):
+        if not isinstance(row, dict): continue
+        for k in ('home_team', 'away_team'):
+            t = row.get(k)
+            if t: out[t] = out.get(t, 0) + 1
+    return out
+
+
+# 2026-09-09 BLEND: same convention as ncaaf_game_context. Wks 1-3 = weighted
+# blend prior + current, Wk 4+ = pure current. User request 9/9 to stop
+# stats-vs-ESPN mismatches on early-season NFL cards (Wk 2 = Sun 9/14).
+NFL_BLEND_UNTIL_GAMES = 3
+
+_NFL_NEVER_ZERO_FIELDS = {
+    # Fields that CFBD/nflverse can legitimately be 0 on = counter-style
+    # (interceptions, sacks, TDs). Fields that CANNOT be 0 across ≥1 game
+    # = yardage, PPG. Same guard as ncaaf 0-guard.
+    'pass_yards', 'rush_yards', 'penalty_yards',
+    'def_ppg', 'def_pass_ypg', 'def_rush_ypg',
+}
+
+
+def _nfl_blend_pg(cur_val, cur_games: int, pri_val, pri_games: int,
+                   field: str = '', per_game: bool = True) -> Optional[float]:
+    """NFL weighted per-game blend of a stat field.
+
+    weight_current = min(1.0, cur_games / 3)
+    per_game=True: cur_val/pri_val are season totals — divide by games first
+    per_game=False: cur_val/pri_val are already per-game rates — blend direct
+
+    0-guard: CFBD/nflverse can report 0.0 for defense yields when the season
+    aggregation lags — treat 0 as unpopulated for yardage/PPG fields.
+    """
+    if cur_val == 0 and field in _NFL_NEVER_ZERO_FIELDS:
+        cur_val = None
+
+    if per_game:
+        cur_pg = (cur_val / cur_games) if (cur_games and cur_val is not None) else None
+        pri_pg = (pri_val / pri_games) if (pri_games and pri_val is not None) else None
+    else:
+        cur_pg = float(cur_val) if cur_val is not None else None
+        pri_pg = float(pri_val) if pri_val is not None else None
+
+    if cur_pg is None and pri_pg is None: return None
+    if cur_pg is None:  return round(pri_pg, 2)
+    if pri_pg is None:  return round(cur_pg, 2)
+    if cur_games >= NFL_BLEND_UNTIL_GAMES:
+        return round(cur_pg, 2)
+    w = cur_games / float(NFL_BLEND_UNTIL_GAMES)
+    return round(w * cur_pg + (1 - w) * pri_pg, 2)
+
+
+def _nfl_blend_label(cur_games: int, current_season: int, prior_season: int) -> str:
+    """Per-team caption describing which season(s) the displayed NFL stats
+    reflect. Matches ncaaf_game_context._blend_label convention.
+    """
+    if cur_games == 0:
+        return f'{prior_season} season'
+    if cur_games >= NFL_BLEND_UNTIL_GAMES:
+        return f'{current_season} season · {cur_games} games'
+    plural = 's' if cur_games != 1 else ''
+    return f'blended · {cur_games} game{plural} this season + {prior_season} season'
+
+
 # Minimum games/team avg before we trust current-season stats over prior year.
 # Under this threshold we fall back to prior season (regressed to league mean).
 # 4 games ≈ Week 5 — matches the point where cohort samples are meaningful.
@@ -951,7 +1033,8 @@ def _pick_book(event: dict, market_key: str) -> dict:
 
 
 def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 'current',
-               team_def_stats: Optional[dict] = None) -> Optional[dict]:
+               team_def_stats: Optional[dict] = None,
+               blend_meta: Optional[dict] = None) -> Optional[dict]:
     home_raw = event.get('home_team'); away_raw = event.get('away_team')
     home = aliases.get(home_raw); away = aliases.get(away_raw)
     if not home or not away:
@@ -1104,49 +1187,100 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     # 2026-08-28: expose full offense + defense + discipline stats on
     # the row for the game-detail team-stats section. All derived from
     # already-populated nfl_team_stats (nflverse pull). Per-game math.
-    def _per_game(stats: dict, field: str):
-        n = stats.get('games') or 0
-        v = stats.get(field)
-        if v is None or not n: return None
-        try: return round(float(v) / float(n), 2)
-        except (TypeError, ValueError): return None
+    #
+    # 2026-09-09 BLEND: prior _per_game used team_stats (already regressed to
+    # league mean when current sample thin) which was correct for tier gating
+    # but wrong for display (users spot-check ESPN's current-only view and
+    # see mismatch). Now uses _nfl_blend_pg — weighted mix per team based on
+    # actual games played this season (from nfl_game_results). Wks 1-3 blend,
+    # Wk 4+ pure current. Preserves the existing team_stats-based tier gates
+    # by leaving row['stats_source'] as-is; only the DISPLAY fields flip
+    # to blended values.
+    _bm = blend_meta or {}
+    _cur_off = _bm.get('_cur_off') or {}
+    _pri_off = _bm.get('_pri_off') or {}
+    _cur_def = _bm.get('_cur_def') or {}
+    _pri_def = _bm.get('_pri_def') or {}
+    _gp = _bm.get('_games_played') or {}
+    _cur_season = _bm.get('_cur_season')
+    _pri_season = _bm.get('_pri_season')
+
+    def _blend_off(team: str, field: str, per_game: bool = True):
+        cur_row = _cur_off.get(team) or {}
+        pri_row = _pri_off.get(team) or {}
+        cur_games = _gp.get(team, cur_row.get('games') or 0)
+        pri_games = pri_row.get('games') or 0
+        return _nfl_blend_pg(cur_row.get(field), cur_games,
+                              pri_row.get(field), pri_games,
+                              field=field, per_game=per_game)
+
+    def _blend_def(team: str, field: str):
+        cur_row = _cur_def.get(team) or {}
+        pri_row = _pri_def.get(team) or {}
+        cur_games = _gp.get(team, 0)
+        pri_games = pri_row.get('games') or 0
+        # Defense stats in nfl_team_defense_stats are pre-averaged per-game
+        return _nfl_blend_pg(cur_row.get(field), cur_games,
+                              pri_row.get(field), pri_games,
+                              field=field, per_game=False)
+
     # Penalty tendencies
-    row['home_penalties_pg']       = _per_game(home_stats, 'penalties')
-    row['home_penalty_yds_pg']     = _per_game(home_stats, 'penalty_yards')
-    row['away_penalties_pg']       = _per_game(away_stats, 'penalties')
-    row['away_penalty_yds_pg']     = _per_game(away_stats, 'penalty_yards')
+    row['home_penalties_pg']       = _blend_off(home, 'penalties')
+    row['home_penalty_yds_pg']     = _blend_off(home, 'penalty_yards')
+    row['away_penalties_pg']       = _blend_off(away, 'penalties')
+    row['away_penalty_yds_pg']     = _blend_off(away, 'penalty_yards')
     # Offense passing volume + efficiency
-    row['home_pass_yds_pg']        = _per_game(home_stats, 'pass_yards')
-    row['home_pass_tds_pg']        = _per_game(home_stats, 'pass_tds')
-    row['home_pass_ints_pg']       = _per_game(home_stats, 'pass_ints')
+    row['home_pass_yds_pg']        = _blend_off(home, 'pass_yards')
+    row['home_pass_tds_pg']        = _blend_off(home, 'pass_tds')
+    row['home_pass_ints_pg']       = _blend_off(home, 'pass_ints')
     row['home_pass_cpoe']          = home_stats.get('pass_cpoe')
-    row['home_pass_epa_pg']        = _per_game(home_stats, 'pass_epa')
-    row['away_pass_yds_pg']        = _per_game(away_stats, 'pass_yards')
-    row['away_pass_tds_pg']        = _per_game(away_stats, 'pass_tds')
-    row['away_pass_ints_pg']       = _per_game(away_stats, 'pass_ints')
+    row['home_pass_epa_pg']        = _blend_off(home, 'pass_epa')
+    row['away_pass_yds_pg']        = _blend_off(away, 'pass_yards')
+    row['away_pass_tds_pg']        = _blend_off(away, 'pass_tds')
+    row['away_pass_ints_pg']       = _blend_off(away, 'pass_ints')
     row['away_pass_cpoe']          = away_stats.get('pass_cpoe')
-    row['away_pass_epa_pg']        = _per_game(away_stats, 'pass_epa')
+    row['away_pass_epa_pg']        = _blend_off(away, 'pass_epa')
     # Offense rushing volume + efficiency
-    row['home_rush_yds_pg']        = _per_game(home_stats, 'rush_yards')
-    row['home_rush_tds_pg']        = _per_game(home_stats, 'rush_tds')
-    row['home_rush_epa_pg']        = _per_game(home_stats, 'rush_epa')
-    row['home_rush_first_downs_pg'] = _per_game(home_stats, 'rush_first_downs')
-    row['away_rush_yds_pg']        = _per_game(away_stats, 'rush_yards')
-    row['away_rush_tds_pg']        = _per_game(away_stats, 'rush_tds')
-    row['away_rush_epa_pg']        = _per_game(away_stats, 'rush_epa')
-    row['away_rush_first_downs_pg'] = _per_game(away_stats, 'rush_first_downs')
+    row['home_rush_yds_pg']        = _blend_off(home, 'rush_yards')
+    row['home_rush_tds_pg']        = _blend_off(home, 'rush_tds')
+    row['home_rush_epa_pg']        = _blend_off(home, 'rush_epa')
+    row['home_rush_first_downs_pg'] = _blend_off(home, 'rush_first_downs')
+    row['away_rush_yds_pg']        = _blend_off(away, 'rush_yards')
+    row['away_rush_tds_pg']        = _blend_off(away, 'rush_tds')
+    row['away_rush_epa_pg']        = _blend_off(away, 'rush_epa')
+    row['away_rush_first_downs_pg'] = _blend_off(away, 'rush_first_downs')
     # Defense event counts per game (from own-team nfl_team_stats def_* fields)
-    row['home_def_sacks_pg']       = _per_game(home_stats, 'def_sacks')
-    row['home_def_ints_pg']        = _per_game(home_stats, 'def_ints')
-    row['home_def_fumbles_pg']     = _per_game(home_stats, 'def_fumbles_forced')
-    row['home_def_tds_pg']         = _per_game(home_stats, 'def_tds')
-    row['away_def_sacks_pg']       = _per_game(away_stats, 'def_sacks')
-    row['away_def_ints_pg']        = _per_game(away_stats, 'def_ints')
-    row['away_def_fumbles_pg']     = _per_game(away_stats, 'def_fumbles_forced')
-    row['away_def_tds_pg']         = _per_game(away_stats, 'def_tds')
+    row['home_def_sacks_pg']       = _blend_off(home, 'def_sacks')
+    row['home_def_ints_pg']        = _blend_off(home, 'def_ints')
+    row['home_def_fumbles_pg']     = _blend_off(home, 'def_fumbles_forced')
+    row['home_def_tds_pg']         = _blend_off(home, 'def_tds')
+    row['away_def_sacks_pg']       = _blend_off(away, 'def_sacks')
+    row['away_def_ints_pg']        = _blend_off(away, 'def_ints')
+    row['away_def_fumbles_pg']     = _blend_off(away, 'def_fumbles_forced')
+    row['away_def_tds_pg']         = _blend_off(away, 'def_tds')
     # QB pressure allowed (own O-line)
-    row['home_sacks_suffered_pg']  = _per_game(home_stats, 'sacks_suffered')
-    row['away_sacks_suffered_pg']  = _per_game(away_stats, 'sacks_suffered')
+    row['home_sacks_suffered_pg']  = _blend_off(home, 'sacks_suffered')
+    row['away_sacks_suffered_pg']  = _blend_off(away, 'sacks_suffered')
+
+    # 2026-09-09: also re-blend the top-level defense yields that were set
+    # earlier from team_def_stats.get() so display + tier gates share the
+    # same blended source. Silent no-op if blend_meta missing.
+    if _bm:
+        for team, prefix in ((home, 'home'), (away, 'away')):
+            for f in ('def_ppg', 'def_pass_ypg', 'def_rush_ypg',
+                      'def_pass_epa_allowed', 'def_rush_epa_allowed'):
+                blended = _blend_def(team, f)
+                if blended is not None:
+                    row[f'{prefix}_{f}'] = blended
+
+    # 2026-09-09: per-team blend label + games-played counters for the app to
+    # render "blended · 2 games this season + 2025 season" caption below the
+    # team stats block. Same convention as ncaaf_game_context.
+    if _bm and _cur_season and _pri_season:
+        row['home_games_played']       = _gp.get(home, 0)
+        row['away_games_played']       = _gp.get(away, 0)
+        row['home_stats_blend_label']  = _nfl_blend_label(_gp.get(home, 0), _cur_season, _pri_season)
+        row['away_stats_blend_label']  = _nfl_blend_label(_gp.get(away, 0), _cur_season, _pri_season)
 
     # 2026-08-31: Casual-friendly team-stats summary for game-card render.
     # Aggregates the flat per-game fields above into a compact JSONB with
@@ -1154,12 +1288,19 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     # (14th)" without hitting nfl_team_stats a second time. team_stats +
     # team_def_stats already in scope; ranks computed across all teams
     # once and cached on the closure so we don't re-sort per game.
-    row['home_team_stats_summary'] = _build_team_summary(
-        home, home_stats, home_def, team_stats, tds,
-    )
-    row['away_team_stats_summary'] = _build_team_summary(
-        away, away_stats, away_def, team_stats, tds,
-    )
+    # 2026-09-09: inject blend label + games count into the summary blob so
+    # the app can read either the top-level field or via team_stats_summary.
+    home_summary = _build_team_summary(home, home_stats, home_def, team_stats, tds)
+    away_summary = _build_team_summary(away, away_stats, away_def, team_stats, tds)
+    if _bm and _cur_season and _pri_season:
+        if isinstance(home_summary, dict):
+            home_summary['blend_label']    = _nfl_blend_label(_gp.get(home, 0), _cur_season, _pri_season)
+            home_summary['games_current']  = _gp.get(home, 0)
+        if isinstance(away_summary, dict):
+            away_summary['blend_label']    = _nfl_blend_label(_gp.get(away, 0), _cur_season, _pri_season)
+            away_summary['games_current']  = _gp.get(away, 0)
+    row['home_team_stats_summary'] = home_summary
+    row['away_team_stats_summary'] = away_summary
 
     # 2026-08-21: Join qb_vs_team stats from nfl_qb_vs_team backfill (1425 rows
     # 2021-2025 seasons). Powers nfl_qb_owns_defense_career + related signals.
@@ -1444,6 +1585,29 @@ def run(dry_run: bool = False) -> None:
     team_def_stats = load_team_def_stats(season)
     print(f'  team_def_stats={len(team_def_stats)} teams')
 
+    # 2026-09-09 BLEND SUPPORT: load raw current + prior season stats and
+    # per-team games-played count so build_row can compute weighted per-game
+    # blend Wks 1-3 (100% current Wk 4+). Passed via team_stats.__meta__ to
+    # avoid a signature churn.
+    prior_off  = load_team_stats(season - 1)
+    prior_def  = load_team_def_stats(season - 1)
+    current_off = load_team_stats(season)
+    current_def_raw = {}
+    _r = requests.get(f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{season}&season_type=eq.REG&select=*',
+                      headers=H_READ, timeout=15)
+    if _r.status_code == 200:
+        current_def_raw = {x['team']: x for x in (_r.json() or [])}
+    games_played = load_team_games_played(season)
+    _blend_meta = {
+        '_cur_off': current_off, '_pri_off': prior_off,
+        '_cur_def': current_def_raw, '_pri_def': prior_def,
+        '_games_played': games_played,
+        '_cur_season': season, '_pri_season': season - 1,
+    }
+    print(f'  blend meta: {len(current_off)}/{len(prior_off)} off, '
+          f'{len(current_def_raw)}/{len(prior_def)} def, '
+          f'{len(games_played)} teams with games this season')
+
     events = []
     for sk in ('americanfootball_nfl', 'americanfootball_nfl_preseason'):
         e = fetch_odds_events(sk)
@@ -1460,7 +1624,8 @@ def run(dry_run: bool = False) -> None:
     skipped = 0
     for e in events:
         row_source = 'preseason' if e.get('_sweat_phase') == 'preseason' else stats_source
-        r = build_row(e, aliases, team_stats, stats_source=row_source, team_def_stats=team_def_stats)
+        r = build_row(e, aliases, team_stats, stats_source=row_source,
+                      team_def_stats=team_def_stats, blend_meta=_blend_meta)
         if r is None:
             skipped += 1
             continue

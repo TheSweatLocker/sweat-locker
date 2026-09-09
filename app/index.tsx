@@ -5392,6 +5392,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
           + 'signal_confluence_net,signal_confluence_breakdown,'
           + 'sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,'
+          + 'home_team_stats_summary,away_team_stats_summary,'
           + 'home_sp_overall,away_sp_overall,sp_gap,'
           + 'home_sp_plus,away_sp_plus,home_ap_rank,away_ap_rank,'
           + 'home_season_ats_wins,home_season_ats_losses,'
@@ -10629,7 +10630,24 @@ setJerryHistory(prev => {
                     </View>
                   );
                 })}
-                <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. Latest season data.</Text>
+                {(() => {
+                  // 2026-09-09: read per-team blend labels from ncaaf_game_context
+                  // (added same day). Falls back to generic footer when ctx missing.
+                  const ctxKey = `${stripMascot(selectedGame?.away_team||'')}@${stripMascot(selectedGame?.home_team||'')}`;
+                  const ctxRow: any = ncaafGameContextMap?.[ctxKey] || ncaafGameContextMap?.[selectedGame?.game_id] || null;
+                  const awayL = ctxRow?.away_stats_blend_label || ctxRow?.away_team_stats_summary?.blend_label;
+                  const homeL = ctxRow?.home_stats_blend_label || ctxRow?.home_team_stats_summary?.blend_label;
+                  if (awayL && homeL) {
+                    const same = awayL === homeL;
+                    const txt = same ? `📊 ${awayL}` : `📊 ${awayShort}: ${awayL} · ${homeShort}: ${homeL}`;
+                    return (
+                      <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. {txt}</Text>
+                    );
+                  }
+                  return (
+                    <Text style={{color:THEME.textMuted,fontSize:10,marginTop:6,fontStyle:'italic'}}>SP+ and EPA per play from the Sweat Locker proprietary efficiency model. Latest season data.</Text>
+                  );
+                })()}
               </View>
             );
           }
@@ -10666,15 +10684,35 @@ setJerryHistory(prev => {
             const nflCtxKey = `${stripMascot(selectedGame?.away_team||'')}@${stripMascot(selectedGame?.home_team||'')}`;
             const nflCtx = nflGameContextMap[nflCtxKey] || nflGameContextMap[selectedGame?.game_id] || null;
             const nflStatsSrc = nflCtx?.stats_source;
-            // 2026-09-06: dropped 'preseason' badge branch. NFL Week 1 is
-            // live; any lingering stats_source='preseason' rows now render
-            // as regular-season games. Early-season regressed + no-team-stats
-            // badges retained since they're honest data-quality flags.
-            const nflBadge = nflStatsSrc === 'prior_season_regressed'
-              ? { text: '⚠ Early season · using 2025 regressed', clr: THEME.push }
-              : nflStatsSrc === 'none'
-              ? { text: '⚠ No team stats · market/cohort only', clr: THEME.loss }
-              : null;
+            // 2026-09-09: prefer the new per-team blend labels (shipped in
+            // nfl_game_context 2026-09-09) — they honestly describe whether
+            // shown numbers are last season, blended, or fully current per
+            // team. Fall back to the old binary stats_source badge when the
+            // ctx row was written before the migration. Also read from
+            // team_stats_summary JSONB as a secondary source in case the
+            // top-level columns haven't been added by migration yet.
+            const _bl = (side) => {
+              const top = nflCtx?.[`${side}_stats_blend_label`];
+              const nested = nflCtx?.[`${side}_team_stats_summary`]?.blend_label;
+              return top || nested || null;
+            };
+            const awayLabel = _bl('away');
+            const homeLabel = _bl('home');
+            let nflBadge = null;
+            if (awayLabel && homeLabel) {
+              const sameLabel = awayLabel === homeLabel;
+              const isBlended = awayLabel.includes('blended') || homeLabel.includes('blended');
+              const isPriorOnly = awayLabel.includes('season') && !awayLabel.includes('blended') && awayLabel === homeLabel;
+              const clr = isBlended || isPriorOnly ? THEME.push : THEME.textMuted;
+              const text = sameLabel
+                ? `📊 Team stats · ${awayLabel}`
+                : `📊 ${awayShort}: ${awayLabel} · ${homeShort}: ${homeLabel}`;
+              nflBadge = { text, clr };
+            } else if (nflStatsSrc === 'prior_season_regressed') {
+              nflBadge = { text: '⚠ Early season · using 2025 regressed', clr: THEME.push };
+            } else if (nflStatsSrc === 'none') {
+              nflBadge = { text: '⚠ No team stats · market/cohort only', clr: THEME.loss };
+            }
             return (
               <View style={{backgroundColor:'#0a1018',borderRadius:14,padding:14,borderWidth:1,borderColor:THEME.border}}>
                 {nflBadge && (
