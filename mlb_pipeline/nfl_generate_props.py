@@ -87,12 +87,22 @@ ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports'
 # ─────────────────────────────────────────────────────────────
 # Prop registry — maps Odds API market key → player_stats column
 # ─────────────────────────────────────────────────────────────
+# 2026-09-09 SIGNAL UPGRADE:
+#   opp_col was previously 'def_pass_def' (raw passes-defensed count) or
+#   'def_sacks' — noisy proxies for defensive quality. Switched pass/rush
+#   families to def_pass_epa_allowed / def_rush_epa_allowed from
+#   nfl_team_defense_stats (modern EPA measures where LOWER value = tougher
+#   defense — hence opp_col_invert=True to preserve the "0.0 = best, 1.0
+#   = worst" convention in opp_rank). Interceptions props keep def_ints
+#   (higher INT count = higher pick rate against the QB).
 PROP_CONFIG = {
     'player_pass_yds': {
         'col': 'passing_yards',
         'position': 'QB',
         'league_baseline': 235.0,     # league avg per game
-        'opp_col': 'def_pass_def',    # higher pass_def = tougher for QB
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Pass Yds',
         'fantasy_col': 'proj_pass_yds',  # 2026-08-09: Sleeper/ESPN projection field
     },
@@ -100,7 +110,9 @@ PROP_CONFIG = {
         'col': 'rushing_yards',
         'position': 'RB',
         'league_baseline': 55.0,
-        'opp_col': 'def_sacks',       # loose proxy — sackier defenses stop the run too
+        'opp_col': 'def_rush_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'rush',
         'label': 'Rush Yds',
         'fantasy_col': 'proj_rush_yds',
     },
@@ -108,7 +120,9 @@ PROP_CONFIG = {
         'col': 'receiving_yards',
         'position': None,             # WR/TE/RB — filter looser
         'league_baseline': 42.0,
-        'opp_col': 'def_pass_def',
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Rec Yds',
         'fantasy_col': 'proj_rec_yds',
     },
@@ -116,7 +130,9 @@ PROP_CONFIG = {
         'col': 'receptions',
         'position': None,
         'league_baseline': 3.2,
-        'opp_col': 'def_pass_def',
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Receptions',
         'fantasy_col': 'proj_receptions',
     },
@@ -128,7 +144,9 @@ PROP_CONFIG = {
         'col': 'passing_tds',
         'position': 'QB',
         'league_baseline': 1.4,     # league avg pass TDs per game
-        'opp_col': 'def_pass_def',
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Pass TDs',
         'fantasy_col': 'proj_pass_tds',
     },
@@ -136,7 +154,9 @@ PROP_CONFIG = {
         'col': 'anytime_td',
         'position': None,
         'league_baseline': 0.35,    # league avg (RBs + WRs mixed)
-        'opp_col': 'def_pass_def',  # loose proxy — no red-zone-specific data yet
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',   # mixed WR/RB but pass-D correlates with RZ pass usage
         'label': 'Anytime TD',
         'fantasy_col': 'proj_anytime_td',
     },
@@ -144,7 +164,9 @@ PROP_CONFIG = {
         'col': 'rushing_tds',
         'position': 'RB',
         'league_baseline': 0.3,
-        'opp_col': 'def_sacks',
+        'opp_col': 'def_rush_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'rush',
         'label': 'Rush TDs',
         'fantasy_col': 'proj_rush_tds',
     },
@@ -152,7 +174,9 @@ PROP_CONFIG = {
         'col': 'pass_attempts',
         'position': 'QB',
         'league_baseline': 32.0,
-        'opp_col': 'def_pass_def',
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Pass Att',
         'fantasy_col': 'proj_pass_attempts',
     },
@@ -160,7 +184,9 @@ PROP_CONFIG = {
         'col': 'pass_completions',
         'position': 'QB',
         'league_baseline': 21.0,
-        'opp_col': 'def_pass_def',
+        'opp_col': 'def_pass_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'pass',
         'label': 'Completions',
         'fantasy_col': 'proj_pass_completions',
     },
@@ -168,7 +194,9 @@ PROP_CONFIG = {
         'col': 'interceptions',
         'position': 'QB',
         'league_baseline': 0.75,
-        'opp_col': 'def_pass_def',   # high pass_def = more INTs
+        'opp_col': 'def_ints',   # more INTs by opp D = higher chance QB throws pick
+        'opp_col_invert': False,
+        'family': 'pass',
         'label': 'Interceptions',
         'fantasy_col': 'proj_pass_ints',
     },
@@ -176,7 +204,9 @@ PROP_CONFIG = {
         'col': 'rush_attempts',
         'position': 'RB',
         'league_baseline': 13.0,
-        'opp_col': 'def_sacks',
+        'opp_col': 'def_rush_epa_allowed',
+        'opp_col_invert': True,
+        'family': 'rush',
         'label': 'Rush Att',
         'fantasy_col': 'proj_rush_attempts',
     },
@@ -264,26 +294,101 @@ def load_alias_map() -> dict:
 
 
 def load_opponent_defense(season: int) -> dict:
-    """Map team → defensive stat dict for opponent-adjustment."""
-    r = requests.get(
-        f'{SB}/rest/v1/nfl_team_stats?season=eq.{season}&season_type=eq.REG&select=team,def_sacks,def_ints,def_pass_def',
-        headers=H_READ, timeout=15,
-    )
-    if r.status_code != 200: return {}
-    return {row['team']: row for row in r.json()}
+    """Map team → defensive stat dict for opponent-adjustment.
+
+    2026-09-09: merges nfl_team_stats (raw counts — def_sacks, def_ints,
+    def_pass_def, def_fumbles_forced, def_tds) + nfl_team_defense_stats
+    (modern quality — def_ppg, def_ypg, def_pass_ypg, def_rush_ypg,
+    def_pass_epa_allowed, def_rush_epa_allowed). Prop scoring now favors
+    the EPA measures via PROP_CONFIG opp_col.
+
+    2026-09-09 SEASON FALLBACK: NFL 2026 Week 1 just kicked off — no
+    stats have accrued yet. If the current season returns <10 teams,
+    fall back to prior season so opp_pct isn't universally None. Aligns
+    with the [[project-team-stats-weekly-blend-909]] "prior-season for
+    early-season" convention. Auto-flips back to current once ~Week 4
+    of data lands.
+    """
+    def _pull(season_val: int) -> dict:
+        acc: dict = {}
+        r1 = requests.get(
+            f'{SB}/rest/v1/nfl_team_stats?season=eq.{season_val}&season_type=eq.REG'
+            f'&select=team,def_sacks,def_ints,def_pass_def,def_fumbles_forced,def_tds',
+            headers=H_READ, timeout=15,
+        )
+        if r1.status_code == 200:
+            for row in r1.json():
+                acc[row['team']] = dict(row)
+        r2 = requests.get(
+            f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{season_val}&season_type=eq.REG'
+            f'&select=team,def_ppg,def_ypg,def_pass_ypg,def_rush_ypg,'
+            f'def_pass_epa_allowed,def_rush_epa_allowed',
+            headers=H_READ, timeout=15,
+        )
+        if r2.status_code == 200:
+            for row in r2.json():
+                slot = acc.setdefault(row['team'], {'team': row['team']})
+                for k, v in row.items():
+                    if k != 'team' and v is not None:
+                        slot[k] = v
+        return acc
+
+    out = _pull(season)
+    if len(out) < 10:
+        prior = _pull(season - 1)
+        if len(prior) >= 10:
+            print(f'  [load_opponent_defense] season {season} sparse ({len(out)} teams) → falling back to {season - 1} ({len(prior)} teams)')
+            return prior
+    return out
 
 
-def opp_rank(opp_map: dict, opp_team: str, opp_col: str) -> Optional[float]:
-    """Return 0.0 (best defense) → 1.0 (worst) rank as fraction. None if data missing."""
+def opp_rank(opp_map: dict, opp_team: str, opp_col: str,
+             invert: bool = False) -> Optional[float]:
+    """Return 0.0 (best defense) → 1.0 (worst) rank as fraction. None if data missing.
+
+    invert=False (default): higher value = better defense (e.g. def_sacks,
+    def_pass_def raw counts). invert=True: lower value = better defense
+    (e.g. def_pass_epa_allowed, def_pass_ypg — modern EPA/yards allowed).
+    """
     if opp_team not in opp_map: return None
-    values = sorted(
-        [(t, (row.get(opp_col) or 0)) for t, row in opp_map.items()],
-        key=lambda x: -x[1],   # higher = better defense for this stat
-    )
+    # Skip teams with no data for this stat rather than treating None as 0
+    vals = [(t, row.get(opp_col)) for t, row in opp_map.items()
+            if row.get(opp_col) is not None]
+    if not vals or opp_team not in {t for t, _ in vals}: return None
+    values = sorted(vals, key=(lambda x: x[1]) if invert else (lambda x: -x[1]))
     for i, (t, _) in enumerate(values):
         if t == opp_team:
             return i / max(1, len(values) - 1)   # 0.0 = best, 1.0 = worst
     return None
+
+
+def _emit_matchup_rank(opp_pct: Optional[float], opp_team: str,
+                        family: str, side: str, label: str) -> tuple[dict, int]:
+    """Explicit top/bot-10 defense signal — surfaces the matchup rank as a
+    visible why-bullet instead of leaving opp_pct silent.
+
+    2026-09-09: user asked "if a WR is facing a top pass defense are we
+    taking that into account?" Answer was "yes internally but invisible."
+    This closes that gap. Fires when opp_pct is in top ≤30% or bot ≥70%
+    (roughly top-10 / bot-10 of 32 teams).
+    """
+    if opp_pct is None: return {}, 0
+    is_over = (side or '').upper() == 'OVER'
+    fam_word = 'pass' if family == 'pass' else ('rush' if family == 'rush' else label.lower())
+    sig, bonus = {}, 0
+    if opp_pct <= 0.30:
+        rank = int(round(opp_pct * 31)) + 1   # 32 teams → 1..32
+        sig['def_top10'] = (
+            f'Opp {opp_team} ranks #{rank} in {fam_word} defense — top-10 unit, tough matchup'
+        )
+        bonus += -4 if is_over else 4
+    elif opp_pct >= 0.70:
+        rank = int(round(opp_pct * 31)) + 1
+        sig['def_bot10'] = (
+            f'Opp {opp_team} ranks #{rank} in {fam_word} defense — bottom-10 unit, soft matchup'
+        )
+        bonus += 4 if is_over else -4
+    return sig, bonus
 
 
 def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
@@ -855,7 +960,8 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         pass
     if l4 is None and season_avg is None and fantasy_proj_stat is None:
         return None
-    opp_pct = opp_rank(opp_map, opp_team, cfg['opp_col'])
+    opp_pct = opp_rank(opp_map, opp_team, cfg['opp_col'],
+                       invert=cfg.get('opp_col_invert', False))
     proj = project(l4, season_avg, cfg['league_baseline'], opp_pct,
                     fantasy_proj_stat=fantasy_proj_stat)
     if proj is None: return None
@@ -892,6 +998,17 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         prop_family=prop_family, side=side, ctx=ctx or {},
         player_team=player_team, home_team=home_canon, away_team=away_canon,
     )
+
+    # 2026-09-09 EXPLICIT MATCHUP-RANK SIGNAL. opp_pct was previously
+    # computed but silent — user asked "if a WR is facing a top pass D,
+    # are we taking that into account?" Emit a why-bullet + conviction
+    # nudge whenever the matchup lands in top-10 or bot-10 territory.
+    matchup_sigs, matchup_bonus = _emit_matchup_rank(
+        opp_pct=opp_pct, opp_team=opp_team,
+        family=cfg.get('family', ''), side=side, label=cfg['label'],
+    )
+    ctx_sigs.update(matchup_sigs)
+    ctx_bonus += matchup_bonus
 
     # 2026-08-23 NFL L10 HIT-RATE + CHART DATA. User asked: track record
     # of hits over the line IS a signal in itself. Mirror MLB _stat_last10
