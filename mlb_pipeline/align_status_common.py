@@ -420,6 +420,22 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
         overall_verdict = 'no_data'
         overall_aligned = None
 
+    # 2026-09-08 chips_extra: backend-driven chip register. Client renders
+    # each entry through a generic <InfoChip> component (label + value +
+    # tooltip + kind). Enables adding chips WITHOUT app rebuild — future
+    # models drop into this array server-side and the app surfaces them.
+    #
+    # First registered chip: GOAT (nfl_goat_composite.py writes to
+    # primary_play._goat_shadow.chip). Additional models append here.
+    chips_extra = []
+    pp_shadow = (c.get('primary_play') or {})
+    if isinstance(pp_shadow, dict):
+        goat = pp_shadow.get('_goat_shadow') or {}
+        if isinstance(goat, dict):
+            g_chip = goat.get('chip')
+            if isinstance(g_chip, dict) and g_chip.get('label'):
+                chips_extra.append(g_chip)
+
     align_status = {
         'ml': ml_s, 'rl': rl_s, 'total': tot_s,
         'overall': {
@@ -427,6 +443,7 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
             'verdict': overall_verdict,
             'aligned_markets': aligned_markets,
         },
+        'chips_extra': chips_extra,
         'computed_at': datetime.now(timezone.utc).isoformat(),
     }
     oc_snapshot = {**oc_by_surface}

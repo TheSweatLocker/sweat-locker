@@ -37,7 +37,7 @@ NFL_LENS_FIELDS = {
     'conf_col':         'signal_confluence_net',
 }
 
-NFL_EXTRA_SELECT = 'projected_spread,projected_total,signal_confluence_net,model_pred_home_points,model_pred_away_points'
+NFL_EXTRA_SELECT = 'projected_spread,projected_total,signal_confluence_net,model_pred_home_points,model_pred_away_points,primary_play'
 
 
 def _et_today() -> str:

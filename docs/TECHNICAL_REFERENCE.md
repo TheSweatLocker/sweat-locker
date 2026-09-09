@@ -207,6 +207,48 @@ Each field picked independently — if DK has spread but Bovada has ML, take spr
 
 NBA/NHL/NCAAB need a paid historical odds source (TheOddsAPI paid tier or SportsGameOdds) to unblock LR. Tracked in v1.0.1 priorities.
 
+### 3.6 GOAT Model (NFL shadow, 2026-09-08)
+
+**Purpose.** Fused-signal composite that runs in parallel to the NFL ensemble. Not overriding anything at launch — data collection so a real LR fit becomes viable by Week 4.
+
+**Composite formula (v0 hand-weighted):**
+```
+score = 0.30 × ensemble_signal    (current NFL primary_play, tier→prob)
+      + 0.25 × lr_shadow          (nfl_ml_logreg output)
+      + 0.15 × talent             (Madden team + Madden QB + Top100 mix)
+      + 0.10 × panel_proj         (Sleeper-derived panel_pred point diff)
+      + 0.10 × injury_delta       (position-weighted status count, home vs away)
+      + 0.05 × rest_advantage     (rest days delta, capped ±3)
+      + 0.05 × weather            (wind >15 mph total penalty)
+```
+
+**Tier mapping:** `|score|>0.35 = PRIME`, `>0.15 = STRONG`, `>0.05 = LEAN`, else `COVERAGE`.
+
+**Where it lives.** [mlb_pipeline/nfl_goat_composite.py](../mlb_pipeline/nfl_goat_composite.py). Runs post-context in `nfl_pipeline.yml`, before `compute_align_status_nfl.py`.
+
+**Writes:**
+- `primary_play._goat_shadow` — full breakdown `{score, tier, side, p_home, edge_home, contributions, weights, inputs, total, chip, model_version, computed_at}`
+- The `chip` sub-object is picked up by [align_status_common.build_alignment](../mlb_pipeline/align_status_common.py) and appended to `align_status.chips_extra`, which the client renders in the alignment strip via `<InfoChip>`.
+
+**Chip payload (client-facing):**
+```json
+{
+  "key": "goat",
+  "label": "GOAT",
+  "value": "DAL · STRONG",
+  "tooltip": "Proprietary predictive model...",
+  "kind": "ok",         // ok = agrees w/ pick, warn = dissents, neutral = both PASS/no pick
+  "priority": 25
+}
+```
+Tooltip copy is TOS-scrubbed — no source name (Madden / Sleeper / LR) appears in user-facing text.
+
+**Cadence.** Every NFL context run (Tue/Wed/Thu/Sat/Sun) + `--dry-run` supported for testing.
+
+**Promotion path.** After Weeks 1-3 (~48 games w/ shadow + actual outcome), LR-fit on the fused feature vector. If lift ≥ +3pp vs current ensemble baseline, promote from shadow to weighted-vote in the ensemble. Same discipline as NCAAF LR closeout (2026-09-08).
+
+**Backend-driven chip infrastructure.** `align.chips_extra` array is generic. Future models (NBA GOAT, prop GOAT, whatever's next) drop into the array server-side and surface in the app without a rebuild — no chip is hardcoded in TSX.
+
 ---
 
 ## 5. Pipeline Map
@@ -492,3 +534,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 | 2026-09-08 | first draft | Initial structure + NCAAF LR deep dive (sections 1-4). Sections 5-8 stubbed. |
 | 2026-09-08 | pipeline map | Section 5 filled in: full workflow inventory (19 files), trigger chain, concurrency + heartbeat pattern, symptom → check-here debug table. |
 | 2026-09-08 | grading + surfaces | Section 7 filled in: 4-stage flow (resolve → grade → compose → aggregate), 19-surface registry, client read pattern, current metrics snapshot, symptom → check debug table. |
+| 2026-09-08 | GOAT NFL | Section 3.6 added: fused-signal composite shipped shadow-only. Composite formula, chip payload, backend-driven `chips_extra` pattern, promotion path documented. |

@@ -480,6 +480,23 @@ jobs:
       # nfl_game_context. Required prerequisite for the sharp-split
       # signals to fire on NFL games (registry exists but was silent
       # because oddscrowd_snapshot was never populated). Runs after
+      # 2026-09-08 GOAT composite (shadow-only). Fuses ensemble + LR +
+      # Madden + panel + injuries + rest + weather into a single z-score
+      # per game. Writes primary_play._goat_shadow. Must run BEFORE
+      # compute_align_status_nfl so that align.chips_extra picks up the
+      # GOAT chip. Jerry does NOT weigh GOAT for pick selection —
+      # data collection only until Week 4 LR fit. See TECHNICAL_REFERENCE
+      # section 3.6 (post-add) + project_v1_0_1_client_priorities.
+      - name: GOAT composite shadow write (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_goat_composite.py --days 8 || echo "GOAT composite non-fatal"
+
       # external pull so OC data is fresh in external_picks.
       - name: Compute alignment + oddscrowd snapshot
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
