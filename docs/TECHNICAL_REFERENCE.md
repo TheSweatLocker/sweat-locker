@@ -211,18 +211,119 @@ NBA/NHL/NCAAB need a paid historical odds source (TheOddsAPI paid tier or Sports
 
 ## 5. Pipeline Map
 
-_Stub._ Every workflow, its schedule, its outputs, its heartbeat pings. Draft candidate list:
-- `mlb_pipeline.yml` — 4 crons + push + manual; concurrency queue as of 2026-09-08 (0d798915)
-- `mlb_grade_overnight.yml`
-- `ncaaf_pipeline.yml`
-- `nfl_pipeline.yml`
-- `nba_pipeline.yml`
-- `nhl_pipeline.yml`
-- `ufc_pipeline.yml`
-- `mlb_refit_weekly.yml` — Sunday, all-sport LR retrain
-- `mlb_lr_retrain_weekly.yml` (verify — may be same file)
+**Every workflow, its schedule, what it produces, and how to check it when it breaks.** 19 workflow files live in `.github/workflows/`. They fall into three tiers.
 
-To be built out.
+### 5.1 Sport pipelines (7 — one per active sport)
+
+The main daily/weekly workhorse per sport. Each ends with heartbeat pings to `workflow_heartbeat` (start + end) so cross-sport dashboards can spot silent skips.
+
+| Workflow | File | Schedule (UTC) | Concurrency | Heartbeat |
+|----------|------|----------------|-------------|-----------|
+| **MLB Pipeline** | `mlb_pipeline.yml` | 10:00, 11:15, 12:30, 18:00 daily + push on `mlb_pipeline/**` + manual | **queue** (`cancel-in-progress: false`) since 0d798915 | ✅ 4 pings |
+| **NCAAF Pipeline** | `ncaaf_pipeline.yml` | Tue 15:00, Wed 22:00, Fri 18:00, Sat 12:15, Sun 13:00 | none | ✅ 4 pings |
+| **NFL Pipeline** | `nfl_pipeline.yml` | Tue 15:00, Wed 12:10+22:00, Thu 12:10+18:00, Sat 14:00, Sun 12:10, Mon 14:00 + `*/6h` Thu-Sun | none | ✅ 2 pings |
+| **NHL Pipeline** | `nhl_pipeline.yml` | 12:05 daily (staggered off 12:00 pile-up) | none | ✅ 2 pings |
+| **NBA Pipeline** | `nba_pipeline.yml` | 12:00 daily (preseason placeholder) | none | ✅ 2 pings |
+| **NCAAB Pipeline** | `ncaab_pipeline.yml` | 11:00 (resolver), 14:00 (morning), 20:00 (pre-tip) daily + Mon 15:00 (KenPom) | none | ✅ 2 pings |
+| **UFC Pipeline** | `ufc_pipeline.yml` | Wed 22:00 (pull), Fri 14:00 (line moves), Sat 14:00 (early grader), Sun 14:00 (resolver) | none | ✅ 2 pings |
+
+**Shape of every sport pipeline** (common step order — deviations per sport):
+1. Heartbeat start
+2. External monitor ping start (healthchecks.io if `HC_*_URL` secret set)
+3. Resolve yesterday's results (`<sport>_resolve_results.py`)
+4. Grade jerry_reads from yesterday's outcomes (`grade_jerry_reads.py --sport X`)
+5. Build today's game_context (schedule + odds + rest + primary_play write via ensemble+gates)
+6. Enrich context (team form, tendencies, injuries, splits, rankings)
+7. Prop generation (if sport supports; NCAAF/NCAAB skip — see [[feedback_college_sports_no_props]])
+8. Signal calibration refresh (per-sport hit-rate rollups)
+9. Sync jerry_reads from primary_play (`sync_jerry_reads_from_ctx.py --sport X`)
+10. Matview refreshes (team_recent_games, team_situational_records, team_stats_rolling)
+11. Heartbeat end (fires with `if: always()` — never missing means workflow completed)
+
+### 5.2 MLB support workflows (7 — MLB is the heaviest sport)
+
+MLB has the most surface area (year-round + daily props + POTD lock + intraday refreshes), so it has 7 supporting workflows beyond the main pipeline.
+
+| Workflow | Schedule (UTC) | Purpose |
+|----------|----------------|---------|
+| `mlb_grade_overnight.yml` | 06:30, 08:30, 09:30 daily | Grade last night's picks BEFORE morning MLB pipeline runs; writes `daily_best_bet_history` |
+| `mlb_close_line_capture.yml` | 15:00 daily (11am ET) | Capture true closing lines to `mlb_game_results.close_*` for backtest / LR training |
+| `mlb_line_poller.yml` | `*/15` during 10-23 UTC + 0-3 UTC | Snapshot line movement into `line_history` every 15 min during active hours |
+| `mlb_imminent_refresh.yml` | `*/30` during 16-23 UTC + 0-2 UTC | Re-score games within 90 min of first pitch (last-mile lineup + injury updates) |
+| `mlb_oddscrowd_refresh.yml` | 12/15/16/19/22 UTC + 1 + 13/16/17/20/23 UTC + 2 | Poll OddsCrowd sharp-side data (6-shot cadence to match their update pattern) |
+| `mlb_starter_retry.yml` | 21:00, 00:00 UTC | Catch late-announced pitchers (5pm ET + 8pm ET retry windows) |
+| `mlb_watchdogs.yml` | 16, 18, 20, 22 UTC + 0, 2 UTC | Run consistency_watchdog + smoke tests every 2 hrs during active hours |
+
+### 5.3 Cross-cutting workflows (5)
+
+| Workflow | Schedule (UTC) | Purpose |
+|----------|----------------|---------|
+| `mlb_refit_weekly.yml` | **Mon 12:00** | Retrain refit weights + ALL sport LR models (MLB/NFL/NCAAF applied; NBA/NHL/NCAAB exit gracefully w/o corpus). Runs NCAAF odds backfill first (2026-09-08+). Commits fresh JSON weights if drift. |
+| `mlb_prop_calibration.yml` | 04:30 daily | Recompute `prop_signal_calibration` rolling hit rates |
+| `sport_state_auto_flip.yml` | 05:00 daily | Flip `sport_states` (in-season / preseason / offseason) based on calendar |
+| `keep_alive.yml` | Every hour | Ping to prevent GH from marking the repo inactive + skipping scheduled workflows |
+| `steam_room_fix.yml` | Manual only | One-shot recovery for Sharp Card / Steam Room composition bugs |
+
+### 5.4 Trigger chain (who fires what)
+
+```
+Time-based crons ──┐
+                   ├─→ Sport pipelines ──→ jerry_reads / prop_jerry_reads / jerry_cache
+Push on mlb_pipeline/** ──┘                    ↓
+                                          App reads via Supabase
+                                                ↓
+Manual dispatches ──→ specific workflows       ↓
+                                    (Yesterday's picks resolve →
+                                     grade → surface_records rollup)
+                                                ↓
+mlb_grade_overnight ──→ daily_best_bet_history + POTD anchor lock
+
+Weekly Mon 12:00 ──→ mlb_refit_weekly ──→ ncaaf_odds backfill
+                                     ──→ retrain ALL LR models
+                                     ──→ git commit weights (auto-push)
+```
+
+**Key handoffs**
+- Ensemble → jerry_reads: via `sync_jerry_reads_from_ctx.py` (in each sport pipeline post-context step)
+- Primary_play → daily_best_bet_history: via `reconcile_potd_surfaces.py` after `jerry_anchor_potd` (mlb_pipeline)
+- Graded outcomes → surface_records: via `compute_surface_records.py` post-resolve
+- Fresh LR weights → live picks: automatic on next context run (loaded on import in `defensive_gates.py`)
+
+### 5.5 Concurrency + reliability
+
+**Concurrency groups** — currently only mlb_pipeline has one (`group: mlb-pipeline, cancel-in-progress: false`, added 0d798915). Prior state: 23 concurrent MLB runs in a 4-hr window raced on Supabase upserts and tripped `resolve_potd` with transient collisions. Queue mode means late-arriving triggers wait; never kills an in-flight run at its final commit step. Other sport pipelines don't have this yet — MLB was the only one with the trigger volume to need it. Add if we see the same race pattern elsewhere.
+
+**Heartbeat pattern** — every reliable workflow writes to `workflow_heartbeat` twice per run:
+- `event=start` (first step)
+- `event=end` (last step, `if: always()` — fires whether prior steps succeeded or failed)
+
+Missing `end` for a `start` = job was killed externally (cancellation, hard timeout, or runner death). Query pattern to find zombies:
+```sql
+SELECT start.run_id, start.fired_at
+FROM workflow_heartbeat start
+LEFT JOIN workflow_heartbeat e ON e.run_id = start.run_id AND e.event = 'end'
+WHERE start.event = 'start' AND e.run_id IS NULL
+  AND start.fired_at > now() - interval '4 hours';
+```
+
+**External monitors** — most workflows also ping `HC_<SPORT>_URL` secret (healthchecks.io). Two-layer defense: heartbeat catches script-level failure, HC catches GH-Actions-level silent-skip failure (GH cron silently drops scheduled runs when under load — happened for a week in late Aug 2026).
+
+**Belt-and-suspenders redundant crons** — mlb_pipeline has 3 morning triggers (10:00, 11:15, 12:30 UTC) so even if 2/3 drop, the third fires. Later runs no-op via idempotent writes.
+
+### 5.6 Where to look when something breaks
+
+| Symptom | First place to check |
+|---------|----------------------|
+| Alert email says pipeline failed but GH shows success | Concurrency race — query `workflow_heartbeat` for starts w/o ends around the alert time |
+| App shows stale data | `jerry_reads.updated_at` for that (sport, date); if stale → check sync_jerry_reads step |
+| Sharp Card missing picks for a sport | `jerry_cache.cache_key='sharp_card_YYYY-MM-DD'` `.fetched_at`; if fresh but empty → composer bug |
+| POTD not showing | `jerry_cache.cache_key='best_bet_YYYY-MM-DD'` + `daily_best_bet_history` for that date |
+| LR shadow missing on games | `primary_play._lr_ml_shadow` — null usually means close lines weren't populated in ctx at write time |
+| Grading behind (records stale) | `surface_records` `updated_at` per sport; if stale → check `compute_surface_records` in overnight/pipeline logs |
+| Cron silently skipped | GH Actions runs history; if no run appears at expected time → HC alert triggers (or should) |
+| Heartbeat table shows no entries | `workflow_heartbeat` writes need `SUPABASE_SERVICE_ROLE_KEY` secret; check workflow env vars |
+
+**Morning audit** — running [`mlb_pipeline/morning_audit.py`](../mlb_pipeline/morning_audit.py) prints a green/warn/red board of everything above in ~30 sec. Should be the daily first-check before opening the app.
 
 ---
 
@@ -263,3 +364,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 | Date | Author | What |
 |------|--------|------|
 | 2026-09-08 | first draft | Initial structure + NCAAF LR deep dive (sections 1-4). Sections 5-8 stubbed. |
+| 2026-09-08 | pipeline map | Section 5 filled in: full workflow inventory (19 files), trigger chain, concurrency + heartbeat pattern, symptom → check-here debug table. |
