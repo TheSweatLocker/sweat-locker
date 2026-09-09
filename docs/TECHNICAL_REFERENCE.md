@@ -335,12 +335,138 @@ _Stub._ The canonical tier assignment path, tier thresholds by sport, publish ga
 
 ## 7. Grading + Surface Records
 
-_Stub._ How yesterday's picks become today's headline. Covers:
-- Per-sport resolver scripts (`<sport>_resolve_results.py`)
-- `grade_jerry_reads.py` — writes result back to jerry_reads
-- `compute_surface_records.py` — writes `surface_records` unified table
-- `daily_surface_records` per-day rollups
-- Which surfaces exist per sport (`mlb_sides`, `ncaaf_sides`, `sharp_card`, `prop`, `ledger`, `dawg`, `ladder`, `potd`, `ufc_sides` as of 38b61fd7)
+**How yesterday's picks become today's headline.** Every pick the engine publishes goes through four stages: **resolve** the game outcome → **grade** each open pick against it → **compose** per-surface pick lists → **aggregate** into windowed records the app reads.
+
+### 7.1 Stage 1 — Resolve game outcomes
+
+Per-sport script pulls final scores + market outcomes into `<sport>_game_results`. Runs in the sport pipeline post-daily-cron (see §5).
+
+| Sport | Resolver script | Result columns |
+|-------|-----------------|----------------|
+| MLB | `resolve_mlb_results.py` | `home_score, away_score, home_win, run_line_result, total_result` |
+| NFL | `resolve_nfl_results.py` (nflverse) | `home_score, away_score, home_win, spread_result, total_result` |
+| NCAAF | `resolve_ncaaf_results.py` (CFBD) | same as NFL |
+| NBA | `nba_resolve_results.py` | same as NFL |
+| NHL | `nhl_resolve_results.py` | + `went_to_ot, went_to_so, close_puckline` |
+| NCAAB | `resolve_ncaab_results.py` | same as NFL |
+| UFC | inline in `ufc_picks` (no separate results table) | `winner_actual, method_actual, rounds_actual, distance_actual` |
+
+**Failure mode: 400-error on grader.** MLB uses `run_line_result` column (±1.5 concept), others use `spread_result` (point spread). Prior versions of the grader hardcoded `run_line_result` in the SELECT → 400 on non-MLB sports → silent no-op. Fixed 2026-09-07 with per-sport column dispatch.
+
+### 7.2 Stage 2 — Grade jerry_reads
+
+[`mlb_pipeline/grade_jerry_reads.py`](../mlb_pipeline/grade_jerry_reads.py) is the sport-universal grader.
+
+**Registry** (line 29):
+```python
+RESULTS_TABLE = {
+    'MLB': 'mlb_game_results', 'NBA': 'nba_game_results',
+    'NFL': 'nfl_game_results', 'NCAAF': 'ncaaf_game_results',
+    'NCAAB': 'ncaab_game_results', 'NHL': 'nhl_game_results',
+}
+```
+UFC intentionally excluded — different pick model (fighter A vs B, not team side vs total).
+
+**Flow per row:**
+1. Pull ungraded `jerry_reads` rows (result IS NULL) for the sport
+2. Join to `<sport>_game_results` on game_id
+3. Interpret the pick against outcome:
+   - `type=ml`, `side=HOME`, `home_win=true` → `result=win`
+   - `type=rl|spread`, `side=HOME`, `spread_result=home_covered` → `win`
+   - `type=total`, `side=OVER`, `total_result=over` → `win`
+   - Push conditions (spread_result='push') → `result=push`
+4. Compute `units_net` from odds if present, else flat -110 (`payout: 0.909`)
+5. UPSERT `jerry_reads` with `result, units_net, graded_at`
+
+**Called from:** each sport pipeline's "Grade jerry_reads" step, immediately after resolve. Backfills any ungraded historical rows on each run (idempotent).
+
+### 7.3 Stage 3 — Compose per-surface pick lists
+
+[`mlb_pipeline/compute_surface_records.py`](../mlb_pipeline/compute_surface_records.py) is the aggregator. It has **one picker function per surface**, each returning a flat list of graded picks `[{sport, date, result, stake, payout}, ...]` that `_aggregate` rolls up.
+
+**Current surface registry** (19 surfaces, line 710):
+
+| Surface | Sport scope | Source | What it counts |
+|---------|-------------|--------|----------------|
+| `sharp` | MLB | mlb_game_context.primary_play (PRIME/STRONG) | Legacy MLB sides |
+| `prop` | MLB | mlb_pipeline_props (PRIME+STRONG bundled) | Legacy prop record |
+| `sharp_card` | ALL | jerry_cache.sharp_card_YYYY-MM-DD | 🎯 **Authoritative combined sides+props** (2026-09-05) |
+| `ladder` | MLB | jerry_cache.ladder | Steam Room Ladder (1/day roll-winnings) |
+| `ledger` | MLB | jerry_cache.ledger | Ledger parlays + teasers |
+| `potd` | ALL | daily_best_bet_history | Play of the Day |
+| `dawg` | MLB | daily_dawg | Dawg of the Day |
+| `prop_prime` | MLB | mlb_pipeline_props (PRIME only) | 🎯 tier-split (2026-09-09) |
+| `prop_strong` | MLB | mlb_pipeline_props (STRONG only) | tier-split |
+| `prop_lean` | MLB | mlb_pipeline_props (LEAN only) | tier-split |
+| `prop_coverage` | MLB | mlb_pipeline_props (COVERAGE only) | tier-split |
+| `mlb_sides` | MLB | primary_play (PRIME/STRONG/LEAN) | 🎯 UNIFORM sides (2026-09-09) |
+| `nfl_sides` | NFL | primary_play (PRIME/STRONG/LEAN) | UNIFORM sides |
+| `ncaaf_sides` | NCAAF | primary_play (PRIME/STRONG/LEAN) | UNIFORM sides |
+| `nba_sides` | NBA | primary_play (PRIME/STRONG/LEAN) | UNIFORM sides |
+| `nhl_sides` | NHL | primary_play (PRIME/STRONG/LEAN) | UNIFORM sides |
+| `ncaab_sides` | NCAAB | primary_play (PRIME/STRONG/LEAN) | UNIFORM sides |
+| `ufc_sides` | UFC | ufc_picks (winner pick PRIME/STRONG/LEAN) | UFC sides (2026-09-08, 38b61fd7) |
+
+**Design principle: uniformity.** Every sport gets a `<sport>_sides` surface with identical shape so Receipts renders the same way for every sport. Pre-2026-09-09, MLB had no `mlb_sides` and non-MLB had nothing — Receipts was inconsistent. `_pick_generic_sides()` helper (line 453) handles the common case; UFC is bespoke because its result model differs.
+
+### 7.4 Stage 4 — Aggregate into windows
+
+**Four windows** (line 46): `['mtd', 'd7', 'd30', 'lifetime']`
+
+**Sports rolled up:** `['ALL', 'MLB', 'NFL', 'NCAAF', 'NBA', 'NHL', 'NCAAB', 'UFC']` (ALL = grand total across sports).
+
+For each `(surface, sport, window)` combination, `_aggregate` computes:
+- `wins, losses, pushes` counts
+- `units_net` (Σ stake × payout for wins, minus stake for losses)
+- `last_date_graded` (most recent resolution)
+- `epoch_start` (earliest date graded within window)
+
+**Output table.** `surface_records` (unique constraint on `sport, surface, window_key`). Upserted via PostgREST `on_conflict` merge-duplicates.
+
+**Per-day rollups.** Separate table `daily_surface_records` (written by [`aggregate_daily_records.py`](../mlb_pipeline/aggregate_daily_records.py)) stores wins/losses per (sport, surface, date). Enables split-per-day drilldowns in the app (e.g., "yesterday MLB sharp_card went 6-2").
+
+### 7.5 Client read pattern
+
+**One fetch, cached:** [app/index.tsx:5518](../app/index.tsx#L5518)
+```js
+const {data} = await supabase.from('surface_records').select('*');
+const map = {};
+data.forEach(r => { map[`${r.sport}|${r.surface}|${r.window_key}`] = r; });
+```
+
+Every UI element that shows a record — home-screen stat headline, Receipts tab, Sharp Card record chip, tier-split badges — looks up its record from that map. Numbers never diverge across surfaces because they all come from the same aggregation. This was the fix for the "each surface shows a different record for the same picks" bug (2026-08-27, migration `20260827b_surface_records.sql`).
+
+### 7.6 Current metrics (2026-09-08 snapshot, d30 window)
+
+| Surface | Record | Units | Hit % |
+|---------|--------|-------|-------|
+| ALL sharp_card | 317-182-5 | +141.7u | 63.5% |
+| ALL prop | 300-107 | +148.2u | 73.7% |
+| ALL prop_prime | 177-41 | +100.6u | **81.2%** |
+| ALL prop_strong | 123-66 | +28.8u | 65.1% |
+| ALL potd | 17-7 | +7.7u | 70.8% |
+| ALL mlb_sides | 81-51-3 | +22.6u | 61.4% |
+| ALL ncaaf_sides | 34-15-2 | +15.9u | **69.4%** |
+| ALL ladder | 8-12 | -6.3u | 40.0% |
+| ALL dawg | 5-15 | -10.5u | 25.0% |
+
+Ladder + Dawg are the underperformers — flagged for calibration review.
+
+### 7.7 Where to look when a record looks wrong
+
+| Symptom | Check |
+|---------|-------|
+| Record stale for one sport | `surface_records.updated_at` where sport=X — if stale, sport's grader step is failing |
+| Record stale for one surface | Same table, filter by surface — one picker is broken |
+| Sharp Card ALL doesn't equal sum of sports | `sharp_card_YYYY-MM-DD` in `jerry_cache` may be double-counting; check picker composition |
+| PRIME/STRONG numbers different vs old bundled 'prop' | Expected — tier-split surfaces (prop_prime, prop_strong) added 2026-09-09 replace legacy 'prop' |
+| Client shows blank record | `surface_records` fetch failed in `fetchSurfaceRecords()` OR (sport,surface,window) key missing — probably new sport not yet in aggregate |
+| A specific game's pick shows ungraded but game finished | `jerry_reads.result IS NULL` — check `grade_jerry_reads.py --sport X` in latest workflow run |
+
+**Adding a new surface** — three steps:
+1. Write `pick_<surface>() -> list[dict]` returning `[{sport, date, result, stake, payout}, ...]`
+2. Add to `SURFACES` dict at line 710
+3. Ensure client references the new key: `surfaceRecords['ALL|<surface>|d30']`
 
 ---
 
@@ -365,3 +491,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 |------|--------|------|
 | 2026-09-08 | first draft | Initial structure + NCAAF LR deep dive (sections 1-4). Sections 5-8 stubbed. |
 | 2026-09-08 | pipeline map | Section 5 filled in: full workflow inventory (19 files), trigger chain, concurrency + heartbeat pattern, symptom → check-here debug table. |
+| 2026-09-08 | grading + surfaces | Section 7 filled in: 4-stage flow (resolve → grade → compose → aggregate), 19-surface registry, client read pattern, current metrics snapshot, symptom → check debug table. |
