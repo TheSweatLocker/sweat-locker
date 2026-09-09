@@ -253,6 +253,19 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{}' || echo "team_stats_rolling refresh failed"
 
+      # 2026-09-08: bridge primary_play → jerry_reads for NHL. Ensemble +
+      # defensive_gates now write primary_play in nhl_game_context; without
+      # this sync, app never sees NHL picks (jerry_reads is the source of
+      # truth the client reads from). Mirrors NCAAF/NFL/MLB wiring.
+      - name: Sync NHL jerry_reads from context
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sync_jerry_reads_from_ctx.py --sport NHL --window 7 || echo "NHL jerry_reads sync failed (non-fatal, offseason)"
+
       # 2026-09-08 heartbeat END.
       - name: Heartbeat — end
         if: always()

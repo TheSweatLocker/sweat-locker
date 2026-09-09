@@ -359,6 +359,17 @@ def _apply_ensemble(row: dict) -> None:
                           'tier': decision.total.tier, 'conviction': decision.total.conviction},
             },
         }
+        # 2026-09-08 wire defensive_gates for NHL parity with NFL/NCAAF/MLB.
+        # OC-flip → MC-dissent → juice-trap (-400 default per NCAAB/NBA class)
+        # → publish gate. LR override no-ops (no NHL LR model trained yet —
+        # blocked on historical odds backfill, tracked in
+        # project_v1_0_1_client_priorities).
+        try:
+            from defensive_gates import apply_all_defensive_gates
+            row['primary_play'] = apply_all_defensive_gates(
+                row['primary_play'], row, sport='NHL')
+        except Exception:
+            pass  # gates unavailable — keep raw ensemble output
     except Exception:
         pass  # ensemble unavailable — leave primary_play alone
 
