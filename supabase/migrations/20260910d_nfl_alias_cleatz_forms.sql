@@ -12,6 +12,9 @@
 -- Applied via API 2026-09-10 (patched in place). This migration re-applies
 -- the same additions declaratively for schema completeness.
 
+-- nfl_team_aliases.alt_names is jsonb (not text[]). The merge below reads
+-- existing values via jsonb_array_elements_text, unions with the new forms,
+-- de-duplicates + sorts, and wraps back into a jsonb array.
 DO $$
 DECLARE
   patches jsonb := $j$
@@ -55,12 +58,16 @@ DECLARE
 BEGIN
   FOR team, new_forms IN SELECT * FROM jsonb_each(patches) LOOP
     UPDATE nfl_team_aliases
-    SET alt_names = ARRAY(
-      SELECT DISTINCT unnest(
-        COALESCE(alt_names, ARRAY[]::text[])
-        || ARRAY(SELECT jsonb_array_elements_text(new_forms))
-      )
-      ORDER BY 1
+    SET alt_names = COALESCE(
+      (SELECT jsonb_agg(val ORDER BY val)
+         FROM (
+           SELECT DISTINCT val FROM (
+             SELECT jsonb_array_elements_text(COALESCE(alt_names, '[]'::jsonb)) AS val
+             UNION ALL
+             SELECT jsonb_array_elements_text(new_forms) AS val
+           ) merged
+         ) deduped),
+      '[]'::jsonb
     ),
     updated_at = NOW()
     WHERE canonical_name = team;
