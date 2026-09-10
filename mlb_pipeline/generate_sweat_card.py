@@ -441,30 +441,53 @@ def fetch_football_picks(today: str) -> list:
     # 2026-09-10 KICKOFF FILTER — skip games already played. NE @ SEA TNF
     # UTC kickoff 00:20 9/10 = ET 8:20 PM 9/9 — game_date=2026-09-10 but game
     # was done by morning. Sweat Card was still surfacing it.
+    #
+    # 2026-09-10 CROSS-DAY FIX (user feedback: SF @ LA missing from Sweat
+    # Card 9/10). SF @ LA UTC kickoff 00:35 9/11 = ET 8:35 PM 9/10. Game
+    # PLAYS today (ET) but game_date field = 2026-09-11 (UTC crossover).
+    # Querying game_date=today missed it. Fix: query game_date IN (today,
+    # tomorrow) then filter by kickoff_utc's ET calendar date — only keep
+    # games whose ET play date == today.
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     now_utc = _dt.now(_tz.utc); ko_cutoff = now_utc - _td(minutes=15)
+    _today_dt = _dt.strptime(today, '%Y-%m-%d').date()
+    _tomorrow_str = (_today_dt + _td(days=1)).isoformat()
 
     for sport, tbl in [('NFL', 'nfl_game_context'), ('NCAAF', 'ncaaf_game_context')]:
         try:
             rows = sb_get(tbl, {
-                'game_date': f'eq.{today}',
+                'game_date': f'in.({today},{_tomorrow_str})',
                 'primary_play': 'not.is.null',
-                'select': 'game_id,home_team,away_team,primary_play,kickoff_utc',
+                'select': 'game_id,home_team,away_team,primary_play,kickoff_utc,game_date',
             })
         except Exception as e:
             print(f'  {sport} fetch failed: {e}')
             continue
         _skipped_past = 0
+        _skipped_wrong_et_date = 0
         for row in rows or []:
             ks = row.get('kickoff_utc')
             if ks:
                 try:
                     ko = _dt.fromisoformat(str(ks).replace('Z','+00:00'))
                     if ko.tzinfo is None: ko = ko.replace(tzinfo=_tz.utc)
+                    # Already played?
                     if ko < ko_cutoff:
                         _skipped_past += 1
                         continue
+                    # ET play date must equal today. UTC-4 offset for ET
+                    # (works year-round for game timing purposes — DST
+                    # boundary edge cases are 1-hr off which never lands
+                    # a game on wrong calendar day).
+                    ko_et_date = (ko - _td(hours=4)).date()
+                    if ko_et_date != _today_dt:
+                        _skipped_wrong_et_date += 1
+                        continue
                 except Exception: pass
+            elif row.get('game_date') != today:
+                # No kickoff_utc + game_date isn't today = not tonight's game
+                _skipped_wrong_et_date += 1
+                continue
             pp = row.get('primary_play') or {}
             if isinstance(pp, str):
                 try: pp = json.loads(pp)
@@ -488,6 +511,8 @@ def fetch_football_picks(today: str) -> list:
             })
         if _skipped_past:
             print(f'  ⏭  {sport} sweat: skipped {_skipped_past} already-played games')
+        if _skipped_wrong_et_date:
+            print(f'  ⏭  {sport} sweat: skipped {_skipped_wrong_et_date} not-tonight games (ET play date mismatch)')
     # Rank by conviction DESC — cap-at-5 applied at composition step
     picks.sort(key=lambda p: -p.get('conviction', 0))
     return picks
