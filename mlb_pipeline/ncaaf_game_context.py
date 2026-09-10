@@ -94,6 +94,23 @@ def load_returning_production(season: int) -> dict:
     return {row['team']: row for row in rows}
 
 
+def _load_ncaaf_team_aliases() -> dict:
+    """Return {ctx_name: cfbd_canonical} from ncaaf_team_name_aliases.
+    Silent-empty on error so a missing table doesn't kill the builder.
+    2026-09-10: fixes 4+ FBS teams (App State/Hawai'i/San José State/
+    Virginia Tech) that were dropping SP+ due to CFBD naming variants."""
+    try:
+        r = requests.get(f'{SB}/rest/v1/ncaaf_team_name_aliases',
+            headers=H_READ, params={'select': 'ctx_name,cfbd_canonical'},
+            timeout=8)
+        if r.status_code == 200:
+            return {row['ctx_name']: row['cfbd_canonical'] for row in r.json()
+                    if row.get('ctx_name') and row.get('cfbd_canonical')}
+    except Exception:
+        pass
+    return {}
+
+
 def load_team_stats(season: int) -> dict:
     """Return {team: stats_row} for the season, merged with defense stats.
 
@@ -106,6 +123,13 @@ def load_team_stats(season: int) -> dict:
     NULL current field from prior. This means Alabama's 2025 defense
     numbers (242 pass_ypg allowed) render on their 2026 preview cards
     until enough 2026 data accumulates.
+
+    2026-09-10: NCAAF TEAM-NAME ALIASING. ncaaf_team_stats stores CFBD
+    canonical names ("App State", "Hawai'i") while ncaaf_game_context
+    stores odds-pipe names ("Appalachian State", "Hawaii"). Add alias
+    lookups to the returned dict so the ctx-side name resolves the row
+    just as reliably as the canonical. Alias table:
+    ncaaf_team_name_aliases (migration 20260910e).
     """
     def _fetch(s: int) -> dict:
         r = requests.get(
@@ -113,6 +137,11 @@ def load_team_stats(season: int) -> dict:
             headers=H_READ, timeout=15,
         )
         out = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+        # Add alias entries so ctx-side names resolve to the same row.
+        _aliases = _load_ncaaf_team_aliases()
+        for ctx_name, canon in _aliases.items():
+            if canon in out and ctx_name not in out:
+                out[ctx_name] = out[canon]
         # 2026-08-29: ONLY enrich existing D1 teams with defense fields.
         # ncaaf_team_defense_stats may include D2/D3 rows w/ 0.0000 EPA
         # (they play FBS teams occasionally). setdefault previously added
