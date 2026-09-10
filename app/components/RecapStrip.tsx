@@ -232,7 +232,7 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
                 is redundant with the ADAPTIVE RECORD CHIPS row above,
                 which already shows per-sport breakdowns. Drop the prefix
                 and keep the label compact. */}
-            SWEAT CARD L30D
+            CARD L30D
           </Text>
           <View style={styles.statRow}>
             <Text style={styles.statValue}>

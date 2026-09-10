@@ -548,7 +548,7 @@ export default function GameDetailV2({
           </Section>
         )}
 
-        <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} />
+        <SportSpecificSlot ctx={ctx} gamesSport={gamesSport} game={game} cohortRecords={cohortTagRecords} />
 
         {/* 2026-09-01: Recent Schedule card — cross-sport, reads
             team_recent_games matview (populated by refresh_team_recent_games
@@ -2589,7 +2589,12 @@ const tsStyles = StyleSheet.create({
 
 
 // ─── SPORT-SPECIFIC SLOT ─────────────────────────────────────────────────
-function SportSpecificSlot({ctx, gamesSport, game}: any) {
+// 2026-09-10 CRASH FIX: cohortRecords must be passed as a prop from the
+// GameDetailV2 parent — SportSpecificSlot is a separate function component
+// and can't access GameDetailV2's `cohortTagRecords` state via closure.
+// Prior version referenced the state var directly here and every NFL/NCAAF
+// game-detail open crashed with ReferenceError.
+function SportSpecificSlot({ctx, gamesSport, game, cohortRecords}: any) {
   if (gamesSport === 'MLB') {
     // Pitcher card lives in Stat Projections above; no additional slot needed
     return null;
@@ -2600,7 +2605,7 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     return null;
   }
   if (gamesSport === 'NFL') {
-    return <NFLSlot ctx={ctx} game={game} cohortRecords={cohortTagRecords} />;
+    return <NFLSlot ctx={ctx} game={game} cohortRecords={cohortRecords} />;
   }
   if (gamesSport === 'NCAAF') {
     // 2026-08-24: NCAAF got its own slot. Previously reused NFLSlot which

@@ -343,6 +343,17 @@ def fetch_prime_props(game_date: str, sport: str = 'MLB') -> list[dict]:
         # belong in Daily Degen, not the chalk-mode Ledger).
         if odds_i < -300 or odds_i > 300: continue
         conv = int(row.get('refit_conviction') or row.get('conviction') or 0)
+        # 2026-09-10: prettify prop_type so the leg text reads "Jared Jones
+        # Under 15.5 Outs" instead of "Jared Jones Under 15.5 outs_under" —
+        # DB stores prop_type with a redundant direction suffix that duplicated
+        # the "Under" word already in the leg text. Same fix pattern as
+        # jerry_anchor_potd._load_top_prop_candidates.
+        _raw_type = str(row.get('prop_type') or '')
+        _stem = _raw_type.rsplit('_', 1)[0] if _raw_type.endswith(('_over','_under')) else _raw_type
+        _PROP_LABEL = {'outs':'Outs','hits':'Hits','er':'Earned Runs','ha':'Hits Allowed',
+                       'ks':'Strikeouts','k':'Strikeouts','tb':'Total Bases','rbi':'RBIs',
+                       'r':'Runs','sb':'Stolen Bases','bb':'Walks'}
+        _pretty_type = _PROP_LABEL.get(_stem.lower(), _stem.replace('_',' ').title())
         out.append({
             'game_id': row.get('game_id'),
             'sport': sport,
@@ -354,7 +365,7 @@ def fetch_prime_props(game_date: str, sport: str = 'MLB') -> list[dict]:
             'conviction': conv,
             'prop_type': row.get('prop_type'),
             'direction': direction,
-            'pick': f"{row.get('player_name')} {direction.title()} {row.get('prop_line')} {row.get('prop_type')}",
+            'pick': f"{row.get('player_name')} {direction.title()} {row.get('prop_line')} {_pretty_type}",
             'original_line': row.get('prop_line'),
             'original_odds': odds_i,
             'teased_line': None,

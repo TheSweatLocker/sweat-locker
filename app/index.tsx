@@ -17104,6 +17104,10 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         'teased_totals_combo':   {label: '📊 TEASED TOTALS COMBO', color: THEME.accent},
                         'teased_spreads_combo':  {label: '📐 TEASED SPREADS COMBO', color: THEME.hrb},
                         'teaser':                {label: '🎯 TEASER',              color: THEME.accent},
+                        // 2026-09-10: added chalk_prop_parlay so the header
+                        // renders "CHALK PROP PARLAY" instead of the raw
+                        // "CHALK_PROP_PARLAY" (default toUpperCase fallback).
+                        'chalk_prop_parlay':     {label: '🎯 CHALK PROP PARLAY',    color: THEME.accent},
                       };
                       const meta = KIND_META[s.kind] || {label: (s.kind || 'COMBO').toUpperCase(), color: THEME.textMuted};
                       const oddsFmt = s.combined_odds > 0 ? `+${s.combined_odds}` : `${s.combined_odds}`;
