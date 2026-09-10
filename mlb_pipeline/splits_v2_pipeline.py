@@ -65,11 +65,23 @@ def _flip(side: str) -> str:
 
 
 def normalize_from_public_splits_archive(sport: str, game_date: str) -> list[dict]:
-    """OddsCrowd is stored pivoted in public_splits_archive. Expand to long-form."""
+    """OddsCrowd is stored pivoted in public_splits_archive. Expand to long-form.
+    2026-09-10: for football, widen captured_at window backward 7 days — the
+    prior filter (captured_at >= game_date T00:00) drops pre-game scrapes."""
+    from datetime import datetime as _dt, timedelta as _td
+    if sport.upper() in ('NFL', 'NCAAF'):
+        try:
+            gd = _dt.strptime(game_date, "%Y-%m-%d").date()
+            start = (gd - _td(days=7)).isoformat()
+            captured_filter = f"gte.{start}T00:00:00"
+        except ValueError:
+            captured_filter = f"gte.{game_date}T00:00:00"
+    else:
+        captured_filter = f"gte.{game_date}T00:00:00"
     r = requests.get(f"{SB}/rest/v1/public_splits_archive",
                      headers=H_READ,
                      params={"sport": f"eq.{sport}",
-                             "captured_at": f"gte.{game_date}T00:00:00",
+                             "captured_at": captured_filter,
                              "select": "game_id,market,pick_side,oc_money_pct,oc_bets_pct,"
                                        "oc_divergence,fr_handle_pct,fr_bettors_pct,captured_at",
                              "limit": 2000},
@@ -179,13 +191,38 @@ def _game_id_lookup(sport: str, game_date: str) -> dict:
     return enriched
 
 
+def _snapshot_window(sport: str, game_date: str) -> str:
+    """2026-09-10 · pre-game snapshot window per sport.
+
+    Original filter: snapshot_date=eq.{game_date}. Correct for MLB (daily
+    scrape aligns with same-day play) but WRONG for NFL/NCAAF where fadereport
+    + cleatz scrape lines 2-7 days ahead of kickoff. Result: 60 fresh cleatz
+    NFL rows for 9/13 games were being silently dropped because they were
+    captured 9/09 (snapshot_date=eq.2026-09-13 → 0 rows).
+
+    Returns a PostgREST filter value like 'gte.2026-09-03' for NFL/NCAAF and
+    the same 'eq.2026-09-10' for MLB/other sports.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    if sport.upper() not in ('NFL', 'NCAAF'):
+        return f"eq.{game_date}"
+    try:
+        gd = _dt.strptime(game_date, "%Y-%m-%d").date()
+    except ValueError:
+        return f"eq.{game_date}"
+    # Look back 7 days for scrapes captured ahead of kickoff.
+    start = (gd - _td(days=7)).isoformat()
+    return f"gte.{start}"
+
+
 def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
     """Fadereport native table. sharp_side_norm + bets/money splits both sides given.
-    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null."""
+    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null.
+    2026-09-10: widened snapshot window for football (pre-game scrapes)."""
     r = requests.get(f"{SB}/rest/v1/fadereport_signals",
                      headers=H_READ,
                      params={"sport": f"eq.{sport}",
-                             "snapshot_date": f"eq.{game_date}",
+                             "snapshot_date": _snapshot_window(sport, game_date),
                              "select": "game_id,market,sharp_side_norm,bets_side_pct,"
                                        "money_side_pct,bets_other_pct,money_other_pct,"
                                        "strength_pts,fetched_at,home_team,away_team",
@@ -227,11 +264,12 @@ def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
 
 def normalize_from_cleatz_signals(sport: str, game_date: str) -> list[dict]:
     """Cleatz native table. sharp_side_norm + handle/bets splits both sides given.
-    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null."""
+    2026-08-23: fallback game_id lookup for non-MLB where scraper leaves gid null.
+    2026-09-10: widened snapshot window for football (pre-game scrapes)."""
     r = requests.get(f"{SB}/rest/v1/cleatz_signals",
                      headers=H_READ,
                      params={"sport": f"eq.{sport}",
-                             "snapshot_date": f"eq.{game_date}",
+                             "snapshot_date": _snapshot_window(sport, game_date),
                              "select": "game_id,market,sharp_side_norm,sharp_bets_pct,"
                                        "sharp_handle_pct,other_bets_pct,other_handle_pct,"
                                        "divergence,fetched_at,home_team,away_team",

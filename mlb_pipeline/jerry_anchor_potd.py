@@ -237,7 +237,19 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
             if effective_conv < min_conv: continue
             direction = str(row.get('direction') or '').upper()
             odds = row.get('book_over_odds') if direction == 'OVER' else row.get('book_under_odds')
-            call_text = f"{row.get('player_name','?')} {direction.title()} {row.get('prop_line','?')} {row.get('prop_type','')}"
+            # 2026-09-10 · strip direction suffix from prop_type in the display
+            # string. DB stores prop_type as 'outs_under' / 'hits_over' /
+            # 'ha_over' etc. — direction is already rendered separately, so
+            # 'Jared Jones Under 15.5 outs_under' was showing the direction
+            # twice. Drop the trailing _over/_under and pretty-print the stem.
+            _raw_type = str(row.get('prop_type', '') or '')
+            _stem = _raw_type.rsplit('_', 1)[0] if _raw_type.endswith(('_over','_under')) else _raw_type
+            _PROP_LABEL = {'outs': 'Outs', 'hits': 'Hits', 'er': 'Earned Runs',
+                           'ha': 'Hits Allowed', 'ks': 'Strikeouts', 'k': 'Strikeouts',
+                           'tb': 'Total Bases', 'rbi': 'RBIs', 'r': 'Runs',
+                           'sb': 'Stolen Bases', 'bb': 'Walks'}
+            _pretty_type = _PROP_LABEL.get(_stem.lower(), _stem.replace('_', ' ').title())
+            call_text = f"{row.get('player_name','?')} {direction.title()} {row.get('prop_line','?')} {_pretty_type}"
             out.append({
                 'sport': sport,
                 'game_id': row['game_id'],
