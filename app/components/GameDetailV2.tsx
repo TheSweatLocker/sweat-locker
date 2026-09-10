@@ -2748,11 +2748,18 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
   // 2026-09-08: server-controlled visibility (see NFLTeamMatchupCard note).
   // NCAAF slot is separately togglable from NFL — different sport row in
   // config_ui_sections. Both default true.
+  //
+  // 2026-09-10 CRASH FIX (same bug as NFLTeamMatchupCard): if (!isEnabled)
+  // return null was between the useStates and the useEffect. When
+  // config_ui_sections loaded with enabled=false, early return fired,
+  // skipping the useEffect → "Rendered fewer hooks than expected" crash on
+  // every NCAAF game detail open. Fix: move useEffect above the early
+  // return, gate the fetch body on isEnabled inside.
   const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'team_matchup', true);
   const [stats, setStats] = React.useState<{home?: any; away?: any}>({});
   const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
-  if (!isEnabled) return null;
   React.useEffect(() => {
+    if (!isEnabled) return;
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
     (async () => {
@@ -2788,7 +2795,8 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
         }
       }
     })();
-  }, [homeTeam, awayTeam, ctx?.season]);
+  }, [homeTeam, awayTeam, ctx?.season, isEnabled]);
+  if (!isEnabled) return null;
 
   // Prefer live team_stats fetch, fall back to ctx fields.
   const spH = stats.home?.sp_overall ?? ctx?.home_sp_overall;
