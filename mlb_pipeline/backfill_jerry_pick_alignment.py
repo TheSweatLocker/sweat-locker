@@ -160,7 +160,7 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool) -> None:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=['MLB','NFL','NCAAF','NBA','NCAAB','NHL'])
-    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--days', type=int, default=14)
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
     run(args.sport, args.days, args.dry_run)

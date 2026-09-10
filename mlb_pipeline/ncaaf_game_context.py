@@ -634,12 +634,21 @@ def compute_primary_play(ctx):
 
     stale_note = ' · prior-season regressed, LEAN cap' if stats_stale else ''
 
+    # 2026-09-10 humanize spread labels: "GB spread cover" → "GB -3.5"
+    # + populate side/line so downstream badge alignment works.
+    _spread_side = 'HOME' if (proj_spread is not None and float(proj_spread) > 0) else 'AWAY'
+    _fav_line = None
+    if close_spread is not None:
+        _fav_line = -float(close_spread) if _spread_side == 'HOME' else float(close_spread)
+    _spread_label = f'{fav} {_fav_line:+g}' if _fav_line is not None else f'{fav} spread'
+
     # PRIME spread — big edge + confluence agreement
     if abs_edge >= 6.0 and abs(conf) >= 3:
         tier = 'LEAN' if stats_stale else 'PRIME'
         floor = 60 if stats_stale else 85
         return {'type': 'spread', 'tier': tier,
-                'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+                'side': _spread_side, 'line': _fav_line,
+                'label': _spread_label,
                 'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d}){stale_note}',
                 'signal_floor': floor}
     # STRONG spread — meaningful edge
@@ -647,7 +656,8 @@ def compute_primary_play(ctx):
         tier = 'LEAN' if stats_stale else 'STRONG'
         floor = 58 if stats_stale else 72
         return {'type': 'spread', 'tier': tier,
-                'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+                'side': _spread_side, 'line': _fav_line,
+                'label': _spread_label,
                 'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}){stale_note}',
                 'signal_floor': floor}
     # STRONG total
@@ -656,6 +666,7 @@ def compute_primary_play(ctx):
         tier = 'LEAN' if stats_stale else 'STRONG'
         floor = 58 if stats_stale else 70
         return {'type': 'total', 'tier': tier,
+                'side': side.upper(), 'line': float(close_total),
                 'label': f'{side} {close_total}',
                 'sub': f'Model projects {proj_total:.1f} vs market {close_total} ({total_edge:+.1f}){stale_note}',
                 'signal_floor': floor}
@@ -665,7 +676,8 @@ def compute_primary_play(ctx):
     if abs_edge >= 3.0:
         tier = 'LEAN' if stats_stale else 'LIGHT'
         return {'type': 'spread', 'tier': tier,
-                'label': f'{fav} spread lean',
+                'side': _spread_side, 'line': _fav_line,
+                'label': _spread_label,
                 'sub': f'Edge {abs_edge:.1f}{stale_note}',
                 'signal_floor': 60}
     return None

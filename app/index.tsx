@@ -14320,15 +14320,25 @@ setJerryHistory(prev => {
   // display 'Pass' when the market IS actually pass.
   let badgeText: string = jr.call_text || '';
   if (!badgeText) {
+    // 2026-09-10 humanize: fall back to team abbreviations instead of
+    // rendering HOME/AWAY literals. Users saw "spread away", "home ml",
+    // "HOME RL 5.5" on games tab when call_text was null. Backend enforcer
+    // now writes call_text for all rows via ensemble.primary_play.label —
+    // this client fallback exists only for orphan rows that slip through.
     const mkt = String(jr.call_market || '').toLowerCase();
-    const side = String(jr.call_side || '');
+    const side = String(jr.call_side || '').toUpperCase();
     const line = jr.call_line;
+    const teamForSide = side === 'HOME' ? game.home_team : side === 'AWAY' ? game.away_team : '';
+    const teamLabel = teamForSide ? (teamAbbrev(teamForSide) || String(teamForSide).slice(0, 4).toUpperCase()) : '';
+    const spreadStr = (typeof line === 'number')
+      ? (line > 0 ? `+${line}` : String(line))
+      : (line ?? '');
     if (mkt === 'pass' || (!mkt && !side)) badgeText = 'Pass';
-    else if (mkt === 'total') badgeText = `${side.charAt(0) + side.slice(1).toLowerCase()} ${line ?? ''}`.trim();
-    else if (mkt === 'ml') badgeText = side ? `${side.charAt(0) + side.slice(1).toLowerCase()} ML` : 'ML';
-    else if (mkt === 'rl') badgeText = `${side.charAt(0) + side.slice(1).toLowerCase()} RL ${line ?? ''}`.trim();
-    else if (mkt === 'fight') badgeText = side ? `Fighter ${side}` : 'Fight';
-    else badgeText = `${mkt.toUpperCase()} ${side}`.trim() || 'Read';
+    else if (mkt === 'total') badgeText = `${side === 'OVER' ? 'Over' : side === 'UNDER' ? 'Under' : ''} ${line ?? ''}`.trim() || 'Total';
+    else if (mkt === 'ml') badgeText = teamLabel ? `${teamLabel} ML` : 'ML';
+    else if (mkt === 'rl' || mkt === 'spread' || mkt === 'puckline') badgeText = teamLabel ? `${teamLabel} ${spreadStr}`.trim() : (spreadStr ? String(spreadStr) : 'Spread');
+    else if (mkt === 'fight') badgeText = teamLabel || 'Fight';
+    else badgeText = teamLabel ? `${teamLabel}` : 'Read';
   }
   return (
     <View style={{marginBottom:10,padding:10,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}}>

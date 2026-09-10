@@ -901,10 +901,17 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
                 sub += f' · Panel disagrees ({panel_spread:+.1f}) — downgrade'
         if stats_stale:
             sub += ' · prior-season data, LEAN cap'
+        # 2026-09-10 humanize label: "GB spread cover" → "GB -3.5".
+        # nflverse convention: close_spread positive = home fav, so fav line
+        # from its own perspective flips sign for away.
+        _side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
+        _fav_line = -float(close_spread) if _side == 'HOME' else float(close_spread)
         return {
             'type': 'spread',
             'tier': tier,
-            'label': f'{fav} spread {"lean" if stats_stale else "cover"}',
+            'side': _side,
+            'line': _fav_line,
+            'label': f'{fav} {_fav_line:+g}',
             'sub': sub,
             'signal_floor': floor,
         }
@@ -1000,10 +1007,15 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
     # stronger STRONG-tier signals got capped).
     if abs_edge >= 2.0:
         tier = 'LEAN' if stats_stale else 'LIGHT'
+        # 2026-09-10 humanize label + populate side/line (see case 2 above)
+        _side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
+        _fav_line = -float(close_spread) if _side == 'HOME' else float(close_spread)
         return {
             'type': 'spread',
             'tier': tier,
-            'label': f'{fav} spread lean',
+            'side': _side,
+            'line': _fav_line,
+            'label': f'{fav} {_fav_line:+g}',
             'sub': f'Edge {abs_edge:.1f}' + (' · prior-season data, LEAN cap' if stats_stale else ''),
             'signal_floor': 60,
         }
