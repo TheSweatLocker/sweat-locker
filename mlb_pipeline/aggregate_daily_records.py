@@ -804,7 +804,7 @@ def agg_split_antipublic(date: str) -> list[dict] | None:
                                   else None)
                     if sharp_side is None: continue
                     # Grade sharp side against actual result
-                    result = _grade_side(market, sharp_side, hs, as_,
+                    result = _grade_side_by_market(market, sharp_side, hs, as_,
                                           res.get('close_spread'), res.get('close_total'))
                     if result not in ('W','L','P'): continue
                     if result == 'P': agg['p'] += 1
@@ -829,10 +829,17 @@ def agg_split_antipublic(date: str) -> list[dict] | None:
     return out_records or None
 
 
-def _grade_side(market: str, sharp_side: str, hs: int, as_: int,
+def _grade_side_by_market(market: str, sharp_side: str, hs: int, as_: int,
                  close_spread, close_total) -> str | None:
     """Grade a sharp side (HOME/AWAY/OVER/UNDER) against final result.
-    Returns 'W' | 'L' | 'P' | None (unresolved)."""
+    Returns 'W' | 'L' | 'P' | None (unresolved).
+
+    2026-09-10 RENAMED from `_grade_side` — the original _grade_side at
+    line 56 has signature (pp: dict, game: dict) used by agg_sharp_card.
+    Same-name collision meant this def shadowed the original, breaking
+    every agg_sharp_card call with TypeError since I shipped this 9/9.
+    Fix: rename this to _grade_side_by_market so both coexist.
+    """
     m = str(market or '').lower()
     ss = str(sharp_side or '').upper()
     if m == 'ml':
