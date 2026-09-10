@@ -309,9 +309,42 @@ def _get(url: str, params: dict = None, timeout: int = 30) -> list:
         return []
 
 
+# 2026-09-10 KICKOFF FILTER — added after user reported Sharp Card + Sweat
+# Card still showing yesterday's NE @ SEA TNF picks on 9/10 morning. UTC-vs-ET
+# crossover: kickoff was 00:20 UTC 9/10 (8:20 PM ET 9/9), so game_date=2026-09-10
+# in the DB but the game was already played. Same class of bug as the POTD
+# fix (jerry_anchor_potd.py 9/10). Filter out any game whose kickoff is
+# already in the past (grace: 15 min for late lock windows).
+def _future_only(rows: list, kickoff_col: str) -> list:
+    """Drop any ctx row whose kickoff_col value is < now - 15min."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now_utc = _dt.now(_tz.utc)
+    cutoff = now_utc - _td(minutes=15)
+    out = []
+    dropped = 0
+    for r in rows:
+        ks = r.get(kickoff_col)
+        if ks:
+            try:
+                ko = _dt.fromisoformat(str(ks).replace('Z','+00:00'))
+                if ko.tzinfo is None: ko = ko.replace(tzinfo=_tz.utc)
+                if ko < cutoff:
+                    dropped += 1
+                    continue
+            except Exception: pass
+        out.append(r)
+    if dropped:
+        print(f'  ⏭  kickoff filter dropped {dropped} already-played games')
+    return out
+
+
 def _fetch_all(today: str) -> dict:
     """One-shot fetch of every source, keyed for downstream composition."""
     out = {}
+    # MLB doesn't need kickoff filter — game_date matches ET play date,
+    # rarely crosses UTC midnight. Column commence_time isn't on
+    # mlb_game_context anyway. Only NFL/NCAAF need the filter (TNF/MNF
+    # kickoffs 8:20 PM ET = next-day UTC).
     out['mlb_ctx']   = _get(f'{SB}/rest/v1/mlb_game_context',
                             params={'select': 'game_id,home_team,away_team,primary_play,'
                                     'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,'
@@ -345,14 +378,18 @@ def _fetch_all(today: str) -> dict:
         # 2026-09-08 SCHEMA DISPATCH: NFL/NCAAF use close_home_ml;
         # NHL/NBA/NCAAB use home_ml_close (same as MLB). Prior state:
         # SELECTing home_ml_odds on NHL/NBA/NCAAB 42703-ed every call.
+        # 2026-09-10: add kickoff_utc for football sports so we can filter
+        # already-played games post-fetch. Kills the NE @ SEA stale-card bug.
         if sport in ('nfl', 'ncaaf'):
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'close_home_ml,close_away_ml')
+                    'close_home_ml,close_away_ml,kickoff_utc')
         else:
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'home_ml_close,away_ml_close')
+                    'home_ml_close,away_ml_close,kickoff_utc')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
+        # Apply future-only filter — same for all football/basketball/hockey
+        out[f'{sport}_ctx'] = _future_only(out[f'{sport}_ctx'], 'kickoff_utc')
     out['ufc_reads'] = _get(f'{SB}/rest/v1/jerry_reads',
                              params={'select': 'game_id,call_side,conviction,input_snapshot',
                                      'sport': 'eq.UFC',

@@ -438,17 +438,33 @@ def fetch_football_picks(today: str) -> list:
     picks = []
     EARLY_SEASON_TIER_CAP_UNTIL = '2026-09-22'  # NFL Week 3 end
 
+    # 2026-09-10 KICKOFF FILTER — skip games already played. NE @ SEA TNF
+    # UTC kickoff 00:20 9/10 = ET 8:20 PM 9/9 — game_date=2026-09-10 but game
+    # was done by morning. Sweat Card was still surfacing it.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now_utc = _dt.now(_tz.utc); ko_cutoff = now_utc - _td(minutes=15)
+
     for sport, tbl in [('NFL', 'nfl_game_context'), ('NCAAF', 'ncaaf_game_context')]:
         try:
             rows = sb_get(tbl, {
                 'game_date': f'eq.{today}',
                 'primary_play': 'not.is.null',
-                'select': 'game_id,home_team,away_team,primary_play',
+                'select': 'game_id,home_team,away_team,primary_play,kickoff_utc',
             })
         except Exception as e:
             print(f'  {sport} fetch failed: {e}')
             continue
+        _skipped_past = 0
         for row in rows or []:
+            ks = row.get('kickoff_utc')
+            if ks:
+                try:
+                    ko = _dt.fromisoformat(str(ks).replace('Z','+00:00'))
+                    if ko.tzinfo is None: ko = ko.replace(tzinfo=_tz.utc)
+                    if ko < ko_cutoff:
+                        _skipped_past += 1
+                        continue
+                except Exception: pass
             pp = row.get('primary_play') or {}
             if isinstance(pp, str):
                 try: pp = json.loads(pp)
@@ -470,6 +486,8 @@ def fetch_football_picks(today: str) -> list:
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),
             })
+        if _skipped_past:
+            print(f'  ⏭  {sport} sweat: skipped {_skipped_past} already-played games')
     # Rank by conviction DESC — cap-at-5 applied at composition step
     picks.sort(key=lambda p: -p.get('conviction', 0))
     return picks
