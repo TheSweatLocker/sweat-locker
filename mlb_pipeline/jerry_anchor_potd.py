@@ -96,25 +96,52 @@ def _load_primary_play_candidates(gd: str, sports: list) -> list:
     call_market, call_side, call_line, conviction, short_read, call_text)
     so the downstream threshold + gate pipeline can process them uniformly.
     Only surfaces PRIME + STRONG plays; LEAN not POTD-worthy.
+
+    2026-09-10 KICKOFF FILTER: excludes games that have already started —
+    prevents POTD from picking a game played last night when its UTC date
+    happens to be today. NE @ SEA TNF 9/9 8:20 PM ET was UTC 00:20 9/10
+    → had game_date 2026-09-10 → became "today" POTD candidate → picked
+    9/10 morning even though game was already final. Now we require
+    kickoff to be in the future (grace: within 15 min of now to allow
+    small clock skew, but no games already played).
     """
+    from datetime import datetime as _dt, timezone as _tz
+    now_utc = _dt.now(_tz.utc)
     out = []
     for sport in sports:
         ctx_table = CONTEXT_TABLE_BY_SPORT.get(sport)
         if not ctx_table: continue
         try:
+            # Select kickoff column for filtering. MLB uses 'commence_time',
+            # NFL/NCAAF use 'kickoff_utc' — probe both, ignore missing.
+            kickoff_col = 'kickoff_utc' if sport in ('NFL', 'NCAAF') else 'commence_time'
+            select = f"game_id,primary_play,home_team,away_team,{kickoff_col}"
             r = requests.get(
                 f"{SUPABASE_URL}/rest/v1/{ctx_table}",
                 headers=H_READ,
                 params={"game_date": f"eq.{gd}",
                         "primary_play": "not.is.null",
-                        "select": "game_id,primary_play,home_team,away_team"},
+                        "select": select},
                 timeout=15,
             )
             rows = r.json() if r.status_code == 200 else []
         except Exception as e:
             print(f"  ⚠ {sport} primary_play load failed: {e}")
             continue
+        skipped_past = 0
         for row in rows:
+            # 2026-09-10 KICKOFF FILTER — skip games already started/played
+            kickoff_str = row.get('kickoff_utc') or row.get('commence_time')
+            if kickoff_str:
+                try:
+                    ko = _dt.fromisoformat(str(kickoff_str).replace('Z','+00:00'))
+                    if ko.tzinfo is None: ko = ko.replace(tzinfo=_tz.utc)
+                    # Grace: 15-min slack for late lock windows
+                    from datetime import timedelta as _td
+                    if ko < now_utc - _td(minutes=15):
+                        skipped_past += 1
+                        continue
+                except Exception: pass  # bad timestamp — allow through
             pp = row.get('primary_play') or {}
             if isinstance(pp, str):
                 try: pp = json.loads(pp)
@@ -139,6 +166,8 @@ def _load_primary_play_candidates(gd: str, sports: list) -> list:
                 'generated_at': None,
                 '_source': 'primary_play',
             })
+        if skipped_past:
+            print(f"  ⏭  {sport} primary_play: skipped {skipped_past} games with kickoff in past")
     return out
 
 
@@ -149,7 +178,28 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
     higher conviction floor (default 80) to be POTD-eligible. Same LR gate
     later — props without _lr_ml_shadow pass through, but the refit_conviction
     field acts as a proxy quality check.
+
+    2026-09-10 KICKOFF FILTER: join with game_context to get kickoff time
+    per game, exclude props for games already played. Prevents NFL props
+    like "Arroyo receptions Under 1.5 conv 95" from being picked as POTD
+    the morning AFTER TNF because prop game_date=2026-09-10 (UTC).
     """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now_utc = _dt.now(_tz.utc)
+
+    # Preload kickoff times for today's games across all sports we care about.
+    kickoff_by_gid = {}
+    for sport, ctx_table in CONTEXT_TABLE_BY_SPORT.items():
+        if not ctx_table: continue
+        try:
+            kc = 'kickoff_utc' if sport in ('NFL', 'NCAAF') else 'commence_time'
+            rr = requests.get(f"{SUPABASE_URL}/rest/v1/{ctx_table}", headers=H_READ,
+                params={'game_date': f'eq.{gd}', 'select': f'game_id,{kc}'}, timeout=10)
+            for row in (rr.json() if rr.status_code == 200 else []):
+                if isinstance(row, dict) and row.get('game_id'):
+                    kickoff_by_gid[row['game_id']] = row.get('kickoff_utc') or row.get('commence_time')
+        except Exception: continue
+
     out = []
     for sport, tbl in PROP_TABLE_BY_SPORT.items():
         try:
@@ -168,7 +218,18 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
         except Exception as e:
             print(f"  ⚠ {sport} prop candidates load failed: {e}")
             continue
+        skipped_past = 0
         for row in rows:
+            # 2026-09-10 KICKOFF FILTER — same as primary_play loader
+            kickoff_str = kickoff_by_gid.get(row.get('game_id'))
+            if kickoff_str:
+                try:
+                    ko = _dt.fromisoformat(str(kickoff_str).replace('Z','+00:00'))
+                    if ko.tzinfo is None: ko = ko.replace(tzinfo=_tz.utc)
+                    if ko < now_utc - _td(minutes=15):
+                        skipped_past += 1
+                        continue
+                except Exception: pass
             conv = int(row.get('conviction') or 0)
             refit = row.get('refit_conviction')
             # Prefer refit when present — it's the calibrated probability
@@ -196,6 +257,8 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
                 },
                 '_source': 'top_prop',
             })
+        if skipped_past:
+            print(f"  ⏭  {sport} top_prop: skipped {skipped_past} props for games already played")
     return out
 
 
