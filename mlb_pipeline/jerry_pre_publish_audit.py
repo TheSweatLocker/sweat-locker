@@ -850,14 +850,48 @@ def auto_repair(sport: str, game_date: str) -> dict:
             try:
                 l = float(line); s = float(sim)
             except (TypeError, ValueError): continue
-            # Only flag/flip when gap is meaningful (>= 0.5 runs)
+            # 2026-09-10 THRESHOLD RAISE + PROSE PRESERVATION.
+            # Prior: gap >= 0.5 runs triggered a full prose rewrite. Result
+            # 9/10: all 5 MLB games hit the flip, entire card read "we can't
+            # defend either side" cardboard prose. 0.5 runs is well within
+            # sim noise on a 4-8 run scale — model output naturally deviates
+            # from published lines that much every day.
+            # New rule:
+            #   gap 0.5-1.4  → soft caution (keep prose, no side change)
+            #   gap 1.5-2.9  → downgrade conviction, keep prose, add caution tag
+            #   gap ≥ 3.0    → realign / force PASS as before (real disagreement)
+            gap = s - l
+            abs_gap = abs(gap)
+            if abs_gap < 1.5:
+                continue  # noise band — leave the read alone
+            severity = 'downgrade' if abs_gap < 3.0 else 'flip'
             contradicts = False
             new_side = None
-            if side == 'UNDER' and s > l + 0.5:
+            if side == 'UNDER' and s > l + 1.5:
                 contradicts = True; new_side = 'OVER'
-            elif side == 'OVER' and s < l - 0.5:
+            elif side == 'OVER' and s < l - 1.5:
                 contradicts = True; new_side = 'UNDER'
             if not contradicts: continue
+            # For soft-severity (1.5-2.9), do NOT overwrite prose — cap
+            # conviction + add a caution note to audit_notes. The user's
+            # original analytical read stays visible.
+            if severity == 'downgrade':
+                _cap = 55
+                _orig_conv = int(r.get('conviction') or 0)
+                if _orig_conv <= _cap:
+                    continue  # already low; leave alone
+                _audit = (f'[Auto-sim-caution SOFT: pick {side} {l} vs sim {s:.1f} '
+                          f'(gap {gap:+.1f}). Conviction capped {_orig_conv}→{_cap}. '
+                          f'Prose preserved.')
+                pr = requests.patch(
+                    f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
+                    headers=H_WRITE,
+                    json={'conviction': _cap, 'audit_notes': _audit[:1500]},
+                    timeout=10)
+                if pr.status_code in (200, 204):
+                    repairs.setdefault('F_soft_conviction_cap', 0)
+                    repairs['F_soft_conviction_cap'] += 1
+                continue
             # 2026-08-12: force to 'pass' market (skip game) rather than flip
             # side. Flipping caused downstream sharp-fade discipline violations
             # (e.g. KC/LAD UNDER→OVER triggered sharp-fade critical). If Jerry's
@@ -880,7 +914,13 @@ def auto_repair(sport: str, game_date: str) -> dict:
             pp_tier = pp.get('tier') or ''
             pp_label = pp.get('label') or ''
             pp_sub = pp.get('sub') or ''
-            if pp_type in ('ml', 'rl') and pp_tier in ('PRIME', 'STRONG') and pp_label:
+            # 2026-09-10 widened realigner: any valid non-total primary_play
+            # is preferable to a PASS + templated prose. Prior gate required
+            # PRIME/STRONG which meant COVERAGE/LEAN plays fell through to
+            # the "sit this out" cardboard even though they had legit ctx-
+            # driven picks. Include LEAN and COVERAGE — the tier cap already
+            # limits how loud the pick reads on the card.
+            if pp_type in ('ml', 'rl') and pp_tier in ('PRIME', 'STRONG', 'LEAN', 'COVERAGE') and pp_label:
                 # Realign — the primary_play is the real published pick.
                 # 2026-09-07: prior realigner wrote a 195-char stub with an
                 # internal audit parenthetical ("Prior totals-market read was
@@ -942,37 +982,30 @@ def auto_repair(sport: str, game_date: str) -> dict:
                     repairs['F_realigned_to_primary_play'] += 1
                 continue
 
-            # primary_play absent or also a total — fall through to old "PASS" path.
-            # 2026-09-07: was dumping raw [Auto-sim-repair] audit text into
-            # user-visible long_read. Moved audit trail to audit_notes column
-            # (dedicated) and composed a real explanatory long_read so users
-            # see clean prose, not internal diagnostics.
-            user_short = (
-                f"Our model has this total closer to {s:.1f} runs while the "
-                f"take had it going {side.lower()} {l}. When our own numbers "
-                f"disagree with the read that much, no edge is defensible "
-                f"on either side — sitting this one out."
-            )
-            user_long = (
-                f"The published pick was {side} {l}, but our sim projects a "
-                f"total near {s:.1f} — a gap of {abs(gap):.1f} runs in the "
-                f"opposite direction. That's a big enough disagreement between "
-                f"the take and our own base numbers that we can't defend "
-                f"either side confidently.\n\n"
-                f"When the read and the sim contradict at this magnitude, the "
-                f"honest move is to sit this one out. We'd rather skip a game "
-                f"and preserve the process than force a pick against our own "
-                f"model. Look for cleaner alignment tomorrow."
-            )
+            # 2026-09-10 PROSE PRESERVATION.
+            # Prior "PASS" path REPLACED user-visible short_read + long_read
+            # with cardboard "sitting this out / we can't defend either side"
+            # template that killed trust the moment a user opened the app.
+            # New rule: never destroy the LLM's original prose. Cap conviction,
+            # append a small caution tag to short_read so the user sees the
+            # signal, stash the full audit note in audit_notes only.
+            # This path only fires now for genuine large disagreements
+            # (gap ≥ 3.0 runs — SOFT band caught earlier) so it's rare.
+            _orig_short = (r.get('short_read') or '').strip()
+            _caution_tag = f' · Model neutral (sim {s:.1f} vs line {l})'
+            # Avoid double-appending on re-runs
+            if _caution_tag.strip() not in _orig_short:
+                new_short = (_orig_short + _caution_tag)[:2000]
+            else:
+                new_short = _orig_short[:2000]
             audit_note = (
-                f'[Auto-sim-repair CONTRADICTS_SIM: pick {side} {l} vs '
-                f'sim {s:.1f} (gap {gap:+.1f}). Forced PASS — Jerry prose '
-                f'contradicts own pick, unsafe to publish either side.] '
-                f'Original take: ' + (r.get('short_read') or '')[:400]
+                f'[Auto-sim-caution HARD: pick {side} {l} vs sim {s:.1f} '
+                f'(gap {gap:+.1f}). Prose preserved, conviction capped to 45, '
+                f'call_market unchanged. LLM read stays visible to users; '
+                f'audit trail lives here.]'
             )
-            payload = {'call_market': 'pass', 'conviction': 40,
-                       'short_read': user_short[:2000],
-                       'long_read': user_long[:2000],
+            payload = {'conviction': 45,
+                       'short_read': new_short,
                        'audit_notes': audit_note[:1500]}
             pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{r["id"]}',
                                 headers=H_WRITE, json=payload, timeout=10)
