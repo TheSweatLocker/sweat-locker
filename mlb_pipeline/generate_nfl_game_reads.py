@@ -652,10 +652,70 @@ def parse_nfl_synthesis(raw: str) -> dict:
     }
 
 
+_NFL_VALID_MARKETS = {'ml', 'rl', 'spread', 'total'}
+
+
+def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
+    """Force NFL jerry_read.call_* to match primary_play at write time.
+
+    2026-09-10 PERMANENT FIX for the chronic pick-vs-narrative mismatch bug.
+    User pain (repeated across weeks): BAL@IND primary_play=BAL ML but
+    Jerry narrative called OVER; BUF@HOU primary_play=BUF ML but Jerry
+    called UNDER. Same class of bug MLB had in Aug — MLB fixed with
+    defer_call_to_ensemble (generate_jerry_synthesis.py:609). NFL never
+    got the same treatment so every soft-signal game shipped two
+    different picks on the same card. This function ports the pattern.
+
+    Rules:
+    - Ensemble primary_play is the SOURCE OF TRUTH for the pick.
+    - LLM's prose (short_read/long_read/conviction) is preserved as-is.
+    - Only call_market/call_side/call_line/call_text are overwritten so
+      the badge on the game card and the pick chip in the narrative
+      always show the same thing.
+    - When ensemble tier=COVERAGE/PASS/SKIP, force call_market='pass' +
+      rewrite short_read to explain the pass ("Engine passed — no
+      publishable edge") so we never surface a soft pick as a hero play.
+    """
+    pp = struct.get('primary_play') if isinstance(struct, dict) else None
+    if not isinstance(pp, dict): return parsed
+    market = str(pp.get('type') or '').lower()
+    side = pp.get('side')
+    label = pp.get('label')
+    conviction = pp.get('conviction')
+    line = pp.get('line')
+    tier = str(pp.get('tier') or '').upper()
+    # Engine PASS path — LLM prose can stay, but badge shows PASS + engine reason
+    if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in _NFL_VALID_MARKETS or not side or not label:
+        engine_sub = str(pp.get('sub') or '').strip()
+        new_short = (f'Engine passed — no publishable edge on this game. '
+                     f'{engine_sub}' if engine_sub else 'Engine passed — no publishable edge on this game.')
+        parsed['call_market'] = 'pass'
+        parsed['call_side'] = None
+        parsed['call_line'] = None
+        parsed['call_text'] = 'Pass'
+        parsed['conviction'] = 0
+        # Preserve original short_read if it's genuinely analytical (long enough),
+        # only replace when it's empty/short
+        orig_short = (parsed.get('short_read') or '').strip()
+        if len(orig_short) < 60:
+            parsed['short_read'] = new_short[:2000]
+        return parsed
+    # Real pick — force the badge fields to match ensemble
+    parsed['call_market'] = market
+    parsed['call_side'] = str(side).upper()
+    parsed['call_line'] = line
+    parsed['call_text'] = label
+    if isinstance(conviction, (int, float)):
+        parsed['conviction'] = max(0, min(100, int(conviction)))
+    return parsed
+
+
 def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     """Write structured NFL Jerry read to jerry_reads table (2026-08-06 Phase 2).
     Uses (sport, game_id, game_date) unique key. This is what the sweat card
     queries for game-side picks — parity with MLB path."""
+    # 2026-09-10: enforce ensemble alignment BEFORE writing so badge + prose agree.
+    parsed = defer_call_to_ensemble_nfl(parsed, struct)
     game_id = game.get('id')  # Odds API game id
     # commence_time to game_date ET
     ct = game.get('commence_time', '')[:10] or today_et()

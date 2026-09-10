@@ -121,6 +121,83 @@ def parse_synthesis(raw: str) -> dict:
     }
 
 
+_VALID_MARKETS_BY_SPORT = {
+    'MLB':   {'ml', 'rl', 'total', 'nrfi', 'yrfi'},
+    'NFL':   {'ml', 'rl', 'spread', 'total'},
+    'NCAAF': {'ml', 'rl', 'spread', 'total'},
+    'NBA':   {'ml', 'rl', 'spread', 'total'},
+    'NCAAB': {'ml', 'rl', 'spread', 'total'},
+    'NHL':   {'ml', 'rl', 'puckline', 'total'},
+    'UFC':   {'ml', 'fight'},
+}
+
+
+def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> dict:
+    """Force parsed jerry_read call_* fields to match ensemble primary_play.
+
+    2026-09-10 PERMANENT CROSS-SPORT FIX.
+
+    Chronic bug across MLB / NFL / NCAAF (user has flagged repeatedly):
+    ensemble picks one thing, LLM narrative writes about another, both
+    ship on the same card. Users see BUF ML badge + "UNDER is the edge"
+    prose. Kills trust.
+
+    Rule: ensemble.primary_play is the single source of truth for the PICK
+    (call_market / call_side / call_line / call_text / conviction). The
+    LLM's prose (short_read, long_read) is preserved as-is — it's the
+    ANALYSIS layer, not the pick layer. This function overwrites the
+    call_* fields at write time.
+
+    MLB has had this since 2026-08-22 (generate_jerry_synthesis.py:609
+    defer_call_to_ensemble). This function ports the pattern to every
+    sport using the shared dual_write path.
+
+    Behavior:
+      - ensemble tier PRIME/STRONG/LEAN + valid market/side/label → align
+      - ensemble tier COVERAGE/PASS/SKIP → force call_market='pass',
+        preserve original LLM prose (long_read + short_read) if analytical
+      - primary_play absent or malformed → leave parsed as-is (fall back
+        to LLM's opinion rather than nulling the pick entirely)
+    """
+    if not isinstance(struct, dict): return parsed
+    pp = struct.get('primary_play')
+    if not isinstance(pp, dict): return parsed
+    market = str(pp.get('type') or '').lower()
+    side = pp.get('side')
+    label = pp.get('label')
+    conviction = pp.get('conviction')
+    line = pp.get('line')
+    tier = str(pp.get('tier') or '').upper()
+    valid_markets = _VALID_MARKETS_BY_SPORT.get(sport.upper(), set())
+    # Soft-tier / no-pick path → force PASS on the badge, preserve prose
+    if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
+        parsed['call_market'] = 'pass'
+        parsed['call_side'] = None
+        parsed['call_line'] = None
+        parsed['call_text'] = 'Pass'
+        parsed['conviction'] = 0
+        # Prose stays — the LLM's analytical read is still valuable to the
+        # user even when we're not publishing a pick. This is different
+        # from the audit path that used to overwrite prose (fixed
+        # 2026-09-10 in jerry_pre_publish_audit.py). Belt-and-suspenders:
+        # only rewrite short_read if it's suspiciously short.
+        orig_short = (parsed.get('short_read') or '').strip()
+        if len(orig_short) < 60:
+            engine_sub = str(pp.get('sub') or '').strip()
+            new_short = (f'Engine passed — no publishable edge on this game.'
+                         + (f' {engine_sub}' if engine_sub else ''))
+            parsed['short_read'] = new_short[:2000]
+        return parsed
+    # Real pick — align badge fields to ensemble
+    parsed['call_market'] = market
+    parsed['call_side'] = str(side).upper()
+    parsed['call_line'] = line
+    parsed['call_text'] = label   # human-readable e.g. "PHI +5.5"
+    if isinstance(conviction, (int, float)):
+        parsed['conviction'] = max(0, min(100, int(conviction)))
+    return parsed
+
+
 def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
                       struct: dict, parsed: dict, narrative: str,
                       prompt_version: str) -> bool:
@@ -128,9 +205,15 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
 
     Non-fatal — prints a warning on HTTP error, returns False. Skips
     silently when Supabase env is missing (unit-test friendly).
+
+    2026-09-10: enforces ensemble alignment on every write. See
+    enforce_primary_play_alignment() docstring above.
     """
     if not _SB_WRITE or not SUPABASE_URL:
         return False
+    # ─── ENSEMBLE ALIGNMENT ENFORCER ───────────────────────────────
+    # Runs BEFORE the truncation guard so the guard sees final prose.
+    parsed = enforce_primary_play_alignment(sport, parsed, struct)
     # 2026-09-05 short_read truncation guard. LLM sometimes emits a
     # fragment like "UCLA's SP+ sits at 5.4 vs." (26 chars, cut on
     # "vs." period). If short is under 100 chars, derive from the
