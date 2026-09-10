@@ -375,21 +375,31 @@ def _fetch_all(today: str) -> dict:
     for sport, tbl in [('nfl','nfl_game_context'), ('ncaaf','ncaaf_game_context'),
                        ('ncaab','ncaab_game_context'), ('nba','nba_game_context'),
                        ('nhl','nhl_game_context')]:
-        # 2026-09-08 SCHEMA DISPATCH: NFL/NCAAF use close_home_ml;
-        # NHL/NBA/NCAAB use home_ml_close (same as MLB). Prior state:
-        # SELECTing home_ml_odds on NHL/NBA/NCAAB 42703-ed every call.
-        # 2026-09-10: add kickoff_utc for football sports so we can filter
-        # already-played games post-fetch. Kills the NE @ SEA stale-card bug.
+        # 2026-09-08 SCHEMA DISPATCH — per-sport column names differ:
+        #   NFL/NCAAF: close_home_ml + kickoff_utc
+        #   NCAAB:     close_home_ml (no kickoff_utc column)
+        #   NBA/NHL:   home_ml_close (no kickoff_utc column)
+        # 2026-09-10a added kickoff_utc for football; landed 42703 errors
+        # on NBA/NHL/NCAAB which don't have the column. Fix: dispatch per
+        # sport, only include kickoff_utc for football (they're the only
+        # ones with the "already played" stale-card bug). Basketball/hockey
+        # tables also lack kickoff_utc — skip the future-only filter there.
         if sport in ('nfl', 'ncaaf'):
             cols = ('game_id,home_team,away_team,primary_play,'
                     'close_home_ml,close_away_ml,kickoff_utc')
-        else:
+        elif sport == 'ncaab':
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'home_ml_close,away_ml_close,kickoff_utc')
+                    'close_home_ml,close_away_ml')
+        else:  # nba, nhl
+            cols = ('game_id,home_team,away_team,primary_play,'
+                    'home_ml_close,away_ml_close')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
-        # Apply future-only filter — same for all football/basketball/hockey
-        out[f'{sport}_ctx'] = _future_only(out[f'{sport}_ctx'], 'kickoff_utc')
+        # Future-only filter only applies to football (only sports that ship
+        # a kickoff_utc column — the NE@SEA stale-card bug was a football
+        # cross-day-UTC issue that doesn't reproduce for NBA/NHL/NCAAB).
+        if sport in ('nfl', 'ncaaf'):
+            out[f'{sport}_ctx'] = _future_only(out[f'{sport}_ctx'], 'kickoff_utc')
     out['ufc_reads'] = _get(f'{SB}/rest/v1/jerry_reads',
                              params={'select': 'game_id,call_side,conviction,input_snapshot',
                                      'sport': 'eq.UFC',

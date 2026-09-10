@@ -12875,32 +12875,14 @@ setJerryHistory(prev => {
           </View>
         )}
 
-        {/* Audit roll-up — most-bettable cohorts */}
-        {sweatCard.audit_roll_up && Object.keys(sweatCard.audit_roll_up).length > 0 && (
-          <View style={{backgroundColor:THEME.win + '0F',borderRadius:10,padding:10,marginBottom:10,borderLeftWidth:3,borderLeftColor:THEME.win}}>
-            <Text style={{color:THEME.win,fontWeight:'800',fontSize:11,marginBottom:6}}>📊 Live Audit (rolling 30D)</Text>
-            {Object.entries(sweatCard.audit_roll_up).slice(0,5).map(([tier, windows]:[string, any], i:number) => {
-              const w = windows['30d'] || windows['std'] || windows['7d'];
-              if (!w || !w.total) return null;
-              const rate = Math.round(w.hit_rate * 100);
-              // 2026-05-24: tier labels were title-casing everything → "Yrfi Lean Le40".
-              // Now uses prettyCohort() which knows our domain acronyms (YRFI, NRFI,
-              // ERA, ML, etc) and uses '≤' for "le" tokens. Mirrors the
-              // cohort_display_config seed labels — eventually we'll fetch from the
-              // table for true backend-driven labels here too, but this string
-              // helper covers the audit_roll_up surface cleanly for now.
-              const tierLabel = prettyCohort(tier);
-              return (
-                <View key={i} style={{flexDirection:'row',justifyContent:'space-between',paddingVertical:3}}>
-                  <Text style={{color:THEME.textDim,fontSize:11,flex:1}}>{tierLabel}</Text>
-                  <Text style={{color:rate >= 60 ? THEME.win : rate >= 50 ? '#fff' : THEME.textMuted,fontSize:11,fontWeight:'700'}}>
-                    {w.hits}-{w.total - w.hits} ({rate}% on {w.total})
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
+        {/* 2026-09-10: killed the "Live Audit (rolling 30D)" section. Was
+            surfacing 4 MLB-only internal cohort buckets (yrfi_lean_le40,
+            confluence_prime_ge4, autofade_dog_high_conv, nrfi_prime_90_94)
+            with hit rates ranging 50-66% — labels were opaque jargon after
+            prettyCohort() and the section was MLB-only (would look broken
+            when MLB goes offseason). Redundant with the RECAP STRIP up top
+            (per-sport 30D W-L) + the top_8_summary yesterday recap. Removed
+            per user directive — cleaner surface, no info loss. */}
 
         {/* Upcoming events — UFC card + tomorrow MLB preview */}
         {sweatCard.upcoming_events?.length > 0 && (

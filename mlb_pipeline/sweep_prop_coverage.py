@@ -487,7 +487,11 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     'book_over_odds': entry.get('over_odds'),
                     'book_under_odds': entry.get('under_odds'),
                     'book_source': entry['book'],
-                    'signals': signals,   # None for batter stubs
+                    # 2026-09-10: coerce None → {} so the write doesn't 23502 on
+                    # the signals NOT NULL constraint. Migration 20260909d set
+                    # DEFAULT '{}'::jsonb but PostgREST sending explicit null
+                    # bypasses the default. Batter stubs have no signals data.
+                    'signals': signals if signals else {},
                     'tier': 'COVERAGE',
                     'conviction': 0,
                     'lineup_state': 'coverage_stub',
