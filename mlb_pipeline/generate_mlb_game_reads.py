@@ -1074,6 +1074,51 @@ def build_struct(g, props, potd):
                     f"of {abs(_delta):.2f} runs"
                 )
         except (TypeError, ValueError): pass
+
+    # 2026-09-10 MC COUNTERSIGNAL: HOU@PHI 9/10 exposed that canonical
+    # picks Jerry pred/V4/V3 but IGNORES the Monte Carlo simulation.
+    # Jerry pred=9.86, V3=9.5 → both said OVER. MC mean=7.71 with
+    # p_under=63% → UNDER strongly. Narrative wrote "The Play: OVER is
+    # sharpest angle" while MC said UNDER. When they disagree > 1 run,
+    # flag it so the LLM presents both sides honestly instead of parroting
+    # the canonical.
+    try:
+        _mc = g.get('mc_probabilities') or {}
+        if isinstance(_mc, dict):
+            _mc_mean = _mc.get('mc_mean_total')
+            _mc_p_over = _mc.get('mc_p_over')
+            _mc_p_under = _mc.get('mc_p_under')
+            if _mc_mean is not None:
+                _mc_mean_f = float(_mc_mean)
+                _po = float(_mc_p_over) if _mc_p_over is not None else None
+                _pu = float(_mc_p_under) if _mc_p_under is not None else None
+                # Always record MC verdict
+                _mc_verdict = 'OVER' if (_po is not None and _po > 0.55) \
+                          else 'UNDER' if (_pu is not None and _pu > 0.55) else 'neutral'
+                facts['mc_total_verdict'] = (
+                    f"MC sim mean={_mc_mean_f:.2f}, "
+                    f"p_over={_po:.2f} / p_under={_pu:.2f} → {_mc_verdict}"
+                    if _po is not None and _pu is not None
+                    else f"MC sim mean={_mc_mean_f:.2f}"
+                )
+                # HARD FLAG when MC disagrees with canonical direction
+                # by > 1 run AND MC probability > 60% on opposite side
+                if _canonical_t is not None and close_t is not None:
+                    _canonical_dir = 'OVER' if float(_canonical_t) > float(close_t) else 'UNDER'
+                    _mc_dir_strong = None
+                    if _po is not None and _po > 0.60: _mc_dir_strong = 'OVER'
+                    elif _pu is not None and _pu > 0.60: _mc_dir_strong = 'UNDER'
+                    if _mc_dir_strong and _mc_dir_strong != _canonical_dir:
+                        facts['mc_vs_canonical_conflict'] = (
+                            f"⚠ MC-vs-canonical CONFLICT: canonical ({_canonical_src}) says "
+                            f"{_canonical_dir} at {float(_canonical_t):.2f}, but MC sim says "
+                            f"{_mc_dir_strong} at mean {_mc_mean_f:.2f} "
+                            f"(p_{_mc_dir_strong.lower()}={_po if _mc_dir_strong=='OVER' else _pu:.2f}). "
+                            f"Do NOT recommend {_canonical_dir} as 'the play' — present the split "
+                            f"honestly or lean {_mc_dir_strong} (MC is the raw sim, more reliable "
+                            f"than the blended canonical when they disagree)."
+                        )
+    except (TypeError, ValueError): pass
     # Model spread direction — use jerry_pred_spread or projected_spread
     _model_spr = _f(g.get('jerry_pred_spread')) or _f(g.get('projected_spread')) or model_spr
     if _model_spr is not None:
