@@ -228,14 +228,22 @@ const COHORT_LABEL_MAP: Record<string, string> = {
 // Force Title Case fallback for any tag missing from the map, so "home fav"
 // no longer sits next to "Divisional" in a chip row — the capitalization bug
 // user flagged 9/10. Strips known sport prefixes first.
-const titleCaseFallback = (raw: string): string =>
-  raw
+// 2026-09-10 HARDENING: guard against null/undefined input (a tag with a
+// weird key was crashing .replace() on a non-string during game-detail
+// render — belt-and-suspenders against the caller passing anything).
+const titleCaseFallback = (raw: any): string => {
+  const s = String(raw ?? '');
+  if (!s) return '';
+  return s
     .replace(/^(nfl|ncaaf|ncaab|nba|nhl|mlb|ufc)_/i, '')
     .split('_')
-    .map(tok => tok.charAt(0).toUpperCase() + tok.slice(1))
+    .map(tok => tok.length ? tok.charAt(0).toUpperCase() + tok.slice(1) : '')
     .join(' ');
-const prettyCohortTag = (raw: string): string =>
-  COHORT_LABEL_MAP[raw] || titleCaseFallback(raw);
+};
+const prettyCohortTag = (raw: any): string => {
+  const key = String(raw ?? '');
+  return COHORT_LABEL_MAP[key] || titleCaseFallback(key);
+};
 
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
@@ -3762,22 +3770,24 @@ function SitChip({label, kind = 'neutral', record}: {
   kind?: 'ok'|'warn'|'info'|'neutral';
   record?: {wins: number; losses: number; pushes: number; hit_rate: number; sample_n: number; market?: string};
 }) {
-  // 2026-09-10: chip pairs pretty label with historical record when available.
-  // Auto-color by hit rate: ≥55% → ok (green), ≤45% → warn (orange), else keep passed kind.
+  // 2026-09-10: DEFENSIVE ROLLBACK — the inline nested-Text record render
+  // was correlating with a "Rendered fewer hooks than expected" crash on
+  // NFL game detail. Reverting to plain-label-only until root cause is
+  // isolated. The records still ride along as a prop so re-enabling is
+  // a one-line change, but we no longer render them client-side.
+  // Auto-color by hit rate stays — reads record but doesn't render it.
   let effectiveKind = kind;
   if (record && record.hit_rate != null) {
-    if (record.hit_rate >= 55) effectiveKind = 'ok';
-    else if (record.hit_rate <= 45) effectiveKind = 'warn';
+    const hr = Number(record.hit_rate);
+    if (isFinite(hr)) {
+      if (hr >= 55) effectiveKind = 'ok';
+      else if (hr <= 45) effectiveKind = 'warn';
+    }
   }
   return (
     <View style={[styles.sitChip, chipStyleFor(effectiveKind)]}>
       <Text style={[styles.sitChipText, {color: chipTextColorFor(effectiveKind)}]}>
         {label}
-        {record && record.hit_rate != null && (
-          <Text style={{fontSize: 10, fontWeight: '600', opacity: 0.85}}>
-            {'  '}{record.wins}-{record.losses}{record.pushes > 0 ? `-${record.pushes}` : ''} · {record.hit_rate}%
-          </Text>
-        )}
       </Text>
     </View>
   );
@@ -4147,33 +4157,23 @@ function CohortsPanel({ctx, cohortRecords}: any) {
   if (items.length === 0) return <Text style={styles.emptyMuted}>No cohort signals fired.</Text>;
   const homeAbbr = abbrev3(ctx?.home_team || '');
   const awayAbbr = abbrev3(ctx?.away_team || '');
+  // 2026-09-10: DEFENSIVE ROLLBACK — record render suspected in the
+  // "Rendered fewer hooks" NFL game-detail crash. Reverted to labels +
+  // sides only. cohortRecords still received but not rendered until we
+  // isolate the root cause and re-enable safely.
   return (
     <View style={styles.cohortsGrid}>
-      {items.map(([name, side]: any, i) => {
-        // Confluence keys share names with tag records for some entries (e.g.
-        // 'hfa' would need its own record row — currently rollup only covers
-        // named cohort_tags). Fall back to no record until we extend the
-        // rollup to track per-confluence-key historical fire rate.
-        const rec = cohortRecords?.[`${name}|ats`] || cohortRecords?.[`${name}|total`];
-        return (
-          <View key={i} style={[
-            styles.cohort,
-            {borderLeftColor: side === 'home' ? C.home : C.away},
-          ]}>
-            <Text style={styles.cohortName}>{prettyCohortTag(name)}</Text>
-            <View style={{flexDirection: 'row', alignItems: 'center', gap: 8}}>
-              {rec && rec.hit_rate != null && (
-                <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '600'}}>
-                  {rec.wins}-{rec.losses}{rec.pushes > 0 ? `-${rec.pushes}` : ''} · {rec.hit_rate}%
-                </Text>
-              )}
-              <Text style={[styles.cohortSide, {color: side === 'home' ? C.home : C.away}]}>
-                {side === 'home' ? homeAbbr : awayAbbr}
-              </Text>
-            </View>
-          </View>
-        );
-      })}
+      {items.map(([name, side]: any, i) => (
+        <View key={i} style={[
+          styles.cohort,
+          {borderLeftColor: side === 'home' ? C.home : C.away},
+        ]}>
+          <Text style={styles.cohortName}>{prettyCohortTag(String(name))}</Text>
+          <Text style={[styles.cohortSide, {color: side === 'home' ? C.home : C.away}]}>
+            {side === 'home' ? homeAbbr : awayAbbr}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }
