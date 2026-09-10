@@ -525,7 +525,14 @@ def write_sweat_score(ctx, score, tier, breakdown=None):
     else:
         persisted_tier = computed_tier
 
-    payload = {'sweat_score': displayed_score, 'sweat_tier': persisted_tier}
+    # 2026-09-10: sweat_tier_current — raw tier BEFORE monotonic lock is
+    # applied. persisted_tier is the locked max; the "current" tier is what
+    # the score genuinely computes to right now. App can show either or
+    # both. Fixes HOU @ PHI 9/10 "STRONG chip on score 59" confusion —
+    # sweat_tier=STRONG (locked from earlier peak), sweat_tier_current=LIGHT_LEAN
+    # (score 59 → what it actually is now).
+    payload = {'sweat_score': displayed_score, 'sweat_tier': persisted_tier,
+               'sweat_tier_current': computed_tier}
     # Promote sweat_tier_max + stamp locked_at when this is the first time
     # today we've reached this tier (or a higher one).
     if new_rank > held_rank:

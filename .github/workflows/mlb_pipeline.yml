@@ -2185,6 +2185,11 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_sweat_card.py
+          # 2026-09-10: refresh audit_roll_up (cheap PATCH). Every cron
+          # run keeps home-page Live Audit numbers current. Snapshot was
+          # locked at sweat_card gen time (12:32 UTC) but calibration
+          # recomputes throughout the day. See refresh_audit_rollup.py.
+          python refresh_audit_rollup.py || echo "audit rollup refresh failed (non-fatal)"
 
       # Post-build refit re-hydration (2026-08-15 pm fix). Refit_conviction
       # gets partially wiped during downstream card-build steps (some prop
