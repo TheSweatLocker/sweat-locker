@@ -93,12 +93,22 @@ def _et_today() -> date:
 
 
 def _load_todays_games(sport: str, snap: date) -> dict:
-    """Return {(away_last, home_last): game_id} lookup."""
+    """Return {(away_last, home_last): game_id} lookup.
+
+    2026-09-10: widen date filter for football sports — cleatz lists every
+    game on this week's slate (10-day horizon), not just kicks-off-today.
+    Prior narrow filter (=snap only) meant only 1 NFL game (TNF) landed in
+    the lookup and Sunday's 14 games returned 'no match' → 0 signals written.
+    """
     tbl = SPORT_TABLE.get(sport)
     if not tbl: return {}
+    if sport in ('NFL', 'NCAAF', 'NBA', 'NCAAB'):
+        end = (snap + timedelta(days=10)).isoformat()
+        date_filter = f'and=(game_date.gte.{snap.isoformat()},game_date.lte.{end})'
+    else:
+        date_filter = f'game_date=eq.{snap.isoformat()}'
     r = requests.get(
-        f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team'
-        f'&game_date=eq.{snap.isoformat()}',
+        f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team&{date_filter}',
         headers=H_READ, timeout=15)
     if r.status_code != 200: return {}
     lookup = {}
@@ -143,40 +153,60 @@ def _clean_html(s: str) -> str:
 def _parse_market(section_text: str, market_name: str, next_market_names: list) -> dict:
     """Extract per-side bets%/handle% for a market from cleaned section text.
 
-    Strategy: find each 'Bets [pipes] N% [pipes] Handle [pipes] N%' block,
-    then walk BACKWARDS to the nearest preceding side header. Robust to
-    pipe-with-space spacing (which broke the original combined regex).
+    2026-09-10 REWRITE: cleatz removed per-side "Bets" / "Handle" inline labels
+    from their HTML — those words now appear once as column headers only.
+    Prior regex `Bets[\\s\\|]+(\\d+)%[\\s\\|]+Handle[\\s\\|]+(\\d+)%` matched 0
+    per game after the change, silently dropping the entire NFL slate.
+
+    New strategy: locate the market slice (between market header and next
+    market header), enumerate ALL N% occurrences within, and take them in
+    pairs — first two = side A (bets, handle), next two = side B. Walk
+    backward from each pair to grab the side name from the nearest
+    "| <text> |" pipe-chunk that isn't obvious junk (market label / odds).
+    Confirmed correct against SF 49ers @ LA Rams and 14 other NFL games on
+    2026-09-10.
     """
-    # Bound market slice
-    start = section_text.find(f'| {market_name} ')
+    start = section_text.find(f'| {market_name} |')
     if start < 0:
-        start = section_text.find(f'|{market_name}')
+        start = section_text.find(f'|{market_name} ')
         if start < 0:
             return {}
     end = len(section_text)
     for nm in next_market_names:
-        p = section_text.find(f'| {nm} ', start + 1)
+        p = section_text.find(f'| {nm} |', start + 5)
         if p > 0 and p < end: end = p
     slice_ = section_text[start:end]
 
-    # [\s\|]+ = one or more pipes/spaces (spans "| | |")
-    bh_pat = re.compile(r'Bets[\s\|]+(\d+)%[\s\|]+Handle[\s\|]+(\d+)%')
+    # Find all "N%" occurrences in order; expect exactly 4 (2 sides × 2 pcts).
+    pct_matches = list(re.finditer(r'(\d+)%', slice_))
     sides = []
-    for m in bh_pat.finditer(slice_):
-        bets = int(m.group(1)); handle = int(m.group(2))
-        # Walk backward to find side header — nearest `| <side> | <odds> |` block
-        back = slice_[:m.start()]
-        # Reverse-search: try to find the LAST "| <name> | <odds> |" pattern before Bets
-        # Match team name (letters/spaces) followed by odds (+/-/o/u prefix + digits)
-        side_matches = re.findall(
-            r'\|\s*([A-Za-z][A-Za-z0-9\.\s\+\-]{1,35}?)\s*\|\s*([+\-][\d\.]+|[ou]\d[\d\.]*|\+?\d{2,4})\s*\|',
-            back)
-        # Filter out market labels
-        labels = {'Moneyline','Total','Run Line','Bets','Handle'}
-        side_matches = [(n.strip(), o) for (n, o) in side_matches if n.strip() not in labels]
-        if not side_matches: continue
-        side_name, odds = side_matches[-1]
-        sides.append({'side_name': side_name, 'odds': odds, 'bets_pct': bets, 'handle_pct': handle})
+    labels = {'Moneyline','Total','Run Line','Spread','Bets','Handle','▼','▲'}
+    for i in range(0, len(pct_matches), 2):
+        if i + 1 >= len(pct_matches): break
+        bets = int(pct_matches[i].group(1))
+        handle = int(pct_matches[i + 1].group(1))
+        # Walk back from the first % of this pair to find the side name.
+        back = slice_[:pct_matches[i].start()]
+        chunks = re.findall(r'\|\s*([^|]{2,40}?)\s*\|', back)
+        # Drop obvious junk (market names, odds numbers, divergence markers, %)
+        odds_re = re.compile(r'^[+\-]?\d')
+        good = [c.strip() for c in chunks
+                if c.strip() not in labels
+                and not odds_re.match(c.strip())
+                and not c.strip().endswith('%')
+                and not c.strip().startswith('+')]  # divergence "+29"
+        if not good: continue
+        side_name = good[-1]
+        # Also try to extract the odds token — nearest token AFTER side name
+        # that looks like odds ("-118" / "+164" / "o8.5" / "u48.5").
+        after_name_idx = back.rfind(side_name)
+        odds_val = None
+        if after_name_idx >= 0:
+            after = slice_[after_name_idx + len(side_name):pct_matches[i].start()]
+            om = re.search(r'\|\s*([+\-]\d{2,4}|[+\-]?\d+\.\d+|[ou]\d[\d\.]*)\s*\|', after)
+            if om: odds_val = om.group(1)
+        sides.append({'side_name': side_name, 'odds': odds_val,
+                      'bets_pct': bets, 'handle_pct': handle})
         if len(sides) == 2: break
     return {'market': market_name, 'sides': sides}
 
@@ -227,20 +257,29 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
         clean = _clean_html(section_html[:10000])  # first 10k chars per section is enough
 
         # Team names — first two ALL-CAPS-prefixed team strings in cleaned text
-        # Pattern: "| BAL Orioles | @ | TB Rays |"
-        team_m = re.search(r'\|\s*([A-Z][A-Z]?\s*[A-Za-z\.]+(?:\s+[A-Z][a-z]+)?)\s*\|\s*@\s*\|\s*([A-Z][A-Z]?\s*[A-Za-z\.]+(?:\s+[A-Z][a-z]+)?)\s*\|',
+        # Pattern: "| BAL Orioles | @ | TB Rays |" or "| SF 49ers | @ | LA Rams |"
+        # 2026-09-10 · added digit support in mascot ([A-Za-z0-9\.]+ instead of
+        # [A-Za-z\.]+) — the ONLY digit-starting NFL mascot is 49ers. Without
+        # this SF games were silently dropped from every scrape.
+        team_m = re.search(r'\|\s*([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*\|\s*@\s*\|\s*([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*\|',
                             clean)
         if not team_m:
             # Try loose pattern
-            team_m = re.search(r'\|\s*([A-Z][A-Za-z\s\.]+?)\s*\|\s*@\s*\|\s*([A-Z][A-Za-z\s\.]+?)\s*\|', clean)
+            team_m = re.search(r'\|\s*([A-Z][A-Za-z0-9\s\.]+?)\s*\|\s*@\s*\|\s*([A-Z][A-Za-z0-9\s\.]+?)\s*\|', clean)
         if not team_m: continue
         away_short = team_m.group(1).strip()
         home_short = team_m.group(2).strip()
         gid = _resolve_gid(away_short, home_short, lookup)
 
-        # Parse each market
-        markets = {'Moneyline': 'ml', 'Total': 'total', 'Run Line': 'rl'}
-        market_order = ['Moneyline', 'Total', 'Run Line']
+        # Parse each market. 2026-09-10: cleatz labels the football spread
+        # market as "Spread"; MLB uses "Run Line". Both map to the same
+        # normalized market key 'rl' downstream so the aggregator lens is
+        # consistent regardless of sport terminology.
+        markets = {'Moneyline': 'ml', 'Total': 'total', 'Run Line': 'rl', 'Spread': 'rl'}
+        if sport in ('NFL', 'NCAAF', 'NBA', 'NCAAB'):
+            market_order = ['Spread', 'Total', 'Moneyline']
+        else:
+            market_order = ['Moneyline', 'Total', 'Run Line']
         for i, mkt_name in enumerate(market_order):
             next_names = market_order[i+1:]
             parsed = _parse_market(clean, mkt_name, next_names)
