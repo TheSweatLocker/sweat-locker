@@ -12234,7 +12234,14 @@ setJerryHistory(prev => {
   // card never goes dark even on no-strong-play days.
   const conf = (dailyBestBet?.confidence || 'standard').toLowerCase();
   const potdTier =
-    (conf === 'elite' || conf === 'high' || conf === 'solid' || conf === 'standard')
+    // 2026-09-10 BUG FIX: added 'prime' + 'strong' to HEADLINE whitelist.
+    // POTD server (jerry_anchor_potd.py) writes lower-case tier names from
+    // _conviction_tier(): 'prime' (80+), 'strong' (70+), 'solid' (60+), 'lean'
+    // (<60). Prior client whitelist only matched 'elite'/'high'/'solid'/'standard'
+    // so PRIME POTDs fell through to "BEST AVAILABLE · Below-conviction lean"
+    // subtitle — making the DAY'S HIGHEST-CONVICTION play look weak.
+    (conf === 'elite' || conf === 'high' || conf === 'solid' || conf === 'standard'
+      || conf === 'prime' || conf === 'strong')
       ? { name: 'HEADLINE',       badge: '🔒', color: HRB_COLOR,  bgColor: THEME.hrb + '26', subhead: null }
     : (conf === 'secondary')
       ? { name: 'SECONDARY',      badge: '🥈', color: THEME.accent,  bgColor: THEME.accent + '1A',  subhead: 'No headline conviction — best available secondary lean' }

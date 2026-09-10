@@ -171,31 +171,68 @@ def check_losing_streak(dry_run: bool = False) -> None:
 # ─── Auto template: monthly track record recap ──────────────────────
 
 def check_track_record_recap(dry_run: bool = False) -> None:
-    """First day of month → publish previous month's recap."""
+    """First day of month → publish previous month's recap — QUALITY ONLY.
+
+    2026-09-10 REWRITE per user feedback: original version showed aggregate
+    hit rates (all tiers pooled) hovering 51-53% — coin-flip range that
+    actively HURT credibility on the first thing users saw. Also duplicated
+    rows (multiple snapshot runs per date) making body ugly.
+
+    New rule: publish ONLY when we have a compelling PRIME-tier stat to lead
+    with (≥60% hit rate on n≥30 sample). If nothing clears the bar, no note
+    published. Better silence than mediocre-looking numbers.
+
+    Content shape:
+      - Feature 1-3 PRIME-tier cohorts with hit rate ≥ 60%
+      - Dedup by (sport, surface, tier)
+      - Human-readable title, no month name (avoids "August recap in September" bug)
+    """
     today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
     if today.day != 1: return
-    last_month_start = date(today.year - (1 if today.month == 1 else 0),
-                             12 if today.month == 1 else today.month - 1, 1)
-    # Sample a 30d snapshot as of the last day of the previous month
     prev_month_end = today - timedelta(days=1)
+
+    # Query PRIME-tier snapshots specifically — the good stuff
     r = requests.get(f'{SB}/rest/v1/hit_rate_snapshots', headers=H_READ,
         params={'snapshot_date': f'eq.{prev_month_end.isoformat()}',
                 'window_days': 'eq.30',
-                'tier': 'is.null',
-                'select': 'sport,surface,hit_rate,sample_n'}, timeout=15)
+                'tier': 'in.(PRIME,STRONG,prime,strong)',
+                'select': 'sport,surface,tier,hit_rate,sample_n'}, timeout=15)
     if r.status_code != 200 or not r.json(): return
-    lines = []
+
+    # Dedup by (sport, surface, tier) — take highest sample_n if duplicates
+    seen = {}
     for row in r.json():
-        if not (row.get('hit_rate') and row.get('sample_n', 0) >= 20):
-            continue
-        lines.append(f'{row["sport"]} {row["surface"]}: {row["hit_rate"]}% '
-                     f'(n={row["sample_n"]})')
-    if not lines: return
-    body = f'30-day hit rates as of {prev_month_end.strftime("%b %d")}:\n\n' + '\n'.join(lines)
-    body += '\n\nAggregate across published tiers. Track record view has the tier-level detail.'
+        key = (row.get('sport'), row.get('surface'), str(row.get('tier','')).upper())
+        n = row.get('sample_n', 0) or 0
+        if key not in seen or n > seen[key].get('sample_n', 0):
+            seen[key] = row
+
+    # Filter to cohorts worth surfacing: hit ≥60% AND n≥30
+    winners = [row for row in seen.values()
+               if (row.get('hit_rate') or 0) >= 60
+               and (row.get('sample_n') or 0) >= 30]
+    if not winners:
+        print('  ✓ track_record_recap: no cohorts cleared 60%/n30 bar — SILENT (better than mediocre)')
+        return
+
+    # Sort by hit rate desc, take top 3
+    winners.sort(key=lambda r: -(r.get('hit_rate') or 0))
+    top = winners[:3]
+
+    lines = []
+    for row in top:
+        sport = str(row.get('sport') or '').upper()
+        surface = str(row.get('surface') or '').replace('_', ' ')
+        tier = str(row.get('tier') or '').upper()
+        rate = row.get('hit_rate')
+        n = row.get('sample_n')
+        lines.append(f'🔥 {sport} {surface} {tier}: {rate}% (n={n})')
+
+    body = 'Last 30 days — our top-hitting cohorts:\n\n' + '\n'.join(lines)
+    body += '\n\nSee Track Record tab for the full breakdown.'
     publish_note(
         category='track_record_recap',
-        title=f'{last_month_start.strftime("%B")} recap',
+        title='30-Day Hot Cohorts',
         body=body, severity='info', ttl_days=14,
         dry_run=dry_run,
     )
