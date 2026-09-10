@@ -198,6 +198,45 @@ const abbrev3 = (team: string) => {
   return teamAbbrev(team) || team.split(' ').slice(-1)[0].slice(0, 3).toUpperCase();
 };
 
+// 2026-09-10: Cohort tag + confluence key → user-facing label. Mirrors the
+// seed rows in cohort_display_config (migration 20260910b) so the client
+// renders proper Title-Case labels immediately even before the fetch cache
+// lands. Backend remains authoritative — this map is the fallback; when we
+// wire fetchCohortLabels() we'll prefer the DB row and only fall back here.
+const COHORT_LABEL_MAP: Record<string, string> = {
+  // NFL cohort_tags (arrive with 'nfl_' prefix in ctx.cohort_tags)
+  'nfl_home_fav':        'Home Favorite',
+  'nfl_heavy_home_dog':  'Heavy Home Underdog',
+  'nfl_div_home_cover':  'Divisional Home Cover',
+  // NCAAF cohort_tags
+  'ncaaf_home_fav':        'Home Favorite',
+  'ncaaf_heavy_home_fav':  'Heavy Home Favorite',
+  'ncaaf_heavy_home_dog':  'Heavy Home Underdog',
+  'ncaaf_shootout':        'Projected Shootout',
+  'ncaaf_grinder':         'Projected Grinder',
+  // Confluence keys (bare — arrive in signal_confluence_breakdown JSONB)
+  'hfa':            'Home-Field Edge',
+  'cpoe':           'QB Accuracy (CPOE)',
+  'def_splash':     'Defensive Splash',
+  'off_epa':        'Offensive EPA',
+  'rush_epa':       'Rush EPA',
+  'sp_plus':        'SP+ Rating',
+  'def_epa':        'Defensive EPA',
+  'explosiveness':  'Explosiveness',
+  'success_rate':   'Success Rate',
+};
+// Force Title Case fallback for any tag missing from the map, so "home fav"
+// no longer sits next to "Divisional" in a chip row — the capitalization bug
+// user flagged 9/10. Strips known sport prefixes first.
+const titleCaseFallback = (raw: string): string =>
+  raw
+    .replace(/^(nfl|ncaaf|ncaab|nba|nhl|mlb|ufc)_/i, '')
+    .split('_')
+    .map(tok => tok.charAt(0).toUpperCase() + tok.slice(1))
+    .join(' ');
+const prettyCohortTag = (raw: string): string =>
+  COHORT_LABEL_MAP[raw] || titleCaseFallback(raw);
+
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
   game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
@@ -207,6 +246,11 @@ export default function GameDetailV2({
   const [fetchedExternals, setFetchedExternals] = useState<any[]>([]);
   const [fetchedProps, setFetchedProps] = useState<any[]>([]);
   const [sourceRecords, setSourceRecords] = useState<Record<string, any>>({});
+  // 2026-09-10 · cohort_tag_records lookup — per (tag, market) historical W-L
+  // populated by mlb_pipeline/build_cohort_tag_records.py, one fetch per game
+  // detail mount for the current sport (max ~10 rows). Chips display the ATS
+  // record for situational-side tags, total record for O/U-side tags.
+  const [cohortTagRecords, setCohortTagRecords] = useState<Record<string, any>>({});
 
   // 2026-09-08 server-controlled section toggles for the shared universal
   // sections. sport='ALL' at the DB level so a single row hides across
@@ -310,6 +354,27 @@ export default function GameDetailV2({
             for (const r of trackData) map[`${r.source}|${r.surface}`] = r;
             setSourceRecords(map);
           }
+        }
+      }
+
+      // 2026-09-10 · fetch cohort_tag_records for this sport (NFL/NCAAF only
+      // for now; MLB/NBA/etc. rollups follow). Empty result is fine — the
+      // chip renderer just skips the "· 45-40 (52.9%)" line and shows the
+      // pretty label alone. Kept cheap by filtering to the game's sport.
+      if (gamesSport === 'NFL' || gamesSport === 'NCAAF') {
+        const {data: recData, error: recErr} = await client
+          .from('cohort_tag_records')
+          .select('tag,market,wins,losses,pushes,hit_rate,sample_n')
+          .eq('sport', gamesSport)
+          .eq('season_scope', 'lifetime')
+          .eq('side', 'primary');
+        if (recErr && recErr.code !== 'PGRST205') {
+          console.warn('[GameDetailV2] cohort_tag_records fetch error:', recErr.message);
+        }
+        if (!cancelled && recData) {
+          const map: Record<string, any> = {};
+          for (const r of recData) map[`${r.tag}|${r.market}`] = r;
+          setCohortTagRecords(map);
         }
       }
 
@@ -533,7 +598,7 @@ export default function GameDetailV2({
             "COHORT SIGNALS · no data" on NHL/UFC/thin NCAAB cards. */}
         {safeJSON(ctx?.signal_confluence_breakdown) && (
           <Expander title="Cohort Signals" badge={cohortBadge(ctx)}>
-            <CohortsPanel ctx={ctx} />
+            <CohortsPanel ctx={ctx} cohortRecords={cohortTagRecords} />
           </Expander>
         )}
 
@@ -2535,7 +2600,7 @@ function SportSpecificSlot({ctx, gamesSport, game}: any) {
     return null;
   }
   if (gamesSport === 'NFL') {
-    return <NFLSlot ctx={ctx} game={game} />;
+    return <NFLSlot ctx={ctx} game={game} cohortRecords={cohortTagRecords} />;
   }
   if (gamesSport === 'NCAAF') {
     // 2026-08-24: NCAAF got its own slot. Previously reused NFLSlot which
@@ -3327,7 +3392,7 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
 // Phase 1 (2026-07-30) — renders what's available from nfl_game_context +
 // nfl_team_stats. Phase 2 adds QB starter card + injuries + weather when
 // those pipes ship.
-function NFLSlot({ctx, game}: any) {
+function NFLSlot({ctx, game, cohortRecords}: any) {
   const homeTeam = ctx?.home_team || game?.home_team;
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
@@ -3338,7 +3403,7 @@ function NFLSlot({ctx, game}: any) {
       <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLInjuriesCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       {/* TeamTendenciesCard removed 2026-09-01 — see NCAAF slot note. */}
-      <NFLSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NFLSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} cohortRecords={cohortRecords} />
     </>
   );
 }
@@ -3633,7 +3698,7 @@ function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
 // ─── NFL SITUATIONAL (chips row — divisional, rest gap, cohort tags) ────
 // Weather chips REMOVED here; the shared SportWeatherCard renders them
 // as a proper section higher up.
-function NFLSituationalCard({ctx, homeTeam, awayTeam}: any) {
+function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   const isEnabled = useSectionEnabled('NFL', 'game_detail', 'situational', true);
   const tags = ctx?.cohort_tags || [];
   const rest = {home: ctx?.home_rest, away: ctx?.away_rest};
@@ -3646,14 +3711,16 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam}: any) {
   return (
     <Section title="Situational">
       <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
-        {div && <SitChip label="Divisional" />}
-        {roof && <SitChip label={`Roof: ${roof}`} />}
+        {div && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
+        {roof && <SitChip label={`Roof: ${roof.charAt(0).toUpperCase() + roof.slice(1)}`} />}
         {restGap && (
-          <SitChip label={`Rest gap: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
+          <SitChip label={`Rest edge: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
         )}
-        {Array.isArray(tags) && tags.map((t: string, i: number) => (
-          <SitChip key={i} label={t.replace(/^nfl_/, '').replace(/_/g, ' ')} />
-        ))}
+        {Array.isArray(tags) && tags.map((t: string, i: number) => {
+          // Prefer the ATS record if present (most tags are ATS-side); else total.
+          const rec = cohortRecords?.[`${t}|ats`] || cohortRecords?.[`${t}|total`];
+          return <SitChip key={i} label={prettyCohortTag(t)} record={rec} />;
+        })}
       </View>
     </Section>
   );
@@ -3685,10 +3752,28 @@ function TeamStatRow({team, side, stats, defense}: any) {
   );
 }
 
-function SitChip({label, kind = 'neutral'}: {label: string; kind?: 'ok'|'warn'|'info'|'neutral'}) {
+function SitChip({label, kind = 'neutral', record}: {
+  label: string;
+  kind?: 'ok'|'warn'|'info'|'neutral';
+  record?: {wins: number; losses: number; pushes: number; hit_rate: number; sample_n: number; market?: string};
+}) {
+  // 2026-09-10: chip pairs pretty label with historical record when available.
+  // Auto-color by hit rate: ≥55% → ok (green), ≤45% → warn (orange), else keep passed kind.
+  let effectiveKind = kind;
+  if (record && record.hit_rate != null) {
+    if (record.hit_rate >= 55) effectiveKind = 'ok';
+    else if (record.hit_rate <= 45) effectiveKind = 'warn';
+  }
   return (
-    <View style={[styles.sitChip, chipStyleFor(kind)]}>
-      <Text style={[styles.sitChipText, {color: chipTextColorFor(kind)}]}>{label}</Text>
+    <View style={[styles.sitChip, chipStyleFor(effectiveKind)]}>
+      <Text style={[styles.sitChipText, {color: chipTextColorFor(effectiveKind)}]}>
+        {label}
+        {record && record.hit_rate != null && (
+          <Text style={{fontSize: 10, fontWeight: '600', opacity: 0.85}}>
+            {'  '}{record.wins}-{record.losses}{record.pushes > 0 ? `-${record.pushes}` : ''} · {record.hit_rate}%
+          </Text>
+        )}
+      </Text>
     </View>
   );
 }
@@ -4046,23 +4131,44 @@ function NCAABFormRestCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 // ─── COHORTS PANEL ──────────────────────────────────────────────────────
-function CohortsPanel({ctx}: any) {
+// 2026-09-10: swap raw snake_case names → prettyCohortTag() lookup + fall back
+// to Title Case; swap "HOME"/"AWAY" text → team abbrev (SEA / NE), which is
+// what the user actually recognizes. Signal name + team abbrev pair reads as
+// "Home-Field Edge → SEA" instead of "hfa → HOME". Records column will be
+// wired in when cohort_tag_records rollup ships (project_cohort_signal_ux_909).
+function CohortsPanel({ctx, cohortRecords}: any) {
   const cb = safeJSON(ctx?.signal_confluence_breakdown) || {};
   const items = Object.entries(cb).filter(([_, v]) => v === 'home' || v === 'away');
   if (items.length === 0) return <Text style={styles.emptyMuted}>No cohort signals fired.</Text>;
+  const homeAbbr = abbrev3(ctx?.home_team || '');
+  const awayAbbr = abbrev3(ctx?.away_team || '');
   return (
     <View style={styles.cohortsGrid}>
-      {items.map(([name, side]: any, i) => (
-        <View key={i} style={[
-          styles.cohort,
-          {borderLeftColor: side === 'home' ? C.home : C.away},
-        ]}>
-          <Text style={styles.cohortName}>{name}</Text>
-          <Text style={[styles.cohortSide, {color: side === 'home' ? C.home : C.away}]}>
-            {String(side).toUpperCase()}
-          </Text>
-        </View>
-      ))}
+      {items.map(([name, side]: any, i) => {
+        // Confluence keys share names with tag records for some entries (e.g.
+        // 'hfa' would need its own record row — currently rollup only covers
+        // named cohort_tags). Fall back to no record until we extend the
+        // rollup to track per-confluence-key historical fire rate.
+        const rec = cohortRecords?.[`${name}|ats`] || cohortRecords?.[`${name}|total`];
+        return (
+          <View key={i} style={[
+            styles.cohort,
+            {borderLeftColor: side === 'home' ? C.home : C.away},
+          ]}>
+            <Text style={styles.cohortName}>{prettyCohortTag(name)}</Text>
+            <View style={{flexDirection: 'row', alignItems: 'center', gap: 8}}>
+              {rec && rec.hit_rate != null && (
+                <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '600'}}>
+                  {rec.wins}-{rec.losses}{rec.pushes > 0 ? `-${rec.pushes}` : ''} · {rec.hit_rate}%
+                </Text>
+              )}
+              <Text style={[styles.cohortSide, {color: side === 'home' ? C.home : C.away}]}>
+                {side === 'home' ? homeAbbr : awayAbbr}
+              </Text>
+            </View>
+          </View>
+        );
+      })}
     </View>
   );
 }

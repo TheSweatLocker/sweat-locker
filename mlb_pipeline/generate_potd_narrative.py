@@ -138,15 +138,47 @@ def build_mlb_prompt(potd):
     # signals relevant to that market, add explicit rules about what
     # NOT to cite. Removes the temptation for Claude to grab off-market
     # numbers.
+    #
+    # 2026-09-10 PROP DETECTION FIX. Prior version had two holes:
+    #   (1) startswith('over'/'under') missed prop picks like "Jared Jones
+    #       Under 15.5 outs" — the pick starts with the player name, not
+    #       'over'/'under'. Detection fell through to market='ml' default.
+    #   (2) No prop-market branch. Prop picks were being fed ML prompt
+    #       (bullpen ERAs, LR win probability, wRC+) which had nothing to
+    #       do with a pitcher-outs or batter-hits prop. Result 2026-09-10:
+    #       Jared Jones Under 15.5 outs POTD shipped with narrative arguing
+    #       "LR heavily favors Pittsburgh at 85%, keeping Jones on the
+    #       mound well past 15 outs" — inverting the UNDER pick.
     lean_lower = lean.lower()
-    if ' ml' in lean_lower or 'moneyline' in lean_lower:
+    # Prop signals: pitcher props (outs, strikeouts, ks), batter props (hits,
+    # home_runs/hr, total_bases, rbis, runs), plus generic 'prop'/'player_'.
+    prop_markers = ('outs', 'strikeouts', 'ks_over', 'ks_under', 'total_bases',
+                    'hits ', ' hits(', 'home_runs', 'home run', 'hr over', 'hr under',
+                    'rbis', 'runs scored', 'runs_scored', 'player_', 'prop')
+    is_prop = any(m in lean_lower for m in prop_markers)
+    if is_prop:
+        market = 'prop'
+    elif ' ml' in lean_lower or 'moneyline' in lean_lower:
         market = 'ml'
-    elif lean_lower.startswith('over') or lean_lower.startswith('under'):
+    # Detect over/under ANYWHERE in the string, not just at start (was missing
+    # prop-style picks entirely — the `is_prop` branch catches them, but this
+    # keeps game-total picks correct even if phrasing shifts).
+    elif ' over ' in f' {lean_lower} ' or ' under ' in f' {lean_lower} ' or \
+         lean_lower.startswith('over') or lean_lower.startswith('under'):
         market = 'total'
     elif '+' in lean or '-' in lean.replace('- ', '').replace('--', ''):
         market = 'spread'  # e.g. "Astros +1.5"
     else:
         market = 'ml'  # default
+
+    # Prop direction sniff — extracted from leanDisplay so the prompt can
+    # explicitly tell Claude which SIDE the pick argues.
+    prop_direction = None
+    if market == 'prop':
+        if ' under ' in f' {lean_lower} ' or 'outs_under' in lean_lower or '_under' in lean_lower.replace('under_', ''):
+            prop_direction = 'UNDER'
+        elif ' over ' in f' {lean_lower} ' or 'outs_over' in lean_lower or '_over' in lean_lower.replace('over_', ''):
+            prop_direction = 'OVER'
 
     parts = [
         "You are Jerry, a sharp sports analyst for The Sweat Locker app.",
@@ -217,6 +249,52 @@ def build_mlb_prompt(potd):
             parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
         parts.append("- DO NOT cite spread_delta or ML edge — SPREAD IS IRRELEVANT for total picks.")
         parts.append("- Focus on: both pitchers' xERAs combined, park run factor, weather (wind out = OVER, in = UNDER).")
+    elif market == 'prop':
+        # Prop picks: player-specific, direction-locked. Team win probability
+        # and bullpen ERAs may INDIRECTLY matter (blowout = pitcher pulled
+        # early; game state = batter sits) but the narrative MUST argue the
+        # PROP DIRECTION, not team outcome. Give Claude an explicit direction
+        # anchor and forbid it from inverting.
+        parts.append("RELEVANT SIGNALS FOR THIS PLAYER PROP PICK:")
+        parts.append(f"- PICK DIRECTION: **{prop_direction or 'READ FROM LEAN STRING ABOVE'}**")
+        parts.append(f"- The pick argues the player will finish BELOW the line if UNDER, ABOVE if OVER.")
+        parts.append(f"- Your narrative MUST support the pick direction. If your reasoning ends up arguing the OTHER side, STOP — you have the direction wrong.")
+        # Pitcher-prop context (outs / strikeouts): pitcher's own xERA + opp
+        # offense wRC+ against tell the story. NOT team ML win prob.
+        if 'outs' in lean_lower or 'strikeout' in lean_lower or 'ks_' in lean_lower:
+            # Pitcher prop: figure out which starter is the subject
+            subject_pitcher = None
+            subject_side = None  # 'home' or 'away'
+            if h_p and h_p.lower() in lean_lower:
+                subject_pitcher, subject_side = h_p, 'home'
+            elif a_p and a_p.lower() in lean_lower:
+                subject_pitcher, subject_side = a_p, 'away'
+            if subject_pitcher:
+                opp_offense = away if subject_side == 'home' else home
+                own_team = home if subject_side == 'home' else away
+                opp_wrc = ctx.get(f'{("away" if subject_side=="home" else "home")}_wrc_plus')
+                own_xera = ctx.get(f'{subject_side}_sp_xera')
+                parts.append(f"- SUBJECT PITCHER: {subject_pitcher} ({own_team}) — his line is {lean}")
+                parts.append(f"- He is FACING the {opp_offense} lineup (wRC+ {opp_wrc}).")
+                if own_xera is not None:
+                    parts.append(f"- {subject_pitcher}'s season xERA: {own_xera} (lower = better; better xERA = more outs recorded per appearance in a normal game).")
+                if prop_direction == 'UNDER':
+                    parts.append(f"- UNDER outs argues: {subject_pitcher} does NOT go deep. Reasons: (a) shaky xERA + tough opposing offense drives up pitch count; (b) manager quick hook; (c) opposing offense high wRC+ shortens outings; (d) recent short outings trend.")
+                    parts.append(f"- DO NOT argue that {subject_pitcher}'s good stuff keeps him in the game — that is the OVER case, opposite the pick.")
+                elif prop_direction == 'OVER':
+                    parts.append(f"- OVER outs argues: {subject_pitcher} DOES go deep. Reasons: (a) elite xERA suppresses opposing wRC+; (b) manager will ride him with the game in hand; (c) low-wRC+ opposing offense shortens innings so pitch count stays low.")
+        # Batter-prop context (hits / HR / total bases): batter vs opposing SP
+        # xERA + own team wRC+ + opposing bullpen for late-game ABs.
+        else:
+            parts.append("- Batter prop: subject batter is named in the lean; opposing pitcher's xERA and bullpen ERA drive projected AB quality.")
+        if ctx.get("venue"):
+            parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
+        parts.append("- DO NOT cite team ML win probability, LR probability, spread_delta, or projected_total — the prop pays on the PLAYER'S line, not the team's outcome.")
+        parts.append("")
+        parts.append("HONESTY RULES (do not violate):")
+        parts.append(f"- The pick is {prop_direction or 'as stated above'}. Every sentence must argue that side or acknowledge honest counter-signal.")
+        parts.append("- ONLY cite specific numbers that appear in the RELEVANT SIGNALS block above. NEVER invent numbers.")
+        parts.append("- If a signal genuinely argues the OTHER side, name it honestly and cite the ACTUAL edge supporting the pick (e.g., 'Opposing wRC+ is average, but Jones's L3 starts averaged 4.2 IP — early hook trend').")
     else:  # spread / RL
         parts.append("RELEVANT SIGNALS FOR THIS RUN-LINE / SPREAD PICK:")
         if ctx.get("spread_delta") is not None:
