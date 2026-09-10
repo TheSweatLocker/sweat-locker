@@ -632,7 +632,12 @@ jobs:
         run: |
           cd mlb_pipeline
           python resolve_nfl_results.py || echo "resolver failed"
-          # 2026-08-23 season-ready: grade NFL props (was game-results-only)
+          # 2026-09-10: ESPN box-score fast grader FIRST — grades within
+          # minutes of game end. Fixes 5-day wait users saw on TNF props.
+          # Falls back to nflverse grader below for anything still ungraded.
+          python resolve_nfl_props_espn.py --lookback 3 || echo "ESPN prop grader failed (non-fatal)"
+          # 2026-08-23 season-ready: nflverse grader as backfill for props
+          # ESPN couldn't grade (bench players, missing stats). Runs Tue AM+.
           python resolve_nfl_props.py || echo "prop resolver failed (non-fatal)"
 
       # 2026-08-25: refresh home/road tendencies materialized view after
