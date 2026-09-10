@@ -465,8 +465,15 @@ def write_summary_to_ctx(sport: str, game_id: str, summary: dict, dry: bool) -> 
     if dry:
         print(f"    [DRY] would write splits_summary to {tbl} game_id={game_id[:8]}...")
         return False
-    r = requests.patch(f"{SB}/rest/v1/{tbl}?game_id=eq.{game_id}",
+    # 2026-09-10 URL-encoding fix: NCAAF game_ids like
+    # "ncaaf_20260911_Florida A&M_Miami" carry ampersands + spaces that
+    # get interpreted as query-param delimiters when embedded in the
+    # URL path. Result: PATCH silently no-oped (200 but 0 rows updated),
+    # every FCS-mascot game with & in the name had splits_summary=null.
+    # Fix: pass game_id via params so requests handles escaping.
+    r = requests.patch(f"{SB}/rest/v1/{tbl}",
                        headers=H_WRITE,
+                       params={"game_id": f"eq.{game_id}"},
                        json={"splits_summary": summary},
                        timeout=15)
     return r.status_code in (200, 204)

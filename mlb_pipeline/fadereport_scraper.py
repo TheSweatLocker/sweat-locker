@@ -96,11 +96,25 @@ def _load_todays_games(sport: str, snap: date) -> dict:
 
 
 ALIASES = {'blue': 'jays', 'red': 'sox', 'white': 'sox'}
+
+
+def _strip_parens(s: str) -> str:
+    """Remove trailing "(FL)", "(OH)" etc that fadereport appends but our
+    ncaaf_game_context typically doesn't carry. 2026-09-10: Miami-FAMU
+    was skipping matching because FR had "Miami (FL)" but we had "Miami".
+    """
+    return re.sub(r'\s*\([^)]*\)\s*$', '', s or '').strip()
+
+
 def _fuzzy_resolve(a: str, h: str, lookup: dict) -> Optional[str]:
     a = (a or '').lower(); h = (h or '').lower()
-    a_last = a.split()[-1] if a else ''
-    h_last = h.split()[-1] if h else ''
+    # 2026-09-10 also strip parenthetical qualifier: "miami (fl)" → "miami"
+    a_stripped = _strip_parens(a).lower()
+    h_stripped = _strip_parens(h).lower()
+    a_last = a_stripped.split()[-1] if a_stripped else ''
+    h_last = h_stripped.split()[-1] if h_stripped else ''
     if (a_last, h_last) in lookup: return lookup[(a_last, h_last)]
+    if (a_stripped, h_stripped) in lookup: return lookup[(a_stripped, h_stripped)]
     for (ak, hk), gid in lookup.items():
         if a_last and (a_last in ak.split() or ak.endswith(a_last)) and \
            h_last and (h_last in hk.split() or hk.endswith(h_last)):
@@ -163,7 +177,23 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
     print(f'  · {len(all_games)} game rows in RSC payload (all history)')
 
     snap_str = snap.isoformat()
-    today_games = [g for g in all_games if snap_str in (g.get('game_id') or '')]
+    # 2026-09-10 FIX: FR game_id embeds UTC date, but a game starting at
+    # 8pm ET on 9/10 = 12am UTC 9/11 → FR slug says 2026-09-11 while our
+    # ET-based snap says 2026-09-10. Was missing every night game (incl.
+    # Miami-FAMU Wed night). Fix: convert game_time_raw (ISO UTC) to ET
+    # date and match on that. Fallback to old slug-substring match when
+    # game_time_raw missing.
+    def _matches_snap(g: dict) -> bool:
+        raw = g.get('game_time_raw') or ''
+        if raw:
+            try:
+                dt_utc = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                et_date = (dt_utc - timedelta(hours=4)).date()
+                return et_date == snap
+            except (ValueError, TypeError):
+                pass
+        return snap_str in (g.get('game_id') or '')
+    today_games = [g for g in all_games if _matches_snap(g)]
     # Dedupe on (game_id) — same row can appear multiple times
     seen = set(); dedup = []
     for g in today_games:
