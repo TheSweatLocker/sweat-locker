@@ -460,6 +460,22 @@ jobs:
           cd mlb_pipeline
           python nfl_prop_signal_discipline.py --days 8 || echo "prop discipline non-fatal"
 
+      # 2026-09-10: NFL prop injury filter. Post-generation demotion pass —
+      # reads nfl_injuries + demotes tier/conviction for Out/Doubtful/
+      # Questionable players. Root cause was ctx.panel_injury_outs being an
+      # aggregate int, not a list, so per-player injury never reached the
+      # generator. Non-invasive fix: run this AFTER the generator to catch
+      # the injured skill-player props before they hit the app.
+      - name: NFL prop injury filter (demote Out/Doubtful/Questionable)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_prop_injury_filter.py --window 8 || echo "injury filter non-fatal"
+
       # 2026-08-17: NFL prop playbook shadow-mode pipeline.
       # Same pattern as MLB: backfill L10 lookback → run prop_ensemble_scorer.
       # NFL doesn't have apply_prop_refit yet (refit weights are MLB-only),

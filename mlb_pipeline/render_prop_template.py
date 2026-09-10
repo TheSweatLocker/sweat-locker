@@ -330,11 +330,30 @@ def _coverage_from_ctx(checklist: list, ctx: dict, prop_signals: dict, sources: 
         'opp_def_rating':     ['opp_def_rating'],
         'opp_rebound_rate':   ['opp_rebound_rate'],
         'opp_3p_defense':     ['opp_3p_defense'],
-        'opp_pass_def':       ['opp_pass_def'],
-        'opp_run_def':        ['opp_run_def'],
+        'opp_pass_def':       ['opp_pass_def',
+                               # 2026-09-10 NFL FIX — real column names on
+                               # nfl_game_context. Prior mapping only checked
+                               # 'opp_pass_def' which doesn't exist on NFL ctx,
+                               # so every NFL WR/QB prop showed SIGNAL COVERAGE
+                               # 0/N even though defense data was fully loaded.
+                               'home_def_pass_ypg', 'away_def_pass_ypg',
+                               'home_def_pass_epa_allowed', 'away_def_pass_epa_allowed'],
+        'opp_run_def':        ['opp_run_def',
+                               'home_def_rush_ypg', 'away_def_rush_ypg',
+                               'home_def_rush_epa_allowed', 'away_def_rush_epa_allowed'],
         'opp_goalie_sv':      ['opp_goalie_sv'],
         'opp_shots_per60':    ['opp_shots_per60'],
     }
+    # 2026-09-10 NFL FIX — pace/weather/game_script also missed on NFL ctx.
+    # Extend the same entries above so NFL-shaped context satisfies them.
+    ctx_check['pace'] = ctx_check['pace'] + ['home_pass_epa_pg', 'away_pass_epa_pg']
+    ctx_check['weather'] = ctx_check.get('weather', []) + ['temp', 'wind', 'roof']
+    ctx_check['game_script_pass'] = ctx_check.get('game_script_pass', []) + ['projected_spread', 'close_spread']
+    ctx_check['game_script_run']  = ctx_check.get('game_script_run', [])  + ['projected_spread', 'close_spread']
+    ctx_check['implied_high']     = ctx_check.get('implied_high', [])     + ['projected_total', 'close_total']
+    # target_share isn't on ctx per-player yet; treat presence of team pass
+    # volume as a proxy so the coverage pill isn't unfairly harsh on WRs.
+    ctx_check['target_share'] = ctx_check['target_share'] + ['home_pass_yds_pg', 'away_pass_yds_pg']
     # Legacy fuzzy match on signal keys — used when ctx not provided
     sig_check = {
         'opp_k_pct':          ['opp_k_rate', 'opp_k_pct', 'opp_hand_k', 'opp_k_heavy', 'opp_k_artist'],
