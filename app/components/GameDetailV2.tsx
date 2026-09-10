@@ -3529,11 +3529,25 @@ function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
   // feedback 9/8. Flipping enabled=false on the DB row hides this section
   // without an app rebuild. Default = true (backwards-compatible on first
   // v1.0.1 deploy; DB update is the way to actually hide it).
+  //
+  // 2026-09-10 CRASH FIX — this component was crashing every NFL game
+  // detail with "Rendered fewer hooks than expected." Root cause:
+  // `if (!isEnabled) return null;` was placed BETWEEN the useState and
+  // the useEffect. First render defaulted enabled=true (3 hooks); then
+  // when config_ui_sections loaded with enabled=false (we flipped it via
+  // DB toggle on 9/10 to hide the redundant section) the early return
+  // fired, skipping the useEffect and yielding only 2 hooks. Rules of
+  // Hooks: ALL hooks must run before ANY conditional return.
+  // Fix: moved useEffect above the early return, added a hasSummary guard
+  // inside the effect body so it stays a no-op when not needed.
   const isEnabled = useSectionEnabled('NFL', 'game_detail', 'team_matchup', true);
   const [fallback, setFallback] = useState<{home?: any; away?: any} | null>(null);
   const hasSummary = ctx?.home_team_stats_summary || ctx?.away_team_stats_summary;
-  if (!isEnabled) return null;
   React.useEffect(() => {
+    // Skip the fetch when the section is hidden OR when the server already
+    // populated a summary — same behavior as before, just gated inside the
+    // effect body so the hook itself always runs.
+    if (!isEnabled) return;
     if (hasSummary) return;
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
@@ -3553,7 +3567,8 @@ function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
         setFallback({home: map[homeTeam], away: map[awayTeam]});
       }
     })();
-  }, [homeTeam, awayTeam, ctx?.season, hasSummary]);
+  }, [homeTeam, awayTeam, ctx?.season, hasSummary, isEnabled]);
+  if (!isEnabled) return null;
 
   // Compose a normalized {home, away} summary — from server blob first, else fallback fetch.
   const home = ctx?.home_team_stats_summary || (fallback?.home ? _deriveNflSummary(fallback.home, ctx) : null);
