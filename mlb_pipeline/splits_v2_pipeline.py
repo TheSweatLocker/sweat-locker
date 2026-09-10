@@ -153,6 +153,42 @@ def _game_id_lookup(sport: str, game_date: str) -> dict:
     base = {(row.get("away_team"), row.get("home_team")): row.get("game_id")
             for row in (r.json() or []) if isinstance(row, dict) and row.get("game_id")}
 
+    # 2026-09-10 NCAAF ALIAS EXPANSION.
+    # Same class of bug as NFL had (fixed 2026-09-09): splits scrapers use
+    # different name conventions than ncaaf_game_context. User hit this on
+    # Miami tonight — Florida A&M @ Miami had no money flow because
+    # fadereport uses "Miami (FL)"/cleatz uses "Miami FL"/ctx uses "Miami".
+    # UConn/Connecticut, Hawai'i/Hawaii, ULM/Louisiana Monroe same problem.
+    # Hardcoded aliases below cover the 23 mismatches surveyed on 2026-09-10;
+    # move to ncaaf_team_aliases table when we do the v1.0.1 team-display
+    # config refactor.
+    if sport.upper() == "NCAAF":
+        _NCAAF_SPLIT_ALIASES = {
+            'Miami':               {'Miami (FL)', 'Miami FL'},
+            'Miami (OH)':          {'Miami OH'},
+            'Connecticut':         {'UConn'},
+            'Hawaii':              {"Hawai'i"},
+            'Louisiana Monroe':    {'Louisiana-Monroe', 'ULM'},
+            'Albany':              {'Albany NY', 'University at Albany'},
+            'Alcorn State':        {'Alcorn'},
+            'Nicholls':            {'Nicholls State'},
+            'Idaho State':         {'Idaho'},   # ambiguous with FBS Idaho; ok as fuzzy fallback only
+            'The Citadel':         {'Citadel'},
+            'Bethune-Cookman':     {'Bethune Cookman'},
+            'Arkansas-Pine Bluff': {'Arkansas Pine Bluff', 'UAPB'},
+            'North Carolina A&T':  {'NC A&T', 'North Carolina AT'},
+            'Houston Christian':   {'Houston Baptist'},   # school renamed
+            'LIU':                 {'Long Island'},
+        }
+        enriched = dict(base)
+        for (away, home), gid in base.items():
+            aw_forms = {away} | _NCAAF_SPLIT_ALIASES.get(away, set())
+            hm_forms = {home} | _NCAAF_SPLIT_ALIASES.get(home, set())
+            for a in aw_forms:
+                for h in hm_forms:
+                    enriched[(a, h)] = gid
+        return enriched
+
     if sport.upper() != "NFL":
         return base
 

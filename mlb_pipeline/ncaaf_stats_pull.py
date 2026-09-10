@@ -62,9 +62,14 @@ def cfbd_get(path: str, params: dict) -> list:
     return r.json()
 
 
-def fetch_advanced_stats(season: int) -> dict:
-    """Return {team: {off_epa, off_success, off_explosive, def_*, ...}}."""
-    rows = cfbd_get('/stats/season/advanced', {'year': season})
+def fetch_advanced_stats(season: int, classification: str = None) -> dict:
+    """Return {team: {off_epa, off_success, off_explosive, def_*, ...}}.
+    2026-09-10: classification param added — pass 'fcs' to get FCS teams.
+    Default (no filter) returns FBS; pipeline calls both to get 100% coverage.
+    """
+    params = {'year': season}
+    if classification: params['classification'] = classification
+    rows = cfbd_get('/stats/season/advanced', params)
     out = {}
     for row in rows:
         team = row.get('team')
@@ -86,7 +91,7 @@ def fetch_advanced_stats(season: int) -> dict:
     return out
 
 
-def fetch_season_stats(season: int) -> dict:
+def fetch_season_stats(season: int, classification: str = None) -> dict:
     """CFBD /stats/season (non-advanced) — raw volumetric stats.
 
     Returns {team: {pass_yards, rush_yards, penalties, penalty_yards,
@@ -95,8 +100,11 @@ def fetch_season_stats(season: int) -> dict:
     def_sacks, def_ints, def_fumbles_rec, ...}}.
 
     CFBD returns list of {team, statName, statValue} — pivoting here.
+    2026-09-10: classification param — pass 'fcs' to include FCS teams.
     """
-    rows = cfbd_get('/stats/season', {'year': season})
+    params = {'year': season}
+    if classification: params['classification'] = classification
+    rows = cfbd_get('/stats/season', params)
     # CFBD stat name → our column name
     stat_map = {
         'netPassingYards':          'pass_yards',
@@ -179,13 +187,23 @@ def run(seasons: list) -> None:
     total = 0
     for season in seasons:
         print(f'\n--- Season {season} ---')
-        adv = fetch_advanced_stats(season)
-        sp = fetch_sp_ratings(season)
-        # 2026-08-28: also pull raw volumetric stats (yards, penalties,
-        # downs, TOP, turnovers) that the /stats/season/advanced endpoint
-        # doesn't return. Feeds the game-detail team-stats section.
-        vol = fetch_season_stats(season)
-        print(f'  advanced: {len(adv)} · SP+: {len(sp)} · vol: {len(vol)} teams')
+        # 2026-09-10 FULL COVERAGE: pull both FBS and FCS. Prior version was
+        # FBS-only and every FCS matchup (Cal Poly, Sacred Heart, Fordham
+        # etc.) had empty Team Stats section on game detail — user pain
+        # point on Saturday NCAAF slate. CFBD /stats/season?classification=fcs
+        # returns 120 FCS teams / 7139 stat rows so full coverage is a free
+        # pull. SP+ endpoint doesn't publish FCS ratings (verified), so those
+        # teams still get null sp_overall — no data source alternative yet
+        # (Massey/Sagarin scrape queued for post-launch).
+        adv_fbs = fetch_advanced_stats(season)
+        adv_fcs = fetch_advanced_stats(season, classification='fcs')
+        adv = {**adv_fbs, **adv_fcs}
+        sp = fetch_sp_ratings(season)   # FBS-only; CFBD doesn't publish FCS SP+
+        vol_fbs = fetch_season_stats(season)
+        vol_fcs = fetch_season_stats(season, classification='fcs')
+        vol = {**vol_fbs, **vol_fcs}
+        print(f'  advanced: {len(adv)} (FBS {len(adv_fbs)} + FCS {len(adv_fcs)}) · '
+              f'SP+: {len(sp)} · vol: {len(vol)} (FBS {len(vol_fbs)} + FCS {len(vol_fcs)}) teams')
         team_set = set(adv.keys()) | set(sp.keys()) | set(vol.keys())
         rows = []
         for team in sorted(team_set):
