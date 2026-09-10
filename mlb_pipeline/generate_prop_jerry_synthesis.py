@@ -518,7 +518,15 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     ctx_by_game: dict = {}
     _sport_key = sport.lower()
     _ctx_table = _CTX_TABLE_BY_SPORT.get(_sport_key)
-    if props_for_template and _ctx_table:
+    # 2026-09-10 FIX: was gated on `props_for_template and _ctx_table`. When
+    # every prop went LLM path (PRIME slates), ctx_by_game stayed empty, so
+    # the LLM-path render_prop_template call at ~line 758 got ctx=None and
+    # rendered SIGNAL COVERAGE 0/N despite ctx being fully loaded (Kittle
+    # PRIME Over Receptions showing "0/2 gaps: target_share, game_script"
+    # even though SF@LA has projected_spread AND close_spread on ctx).
+    # Fix: load ctx whenever the table exists, regardless of template-path
+    # count. LLM path also needs ctx for its structured-section attach.
+    if _ctx_table and (props_for_template or props_for_llm):
         try:
             ctx_r = requests.get(f'{SUPABASE_URL}/rest/v1/{_ctx_table}',
                 headers=H_READ,
