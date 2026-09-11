@@ -2548,16 +2548,25 @@ setEvData(evOpps.slice(0,20));
   // cache that would otherwise linger for 60 min after the preseason-key
   // fetch shipped. Any keyed cache change works — v2 is the simplest.
   const CACHE_KEY = `odds_games_${sport}_${day}_v2`;
-  const CACHE_MINUTES = 60;
+  // 2026-09-11 TTL SPLIT. Prior behavior: both AsyncStorage and Supabase reads
+  // shared one 60-min window, so a server-side odds refresh (cron every 15 min)
+  // was invisible to any user whose local cache was under an hour old — Split
+  // showed stale prices, line movement looked flat. Now:
+  //   LOCAL_CACHE_MIN = 10  → fast in-session hydrate (tab switches, quick returns)
+  //   SERVER_CACHE_MIN = 60 → skip network only when server has nothing newer either
+  // Between 10-60 min we always consult Supabase (one keyed row, ~30ms) so the
+  // freshest server row wins.
+  const LOCAL_CACHE_MIN = 10;
+  const SERVER_CACHE_MIN = 60;
 
   if(!forceRefresh) {
-  // 1. Check AsyncStorage first
+  // 1. Check AsyncStorage first (short window — just enough for tab switches)
   try {
     const cached = await AsyncStorage.getItem('sweatlocker_games'+'_'+sport+'_'+day+'_v2');
     if(cached) {
       const parsed = JSON.parse(cached);
       const ageMin = (Date.now() - parsed.timestamp) / 60000;
-      if(ageMin < CACHE_MINUTES) {
+      if(ageMin < LOCAL_CACHE_MIN) {
         setGamesData(parsed.data);
         setGamesLoading(false);
         setRefreshing(false);
@@ -2566,7 +2575,7 @@ setEvData(evOpps.slice(0,20));
     }
   } catch(e) {}
 
-  // 2. Check Supabase cache
+  // 2. Check Supabase cache — always prefer server truth over stale AsyncStorage
   try {
     const { data: supabaseCache } = await supabase
       .from('odds_cache')
@@ -2575,7 +2584,7 @@ setEvData(evOpps.slice(0,20));
       .single();
     if(supabaseCache) {
       const ageMin = (Date.now() - new Date(supabaseCache.fetched_at).getTime()) / 60000;
-      if(ageMin < CACHE_MINUTES) {
+      if(ageMin < SERVER_CACHE_MIN) {
         const mappedGames = supabaseCache.data;
         setGamesData(mappedGames);
         await AsyncStorage.setItem('sweatlocker_games'+'_'+sport+'_'+day+'_v2', JSON.stringify({data:mappedGames, timestamp:Date.now()}));
