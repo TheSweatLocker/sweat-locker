@@ -85,7 +85,8 @@ def _stats(rows: list, res_key: str = 'result') -> tuple:
 
 def _get_active_sports() -> list:
     """Read sport_registry for currently-active sports (per feedback_faq_sport_registry_source_906)."""
-    r = _rows('sport_registry', {'is_active': 'eq.true', 'select': 'sport'})
+    # 2026-09-11: column is `active` not `is_active` on sport_registry.
+    r = _rows('sport_registry', {'active': 'eq.true', 'select': 'sport'})
     if r:
         return sorted(set(row.get('sport') for row in r if row.get('sport')))
     # Fallback if registry unavailable

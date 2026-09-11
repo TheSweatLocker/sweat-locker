@@ -54,10 +54,17 @@ on:
 # runs in a 4-hour window, racing on Supabase upserts and occasionally
 # tripping resolve_potd with transient collisions. Queue mode (no cancel)
 # means late-arriving triggers wait rather than being killed — no risk of
-# canceling a run at its final auto-commit step. Downside: queue can
-# grow 2-3 hrs deep on high-trigger days. Acceptable tradeoff vs races.
+# canceling a run at its final auto-commit step.
+#
+# 2026-09-11 REFINEMENT: split concurrency group by trigger source. Prior
+# single "mlb-pipeline" group had GitHub silently cancelling QUEUED
+# scheduled runs when a newer push/manual queued behind them ("Canceling
+# since a higher priority waiting request exists"). Scheduled data
+# refreshes were being killed in favor of commit-triggered rebuilds
+# doing the same work. Now push/dispatch dedup against each other, but
+# scheduled runs get their own queue slot and always execute.
 concurrency:
-  group: mlb-pipeline
+  group: mlb-pipeline-${{ github.event_name == 'schedule' && 'sched' || 'user' }}
   cancel-in-progress: false
 
 jobs:

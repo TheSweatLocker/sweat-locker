@@ -143,7 +143,11 @@ def run_sport(sport: str, write: bool) -> None:
                 'by_market':   stats['by_market'],
                 'by_tier':     stats['by_tier'],
                 'by_model':    stats['by_model'],
-                'computed_at': datetime.now(timezone.utc).isoformat().replace('+', '%2B'),
+                # 2026-09-11: was .replace('+', '%2B') which is a URL-encoding
+                # trick for query params. This is a JSON body → PG stored the
+                # literal '%2B' or the '+' collapsed to space (invalid
+                # timestamp syntax). Plain isoformat() writes fine as JSON.
+                'computed_at': datetime.now(timezone.utc).isoformat(),
             }
             # For upsert we need window_days + sport uniqueness, but computed_at
             # is in the unique index — so each run appends a new row. That's

@@ -112,10 +112,15 @@ def _load_primary_play_candidates(gd: str, sports: list) -> list:
         ctx_table = CONTEXT_TABLE_BY_SPORT.get(sport)
         if not ctx_table: continue
         try:
-            # Select kickoff column for filtering. MLB uses 'commence_time',
-            # NFL/NCAAF use 'kickoff_utc' — probe both, ignore missing.
-            kickoff_col = 'kickoff_utc' if sport in ('NFL', 'NCAAF') else 'commence_time'
-            select = f"game_id,primary_play,home_team,away_team,{kickoff_col}"
+            # 2026-09-11: mlb_game_context has NO commence_time column
+            # (schema stores just game_date). Selecting it caused ~thousands
+            # of 42703 errors/day in Supabase logs — every POTD compute pass.
+            # Fix: MLB skips the kickoff filter (game_date match is enough
+            # for MLB slates that are all today anyway); NFL/NCAAF use
+            # kickoff_utc for cross-day/night-game filtering.
+            kickoff_col = 'kickoff_utc' if sport in ('NFL', 'NCAAF') else None
+            select = (f"game_id,primary_play,home_team,away_team,{kickoff_col}"
+                      if kickoff_col else "game_id,primary_play,home_team,away_team")
             r = requests.get(
                 f"{SUPABASE_URL}/rest/v1/{ctx_table}",
                 headers=H_READ,
@@ -188,11 +193,15 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
     now_utc = _dt.now(_tz.utc)
 
     # Preload kickoff times for today's games across all sports we care about.
+    # 2026-09-11 same fix as above — MLB has no commence_time column, only NFL/NCAAF
+    # ctx tables carry kickoff_utc. For MLB, kickoff_by_gid stays empty (all today).
     kickoff_by_gid = {}
     for sport, ctx_table in CONTEXT_TABLE_BY_SPORT.items():
         if not ctx_table: continue
+        if sport not in ('NFL', 'NCAAF'):
+            continue  # only weekly sports need kickoff-time filter
         try:
-            kc = 'kickoff_utc' if sport in ('NFL', 'NCAAF') else 'commence_time'
+            kc = 'kickoff_utc'
             rr = requests.get(f"{SUPABASE_URL}/rest/v1/{ctx_table}", headers=H_READ,
                 params={'game_date': f'eq.{gd}', 'select': f'game_id,{kc}'}, timeout=10)
             for row in (rr.json() if rr.status_code == 200 else []):

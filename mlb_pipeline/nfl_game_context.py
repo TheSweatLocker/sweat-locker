@@ -294,7 +294,7 @@ def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
             params={
                 'recent_team': f'eq.{team_abbr}',
                 'position': 'eq.QB',
-                'select': 'player_id,player_display_name,season,week,attempts',
+                'select': 'player_id,player_name,season,week,attempts',
                 'order': 'season.desc,week.desc',
                 'limit': '10',
             }, timeout=10,
@@ -306,7 +306,7 @@ def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
         if not starters:
             return {}
         qb_id = starters[0].get('player_id')
-        qb_name = starters[0].get('player_display_name')
+        qb_name = starters[0].get('player_name')
         if not qb_id:
             return {}
 

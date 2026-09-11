@@ -305,15 +305,25 @@ def check_source_stats_staleness(since_date: str) -> list[dict]:
                 'note': f'{tbl} newest row is {round(age_days, 1)}d old (max expected {max_days}d)',
             })
 
-    # Also check the three rollup matviews themselves
-    for mv in ('team_recent_games', 'team_situational_records', 'team_stats_rolling'):
-        r = requests.get(f'{SB}/rest/v1/{mv}?select=refreshed_at&order=refreshed_at.desc&limit=1',
+    # Also check the three rollup matviews themselves.
+    # 2026-09-11 SCHEMA FIX: team_recent_games + team_situational_records
+    # don't carry a `refreshed_at` column (audit was throwing 42703 every
+    # scheduled run). team_stats_rolling does — probe each and pick
+    # whichever timestamp column is present.
+    _MV_TS_COL = {
+        'team_recent_games': None,           # no ts column; skip freshness check
+        'team_situational_records': None,    # no ts column; skip freshness check
+        'team_stats_rolling': 'refreshed_at',
+    }
+    for mv, ts_col in _MV_TS_COL.items():
+        if not ts_col: continue
+        r = requests.get(f'{SB}/rest/v1/{mv}?select={ts_col}&order={ts_col}.desc&limit=1',
                          headers=H, timeout=15)
         if r.status_code != 200: continue
         rows = r.json() if isinstance(r.json(), list) else []
-        if not rows or not rows[0].get('refreshed_at'): continue
+        if not rows or not rows[0].get(ts_col): continue
         try:
-            ts_str = rows[0]['refreshed_at']
+            ts_str = rows[0][ts_col]
             newest = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
             if newest.tzinfo is None:
                 newest = newest.replace(tzinfo=timezone.utc)

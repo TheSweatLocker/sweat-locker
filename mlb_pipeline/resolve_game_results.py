@@ -535,19 +535,11 @@ def run():
                 continue  # game not finalized yet
             g = gr_data[0]
 
-            # Pull commence_time from game_context for DH disambig (best-effort,
-            # often None for stale games)
+            # 2026-09-11: mlb_game_context.commence_time doesn't exist as a
+            # column (schema stores game_date only). The lookup was firing a
+            # 42703 error on every prop and always returning None. Skip the
+            # hint entirely — pitcher-name match handles DH disambig fine.
             ct_hint = None
-            try:
-                ctx_r = requests.get(
-                    f'{SUPABASE_URL}/rest/v1/mlb_game_context?game_id=eq.{prop["game_id"]}&select=commence_time',
-                    headers=HEADERS
-                )
-                ctx_data = ctx_r.json()
-                if ctx_data:
-                    ct_hint = ctx_data[0].get('commence_time')
-            except Exception:
-                pass
 
             game_pk = find_game_pk(
                 prop['game_date'], g['home_team'], g['away_team'],

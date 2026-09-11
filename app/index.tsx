@@ -9238,13 +9238,15 @@ setJerryHistory(prev => {
       // signal card can show "this source hits X% over 30d n=N" inline.
       // Populated nightly by compute_external_source_records.py.
       try {
+        // 2026-09-11: dropped `market` from the select — no such column
+        // on external_source_track_record (surface plays that role).
+        // Was causing 42703 error every home-screen load.
         const {data: recs} = await supabase.from('external_source_track_record')
-          .select('source,sport,market,surface,window_days,hit_rate,n_graded,n_wins,n_losses,n_pushes')
+          .select('source,sport,surface,window_days,hit_rate,n_graded,n_wins,n_losses,n_pushes')
           .limit(500);
-        // Column is `surface` in the underlying table but LineMovementTab
-        // expects `market` — normalize here so the component stays clean.
+        // Component expects `market` — alias surface into it.
         const normalized = (recs || []).map((r: any) => ({
-          ...r, market: r.market || r.surface,
+          ...r, market: r.surface,
         }));
         setSteamSourceRecords(normalized);
       } catch { setSteamSourceRecords([]); }

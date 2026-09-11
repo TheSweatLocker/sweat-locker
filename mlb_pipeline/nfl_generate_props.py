@@ -178,7 +178,7 @@ PROP_CONFIG = {
         'fantasy_col': 'proj_rush_tds',
     },
     'player_pass_attempts': {
-        'col': 'pass_attempts',
+        'col': 'attempts',
         'position': 'QB',
         'league_baseline': 32.0,
         'opp_col': 'def_pass_epa_allowed',
@@ -188,7 +188,7 @@ PROP_CONFIG = {
         'fantasy_col': 'proj_pass_attempts',
     },
     'player_pass_completions': {
-        'col': 'pass_completions',
+        'col': 'completions',
         'position': 'QB',
         'league_baseline': 21.0,
         'opp_col': 'def_pass_epa_allowed',
@@ -208,7 +208,7 @@ PROP_CONFIG = {
         'fantasy_col': 'proj_pass_ints',
     },
     'player_rush_attempts': {
-        'col': 'rush_attempts',
+        'col': 'carries',
         'position': 'RB',
         'league_baseline': 13.0,
         'opp_col': 'def_rush_epa_allowed',
