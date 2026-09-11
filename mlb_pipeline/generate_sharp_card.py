@@ -839,11 +839,30 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                 existing_count = ((row.get('data') or {}).get('count') or 0)
                 # Only lock if existing card has real items (not an empty stub)
                 if existing_count > 0:
-                    print(f'  🔒 sharp_card_{today} already published '
-                          f'({existing_count} items @ {row["fetched_at"][:19]}) — '
-                          f'skipping republish. Use --force or SHARP_CARD_ALLOW_REPUBLISH=1 '
-                          f'to override.')
-                    return
+                    # 2026-09-11 MATERIALLY-BETTER OVERRIDE. Prior lock was
+                    # absolute — 8am cron published 2 PRIME + 13 STRONG props
+                    # because pipeline was mid-landing, then 11am refit
+                    # produced 15 PRIME survivors but lock blocked update.
+                    # Result: user's Sharp tab showed STRONG props while a
+                    # much stronger PRIME deck sat un-published. Fix: allow
+                    # republish when new composition has MORE PRIME items
+                    # than the existing card — that's a materially better
+                    # deck, not churn. STRONG-count churn still locked.
+                    _existing_items = (row.get('data') or {}).get('items') or []
+                    _existing_primes = sum(1 for it in _existing_items
+                                           if isinstance(it, dict) and str(it.get('tier','')).upper() == 'PRIME')
+                    _new_primes = sum(1 for it in items
+                                      if isinstance(it, dict) and str(it.get('tier','')).upper() == 'PRIME')
+                    if _new_primes > _existing_primes:
+                        print(f'  🔓 sharp_card_{today} republish allowed: '
+                              f'{_existing_primes} → {_new_primes} PRIME items '
+                              f'(materially better deck)')
+                    else:
+                        print(f'  🔒 sharp_card_{today} already published '
+                              f'({existing_count} items, {_existing_primes} PRIME '
+                              f'@ {row["fetched_at"][:19]}) — new composition would '
+                              f'have {_new_primes} PRIMEs, not more, skipping.')
+                        return
         except Exception as _e:
             print(f'  ⚠ publish-lock check failed: {_e} — proceeding with write')
 
