@@ -87,8 +87,16 @@ def compute_outcome_patch(cfbd_game: dict, existing: dict) -> Optional[dict]:
         return None
     existing_home = _i(existing.get('home_score'))
     existing_away = _i(existing.get('away_score'))
-    if existing_home == home_score and existing_away == away_score:
-        return None  # no change
+    # 2026-09-11 FIX: previously returned None when scores unchanged, but that
+    # skipped filling in spread_result/total_result for rows where scores had
+    # been imported by a different loader (e.g. Miami vs FAMU 77-7 was seeded
+    # with scores but spread_result/total_result stayed null forever). Now
+    # only skip if scores AND both derived fields are already present.
+    scores_stable = (existing_home == home_score and existing_away == away_score)
+    already_derived = (existing.get('spread_result') is not None
+                       and existing.get('total_result') is not None)
+    if scores_stable and already_derived:
+        return None  # nothing to do
 
     payload = {
         'home_score': home_score,
@@ -240,7 +248,8 @@ def fetch_existing(game_ids: list) -> dict:
             headers=H_READ,
             params={'game_date': f'eq.{d}',
                     'select': 'game_id,home_team,away_team,home_score,'
-                              'away_score,close_spread,close_total',
+                              'away_score,close_spread,close_total,'
+                              'spread_result,total_result',
                     'limit': 1000},
             timeout=30,
         )
