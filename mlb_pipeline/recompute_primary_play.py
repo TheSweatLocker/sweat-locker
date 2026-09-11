@@ -364,11 +364,17 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
     if not dry_run and patched > 0:
         try:
             import subprocess
+            from pathlib import Path as _P
             print(f'\n  → auto-aligning jerry_reads via backfill_jerry_pick_alignment')
+            # 2026-09-11 CWD FIX: subprocess inherits caller's cwd, which may
+            # not be mlb_pipeline/. Use absolute script path so it always
+            # resolves whether recompute is invoked from repo root, CI, or
+            # cron. Also merge stderr into stdout for visible failures.
+            _script = str(_P(__file__).parent / 'backfill_jerry_pick_alignment.py')
             r = subprocess.run(
-                ['python', 'backfill_jerry_pick_alignment.py', '--sport', 'MLB'],
+                [sys.executable, _script, '--sport', 'MLB'],
                 capture_output=True, text=True, timeout=180)
-            for line in (r.stdout or '').splitlines()[-6:]:
+            for line in ((r.stdout or '') + (r.stderr or '')).splitlines()[-8:]:
                 print(f'    {line}')
             if r.returncode != 0:
                 print(f'    ⚠ align exit {r.returncode}')
