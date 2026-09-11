@@ -690,13 +690,17 @@ def build_teased_totals_combo(picks: list[dict], exclude_games: set = None) -> O
     # v4-fallback games where MC probabilities are unavailable. Teasing
     # LEAN totals to easier lines still produces a defensible combo since
     # the tease itself moves us into higher-hit-rate territory.
+    # 2026-09-11 PRIME-only gate. User directive: "the ledger should be
+    # prime plays that are teased". Prior filter accepted PRIME/STRONG/LEAN
+    # → 30d record was 7-13 (-2.95u); teasing lower-conviction totals into
+    # "safer" zones didn't clear the -110 combined juice. Restrict to PRIME
+    # so we're only teasing legs we already believe in.
     tease_candidates = [p for p in picks
                         if p['market'] == 'total'
                         and p['original_line'] is not None
-                        and p['tier'] in ('PRIME', 'STRONG', 'LEAN')
+                        and p['tier'] == 'PRIME'
                         and p.get('game_id') not in exclude_games]
-    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
-    tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    tease_candidates.sort(key=lambda p: -p.get('conviction', 0))
     if len(tease_candidates) < 2: return None
 
     def tease_leg(p, game_date):
@@ -753,13 +757,15 @@ def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> 
     Cross-sport eligible (MLB RL, NFL/NCAAF/NCAAB spread) — TEASER_STEP
     per sport keeps the math sane."""
     exclude_games = exclude_games or set()
+    # 2026-09-11 PRIME-only gate (same rationale as build_teased_totals_combo).
+    # Prior filter took LEAN/STRONG which pushed the 30d record to 4-5 (-3.10u)
+    # once real book prices got locked in via alt-line lookup.
     tease_candidates = [p for p in picks
                         if p['market'] in ('rl', 'spread', 'runline')
                         and p['original_line'] is not None
-                        and p['tier'] in ('PRIME', 'STRONG', 'LEAN')
+                        and p['tier'] == 'PRIME'
                         and p.get('game_id') not in exclude_games]
-    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
-    tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    tease_candidates.sort(key=lambda p: -p.get('conviction', 0))
     if len(tease_candidates) < 2: return None
 
     def tease_leg(p, game_date):
@@ -956,18 +962,19 @@ def build_teaser(picks: list[dict], sport_filter: Optional[str] = None) -> Optio
     were 14-25 (36%, -2.57u), 14d -5.77u. Restrict to PRIME picks whose
     tease crosses a key number (total) or is a real spread (≥6 NFL/NCAAF).
     """
-    # Find a total or spread pick to tease
+    # 2026-09-11 PRIME-only gate. Prior filter allowed STRONG legs; that
+    # pushed 14d teaser record to -5.77u even with the strict-criteria
+    # key-number check. User directive: "prime plays that are teased".
     tease_candidates = [p for p in picks
                         if p['market'] in ('total', 'rl', 'spread')
                         and p['original_line'] is not None
-                        and p['tier'] in ('PRIME', 'STRONG')
+                        and p['tier'] == 'PRIME'
                         and (sport_filter is None or p['sport'] == sport_filter)
                         and _teaser_meets_strict_criteria(p)]
     if not tease_candidates: return None
 
-    # Take strongest teaser candidate
-    tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
-    tease_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    # Take strongest teaser candidate (highest conviction wins)
+    tease_candidates.sort(key=lambda p: -p.get('conviction', 0))
     tease_pick = tease_candidates[0]
     sport = tease_pick['sport']
     step = TEASER_STEP.get(sport, 1.5)
@@ -999,14 +1006,15 @@ def build_teaser(picks: list[dict], sport_filter: Optional[str] = None) -> Optio
 
     teased_odds = teaser_price(sport, market, orig_odds, line_move)
 
-    # Pair with correlated leg: find another pick in the SAME sport at reasonable odds
+    # Pair with correlated leg: another PRIME pick in the same sport.
+    # 2026-09-11: tightened from PRIME/STRONG to PRIME-only (see above).
     pair_candidates = [p for p in picks
                        if p['sport'] == sport and p['game_id'] != tease_pick['game_id']
-                       and p['tier'] in ('PRIME', 'STRONG')
+                       and p['tier'] == 'PRIME'
                        and p['original_odds'] is not None
                        and -200 <= float(p['original_odds']) <= 150]
     if not pair_candidates: return None
-    pair_candidates.sort(key=lambda p: (tier_rank.get(p['tier'], 9), -p.get('conviction', 0)))
+    pair_candidates.sort(key=lambda p: -p.get('conviction', 0))
     pair = pair_candidates[0]
 
     legs_out = [
@@ -1112,19 +1120,17 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
         suggestions.append(chalk); register(chalk)
         print(f'  ✓ CHALK TRIO: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
 
-    # 2. Teased totals combo — PAUSED 2026-08-25.
-    # 7d P/L bleeding -3u/day; 1-of-2 leg-hit three consecutive days. Teasing
-    # totals 1.5-2 runs into "safer" zones hasn't cleared the -110/-120 combined
-    # juice on this slate profile. Re-enable after backtest reweight or when
-    # per-source tracker shows totals cohort recovering.
-    teased_totals_paused = True
-    if not teased_totals_paused:
-        teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
-        if teased_totals:
-            suggestions.append(teased_totals); register(teased_totals)
-            print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
+    # 2. Teased totals combo — RE-ENABLED 2026-09-11 with PRIME-only gate.
+    # Was paused 8/25 after bleeding -3u/day when LEAN/STRONG legs went in.
+    # User directive "prime plays that are teased" means we only tease legs
+    # we already believe strongly in; the composer now returns None unless
+    # 2 PRIME totals exist. On quiet slates it silently no-ops.
+    teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
+    if teased_totals:
+        suggestions.append(teased_totals); register(teased_totals)
+        print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
     else:
-        print('  ⏸ TEASED TOTALS COMBO paused (7d bleeding -3u/day, 1/2 leg-hit trap)')
+        print('  ⏸ TEASED TOTALS COMBO — no eligible PRIME totals pair today')
 
     # 3. Teased spreads combo — 2026-08-18 per user: "Could also tease
     # spreads across sports like Reds +2.5." Mirror of totals combo for
@@ -1170,19 +1176,22 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
             if hits_parlay:
                 suggestions.append(hits_parlay)
 
-    # 6. Chalk PROP parlay (MLB + NFL) — 2026-09-09 per surface walkthrough
-    # "Ledger needs to be more chalkier in some varieties." Same conceptual
-    # cousin to chalk-trio but built from props at PUBLISHED lines instead
-    # of ML favorites. Uses real book odds so combined payout is accurate.
-    for prop_sport in ('MLB', 'NFL'):
-        if prop_sport not in sports: continue
-        prime_props = fetch_prime_props(gd, sport=prop_sport)
-        if not prime_props: continue
-        chalk_prop = build_chalk_prop_parlay(prime_props, exclude_games=used_games)
-        if chalk_prop:
-            suggestions.append(chalk_prop); register(chalk_prop)
-            print(f'  ✓ {prop_sport} CHALK PROP PARLAY: {chalk_prop["combined_odds"]:+d} · '
-                  f'{len(chalk_prop["legs"])} legs')
+    # 6. Chalk PROP parlay — KILLED 2026-09-11 per 30d audit.
+    # Record: 3-7 (30%, -3.98u). Props can't be teased into safer zones the
+    # way spreads/totals can, and combining 3+ prop legs at PRIME conviction
+    # is still hostile parlay math. User directive: Ledger = "prime plays
+    # that are teased" — props don't fit that model. Left as dead path
+    # for archaeology; re-enable requires a teased-props approach.
+    if False:  # DEAD PATH
+        for prop_sport in ('MLB', 'NFL'):
+            if prop_sport not in sports: continue
+            prime_props = fetch_prime_props(gd, sport=prop_sport)
+            if not prime_props: continue
+            chalk_prop = build_chalk_prop_parlay(prime_props, exclude_games=used_games)
+            if chalk_prop:
+                suggestions.append(chalk_prop); register(chalk_prop)
+                print(f'  ✓ {prop_sport} CHALK PROP PARLAY: {chalk_prop["combined_odds"]:+d} · '
+                      f'{len(chalk_prop["legs"])} legs')
 
     written = 0
     for i, sugg in enumerate(suggestions, 1):
