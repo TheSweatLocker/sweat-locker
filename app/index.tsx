@@ -9943,17 +9943,31 @@ setJerryHistory(prev => {
             const isMLBSelected = selectedGame?.sport_key === 'baseball_mlb' || gamesSport === 'MLB';
             if (!isMLBSelected) return null;
 
+            // 2026-09-11 SUPPRESS on non-publishable tiers. THE PLAY panel
+            // was rendering pp.label ("Over 8.0") even when the ensemble
+            // demoted to COVERAGE/PASS/SKIP — jerry_reads below correctly
+            // shows "Engine passed" but the panel above still argued for
+            // the killed pick, creating a same-page contradiction the user
+            // called out on NYM@NYY 9/11: "pre-analysis says engine pass,
+            // score is 0 on a total call". Hide the panel entirely when
+            // the pick isn't publishable — the jerry_reads block below
+            // carries the engine's actual reasoning.
+            const _PLAY_PUBLISHABLE = new Set(['PRIME','STRONG','LEAN','LIGHT']);
+            const ppIsPublishable = pp?.tier && _PLAY_PUBLISHABLE.has(String(pp.tier).toUpperCase());
+            const ppEffective = ppIsPublishable ? pp : null;
+
             // Tier-driven palette
-            const tierColor = TIER_COLOR[(pp?.tier as any) as 'PRIME'|'STRONG'|'LEAN'|'LIGHT'] || THEME.textDim;
+            const tierColor = TIER_COLOR[(ppEffective?.tier as any) as 'PRIME'|'STRONG'|'LEAN'|'LIGHT'] || THEME.textDim;
             const tierBg = tierColor + '1A';   // ~10% alpha
             const tierBorder = tierColor + '4D'; // ~30% alpha
 
             // Audit hit rate — server-driven (mlb_tier_calibration → primary_play.audit_note)
             // No hardcoded numbers; if the cohort isn't calibrated yet, the
             // server returns null and we just don't render the AUDIT row.
-            const auditNote = pp?.audit_note || null;
+            const auditNote = ppEffective?.audit_note || null;
 
-            if (pp) {
+            if (ppEffective) {
+              const pp = ppEffective;
               return (
                 <View style={{marginHorizontal:16,marginTop:4,marginBottom:12,backgroundColor:tierBg,borderRadius:14,padding:16,borderWidth:1.5,borderColor:tierBorder}}>
                   {/* 2026-08-20: tier chip removed from game analysis surface
