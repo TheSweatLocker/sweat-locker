@@ -99,7 +99,7 @@ FOOTBALL_CHALK_ML_JUICE_MAX = -1500        # if picked ML <= this, cap it
 # the quota drops by tier priority (LEAN first, then STRONG).
 # Historical volume was 100+; new cap ~50 balances "sharp discipline"
 # with "cross-sport coverage on Sat when 4 sports are live."
-SHARP_CARD_ITEM_CAP = 50
+SHARP_CARD_ITEM_CAP = 20  # was 50 — tightened 2026-09-11 for curation
 
 # (4) 2026-09-06 juice cap on SOLE game picks (all sports). ML picks
 # juicier than this get auto-swapped to the spread side of the same
@@ -109,14 +109,24 @@ SHARP_CARD_ITEM_CAP = 50
 # so a juiced fav is fine as a parlay leg, not as a sole play.
 SOLE_PICK_ML_JUICE_MAX = -300
 LEDGER_ML_JUICE_MAX    = -450  # ledger-only; documented for the composer that builds parlays
+# 2026-09-11 TIGHTER CAPS. Prior 25/12/10/10 quotas + 50 global produced
+# 46-item cards on active MLB days (see 9/11: 13 MLB sides + 32 MLB
+# props + 1 NCAAF). User feedback: "46 plays is alot for the sharp" —
+# curation failure. A user opening Sharp Card should see 15-20 real
+# edges, not scroll a 46-pick backlog. Tighter caps rely on the existing
+# tier-sort (PRIME first) to keep the deck loaded with high-conviction
+# picks. STRONG picks still get a slot when PRIMEs don't fill the quota.
+# Post-launch v2 (option 2 from user discussion): explicit PRIME-first
+# rule that drops STRONGs entirely when PRIMEs exceed quota — deferred
+# because on quiet slates it could produce a 2-3 item card.
 SHARP_CARD_PER_SPORT_MAX = {
-    'MLB':   25,   # daily bread — sides + props
-    'NCAAF': 12,   # Sat slate is huge, top 12 STRONGs
-    'NFL':   10,   # Sun slate
-    'NCAAB': 10,
-    'NBA':    8,
-    'NHL':    8,
-    'UFC':    5,   # per-card
+    'MLB':   15,   # daily bread — was 25
+    'NCAAF': 5,    # Sat slate — was 12
+    'NFL':   5,    # Sun slate — was 10
+    'NCAAB': 5,    # was 10
+    'NBA':   3,    # was 8
+    'NHL':   3,    # was 8
+    'UFC':   3,    # was 5 per-card
 }
 
 # 2026-09-09 COLD-STREAK AUTO-TIGHTENING (user directive from surface walkthrough).
