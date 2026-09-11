@@ -9130,17 +9130,22 @@ setJerryHistory(prev => {
           // 2026-08-18: include away_team/home_team so LineMovementCard has
           // a matchup fallback when line_history sample is empty (some
           // flagged games rendered as "matchup pending sample" placeholder).
-          // Also pull commence_time for the time-badge fallback.
+          // 2026-09-11: dropped `commence_time` from the SELECT — that column
+          // does not exist on `mlb_game_context` (never did — kickoff_utc
+          // is only on the football *_context tables) and the query was
+          // 400-ing every Steam Room open, drowning Supabase logs in 42703
+          // errors. Time-badge fallback below now reads whatever the
+          // downstream badge does (game_date is enough for date display).
           const {data: ourPicks} = await supabase
             .from('mlb_game_context')
-            .select('game_id,game_date,away_team,home_team,commence_time,primary_play,supplementary_play')
+            .select('game_id,game_date,away_team,home_team,primary_play,supplementary_play')
             .in('game_id', uniqueGids);
           const picksIdx: Record<string, any> = {};
           (ourPicks || []).forEach((row: any) => {
             picksIdx[row.game_id] = {
               primary: row.primary_play, supplementary: row.supplementary_play,
               away_team: row.away_team, home_team: row.home_team,
-              commence_time: row.commence_time,
+              commence_time: null,  // MLB context has no commence_time; badge falls through
               game_date: row.game_date,
             };
           });
