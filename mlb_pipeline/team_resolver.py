@@ -230,7 +230,21 @@ def resolve_ncaaf_team(raw_name: str) -> Optional[str]:
 
 
 def log_ncaaf_gap(raw_name: str, source: str) -> None:
-    """Upsert row into team_alias_gaps. Increments hit_count on repeat."""
+    """Upsert row into team_alias_gaps for an unmapped NCAAF team name.
+
+    2026-09-11: swapped the two-step (POST-then-PATCH-on-409) pattern for
+    a single PostgREST merge-duplicates upsert against the
+    (sport, source, raw_name) unique constraint. Prior pattern relied on
+    the INSERT failing with 23505 and catching the 409 — but Postgres
+    still logs the constraint violation at the DB level, flooding
+    Supabase logs (~50/min sustained during a busy scrape). The atomic
+    upsert handles the conflict at the constraint level with no
+    violation logged.
+
+    hit_count is intentionally omitted from the payload so it keeps its
+    DB default (1) on INSERT and stays unchanged on UPDATE — same
+    net behavior as the prior PATCH-only-bumps-last_seen path.
+    """
     if not raw_name or not source: return
     now = datetime.now(timezone.utc).isoformat()
     payload = {
@@ -238,24 +252,13 @@ def log_ncaaf_gap(raw_name: str, source: str) -> None:
         'source': source,
         'raw_name': raw_name,
         'last_seen': now,
-        'hit_count': 1,   # server-side increment via on_conflict merge
     }
     try:
-        # First try insert; if conflict, PATCH to bump last_seen + hit_count
-        r = requests.post(
-            f'{SB}/rest/v1/team_alias_gaps',
-            headers={**_HW, 'Prefer': 'return=minimal'},
+        requests.post(
+            f'{SB}/rest/v1/team_alias_gaps?on_conflict=sport,source,raw_name',
+            headers={**_HW, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=10,
         )
-        if r.status_code == 409:
-            # Row exists — increment via PATCH
-            requests.patch(
-                f'{SB}/rest/v1/team_alias_gaps'
-                f'?sport=eq.NCAAF&source=eq.{source}&raw_name=eq.{raw_name}',
-                headers={**_HW, 'Prefer': 'return=minimal'},
-                json={'last_seen': now}, timeout=10,
-            )
-            # Best-effort hit_count bump via RPC or accept it's just "last_seen updated"
     except Exception:
         pass  # never let gap logging break a scrape
 
@@ -423,26 +426,26 @@ def resolve_ncaab_team(raw_name: str) -> Optional[str]:
 
 
 def log_ncaab_gap(raw_name: str, source: str) -> None:
-    """Upsert row into team_alias_gaps (sport='NCAAB')."""
+    """Upsert row into team_alias_gaps (sport='NCAAB').
+
+    2026-09-11: same merge-duplicates upsert refactor as log_ncaaf_gap
+    above — kills the 23505 log-flood by resolving conflicts at the
+    constraint level. See docstring there for details.
+    """
     if not raw_name or not source: return
     now = datetime.now(timezone.utc).isoformat()
     payload = {
-        'sport': 'NCAAB', 'source': source, 'raw_name': raw_name,
-        'last_seen': now, 'hit_count': 1,
+        'sport': 'NCAAB',
+        'source': source,
+        'raw_name': raw_name,
+        'last_seen': now,
     }
     try:
-        r = requests.post(
-            f'{SB}/rest/v1/team_alias_gaps',
-            headers={**_HW, 'Prefer': 'return=minimal'},
+        requests.post(
+            f'{SB}/rest/v1/team_alias_gaps?on_conflict=sport,source,raw_name',
+            headers={**_HW, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=10,
         )
-        if r.status_code == 409:
-            requests.patch(
-                f'{SB}/rest/v1/team_alias_gaps'
-                f'?sport=eq.NCAAB&source=eq.{source}&raw_name=eq.{raw_name}',
-                headers={**_HW, 'Prefer': 'return=minimal'},
-                json={'last_seen': now}, timeout=10,
-            )
     except Exception:
         pass
 
