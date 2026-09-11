@@ -367,18 +367,21 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # gaps where apply_prop_refit was skipped in the pipeline.
     _refit_self_heal_if_stale(sport, game_date, table)
     # Fetch today's props for this sport.
-    # 2026-09-07 limit bumped 300 → 2000: NFL 9/13 slate had 326 props for
-    # one date, prior 300 cap silently truncated 26 props (all STRONG tier)
-    # → no Jerry read → no chart on those cards. User audit: "Bowers,
-    # Dulcich, Okonkwo, Hurts INT, Daniels INT all missing graphs." 2000 is
-    # safe headroom for any single-date slate across all sports (biggest
-    # observed = MLB ~250 on a 15-game night).
+    # 2026-09-11: limit bumped 2000 → 5000 AND ordered tier-then-conviction
+    # so non-SKIP props are never truncated when SKIP volume balloons.
+    # Prior 2000 cap silently dropped Kirby's PRIME ha_over on 9/11 —
+    # 3191 pipeline_props rows / 2000 limit / alphabetical order pushed
+    # him past the cutoff. Ordering guarantees the 164 non-SKIP rows land
+    # in the first slice regardless of total row count.
+    # 2026-09-07 (earlier bump) rationale kept for history: NFL 9/13 slate
+    # had 326 props → prior 300 cap truncated 26 STRONG tier props.
     r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
                      headers=H_READ,
                      params={'game_date': f'eq.{game_date}',
                              'select': 'game_id,player_name,prop_type,direction,prop_line,'
                                        'signals,conviction,refit_conviction,book_over_odds,book_under_odds,tier',
-                             'limit': 2000},
+                             'order': 'tier.asc,conviction.desc',
+                             'limit': 5000},
                      timeout=30)
     props = r.json() if r.status_code == 200 else []
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
@@ -404,11 +407,17 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         props = [p for p in props if p.get('tier') != 'SKIP']
         print(f'  [{sport}] JERRY_BUCKET_ROI_ENABLED=false — using legacy SKIP filter')
 
-    # Edge gate: COVERAGE stubs (from sweep_prop_coverage) only pass if they
-    # carry a meaningful projection delta or opp K% extreme. Non-COVERAGE tiers
-    # already earned Jerry's attention via legacy scorer. Keeps Jerry-take
-    # volume manageable (~30–60/day) even when coverage stubs push the raw
-    # props table to 250+ rows.
+    # Edge gate: COVERAGE stubs only carry an LLM-worthy narrative when
+    # projection delta or opp K% extreme is present. This filter is
+    # applied later, ONLY to the paid LLM path — every remaining
+    # non-SKIP prop still gets a template-rendered row (recent_form
+    # chart, coverage pill, no narrative), so the app never publishes
+    # a prop card that lacks graphs.
+    # 2026-09-11 root fix: prior version filtered here globally BEFORE
+    # the tier_gate template/LLM split, so ~577 COVERAGE MLB props/day
+    # ended up with NO prop_jerry_reads row → app rendered the card
+    # without the L5/L10 bar chart (user report: "not seeing graphs in
+    # prop jerry"). Now the filter is deferred to only paid narrative.
     def _has_edge(p: dict) -> bool:
         if (p.get('tier') or '').upper() != 'COVERAGE':
             return True
@@ -427,9 +436,8 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
             except ValueError: pass
         return False
 
-    before = len(props)
-    props = [p for p in props if _has_edge(p)]
-    print(f'  [{sport}] {len(props)}/{before} eligible after edge gate')
+    print(f'  [{sport}] {len(props)} props enter template/LLM split '
+          f'(edge gate deferred to LLM path only)')
 
     # Tier calibration (2026-08-03 v2): FADE historical losers (flip direction),
     # cap juice traps, promote goldmine SKIP tiers. Per user directive: don't
@@ -480,6 +488,18 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         props_for_template = [p for p in props if (p.get('tier') or '').upper() not in tier_gate]
         print(f'  [{sport}] tier-gate {sorted(tier_gate)}: '
               f'{len(props_for_llm)} LLM · {len(props_for_template)} template')
+
+    # 2026-09-11: apply the COVERAGE edge filter ONLY to the paid LLM
+    # path. Template path (deterministic, zero-cost) keeps every prop so
+    # the app always finds a matching prop_jerry_reads row with
+    # input_snapshot.render_sections.recent_form → L5/L10 chart on
+    # every card.
+    if props_for_llm:
+        _pre_llm = len(props_for_llm)
+        props_for_llm = [p for p in props_for_llm if _has_edge(p)]
+        if _pre_llm != len(props_for_llm):
+            print(f'  [{sport}] LLM path edge-filter: '
+                  f'{len(props_for_llm)}/{_pre_llm} keep')
 
     # Batch-fetch playbook decisions so template renderer gets rich chip data
     # without per-prop DB round-trips.
