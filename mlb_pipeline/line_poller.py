@@ -312,11 +312,24 @@ def run():
     except ImportError:
         _BL_AVAILABLE = False
 
+    # 2026-09-11: also populate line_history from the same slate response.
+    # Previously line_history was fed only by the sport-universal
+    # write_line_history.py which reads client-populated odds_cache — so
+    # if no MLB user opened the Games tab, Split's sparkline went flat
+    # for hours. This writer pulls from the poll's own fresh slate,
+    # server-independent of the client.
+    try:
+        from book_lines_writer import write_line_history_from_event
+        _LH_AVAILABLE = True
+    except ImportError:
+        _LH_AVAILABLE = False
+
     polled = 0
     closed = 0
     skipped_inprog = 0
     bl_rows_written = 0
     bl_books_scanned = 0
+    lh_rows_written = 0
     write_ok = 0            # 2026-08-25: count successful history writes
     write_fail = 0
     first_write_error = None
@@ -349,11 +362,20 @@ def run():
                 bl_books_scanned += bl_stats.get('books_scanned', 0)
             except Exception as e:
                 print(f"    ⚠ book_lines writer error on {game_id[:10]}: {e}")
+        # Per-book line_history path (always-write; Split sparkline source)
+        if _LH_AVAILABLE:
+            try:
+                lh_rows_written += write_line_history_from_event(
+                    ev, sport='MLB', game_id=game_id, game_date=game_date)
+            except Exception as e:
+                print(f"    ⚠ line_history writer error on {game_id[:10]}: {e}")
 
     print(f"  ✓ polled {polled} events, locked close_total on {closed}, skipped {skipped_inprog} in-progress")
     print(f"  📝 history writes: {write_ok} ok, {write_fail} failed")
     if _BL_AVAILABLE:
         print(f"  📚 book_lines: {bl_rows_written} rows written (change-only) across {bl_books_scanned} book-events scanned")
+    if _LH_AVAILABLE:
+        print(f"  📈 line_history: {lh_rows_written} rows written (server-side, always-write for Split sparkline)")
 
     # 2026-08-25: exit non-zero when EVERY event's write failed — that's
     # the "silent no-op" pattern that hid Aug 17-24 RLS-blocked writes.

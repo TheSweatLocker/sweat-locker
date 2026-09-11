@@ -109,18 +109,31 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
     props_table, sport_str = SPORT_REG[sport]
     print(f'=== dedup_prop_dupes · {sport} · {gd} ===')
 
+    # 2026-09-11 limit bump 500 → 5000. Prior 500 cap on a 3191-row MLB
+    # slate silently pulled only the first 500 rows into `props`, so the
+    # `alive` set (line ~174) missed thousands of legitimate props. The
+    # orphan-cleanup step then wiped ~360 prop_jerry_reads rows every
+    # cron run — including all their input_snapshot.render_sections
+    # payloads → no L5/L10 charts on the app cards. Symptom user saw:
+    # graphs appeared after generate_prop_jerry_synthesis ran, then
+    # disappeared minutes later after this script fired.
     r = requests.get(f'{SB}/rest/v1/{props_table}',
                      headers=H_READ,
                      params={'game_date': f'eq.{gd}',
                              'select': 'id,player_name,prop_type,direction,'
                                        'tier,conviction,refit_conviction,signals',
-                             'limit': 500},
-                     timeout=20)
+                             'limit': 5000},
+                     timeout=30)
     if r.status_code != 200:
         print(f'  ⚠ fetch failed: {r.status_code}')
         return 0
     props = r.json() or []
     print(f'  {len(props)} total props')
+    # Belt-and-suspenders: if we're within 100 of the limit, log a warning
+    # so a future volume spike doesn't silently re-introduce the same bug.
+    if len(props) >= 4900:
+        print(f'  ⚠ warning: prop count {len(props)} near fetch limit — '
+              f'consider bumping the limit again to avoid orphan wipe.')
 
     # Group by (player_name.lower, stat_family)
     groups: dict = defaultdict(list)
@@ -133,12 +146,16 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
     print(f'  {len(dupes)} (player, family) pairs have duplicates')
 
     losers_to_delete: list = []
+    loser_props: list = []  # keep full row so orphan cleanup can match on
+                            # (player, prop_type, direction) — see safety
+                            # rewrite of the orphan-sweep block below.
     for k, rows in dupes.items():
         rows.sort(key=_rank, reverse=True)
         winner = rows[0]
         losers = rows[1:]
         for loser in losers:
             losers_to_delete.append(loser['id'])
+            loser_props.append(loser)
             print(f'  drop id={loser["id"]:>6} {loser["player_name"]:<22} '
                   f'{loser["prop_type"]:<10} {loser["direction"]:<5} '
                   f'[{loser["tier"]} {loser["conviction"]}, refit={loser.get("refit_conviction")}, '
@@ -168,25 +185,35 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
         else:
             print(f'  ⚠ delete chunk failed: {dr.status_code} {dr.text[:200]}')
 
-    # Also clean stale prop_jerry_reads for deleted props (avoid orphan cards)
-    if deleted:
-        # Rebuild alive-key set to find orphan reads
-        alive = {(p['player_name'], p['prop_type'], p['direction']) for p in props
-                 if p['id'] not in losers_to_delete}
+    # 2026-09-11 SAFETY REWRITE. Prior logic built `alive` from the
+    # in-memory `props` slice — if that slice was truncated (which it was:
+    # limit=500 vs 3191-row slate), thousands of legitimate props were
+    # missing from `alive` → the orphan sweep classified their jerry_reads
+    # as orphans and DELETED them. Symptom: prop_jerry_reads dropped from
+    # ~400 to ~27 every cron cycle → app cards lost their L5/L10 charts.
+    #
+    # New rule: only delete jerry_reads that match a prop we KNOW we just
+    # deleted this run (loser_props). Never delete a jerry_read just
+    # because its parent prop wasn't in our `props` fetch — that's a
+    # symptom of pagination, not an orphan.
+    if deleted and loser_props:
+        deleted_keys = {(lp['player_name'], lp['prop_type'], lp['direction'])
+                        for lp in loser_props}
         jr = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
                           headers=H_READ,
                           params={'game_date': f'eq.{gd}', 'sport': f'eq.{sport_str}',
                                   'select': 'id,player_name,prop_type,direction',
-                                  'limit': 1000},
+                                  'limit': 5000},
                           timeout=20).json() or []
         orphan_ids = [j['id'] for j in jr
-                      if (j['player_name'], j['prop_type'], j['direction']) not in alive]
+                      if (j['player_name'], j['prop_type'], j['direction']) in deleted_keys]
         for i in range(0, len(orphan_ids), CHUNK):
             chunk = orphan_ids[i:i+CHUNK]
             id_list = ','.join(str(x) for x in chunk)
             requests.delete(f'{SB}/rest/v1/prop_jerry_reads?id=in.({id_list})',
                             headers=H_WRITE, timeout=30)
-        print(f'  🧹 cleaned {len(orphan_ids)} orphaned prop_jerry_reads rows')
+        print(f'  🧹 cleaned {len(orphan_ids)} orphaned prop_jerry_reads rows '
+              f'(matched to {len(deleted_keys)} deleted props)')
 
     print(f'\n  ✅ deleted {deleted} duplicate prop rows')
     print(f'  now: {len(props) - deleted} unique (player, family) picks')
