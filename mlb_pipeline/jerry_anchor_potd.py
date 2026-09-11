@@ -235,6 +235,17 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
             # Prefer refit when present — it's the calibrated probability
             effective_conv = int(refit) if refit is not None else conv
             if effective_conv < min_conv: continue
+            # 2026-09-11 KILL hits_over from POTD pool per user directive.
+            # "I dont think i want over .5 hits as POTD material, write up
+            # looks bad anyway." Batter hits O 0.5 is the classic juice
+            # trap (see feedback_batter_hits_juice_trap_803); even Over 1.5
+            # hits is high-variance one-game noise, not POTD material.
+            # POTD needs stable prop shapes — pitcher outs/Ks, receiver yds,
+            # rush yds. This filter fires ONLY for POTD selection; the
+            # underlying prop still lives on the props tab.
+            _pt = str(row.get('prop_type', '')).lower()
+            if _pt in ('hits_over', 'hits_under'):
+                continue
             direction = str(row.get('direction') or '').upper()
             odds = row.get('book_over_odds') if direction == 'OVER' else row.get('book_under_odds')
             # 2026-09-10 · strip direction suffix from prop_type in the display

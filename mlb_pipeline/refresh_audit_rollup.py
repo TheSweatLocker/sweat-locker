@@ -80,6 +80,17 @@ def refresh(dry_run: bool = False):
     today = today_et()
     print(f'== refresh_audit_rollup · {today} · dry={dry_run} ==')
 
+    # 2026-09-11 KILLED — the "Live Audit (rolling 30D)" section was removed
+    # from the app render (generate_sweat_card.py:2076 sets audit_roll_up=None
+    # permanently). This refresher was clobbering that null on every scheduled
+    # run, re-populating the field so old TestFlight bundles (that still
+    # render the section) kept showing MLB cohort jargon under the sweat card.
+    # Neuter the whole write path — the rollup data isn't rendered anywhere.
+    # Cohort record display now lives in project_cohort_signal_ux_909 queue
+    # for a plain-english redesign, separate table.
+    print('  ⏭  refresher DISABLED 2026-09-11 (see generate_sweat_card.py comment)')
+    return 0
+
     fresh = _fetch_live_rollup()
     print(f'  fresh rollup: {len(fresh)} cohorts')
     if not fresh:
