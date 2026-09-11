@@ -121,13 +121,26 @@ def fetch_player_stats_for_date(date_str: str) -> dict:
 
 def grade_prop(prop: dict, stats_map: dict) -> tuple:
     """Return (result_str, actual_value) — result_str in
-    {'Win','Loss','Push', None}. None if can't grade."""
+    {'Win','Loss','Push', None}. None if can't grade.
+
+    2026-09-11 SUSPECT-ZERO GUARD: for outs props (outs_over/outs_under)
+    with actual=0, refuse to grade. Real starting pitchers always record
+    ≥ 3 outs (usually 15+); 0 outs almost always means the grader fetched
+    boxscore before MLB API populated pitching stats — a race between
+    game state flipping to Final and the stats push. Locking in 'Win' on
+    a bogus 0 corrupts records for days until a manual regrade. Deferring
+    (return None) leaves result=null so the next grader run picks it up
+    once stats are real. Every outs misgrade last week traced to this.
+    """
     stat_key = STAT_MAP_MLB.get(prop.get('prop_type'))
     if not stat_key: return None, None
     stats = stats_map.get((prop.get('player_name') or '').lower())
     if not stats: return None, None
     actual = stats.get(stat_key)
     if actual is None: return None, None
+    # Zero-outs safety net — pitcher props only
+    if stat_key == 'outs' and actual == 0:
+        return None, None
     line = prop.get('prop_line')
     if line is None: return None, actual
     line = float(line)
@@ -157,15 +170,24 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
 
     # Fetch props for the date. When --force, include already-graded rows
     # too so we can overwrite stale/buggy values from prior grader runs.
+    #
+    # 2026-09-11 BUGGY-ZERO SWEEP: also pick up any outs prop whose
+    # final_value locked at 0 from a prior race-condition grade (see
+    # grade_prop SUSPECT-ZERO GUARD). PostgREST `or=(...)` joins the
+    # ungraded set with the buggy set so both flow through the same
+    # regrade path — self-healing without needing a separate script.
     params = {
         'game_date': f'eq.{date_str}',
         'tier': 'in.(PRIME,STRONG,LEAN,SKIP,COVERAGE)',
         'select': 'id,player_name,prop_type,prop_line,direction,tier,conviction,result,final_value',
     }
     if not FORCE_REGRADE:
-        params['result'] = 'is.null'
+        params['or'] = (
+            '(result.is.null,'
+            'and(prop_type.in.(outs_over,outs_under),final_value.eq.0))'
+        )
     r = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ, params=params, timeout=15).json()
-    print(f'  {len(r)} props to check ({"force-regrade all" if FORCE_REGRADE else "ungraded only"})')
+    print(f'  {len(r)} props to check ({"force-regrade all" if FORCE_REGRADE else "ungraded + buggy-zero sweep"})')
 
     tally = {'graded': 0, 'skipped_no_stat': 0, 'skipped_no_player': 0, 'errors': 0,
              'W': 0, 'L': 0, 'P': 0}
