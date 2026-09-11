@@ -757,6 +757,13 @@ def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> 
     leg_a = tease_leg(tease_candidates[0], gd)
     leg_b = tease_leg(tease_candidates[1], gd)
     combined = combined_american_odds([leg_a['teased_odds'], leg_b['teased_odds']])
+    # 2026-09-10 pricing gate. teased_spreads_combo was 4-5 (44%, -3.09u)
+    # over 30d at avg combined -165 — upside-down math: risk 1u to win
+    # ~0.6u at 44% is guaranteed to bleed. Require combined ≥ -110 to
+    # publish; when the alt-line juice on both legs pushes the combined
+    # below that, the combo shouldn't run.
+    if combined < -110:
+        return None
     sports_in = {leg_a['sport'], leg_b['sport']}
     real_count = sum(1 for l in (leg_a, leg_b) if l.get('price_source') == 'book')
     return {
@@ -858,15 +865,65 @@ def build_mixed_parlay(picks: list[dict], target_odds_range: tuple = (150, 400))
     return None
 
 
+def _teaser_meets_strict_criteria(p: dict) -> bool:
+    """2026-09-10 gate. Teasers were 14-25 (36%, -2.57u) over 30d; -5.77u
+    in the last 14 days alone. Root: teasing lines that don't move enough
+    to justify. Require:
+      - PRIME tier (drop STRONG-only teasers; the -5.77u bleed was in
+        STRONG teasers where the model isn't confident enough for the
+        payout hit that teasing takes).
+      - Total picks: original line must be within key-number bracket
+        so a step move crosses at least one common landing (MLB 7/8/9,
+        NFL 41/44/47/51, NCAAF 45/49/52/56).
+      - Spread/RL picks: fav ≥ 6 in NFL/NCAAF (step 6pts), or MLB RL fav
+        (any). Small-fav teases don't gain enough coverage.
+    """
+    market = p['market']
+    tier = p['tier']
+    sport = p['sport']
+    line = p.get('original_line')
+    if line is None: return False
+    if tier != 'PRIME':
+        return False  # tier gate — the -5.77u bleed was mostly STRONG teasers
+    try: line_f = float(line)
+    except (TypeError, ValueError): return False
+    if market == 'total':
+        # Key-number bracket check: does a step move cross one?
+        step = TEASER_STEP.get(sport, 1.5)
+        side = str(p.get('side') or '').upper()
+        teased = line_f - step if side == 'OVER' else line_f + step
+        key_nums = {'MLB': (7, 7.5, 8, 8.5, 9),
+                    'NFL': (41, 44, 47, 51),
+                    'NCAAF': (45, 49, 52, 56)}.get(sport, ())
+        # true if original is on one side of a key and teased is on the other
+        for k in key_nums:
+            if (line_f < k < teased) or (teased < k < line_f):
+                return True
+        return False
+    if market in ('rl', 'spread', 'runline'):
+        if sport in ('NFL', 'NCAAF'):
+            return abs(line_f) >= 6.0  # need real spread to matter
+        if sport == 'MLB':
+            return line_f < 0  # RL fav only (fav -1.5 → +0.5 = huge)
+        return False
+    return False
+
+
 def build_teaser(picks: list[dict], sport_filter: Optional[str] = None) -> Optional[dict]:
     """Build a teaser: move total or spread pick to higher-prob zone,
-    pair with correlated leg to get even-money math."""
+    pair with correlated leg to get even-money math.
+
+    2026-09-10: added _teaser_meets_strict_criteria gate. Teasers 30d
+    were 14-25 (36%, -2.57u), 14d -5.77u. Restrict to PRIME picks whose
+    tease crosses a key number (total) or is a real spread (≥6 NFL/NCAAF).
+    """
     # Find a total or spread pick to tease
     tease_candidates = [p for p in picks
                         if p['market'] in ('total', 'rl', 'spread')
                         and p['original_line'] is not None
                         and p['tier'] in ('PRIME', 'STRONG')
-                        and (sport_filter is None or p['sport'] == sport_filter)]
+                        and (sport_filter is None or p['sport'] == sport_filter)
+                        and _teaser_meets_strict_criteria(p)]
     if not tease_candidates: return None
 
     # Take strongest teaser candidate
@@ -1061,17 +1118,18 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
         suggestions.append(ncaab_teaser); register(ncaab_teaser)
         print(f'  ✓ NCAAB TEASER: {ncaab_teaser["combined_odds"]:+d}')
 
-    # 5. Hits parlay (MLB) — 2026-08-28 addition. hits_over 0.5 moved off
-    # Sharp Card because standalone juice math is break-even. Correlated
-    # multi-leg parlay turns it positive when all bats hit. L10>=8 filter.
-    if 'MLB' in sports:
+    # 5. Hits parlay — KILLED 2026-09-10 per 30d audit.
+    # Record: 1-3 (25%) at avg +188 = -0.60u. Occupying a Ledger slot that
+    # should go to chalk_parlay (48% at +131 = +7.35u profitable). Users
+    # get more value from a second chalk_parlay variant than from a hits
+    # parlay whose small-sample negative is unlikely to reverse — hits_over
+    # 0.5 is a coin-flip market pre-juice.
+    if False and 'MLB' in sports:  # DEAD PATH — leaving for archaeology
         hit_legs = fetch_hits_over_legs(gd)
         if hit_legs:
             hits_parlay = build_hits_parlay(hit_legs)
             if hits_parlay:
                 suggestions.append(hits_parlay)
-                print(f'  ✓ HITS PARLAY: {hits_parlay["combined_odds"]:+d} · '
-                      f'{len(hits_parlay["legs"])} legs')
 
     # 6. Chalk PROP parlay (MLB + NFL) — 2026-09-09 per surface walkthrough
     # "Ledger needs to be more chalkier in some varieties." Same conceptual
