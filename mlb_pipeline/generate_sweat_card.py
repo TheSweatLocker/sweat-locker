@@ -2067,11 +2067,16 @@ def build_card():
     # fetch yesterday_recap (it powers the Receipts tab regardless of
     # density). Skipping it 2026-05-24 caused the Receipts tab to show
     # only POTD/DotD on standard slate days, missing the full top_8.
+    # 2026-09-10 KILLED audit_roll_up permanently. Section was removed from
+    # the app render (killed 9/10 above the yesterday_recap block), but old
+    # TestFlight bundles still had the render code and would show "🔍 Live
+    # Audit (rolling 30D)" with MLB-only cohort jargon (yrfi_lean_le40 etc)
+    # if the field was populated. Null it at the source so old clients also
+    # see the cleaner surface. Redundant with RECAP STRIP + yesterday_recap.
     audit_roll_up = None
     yesterday_recap = fetch_yesterday_recap()
     upcoming_events = None
     if density["mode"] in ("thin", "empty"):
-        audit_roll_up = fetch_audit_roll_up()
         upcoming_events = fetch_upcoming_events()
 
     # 2026-08-09: run correlation_check across the finalized card picks so
