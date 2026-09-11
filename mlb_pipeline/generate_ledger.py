@@ -22,12 +22,40 @@ CLI:
     python generate_ledger.py --dry-run
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, re, sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
 import requests
+
+
+def _signed_spread_from_label(label: str, fallback: float | None) -> float | None:
+    """Extract the SIGNED spread magnitude from the pick label (e.g.
+    "Arizona Diamondbacks -1.5" → -1.5, "Texas Rangers +1.5" → +1.5).
+
+    2026-09-11 bug: upstream primary_play.line is inconsistent — some
+    rows store signed (-1.5), others store the magnitude (1.5) even
+    when the pick side is negative. tease_leg() previously did
+    `orig_line + step` which is only correct if the input is signed —
+    for a fav stored as +1.5 (unsigned) it produced 3.0 (deep fav)
+    instead of 0.0 (teased to pk). Result: ledger shipped combos like
+    "Arizona Diamondbacks -1.5 → 3.0" alongside a "Texas Rangers +1.5"
+    POTD (same game, contradictory sides).
+
+    Sign is unambiguous in the label text. Parse it there; only
+    fall back to the numeric field when the label has no signed
+    trailer (should be rare — labels are user-facing).
+    """
+    if isinstance(label, str):
+        m = re.search(r'([+-])\s*(\d+(?:\.\d+)?)\s*$', label.strip())
+        if m:
+            sign = -1.0 if m.group(1) == '-' else 1.0
+            return sign * float(m.group(2))
+    try:
+        return float(fallback) if fallback is not None else None
+    except (TypeError, ValueError):
+        return None
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -513,7 +541,11 @@ def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
             if pick_type == 'ml':
                 odds = row.get('home_ml_close') if side == 'HOME' else row.get('away_ml_close')
             elif pick_type == 'rl' or pick_type == 'spread':
-                line = pp.get('line') or row.get('close_spread')
+                # Sign from the label — see _signed_spread_from_label docstring.
+                # Upstream `pp.get('line')` is inconsistent between signed and
+                # magnitude; the pick text ("Team -1.5" / "Team +1.5") is not.
+                raw_line = pp.get('line') if pp.get('line') is not None else row.get('close_spread')
+                line = _signed_spread_from_label(label, raw_line)
                 odds = -110  # rl typically -110
             elif pick_type == 'total':
                 line = pp.get('line') or row.get('close_total')
@@ -733,9 +765,16 @@ def build_teased_spreads_combo(picks: list[dict], exclude_games: set = None) -> 
     def tease_leg(p, game_date):
         sport = p['sport']
         step = TEASER_STEP.get(sport, 1.5)
-        orig_line = float(p['original_line'])
+        # 2026-09-11 defense-in-depth. Re-sign from label even after
+        # fetch_picks normalized it — some ledger builders receive picks
+        # from other paths (chalk_parlay legs propagated as spread candidates,
+        # or future refactors). "Team -1.5" must always end teased at
+        # something ≤ orig, not deeper into fav territory.
+        orig_line = _signed_spread_from_label(p.get('pick', ''), p['original_line'])
+        if orig_line is None:
+            orig_line = float(p['original_line'])
         orig_odds = p['original_odds']
-        # Line always moves toward MORE cover
+        # orig_line is now signed: dog +1.5 → teased +3.0, fav -1.5 → teased 0.0
         teased_line = orig_line + step
         side = (p.get('side') or '').upper()
         real_price = fetch_alt_line(p.get('game_id',''), 'alternate_spreads',
