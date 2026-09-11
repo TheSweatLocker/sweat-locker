@@ -349,18 +349,31 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
     # saw "PHL -1.5" on the badge while game detail argued Over 8.5.
     # Now the two are guaranteed to stay in sync after any recompute run.
     # Only fires when actual changes were written (patched > 0, not dry-run).
+    #
+    # 2026-09-10 UPGRADE: swap jerry_pick_scrub.py → backfill_jerry_pick_alignment.py.
+    # Root cause of tonight's audit finding (Jerry MLB 4-1 hidden behind
+    # conv=0 badges): LR TOTAL override promoted 4 games to PRIME conv 84-91
+    # AFTER jerry_reads was written. jerry_pick_scrub.py didn't apply the
+    # cross-sport enforcer, so stale conv=0 stayed on jerry_reads while
+    # primary_play showed PRIME. Users saw "Pass" badges on picks that
+    # actually won 4-of-5. Swap to backfill_jerry_pick_alignment.py which
+    # applies enforce_primary_play_alignment() — the source-of-truth rule
+    # from jerry_reads_dual_write.py. Now any primary_play tier change
+    # (LR override, MC dissent, publish gate) flows to jerry_reads in one
+    # step.
     if not dry_run and patched > 0:
         try:
             import subprocess
-            print(f'\n  → auto-syncing jerry_reads via jerry_pick_scrub (drift fix)')
-            r = subprocess.run(['python', 'jerry_pick_scrub.py', '--sport', 'MLB'],
-                               capture_output=True, text=True, timeout=120)
-            for line in (r.stdout or '').splitlines()[-5:]:
+            print(f'\n  → auto-aligning jerry_reads via backfill_jerry_pick_alignment')
+            r = subprocess.run(
+                ['python', 'backfill_jerry_pick_alignment.py', '--sport', 'MLB'],
+                capture_output=True, text=True, timeout=180)
+            for line in (r.stdout or '').splitlines()[-6:]:
                 print(f'    {line}')
             if r.returncode != 0:
-                print(f'    ⚠ scrub exit {r.returncode}')
+                print(f'    ⚠ align exit {r.returncode}')
         except Exception as e:
-            print(f'    ⚠ auto-scrub failed: {e} (jerry_reads may be out of sync)')
+            print(f'    ⚠ auto-align failed: {e} (jerry_reads may be out of sync)')
 
     print(f'\n{"[DRY] " if dry_run else "✓ "}patched={patched}/{len(ctxs)}  '
           f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}')

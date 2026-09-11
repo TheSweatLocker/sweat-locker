@@ -1031,13 +1031,19 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # ended up with no shadow at all → downstream gates (POTD LR check,
     # Sharp Card LR-conflict, watchdogs) silently no-op'd.
     #
-    # Fix: after all override paths run, compute both ML and TOTAL LR
-    # predictions and stamp them onto pp if not already present. This
-    # is idempotent (checks `is None`) and only fills gaps, never
-    # overwrites live override output.
+    # 2026-09-10 UPGRADE — was `if pp.get('_lr_ml_shadow') is None`, which
+    # only filled gaps and never refreshed. Audit found 3/5 MLB games
+    # tonight had stale shadows (identical p_home=0.4076 fallback from
+    # an earlier compute pass, before close_lines dropped). Fresh compute
+    # gives distinct real values (0.5973, 0.9624, 0.1614, etc). Fix:
+    # ALWAYS recompute at this stage — this runs after all override paths
+    # + late-updated market data, so latest ctx should be the source of
+    # truth for the shadow. Only skip when the model file itself is
+    # missing or the compute raises. Cheap (single linear pass over
+    # ~100 features), no reason to cache.
     if isinstance(pp, dict):
         try:
-            if sport in ('MLB', 'NFL', 'NCAAF') and pp.get('_lr_ml_shadow') is None:
+            if sport in ('MLB', 'NFL', 'NCAAF'):
                 _map = {'MLB': _LR_MODEL_MLB_ML, 'NFL': _LR_MODEL_NFL_ML,
                         'NCAAF': _LR_MODEL_NCAAF_ML}
                 _model = _map.get(sport)
@@ -1048,7 +1054,7 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
         except Exception:
             pass
         try:
-            if sport == 'MLB' and pp.get('_lr_total_shadow') is None and _LR_MODEL_MLB_TOTAL is not None:
+            if sport == 'MLB' and _LR_MODEL_MLB_TOTAL is not None:
                 _pred = _lr_predict_total(ctx, model=_LR_MODEL_MLB_TOTAL)
                 if _pred is not None:
                     pp['_lr_total_shadow'] = _pred
