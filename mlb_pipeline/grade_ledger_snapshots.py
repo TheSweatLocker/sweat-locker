@@ -117,7 +117,12 @@ def _grade_prop_leg(leg: dict, player_stats: dict | None) -> str:
     """
     if not player_stats: return 'NR'
     market = str(leg.get('market') or '').lower()
+    # 2026-09-11 chalk_prop_parlay writes market='prop' with detailed
+    # `prop_type` (e.g., 'outs_under'). Fall back to prop_type-prefixed
+    # lookup when raw market isn't in the map. Same-map, two entry points.
     stat_key = _PROP_MARKET_STAT.get(market)
+    if not stat_key and leg.get('prop_type'):
+        stat_key = _PROP_MARKET_STAT.get(f"prop_{str(leg.get('prop_type')).lower()}")
     if not stat_key: return 'NR'
     # Prefer explicit player_name; fall back to parsing 'pick' string
     # ("Miguel Vargas Over 0.5 Hits" → "Miguel Vargas")
@@ -157,7 +162,10 @@ def _grade_prop_leg(leg: dict, player_stats: dict | None) -> str:
 def _grade_leg(leg: dict, result: dict, player_stats: dict | None = None) -> str:
     """Return 'W', 'L', 'P', or 'NR' (not resolved)."""
     market = str(leg.get('market') or '').lower()
-    if market.startswith('prop_'):
+    # 2026-09-11 chalk_prop_parlay writes market='prop' with prop_type
+    # populated. Route bare 'prop' + any leg carrying prop_type through
+    # the prop grader too (was skipping and returning NR unconditionally).
+    if market == 'prop' or market.startswith('prop_') or leg.get('prop_type'):
         return _grade_prop_leg(leg, player_stats)
     hs = result.get('home_score') if result else None
     as_ = result.get('away_score') if result else None
@@ -210,12 +218,15 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
     if not snaps: return 0, 0
 
     # 2026-08-30: lazy-load MLB batter/pitcher stats once per date if any
-    # snapshot has a prop_* leg. Feeds _grade_prop_leg for hits_parlay etc.
+    # snapshot has a prop leg. Feeds _grade_prop_leg for hits_parlay etc.
+    # 2026-09-11: chalk_prop_parlay legs write market='prop' (not 'prop_*'),
+    # so the startswith check was missing them → 11 rows ungraded over
+    # 9/9-9/10. Include bare 'prop' + presence of prop_type field.
     player_stats = None
-    needs_props = any(
-        str(l.get('market') or '').lower().startswith('prop_')
-        for s in snaps for l in (s.get('legs') or [])
-    )
+    def _is_prop_leg(l):
+        m = str(l.get('market') or '').lower()
+        return m == 'prop' or m.startswith('prop_') or bool(l.get('prop_type'))
+    needs_props = any(_is_prop_leg(l) for s in snaps for l in (s.get('legs') or []))
     if needs_props:
         try:
             from grade_props import fetch_player_stats_for_date
@@ -238,8 +249,9 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
             if not sport or not gid:
                 combo_status = 'NR'; break
             market = str(leg.get('market') or '').lower()
-            # Prop legs bypass sport-results fetch — graded via player stats
-            if market.startswith('prop_'):
+            # Prop legs bypass sport-results fetch — graded via player stats.
+            # 2026-09-11 accept bare 'prop' too (chalk_prop_parlay uses that).
+            if market == 'prop' or market.startswith('prop_') or leg.get('prop_type'):
                 outcome = _grade_leg(leg, {}, player_stats=player_stats)
             else:
                 res = _fetch_result(sport, gid)

@@ -240,11 +240,42 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
                 prop_lookup.setdefault(row['game_id'], row)
 
     graded = 0
+    voided = 0
     for read in reads:
         result = grade_one(read, results_by_gid,
                            prop_lookup=prop_lookup,
                            postponed_gids=postponed_gids)
-        if not result: continue
+        if not result:
+            # 2026-09-11 VOID PATH — was `continue`, leaving rows ungraded
+            # forever. NCAAF audit found 45/125 jerry_reads over past 14d
+            # stuck as ungraded because call_market/call_side/call_line
+            # were all None (LLM wrote prose but no pick — a de-facto Pass).
+            # grade_one() returned None → row stayed result=null → next
+            # grader run picked it up again → same None. Result: bloated
+            # ungraded queue + no signal to distinguish "grader hasn't run
+            # yet" from "no pick to grade." Fix: when the row has no pick
+            # data AND the game is settled (result row exists w/ score) OR
+            # is >3d old, patch result='Void'. Void rows exit the queue
+            # but aren't counted in W-L records.
+            has_pick = bool(read.get('call_market')
+                            and str(read.get('call_market')).lower() != 'pass')
+            res_row = results_by_gid.get(read.get('game_id')) or {}
+            game_settled = res_row.get('home_score') is not None
+            try:
+                from datetime import date as _d
+                gd_age = (_d.today() - _d.fromisoformat(read.get('game_date') or '2099-01-01')).days
+            except Exception:
+                gd_age = 0
+            if not has_pick and (game_settled or gd_age > 3):
+                if dry_run:
+                    voided += 1; continue
+                pr = requests.patch(f'{SB}/rest/v1/jerry_reads?id=eq.{read["id"]}',
+                                    headers=H_WRITE,
+                                    json={'result': 'Void',
+                                          'resolved_at': datetime.now(timezone.utc).isoformat()},
+                                    timeout=15)
+                if pr.status_code in (200, 204): voided += 1
+            continue
         actual = {'home_score': results_by_gid.get(read['game_id'], {}).get('home_score'),
                   'away_score': results_by_gid.get(read['game_id'], {}).get('away_score')}
         if dry_run:
@@ -261,7 +292,8 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
             graded += 1
         else:
             print(f'  ⚠ patch id={read["id"]}: {pr.status_code} {pr.text[:120]}')
-    print(f'  [{sport}] graded {graded}/{len(reads)} jerry_reads')
+    print(f'  [{sport}] graded {graded}/{len(reads)} jerry_reads'
+          + (f' · voided {voided} (no-pick rows)' if voided else ''))
     return graded
 
 
@@ -296,8 +328,11 @@ if __name__ == '__main__':
     p.add_argument('--date', help='YYYY-MM-DD; defaults yesterday + backfill window')
     p.add_argument('--sport', help='MLB/NBA/NFL/NCAAF/NCAAB (default: all)')
     p.add_argument('--dry-run', action='store_true')
-    p.add_argument('--backfill-days', type=int, default=3,
-                   help='Days prior to yesterday to also re-grade. Default 3.')
+    p.add_argument('--backfill-days', type=int, default=7,
+                   help='Days prior to yesterday to also re-grade. Default 7. '
+                        '(2026-09-11: bumped 3→7 so weekly NFL/NCAAF slates + '
+                        'late-arriving results get swept — 9/5 NCAAF stragglers '
+                        'sat un-graded for 6 days outside the old 3-day window.)')
     args = p.parse_args()
     main(game_date=args.date, sport=args.sport, dry_run=args.dry_run,
          backfill_days=args.backfill_days)

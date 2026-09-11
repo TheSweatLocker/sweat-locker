@@ -194,9 +194,14 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
         d = asdict(p); d['pull_id'] = pull_id
         payload.append(d)
     try:
+        # 2026-09-11: on_conflict added to route through the unique constraint
+        # `external_picks_dedup_key_v2` (source, game_id, surface, game_date).
+        # Without it, POSTs on re-runs of the puller within a day threw 23505
+        # every time — spamming the Supabase error log. Merge-duplicates makes
+        # the second write a no-op update instead of an error.
         r = requests.post(
-            f'{SB}/rest/v1/external_picks',
-            headers={**H_WRITE, 'Prefer': 'return=minimal'},
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date',
+            headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
         if r.status_code not in (200, 201, 204):
