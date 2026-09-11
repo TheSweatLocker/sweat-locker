@@ -71,6 +71,36 @@ def snapshot_from_odds_cache(sport: str, dry_run: bool = False) -> int:
     if not isinstance(rows, list) or not rows:
         print(f'  {sport}: no odds_cache rows found'); return 0
 
+    # 2026-09-11 STALENESS GUARD. write_line_history dutifully snapshotted
+    # a 2-day-stale MLB odds_cache row every 15 min for days, tagging it
+    # captured_at=now — polluting line_history with fake "movement" and
+    # feeding detect_line_movement stale single-book data. Split showed
+    # no line movement today because every row was the SAME 9/9 snapshot
+    # with our own 'sweatlocker' book only. Fix: skip cache rows older
+    # than 12h — if the app hasn't refreshed the cache, don't fake it.
+    from datetime import timedelta
+    _now = datetime.now(timezone.utc)
+    _fresh_rows = []
+    for _row in rows:
+        try:
+            _ft = _row.get('fetched_at')
+            if not _ft: continue
+            _fd = datetime.fromisoformat(str(_ft).replace('Z', '+00:00'))
+            if (_now - _fd) < timedelta(hours=12):
+                _fresh_rows.append(_row)
+        except (ValueError, TypeError):
+            continue
+    if not _fresh_rows:
+        _newest_age = 'unknown'
+        if rows:
+            try:
+                _fd = datetime.fromisoformat(str(rows[0].get('fetched_at','')).replace('Z','+00:00'))
+                _newest_age = f'{(_now - _fd).total_seconds() / 3600:.1f}h old'
+            except: pass
+        print(f'  {sport}: all odds_cache rows stale (newest {_newest_age}) — skip write')
+        return 0
+    rows = _fresh_rows
+
     now = datetime.now(timezone.utc).isoformat()
     written = 0
     seen_keys: set = set()  # dedup within this run — one row per (gid,market,book,side)
