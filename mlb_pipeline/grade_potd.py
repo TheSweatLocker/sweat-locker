@@ -33,7 +33,7 @@ USAGE:
     python grade_potd.py --dry-run
 """
 from __future__ import annotations
-import argparse, os, sys, json
+import argparse, os, re, sys, json
 import datetime as dt
 from pathlib import Path
 
@@ -65,6 +65,125 @@ SPORT_CTX_TABLE = {
     'NBA':   ('nba_game_results',   'home_score', 'away_score'),
     'NHL':   ('nhl_game_results',   'home_score', 'away_score'),
 }
+
+# Sport → prop-pipeline table (used only when POTD is a player prop —
+# e.g. "Jared Jones Under 15.5 Outs"). Grader looks up the pre-graded
+# row by (game_id, player_name, prop_type, direction) and mirrors its
+# result. Falls back to Void if the row exists but hasn't been graded.
+PROP_TABLE_BY_SPORT = {
+    'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',
+}
+
+# Trailing-word → prop_type key. Order matters: check the longer
+# multi-word phrases before single-word ones so "hits allowed"
+# resolves as `ha_*` before "hits" alone matches `hits_*`.
+_PROP_STAT_ALIASES = [
+    ('hits allowed',   'ha'),
+    ('earned runs',    'er'),
+    ('total bases',    'total_bases'),
+    ('rbis',           'rbis'),
+    ('strikeouts',     'ks'),
+    ('walks',          'bb'),
+    ('outs recorded',  'outs'),
+    ('outs',           'outs'),
+    ('ks',             'ks'),
+    ('bb',             'bb'),
+    ('home runs',      'hr'),
+    ('runs',           'runs'),
+    ('hits',           'hits'),
+]
+
+
+def _parse_prop_from_lean(lean: str) -> dict | None:
+    """Return {player_name, direction, line, prop_type} if `lean` looks
+    like a player-prop POTD (e.g. "Jared Jones Under 15.5 Outs"),
+    else None.
+
+    Handles:
+      "Player Name Over 5.5 Hits Allowed"
+      "Player Name Under 15.5 Outs"
+      "Player Name Over 3.5 KS"
+      "Player Name Under 2.5 Earned Runs"
+    Ignores the "(Jerry NN/100)" parenthetical suffix.
+    """
+    if not lean or not isinstance(lean, str):
+        return None
+    # Strip trailing parenthetical (Jerry 80/100), (Model 74%), etc.
+    txt = re.sub(r'\([^)]*\)\s*$', '', lean).strip()
+    m = re.match(r'^(.+?)\s+(Over|Under)\s+(\d+(?:\.\d+)?)\s+(.+)$',
+                 txt, re.IGNORECASE)
+    if not m:
+        return None
+    player = m.group(1).strip()
+    direction = m.group(2).lower()  # 'over' | 'under'
+    line = float(m.group(3))
+    stat_raw = m.group(4).strip().lower()
+    prop_key = None
+    for alias, key in _PROP_STAT_ALIASES:
+        if stat_raw == alias or stat_raw.startswith(alias + ' '):
+            prop_key = key; break
+    if not prop_key:
+        return None
+    prop_type = f'{prop_key}_{direction}'  # e.g. 'outs_under', 'ha_over'
+    return {
+        'player_name': player,
+        'direction': direction,
+        'line': line,
+        'prop_type': prop_type,
+    }
+
+
+def _grade_prop_via_pipeline(sport: str, game_id: str, date_str: str,
+                             prop: dict) -> str | None:
+    """Read the already-graded prop row from the sport's prop-pipeline
+    table and return its result. Returns None (caller treats as Pending)
+    if the row exists but hasn't been graded yet, or the row is missing.
+
+    Match keys are (game_date, game_id, player_name, prop_type, direction)
+    — same tuple `apply_prop_refit` writes the graded `result` to.
+    """
+    tbl = PROP_TABLE_BY_SPORT.get(sport)
+    if not tbl or not game_id or not prop:
+        return None
+    try:
+        r = requests.get(f'{SB}/rest/v1/{tbl}',
+                         headers=H_R,
+                         params={
+                             'game_date': f'eq.{date_str}',
+                             'game_id': f'eq.{game_id}',
+                             'player_name': f'eq.{prop["player_name"]}',
+                             'prop_type': f'eq.{prop["prop_type"]}',
+                             'direction': f'eq.{prop["direction"]}',
+                             'select': 'result,final_value,prop_line',
+                             'limit': '1',
+                         }, timeout=15)
+        if r.status_code != 200 or not r.json():
+            return None
+        row = r.json()[0]
+        res = (row.get('result') or '').strip()
+        # Prop grader writes 'Win'|'Loss'|'Push'|None (Pending)
+        if res in ('Win', 'Loss', 'Push'):
+            return res
+        # Fallback: compute from final_value when the grader hasn't
+        # stamped result yet (rare — prop grader runs before POTD grader,
+        # but keep the belt-and-suspenders path for late-arriving stats).
+        fv = row.get('final_value')
+        pl = row.get('prop_line') or prop.get('line')
+        if fv is not None and pl is not None:
+            try:
+                fv = float(fv); pl = float(pl)
+                if abs(fv - pl) < 0.001:
+                    return 'Push'
+                went_over = fv > pl
+                if prop['direction'] == 'over':
+                    return 'Win' if went_over else 'Loss'
+                return 'Loss' if went_over else 'Win'
+            except (TypeError, ValueError):
+                pass
+        return None
+    except Exception:
+        return None
 
 
 def _today_et() -> str:
@@ -166,21 +285,46 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
     call_side = data.get('call_side') or ''
     call_line = data.get('call_line') or data.get('prop_line') or data.get('line')
     call_side_team = None
-    # If we only have leanDisplay text like "Toronto Blue Jays ML" or
-    # "Over 8.5", parse it.
+    prop_info = None
+    # If we only have leanDisplay text like "Toronto Blue Jays ML",
+    # "Over 8.5", "Texas Rangers RL +1.5", or "Jared Jones Under 15.5 Outs",
+    # parse it.
     if not call_side and pick_side_raw:
         s = str(pick_side_raw).strip()
+        # 2026-09-11: strip any trailing parenthetical suffix ONCE up front
+        # ("(Jerry 80/100)" etc.) so every branch below sees clean text.
+        s = re.sub(r'\s*\([^)]*\)\s*$', '', s).strip()
         low = s.lower()
-        if ' ml' in low or low.endswith('ml'):
+        # 1. Player prop pattern ("Player Name Over/Under N.N StatName")
+        #    Must be checked BEFORE the totals branch or "Under 15.5" in the
+        #    middle of the string never wins vs the totals startswith check.
+        prop_info = _parse_prop_from_lean(s)
+        if prop_info:
+            call_market = 'prop'
+            call_side = prop_info['direction'].upper()
+            call_line = prop_info['line']
+        elif ' ml' in low or low.endswith('ml'):
             call_market = call_market or 'ml'
             # Team side determined via game_id lookup — leave call_side blank
             # and let the grader look up which side won
             call_side = '__PARSE_TEAM__'
             call_side_team = s[:-3].strip() if low.endswith(' ml') else s.replace(' ML', '').strip()
+        elif ' rl ' in f' {low} ' or ' spread ' in f' {low} ':
+            # 2026-09-11: "Team Name RL +1.5" / "Team Name -1.5 Spread"
+            # → market=rl, team + signed line; grader resolves side later.
+            call_market = call_market or 'rl'
+            m_line = re.search(r'([+-]\s*\d+(?:\.\d+)?)', s)
+            if m_line:
+                try: call_line = float(m_line.group(1).replace(' ', ''))
+                except (TypeError, ValueError): call_line = None
+            # Team name is everything before "RL"/"Spread" or the signed line
+            call_side = '__PARSE_TEAM__'
+            _team = re.split(r'\s+(?:rl|spread)\b|\s+[+-]\d', s, maxsplit=1,
+                             flags=re.IGNORECASE)[0].strip()
+            call_side_team = _team or None
         elif low.startswith('over'):
             call_market = call_market or 'total'
             call_side = 'OVER'
-            # Strip any parenthetical suffix like " (Jerry 74/100)" first
             try: call_line = float(low.replace('over','').split('(')[0].strip().split()[0])
             except (ValueError, IndexError): pass
         elif low.startswith('under'):
@@ -192,6 +336,7 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
         'sport': sport, 'game_id': game_id, 'call_market': call_market,
         'call_side': call_side, 'call_line': call_line,
         'call_side_team': call_side_team,
+        'prop_info': prop_info,
     }
 
 
@@ -203,7 +348,11 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
     if isinstance(data, str):
         try: data = json.loads(data)
         except (json.JSONDecodeError, TypeError): data = {}
-    if data.get('result'):
+    if data.get('result') and data.get('result') != 'no-pick':
+        # 'no-pick' is a parser-failure marker (e.g. an old grade that
+        # couldn't decode a prop-type POTD before this file learned the
+        # prop pattern). Re-grade those rows instead of treating them as
+        # settled — that's how the 9/10 Jared Jones POTD gets its result.
         # 2026-09-09 dual-write reconciliation for already-graded rows:
         # older grades wrote only to jerry_cache. Backfill daily_best_bet_history
         # if it's stale (still 'Pending'). Non-fatal.
@@ -235,6 +384,26 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
         print(f'  {date_str}: cannot extract pick (game_id={pick["game_id"]!r}, '
               f'market={pick["call_market"]!r}) - marking as no-pick')
         result_payload = {'result': 'no-pick', 'graded_at': dt.datetime.now(dt.timezone.utc).isoformat()}
+    elif pick['call_market'] == 'prop':
+        # 2026-09-11: prop-type POTDs (e.g. "Jared Jones Under 15.5 Outs")
+        # grade via the sport's *_pipeline_props table where the prop grader
+        # already wrote a `result`. Prior version fell through to the totals
+        # branch, mis-parsed the line as the player's first name, and left
+        # a `no-pick` row on the Receipts calendar even though the prop was
+        # graded. 9/10 Jones Under 15.5 Outs (21 actual = Loss) hit exactly
+        # this path.
+        pres = _grade_prop_via_pipeline(pick['sport'], pick['game_id'],
+                                         date_str, pick['prop_info'])
+        if pres is None:
+            print(f'  {date_str}: prop grade pending / row missing '
+                  f'({pick["prop_info"]["player_name"]} {pick["prop_info"]["prop_type"]})')
+            return 'pending'
+        print(f'  {date_str}: {pick["sport"]} PROP '
+              f'{pick["prop_info"]["player_name"]} {pick["prop_info"]["direction"].upper()} '
+              f'{pick["prop_info"]["line"]} {pick["prop_info"]["prop_type"]} -> {pres}')
+        result_payload = {'result': pres,
+                          'graded_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                          'graded_by': 'grade_potd.py (prop path)'}
     else:
         game = _fetch_game_result(pick['sport'], pick['game_id'])
         if not game:
