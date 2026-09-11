@@ -299,6 +299,29 @@ def build_hits_parlay(hit_legs: list[dict],
     return None
 
 
+def _kickoff_by_gid(sport: str, game_date: str) -> dict:
+    """For weekly sports (NFL/NCAAF), fetch the true kickoff_utc so we can
+    cross-check prop rows whose game_date was written as today but whose
+    real game is a day off. Returns {game_id: kickoff_utc_iso}.
+
+    2026-09-10 guard: NE@SEA appeared on today's Ledger tagged 2026-09-10
+    even though the game is Thursday 9/11 8:20pm ET. Both prop and ctx
+    game_date were 9/10, so a game_date match alone can't screen this.
+    """
+    if sport not in ('NFL', 'NCAAF'): return {}
+    tbl = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context'}[sport]
+    try:
+        r = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_READ,
+            params={'game_date': f'eq.{game_date}',
+                    'select': 'game_id,kickoff_utc',
+                    'limit': '500'}, timeout=15)
+        if r.status_code != 200: return {}
+        return {row.get('game_id'): row.get('kickoff_utc')
+                for row in (r.json() or []) if isinstance(row, dict) and row.get('game_id')}
+    except Exception:
+        return {}
+
+
 def fetch_prime_props(game_date: str, sport: str = 'MLB') -> list[dict]:
     """Pull PRIME/STRONG props at published lines for chalk-mode parlays.
 
@@ -328,9 +351,34 @@ def fetch_prime_props(game_date: str, sport: str = 'MLB') -> list[dict]:
                 'limit': '30'},
         timeout=15)
     if r.status_code != 200: return []
+    # 2026-09-10 guard for NFL/NCAAF: verify each prop's game actually kicks
+    # off today ET. Root issue upstream: NE@SEA was tagged game_date=2026-09-10
+    # on both props + ctx even though kickoff is 9/11 night — Ledger built a
+    # SEA chalk_prop_parlay on today's card when there's no NFL game today.
+    # Compare kickoff_utc → ET date; drop props whose true ET date != game_date.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _kick = _kickoff_by_gid(sport, game_date)
+    _valid_gids = set()
+    if _kick:
+        try:
+            _target = _dt.fromisoformat(f'{game_date}T00:00:00').date()
+            for gid, ko in _kick.items():
+                if not ko: continue
+                try:
+                    _u = _dt.fromisoformat(ko.replace('Z', '+00:00'))
+                    _et = (_u - _td(hours=4)).date()
+                    if _et == _target:
+                        _valid_gids.add(gid)
+                except (ValueError, TypeError): pass
+        except Exception:
+            _valid_gids = set(_kick.keys())  # fail-open if parse blows up
     out = []
     for row in (r.json() or []):
         if not isinstance(row, dict): continue
+        # NFL/NCAAF weekly-sport guard — skip props whose kickoff isn't
+        # actually today ET (root-cause upstream game_date mislabel).
+        if sport in ('NFL', 'NCAAF') and _kick and row.get('game_id') not in _valid_gids:
+            continue
         direction = str(row.get('direction') or '').upper()
         odds = (row.get('book_over_odds') if direction == 'OVER'
                 else row.get('book_under_odds'))
