@@ -520,6 +520,23 @@ jobs:
           cd mlb_pipeline
           python generate_prop_jerry_synthesis.py --sport NFL --force --tier-gate NONE || echo "NFL prop Jerry synthesis failed (non-fatal)"
 
+      # 2026-09-13 Jerry-read orphan sweep for NFL. Same class as MLB
+      # cleanup after final dedup — NFL 9/13 audit found 55 orphan
+      # publishable jerry_reads (DeVonta Smith BACK 82, Justin Herbert
+      # BACK 62, etc.) whose parent nfl_pipeline_props row was demoted
+      # to LIGHT after synth ran. Coverage 80% → 93% post-cleanup.
+      # Non-fatal.
+      - name: Cleanup orphaned NFL jerry_reads (post-synth)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python cleanup_stale_coverage_props.py --sport NFL --jerry-orphan-scan \
+            || echo "NFL jerry-orphan cleanup failed (non-fatal)"
+
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

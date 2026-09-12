@@ -177,8 +177,16 @@ def scan_stale_jerry_reads(sport: str, date: str, dry_run: bool = False) -> int:
     print(f'  [{sport}] {len(jerry_reads)} publishable jerry_reads to verify')
     # Build a set of (player, prop_type, direction) with a live publishable
     # parent prop. One paged scan covers the whole slate.
+    #
+    # 2026-09-13 v2 REFINE: include COVERAGE tier as an alive parent — the
+    # composer's publishable-tier set is ('PRIME','STRONG','LEAN','COVERAGE'),
+    # so a jerry_read with a COVERAGE parent is legitimately publishable and
+    # must not be swept. The original scan_and_clean() only kills a jerry_
+    # read when the COVERAGE parent's own conviction dropped below the
+    # STALE_CONVICTION_FLOOR — this jerry-orphan variant kills only when
+    # NO parent at ANY publishable tier exists (or parent is SKIP-only).
     alive = set()
-    for tier in ('PRIME', 'STRONG', 'LEAN'):
+    for tier in ('PRIME', 'STRONG', 'LEAN', 'COVERAGE'):
         for page in range(15):
             lo = page * 1000
             r = requests.get(f'{SB}/rest/v1/{table}',
