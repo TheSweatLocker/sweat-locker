@@ -111,8 +111,9 @@ def _load_todays_games(sport: str, snap: date) -> dict:
         f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team&{date_filter}',
         headers=H_READ, timeout=15)
     if r.status_code != 200: return {}
+    ctx_rows = r.json() or []
     lookup = {}
-    for row in r.json() or []:
+    for row in ctx_rows:
         if not isinstance(row, dict): continue
         gid = row.get('game_id')
         away = (row.get('away_team') or '').lower()
@@ -120,25 +121,65 @@ def _load_todays_games(sport: str, snap: date) -> dict:
         a_last = away.split()[-1] if away else ''
         h_last = home.split()[-1] if home else ''
         lookup[(a_last, h_last)] = gid
+    # 2026-09-11 NFL mascot alias enrichment. Cleatz gives "NY Jets",
+    # "LA Chargers", "DAL Cowboys" but nfl_game_context stores canonical
+    # abbrevs ("NYJ", "LAC", "DAL"). First-word match works for one-city
+    # abbrevs (DAL↔DAL) but NY-shared/LA-shared teams miss (NY→NYJ/NYG,
+    # LA→LAR/LAC). Load nfl_team_aliases and add mascot-keyed lookups
+    # so ('jets', 'titans') resolves via the alias table.
+    if sport == 'NFL':
+        try:
+            ar = requests.get(f'{SB}/rest/v1/nfl_team_aliases', headers=H_READ,
+                              params={'select': 'canonical_name,mascot'}, timeout=10)
+            abbrev_to_mascot = {r['canonical_name']: (r.get('mascot') or '').lower()
+                                for r in (ar.json() or [])
+                                if isinstance(r, dict) and r.get('canonical_name')}
+            for row in ctx_rows:
+                if not isinstance(row, dict): continue
+                gid = row.get('game_id')
+                a_abbr = (row.get('away_team') or '').upper()
+                h_abbr = (row.get('home_team') or '').upper()
+                a_mascot = abbrev_to_mascot.get(a_abbr, '').lower()
+                h_mascot = abbrev_to_mascot.get(h_abbr, '').lower()
+                if a_mascot and h_mascot:
+                    lookup[(a_mascot, h_mascot)] = gid
+        except Exception:
+            pass
     return lookup
 
 
 def _resolve_gid(away_short: str, home_short: str, lookup: dict) -> Optional[str]:
-    """Cleatz uses codes like 'BAL Orioles', 'TB Rays', 'NY Yankees'.
-    Match on the LAST word (mascot name) which is unique per team."""
+    """Cleatz uses codes like 'BAL Orioles', 'TB Rays', 'NY Yankees',
+    'NO Saints', 'DET Lions'. Match against our game_context which
+    stores either the full club name (MLB: 'Baltimore Orioles') or
+    just the abbrev (NFL/NCAAF: 'NO', 'DET').
+
+    Strategy — try in order:
+      1. Last-word mascot match ('saints' vs 'saints')  — MLB pattern
+      2. First-word abbrev match ('no' vs 'no')         — NFL pattern
+      3. Substring fuzzy on either
+    2026-09-11: added #2 because NFL game_context stores bare abbrevs,
+    so last-word match ('saints' vs 'no') never fired and every NFL
+    cleatz signal shipped with game_id=None. Downstream classifier
+    joins by game_id → 0 signals visible → sharp confluence never fired
+    for NFL despite the scraper writing 42 rows/day.
+    """
     a = (away_short or '').lower().split()
     h = (home_short or '').lower().split()
-    # Handle 'Red Sox' / 'White Sox' / 'Blue Jays' — take last 2 words
-    a_key = a[-1] if a else ''
-    h_key = h[-1] if h else ''
-    # Two-word mascots
-    if len(a) >= 2 and a[-2] in ('red','white','blue'): a_key = a[-1]  # 'sox'/'jays'
-    if len(h) >= 2 and h[-2] in ('red','white','blue'): h_key = h[-1]
-    # Direct match
-    if (a_key, h_key) in lookup: return lookup[(a_key, h_key)]
-    # Fuzzy - substring match
+    if not a or not h: return None
+    a_last = a[-1]; h_last = h[-1]
+    # Two-word mascots ('Red Sox', 'Blue Jays')
+    if len(a) >= 2 and a[-2] in ('red','white','blue'): a_last = a[-1]
+    if len(h) >= 2 and h[-2] in ('red','white','blue'): h_last = h[-1]
+    # 1. Last-word mascot direct match
+    if (a_last, h_last) in lookup: return lookup[(a_last, h_last)]
+    # 2. First-word abbrev direct match (NFL / NCAAF game_context stores abbrev only)
+    a_first = a[0]; h_first = h[0]
+    if (a_first, h_first) in lookup: return lookup[(a_first, h_first)]
+    # 3. Fuzzy substring on either last or first word
     for (ak, hk), gid in lookup.items():
-        if a_key and a_key in ak and h_key and h_key in hk:
+        if ((a_last and a_last in ak) or (a_first and a_first == ak)) and \
+           ((h_last and h_last in hk) or (h_first and h_first == hk)):
             return gid
     return None
 
@@ -171,6 +212,26 @@ def _parse_market(section_text: str, market_name: str, next_market_names: list) 
         start = section_text.find(f'|{market_name} ')
         if start < 0:
             return {}
+    # 2026-09-11 · cleatz NFL page now emits a market navbar strip
+    # (`| Spread | Total | Moneyline |`) BEFORE the actual data section
+    # (`| Spread | Consensus | ...`). The old code took the first `|
+    # MARKET |` as start and clipped end at the next navbar market name,
+    # so slice_ was ~9 chars of pure header with no % values → every
+    # spread/total market returned 0 sides and 14 games shipped only
+    # ML. Detect the navbar by checking whether the next market name
+    # appears immediately after start (within ~40 chars): if so, that
+    # was the navbar — jump start to the second occurrence (real data
+    # section header).
+    if next_market_names:
+        nearest_nav = None
+        for nm in next_market_names:
+            p = section_text.find(f'| {nm} |', start + 5)
+            if p > 0 and p - start < 40:
+                nearest_nav = p if nearest_nav is None else min(nearest_nav, p)
+        if nearest_nav is not None:
+            second = section_text.find(f'| {market_name} |', start + 5)
+            if second > 0:
+                start = second
     end = len(section_text)
     for nm in next_market_names:
         p = section_text.find(f'| {nm} |', start + 5)
@@ -261,11 +322,22 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
         # 2026-09-10 · added digit support in mascot ([A-Za-z0-9\.]+ instead of
         # [A-Za-z\.]+) — the ONLY digit-starting NFL mascot is 49ers. Without
         # this SF games were silently dropped from every scrape.
-        team_m = re.search(r'\|\s*([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*\|\s*@\s*\|\s*([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*\|',
-                            clean)
+        # 2026-09-11 · cleatz.com's NFL page now emits pipe delimiters
+        # separated by whitespace after tag-strip ("| | NO Saints | @ |
+        # | DET Lions | |"). The old `\|` (single-pipe) separator matched
+        # 0 sections, silently dropping the entire NFL slate. Fix: allow
+        # `(?:\|\s*)+` so one-or-more pipes with optional whitespace
+        # between them count as one separator. MLB stays compatible
+        # because a single "|" is a subset of "(?:\|\s*)+".
+        _sep = r'(?:\|\s*)+'
+        team_m = re.search(
+            rf'{_sep}([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*{_sep}@\s*{_sep}([A-Z][A-Z]?\s*[A-Za-z0-9\.]+(?:\s+[A-Z][a-z]+)?)\s*{_sep}',
+            clean)
         if not team_m:
             # Try loose pattern
-            team_m = re.search(r'\|\s*([A-Z][A-Za-z0-9\s\.]+?)\s*\|\s*@\s*\|\s*([A-Z][A-Za-z0-9\s\.]+?)\s*\|', clean)
+            team_m = re.search(
+                rf'{_sep}([A-Z][A-Za-z0-9\s\.]+?)\s*{_sep}@\s*{_sep}([A-Z][A-Za-z0-9\s\.]+?)\s*{_sep}',
+                clean)
         if not team_m: continue
         away_short = team_m.group(1).strip()
         home_short = team_m.group(2).strip()

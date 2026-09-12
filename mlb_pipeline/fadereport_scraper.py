@@ -74,12 +74,26 @@ def _et_today() -> date:
 
 
 def _load_todays_games(sport: str, snap: date) -> dict:
-    """Return {(away_last, home_last): game_id} for fuzzy join."""
+    """Return {(away_last, home_last): game_id} for fuzzy join.
+
+    2026-09-11: widen date filter for football/weekly sports (mirror of
+    cleatz_scraper._load_todays_games fix from 2026-09-10). Fadereport
+    publishes a full-slate splits view for the coming NFL/NCAAF play-week,
+    not just the games kicking off today. When today=Fri and the slate
+    is Sat-Mon, the narrow `game_date=eq.today` filter loaded 0
+    game_context rows → every fadereport game row failed the fuzzy join
+    → 0 signals written for two NFL cycles in a row. Same widening pattern
+    as cleatz.
+    """
     tbl = SPORT_TABLE.get(sport)
     if not tbl: return {}
+    if sport in ('NFL', 'NCAAF', 'NBA', 'NCAAB'):
+        end = (snap + timedelta(days=10)).isoformat()
+        date_filter = f'and=(game_date.gte.{snap.isoformat()},game_date.lte.{end})'
+    else:
+        date_filter = f'game_date=eq.{snap.isoformat()}'
     r = requests.get(
-        f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team'
-        f'&game_date=eq.{snap.isoformat()}',
+        f'{SB}/rest/v1/{tbl}?select=game_id,away_team,home_team&{date_filter}',
         headers=H_READ, timeout=15)
     if r.status_code != 200: return {}
     lookup = {}
@@ -92,6 +106,33 @@ def _load_todays_games(sport: str, snap: date) -> dict:
         h_last = home.split()[-1] if home else ''
         lookup[(a_last, h_last)] = gid
         lookup[(away, home)] = gid
+    # 2026-09-11 NFL/NCAAF mascot alias enrichment. Fadereport gives just
+    # the mascot ("Saints", "Cowboys") but nfl_game_context stores the
+    # canonical abbrev ("NO", "DAL"). Every NFL FR row shipped with
+    # game_id=None because last-word match ('saints' vs 'no') fails.
+    # Pull nfl_team_aliases mascot column and add mascot-keyed entries
+    # pointing at the same game_id, so FR's mascot lookup hits.
+    if sport == 'NFL':
+        try:
+            ar = requests.get(f'{SB}/rest/v1/nfl_team_aliases',
+                              headers=H_READ,
+                              params={'select': 'canonical_name,mascot'},
+                              timeout=10)
+            abbrev_to_mascot = {row['canonical_name']: (row.get('mascot') or '').lower()
+                                for row in (ar.json() or [])
+                                if isinstance(row, dict) and row.get('canonical_name')}
+            # Re-scan ctx rows and add mascot-keyed variants
+            for row in r.json() or []:
+                if not isinstance(row, dict): continue
+                gid = row.get('game_id')
+                a_abbr = (row.get('away_team') or '').upper()
+                h_abbr = (row.get('home_team') or '').upper()
+                a_mascot = abbrev_to_mascot.get(a_abbr, '').lower()
+                h_mascot = abbrev_to_mascot.get(h_abbr, '').lower()
+                if a_mascot and h_mascot:
+                    lookup[(a_mascot, h_mascot)] = gid
+        except Exception:
+            pass
     return lookup
 
 
@@ -183,13 +224,20 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
     # Miami-FAMU Wed night). Fix: convert game_time_raw (ISO UTC) to ET
     # date and match on that. Fallback to old slug-substring match when
     # game_time_raw missing.
+    # 2026-09-11 FIX 2: for weekly-slate sports (NFL/NCAAF/NBA/NCAAB) accept
+    # a 10-day forward window instead of just today. FR ships the full
+    # NFL/NCAAF slate at once (Thu-Mon), so filtering to a single date
+    # dropped Sat/Sun/Mon games and Wk2 population stopped. Mirrors the
+    # cleatz widening pattern from the sibling _load_todays_games.
+    wide = sport in ('NFL', 'NCAAF', 'NBA', 'NCAAB')
+    win_end = snap + timedelta(days=10) if wide else snap
     def _matches_snap(g: dict) -> bool:
         raw = g.get('game_time_raw') or ''
         if raw:
             try:
                 dt_utc = datetime.fromisoformat(raw.replace('Z', '+00:00'))
                 et_date = (dt_utc - timedelta(hours=4)).date()
-                return et_date == snap
+                return snap <= et_date <= win_end
             except (ValueError, TypeError):
                 pass
         return snap_str in (g.get('game_id') or '')
