@@ -110,14 +110,32 @@ PROPS_TABLE = {
     'NBA': 'nba_pipeline_props',    # 2026-08-17: L10 lookback needs NBA player game log fetcher (TBD)
 }
 
-# Map prop_type → stat_field on player game logs
+# Map prop_type → stat_field on player game logs.
+# 2026-09-12: added batter stat families (total_bases, rbis, runs, hr,
+# batter_ks) so L5/L10 backfill covers position player props instead of
+# silently skipping them as no_stat_map. Prior version + split('_')[0]
+# lookup only matched single-token prefixes ('hits','ks','ha','bb',
+# 'outs','er') — every multi-token prop type (total_bases_over,
+# batter_ks_under, etc.) got dropped at the parser, so 2357 of 3173
+# props on 9/12 shipped without L5/L10 and tier promotion had no
+# recency signal to promote them past LEAN. Root cause of Andy's
+# "L5/L10 graphs missing on prop stat cards" 9/12 regression.
 MLB_STAT_MAP = {
-    'hits':  'hits',
-    'ks':    'strikeouts',      # pitcher Ks
+    # Pitcher
+    'hits':  'hits',           # kept for legacy hits_over (single-token) —
+                               # batter hits go via 'hits_over' below with
+                               # the _mlb_stat_key suffix-strip lookup.
+    'ks':    'strikeouts',     # pitcher Ks
     'ha':    'hits_allowed',
-    'bb':    'walks',           # pitcher BB — for batter BB, key differs
+    'bb':    'walks',          # pitcher BB
     'outs':  'outs',
     'er':    'earned_runs',
+    # Batter
+    'total_bases': 'total_bases',
+    'rbis':        'rbis',
+    'runs':        'runs',
+    'hr':          'home_runs',
+    'batter_ks':   'batter_ks',
 }
 NFL_STAT_MAP = {
     # 2026-08-22 CRITICAL FIX (silent-bug audit finding #3): keys MUST match
@@ -150,9 +168,18 @@ def _et_today() -> str:
 
 
 def _mlb_stat_key(prop_type: str) -> str | None:
-    """Convert prop_type ('hits_over','bb_under') to stat field name."""
+    """Convert prop_type ('hits_over','bb_under','total_bases_over') to
+    stat field name. 2026-09-12: strip _over/_under suffix like NFL path
+    (line 164-166). Prior version used split('_')[0] which broke every
+    multi-token family: 'total_bases_over' → 'total' (missing), 'batter_ks_under'
+    → 'batter' (missing). Now correctly maps 'total_bases_over' → 'total_bases'.
+    """
     if not prop_type: return None
-    base = prop_type.split('_')[0]  # 'hits_over' → 'hits'
+    base = prop_type
+    for suffix in ('_over', '_under'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
     return MLB_STAT_MAP.get(base)
 
 
@@ -238,6 +265,15 @@ def _mlb_player_id(player_name: str) -> Optional[int]:
 _MLB_API_STAT = {
     # batter — hitting group
     'hits':         ('hitting', 'hits'),
+    # 2026-09-12 added batter stat families so L5/L10 backfill covers
+    # position player props. Each maps STAT_MAP output → (api group,
+    # api field). batter_ks / pitcher strikeouts collide on field name
+    # but the group disambiguates them.
+    'total_bases':  ('hitting', 'totalBases'),
+    'rbis':         ('hitting', 'rbi'),
+    'runs':         ('hitting', 'runs'),
+    'home_runs':    ('hitting', 'homeRuns'),
+    'batter_ks':    ('hitting', 'strikeOuts'),
     # pitcher — pitching group
     'strikeouts':   ('pitching', 'strikeOuts'),
     'hits_allowed': ('pitching', 'hits'),
