@@ -139,15 +139,26 @@ def fetch_prop_tier_rates(days_back=30, min_n=10):
     try:
         gd_end = today_et()
         gd_start = (datetime.strptime(gd_end, '%Y-%m-%d') - timedelta(days=days_back)).strftime('%Y-%m-%d')
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
-            f"?game_date=gte.{gd_start}&game_date=lt.{gd_end}"
-            f"&result=in.(Win,Loss)"
-            f"&select=prop_type,tier,result&limit=5000",
-            headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
-            timeout=20,
-        )
-        rows = r.json() if r.status_code == 200 else []
+        # 2026-09-13 PAGINATION FIX. limit=5000 was silently capped at 1000
+        # by PostgREST; 30d MLB has ~6.9k graded prop rows so the tier-rate
+        # dict was calibrated off the newest ~2 days, and daily_degen's
+        # prop cohort thresholds were noise. Range-header pagination pulls
+        # the real window. Same landmine as sweat_card aa2f968f.
+        rows = []
+        for page in range(20):
+            lo = page * 1000
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+                f"?game_date=gte.{gd_start}&game_date=lt.{gd_end}"
+                f"&result=in.(Win,Loss)&select=prop_type,tier,result",
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}',
+                         'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+                timeout=20,
+            )
+            if r.status_code not in (200, 206): break
+            chunk = r.json() if isinstance(r.json(), list) else []
+            rows.extend(chunk)
+            if len(chunk) < 1000: break
     except Exception as e:
         print(f"  ⚠️ prop tier rate fetch failed ({e}) — props will use flat default")
         return {}

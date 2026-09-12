@@ -100,22 +100,32 @@ def fetch_legacy_results_for_date(sport: str, date_str: str) -> dict:
     from the legacy props table on `date_str`."""
     table = SPORT_PROPS_TABLE.get(sport)
     if not table: return {}
-    r = requests.get(
-        f'{SB}/rest/v1/{table}',
-        headers=H_READ,
-        params={
-            'game_date': f'eq.{date_str}',
-            'result':    'not.is.null',
-            'select':    'player_name,prop_type,direction,prop_line,result,final_value',
-            'limit':     '5000',
-        },
-        timeout=30,
-    )
-    if r.status_code != 200:
-        print(f'  ⚠ legacy fetch failed HTTP {r.status_code}: {r.text[:200]}')
-        return {}
+    # 2026-09-13 PAGINATION FIX. limit=5000 was silently capped at 1000 by
+    # PostgREST — big NCAAF Saturdays produce >1k graded props/day, so the
+    # tail of the day's grading silently missed pass-1 inheritance and had
+    # to fall through to the (slower, external-API) pass-2 grader instead.
+    # Same landmine class as [[project_postgrest_truncation_audit_912]].
+    rows = []
+    for page in range(15):
+        lo = page * 1000
+        r = requests.get(
+            f'{SB}/rest/v1/{table}',
+            headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+            params={
+                'game_date': f'eq.{date_str}',
+                'result':    'not.is.null',
+                'select':    'player_name,prop_type,direction,prop_line,result,final_value',
+            },
+            timeout=30,
+        )
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ legacy fetch failed HTTP {r.status_code}: {r.text[:200]}')
+            break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     out = {}
-    for row in r.json():
+    for row in rows:
         line = row.get('prop_line')
         if line is not None:
             line = float(line)
@@ -214,21 +224,31 @@ def grade_date(date_str: str, sport: str = 'MLB',
     """Grade all ungraded prop_playbook_decisions rows for a single date."""
     print(f'=== grade_prop_playbook · {sport} · {date_str} ===')
 
-    # Fetch ungraded rows (or all if --force)
+    # 2026-09-13 PAGINATION FIX. limit=5000 was silently capped at 1000.
+    # prop_playbook_decisions rows exceed 1k on busy multi-sport slates
+    # (MLB day slate + NCAAF Saturday + NBA night), which meant the tail
+    # of the day's decisions was silently left ungraded — feedback_grading_
+    # zero_fail_912. Range-header pagination catches every row.
     params = {
         'sport':     f'eq.{sport}',
         'game_date': f'eq.{date_str}',
         'select':    'id,player_name,prop_type,direction,prop_line,playbook_tier,result',
-        'limit':     '5000',
     }
     if not force:
         params['result'] = 'is.null'
-    r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
-                     headers=H_READ, params=params, timeout=30)
-    if r.status_code != 200:
-        print(f'  ⚠ ppd fetch failed HTTP {r.status_code}: {r.text[:200]}')
-        return {}
-    rows = r.json()
+    rows = []
+    for page in range(20):
+        lo = page * 1000
+        r = requests.get(
+            f'{SB}/rest/v1/prop_playbook_decisions',
+            headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+            params=params, timeout=30)
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ ppd fetch failed HTTP {r.status_code}: {r.text[:200]}')
+            return {}
+        chunk = r.json() if isinstance(r.json(), list) else []
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     if not rows:
         print(f'  no {"" if force else "ungraded "}rows on {date_str}')
         return {}

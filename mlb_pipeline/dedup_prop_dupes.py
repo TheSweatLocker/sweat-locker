@@ -117,23 +117,29 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
     # payloads → no L5/L10 charts on the app cards. Symptom user saw:
     # graphs appeared after generate_prop_jerry_synthesis ran, then
     # disappeared minutes later after this script fired.
-    r = requests.get(f'{SB}/rest/v1/{props_table}',
-                     headers=H_READ,
-                     params={'game_date': f'eq.{gd}',
-                             'select': 'id,player_name,prop_type,direction,'
-                                       'tier,conviction,refit_conviction,signals',
-                             'limit': 5000},
-                     timeout=30)
-    if r.status_code != 200:
-        print(f'  ⚠ fetch failed: {r.status_code}')
-        return 0
-    props = r.json() or []
+    # 2026-09-13 PAGINATION FIX. limit=5000 was silently capped at 1000 by
+    # PostgREST — the 9/11 slate had 3,191 props, so this returned 1,000 of
+    # them and the missing 2,191 didn't participate in dedup ranking, plus
+    # (worse) any orphan_ids computation ran against a truncated `alive` set.
+    # The 2026-09-11 SAFETY REWRITE below defends against orphan wipes but
+    # dedup itself was still working on a slice. Range-header pagination
+    # catches every row.
+    props = []
+    for page in range(20):
+        lo = page * 1000
+        r = requests.get(f'{SB}/rest/v1/{props_table}',
+                         headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+                         params={'game_date': f'eq.{gd}',
+                                 'select': 'id,player_name,prop_type,direction,'
+                                           'tier,conviction,refit_conviction,signals'},
+                         timeout=30)
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ fetch failed: {r.status_code}')
+            return 0
+        chunk = r.json() if isinstance(r.json(), list) else []
+        props.extend(chunk)
+        if len(chunk) < 1000: break
     print(f'  {len(props)} total props')
-    # Belt-and-suspenders: if we're within 100 of the limit, log a warning
-    # so a future volume spike doesn't silently re-introduce the same bug.
-    if len(props) >= 4900:
-        print(f'  ⚠ warning: prop count {len(props)} near fetch limit — '
-              f'consider bumping the limit again to avoid orphan wipe.')
 
     # Group by (player_name.lower, stat_family)
     groups: dict = defaultdict(list)
@@ -199,12 +205,22 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
     if deleted and loser_props:
         deleted_keys = {(lp['player_name'], lp['prop_type'], lp['direction'])
                         for lp in loser_props}
-        jr = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
-                          headers=H_READ,
-                          params={'game_date': f'eq.{gd}', 'sport': f'eq.{sport_str}',
-                                  'select': 'id,player_name,prop_type,direction',
-                                  'limit': 5000},
-                          timeout=20).json() or []
+        # 2026-09-13 same pagination fix: prop_jerry_reads scan for orphan
+        # matching. Truncation here meant orphan_ids was computed against a
+        # partial jerry_reads list, silently keeping stale rows around.
+        jr = []
+        for page in range(15):
+            lo = page * 1000
+            _r = requests.get(
+                f'{SB}/rest/v1/prop_jerry_reads',
+                headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+                params={'game_date': f'eq.{gd}', 'sport': f'eq.{sport_str}',
+                        'select': 'id,player_name,prop_type,direction'},
+                timeout=20)
+            if _r.status_code not in (200, 206): break
+            chunk = _r.json() if isinstance(_r.json(), list) else []
+            jr.extend(chunk)
+            if len(chunk) < 1000: break
         orphan_ids = [j['id'] for j in jr
                       if (j['player_name'], j['prop_type'], j['direction']) in deleted_keys]
         for i in range(0, len(orphan_ids), CHUNK):
