@@ -328,14 +328,35 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
 
 
 def run(sports: list, dry_run: bool = False):
+    # 2026-09-11 LOUD CANARY (mirror of cleatz_scraper.run). See that
+    # docstring — emits `🚨 SCRAPER_ZERO` for any in-season sport that
+    # comes back empty, so cron logs have one grep target for silent
+    # scraper regressions.
+    from datetime import date as _date
+    _m = _date.today().month
+    IN_SEASON = {
+        'MLB':   3 <= _m <= 10,
+        'NFL':   _m >= 9 or _m <= 2,
+        'NCAAF': _m >= 8 or _m <= 1,
+        'NBA':   _m >= 10 or _m <= 6,
+        'NCAAB': _m >= 11 or _m <= 4,
+        'NHL':   _m >= 10 or _m <= 6,
+        'CFB':   _m >= 8 or _m <= 1,
+    }
     total = 0
+    per_sport = {}
     for sport in sports:
         print(f'\n=== fadereport_scraper · {sport} ===')
         try:
             n = scrape_sport(sport, dry_run=dry_run)
             total += n
+            per_sport[sport] = n
         except Exception as e:
             print(f'  ✗ {sport} failed: {e}')
+            per_sport[sport] = 0
+    for sport, n in per_sport.items():
+        if n == 0 and IN_SEASON.get(sport, False):
+            print(f'🚨 SCRAPER_ZERO · fadereport · {sport} · in-season sport wrote 0 signals')
     print(f'\n✓ done · {total} signals total across {len(sports)} sports')
 
 
