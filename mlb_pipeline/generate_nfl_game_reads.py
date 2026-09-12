@@ -684,6 +684,21 @@ def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
     conviction = pp.get('conviction')
     line = pp.get('line')
     tier = str(pp.get('tier') or '').upper()
+    # 2026-09-12 UNBLOCK: NFL Week 2 slate had 16 of 27 games force-passed
+    # because ensemble is still calibrating and tiering games to COVERAGE.
+    # Original rule was ALL COVERAGE → force PASS. New rule: COVERAGE with
+    # conviction >= 60 ships as a LEAN pick (visible to users) instead of
+    # PASS. COVERAGE conv < 60 + PASS/SKIP tiers keep the pass path — those
+    # are genuinely soft. This surfaces the ensemble's best guess when it
+    # exists but doesn't manufacture picks on games with no signal at all.
+    _COVERAGE_LEAN_FLOOR = 60
+    _cov_promotable = (tier == 'COVERAGE'
+                       and isinstance(conviction, (int, float))
+                       and int(conviction) >= _COVERAGE_LEAN_FLOOR
+                       and market in _NFL_VALID_MARKETS and side and label)
+    if _cov_promotable:
+        # Downgrade tier for display but keep the pick — treat as LEAN
+        tier = 'LEAN'
     # Engine PASS path — LLM prose can stay, but badge shows PASS + engine reason
     if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in _NFL_VALID_MARKETS or not side or not label:
         engine_sub = str(pp.get('sub') or '').strip()
@@ -725,7 +740,26 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
         'game_date': ct,
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'prompt_version': 'nfl_game_read_v2_2026-08-06',
-        'input_snapshot': {'source': 'generate_nfl_game_reads', 'matchup': struct.get('matchup')},
+        # 2026-09-12 DEPTH: Was only serializing {source, matchup} — 2 keys
+        # vs MLB's 28. Andy complaint "NFL reads should be as deep as MLB".
+        # Now serializes the full primary_play (has LR shadows, ensemble
+        # sources, per-market breakdown) plus struct signals so the app can
+        # render richer sections. App renders whatever keys exist and skips
+        # missing ones, so this is additive/safe — doesn't break any
+        # existing UI path.
+        'input_snapshot': {
+            'source': 'generate_nfl_game_reads',
+            'matchup': struct.get('matchup'),
+            'primary_play': struct.get('primary_play'),
+            'align_status': struct.get('align_status'),
+            'signals': struct.get('signals'),
+            'team_snapshot': {
+                'away': {k: v for k, v in (struct.get('away') or {}).items()
+                         if v is not None and not k.startswith('_')},
+                'home': {k: v for k, v in (struct.get('home') or {}).items()
+                         if v is not None and not k.startswith('_')},
+            } if isinstance(struct.get('away'), dict) or isinstance(struct.get('home'), dict) else None,
+        },
         'short_read': parsed.get('short_read') or narrative[:500],
         'long_read': parsed.get('long_read') or narrative,
         'call_text': parsed.get('call_text'),
