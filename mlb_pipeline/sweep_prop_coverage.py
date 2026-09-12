@@ -498,8 +498,18 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                 }
                 if dry_run:
                     written += 1; continue
-                wr = requests.post(f'{SB}/rest/v1/mlb_pipeline_props',
-                                   headers=H_WRITE, json=payload, timeout=15)
+                # 2026-09-12: add on_conflict clause. H_WRITE already sends
+                # Prefer: resolution=merge-duplicates but PostgREST needs
+                # ?on_conflict=<uniq-cols> in the URL to route the upsert;
+                # without it, existing rows return 23505 and Andy sees 1000+
+                # violations per cron in the supabase error feed. Same class
+                # as the mlb_lr_dissent fix (d15319b1). Constraint columns:
+                # (game_date, player_name, prop_type, direction, prop_line)
+                # per supabase/migrations/20260826d_mlb_pipeline_props_dedup.sql
+                wr = requests.post(
+                    f'{SB}/rest/v1/mlb_pipeline_props'
+                    '?on_conflict=game_date,player_name,prop_type,direction,prop_line',
+                    headers=H_WRITE, json=payload, timeout=15)
                 if wr.status_code in (200, 201, 204):
                     written += 1
                 else:
