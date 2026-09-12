@@ -909,6 +909,23 @@ jobs:
           cd mlb_pipeline
           python dedup_prop_dupes.py --sport MLB || echo "final dedup failed (non-fatal)"
 
+      # 2026-09-13 Jerry-read orphan sweep. After dedup + refit override,
+      # some jerry_reads point at (player, prop_type, direction) tuples
+      # whose parent mlb_pipeline_props row got demoted to SKIP/COVERAGE
+      # (Andy 9/12 audit: 56 orphaned publishable jerry_reads on today's
+      # MLB slate — Luis Castillo PRIME outs_under, Paul Skenes STRONG
+      # ks_over, etc.). Delete those so the app never renders empty
+      # L5/L10 cards. Non-fatal.
+      - name: Cleanup orphaned jerry_reads (post-dedup)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python cleanup_stale_coverage_props.py --sport MLB --jerry-orphan-scan \
+            || echo "jerry-orphan cleanup failed (non-fatal)"
+
       # 2026-08-14 · FADE→PASS discipline for bomb-list prop_types.
       # 30d audit showed outs_over / er_under / bb_over / bb_under / ks_under
       # natural FADEs hit <45% (see apply_fade_type_discipline.py docstring).
