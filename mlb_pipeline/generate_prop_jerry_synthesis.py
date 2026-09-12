@@ -400,6 +400,34 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
         if _page > 10:  # 10 * 1000 = 10k safety cap
             print(f'  [{sport}] fetch safety cap hit at {len(props)} props')
             break
+    # 2026-09-12 BANNED PROP FAMILIES — MLB. Andy directive: batter families
+    # (rbis/total_bases/hr/runs/batter_ks/hits_under) were never historically
+    # rendered on the app and don't have _stat_last10 populated via
+    # backfill_prop_lookback (MLB_STAT_MAP intentionally excludes them per
+    # feedback_prop_graph_rendering_912). Every synth run before this filter
+    # was recreating ~2200 prop_jerry_reads rows for these families, all
+    # with recent_form=NULL → the "majority of graphs missing" Andy hit
+    # today. The 2081 morning purge + 2204 afternoon purge were treating
+    # symptoms; this filter is the cause fix.
+    #
+    # Kill by prop_type. If user later approves specific batter families
+    # (e.g., promotes hits_under to publishable), remove from this set
+    # AND add to MLB_STAT_MAP in backfill_prop_lookback so graphs render.
+    _MLB_BANNED_PROP_TYPES = {
+        'rbis_over', 'rbis_under',
+        'total_bases_over', 'total_bases_under',
+        'hr_over', 'hr_under',
+        'runs_over', 'runs_under',
+        'batter_ks_over', 'batter_ks_under',
+        'hits_under',
+    }
+    if sport == 'MLB':
+        _before_ban = len(props)
+        props = [p for p in props if p.get('prop_type') not in _MLB_BANNED_PROP_TYPES]
+        if _before_ban != len(props):
+            print(f'  [{sport}] dropped {_before_ban - len(props)} banned batter-family props '
+                  f'(no MLB_STAT_MAP coverage → would render graph-less)')
+
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
     # the entire bucket ROI injection path. Fallback = pre-8/1 behavior.
     BUCKET_ROI_ON = os.environ.get('JERRY_BUCKET_ROI_ENABLED', 'true').lower() != 'false'
