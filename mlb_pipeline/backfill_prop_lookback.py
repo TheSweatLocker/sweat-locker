@@ -111,31 +111,24 @@ PROPS_TABLE = {
 }
 
 # Map prop_type → stat_field on player game logs.
-# 2026-09-12: added batter stat families (total_bases, rbis, runs, hr,
-# batter_ks) so L5/L10 backfill covers position player props instead of
-# silently skipping them as no_stat_map. Prior version + split('_')[0]
-# lookup only matched single-token prefixes ('hits','ks','ha','bb',
-# 'outs','er') — every multi-token prop type (total_bases_over,
-# batter_ks_under, etc.) got dropped at the parser, so 2357 of 3173
-# props on 9/12 shipped without L5/L10 and tier promotion had no
-# recency signal to promote them past LEAN. Root cause of Andy's
-# "L5/L10 graphs missing on prop stat cards" 9/12 regression.
+# 2026-09-12 REVERT: dropped batter families (total_bases, rbis, runs,
+# hr, batter_ks) that were added earlier the same day. The addition
+# expanded L5/L10 coverage but ALSO promoted those families into
+# PRIME/STRONG tier via the ensemble scorer — putting rbis U0.5,
+# tb U0.5, hr U0.5 etc. onto the Sweat Card for the first time ever.
+# Andy: "we dont even list rbi in prop jerry... never seen rbis plays
+# until today on our first fucking full launch day." Historical Sweat
+# Card only ships pitcher props + hits_over — this map now enforces
+# that by omission (only entries here get L5/L10 → only these can
+# promote to PRIME tier via recency signal). hits_under works because
+# the _mlb_stat_key suffix-strip fix routes it to the 'hits' entry.
 MLB_STAT_MAP = {
-    # Pitcher
-    'hits':  'hits',           # kept for legacy hits_over (single-token) —
-                               # batter hits go via 'hits_over' below with
-                               # the _mlb_stat_key suffix-strip lookup.
+    'hits':  'hits',           # covers hits_over AND hits_under (suffix-strip)
     'ks':    'strikeouts',     # pitcher Ks
     'ha':    'hits_allowed',
     'bb':    'walks',          # pitcher BB
     'outs':  'outs',
     'er':    'earned_runs',
-    # Batter
-    'total_bases': 'total_bases',
-    'rbis':        'rbis',
-    'runs':        'runs',
-    'hr':          'home_runs',
-    'batter_ks':   'batter_ks',
 }
 NFL_STAT_MAP = {
     # 2026-08-22 CRITICAL FIX (silent-bug audit finding #3): keys MUST match
@@ -265,15 +258,9 @@ def _mlb_player_id(player_name: str) -> Optional[int]:
 _MLB_API_STAT = {
     # batter — hitting group
     'hits':         ('hitting', 'hits'),
-    # 2026-09-12 added batter stat families so L5/L10 backfill covers
-    # position player props. Each maps STAT_MAP output → (api group,
-    # api field). batter_ks / pitcher strikeouts collide on field name
-    # but the group disambiguates them.
-    'total_bases':  ('hitting', 'totalBases'),
-    'rbis':         ('hitting', 'rbi'),
-    'runs':         ('hitting', 'runs'),
-    'home_runs':    ('hitting', 'homeRuns'),
-    'batter_ks':    ('hitting', 'strikeOuts'),
+    # 2026-09-12 REVERTED batter family additions (total_bases/rbis/
+    # runs/home_runs/batter_ks) — see MLB_STAT_MAP comment. Those families
+    # aren't publishable on Sweat Card per historical discipline.
     # pitcher — pitching group
     'strikeouts':   ('pitching', 'strikeOuts'),
     'hits_allowed': ('pitching', 'hits'),

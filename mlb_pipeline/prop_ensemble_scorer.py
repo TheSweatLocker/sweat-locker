@@ -520,6 +520,31 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
     elif tier == 'STRONG' and conviction < 60:
         tier = 'LEAN'
 
+    # 2026-09-12 HARD PROP-FAMILY CAP for Sweat Card publish discipline.
+    # Historical Sweat Card only shipped pitcher props + hits_over. Andy:
+    # "we dont even list rbi in prop jerry i have actaully never seen rbis
+    # plays until today on our first fucking full lssunch day."
+    # Root cause of the surprise: an earlier same-day L5/L10 STAT_MAP
+    # expansion silently opened batter families (rbis, total_bases, hr,
+    # runs, batter_ks, hits_under) to promotion because the ensemble
+    # scorer had no family gate — any prop with strong enough score
+    # could hit PRIME regardless of type. Now capped at LEAN maximum
+    # for those families so they never surface on the card even if the
+    # ensemble score would otherwise promote them.
+    _NEVER_PUBLISH_TYPES = {
+        'rbis_over', 'rbis_under',
+        'total_bases_over', 'total_bases_under',
+        'hr_over', 'hr_under',
+        'batter_ks_over', 'batter_ks_under',
+        'runs_over', 'runs_under',
+        'hits_under',
+    }
+    if (prop.get('prop_type') or '').lower() in _NEVER_PUBLISH_TYPES:
+        if tier in ('PRIME', 'STRONG'):
+            tier = 'LEAN'
+        if conviction > 55:
+            conviction = 55
+
     # 2026-09-02 PRIME DISCIPLINE GATE (audit-driven, backtest-verified).
     # 30d audit revealed PRIME props were hitting 45% while STRONG hit
     # 60% — the tier ordering was INVERTED. Root causes identified:
