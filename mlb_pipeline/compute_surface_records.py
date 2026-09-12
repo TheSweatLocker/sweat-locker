@@ -483,18 +483,51 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
         'total_result': 'total_result',
         **(result_key_map or {}),
     }
+    # 2026-09-11 game_id-mismatch fix. NFL (and any sport with divergent
+    # id conventions between game_context and game_results) had
+    # res_map.get(ctx.game_id) always return None because ctx uses the
+    # Odds API hash while results use schedule format. Every non-MLB
+    # sport's sides surface silently reported 0 graded picks since
+    # launch. Fix: join by (away_team, home_team, week_bucket) tuple
+    # instead of raw game_id. MLB and NCAAF (whose game_id conventions
+    # already match across their two tables) stay compatible because
+    # the tuple is unique per matchup+week regardless.
     ctx_url = (f'{SB}/rest/v1/{ctx_table}'
-               f'?select=game_id,game_date,primary_play&primary_play=not.is.null')
+               f'?select=game_id,game_date,away_team,home_team,primary_play&primary_play=not.is.null')
     res_url = (f'{SB}/rest/v1/{res_table}'
-               f'?select=game_id,{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]}')
+               f'?select=game_id,game_date,away_team,home_team,'
+               f'{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]}')
     try:
         ctx_rows = list(_paged(ctx_url))
     except Exception:
         return []
     try:
-        res_map = {r['game_id']: r for r in _paged(res_url) if r.get('game_id')}
+        res_rows = list(_paged(res_url))
     except Exception:
         return []
+
+    def _week_bucket(dstr):
+        try:
+            d = dt.date.fromisoformat(dstr)
+        except Exception:
+            return ''
+        # Snap to most-recent Thursday (NFL) or use date as-is for
+        # sports without a Thu-based week (still gives a stable
+        # per-day bucket since same-day rematches don't happen).
+        if sport in ('NFL', 'NCAAF'):
+            return (d - dt.timedelta(days=(d.weekday() - 3 + 7) % 7)).isoformat()
+        return d.isoformat()
+
+    res_map = {}
+    for r in res_rows:
+        if not isinstance(r, dict): continue
+        key = (r.get('away_team'), r.get('home_team'),
+               _week_bucket(r.get('game_date') or ''))
+        # Prefer the row with actual scores over a schedule-only skeleton
+        existing = res_map.get(key)
+        if existing is None or (existing.get(keys['home_win']) is None
+                                and r.get(keys['home_win']) is not None):
+            res_map[key] = r
     out = []
     for c in ctx_rows:
         pp = c.get('primary_play') or {}
@@ -502,7 +535,9 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
         tier = (pp.get('tier') or '').upper()
         if tier not in ('PRIME', 'STRONG', 'LEAN'):
             continue
-        res = res_map.get(c.get('game_id'))
+        key = (c.get('away_team'), c.get('home_team'),
+               _week_bucket(c.get('game_date') or ''))
+        res = res_map.get(key)
         if not res: continue
         ptype = (pp.get('type') or '').lower()
         side  = (pp.get('side') or '').upper()

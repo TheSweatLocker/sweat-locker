@@ -189,21 +189,81 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
     gid_list = list({r['game_id'] for r in reads if r.get('game_id')})
     gid_in = ','.join(f'"{g}"' for g in gid_list)
     spread_col = SPREAD_COL_BY_SPORT.get(sport, 'spread_result')
-    rr = requests.get(f'{SB}/rest/v1/{results_table}',
-                      headers=H_READ,
-                      params={'game_id': f'in.({gid_in})',
-                              'select': f'game_id,home_score,away_score,{spread_col},total_result'},
-                      timeout=15)
-    raw_rows = rr.json() if rr.status_code == 200 else []
-    if rr.status_code != 200:
-        print(f'  [{sport}] results query failed ({rr.status_code}): {str(rr.text)[:150]}')
-    # Normalize: alias the sport's spread column into `run_line_result` key
-    # so downstream grade_rl works uniformly regardless of sport.
-    results_by_gid = {}
-    for row in raw_rows:
-        if isinstance(row, dict):
-            row['run_line_result'] = row.get(spread_col)
-            results_by_gid[row['game_id']] = row
+
+    # 2026-09-11 game_id mismatch fix for NFL/NCAAF. jerry_reads uses the
+    # Odds API event hash while nfl_game_results / ncaaf_game_results use
+    # a schedule-format id (20260910_NE_SEA / ncaaf_20261212_Army_Navy).
+    # in.() lookup returned zero matches → results_by_gid empty → every
+    # NFL/NCAAF jerry_read stayed ungraded since launch. Same class of
+    # bug that just landed in resolve_nfl_results (249d71cb).
+    # Fix: for these sports, resolve teams via sport_game_context (which
+    # DOES share game_id with jerry_reads), then match results by
+    # (away, home, week_bucket) tuple with ET/UTC date-window tolerance.
+    # 249d71cb applied the sibling fix in resolve_nfl_results.py.
+    if sport in ('NFL', 'NCAAF') and gid_list:
+        ctx_table = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+        ctx_r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+                             params={'game_id': f'in.({gid_in})',
+                                     'select': 'game_id,away_team,home_team,game_date'},
+                             timeout=15)
+        ctx_by_gid = {row['game_id']: row for row in (ctx_r.json() or [])
+                      if isinstance(row, dict) and row.get('game_id')}
+        # Build a wide date-window fetch on results table
+        from datetime import date as _d, timedelta as _td
+        dates = [row.get('game_date') for row in ctx_by_gid.values() if row.get('game_date')]
+        results_by_gid = {}
+        if dates:
+            dmin = min(dates); dmax = max(dates)
+            lo = (_d.fromisoformat(dmin) - _td(days=3)).isoformat()
+            hi = (_d.fromisoformat(dmax) + _td(days=3)).isoformat()
+            rr = requests.get(f'{SB}/rest/v1/{results_table}', headers=H_READ,
+                              params={'game_date': f'gte.{lo}',
+                                      'and': f'(game_date.lte.{hi})',
+                                      'select': f'game_id,game_date,away_team,home_team,'
+                                                f'home_score,away_score,{spread_col},total_result'},
+                              timeout=25)
+            result_rows = rr.json() if rr.status_code == 200 else []
+
+            def _week_bucket(dstr):
+                d = _d.fromisoformat(dstr)
+                return (d - _td(days=(d.weekday() - 3 + 7) % 7)).isoformat()
+
+            by_tuple = {}
+            for row in result_rows:
+                if not isinstance(row, dict): continue
+                row['run_line_result'] = row.get(spread_col)
+                key = (row.get('away_team'), row.get('home_team'),
+                       _week_bucket(row.get('game_date') or dmin))
+                existing = by_tuple.get(key)
+                if existing is None or (existing.get('home_score') is None and row.get('home_score') is not None):
+                    by_tuple[key] = row
+            # Re-key by the jerry_read game_id (Odds hash) so downstream code
+            # keeps using results_by_gid[read['game_id']] unchanged.
+            for gid, ctx_row in ctx_by_gid.items():
+                key = (ctx_row.get('away_team'), ctx_row.get('home_team'),
+                       _week_bucket(ctx_row.get('game_date') or dmin))
+                hit = by_tuple.get(key)
+                if hit is not None:
+                    results_by_gid[gid] = hit
+        raw_rows = list(results_by_gid.values())
+        if rr.status_code != 200 if 'rr' in locals() else False:
+            print(f'  [{sport}] results query failed')
+    else:
+        rr = requests.get(f'{SB}/rest/v1/{results_table}',
+                          headers=H_READ,
+                          params={'game_id': f'in.({gid_in})',
+                                  'select': f'game_id,home_score,away_score,{spread_col},total_result'},
+                          timeout=15)
+        raw_rows = rr.json() if rr.status_code == 200 else []
+        if rr.status_code != 200:
+            print(f'  [{sport}] results query failed ({rr.status_code}): {str(rr.text)[:150]}')
+        # Normalize: alias the sport's spread column into `run_line_result` key
+        # so downstream grade_rl works uniformly regardless of sport.
+        results_by_gid = {}
+        for row in raw_rows:
+            if isinstance(row, dict):
+                row['run_line_result'] = row.get(spread_col)
+                results_by_gid[row['game_id']] = row
 
     # Postponement inference: game_date more than 4 days old + no result row
     # or result row with null scores = postponed/cancelled. Void them so they

@@ -408,6 +408,15 @@ jobs:
         run: |
           cd mlb_pipeline
           python resolve_ncaaf_results.py || echo "resolver failed"
+          # 2026-09-11: NCAAF was missing from grade_jerry_reads cron all
+          # along (MLB/NBA/NCAAB/NHL wired, NCAAF/NFL not). Games tab /
+          # Receipts couldn't show side/total records because
+          # jerry_reads.result stayed null for every NCAAF row since
+          # launch. Runs after resolve_ncaaf_results which fills
+          # ncaaf_game_results with scores; grader then reads those to
+          # populate jerry_reads.result. Same class of fix as NFL cron
+          # sibling entry landed 9/11.
+          python grade_jerry_reads.py --sport NCAAF || echo "NCAAF jerry grader failed (non-fatal)"
 
       - name: Recompute NCAAF cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
