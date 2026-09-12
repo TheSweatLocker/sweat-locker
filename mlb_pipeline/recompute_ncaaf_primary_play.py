@@ -137,6 +137,31 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
         if dry_run: continue
         if patch_pp(g['game_id'], new_pp): patched += 1
 
+    # 2026-09-11 PERMANENT FIX for Jerry vs primary_play badge drift on NCAAF.
+    # Ports the MLB (2026-09-09) + NFL (2026-09-11) auto-align pattern. NCAAF
+    # jerry_cache is per-day, so once Jerry writes on cron day X, a later
+    # recompute changing primary_play leaves jerry_reads.call_* pointing at
+    # the stale pick until the next day's cron regenerates Jerry. Games tab
+    # badge then disagrees with primary_play chip. backfill_jerry_pick_alignment
+    # applies enforce_primary_play_alignment() to every jerry_read in the
+    # window with a diff-only PATCH, keeping the two surfaces in permanent
+    # sync regardless of cron order.
+    if not dry_run and patched > 0:
+        try:
+            import subprocess
+            from pathlib import Path as _P
+            print(f'\n  → auto-aligning jerry_reads via backfill_jerry_pick_alignment')
+            _script = str(_P(__file__).parent / 'backfill_jerry_pick_alignment.py')
+            r = subprocess.run(
+                [sys.executable, _script, '--sport', 'NCAAF'],
+                capture_output=True, text=True, timeout=180)
+            for line in ((r.stdout or '') + (r.stderr or '')).splitlines()[-10:]:
+                print(f'    {line}')
+            if r.returncode != 0:
+                print(f'    ⚠ align exit {r.returncode}')
+        except Exception as e:
+            print(f'    ⚠ auto-align failed: {e} (jerry_reads may be out of sync)')
+
     prefix = '[DRY] ' if dry_run else ''
     print(f'\n{prefix}changed={changed}  patched={patched}  rerouted={rerouted}')
 
