@@ -175,13 +175,57 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # Templated fallback signature: "The published call is X — Y tier"
         _tmpl_fallback = 'published call is' in _lower_long
         # Cross-market cue: ml call but prose says "Take X ML" / "Under X"
-        _has_ml_take    = ' ml' in _lower_long or 'moneyline' in _lower_long
-        _has_total_take = 'take under' in _lower_long or 'take over' in _lower_long \
-                          or 'take the under' in _lower_long or 'take the over' in _lower_long
+        # 2026-09-12 FIX: previously only scanned long_read but prior scrub
+        # runs null long_read (leaving short_read stale). Andy audit
+        # confirmed 4 of 5 today's mismatches had contradiction in
+        # short_read only (long_read empty). Scan BOTH fields now.
+        _prose_all = (_lower_short + ' ' + _lower_long)
+        _has_ml_take    = (' ml' in _prose_all or 'moneyline' in _prose_all)
+        _has_total_take = ('take under' in _prose_all or 'take over' in _prose_all
+                           or 'take the under' in _prose_all or 'take the over' in _prose_all)
         _prose_cross_market = (
             (pp_type == 'total' and _has_ml_take and not _has_total_take) or
             (pp_type == 'ml'    and _has_total_take)
         )
+        # 2026-09-12 SAME-MARKET SIDE FLIP detection. Andy audit surfaced 5 of
+        # 15 MLB writeups where prose recommends opposite side of same market:
+        #   card OVER 9.0 vs prose "Take UNDER 9.0"
+        #   card Dodgers ML vs prose "Take Marlins ML" (opposite team)
+        # Previous code only caught cross-market swaps (ml vs total). Same-
+        # market flip is just as broken from user POV. Detects by parsing
+        # short_read + long_read for direction words and comparing to
+        # pp_side. When flipped, treated identically to cross-market:
+        # null both prose fields so app shows "analysis pending" instead
+        # of prose contradicting the card.
+        _same_market_side_flip = False
+        if pp_type == 'total':
+            _prose_says_over  = ('take over'  in _lower_short or 'take over'  in _lower_long
+                                 or 'take the over'  in _lower_short or 'take the over'  in _lower_long)
+            _prose_says_under = ('take under' in _lower_short or 'take under' in _lower_long
+                                 or 'take the under' in _lower_short or 'take the under' in _lower_long)
+            if pp_side == 'OVER'  and _prose_says_under and not _prose_says_over:
+                _same_market_side_flip = True
+            if pp_side == 'UNDER' and _prose_says_over  and not _prose_says_under:
+                _same_market_side_flip = True
+        elif pp_type in ('ml', 'rl'):
+            # Extract team names — for ml/rl side flip, prose recommends the
+            # OTHER team by name. Use home/away team from ctx row.
+            _home = (c.get('home_team') or '').lower().strip()
+            _away = (c.get('away_team') or '').lower().strip()
+            if _home and _away and _home != _away:
+                _picked_team = _home if pp_side == 'HOME' else _away
+                _other_team  = _away if pp_side == 'HOME' else _home
+                # Only flip-detected if prose recommends OTHER team by name
+                # in a "take X" context AND does not also mention picked
+                # team in same context (avoid false positive on prose that
+                # discusses both teams).
+                _prose_all = (_lower_short + ' ' + _lower_long)
+                _take_other = (f'take {_other_team}' in _prose_all or
+                               f'take the {_other_team}' in _prose_all)
+                _take_picked = (f'take {_picked_team}' in _prose_all or
+                                f'take the {_picked_team}' in _prose_all)
+                if _take_other and not _take_picked:
+                    _same_market_side_flip = True
         # 2026-09-08 STALE-SCRUB-TEMPLATE detection. When a prior scrub
         # left "Model recomputed to X" but the current call has since
         # flipped to Y, that short_read is stale (points at old pick).
@@ -196,7 +240,8 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             if _claimed and _current and _claimed not in _current and _current not in _claimed:
                 _stale_recompute_template = True
 
-        stale_prose = _tmpl_fallback or _prose_cross_market or _stale_recompute_template
+        stale_prose = (_tmpl_fallback or _prose_cross_market or
+                       _stale_recompute_template or _same_market_side_flip)
 
         if not drift and not stale_prose: continue
 
@@ -290,13 +335,24 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # "take X ml" cue AND an ml-picked game, or the reverse) — no
         # template writes, just a null-out that the render treats as
         # "analysis pending".
-        _hard_cross_market = _prose_cross_market and (drift or stale_prose)
-        if _hard_cross_market:
-            # Null out the cross-market prose. UI falls back to
+        # 2026-09-12: expanded from _prose_cross_market only to also catch
+        # _same_market_side_flip. Andy audit found 5 of 15 MLB writeups with
+        # prose contradicting the card — 4 cross-market, 1 same-market
+        # (Cubs card Over 9.0 vs prose "Take UNDER 9.0"). Same-market
+        # flip is same UX bug from user POV, deserves same treatment.
+        # Also now nulls BOTH short_read AND long_read (was long_read only)
+        # since users read the short_read as the primary prose on the
+        # card — leaving stale short_read defeats the null-long_read fix.
+        _hard_bad_prose = (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
+        if _hard_bad_prose:
+            # Null out contradictory prose (both fields). UI falls back to
             # "analysis pending" — better than misleading text.
-            payload['long_read'] = None
+            payload['short_read'] = None
+            payload['long_read']  = None
+            _flip_kind = ('cross-market' if _prose_cross_market
+                          else 'same-market-side-flip')
             _orig_note = (
-                f'[jerry_pick_scrub 2026-09-08 null-out cross-market: '
+                f'[jerry_pick_scrub 2026-09-12 null-out {_flip_kind}: '
                 f'call is now {pp_type.upper()}/{pp_side} {_side_readable[:40]}. '
                 f'Original short: {orig_short[:300]} · Original long start: {orig_long_pre[:200]}]'
             )
