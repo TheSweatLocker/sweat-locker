@@ -88,13 +88,27 @@ def refresh_results(schedules: list, dry_run: bool = False) -> int:
         print(f'  [DRY] would refresh scores for {len(schedules)} games')
         return len(schedules)
 
-    updated = 0
+    # 2026-09-11 MATCHER FIX. nflverse game_id is season_week_away_home
+    # (e.g. 2026_01_NE_SEA); nfl_game_results was seeded by nfl_odds_pull
+    # with YYYYMMDD_AWAY_HOME (e.g. 20260910_NE_SEA). Additionally
+    # nflverse `gameday` is ET while our DB game_date is UTC, so a Thu
+    # 8pm ET kickoff lands on gameday=9/09 ET but game_date=9/10 UTC.
+    # The old PATCH ?game_id=eq.<nflverse_gid> matched ZERO rows and
+    # PostgREST returned 204 (silent no-op); the counter incremented
+    # anyway, so we falsely reported "refreshed N game outcomes" and
+    # every completed game stayed with score=None. Now match on
+    # (away_team, home_team) with a game_date window spanning the
+    # nflverse date +/- 1 day — unique enough since teams play weekly.
+    updated = 0; unmatched = 0
     for row in schedules:
-        gid = row.get('game_id')
-        if not gid: continue
         home_score = _i(row.get('home_score'))
         away_score = _i(row.get('away_score'))
         if home_score is None or away_score is None: continue
+        away = (row.get('away_team') or '').strip()
+        home = (row.get('home_team') or '').strip()
+        gameday_et = (row.get('gameday') or '').strip()
+        if not (away and home and gameday_et): continue
+
         close_spread = _f(row.get('spread_line'))
         close_total = _f(row.get('total_line'))
         margin = home_score - away_score
@@ -124,14 +138,40 @@ def refresh_results(schedules: list, dry_run: bool = False) -> int:
             'spread_result': spread_result,
             'total_result': total_result,
         }
+        # Window: ET gameday ±1 day covers the ET→UTC date shift for both
+        # Thu/Fri primetime kickoffs (ET→UTC forward) and any local-tz
+        # oddities. Uniqueness is preserved by team pair.
+        from datetime import datetime as _dt, timedelta as _td
+        _et = _dt.fromisoformat(gameday_et)
+        date_lo = (_et - _td(days=1)).date().isoformat()
+        date_hi = (_et + _td(days=1)).date().isoformat()
+        params = [
+            ('away_team', f'eq.{away}'),
+            ('home_team', f'eq.{home}'),
+            ('game_date', f'gte.{date_lo}'),
+            ('game_date', f'lte.{date_hi}'),
+        ]
         r = requests.patch(
-            f'{SB}/rest/v1/nfl_game_results?game_id=eq.{gid}',
-            headers={**H_WRITE, 'Prefer': 'return=minimal'},
-            json=payload, timeout=15,
+            f'{SB}/rest/v1/nfl_game_results',
+            headers={**H_WRITE, 'Prefer': 'return=representation'},
+            params=params, json=payload, timeout=15,
         )
         if r.status_code in (200, 201, 204):
-            updated += 1
-    print(f'  ✓ refreshed {updated} game outcomes')
+            # Use representation to know how many rows we actually touched;
+            # a WHERE that matches 0 rows returns 200 with [] (silent no-op)
+            try:
+                affected = len(r.json()) if r.text else 0
+            except Exception:
+                affected = 0
+            if affected > 0:
+                updated += 1
+            else:
+                unmatched += 1
+                print(f'    ⚠ no match: {away}@{home} gameday_et={gameday_et}')
+        else:
+            unmatched += 1
+            print(f'    ⚠ patch {r.status_code}: {away}@{home}  {r.text[:120]}')
+    print(f'  ✓ refreshed {updated} game outcomes  (unmatched={unmatched})')
     return updated
 
 
@@ -140,29 +180,63 @@ def fetch_ungraded_picks(force_regrade: bool = False) -> list:
     filt = '' if force_regrade else '&result=is.null'
     r = requests.get(
         f'{SB}/rest/v1/nfl_game_picks?pick_type=neq.skip{filt}'
-        f'&select=pick_id,game_id,pick_type,pick_side,pick_line,tier,'
+        f'&select=pick_id,game_id,game_date,pick_type,pick_side,pick_line,tier,'
         f'close_spread,close_total,home_team,away_team',
         headers=H_READ, timeout=15,
     )
     return r.json() if r.status_code == 200 else []
 
 
-def fetch_result_map(game_ids: list) -> dict:
-    """Batch-fetch outcome rows for the referenced game_ids."""
-    if not game_ids: return {}
-    # PostgREST in.() has URL length limits; chunk 100 at a time.
+def fetch_result_map(picks: list) -> dict:
+    """Fetch outcome rows and key by (away, home, game_date_bucket) tuple.
+
+    2026-09-11 FIX: was keyed by nfl_game_results.game_id which is the
+    schedule format (20260910_NE_SEA); nfl_game_picks stores the Odds API
+    hash (8c94552d0...) as its game_id. Every lookup returned None so no
+    pick has been graded since launch. Also handles the ET-vs-UTC date
+    offset for evening kickoffs — a picks row dated 9/10 (UTC) can match
+    a results row dated 9/09 (ET) for the same matchup. Bucket both to
+    the same NFL play-week (rounded down to the most-recent Thursday).
+    """
+    if not picks: return {}
+    # Widest date window we might need: min pick date to max pick date +/- 3d
+    dates = [p.get('game_date') for p in picks if p.get('game_date')]
+    if not dates: return {}
+    from datetime import datetime as _dt, timedelta as _td
+    dmin = min(dates); dmax = max(dates)
+    lo = (_dt.fromisoformat(dmin) - _td(days=3)).date().isoformat()
+    hi = (_dt.fromisoformat(dmax) + _td(days=3)).date().isoformat()
+    r = requests.get(
+        f'{SB}/rest/v1/nfl_game_results'
+        f'?game_date=gte.{lo}&game_date=lte.{hi}'
+        f'&select=game_id,game_date,away_team,home_team,home_score,away_score,'
+        f'home_win,spread_result,total_result,close_spread,close_total,total_points',
+        headers=H_READ, timeout=25,
+    )
+    rows = r.json() if r.status_code == 200 else []
+
+    def _week_bucket(dstr: str) -> str:
+        """Snap to most-recent Thursday. dstr = 'YYYY-MM-DD'."""
+        if not dstr: return ''
+        d = _dt.fromisoformat(dstr).date()
+        # dow: Mon=0 ... Thu=3 ... Sun=6
+        _daysBackToThu = (d.weekday() - 3 + 7) % 7
+        return (d - _td(days=_daysBackToThu)).isoformat()
+
     out = {}
-    for i in range(0, len(game_ids), 100):
-        chunk = game_ids[i:i+100]
-        ids_str = ','.join(f'"{g}"' for g in chunk)
-        r = requests.get(
-            f'{SB}/rest/v1/nfl_game_results?game_id=in.({ids_str})'
-            f'&select=game_id,home_score,away_score,home_win,spread_result,total_result,close_spread,close_total,total_points',
-            headers=H_READ, timeout=15,
-        )
-        if r.status_code == 200:
-            for row in r.json():
-                out[row['game_id']] = row
+    for row in rows:
+        key = (row.get('away_team'), row.get('home_team'), _week_bucket(row.get('game_date') or ''))
+        # Only overwrite existing key if this row has scores and the current one doesn't —
+        # avoids evicting a graded row with a schedule-only row for the same matchup.
+        existing = out.get(key)
+        if existing is None or (existing.get('home_score') is None and row.get('home_score') is not None):
+            out[key] = row
+    # Stash the bucket function so resolve_picks can build the lookup key
+    out['_lookup'] = lambda pick: (
+        pick.get('away_team'),
+        pick.get('home_team'),
+        _week_bucket(pick.get('game_date') or ''),
+    )
     return out
 
 
@@ -201,9 +275,9 @@ def grade_pick(pick: dict, result: dict) -> Optional[str]:
 def resolve_picks(picks: list, result_map: dict, dry_run: bool = False) -> dict:
     """Grade and patch each pick. Returns tally dict."""
     tally = {'W': 0, 'L': 0, 'P': 0, 'pending': 0}
+    lookup = result_map.get('_lookup')  # 2026-09-11: tuple builder installed by fetch_result_map
     for p in picks:
-        gid = p['game_id']
-        result = result_map.get(gid)
+        result = result_map.get(lookup(p)) if lookup else result_map.get(p.get('game_id'))
         grade = grade_pick(p, result)
         if grade is None:
             tally['pending'] += 1
@@ -306,8 +380,10 @@ def run(season: Optional[int] = None, force_regrade: bool = False,
     # 2. Grade picks
     picks = fetch_ungraded_picks(force_regrade=force_regrade)
     print(f'  ungraded picks: {len(picks)}')
-    game_ids = list({p['game_id'] for p in picks})
-    result_map = fetch_result_map(game_ids)
+    # 2026-09-11: fetch_result_map now takes picks (not game_ids) so it can
+    # build the (away, home, week_bucket) tuple index. Old game_id-keyed
+    # lookup never matched because the two tables use different id formats.
+    result_map = fetch_result_map(picks)
     pick_tally = resolve_picks(picks, result_map, dry_run=dry_run)
     print(f'  picks: {pick_tally}')
 
