@@ -197,6 +197,22 @@ def load_public_splits_snapshot(sb_url: str, sb_key: str, sport_code: str,
             div_val = None
             if top_bets is not None:
                 div_val = int(round(top_money - top_bets))
+            # 2026-09-13 EXTREME PUBLIC BIAS flag. Andy audit: UCLA vs SDSU
+            # had money 100% + bets 99% on HOME — textbook fade setup that
+            # the normal 10pp-gap `fade_note` completely missed (money and
+            # bets both super-heavy same side = no gap). Add an explicit
+            # extreme_public field when either side crosses 90% — app can
+            # render a contrarian FADE badge; ensemble scorer can weight it
+            # as a public-loss cohort signal.
+            extreme_public = None
+            if top_money >= 90 or (top_bets is not None and top_bets >= 90):
+                extreme_public = {
+                    'flag': True, 'side': top_side,
+                    'money': int(round(top_money)),
+                    'bets': int(round(top_bets or 0)),
+                    'note': (f'{top_side} at {int(round(top_money))}% money / '
+                             f'{int(round(top_bets or 0))}% bets — extreme public bias, contrarian setup'),
+                }
             snapshot[mkt] = {
                 'pick': top_side,
                 'money': int(round(top_money)),
@@ -204,6 +220,7 @@ def load_public_splits_snapshot(sb_url: str, sb_key: str, sport_code: str,
                 'div': div_val if div_val is not None else 0,
                 'fade': fade_note,
                 'source': 'so',
+                'extreme_public': extreme_public,
             }
         if snapshot:
             snapshot['pulled_at'] = latest_ts.get(gid)
@@ -398,6 +415,8 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
             'rlm': rlm_info['rlm'],
             'sharp_side': rlm_info['sharp_side'],
             'rlm_note': rlm_info['direction_note'],
+            # 2026-09-13: extreme public bias flag (money OR bets >=90% one side)
+            'extreme_public': oc.get('extreme_public') if oc else None,
         }
 
     ml_s = market_status('ml')
@@ -435,6 +454,31 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
             g_chip = goat.get('chip')
             if isinstance(g_chip, dict) and g_chip.get('label'):
                 chips_extra.append(g_chip)
+
+    # 2026-09-13 EXTREME_PUBLIC chip. Andy audit UCLA/SDSU showed money 100%
+    # + bets 99% on HOME with no visible fade cue on the card. Emit one chip
+    # per market that trips the extreme-public gate — contrarian setup that
+    # the app can surface as a red/gold FADE badge via the generic
+    # <InfoChip> renderer (label + value + tooltip + kind).
+    for _mkt_key, _mkt_state in (('ml', ml_s), ('rl', rl_s), ('total', tot_s)):
+        _xp = _mkt_state.get('extreme_public') if isinstance(_mkt_state, dict) else None
+        if not (isinstance(_xp, dict) and _xp.get('flag')):
+            continue
+        _side_label = _xp.get('side') or '?'
+        _mkt_pretty = {'ml': 'ML', 'rl': 'Spread', 'total': 'Total'}.get(_mkt_key, _mkt_key.upper())
+        chips_extra.append({
+            'key': f'extreme_public_{_mkt_key}',
+            'label': f'FADE PUBLIC · {_mkt_pretty}',
+            'value': f"{_xp.get('money', 0)}% $ · {_xp.get('bets', 0)}% bets on {_side_label}",
+            'tooltip': (
+                f"{_side_label} sits at {_xp.get('money', 0)}% money and "
+                f"{_xp.get('bets', 0)}% of bets — extreme public bias. "
+                'Historical fade edge fires when one side crosses 90/90 with '
+                'no sharp counter-signal. Cross-reference the sharp side + RLM.'
+            ),
+            'kind': 'warn',
+            'priority': 82,
+        })
 
     align_status = {
         'ml': ml_s, 'rl': rl_s, 'total': tot_s,
