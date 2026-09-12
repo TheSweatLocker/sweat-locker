@@ -1519,6 +1519,69 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     return len(rows)
 
 
+def _enrich_nfl_qb_home_away_splits(rows: list) -> None:
+    """Attach per-QB career + recent home/road splits to ctx.
+
+    2026-09-11: reads from nfl_qb_home_away_splits (materialized weekly by
+    compute_nfl_qb_home_away_splits.py) and joins on home_qb_id +
+    away_qb_id. Feeds new signal_sources that fire on extreme deltas
+    (Tua +34pp home-vs-road; Bo Nix +27pp; Josh Allen +21pp; Davis Mills
+    inverse -20pp). No-ops safely if the table doesn't exist yet
+    (pre-migration installs) — try/except swallows the 404.
+    """
+    qb_ids: set = set()
+    for r in rows:
+        for k in ('home_qb_id', 'away_qb_id'):
+            v = r.get(k)
+            if v: qb_ids.add(v)
+    if not qb_ids:
+        return
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/nfl_qb_home_away_splits',
+            headers=SB_READ,
+            params={
+                'qb_id': f'in.({",".join(qb_ids)})',
+                'select': 'qb_id,home_starts,home_wins,road_starts,road_wins,'
+                          'home_win_pct,road_win_pct,career_h_r_delta_pp,'
+                          'recent_home_starts,recent_home_wins,'
+                          'recent_road_starts,recent_road_wins,'
+                          'recent_home_win_pct,recent_road_win_pct,'
+                          'recent_h_r_delta_pp',
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return  # table missing or query failed — silent no-op
+        by_qb = {row['qb_id']: row for row in (r.json() or [])}
+    except Exception:
+        return
+
+    for r in rows:
+        hqb = r.get('home_qb_id')
+        aqb = r.get('away_qb_id')
+        if hqb and hqb in by_qb:
+            s = by_qb[hqb]
+            r['home_qb_career_home_starts']    = s.get('home_starts')
+            r['home_qb_career_home_win_pct']   = s.get('home_win_pct')
+            r['home_qb_career_road_starts']    = s.get('road_starts')
+            r['home_qb_career_road_win_pct']   = s.get('road_win_pct')
+            r['home_qb_career_h_r_delta_pp']   = s.get('career_h_r_delta_pp')
+            r['home_qb_recent_home_starts']    = s.get('recent_home_starts')
+            r['home_qb_recent_home_win_pct']   = s.get('recent_home_win_pct')
+            r['home_qb_recent_h_r_delta_pp']   = s.get('recent_h_r_delta_pp')
+        if aqb and aqb in by_qb:
+            s = by_qb[aqb]
+            r['away_qb_career_home_starts']    = s.get('home_starts')
+            r['away_qb_career_home_win_pct']   = s.get('home_win_pct')
+            r['away_qb_career_road_starts']    = s.get('road_starts')
+            r['away_qb_career_road_win_pct']   = s.get('road_win_pct')
+            r['away_qb_career_h_r_delta_pp']   = s.get('career_h_r_delta_pp')
+            r['away_qb_recent_road_starts']    = s.get('recent_road_starts')
+            r['away_qb_recent_road_win_pct']   = s.get('recent_road_win_pct')
+            r['away_qb_recent_h_r_delta_pp']   = s.get('recent_h_r_delta_pp')
+
+
 def _enrich_nfl_rest_days(rows: list) -> None:
     """Populate ctx.home_rest / ctx.away_rest per game (days since last game).
     2026-08-22: closes 5 dead signals (nfl_rest_advantage_home, _away,
@@ -1655,6 +1718,16 @@ def run(dry_run: bool = False) -> None:
         _enrich_nfl_rest_days(rows)
     except Exception as _e:
         print(f'  ⚠ rest-days enrichment failed (non-fatal): {_e}')
+
+    # 2026-09-11 QB HOME/AWAY SPLITS ENRICHMENT.
+    # Attaches per-QB career + recent home/road W-L splits to ctx so
+    # nfl_qb_home_dominant / nfl_away_qb_road_struggles signals have
+    # data to fire on. No-ops if nfl_qb_home_away_splits table hasn't
+    # been migrated yet.
+    try:
+        _enrich_nfl_qb_home_away_splits(rows)
+    except Exception as _e:
+        print(f'  ⚠ QB home/away splits enrichment failed (non-fatal): {_e}')
 
     written = upsert_context(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
