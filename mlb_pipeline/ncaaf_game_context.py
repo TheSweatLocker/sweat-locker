@@ -327,13 +327,33 @@ def _blend_pg(stats: dict, field: str, per_game: bool = True) -> Optional[float]
         pri_pg = float(pri_val) if pri_val is not None else None
 
     if cur_pg is None and pri_pg is None: return None
-    if cur_pg is None:  return round(pri_pg, 2)
-    if pri_pg is None:  return round(cur_pg, 2)
-    if cur_games >= BLEND_UNTIL_GAMES:
-        return round(cur_pg, 2)
+    if cur_pg is None:  result = round(pri_pg, 2)
+    elif pri_pg is None:  result = round(cur_pg, 2)
+    elif cur_games >= BLEND_UNTIL_GAMES:
+        result = round(cur_pg, 2)
+    else:
+        w = cur_games / float(BLEND_UNTIL_GAMES)
+        result = round(w * cur_pg + (1 - w) * pri_pg, 2)
 
-    w = cur_games / float(BLEND_UNTIL_GAMES)
-    return round(w * cur_pg + (1 - w) * pri_pg, 2)
+    # 2026-09-12 SANITY CLAMP. Andy caught Jerry writing "Texas averages
+    # 36 penalties per game" in the Ohio State @ Texas read — impossible
+    # (real NCAAF penalty rate is 5-8/game). Root cause: 101 games in
+    # ncaaf_game_context had penalty values >15/pg, either the CFBD
+    # source mis-labeling season totals as per-game, or a games-played
+    # denominator missing when the volumetric field was already pre-
+    # divided upstream. Rather than trust the ingest to be perfect,
+    # cap known-per-game stats at physical limits — any value above is
+    # a data bug, return None so downstream signal composers + Jerry
+    # prompts don't see garbage. Better nothing than nonsense in prose.
+    _PG_CAPS = {
+        'penalties': 15,          # real NCAAF max ~12/game
+        'penalty_yards': 200,     # real NCAAF max ~150/game
+        'turnovers': 8,           # real max ~5/game
+    }
+    _cap = _PG_CAPS.get(field)
+    if _cap is not None and result is not None and result > _cap:
+        return None
+    return result
 
 
 def _blend_label(stats: dict) -> str:
