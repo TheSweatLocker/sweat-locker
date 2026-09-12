@@ -139,10 +139,73 @@ def fetch_ungraded_picks(sport: str, days: Optional[int], force_regrade: bool) -
 
 
 def fetch_result_map(sport: str, game_ids: list) -> dict:
-    """Batch-fetch outcome rows keyed by game_id."""
+    """Batch-fetch outcome rows keyed by game_id.
+
+    2026-09-11 NFL BRIDGE. external_picks.game_id is the Odds API event
+    hash for NFL (e.g. ae7d5615fc56...) while nfl_game_results.game_id
+    is schedule-format (20260910_NE_SEA). The direct game_id join
+    returned 0 rows → external_picks NFL stayed 100% ungraded since
+    launch (52 pulled, 0 graded). NCAAF is unaffected because both
+    external_picks and ncaaf_game_results use the same schedule format.
+    Fix: for NFL, bridge through nfl_game_context (which shares Odds
+    hash game_id with external_picks) to get (away, home, game_date),
+    then join nfl_game_results by (away, home, week_bucket).
+    Same pattern as resolve_nfl_results (249d71cb) + grade_jerry_reads
+    (7b0b10a5) + compute_surface_records (7b0b10a5).
+    """
     if not game_ids:
         return {}
     cfg = SPORT_CONFIG[sport]
+    if sport == 'NFL':
+        from datetime import date as _d, timedelta as _td
+        out = {}
+        # Bridge: game_id (Odds hash) → (away, home, game_date) via nfl_game_context
+        ctx_by_gid = {}
+        for i in range(0, len(game_ids), 100):
+            chunk = game_ids[i:i + 100]
+            ids_str = ','.join(f'"{g}"' for g in chunk)
+            cr = requests.get(
+                f'{SB}/rest/v1/nfl_game_context?game_id=in.({ids_str})'
+                f'&select=game_id,away_team,home_team,game_date',
+                headers=H_READ, timeout=15)
+            for row in (cr.json() or []):
+                if isinstance(row, dict) and row.get('game_id'):
+                    ctx_by_gid[row['game_id']] = row
+        if not ctx_by_gid:
+            return {}
+        dates = [c.get('game_date') for c in ctx_by_gid.values() if c.get('game_date')]
+        if not dates:
+            return {}
+        dmin = min(dates); dmax = max(dates)
+        lo = (_d.fromisoformat(dmin) - _td(days=3)).isoformat()
+        hi = (_d.fromisoformat(dmax) + _td(days=3)).isoformat()
+        rr = requests.get(
+            f'{SB}/rest/v1/nfl_game_results'
+            f'?game_date=gte.{lo}&game_date=lte.{hi}'
+            f'&select=game_id,game_date,away_team,home_team,{cfg["select_cols"]}',
+            headers=H_READ, timeout=25)
+        result_rows = rr.json() if rr.status_code == 200 else []
+        def _bucket(dstr):
+            d = _d.fromisoformat(dstr)
+            return (d - _td(days=(d.weekday() - 3 + 7) % 7)).isoformat()
+        by_tuple = {}
+        for row in result_rows:
+            if not isinstance(row, dict): continue
+            key = (row.get('away_team'), row.get('home_team'),
+                   _bucket(row.get('game_date') or dmin))
+            existing = by_tuple.get(key)
+            if existing is None or (existing.get('home_score') is None
+                                    and row.get('home_score') is not None):
+                by_tuple[key] = row
+        # Re-key by external_picks.game_id (Odds hash)
+        for gid, ctx in ctx_by_gid.items():
+            key = (ctx.get('away_team'), ctx.get('home_team'),
+                   _bucket(ctx.get('game_date') or dmin))
+            hit = by_tuple.get(key)
+            if hit is not None:
+                out[gid] = hit
+        return out
+    # MLB / NCAAF / others: direct game_id join (their ids match)
     out = {}
     for i in range(0, len(game_ids), 100):
         chunk = game_ids[i:i + 100]
