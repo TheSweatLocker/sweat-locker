@@ -140,19 +140,109 @@ def scan_and_clean(sport: str, date: str, dry_run: bool = False) -> int:
     return deleted
 
 
+def scan_stale_jerry_reads(sport: str, date: str, dry_run: bool = False) -> int:
+    """2026-09-13 v2: jerry-read-first orphan sweep.
+
+    Sister to scan_and_clean() (which walks the props table for
+    COVERAGE tier). This variant walks prop_jerry_reads directly and
+    kills any row where the parent mlb_pipeline_props table has NO
+    publishable tier for that (player, prop_type, direction) tuple —
+    catches the SKIP-tier orphan class the COVERAGE-only scan misses.
+
+    Motivation: Andy audit 9/12 — Ian Seymour ha_over LEAN jerry_read
+    exists but every mlb_pipeline_props row for that tuple is SKIP.
+    Same story for Gage Jump / Andrew Alvarez / Brady Singer LEAN
+    pitcher props (8 total on today's slate). App renders these as
+    "empty L5/L10" cards because the parent prop has no recent-form
+    signals attached — the jerry_read is from an earlier tier state
+    and needs to go.
+    """
+    table = PROPS_TABLES.get(sport)
+    if not table:
+        print(f'  [{sport}] no props table registered — skip'); return 0
+    # Page all publishable-conviction jerry_reads for the date+sport
+    jerry_reads = []
+    for page in range(15):
+        lo = page * 1000
+        r = requests.get(f'{SB}/rest/v1/prop_jerry_reads',
+            headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+            params={'sport': f'eq.{sport}', 'game_date': f'eq.{date}',
+                    'conviction': f'gte.{STALE_CONVICTION_FLOOR}',
+                    'select': 'id,player_name,prop_type,direction,conviction,call_verdict'},
+            timeout=20)
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        jerry_reads.extend(chunk)
+        if len(chunk) < 1000: break
+    print(f'  [{sport}] {len(jerry_reads)} publishable jerry_reads to verify')
+    # Build a set of (player, prop_type, direction) with a live publishable
+    # parent prop. One paged scan covers the whole slate.
+    alive = set()
+    for tier in ('PRIME', 'STRONG', 'LEAN'):
+        for page in range(15):
+            lo = page * 1000
+            r = requests.get(f'{SB}/rest/v1/{table}',
+                headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+                params={'game_date': f'eq.{date}', 'tier': f'eq.{tier}',
+                        'select': 'player_name,prop_type,direction'},
+                timeout=20)
+            if r.status_code not in (200, 206): break
+            chunk = r.json() if isinstance(r.json(), list) else []
+            for row in chunk:
+                alive.add((row['player_name'], row['prop_type'], row['direction']))
+            if len(chunk) < 1000: break
+    print(f'  [{sport}] {len(alive)} live publishable (player,type,dir) tuples')
+    # Any jerry_read whose parent tuple isn't in `alive` is stale
+    stale = [jr for jr in jerry_reads
+             if (jr['player_name'], jr['prop_type'], jr['direction']) not in alive]
+    if not stale:
+        print(f'  [{sport}] ✓ no orphaned jerry_reads')
+        return 0
+    print(f'  [{sport}] {len(stale)} ORPHANED jerry_reads (parent prop demoted below LEAN):')
+    for jr in stale[:15]:
+        print(f'    · {jr["player_name"][:24]:24s} {jr["prop_type"]:14s} '
+              f'{jr["direction"]:5s}  pjr_conv={jr["conviction"]}  '
+              f'verdict={jr.get("call_verdict","?")}')
+    if len(stale) > 15:
+        print(f'    ...and {len(stale) - 15} more')
+    if dry_run:
+        print(f'  [DRY-RUN] would delete {len(stale)} rows')
+        return 0
+    deleted = 0
+    ids = [jr['id'] for jr in stale]
+    for i in range(0, len(ids), 100):
+        chunk_ids = ids[i:i+100]
+        csv = ','.join(str(x) for x in chunk_ids)
+        r = requests.delete(f'{SB}/rest/v1/prop_jerry_reads?id=in.({csv})',
+            headers=H_WRITE, timeout=30)
+        if r.status_code in (200, 204):
+            deleted += len(chunk_ids)
+        else:
+            print(f'  [{sport}] delete chunk failed: {r.status_code} {r.text[:150]}')
+    print(f'  [{sport}] deleted {deleted} orphaned rows')
+    return deleted
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', help='One sport (MLB/NFL/NCAAF); default all')
     ap.add_argument('--date', help='ET date; default today')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--jerry-orphan-scan', action='store_true',
+                    help='Use jerry-read-first orphan detection (catches SKIP + '
+                         'COVERAGE + missing-parent classes at once). Recommended.')
     args = ap.parse_args()
     d = args.date or _et_today()
     sports = [args.sport] if args.sport else list(PROPS_TABLES.keys())
     print(f'=== cleanup_stale_coverage_props · {d} '
-          f'{"[DRY-RUN]" if args.dry_run else ""} ===')
+          f'{"[DRY-RUN]" if args.dry_run else ""} '
+          f'{"[JERRY-ORPHAN]" if args.jerry_orphan_scan else "[COVERAGE-SCAN]"} ===')
     total = 0
     for s in sports:
-        total += scan_and_clean(s, d, dry_run=args.dry_run)
+        if args.jerry_orphan_scan:
+            total += scan_stale_jerry_reads(s, d, dry_run=args.dry_run)
+        else:
+            total += scan_and_clean(s, d, dry_run=args.dry_run)
     print(f'\n=== total stale rows {"would-delete" if args.dry_run else "deleted"}: {total} ===')
 
 
