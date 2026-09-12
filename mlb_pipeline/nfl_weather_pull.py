@@ -114,15 +114,27 @@ def fetch_forecast(lat: float, lng: float, target_utc: datetime) -> Optional[dic
 
 
 def fetch_upcoming_games() -> list:
-    """Games in nfl_game_context within next 7 days that lack weather."""
+    """Games in nfl_game_context within next 7 days that lack weather.
+
+    2026-09-11 fix: was querying `commence_time` (doesn't exist on
+    nfl_game_context; that column lives on the odds side). Correct column
+    is `kickoff_utc`. Also swapped the malformed comma-joined filter
+    string for proper PostgREST tuple-param syntax so both bounds
+    apply. Prior version returned 0 games every run — silently. Weather
+    signals never had any data to fire on.
+    """
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=7)
     r = requests.get(
         f'{SB}/rest/v1/nfl_game_context',
         headers=H_READ,
-        params={'select': 'game_id,commence_time,home_team,away_team,temp,wind,dome',
-                'commence_time': f'gte.{now.isoformat()},lt.{horizon.isoformat()}',
-                'order': 'commence_time.asc', 'limit': 200},
+        params=[
+            ('select', 'game_id,kickoff_utc,home_team,away_team,temp,wind,roof'),
+            ('kickoff_utc', f'gte.{now.isoformat()}'),
+            ('kickoff_utc', f'lt.{horizon.isoformat()}'),
+            ('order', 'kickoff_utc.asc'),
+            ('limit', '200'),
+        ],
         timeout=20,
     )
     if r.status_code != 200:
@@ -166,25 +178,30 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
             print(f'  ⚠ no stadium coord for {home} — skip')
             continue
         if stad['dome']:
-            patch = {'temp': 72, 'wind': 0, 'dome': True, 'weather_source': 'dome_default'}
+            # 2026-09-11: dropped `dome`+`weather_source` (columns don't
+            # exist on nfl_game_context). Signals expect roof ∈ ('dome',
+            # 'closed') for indoor, else NULL — matches nfl_dome_over
+            # condition_expr `ctx.roof in ('dome','closed')`.
+            patch = {'temp': 72, 'wind': 0, 'roof': 'dome'}
             if patch_game(g['game_id'], patch, dry_run):
                 updated += 1
             continue
-        # Parse commence_time → utc dt
+        # Parse kickoff_utc → utc dt (was commence_time; that column
+        # doesn't exist on nfl_game_context — see fetch_upcoming_games
+        # docstring above for the full fix rationale).
         try:
-            ct = g['commence_time']
+            ct = g['kickoff_utc']
             if ct.endswith('Z'): ct = ct[:-1] + '+00:00'
             target_utc = datetime.fromisoformat(ct)
         except Exception as e:
-            print(f'  ⚠ bad commence_time {g.get("commence_time")}: {e}')
+            print(f'  ⚠ bad kickoff_utc {g.get("kickoff_utc")}: {e}')
             continue
         wx = fetch_forecast(stad['lat'], stad['lng'], target_utc)
         if not wx:
             continue
         patch = {'temp': round(wx['temp']) if wx['temp'] is not None else None,
                  'wind': round(wx['wind_mph']) if wx['wind_mph'] is not None else None,
-                 'dome': False,
-                 'weather_source': f'openweather_{wx.get("source", "?")}'}
+                 'roof': 'outdoor'}
         if patch_game(g['game_id'], patch, dry_run):
             updated += 1
 
