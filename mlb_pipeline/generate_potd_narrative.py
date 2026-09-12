@@ -226,8 +226,26 @@ def build_mlb_prompt(potd):
         if home_wrc is not None or away_wrc is not None:
             parts.append(f"- Team offense wRC+: {home} {home_wrc}, {away} {away_wrc} (100 = league average; +10 pts is a big edge)")
         if lr_p_home is not None:
-            fav_side = home if lr_p_home > 0.5 else away
-            parts.append(f"- LR model probability: p_home_win={lr_p_home:.2f} → favors {fav_side}")
+            # 2026-09-13 FORMATTING FIX: previously sent p_home_win=0.80 as a
+            # bare decimal, which the LLM rendered as "8%" in prose (dropped
+            # the leading 0 when interpreting the string). Pre-format as
+            # explicit whole-number percentages for BOTH teams — no room for
+            # decimal-vs-percent ambiguity. Anchor with fav side + pct so the
+            # LLM can't invert or mis-scale.
+            try:
+                _p_home_pct = int(round(float(lr_p_home) * 100))
+            except (TypeError, ValueError):
+                _p_home_pct = None
+            if _p_home_pct is not None:
+                _p_away_pct = 100 - _p_home_pct
+                fav_side = home if _p_home_pct >= 50 else away
+                fav_pct = max(_p_home_pct, _p_away_pct)
+                parts.append(
+                    f"- LR model win probability: {home} {_p_home_pct}% · "
+                    f"{away} {_p_away_pct}% → favors {fav_side} at {fav_pct}% "
+                    "(these percentages are ALREADY IN PERCENT FORM — do NOT "
+                    "multiply, divide, or reformat; cite them verbatim)"
+                )
         if ctx.get("venue"):
             parts.append(f"- Venue: {ctx['venue']}{(' · Temp ' + str(ctx.get('temperature')) + '°F') if ctx.get('temperature') is not None else ''}")
         parts.append("- DO NOT cite projected_total or over/under numbers — TOTAL IS IRRELEVANT for ML picks (a 12-run total helps neither side).")
