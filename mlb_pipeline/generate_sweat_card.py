@@ -930,12 +930,35 @@ def _fetch_cohort_rates(days_back):
     """
     from datetime import datetime, timedelta, timezone
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    rows = sb_get("mlb_pipeline_props", {
-        "game_date": f"gte.{cutoff}",
-        "result": "not.is.null",
-        "select": "prop_type,direction,tier,result",
-        "limit": "5000",
-    }) or []
+    # 2026-09-13 PAGINATION FIX. Prior version passed limit=5000, which
+    # PostgREST silently caps at 1000. MLB has ~6,900 graded prop rows in
+    # a rolling 30d window — the tier-calibration table on today's Sweat
+    # Card was being built from only the most recent ~2 days of data
+    # (85% dropped). Range-header pagination pulls the full window, so
+    # per-(prop_type, direction, tier) hit rates reflect real 30d sample
+    # size instead of noise. Same landmine class as ncaaf ctx 39a12c28.
+    rows = []
+    for page in range(20):  # 20*1000 = 20k safety cap (30d MLB peak ~7k)
+        lo = page * 1000
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Range": f"{lo}-{lo+999}",
+                "Range-Unit": "items",
+            },
+            params={
+                "game_date": f"gte.{cutoff}",
+                "result": "not.is.null",
+                "select": "prop_type,direction,tier,result",
+            },
+            timeout=20,
+        )
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        rows.extend(chunk)
+        if len(chunk) < 1000: break
     from collections import defaultdict
     agg = defaultdict(lambda: {"W": 0, "L": 0, "P": 0})
     for r in rows:
