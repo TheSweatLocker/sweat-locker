@@ -1667,7 +1667,23 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
                     suggested_line = _m.ceil(pv) + 0.5
                     label = f"{player} Under {suggested_line} Ks  ·  proj {pv:.1f}"
             except (TypeError, ValueError):
-                label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}"
+                # 2026-09-12 FIX for the recurring "Under 5.5 ks under"
+                # bug (Andy has flagged 5+ times). Prior version used
+                # prop_type.replace('_',' ') which turned 'ks_under' into
+                # 'ks under', concatenated with the already-included
+                # {direction.title()}, producing 'Under 5.5 ks under'.
+                # Use stat family only (strip _over/_under suffix) and
+                # apply a pretty-name map for common families.
+                _pt = prop.get('prop_type', '') or ''
+                _fam = _pt[:-len('_over')] if _pt.endswith('_over') else (
+                       _pt[:-len('_under')] if _pt.endswith('_under') else _pt)
+                _PRETTY = {'ks': 'Strikeouts', 'ha': 'Hits Allowed',
+                           'bb': 'Walks', 'er': 'Earned Runs',
+                           'outs': 'Outs Recorded', 'hits': 'Hits',
+                           'rbis': 'RBIs', 'total_bases': 'Total Bases',
+                           'hr': 'HR', 'runs': 'Runs'}
+                _fam_display = _PRETTY.get(_fam, _fam.replace('_',' ').title())
+                label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {_fam_display}"
         else:
             label = f"{player} {prop.get('direction', '').title()} {prop.get('prop_line')} {prop.get('prop_type', '').replace('_', ' ')}"
 
