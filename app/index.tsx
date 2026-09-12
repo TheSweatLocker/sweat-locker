@@ -2723,41 +2723,67 @@ setEvData(evOpps.slice(0,20));
       const _WEEKLY_SPORTS = new Set(['NFL', 'NCAAF', 'UFC']);
       const isWeekly = meta?.tab_scope === 'weekly'
                         || (!meta && _WEEKLY_SPORTS.has(gamesSport));
-      // 2026-09-06 window fix. Prior code used a rolling 7-day window
-      // (today → today+7). On Sat 9/6 that put DEN@KC MNF 9/15 (9 days
-      // out) in "Next Week" even though NFL fans mentally consider it
-      // Week 1 (== "This Week"). Same story for NCAAF — Sat 9/6 games
-      // and next Sat 9/13 games both landed in the same 7-day window,
-      // making the current NCAAF play-week ambiguous.
+      // 2026-09-11 play-week anchor fix. Prior 10-day forward window
+      // worked on Sat viewings (Sat + 10d catches MNF) but on Thu 9/11
+      // it bled Week 3 TNF (9/18) and Week 3 Sun (9/20-21) into "This
+      // Week", and Week 3 MNF + Week 4 TNF into "Next Week".
       //
-      // New logic:
-      //   - NFL: 10-day forward window catches the following Monday's
-      //          MNF (Sun-to-following-Mon spans 9 days from a Sat viewer).
-      //          Next Week = day+11 → day+17 (following Tue → Mon).
-      //   - NCAAF: 7-day window is correct (Sat-to-Sat conference play).
-      //          Next Week = day+8 → day+14 (following Sun → Sat).
-      //   - UFC: 7-day window (weekly cards).
+      // New logic anchors on the play-week's kickoff day so buckets align
+      // with how fans think about the slate regardless of day-of-week:
+      //   - NFL:   play-week Thu(TNF) → Mon(MNF). Wed is idle. Roll to
+      //            next week starts Tue AM (day after MNF).
+      //   - NCAAF: play-week Wed → Tue (Sat-centric with Wed cards).
+      //   - UFC:   7-day forward window (weekly cards, variable day).
       //
-      // Proper long-term fix: bucket by nfl_game_context.season_week /
-      // ncaaf_game_context.season_week (see queued
-      // [[project_game_detail_action_network_vision_901]] scope). For
-      // launch we ship the 10-day heuristic which handles the specific
-      // Mon-in-next-window case without needing DB round-trips at fetch.
-      const weekWindowDays = gamesSport === 'NFL' ? 10 : 7;
-      const nextWeekGap = gamesSport === 'NFL' ? 1 : 1;
-      const nextWeekLen = 7;
-      const weekTodayEnd = new Date(todayStart);
-      weekTodayEnd.setDate(weekTodayEnd.getDate() + weekWindowDays);
+      // Proper long-term fix (queued project_game_detail_action_network_vision_901):
+      // bucket by nfl_game_context.season_week once the column ships. This
+      // heuristic is the launch-safe approximation — no DB round-trip at
+      // fetch, and it survives every day-of-week.
+      const _dow = todayStart.getDay(); // 0=Sun ... 4=Thu ... 6=Sat
+      let _daysToWeekStart: number;
+      if (gamesSport === 'NCAAF') {
+        // NCAAF Wed(3) anchor. Roll forward on Tue (dow=2) since Tue is post-slate.
+        _daysToWeekStart = _dow === 2 ? 1 : -((_dow - 3 + 7) % 7);
+      } else {
+        // NFL Thu(4) anchor. Roll forward on Tue(2) and Wed(3) since Mon(MNF) ends slate.
+        if (_dow === 2 || _dow === 3) {
+          _daysToWeekStart = 4 - _dow;  // +2 on Tue, +1 on Wed
+        } else {
+          _daysToWeekStart = -((_dow - 4 + 7) % 7); // 0 on Thu, -1 on Fri, ... -4 on Mon
+        }
+      }
+      const weekTodayStart = new Date(todayStart);
+      weekTodayStart.setDate(weekTodayStart.getDate() + _daysToWeekStart);
+      weekTodayStart.setHours(0,0,0,0);
+      const weekTodayEnd = new Date(weekTodayStart);
+      weekTodayEnd.setDate(weekTodayEnd.getDate() + 6); // 7-day play-week
       weekTodayEnd.setHours(23,59,59,999);
       const weekTomorrowStart = new Date(weekTodayEnd);
-      weekTomorrowStart.setDate(weekTomorrowStart.getDate() + nextWeekGap);
+      weekTomorrowStart.setDate(weekTomorrowStart.getDate() + 1);
       weekTomorrowStart.setHours(0,0,0,0);
       const weekTomorrowEnd = new Date(weekTomorrowStart);
-      weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + nextWeekLen);
+      weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + 6);
       weekTomorrowEnd.setHours(23,59,59,999);
+      // UFC: 7-day forward window (weekly card cadence, no fixed anchor day).
+      if (gamesSport === 'UFC') {
+        weekTodayStart.setTime(todayStart.getTime());
+        weekTodayEnd.setTime(todayStart.getTime());
+        weekTodayEnd.setDate(weekTodayEnd.getDate() + 7);
+        weekTodayEnd.setHours(23,59,59,999);
+        weekTomorrowStart.setTime(weekTodayEnd.getTime());
+        weekTomorrowStart.setDate(weekTomorrowStart.getDate() + 1);
+        weekTomorrowStart.setHours(0,0,0,0);
+        weekTomorrowEnd.setTime(weekTomorrowStart.getTime());
+        weekTomorrowEnd.setDate(weekTomorrowEnd.getDate() + 7);
+        weekTomorrowEnd.setHours(23,59,59,999);
+      }
+      // Filter LOW bound: use weekTodayStart when it's in the future (post-Tue
+      // roll on NFL, post-Tue on NCAAF), else todayStart. This way, mid-week
+      // viewers still see only upcoming games from the current play-week.
+      const weekTodayLow = weekTodayStart > todayStart ? weekTodayStart : todayStart;
       const filtered = rData.filter((game: any) => {
         const t = new Date(game.commence_time);
-        if (day === 'today') return isWeekly ? (t >= todayStart && t <= weekTodayEnd) : (t >= todayStart && t <= todayEnd);
+        if (day === 'today') return isWeekly ? (t >= weekTodayLow && t <= weekTodayEnd) : (t >= todayStart && t <= todayEnd);
         if (day === 'tomorrow') return isWeekly ? (t >= weekTomorrowStart && t <= weekTomorrowEnd) : (t >= tomorrowStart && t <= tomorrowEnd);
         if (day === 'yesterday') return t >= yesterdayStart && t < todayStart;
         return true;
@@ -2777,7 +2803,7 @@ setEvData(evOpps.slice(0,20));
       if (mappedGames.length === 0 && isWeekly && (sport === 'NFL' || sport === 'NCAAF')) {
         try {
           const ctxTable = sport === 'NFL' ? 'nfl_game_context' : 'ncaaf_game_context';
-          const startISO = (day === 'tomorrow' ? weekTomorrowStart : todayStart).toISOString().split('T')[0];
+          const startISO = (day === 'tomorrow' ? weekTomorrowStart : weekTodayLow).toISOString().split('T')[0];
           const endISO   = (day === 'tomorrow' ? weekTomorrowEnd   : weekTodayEnd).toISOString().split('T')[0];
           const fb = await supabase.from(ctxTable)
             .select('game_id,game_date,home_team,away_team,close_spread,close_total,close_home_ml,close_away_ml,kickoff_utc')
