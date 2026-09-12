@@ -424,9 +424,17 @@ def run(game_date: str | None = None, threshold: int = 70,
             ctx_row = ml_lookup.get(r["game_id"], {})
             side = (r.get("call_side") or "").upper()
             pick_ml = ctx_row.get("home_ml_close") if side == "HOME" else ctx_row.get("away_ml_close")
-            if pick_ml is not None and pick_ml <= -200:
+            # 2026-09-12 juice gate loosened from -200 → -250 with LR guardrail.
+            # -200 was tossing legitimate PRIME plays like Brewers ML conv 100
+            # @ -207 (won 9/11, LR 1.00) and Dodgers ML conv 91 @ -209 (won,
+            # LR 0.91). At -250 implied prob = 71.4%, so pairing with the LR
+            # ≥ 0.60 gate downstream keeps EV positive: 71% market vs 60%+
+            # model = -11pp minimum edge, which pays out on the roll. Anything
+            # below -250 (e.g. -300 implied 75%) needs LR ≥ 0.75 to have EV,
+            # which the ≥0.60 gate can't guarantee — hence the hard cap stays.
+            if pick_ml is not None and pick_ml <= -250:
                 ct = (r.get('call_text') or '?')[:30]
-                skipped_juice.append(f"{ct} at {pick_ml}")
+                skipped_juice.append(f"{ct} at {pick_ml} (below -250 cap)")
                 continue
             filtered.append(r)
         if skipped_juice:
@@ -488,6 +496,22 @@ def run(game_date: str | None = None, threshold: int = 70,
         elif call_mkt == "total" and tot_shadow.get("p_over") is not None:
             p_over = float(tot_shadow["p_over"])
             p_support = p_over if call_side == "OVER" else (1 - p_over)
+        # 2026-09-12 EXTEND LR gate to RL / spread. Prior gap: only ml/total
+        # were checked, so RL picks bypassed the gate entirely. Root cause of
+        # 9/11 POTD ("Rangers RL +1.5" conv 80 selected while every graded
+        # ML/total >= conv 79 won). RL support = p_home_win (or 1-p_home_win)
+        # since RL and ML share a directional prior. Slightly looser gate
+        # (0.55 not 0.60) because RL +/- 1.5 has ~40% of the win margin
+        # compared to pure ML, so the LR support needn't be as high to be
+        # a positive-EV pick.
+        elif call_mkt in ("rl", "spread") and ml_shadow.get("p_home_win") is not None:
+            p_home = float(ml_shadow["p_home_win"])
+            p_support = p_home if call_side == "HOME" else (1 - p_home)
+            if p_support < 0.55:
+                ct = (r.get('call_text') or '?')[:30]
+                lr_skipped.append(f"{ct} RL p={p_support:.2f} (<0.55)")
+                continue
+            lr_gated.append(r); continue
         if p_support is not None and p_support < 0.60:
             ct = (r.get('call_text') or '?')[:30]
             lr_skipped.append(f"{ct} p={p_support:.2f}")

@@ -215,10 +215,10 @@ def agg_sharp_card(date: str) -> list[dict] | None:
     # NCAAF items look up in the correct results tables (multi-sport fix).
     # Accumulate per-sport tallies so we can emit one daily_surface_records
     # row per sport plus a combined ALL row for the app hero display.
-    per_sport = {}   # sport → {w, l, p_ct, units_bet, units_won, detail}
+    per_sport = {}   # sport → {w, l, p_ct, pending, shipped, units_bet, units_won, detail}
     def _bucket(s):
-        return per_sport.setdefault(s, {'w':0,'l':0,'p_ct':0,'units_bet':0.0,
-                                         'units_won':0.0,'detail':[]})
+        return per_sport.setdefault(s, {'w':0,'l':0,'p_ct':0,'pending':0,'shipped':0,
+                                         'units_bet':0.0,'units_won':0.0,'detail':[]})
 
     for it in items:
         if not isinstance(it, dict): continue
@@ -228,12 +228,23 @@ def agg_sharp_card(date: str) -> list[dict] | None:
         odds = it.get('odds')
         verdict = None
         pick_label = it.get('pick') or it.get('pick_label') or '?'
+        # 2026-09-12 always count as shipped (was silently dropped when
+        # ungraded — user saw The Sharp = 4-2-1 for 9/11 despite shipping
+        # 16 items, because 8 of the props were pending grades). Bump
+        # shipped BEFORE the continue paths so the total count survives.
+        _b = _bucket(item_sport)
+        _b['shipped'] += 1
 
         if item_type in ('ml', 'rl', 'total'):
             matchup = (it.get('matchup') or '').lower()
             games_dict = games_by_sport.get(item_sport, {})
             g = games_dict.get(matchup)
-            if not g: continue
+            if not g:
+                _b['pending'] += 1  # 2026-09-12 track pending sides too
+                _b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+                                     'verdict': 'PENDING', 'stake': stake,
+                                     'odds': odds, 'sport': item_sport})
+                continue
             fake_pp = {'type': item_type, 'label': pick_label}
             verdict = _grade_side(fake_pp, g)
         elif item_type == 'prop':
@@ -253,24 +264,40 @@ def agg_sharp_card(date: str) -> list[dict] | None:
                             ptype = f'{ptype_lc}_{direction}'
                             break
             if not (player and ptype and direction):
+                _b['pending'] += 1  # untagged prop → still shipped, mark pending
+                _b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+                                     'verdict': 'PENDING', 'stake': stake,
+                                     'odds': odds, 'sport': item_sport})
                 continue
             pkey = (str(player).lower(), str(ptype).lower(), str(direction).lower())
             props_dict = props_by_sport.get(item_sport, {})
             pr = props_dict.get(pkey)
-            if not pr: continue
+            if not pr or pr.get('result') is None:
+                # 2026-09-12 ungraded prop = pending, not silently dropped.
+                # Was root cause of "The Sharp 4-2-1" bug — 8 props still
+                # awaiting pitcher-line grades vanished from the display.
+                _b['pending'] += 1
+                _b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+                                     'verdict': 'PENDING', 'stake': stake,
+                                     'odds': odds, 'sport': item_sport})
+                continue
             res_c = (pr.get('result') or '').upper()
             if res_c in ('WIN', 'W'): verdict = 'W'
             elif res_c in ('LOSS', 'L'): verdict = 'L'
             elif res_c in ('PUSH', 'P'): verdict = 'P'
 
-        if verdict is None: continue
-        b = _bucket(item_sport)
-        b['units_bet'] += stake
+        if verdict is None:
+            _b['pending'] += 1
+            _b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+                                 'verdict': 'PENDING', 'stake': stake,
+                                 'odds': odds, 'sport': item_sport})
+            continue
+        _b['units_bet'] += stake
         payout = _american_payout(odds)
-        if verdict == 'W': b['w'] += 1; b['units_won'] += stake * payout
-        elif verdict == 'L': b['l'] += 1; b['units_won'] -= stake
-        elif verdict == 'P': b['p_ct'] += 1
-        b['detail'].append({'type': item_type, 'pick': pick_label[:80],
+        if verdict == 'W': _b['w'] += 1; _b['units_won'] += stake * payout
+        elif verdict == 'L': _b['l'] += 1; _b['units_won'] -= stake
+        elif verdict == 'P': _b['p_ct'] += 1
+        _b['detail'].append({'type': item_type, 'pick': pick_label[:80],
                             'verdict': verdict, 'stake': stake, 'odds': odds,
                             'sport': item_sport})
 
@@ -279,20 +306,30 @@ def agg_sharp_card(date: str) -> list[dict] | None:
     # 5. Emit one row per sport with data, plus a combined ALL row so the
     # app can show a single unified Sharp Card record OR filter per sport.
     rows = []
-    all_w = all_l = all_p = 0
+    all_w = all_l = all_p = all_pending = all_shipped = 0
     all_bet = all_won = 0.0
     all_detail = []
     for sport, b in per_sport.items():
-        if b['w'] + b['l'] + b['p_ct'] == 0: continue
+        # 2026-09-12: emit row when ANY items shipped (graded OR pending).
+        # Previously required at least one graded outcome, which suppressed
+        # the whole day-row when all items were still pending — user saw
+        # nothing under Sharp Card until first grade landed.
+        if b['shipped'] == 0: continue
         rows.append({
             'surface':'sharp_card','sport':sport,'record_date':date,
             'wins':b['w'],'losses':b['l'],'pushes':b['p_ct'],
             'units_bet':round(b['units_bet'],2),
             'units_won':round(b['units_won'],2),
-            'pick_count':b['w']+b['l']+b['p_ct'],
-            'detail':{'legs':b['detail'][:50], 'source':'jerry_cache.sharp_card'},
+            # 2026-09-12: pick_count = total SHIPPED (incl. pending) so app
+            # can render "4-2-1 · 8 pending" honestly. Consumers that need
+            # only graded count use w+l+p directly.
+            'pick_count':b['shipped'],
+            'detail':{'legs':b['detail'][:50], 'source':'jerry_cache.sharp_card',
+                       'pending':b['pending'], 'graded':b['w']+b['l']+b['p_ct'],
+                       'shipped':b['shipped']},
         })
         all_w += b['w']; all_l += b['l']; all_p += b['p_ct']
+        all_pending += b['pending']; all_shipped += b['shipped']
         all_bet += b['units_bet']; all_won += b['units_won']
         all_detail.extend(b['detail'])
 
@@ -304,9 +341,12 @@ def agg_sharp_card(date: str) -> list[dict] | None:
             'wins':all_w,'losses':all_l,'pushes':all_p,
             'units_bet':round(all_bet,2),
             'units_won':round(all_won,2),
-            'pick_count':all_w+all_l+all_p,
+            # 2026-09-12: pick_count = total SHIPPED for the ALL row too.
+            'pick_count':all_shipped,
             'detail':{'legs':all_detail[:50], 'source':'jerry_cache.sharp_card',
-                       'sports_included': sorted(per_sport.keys())},
+                       'sports_included': sorted(per_sport.keys()),
+                       'pending':all_pending, 'graded':all_w+all_l+all_p,
+                       'shipped':all_shipped},
         })
     return rows
 
