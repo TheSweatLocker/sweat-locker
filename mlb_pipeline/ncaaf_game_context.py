@@ -979,6 +979,26 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
     }
+    # 2026-09-13 Market-anchor pass. When stats_source='prior_season_regressed'
+    # (Wks 1-3), thin sample can produce hallucinated magnitudes vs market
+    # (Andy audit: ARI +2 vs LAC when market has LAC -9.5). Blend the raw
+    # model projection toward market by a tiered weight so pick DIRECTION is
+    # preserved but magnitude stays reasonable. Full contract in
+    # projection_anchor.py. `projected_spread_raw` retains the unblended
+    # number for post-week grading + tier-tuning.
+    try:
+        from projection_anchor import anchor_projected_spread
+        _raw = row.get('projected_spread')
+        _anchored, _w, _reason = anchor_projected_spread(
+            row.get('close_spread'), _raw, stats_source,
+        )
+        row['projected_spread_raw']    = _raw
+        row['spread_anchor_weight']    = _w
+        row['spread_anchor_reason']    = _reason
+        row['projected_spread']        = _anchored
+    except Exception as _e:
+        # Non-fatal: leave raw projection in place if anchor helper errors.
+        row['spread_anchor_reason']    = f'anchor_error:{type(_e).__name__}'
     score = compute_sweat_score(
         row.get('projected_spread'), row.get('close_spread'), conf_net,
         row.get('projected_total'), row.get('close_total'),

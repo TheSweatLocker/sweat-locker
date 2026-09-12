@@ -1352,6 +1352,25 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     row['cohort_tags'] = compute_cohort_tags(row)
     row['stats_source'] = stats_source
 
+    # 2026-09-13 Market-anchor pass. See ncaaf_game_context.build_context_row
+    # + projection_anchor.py for full contract. Anchor fires only when
+    # stats_source='prior_season_regressed' (Wks 1-3), so the model gets
+    # full authority back once real 2026 data is populated. Andy Wk 1
+    # audit: ARI +2 vs LAC hallucination gets clamped to LAC -8ish under
+    # the tiered anchor (delta ≥ 6 → w=0.75).
+    try:
+        from projection_anchor import anchor_projected_spread
+        _raw = row.get('projected_spread')
+        _anchored, _w, _reason = anchor_projected_spread(
+            row.get('close_spread'), _raw, stats_source,
+        )
+        row['projected_spread_raw']    = _raw
+        row['spread_anchor_weight']    = _w
+        row['spread_anchor_reason']    = _reason
+        row['projected_spread']        = _anchored
+    except Exception as _e:
+        row['spread_anchor_reason']    = f'anchor_error:{type(_e).__name__}'
+
     score = compute_sweat_score(
         row.get('projected_spread'), row.get('close_spread'), conf_net,
         row.get('projected_total'), row.get('close_total'),
