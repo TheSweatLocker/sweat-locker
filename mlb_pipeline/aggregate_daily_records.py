@@ -729,11 +729,17 @@ def agg_prop_by_tier(date: str) -> list:
     COVERAGE. Only tiers with ≥1 graded pick emit a record. Uses flat
     -110 payout as a proxy since prop odds vary widely per player.
 
-    Sports supported today: MLB. NFL/NCAAF props exist but need result
-    grading on the raw props tables first.
+    2026-09-12: added NFL now that resolve_nfl_props.py + ESPN box-score
+    grader populate nfl_pipeline_props.result. Andy spec — every prop
+    Prop Jerry shipped for a graded game needs to land on Receipts.
+    NCAAF intentionally excluded (per feedback_college_sports_no_props
+    policy: no college props anywhere).
     """
     out = []
-    for sport, table in [('MLB', 'mlb_pipeline_props')]:
+    for sport, table in [
+        ('MLB', 'mlb_pipeline_props'),
+        ('NFL', 'nfl_pipeline_props'),
+    ]:
         r = requests.get(f'{SB}/rest/v1/{table}',
             headers=H_READ,
             params={'game_date': f'eq.{date}',

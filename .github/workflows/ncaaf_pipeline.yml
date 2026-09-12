@@ -417,6 +417,16 @@ jobs:
           # populate jerry_reads.result. Same class of fix as NFL cron
           # sibling entry landed 9/11.
           python grade_jerry_reads.py --sport NCAAF || echo "NCAAF jerry grader failed (non-fatal)"
+          # 2026-09-12 RECEIPTS-CLOSURE (sibling to NFL cron addition).
+          # Andy spec (docs/SPEC_NFL_NCAAF_GRADING_AND_RECEIPTS.md): grade →
+          # roll up to daily_surface_records so app Receipts tab shows
+          # NCAAF W-L per surface (sides, sharp_card, potd, ladder — no
+          # props per college policy).
+          _YESTERDAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4,days=1)).date().isoformat())")
+          _TODAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4)).date().isoformat())")
+          python aggregate_daily_records.py --date $_YESTERDAY || echo "aggregate yesterday failed (non-fatal)"
+          python aggregate_daily_records.py --date $_TODAY || echo "aggregate today failed (non-fatal)"
+          python compute_surface_records.py --sport NCAAF || echo "compute_surface_records NCAAF failed (non-fatal)"
 
       - name: Recompute NCAAF cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'

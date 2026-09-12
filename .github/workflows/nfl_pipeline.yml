@@ -665,6 +665,37 @@ jobs:
           # ESPN couldn't grade (bench players, missing stats). Runs Tue AM+.
           python resolve_nfl_props.py || echo "prop resolver failed (non-fatal)"
 
+      # 2026-09-12 RECEIPTS-CLOSURE STEPS. Andy spec (docs/SPEC_NFL_NCAAF_
+      # GRADING_AND_RECEIPTS.md): after resolve/grade, MUST roll up to
+      # daily_surface_records so app Receipts tab shows NFL W-L per surface.
+      # Prior NFL cron only graded the raw tables and never emitted the
+      # per-surface aggregates — so nfl_sides, nfl_props, nfl_sharp_card,
+      # nfl_potd, nfl_ladder never appeared on the Receipts screen.
+      - name: Grade prop_jerry_reads (NFL surface) + roll up daily records
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Grade the prop_jerry_reads.result column separately from
+          # nfl_pipeline_props.result. Prop Jerry surface record reads
+          # from prop_jerry_reads, not the raw props table.
+          python grade_prop_jerry_reads.py --sport NFL || echo "prop_jerry_reads NFL grader failed (non-fatal)"
+          # Roll up to daily_surface_records for both yesterday (Sun games
+          # graded Mon AM) and today (in case MNF finalized this run).
+          # aggregate_daily_records iterates all sports internally per
+          # SPORT_RESULTS_MAP so this single call handles NFL + NCAAF +
+          # any other sport with data.
+          _YESTERDAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4,days=1)).date().isoformat())")
+          _TODAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4)).date().isoformat())")
+          python aggregate_daily_records.py --date $_YESTERDAY || echo "aggregate yesterday failed (non-fatal)"
+          python aggregate_daily_records.py --date $_TODAY || echo "aggregate today failed (non-fatal)"
+          # Roll windowed records (7d/30d/lifetime) so app header + drilldown
+          # reflect the fresh outcomes.
+          python compute_surface_records.py --sport NFL || echo "compute_surface_records NFL failed (non-fatal)"
+
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NFL
       # slot redesign. Uses refresh_home_road_tendencies(sport) RPC from
