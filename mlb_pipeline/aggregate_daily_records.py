@@ -136,26 +136,46 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
 
 def _load_props_by_sport(date: str, sport: str) -> dict:
     """Load prop rows for one sport → composite-key dict for Sharp Card
-    prop grading."""
+    prop grading.
+
+    2026-09-12 PAGINATION FIX. Single-request fetch capped at PostgREST's
+    1000-row default; daily prop inventory exceeds that (3173 on 9/11
+    MLB). The first 1000 rows (sorted arbitrarily but usually low-id
+    SKIP-tier batter props) were the only ones in by_key. Sharp Card
+    PRIME pitcher props at higher ids never matched → aggregator
+    silently graded 0 props → user saw sharp_card 4-2-1 (sides only)
+    with 8 pending props that were actually already Win/Loss in DB.
+    Same class of bug as grade_props (fixed 77f138eb). Paginate via
+    Range header in 1000-row chunks.
+    """
     _PROPS_TABLE = {
         'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
     }
     table = _PROPS_TABLE.get(sport)
     if not table: return {}
-    r = requests.get(f'{SB}/rest/v1/{table}',
-        headers=H_READ,
-        params={'game_date': f'eq.{date}',
-                'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds'},
-        timeout=15)
-    if r.status_code != 200:
-        print(f'  [agg_sharp_card] {sport} props fetch failed: {r.status_code}')
-        return {}
     by_key = {}
-    for p in (r.json() if isinstance(r.json(), list) else []):
-        pkey = (str(p.get('player_name') or '').lower(),
-                str(p.get('prop_type') or '').lower(),
-                str(p.get('direction') or '').lower())
-        by_key[pkey] = p
+    _page = 0
+    while True:
+        _lo = _page * 1000
+        _hi = _lo + 999
+        r = requests.get(f'{SB}/rest/v1/{table}',
+            headers={**H_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_hi}'},
+            params={'game_date': f'eq.{date}',
+                    'select': 'player_name,prop_type,direction,tier,result,book_over_odds,book_under_odds',
+                    'order': 'id.asc'},
+            timeout=20)
+        if r.status_code not in (200, 206):
+            print(f'  [agg_sharp_card] {sport} props fetch page {_page} failed: {r.status_code}')
+            break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        for p in chunk:
+            pkey = (str(p.get('player_name') or '').lower(),
+                    str(p.get('prop_type') or '').lower(),
+                    str(p.get('direction') or '').lower())
+            by_key[pkey] = p
+        if len(chunk) < 1000: break
+        _page += 1
+        if _page > 20: break  # safety cap
     return by_key
 
 
