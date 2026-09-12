@@ -17138,8 +17138,13 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             </View>
                             {totalPrev > 0 && (
                               <View style={{flexDirection:'row', justifyContent:'flex-end', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
+                                {/* 2026-09-12: reworded from "{Aug}: 25-27 · +5.00u"
+                                    which Andy read as a date range (Aug 25-27) instead
+                                    of a full-month record. Now says "{Aug} record: 25-27
+                                    · +5.00u" so the numbers unambiguously read as
+                                    wins-losses. */}
                                 <Text style={{color:THEME.textDim, fontSize:10}}>
-                                  {prevMonthName}: {r.wPrev}-{r.lPrev} · <Text style={{color:uColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
+                                  {prevMonthName} record: {r.wPrev}-{r.lPrev} · <Text style={{color:uColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
                                 </Text>
                               </View>
                             )}

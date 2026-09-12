@@ -59,14 +59,25 @@ SPORT_PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
 }
 
-# prop_type → boxscore stat key
+# prop_type → boxscore stat key.
+# 2026-09-12: added batter prop types (hits_under, total_bases, rbis, runs,
+# hr, batter_ks). Prior map only covered pitcher props + hits_over, so
+# 700+ batter SKIP-tier props stayed ungraded every day, inflating the
+# ungraded queue and hiding the true daily hit rate for batter categories.
 STAT_MAP_MLB = {
-    'ks_over':   'ks',   'ks_under':   'ks',
-    'bb_over':   'bb',   'bb_under':   'bb',
-    'er_over':   'er',   'er_under':   'er',
-    'ha_over':   'h_pit', 'ha_under':  'h_pit',
-    'outs_over': 'outs', 'outs_under': 'outs',
-    'hits_over': 'h_bat',
+    # Pitcher stats
+    'ks_over':   'ks',    'ks_under':   'ks',
+    'bb_over':   'bb',    'bb_under':   'bb',
+    'er_over':   'er',    'er_under':   'er',
+    'ha_over':   'h_pit', 'ha_under':   'h_pit',
+    'outs_over': 'outs',  'outs_under': 'outs',
+    # Batter stats
+    'hits_over':        'h_bat',  'hits_under':        'h_bat',
+    'total_bases_over': 'tb',     'total_bases_under': 'tb',
+    'rbis_over':        'rbi',    'rbis_under':        'rbi',
+    'runs_over':        'r',      'runs_under':        'r',
+    'hr_over':          'hr',     'hr_under':          'hr',
+    'batter_ks_over':   'ks_bat', 'batter_ks_under':   'ks_bat',
 }
 
 
@@ -109,12 +120,20 @@ def fetch_player_stats_for_date(date_str: str) -> dict:
                 except (ValueError, AttributeError):
                     pass
                 stats[name.lower()] = {
+                    # Pitcher
                     'ks':    pit.get('strikeOuts', 0) if pit else 0,
                     'bb':    pit.get('baseOnBalls', 0) if pit else 0,
                     'er':    pit.get('earnedRuns', 0) if pit else 0,
                     'h_pit': pit.get('hits', 0) if pit else 0,
                     'outs':  outs,
+                    # Batter (2026-09-12 added tb/rbi/r/hr/ks_bat so batter
+                    # props grade instead of being silently skipped).
                     'h_bat': bat.get('hits', 0) if bat else 0,
+                    'tb':    bat.get('totalBases', 0) if bat else 0,
+                    'rbi':   bat.get('rbi', 0) if bat else 0,
+                    'r':     bat.get('runs', 0) if bat else 0,
+                    'hr':    bat.get('homeRuns', 0) if bat else 0,
+                    'ks_bat':bat.get('strikeOuts', 0) if bat else 0,
                 }
     return stats, len(game_pks)
 
@@ -176,17 +195,45 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
     # grade_prop SUSPECT-ZERO GUARD). PostgREST `or=(...)` joins the
     # ungraded set with the buggy set so both flow through the same
     # regrade path — self-healing without needing a separate script.
+    # 2026-09-12 PAGINATION FIX. PostgREST default limit is 1000 rows;
+    # ungraded prop counts have exceeded that daily since prop inventory
+    # expanded (2962 ungraded on 9/11). The old single-request fetch
+    # returned only the first 1000 rows — sorted by default (id asc),
+    # which are the earliest-inserted SKIP-tier batter props. The
+    # high-conviction PRIME pitcher props at higher ids never made it
+    # into the loop and stayed ungraded FOREVER. Root cause of Andy's
+    # "5-0 with 3 pending" on Sweat Card yesterday and every prior day's
+    # silent grading gap. Fix: paginate in 1000-row chunks using
+    # Range header until fewer than 1000 come back.
     params = {
         'game_date': f'eq.{date_str}',
         'tier': 'in.(PRIME,STRONG,LEAN,SKIP,COVERAGE)',
         'select': 'id,player_name,prop_type,prop_line,direction,tier,conviction,result,final_value',
+        'order': 'id.asc',
     }
     if not FORCE_REGRADE:
         params['or'] = (
             '(result.is.null,'
             'and(prop_type.in.(outs_over,outs_under),final_value.eq.0))'
         )
-    r = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ, params=params, timeout=15).json()
+    r = []
+    _page = 0
+    while True:
+        _lo = _page * 1000
+        _hi = _lo + 999
+        _headers = {**H_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_hi}'}
+        _resp = requests.get(f'{SB}/rest/v1/{table}', headers=_headers,
+                             params=params, timeout=25)
+        if _resp.status_code not in (200, 206):
+            print(f'  ⚠ fetch page {_page} {_resp.status_code}: {_resp.text[:150]}')
+            break
+        _chunk = _resp.json() if isinstance(_resp.json(), list) else []
+        r.extend(_chunk)
+        if len(_chunk) < 1000: break
+        _page += 1
+        if _page > 20:  # 20 * 1000 = 20k safety cap
+            print(f'  ⚠ hit 20-page safety cap — {len(r)} rows fetched')
+            break
     print(f'  {len(r)} props to check ({"force-regrade all" if FORCE_REGRADE else "ungraded + buggy-zero sweep"})')
 
     tally = {'graded': 0, 'skipped_no_stat': 0, 'skipped_no_player': 0, 'errors': 0,
