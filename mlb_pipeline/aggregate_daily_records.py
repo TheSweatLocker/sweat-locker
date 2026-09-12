@@ -784,6 +784,63 @@ def agg_prop_by_tier(date: str) -> list:
     return out
 
 
+def agg_side_transparency(date: str) -> list[dict]:
+    """2026-09-12: PASS-count transparency stat per Andy spec.
+
+    Existing surface records count only Wins/Losses/Pushes on shipped
+    picks. A PASS'd game (call_market='pass') isn't a bet so shouldn't
+    affect W-L — but hiding the pass count makes the record look
+    cherry-picked ("we only showed 6 games all week!").
+
+    This aggregator counts per (sport, date):
+      - shipped   = jerry_reads rows with call_market in {ml,spread,rl,total}
+      - passed    = jerry_reads rows with call_market='pass'
+      - pct_shipped = shipped / (shipped + passed)
+
+    Writes to daily_surface_records with surface=<sport-lower>_transparency
+    and detail = {shipped, passed, pct_shipped, note}. App renders
+    "NFL Week 2: 15 shipped calls, 12 passed, 7-5 on shipped" from this.
+
+    Sport scope: MLB, NFL, NCAAF. NBA/NHL/NCAAB will populate when
+    their slates run.
+    """
+    out = []
+    for sport in ('MLB', 'NFL', 'NCAAF'):
+        r = requests.get(f'{SB}/rest/v1/jerry_reads',
+            headers=H_READ,
+            params={'sport': f'eq.{sport}', 'game_date': f'eq.{date}',
+                    'select': 'call_market'},
+            timeout=15)
+        if r.status_code != 200: continue
+        rows = r.json() if isinstance(r.json(), list) else []
+        if not rows: continue
+        shipped = sum(1 for r_ in rows
+                      if str(r_.get('call_market') or '').lower()
+                      in ('ml', 'spread', 'rl', 'total'))
+        passed = sum(1 for r_ in rows
+                     if str(r_.get('call_market') or '').lower() == 'pass')
+        total = shipped + passed
+        if total == 0: continue
+        out.append({
+            'surface': f'{sport.lower()}_transparency',
+            'sport': sport,
+            'record_date': date,
+            'wins': 0, 'losses': 0, 'pushes': 0,
+            'units_bet': 0.0, 'units_won': 0.0,
+            'pick_count': total,
+            'detail': {
+                'shipped': shipped,
+                'passed': passed,
+                'pct_shipped': round(shipped / total, 3) if total else None,
+                'note': (
+                    f'{sport} {date}: {shipped} shipped calls, {passed} passed '
+                    f'({int(100*shipped/total) if total else 0}% shipped)'
+                ),
+            },
+        })
+    return out
+
+
 def agg_split_antipublic(date: str) -> list[dict] | None:
     """The Split · Anti-Public sub-lens (2026-09-09).
 
@@ -942,6 +999,7 @@ AGGREGATORS = [
     ('split_antipublic', agg_split_antipublic),  # 2026-09-09 — Anti-Public sub-lens
     ('ncaaf_card', agg_ncaaf_card), # 2026-08-30 — NCAAF picks graded
     ('prop_by_tier', agg_prop_by_tier), # 2026-09-09 — per-tier prop records
+    ('side_transparency', agg_side_transparency), # 2026-09-12 — PASS-count transparency
 ]
 
 
