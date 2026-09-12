@@ -576,6 +576,10 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
             print(f'  [{sport}] ctx fetch failed (coverage will use signals-dict fallback): {_e}')
 
     # Render templates for below-gate props FIRST — fast, no LLM
+    # 2026-09-12: initialize `done` here (not later at LLM loop start)
+    # so template increments in this loop can add to it without hitting
+    # UnboundLocalError.
+    done = 0
     tmpl_done = 0
     if props_for_template:
         try:
@@ -626,8 +630,10 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
             print(f'  [{sport}] render_prop_template unavailable — below-gate props skipped ({_e})')
 
     # Then LLM path for card-worthy props (existing loop)
+    # 2026-09-12: don't reset `done` here — template loop above already
+    # incremented it for any template writes. Resetting would zero out
+    # the template count in the return value.
     props = props_for_llm
-    done = 0
     for prop in props:
         if limit and done >= limit: break
         if not force:
