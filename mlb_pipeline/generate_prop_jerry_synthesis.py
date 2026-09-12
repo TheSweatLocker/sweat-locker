@@ -367,23 +367,39 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # gaps where apply_prop_refit was skipped in the pipeline.
     _refit_self_heal_if_stale(sport, game_date, table)
     # Fetch today's props for this sport.
-    # 2026-09-11: limit bumped 2000 → 5000 AND ordered tier-then-conviction
-    # so non-SKIP props are never truncated when SKIP volume balloons.
-    # Prior 2000 cap silently dropped Kirby's PRIME ha_over on 9/11 —
-    # 3191 pipeline_props rows / 2000 limit / alphabetical order pushed
-    # him past the cutoff. Ordering guarantees the 164 non-SKIP rows land
-    # in the first slice regardless of total row count.
-    # 2026-09-07 (earlier bump) rationale kept for history: NFL 9/13 slate
-    # had 326 props → prior 300 cap truncated 26 STRONG tier props.
-    r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
-                     headers=H_READ,
-                     params={'game_date': f'eq.{game_date}',
-                             'select': 'game_id,player_name,prop_type,direction,prop_line,'
-                                       'signals,conviction,refit_conviction,book_over_odds,book_under_odds,tier',
-                             'order': 'tier.asc,conviction.desc',
-                             'limit': 5000},
-                     timeout=30)
-    props = r.json() if r.status_code == 200 else []
+    # 2026-09-12 PAGINATION FIX. Andy audit finding: prop synth run today
+    # showed "1000 props enter template/LLM split" despite mlb_pipeline_props
+    # having 2807 rows for 9/12. Root cause: PostgREST caps response at
+    # 1000 rows by default regardless of the `limit` query param (needs
+    # PGRST_DB_MAX_ROWS server config to raise the ceiling). Same class as
+    # the grade_props (77f138eb), _load_props_by_sport (4808ca02) bugs
+    # landed earlier today. Fix: paginate via Range header in 1000-row
+    # chunks so every prop (including PRIME/STRONG pitcher props sitting
+    # past row 1000 in the tier-then-conviction order) gets a synth pass
+    # and lands with input_snapshot.render_sections.recent_form populated.
+    # Order stays tier.asc,conviction.desc so PRIME/STRONG surface first.
+    props = []
+    _page = 0
+    while True:
+        _lo = _page * 1000; _hi = _lo + 999
+        r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
+                         headers={**H_READ, 'Range-Unit':'items',
+                                  'Range': f'{_lo}-{_hi}'},
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': 'game_id,player_name,prop_type,direction,prop_line,'
+                                           'signals,conviction,refit_conviction,book_over_odds,book_under_odds,tier',
+                                 'order': 'tier.asc,conviction.desc'},
+                         timeout=30)
+        if r.status_code not in (200, 206):
+            print(f'  [{sport}] props fetch page {_page} failed: {r.status_code}')
+            break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        props.extend(chunk)
+        if len(chunk) < 1000: break
+        _page += 1
+        if _page > 10:  # 10 * 1000 = 10k safety cap
+            print(f'  [{sport}] fetch safety cap hit at {len(props)} props')
+            break
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
     # the entire bucket ROI injection path. Fallback = pre-8/1 behavior.
     BUCKET_ROI_ON = os.environ.get('JERRY_BUCKET_ROI_ENABLED', 'true').lower() != 'false'
@@ -600,6 +616,11 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                 }
                 if upsert_read(sport, prop, parsed, '', game_date):
                     tmpl_done += 1
+                    done += 1  # 2026-09-12: count template writes in the return
+                               # tally so main() summary reports true total.
+                               # Previously main printed "wrote 0" on template-only
+                               # runs, misleading Andy's audit into thinking synth
+                               # failed when it actually wrote 1000 rows.
             print(f'  [{sport}] template rendered {tmpl_done}/{len(props_for_template)} below-gate props')
         except ImportError as _e:
             print(f'  [{sport}] render_prop_template unavailable — below-gate props skipped ({_e})')
