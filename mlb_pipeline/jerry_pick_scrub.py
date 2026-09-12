@@ -112,15 +112,16 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     if not cfg:
         return (0, 0)
     # Fetch ctx rows for today (or specified games)
-    ctx_filter = f'game_date=eq.{gd}&primary_play=not.is.null'
+    # 2026-09-13: params dict per URL-encoding fix above.
+    _params = {'select': 'game_id,home_team,away_team,primary_play',
+               'primary_play': 'not.is.null'}
     if game_ids:
         ids = ','.join(f'"{g}"' for g in game_ids)
-        ctx_filter = f'game_id=in.({ids})'
-    r = requests.get(
-        f'{SB}/rest/v1/{cfg["ctx"]}?{ctx_filter}'
-        '&select=game_id,home_team,away_team,primary_play',
-        headers=H_READ, timeout=30,
-    )
+        _params['game_id'] = f'in.({ids})'
+    else:
+        _params['game_date'] = f'eq.{gd}'
+    r = requests.get(f'{SB}/rest/v1/{cfg["ctx"]}',
+                     params=_params, headers=H_READ, timeout=30)
     if r.status_code != 200:
         print(f'  {sport}: ctx fetch failed {r.status_code}')
         return (0, 0)
@@ -131,11 +132,20 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     ctx_by_gid = {c['game_id']: c for c in ctx_rows}
 
     # Fetch jerry_reads for those games
+    # 2026-09-13: use requests.params for proper URL-encoding. Prior raw
+    # string interpolation broke on NCAAF game_ids containing spaces
+    # ("ncaaf_20260912_Tennessee_Georgia Tech") — PostgREST 400'd. MLB
+    # hex-hash game_ids never hit this. requests handles encoding
+    # correctly when the filter is passed as a params dict.
     ids = ','.join(f'"{g}"' for g in ctx_by_gid.keys())
     r = requests.get(
-        f'{SB}/rest/v1/jerry_reads?sport=eq.{sport}&game_id=in.({ids})'
-        '&select=id,game_id,call_market,call_side,call_line,call_text,'
-        'short_read,long_read,audit_notes,conviction',
+        f'{SB}/rest/v1/jerry_reads',
+        params={
+            'sport': f'eq.{sport}',
+            'game_id': f'in.({ids})',
+            'select': 'id,game_id,call_market,call_side,call_line,call_text,'
+                      'short_read,long_read,audit_notes,conviction',
+        },
         headers=H_READ, timeout=30,
     )
     if r.status_code != 200:
@@ -240,8 +250,23 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             if _claimed and _current and _claimed not in _current and _current not in _claimed:
                 _stale_recompute_template = True
 
+        # 2026-09-13 OC-DISSENT FLIP detection. Andy audit tonight caught
+        # 2 NCAAF games (Tennessee@GT, SDSU@UCLA) where the primary_play
+        # flipped from ensemble's original pick to the opposite side
+        # because OC (external consensus) had 64-70% money on the other
+        # side. The pick label shows the FLIPPED side but the LLM prose
+        # was written arguing for the PRE-FLIP side — reads as internal
+        # contradiction to users.
+        #
+        # Detection signature: pp.sub starts with "OC-dissent flip".
+        # Format from ensemble scorer: "OC-dissent flip. Ensemble had X;
+        # OC has Y% money on the other side." When present, prose is
+        # ALWAYS stale relative to the current call, regardless of what
+        # words the LLM used.
+        _oc_dissent_flip = 'oc-dissent flip' in str(pp.get('sub', '') or '').lower()
         stale_prose = (_tmpl_fallback or _prose_cross_market or
-                       _stale_recompute_template or _same_market_side_flip)
+                       _stale_recompute_template or _same_market_side_flip
+                       or _oc_dissent_flip)
 
         if not drift and not stale_prose: continue
 
@@ -343,7 +368,15 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # Also now nulls BOTH short_read AND long_read (was long_read only)
         # since users read the short_read as the primary prose on the
         # card — leaving stale short_read defeats the null-long_read fix.
-        _hard_bad_prose = (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
+        # 2026-09-13: OC-dissent flip added to hard-null trigger. Andy caught
+        # 2 NCAAF cases tonight where prose argued for pre-flip side while
+        # pick label showed post-flip. OC-dissent DOESN'T need `drift`
+        # since pp.type/side may already have been rewritten during
+        # ensemble scoring — the signal is the "OC-dissent flip" phrase
+        # itself, which guarantees prose staleness regardless.
+        _hard_bad_prose = (
+            (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
+        ) or _oc_dissent_flip
         if _hard_bad_prose:
             # Null out contradictory prose (both fields). UI falls back to
             # "analysis pending" — better than misleading text.
