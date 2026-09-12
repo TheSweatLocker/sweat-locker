@@ -1471,13 +1471,25 @@ def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str]
         return (f'{home} ML', 'HOME', None)
     if candidate == 'AWAY_ML':
         return (f'{away} ML', 'AWAY', None)
+    # 2026-09-11 SIGN FIX. NFL close_spread is AWAY-perspective (positive =
+    # away dog); every other sport is HOME-perspective. Convert to HOME
+    # perspective here so HOME_RL always displays home's line and AWAY_RL
+    # always displays away's line — regardless of sport. Was shipping
+    # "PHI +5.5" for -5.5 home favorite before this fix.
+    sport = str(ctx.get('_sport') or '').upper()
+    try:
+        raw_sp = float(close_spread) if close_spread is not None else None
+    except (TypeError, ValueError):
+        raw_sp = None
+    if raw_sp is not None and sport == 'NFL':
+        home_line = -raw_sp  # flip to home perspective for NFL
+    else:
+        home_line = raw_sp   # MLB / NCAAF / NBA / NCAAB / NHL already home-perspective
     if candidate == 'HOME_RL':
-        try: line = float(close_spread)
-        except (TypeError, ValueError): line = None
+        line = home_line
         return (f'{home} {line:+g}' if line is not None else f'{home} RL', 'HOME', line)
     if candidate == 'AWAY_RL':
-        try: line = -float(close_spread)
-        except (TypeError, ValueError): line = None
+        line = -home_line if home_line is not None else None
         return (f'{away} {line:+g}' if line is not None else f'{away} RL', 'AWAY', line)
     if candidate == 'OVER':
         try: line = float(close_total)
@@ -1518,6 +1530,15 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
         if _ctx_needs_copy:
             ctx = dict(ctx); _ctx_needs_copy = False
         ctx['close_spread'] = ctx['current_spread']
+    # 2026-09-11 SIGN CONVENTION LANDMINE. NFL close_spread is AWAY-perspective
+    # (positive = away is dog) while every other sport is HOME-perspective
+    # (negative = home is fav). _label_from_candidate needs to know so it
+    # doesn't ship "PHI +5.5" when PHI is -5.5 home fav. Stamp the sport onto
+    # ctx once here; label builder reads it downstream. Copy first so caller's
+    # ctx dict isn't mutated.
+    if _ctx_needs_copy:
+        ctx = dict(ctx); _ctx_needs_copy = False
+    ctx['_sport'] = (sport or '').upper()
 
     health = _current_health_state(sport)
     if health.get('suppressed'):

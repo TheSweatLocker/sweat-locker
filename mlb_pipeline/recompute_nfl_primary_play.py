@@ -129,6 +129,30 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
         if dry_run: continue
         if patch_pp(g['game_id'], new_pp): patched += 1
 
+    # 2026-09-11 PERMANENT FIX for Jerry vs primary_play badge drift on NFL.
+    # Ports MLB's 2026-09-09 auto-align pattern (see recompute_primary_play.py:344).
+    # Jerry cache key is per-NFL-week (Thu lock), so once Jerry writes on
+    # Thursday, later primary_play recomputes leave jerry_reads.call_* pointing
+    # at the stale pick. Games tab badge (from jerry_reads) then disagrees with
+    # the primary_play chip (WAS@PHI, GB@MIN, MIA@LV — reported 2026-09-11).
+    # backfill_jerry_pick_alignment applies enforce_primary_play_alignment()
+    # against every jerry_read row in the window; diff-only PATCH so it's cheap.
+    if not dry_run and patched > 0:
+        try:
+            import subprocess
+            from pathlib import Path as _P
+            print(f'\n  → auto-aligning jerry_reads via backfill_jerry_pick_alignment')
+            _script = str(_P(__file__).parent / 'backfill_jerry_pick_alignment.py')
+            r = subprocess.run(
+                [sys.executable, _script, '--sport', 'NFL'],
+                capture_output=True, text=True, timeout=180)
+            for line in ((r.stdout or '') + (r.stderr or '')).splitlines()[-10:]:
+                print(f'    {line}')
+            if r.returncode != 0:
+                print(f'    ⚠ align exit {r.returncode}')
+        except Exception as e:
+            print(f'    ⚠ auto-align failed: {e} (jerry_reads may be out of sync)')
+
     prefix = '[DRY] ' if dry_run else ''
     print(f'\n{prefix}changed={changed}  patched={patched}')
 
