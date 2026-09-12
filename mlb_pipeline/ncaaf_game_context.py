@@ -266,22 +266,35 @@ def load_team_games_played(season: int) -> dict:
     counting completed games there gives the true early-season sample size —
     which drives the _blend_pg weighting for Weeks 1-3.
     """
+    # 2026-09-13 PAGINATION FIX. Previously `limit=5000` was silently
+    # capped by PostgREST at 1000, and 2025 has 3,829 game_results rows
+    # (bowls + playoff + FCS-vs-FBS). Result: only the first 1,000 rows
+    # (early-season weeks) were tallied, so Texas ended up at 3 games,
+    # Tennessee at 4, Ohio State at 3 for the 2025 prior-season fallback.
+    # _blend_pg then computed pass_yds_pg = pass_yards_TOTAL / 3, which
+    # rendered Texas averaging 1,086 pass yds/game on the 9/12 Ohio State
+    # card — obvious nonsense. Range-header pagination guarantees every
+    # game is counted regardless of season size (bowls, FCS opponents,
+    # future 16-team CFP).
     out: dict = {}
-    r = requests.get(
-        f'{SB}/rest/v1/ncaaf_game_results',
-        headers=H_READ,
-        params={'season': f'eq.{season}',
-                'home_score': 'not.is.null',
-                'select': 'home_team,away_team',
-                'limit': '5000'},
-        timeout=15,
-    )
-    if r.status_code != 200: return out
-    for row in (r.json() or []):
-        if not isinstance(row, dict): continue
-        for k in ('home_team', 'away_team'):
-            t = row.get(k)
-            if t: out[t] = out.get(t, 0) + 1
+    for page in range(10):  # 10*1000 = 10k safety cap; a season is ~4k rows
+        lo = page * 1000
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_game_results',
+            headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+            params={'season': f'eq.{season}',
+                    'home_score': 'not.is.null',
+                    'select': 'home_team,away_team'},
+            timeout=15,
+        )
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        for row in chunk:
+            if not isinstance(row, dict): continue
+            for k in ('home_team', 'away_team'):
+                t = row.get(k)
+                if t: out[t] = out.get(t, 0) + 1
+        if len(chunk) < 1000: break
     return out
 
 
@@ -349,6 +362,18 @@ def _blend_pg(stats: dict, field: str, per_game: bool = True) -> Optional[float]
         'penalties': 15,          # real NCAAF max ~12/game
         'penalty_yards': 200,     # real NCAAF max ~150/game
         'turnovers': 8,           # real max ~5/game
+        # 2026-09-13: added after games_played pagination bug produced
+        # pass_yds_pg=1086 for Texas (season total / 3 games). Even with
+        # the fix landed, cap out-of-band values so any future upstream
+        # bug can't render as user-visible garbage. Real CFB extremes:
+        # ~450 pass yds/gm, ~350 rush yds/gm, ~7 TDs/gm.
+        'pass_yards': 550,
+        'rush_yards': 400,
+        'pass_tds': 8,
+        'rush_tds': 8,
+        'def_sacks': 8,
+        'def_ints': 5,
+        'possession_time_sec': 2400,   # 40 minutes ceiling
     }
     _cap = _PG_CAPS.get(field)
     if _cap is not None and result is not None and result > _cap:
