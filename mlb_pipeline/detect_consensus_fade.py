@@ -65,6 +65,10 @@ SPORT_CONTEXT_TABLE = {
     'MLB': 'mlb_game_context',
     'NFL': 'nfl_game_context',
     'NCAAB': 'ncaab_game_context',
+    # 2026-09-12: added NCAAF. Column migration 20260912b adds the 5
+    # consensus_fade_* columns to nfl_game_context + ncaaf_game_context
+    # so both sports can now write here without 42703.
+    'NCAAF': 'ncaaf_game_context',
 }
 
 PCT_BANDS = [
