@@ -314,6 +314,42 @@ def build_struct(game, stats, contexts=None):
         if pp:
             struct["primary_play"] = pp
 
+        # 2026-09-12 DEPTH: also pass through select ctx fields so
+        # input_snapshot serialization in upsert_jerry_read_nfl can
+        # surface align_status chips, cohort tags, and a slim
+        # team_snapshot on the NFL card. Without this the input_snapshot
+        # fields were None because struct never included them —
+        # Andy audit found 3 non-null keys vs MLB's 28. Now the card
+        # can render alignment/cohort/team blocks whenever ctx has them.
+        _align = ctx.get('align_status')
+        if _align: struct['align_status'] = _align
+        # Slim signals blob — pull only useful non-personal fields
+        _sig = {
+            'confluence_net': ctx.get('signal_confluence_net'),
+            'cohort_tags': ctx.get('cohort_tags'),
+            'sweat_score': ctx.get('sweat_score'),
+            'sweat_tier': ctx.get('sweat_tier'),
+            'panel_confidence': ctx.get('panel_confidence'),
+            'close_total': ctx.get('close_total'),
+            'close_spread': ctx.get('close_spread'),
+        }
+        # Only include if at least one value is real
+        if any(v is not None for v in _sig.values()):
+            struct['signals'] = {k: v for k, v in _sig.items() if v is not None}
+        # Slim team_snapshot — Madden ratings, off/def rating, EPA/pg
+        _KEEP_TEAM_FIELDS = (
+            'madden_ovr','madden_off','madden_def','qb_madden_ovr','qb_top10_flag',
+            'off_rating','pass_epa_pg','rush_epa_pg','pass_yds_pg','pass_tds_pg',
+            'def_pass_ypg','def_rush_ypg','def_ppg','def_sacks_pg','def_ints_pg',
+        )
+        _team_snap = {}
+        for side_ in ('away','home'):
+            fields = {f: ctx.get(f'{side_}_{f}') for f in _KEEP_TEAM_FIELDS}
+            fields = {k: v for k, v in fields.items() if v is not None}
+            if fields: _team_snap[side_] = fields
+        if _team_snap:
+            struct['team_snapshot'] = _team_snap
+
         # 2026-09-07 ANTI-HALLUCINATION PRE-PARSE.
         # Before this block, Jerry got raw fields (`projected_spread: 2.38`,
         # `close_home_ml: 145`, `close_away_ml: -175`) and had to infer sign
@@ -740,26 +776,21 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
         'game_date': ct,
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'prompt_version': 'nfl_game_read_v2_2026-08-06',
-        # 2026-09-12 DEPTH: Was only serializing {source, matchup} — 2 keys
-        # vs MLB's 28. Andy complaint "NFL reads should be as deep as MLB".
-        # Now serializes the full primary_play (has LR shadows, ensemble
-        # sources, per-market breakdown) plus struct signals so the app can
-        # render richer sections. App renders whatever keys exist and skips
-        # missing ones, so this is additive/safe — doesn't break any
-        # existing UI path.
+        # 2026-09-12 DEPTH: was 2 keys (source, matchup) vs MLB's 28.
+        # Andy complaint "NFL reads should be as deep as MLB". build_struct
+        # now surfaces primary_play (LR shadow, ensemble sources, per-market
+        # breakdown), align_status, signals (confluence/cohort/sweat/panel),
+        # team_snapshot (Madden + EPA + defensive metrics), plus models
+        # (matchup + panel projections) and pre_parsed_facts (Jerry's
+        # anti-hallucination structured facts). App renders whatever keys
+        # exist — additive/safe.
         'input_snapshot': {
-            'source': 'generate_nfl_game_reads',
-            'matchup': struct.get('matchup'),
-            'primary_play': struct.get('primary_play'),
-            'align_status': struct.get('align_status'),
-            'signals': struct.get('signals'),
-            'team_snapshot': {
-                'away': {k: v for k, v in (struct.get('away') or {}).items()
-                         if v is not None and not k.startswith('_')},
-                'home': {k: v for k, v in (struct.get('home') or {}).items()
-                         if v is not None and not k.startswith('_')},
-            } if isinstance(struct.get('away'), dict) or isinstance(struct.get('home'), dict) else None,
-        },
+            k: struct.get(k) for k in (
+                'matchup', 'primary_play', 'align_status', 'signals',
+                'team_snapshot', 'models', 'confluence', 'sweat',
+                'pre_parsed_facts',
+            ) if struct.get(k) is not None
+        } | {'source': 'generate_nfl_game_reads'},
         'short_read': parsed.get('short_read') or narrative[:500],
         'long_read': parsed.get('long_read') or narrative,
         'call_text': parsed.get('call_text'),
