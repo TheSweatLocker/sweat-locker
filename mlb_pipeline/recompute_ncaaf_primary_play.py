@@ -128,6 +128,62 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
         # 2026-09-01: defensive gates (juice-trap floor -300 for NCAAF)
         new_pp = apply_all_defensive_gates(new_pp, g, sport='NCAAF')
         if new_pp is None: continue
+
+        # 2026-09-12 LR DISAGREEMENT GUARDRAIL. Andy audit finding: 42 of 50
+        # dog picks (84%) on 9/12 have LR giving picked team <35% outright
+        # win probability. 20 hard-disagree (<25%). Root cause: signal-
+        # stacking on FBS-vs-FCS/D-II buy games — three unreliable priors
+        # (prior-season penalty rate, FCS/G5 L10-road ATS, D-II lineman
+        # weight) compound to STRONG on dogs LR calls near-impossible.
+        # Canary: Mercyhurst (D-II) +41.5 @ New Mexico — LR gives home
+        # 98.6%, ensemble stacked to STRONG dog. This is a bias, not edge.
+        #
+        # Rule: if picked side's outright-win probability per LR ml shadow
+        # is below LR_DISAGREE_HARD_THRESHOLD AND ensemble tier is
+        # PRIME/STRONG, cap tier at LEAN. Below LR_DISAGREE_SUPPRESS_THRESHOLD
+        # (very hard disagree), suppress entirely (return None → not
+        # published as primary_play). LR-aligned picks untouched.
+        #
+        # ML/total markets: this reads p_home_win directly. Spread market:
+        # a dog can COVER without winning outright, so <20% ML outright
+        # is a "LR calls the picked team a serious longshot" signal, not
+        # a "LR says the pick loses" signal. Cap-at-LEAN is appropriate
+        # (still surfaces, downweighted), not suppression.
+        try:
+            _lr_ml = ((g.get('lr_shadow') or {}).get('p_home_win')
+                      if isinstance(g.get('lr_shadow'), dict) else None)
+            if _lr_ml is None:
+                _lr_ml = ((new_pp.get('_lr_ml_shadow') or {}).get('p_home_win')
+                          if isinstance(new_pp.get('_lr_ml_shadow'), dict) else None)
+            if _lr_ml is not None:
+                _pick_side = (new_pp.get('side') or '').upper()
+                _picked_ml_p = float(_lr_ml) if _pick_side == 'HOME' else (1 - float(_lr_ml))
+                LR_DISAGREE_HARD_THRESHOLD     = 0.20  # cap tier at LEAN
+                LR_DISAGREE_SUPPRESS_THRESHOLD = 0.10  # suppress entirely
+                _cur_tier = (new_pp.get('tier') or '').upper()
+                if _picked_ml_p < LR_DISAGREE_SUPPRESS_THRESHOLD and _cur_tier in ('PRIME','STRONG','LEAN'):
+                    print(f'    LR-SUPPRESS {g.get("away_team","?")[:12]}@{g.get("home_team","?")[:12]}: '
+                          f'{_cur_tier}→PASS, picked-side LR p={_picked_ml_p:.2f} < {LR_DISAGREE_SUPPRESS_THRESHOLD}')
+                    # Force tier=PASS so app filters it out. Cannot `continue`
+                    # here — previous stored primary_play is likely also
+                    # STRONG on the same pick (deterministic ensemble), so
+                    # skipping the patch leaves the ship-worthy label
+                    # intact. Explicit PASS write ensures suppression.
+                    new_pp['tier'] = 'PASS'
+                    new_pp['_lr_disagreement_cap'] = {
+                        'orig_tier': _cur_tier, 'picked_ml_p': round(_picked_ml_p, 3),
+                        'action': 'suppress', 'threshold': LR_DISAGREE_SUPPRESS_THRESHOLD,
+                    }
+                elif _picked_ml_p < LR_DISAGREE_HARD_THRESHOLD and _cur_tier in ('PRIME','STRONG'):
+                    print(f'    LR-CAP    {g.get("away_team","?")[:12]}@{g.get("home_team","?")[:12]}: '
+                          f'{_cur_tier}→LEAN, picked-side LR p={_picked_ml_p:.2f} < {LR_DISAGREE_HARD_THRESHOLD}')
+                    new_pp['tier'] = 'LEAN'
+                    new_pp['_lr_disagreement_cap'] = {
+                        'orig_tier': _cur_tier, 'picked_ml_p': round(_picked_ml_p, 3),
+                        'threshold': LR_DISAGREE_HARD_THRESHOLD,
+                    }
+        except Exception as _e:
+            print(f'    ⚠ LR-guardrail check failed for {g.get("game_id","?")[:12]}: {_e}')
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
         if new_key == old_key: continue
         changed += 1
