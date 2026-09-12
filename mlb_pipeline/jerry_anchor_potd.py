@@ -311,6 +311,35 @@ def run(game_date: str | None = None, threshold: int = 70,
     #
     # Override with --force flag OR POTD_ALLOW_REPUBLISH=1 env var.
     # Bypass conditions: dry_run always runs; force respects user intent.
+    #
+    # 2026-09-12 HARD LOCK — same rule as Sharp Card. Past HARD_LOCK_ET_HOUR
+    # (default 11am ET), POTD is IMMUTABLE regardless of --force or env
+    # bypass. User trust + Ledger integrity requires that once users see
+    # the POTD, it can't flip mid-day. Emergency override:
+    # POTD_EMERGENCY_UNLOCK=1 (distinct env so --force can't slip past).
+    from datetime import datetime as _dt2, timedelta as _td2, timezone as _tz2
+    _et_hour = (_dt2.now(_tz2.utc) - _td2(hours=4)).hour
+    _HARD_LOCK_HOUR = int(os.environ.get('POTD_HARD_LOCK_ET_HOUR', '11'))
+    _emergency = os.environ.get('POTD_EMERGENCY_UNLOCK') == '1'
+    if not dry_run and not _emergency and _et_hour >= _HARD_LOCK_HOUR:
+        try:
+            _ex = requests.get(f"{SUPABASE_URL}/rest/v1/jerry_cache", headers=H_READ,
+                params={"cache_key": f"eq.best_bet_{gd}", "select": "data,fetched_at"},
+                timeout=10)
+            if _ex.status_code == 200 and _ex.json():
+                _row = _ex.json()[0]
+                _data = _row.get('data') or {}
+                if isinstance(_data, str):
+                    try: import json as _j; _data = _j.loads(_data)
+                    except Exception: _data = {}
+                if (_data or {}).get('anchor') == 'jerry_synthesis_v1':
+                    print(f"  🔒🔒 best_bet_{gd} HARD-LOCK — {_et_hour:02d}:00 ET past "
+                          f"{_HARD_LOCK_HOUR:02d}:00 lock. Republish REFUSED even with "
+                          f"--force. Emergency override: POTD_EMERGENCY_UNLOCK=1")
+                    return
+        except Exception as _e:
+            print(f"  ⚠ hard-lock check failed: {_e} — proceeding")
+
     _allow_republish = force or os.environ.get('POTD_ALLOW_REPUBLISH') == '1'
     if not dry_run and not _allow_republish:
         try:
