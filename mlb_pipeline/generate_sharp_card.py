@@ -834,7 +834,45 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
     #
     # Bypass with --force (manual admin correction) OR set env
     # SHARP_CARD_ALLOW_REPUBLISH=1 (rare emergency).
+    #
+    # 2026-09-12 HARD LOCK — added by Andy directive after NCAAF picks
+    # flipped mid-day when I --force'd a republish at 11am ET to add
+    # missing PRIME props. Users saw picks change — trust killer, and
+    # Ledger would grade the LATEST pick, not what users saw. Fix: past
+    # HARD_LOCK_ET_HOUR (default 11 = 11am ET), no republish is
+    # accepted regardless of --force or SHARP_CARD_ALLOW_REPUBLISH.
+    # Emergency override: SHARP_CARD_EMERGENCY_UNLOCK=1 (distinct env
+    # so a stray --force can't sneak through). Once hard-locked, users
+    # + Ledger + Ladder + POTD all agree on the same displayed picks
+    # for the rest of the day. Backend re-scoring flows to tomorrow's
+    # cron, not today's locked publication.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour  # EDT — TODO: DST switch
+    _HARD_LOCK_HOUR = int(os.environ.get('SHARP_CARD_HARD_LOCK_ET_HOUR', '11'))
+    _emergency = os.environ.get('SHARP_CARD_EMERGENCY_UNLOCK') == '1'
+    _past_lock = _et_hour >= _HARD_LOCK_HOUR
+
     allow_republish = force or os.environ.get('SHARP_CARD_ALLOW_REPUBLISH') == '1'
+    if _past_lock and not _emergency and not dry_run:
+        # Check if existing publication has real content — only hard-lock
+        # a card that was actually published; empty-stub case still allows
+        # first publish even past the lock hour (unusual but possible on
+        # a cron reboot).
+        try:
+            r_ex = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H_READ,
+                params={'cache_key': f'eq.sharp_card_{today}',
+                        'select': 'fetched_at,data'}, timeout=10)
+            if r_ex.status_code == 200 and r_ex.json():
+                _ex_data = (r_ex.json()[0].get('data') or {})
+                if (_ex_data.get('count') or 0) > 0:
+                    print(f'  🔒🔒 sharp_card_{today} HARD-LOCK — {_et_hour:02d}:00 ET '
+                          f'past {_HARD_LOCK_HOUR:02d}:00 lock. Republish REFUSED '
+                          f'even with --force. Emergency override: '
+                          f'SHARP_CARD_EMERGENCY_UNLOCK=1')
+                    return
+        except Exception as _e:
+            print(f'  ⚠ hard-lock check failed: {_e} — proceeding')
+
     if not dry_run and not allow_republish:
         try:
             r_existing = requests.get(
