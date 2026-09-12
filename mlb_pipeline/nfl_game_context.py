@@ -1714,6 +1714,29 @@ def run(dry_run: bool = False) -> None:
         events.extend(e)
     print(f'  Odds API events: {len(events)}')
 
+    # 2026-09-13 UPCOMING-WINDOW FILTER. Prior to this the run iterated
+    # every event returned by the Odds API — which included the ENTIRE
+    # season (~272 regular + preseason events). Each build_row call fires
+    # a per-game Panel Sleeper API request and other per-game work, so at
+    # 1-2s per event the whole regen took 10-15 min and often hung /
+    # timed out silently under `python | head` pipes. Filter to just the
+    # next ~8 days (this-week + Thu/Mon of next week) — matches NCAAF
+    # load_upcoming pattern. Andy audit 9/12: NFL ctx rows last updated
+    # 8/29 because the run wasn't finishing.
+    _now_utc = datetime.now(timezone.utc)
+    _window_end = _now_utc + timedelta(days=8)
+    _pre_filter = len(events)
+    def _parse_ko(s):
+        try: return datetime.fromisoformat(str(s).replace('Z', '+00:00'))
+        except (ValueError, TypeError): return None
+    events = [
+        ev for ev in events
+        if (_ko := _parse_ko(ev.get('commence_time'))) is not None
+           and _now_utc - timedelta(hours=6) <= _ko <= _window_end
+    ]
+    print(f'  filtered to {len(events)} upcoming events '
+          f'(dropped {_pre_filter - len(events)} outside 8d window)')
+
     rows = []
     skipped = 0
     for e in events:
