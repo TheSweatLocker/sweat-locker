@@ -2777,14 +2777,39 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
           const _norm = (n: string) => (n || '').toLowerCase().replace(/\s+/g, ' ').trim();
           const hNorm = _norm(homeTeam);
           const aNorm = _norm(awayTeam);
-          const homeRow = data.find((r: any) => {
-            const t = _norm(r.team);
-            return t === hNorm || hNorm.includes(t) || t.includes(hNorm);
-          });
-          const awayRow = data.find((r: any) => {
-            const t = _norm(r.team);
-            return t === aNorm || aNorm.includes(t) || t.includes(aNorm);
-          });
+          // 2026-09-13 FIX: prior substring-both-directions match caused
+          // "Georgia State" query to grab "Georgia" (Bulldogs) row because
+          // "georgia state".includes("georgia") === true. Same class breaks
+          // Georgia Tech, Georgia Southern, Miami/Miami (Ohio), etc.
+          // New rule: exact match FIRST, then substring only when the
+          // CFBD name has >=2 words (prevents single-word school matches
+          // from grabbing state/tech/southern variants). Andy screenshot
+          // 9/12 caught Georgia State card showing Georgia Tech's stats.
+          const _pickTeam = (norm: string) => {
+            // 1. exact
+            const exact = data.find((r: any) => _norm(r.team) === norm);
+            if (exact) return exact;
+            // 2. substring, but reject single-word CFBD names (too greedy)
+            return data.find((r: any) => {
+              const t = _norm(r.team);
+              const tWords = t.split(' ').filter(Boolean).length;
+              const nWords = norm.split(' ').filter(Boolean).length;
+              // CFBD short (e.g. "Virginia") vs display long (e.g.
+              // "Virginia Cavaliers") — OK when CFBD has >=2 words, OR
+              // display is exactly CFBD + " <one-word-mascot>".
+              if (tWords >= 2 && (norm.includes(t) || t.includes(norm))) return true;
+              if (tWords === 1 && nWords === 2 && norm.startsWith(t + ' ')) {
+                // Only accept if the trailing word looks like a mascot,
+                // not a location differentiator like "State"/"Tech"/"Southern".
+                const trail = norm.slice(t.length + 1);
+                const _LOC = new Set(['state','tech','southern','western','eastern','northern','a&m']);
+                return !_LOC.has(trail);
+              }
+              return false;
+            });
+          };
+          const homeRow = _pickTeam(hNorm);
+          const awayRow = _pickTeam(aNorm);
           const anyReal = [homeRow, awayRow].some((r: any) => r &&
             (r.sp_overall != null || r.off_epa_per_play != null || r.points_per_game != null));
           if (anyReal) {
