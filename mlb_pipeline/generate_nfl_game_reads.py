@@ -920,6 +920,19 @@ def run():
         narrative = call_claude(prompt)
         if not narrative:
             print(f"  • {away} @ {home}: no narrative — struct only")
+        else:
+            # 2026-09-12 cross-sport vocab scrub (see generate_ncaaf_game_reads
+            # for full comment). Kills baseball/basketball/hockey terminology
+            # leaked into NFL prose. Andy's "Texas bats last" catch in NCAAF
+            # motivated this — same class LLM slip can hit NFL too.
+            try:
+                from generate_ncaaf_game_reads import _scrub_wrong_sport_vocab
+                narrative, _redacted = _scrub_wrong_sport_vocab(narrative, sport='NFL')
+                if _redacted > 3:
+                    print(f"  ⚠ NFL vocab-scrub gutted {_redacted} sentences — skipping narrative")
+                    narrative = None
+            except Exception as _e:
+                print(f"  ⚠ vocab-scrub import failed: {_e}")
         parsed = parse_nfl_synthesis(narrative) if narrative else {}
 
         # 2026-08-09: NFL number-hallucination hard-enforce (mirrors MLB

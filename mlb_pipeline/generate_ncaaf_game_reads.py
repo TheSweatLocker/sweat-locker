@@ -26,6 +26,68 @@ from dotenv import load_dotenv
 
 from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
 
+# 2026-09-12 CROSS-SPORT VOCAB SCRUB. Andy caught Jerry writing
+# "Texas bats last" in an Ohio State @ Texas NCAAF read — baseball
+# vocab in a football prose block. Root cause is LLM occasionally
+# reaching for familiar sports metaphors when the prompt is thin,
+# especially early-season when signals are sparse.
+#
+# This scrub redacts full sentences that contain any wrong-sport
+# vocab (baseball, hockey, basketball terms in football reads).
+# Sentence-level rather than word-level so we don't leave grammatical
+# rubble ("Texas at last" if we just delete "bats"). Logs each
+# redaction so we can audit + tune prompt if the pattern recurs.
+#
+# Same set can be reused for NFL reads by importing from here.
+_BASEBALL_VOCAB = (
+    'bats last', 'at bat', 'batting order', 'strike zone', 'hitters',
+    'innings', 'runs batted', 'bullpen', 'starting rotation',
+    ' era ', ' era.', ' era,', 'whip', 'xera', 'wrc+', 'wrc ',
+    'lineup card', 'on the mound', 'pitching change', 'plate appearance',
+    'ninth inning', 'top of the', 'bottom of the',
+)
+_BASKETBALL_VOCAB = (
+    'field goal percentage', 'three-pointer', 'free throws',
+    'rebounds', 'assists', 'turnover ratio', ' paint ',
+)
+_HOCKEY_VOCAB = (
+    'power play', 'penalty kill', 'faceoff', 'save percentage',
+    'shots on goal', 'goaltender', 'net minder',
+)
+_WRONG_SPORT_ALL = _BASEBALL_VOCAB + _BASKETBALL_VOCAB + _HOCKEY_VOCAB
+
+def _scrub_wrong_sport_vocab(text: str, sport: str = 'NCAAF') -> tuple[str, int]:
+    """Redact sentences containing wrong-sport vocab. Returns
+    (scrubbed_text, redacted_count). Sentence boundary heuristic:
+    split on '. ' + newlines. Rebuild without offending sentences."""
+    if not text: return text, 0
+    import re as _re
+    # Sport-safe vocab depends on current sport
+    if sport in ('NFL', 'NCAAF'):
+        bad = _WRONG_SPORT_ALL
+    elif sport in ('NBA', 'NCAAB'):
+        bad = _BASEBALL_VOCAB + _HOCKEY_VOCAB
+    elif sport == 'NHL':
+        bad = _BASEBALL_VOCAB + _BASKETBALL_VOCAB
+    else:  # MLB — keep baseball vocab, only strip others
+        bad = _BASKETBALL_VOCAB + _HOCKEY_VOCAB
+    # Split into sentences (keep paragraph breaks)
+    paras = text.split('\n')
+    out_paras = []
+    redacted = 0
+    for p in paras:
+        sents = _re.split(r'(?<=[.!?])\s+', p)
+        keep = []
+        for s in sents:
+            s_low = s.lower()
+            if any(term in s_low for term in bad):
+                redacted += 1
+                print(f'    ⚠ {sport} vocab-scrub: dropped sentence "{s[:80]}..."')
+                continue
+            keep.append(s)
+        out_paras.append(' '.join(keep))
+    return '\n'.join(out_paras), redacted
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -418,6 +480,13 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
         narrative = call_claude(prompt)
         if not narrative:
             print(f'    ⚠ claude returned empty — skipping cache write')
+            continue
+        # 2026-09-12 vocab scrub — catch Jerry reaching for baseball/basketball/
+        # hockey terms in a football read (Andy: "Texas bats last" hallucination).
+        # If more than 3 sentences got redacted, the read is too gutted — skip.
+        narrative, _redacted = _scrub_wrong_sport_vocab(narrative, sport='NCAAF')
+        if _redacted > 3:
+            print(f'    ⚠ vocab-scrub gutted {_redacted} sentences — skipping cache write')
             continue
         # 2026-08-25 case fix: was 'ncaaf' (lowercase) — data audit found
         # consumers filter jerry_cache by sport='NCAAF' (uppercase per
