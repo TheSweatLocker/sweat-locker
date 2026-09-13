@@ -1412,6 +1412,65 @@ def render_prompt(templates, struct):
                 )
         team_defense_block = "\n".join(_lines) + "\n\n"
 
+    # 2026-09-13 Phase 6: ENGINE PICK + LR SHADOW block. The single
+    # most-important addition. Prior state: Jerry saw primary_play
+    # buried inside the JSON dump, wrote prose from his own analysis,
+    # then defer_call_to_ensemble_nfl overwrote the CALL fields at
+    # write time. Result: prose could argue for one side while the
+    # badge showed another (Andy 9/13 concern: "how is prose matching
+    # to primary play?"). Fix: hoist the engine pick to the TOP of the
+    # context so Jerry knows the pick BEFORE writing, and instruct him
+    # to defend that side rather than derive his own. LR shadow shown
+    # alongside so agreement/disagreement is explicit.
+    engine_block = ""
+    pp = struct.get('primary_play') if isinstance(struct.get('primary_play'), dict) else None
+    if pp:
+        _e_tier = str(pp.get('tier') or '').upper()
+        _e_market = pp.get('type')
+        _e_side = pp.get('side')
+        _e_label = pp.get('label')
+        _e_conv = pp.get('conviction')
+        _e_sub = pp.get('sub')
+        # LR shadow within primary_play
+        _lr_ml = pp.get('_lr_ml_shadow') or {}
+        _lr_total = pp.get('_lr_total_shadow') or {}
+        _lr_ml_p = _lr_ml.get('p_home_win') if isinstance(_lr_ml, dict) else None
+        _lr_tot_p = _lr_total.get('p_over') if isinstance(_lr_total, dict) else None
+        _pass_reason = _e_sub if _e_tier in ('COVERAGE', 'PASS', 'SKIP') else None
+        if _pass_reason or (_e_tier in ('COVERAGE', 'PASS', 'SKIP')):
+            engine_block = (
+                f"ENGINE PICK: PASS (tier={_e_tier}, conv={_e_conv}). "
+                f"Reason: {_pass_reason or 'no publishable edge'}. "
+                f"Your prose must explain the PASS — do NOT argue for a side. "
+                f"The card will show 'Pass' and the read is the explanation.\n\n"
+            )
+        else:
+            _lines = [
+                f"ENGINE PICK (source of truth — your prose MUST argue FOR this side; do not derive a different pick):",
+                f"  {_e_label} · market={_e_market} · side={_e_side} · tier={_e_tier} · conv={_e_conv}",
+            ]
+            if _e_sub:
+                _lines.append(f"  Engine reason: {_e_sub}")
+            if _lr_ml_p is not None:
+                try:
+                    _pv = float(_lr_ml_p)
+                    _lr_side = 'HOME' if _pv >= 0.55 else ('AWAY' if _pv < 0.45 else 'PASS')
+                    _agrees = _lr_side == str(_e_side).upper()
+                    _lines.append(
+                        f"  LR shadow (ML): p_home_win={_pv:.2f} → {_lr_side} "
+                        f"({'AGREES' if _agrees else 'DISAGREES' if _lr_side != 'PASS' else 'NEUTRAL'} with engine)"
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if _lr_tot_p is not None:
+                try:
+                    _pv = float(_lr_tot_p)
+                    _lr_tside = 'OVER' if _pv >= 0.55 else ('UNDER' if _pv < 0.45 else 'PASS')
+                    _lines.append(f"  LR shadow (total): p_over={_pv:.2f} → {_lr_tside}")
+                except (TypeError, ValueError):
+                    pass
+            engine_block = "\n".join(_lines) + "\n\n"
+
     # 2026-09-13 Phase 5b: WEATHER block. Small but distinct — Jerry
     # should cite weather ONLY when material (wind >=15mph or temp <=32F).
     # Non-material weather goes in the block as "not material — do not
@@ -1437,6 +1496,7 @@ def render_prompt(templates, struct):
 
     context_block = (
         facts_block
+        + engine_block       # 2026-09-13 Phase 6: engine pick above all data
         + injury_block
         + key_players_block
         + team_pace_block
