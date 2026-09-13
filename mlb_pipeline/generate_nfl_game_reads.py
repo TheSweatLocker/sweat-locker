@@ -515,6 +515,122 @@ def fetch_team_pace_rolling(teams_needed: set | None = None) -> dict:
     return per_team
 
 
+def fetch_team_defensive_splits(teams_needed: set | None = None) -> dict:
+    """2026-09-13 Phase 5 read enrichment: per-team L3/L5/season defensive
+    splits derived from opponent-perspective aggregation of nfl_player_stats.
+
+    For each defense, sums the stats they ALLOWED (opponent's stats when
+    facing this team). Because nfl_player_stats has opponent_team on
+    every player row, we can invert:
+      - QB rows with opponent_team=X give us what X's PASS defense allowed
+      - RB rows with opponent_team=X give us what X's RUN defense allowed
+
+    Aggregates per (team, season, week):
+      pass_ypa_allowed  = sum(pass_yds) / sum(attempts) faced
+      pass_yds_pg_allowed
+      pass_td_pg_allowed
+      sacks_pg          (from opposing QB's sacks column)
+      rush_ypc_allowed
+      rush_yds_pg_allowed
+      rush_td_pg_allowed
+
+    Returns per-team L3/L5/season dict. Consumed by build_struct to
+    attach `team_defense` block. Jerry can then write "Jaguars defense
+    allowing 6.2 YPA and 4.3 YPC L3" — real analyst context.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from collections import defaultdict as _dd
+    now_et = _dt.now(_tz.utc) - _td(hours=4)
+    cur_season = now_et.year if now_et.month >= 6 else now_et.year - 1
+    prior_season = cur_season - 1
+
+    rows: list = []
+    for _page in range(40):
+        _lo = _page * 1000
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/nfl_player_stats",
+            headers={**SB_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_lo+999}'},
+            params={
+                "season": f"in.({prior_season},{cur_season})",
+                "season_type": "eq.REG",
+                "position": "in.(QB,RB)",  # QB for pass defense, RB for run defense
+                "select": (
+                    "opponent_team,season,week,position,attempts,carries,"
+                    "passing_yards,rushing_yards,passing_tds,rushing_tds,sacks"
+                ),
+            },
+            timeout=25,
+        )
+        if r.status_code not in (200, 206): break
+        page = r.json() or []
+        if not isinstance(page, list): break
+        rows.extend(page)
+        if len(page) < 1000: break
+
+    # Bucket by (defensive_team = opponent_team, season, week)
+    by_game = _dd(lambda: {
+        'pass_att_faced': 0, 'pass_yds_allowed': 0, 'pass_td_allowed': 0,
+        'sacks_gained': 0,  # sum of opposing QB sacks = sacks THIS defense generated
+        'rush_car_faced': 0, 'rush_yds_allowed': 0, 'rush_td_allowed': 0,
+    })
+    for row in rows:
+        if not isinstance(row, dict): continue
+        opp = row.get('opponent_team')
+        season = row.get('season')
+        week = row.get('week')
+        pos = row.get('position')
+        if not (opp and season and week): continue
+        if teams_needed and opp not in teams_needed: continue
+        b = by_game[(opp, season, week)]
+        if pos == 'QB':
+            b['pass_att_faced'] += row.get('attempts') or 0
+            b['pass_yds_allowed'] += row.get('passing_yards') or 0
+            b['pass_td_allowed'] += row.get('passing_tds') or 0
+            b['sacks_gained'] += row.get('sacks') or 0
+        elif pos == 'RB':
+            b['rush_car_faced'] += row.get('carries') or 0
+            b['rush_yds_allowed'] += row.get('rushing_yards') or 0
+            b['rush_td_allowed'] += row.get('rushing_tds') or 0
+
+    # Group by team, sorted (season, week) desc
+    by_team = _dd(list)
+    for (team, season, week), bucket in by_game.items():
+        by_team[team].append({'season': season, 'week': week, **bucket})
+    for team in by_team:
+        by_team[team].sort(key=lambda g: (g.get('season') or 0, g.get('week') or 0),
+                           reverse=True)
+
+    def _agg(games):
+        if not games: return None
+        n = len(games)
+        pass_att = sum(g['pass_att_faced'] for g in games)
+        pass_yds = sum(g['pass_yds_allowed'] for g in games)
+        rush_car = sum(g['rush_car_faced'] for g in games)
+        rush_yds = sum(g['rush_yds_allowed'] for g in games)
+        return {
+            'games': n,
+            'pass_ypa_allowed': round(pass_yds / pass_att, 2) if pass_att else 0.0,
+            'pass_yds_pg_allowed': round(pass_yds / n, 1),
+            'pass_td_pg_allowed': round(sum(g['pass_td_allowed'] for g in games) / n, 2),
+            'sacks_pg': round(sum(g['sacks_gained'] for g in games) / n, 2),
+            'rush_ypc_allowed': round(rush_yds / rush_car, 2) if rush_car else 0.0,
+            'rush_yds_pg_allowed': round(rush_yds / n, 1),
+            'rush_td_pg_allowed': round(sum(g['rush_td_allowed'] for g in games) / n, 2),
+        }
+
+    per_team: dict = {}
+    for team, games in by_team.items():
+        per_team[team] = {
+            'l3': _agg(games[:3]),
+            'l5': _agg(games[:5]),
+            'season': _agg(games),
+        }
+
+    print(f"  fetched team defense: {len(per_team)} teams · {len(by_game)} game buckets "
+          f"from {len(rows)} opponent-perspective rows")
+    return per_team
+
+
 def fetch_current_nfl_injuries():
     """2026-09-13 Phase 1 read enrichment: pull Q/D/OUT list for the
     current NFL week, grouped by team → list of {player_name, position,
@@ -697,7 +813,7 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
-def build_struct(game, stats, contexts=None, injuries=None, key_players=None, team_pace=None):
+def build_struct(game, stats, contexts=None, injuries=None, key_players=None, team_pace=None, team_defense=None):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
     spread, total, hml, aml = extract_market(game)
@@ -1009,6 +1125,20 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         if _tp:
             struct['team_rolling'] = _tp
 
+    # 2026-09-13 Phase 5 read enrichment: attach team defensive splits.
+    # YPA/YPC allowed, sacks/gm, pass+rush TD allowed per team L3/L5/season.
+    # Jerry can now cite matchup edges from BOTH sides: "JAX offense
+    # averaging 360 yds/gm vs CLE defense allowing 340 yds/gm" — full
+    # analyst context.
+    if team_defense:
+        _td_ = {}
+        _home_td = team_defense.get(_home_abbrev) or team_defense.get(home)
+        _away_td = team_defense.get(_away_abbrev) or team_defense.get(away)
+        if _home_td: _td_['home'] = _home_td
+        if _away_td: _td_['away'] = _away_td
+        if _td_:
+            struct['team_defense'] = _td_
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
@@ -1230,11 +1360,43 @@ def render_prompt(templates, struct):
                 )
         team_pace_block = "\n".join(_lines) + "\n\n"
 
+    # 2026-09-13 Phase 5 read enrichment: TEAM DEFENSE block. Per-team
+    # opponent-perspective aggregates (YPA/YPC allowed, sacks/g, TD
+    # allowed). Complements TEAM PACE (offense) with defense.
+    team_defense_block = ""
+    _tdf = struct.get('team_defense') or {}
+    if _tdf:
+        _lines = ["TEAM DEFENSE (opponent-perspective rolling — cite verbatim for matchup edges. YPA/YPC allowed = per-attempt vs this defense):"]
+        for _side_label, _side in ((away, 'away'), (home, 'home')):
+            _tside = _tdf.get(_side) or {}
+            _l3 = _tside.get('l3') or {}
+            _sea = _tside.get('season') or {}
+            if not _l3 and not _sea: continue
+            _lines.append(f"  {_side_label} defense:")
+            if _l3:
+                _lines.append(
+                    f"    L3: {_l3.get('pass_ypa_allowed')} YPA allowed, "
+                    f"{_l3.get('pass_yds_pg_allowed')} pass yds/g allowed, "
+                    f"{_l3.get('pass_td_pg_allowed')} pass TD/g · "
+                    f"{_l3.get('rush_ypc_allowed')} YPC allowed, "
+                    f"{_l3.get('rush_yds_pg_allowed')} rush yds/g allowed, "
+                    f"{_l3.get('rush_td_pg_allowed')} rush TD/g · "
+                    f"{_l3.get('sacks_pg')} sacks/g generated"
+                )
+            if _sea:
+                _lines.append(
+                    f"    Season ({_sea.get('games')}g): {_sea.get('pass_ypa_allowed')} YPA · "
+                    f"{_sea.get('rush_ypc_allowed')} YPC · "
+                    f"{_sea.get('sacks_pg')} sacks/g"
+                )
+        team_defense_block = "\n".join(_lines) + "\n\n"
+
     context_block = (
         facts_block
         + injury_block
         + key_players_block
         + team_pace_block
+        + team_defense_block
         + "NFL GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
         + json.dumps(_struct_for_json, indent=2, default=str)
     )
@@ -1593,6 +1755,13 @@ def run():
     # position leaders.
     team_pace_by_team = fetch_team_pace_rolling()
 
+    # 2026-09-13 Phase 5 read enrichment: team defensive splits (vs pass,
+    # vs run) derived from opponent-perspective aggregation. Jerry can
+    # now cite "JAX defense allowing 6.2 YPA and 4.3 YPC L3" — the
+    # matchup context that separates ESPN-caliber analysis from generic
+    # "solid defense" phrasing.
+    team_defense_by_team = fetch_team_defensive_splits()
+
     # 2026-09-02: Thu-lock — cache key ties to NFL week's Thursday start.
     # Subsequent-day runs check same key, find it, skip. Only Thursday
     # morning cron generates fresh (or manual --force for injury regen).
@@ -1603,7 +1772,8 @@ def run():
     for g in games:
         struct = build_struct(g, stats, contexts=contexts, injuries=injuries_by_team,
                               key_players=key_players_by_team,
-                              team_pace=team_pace_by_team)
+                              team_pace=team_pace_by_team,
+                              team_defense=team_defense_by_team)
         away, home = struct["matchup"].split(" @ ")
         key = f"game_read_{g.get('id')}_nfl_week_{week_key}"
         if not force:
