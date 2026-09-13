@@ -254,11 +254,67 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             'td': _avg(games, 'receiving_tds'), 'games': len(games),
         }
 
-    # For each team, find position leaders by volume in L5
+    # 2026-09-13 v2 refinement (Andy 9/13): Current-team gate.
+    # Prior version picked leaders based on ALL games any player had for
+    # a team across both loaded seasons. Kirk Cousins had 27 ATL games
+    # from 2024+2025 with high pass attempts → aggregator returned him
+    # as ATL QB1 for 2026 Week 2 even though he moved to LV in the
+    # offseason. Same class hits any offseason trade: Aaron Rodgers
+    # moved to PIT, DK Metcalf to PIT, etc.
+    #
+    # Fix: for each player, determine their CURRENT team as the team
+    # of their most-recent (season, week) game. Only allow them to be
+    # a candidate for THAT team's position leader. Filters out
+    # historical-team ghosts entirely.
+    player_current_team: dict = {}
+    for (team, position, player_name), games in by_key.items():
+        # games is already sorted (season, week) desc — [0] is most recent
+        if games:
+            most_recent = games[0]
+            key = (position, player_name)
+            existing = player_current_team.get(key)
+            candidate = (most_recent.get('season') or 0, most_recent.get('week') or 0, team)
+            if not existing or candidate[:2] > existing[:2]:
+                player_current_team[key] = candidate
+
+    # Stale-data flag: if a team has ZERO current-season games at a position,
+    # any leader we surface is prior-season only — flag it so the prompt
+    # can note "using {prior_season} form".
+    def _has_current_season_data(games):
+        return any((g.get('season') == cur_season) for g in games)
+
+    def _stale_flag(games):
+        return not _has_current_season_data(games)
+
+    # For each team, find position leaders using ONLY games where that
+    # player's most-recent team matches AND they have at least 1
+    # current-season game for this team. The AND is critical: DB roster
+    # data lags real-life trades until the traded player logs a game
+    # for their new team. Kirk Cousins DB roster = ATL through 2025 W18;
+    # he moved to LV in 2026 offseason but has no 2026 games logged yet,
+    # so DB's "current team" for Cousins is still ATL. Requiring at
+    # least one current-season game means Cousins doesn't surface at
+    # ATL until 2026 data lands, and we prefer no-data over wrong-data.
+    #
+    # Trade-off: an offseason trade where the DB has 0 current-season
+    # data for that team's position means we return no leader for that
+    # slot. The prompt handles the None case gracefully (KEY PLAYERS
+    # block just omits that position). Better than surfacing yesterday's
+    # QB.
     teams_seen = set(k[0] for k in by_key)
     per_team: dict = {}
     for team in teams_seen:
-        entries = {(p, n): games for (t, p, n), games in by_key.items() if t == team}
+        # Filter: current team is this team AND has 1+ current-season games
+        def _qualifies(pn_key, games):
+            if player_current_team.get(pn_key, (0, 0, None))[2] != team:
+                return False
+            return any((g.get('season') == cur_season) for g in games)
+
+        entries = {
+            (p, n): games
+            for (t, p, n), games in by_key.items()
+            if t == team and _qualifies((p, n), games)
+        }
         result = {}
         # QB1 = highest L5 attempts
         qbs = [((p, n), games) for (p, n), games in entries.items() if p == 'QB']
@@ -267,6 +323,7 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             result['qb'] = {
                 'name': n, 'l3': _agg_qb(games[:3]),
                 'l5': _agg_qb(games[:5]), 'season': _agg_qb(games),
+                'stale': _stale_flag(games),
             }
         # RB1 = highest L5 carries
         rbs = [((p, n), games) for (p, n), games in entries.items() if p == 'RB']
@@ -275,6 +332,7 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             result['rb1'] = {
                 'name': n, 'l3': _agg_rb(games[:3]),
                 'l5': _agg_rb(games[:5]), 'season': _agg_rb(games),
+                'stale': _stale_flag(games),
             }
         # WR1 & WR2 by L5 targets
         wrs = sorted(
@@ -287,12 +345,14 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             result['wr1'] = {
                 'name': n, 'l3': _agg_rec(games[:3]),
                 'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
+                'stale': _stale_flag(games),
             }
         if len(wrs) >= 2:
             (_, n), games = wrs[1]
             result['wr2'] = {
                 'name': n, 'l3': _agg_rec(games[:3]),
                 'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
+                'stale': _stale_flag(games),
             }
         # TE1 by L5 targets
         tes = [((p, n), games) for (p, n), games in entries.items() if p == 'TE']
@@ -301,12 +361,14 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             result['te1'] = {
                 'name': n, 'l3': _agg_rec(games[:3]),
                 'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
+                'stale': _stale_flag(games),
             }
         if result:
             per_team[team] = result
 
     print(f"  fetched key players: {len(per_team)} teams · rolling stats loaded from "
-          f"{len(rows)} player-game rows ({prior_season}+{cur_season} seasons)")
+          f"{len(rows)} player-game rows ({prior_season}+{cur_season} seasons) "
+          f"· current-team-gated")
     return per_team
 
 
