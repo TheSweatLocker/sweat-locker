@@ -327,34 +327,27 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
     def _stale_flag(games):
         return not _has_current_season_data(games)
 
-    # For each team, find position leaders using ONLY games where that
-    # player's most-recent team matches AND they have at least 1
-    # current-season game for this team. The AND is critical: DB roster
-    # data lags real-life trades until the traded player logs a game
-    # for their new team. Kirk Cousins DB roster = ATL through 2025 W18;
-    # he moved to LV in 2026 offseason but has no 2026 games logged yet,
-    # so DB's "current team" for Cousins is still ATL. Requiring at
-    # least one current-season game means Cousins doesn't surface at
-    # ATL until 2026 data lands, and we prefer no-data over wrong-data.
+    # 2026-09-13 v4 (post-roster-load): filter is now driven by the
+    # nfl_rosters_current mapping alone. If nflverse says Herbert is on
+    # LAC, we use his stats regardless of what season/team they were
+    # logged under (they'll be his LAC stats since he's been there).
+    # If nflverse says Cousins is on LV, we surface him for LV only,
+    # not ATL — his stats will still show 2025 ATL context (the `stale`
+    # flag warns Jerry that stats predate the current team). Better to
+    # have prior-season baseline than nothing.
     #
-    # Trade-off: an offseason trade where the DB has 0 current-season
-    # data for that team's position means we return no leader for that
-    # slot. The prompt handles the None case gracefully (KEY PLAYERS
-    # block just omits that position). Better than surfacing yesterday's
-    # QB.
-    teams_seen = set(k[0] for k in by_key)
+    # This assumes fetch_key_players_rolling ran AFTER nfl_rosters_pull.
+    # If nfl_rosters_current is empty, player_current_team was populated
+    # from the most-recent-game heuristic above and this filter still
+    # works but with less accuracy.
+    teams_seen = set(k[0] for k in by_key) | {t for (_, _, t) in player_current_team.values() if t}
     per_team: dict = {}
     for team in teams_seen:
-        # Filter: current team is this team AND has 1+ current-season games
-        def _qualifies(pn_key, games):
-            if player_current_team.get(pn_key, (0, 0, None))[2] != team:
-                return False
-            return any((g.get('season') == cur_season) for g in games)
-
+        # Filter: roster says this player is on this team.
         entries = {
             (p, n): games
             for (t, p, n), games in by_key.items()
-            if t == team and _qualifies((p, n), games)
+            if player_current_team.get((p, n), (0, 0, None))[2] == team
         }
         result = {}
         # QB1 = highest L5 attempts
@@ -1156,19 +1149,28 @@ def render_prompt(templates, struct):
     # (skip missing rb1/te1 quietly). L3 numbers are what matter for
     # "hot right now" language; season for baseline. Prose must cite
     # these numbers verbatim — NO invented stats.
+    #
+    # 2026-09-13 v4 STALE FLAG: each position may carry `stale=true`
+    # meaning the leader has NO current-season data (stats reflect
+    # prior team / prior season). Prompt marks these as [PRIOR-SEASON]
+    # so Jerry frames citations as "averaged X in 2025" rather than
+    # implying it's current form.
     key_players_block = ""
     _kp = struct.get('key_players') or {}
     if _kp:
-        _lines = ["KEY PLAYERS (rolling stats — cite these VERBATIM when discussing skill players. Do not invent stats or player names not shown here):"]
+        _lines = ["KEY PLAYERS (rolling stats — cite these VERBATIM when discussing skill players. Do not invent stats or player names not shown here. Entries tagged [PRIOR-SEASON] have no current-season data — frame stats as historical baseline, not current form):"]
         for _side_label, _side in ((away, 'away'), (home, 'home')):
             _team_kp = _kp.get(_side) or {}
             if not _team_kp: continue
             _lines.append(f"  {_side_label}:")
+            def _stale_tag(entry):
+                return ' [PRIOR-SEASON]' if entry.get('stale') else ''
+
             _qb = _team_kp.get('qb')
             if _qb:
                 _n = _qb.get('name'); _l3 = _qb.get('l3') or {}; _l5 = _qb.get('l5') or {}; _sea = _qb.get('season') or {}
                 _lines.append(
-                    f"    QB1 {_n}: L3 {_l3.get('cmp_pct')}% on {_l3.get('att')} att, "
+                    f"    QB1 {_n}{_stale_tag(_qb)}: L3 {_l3.get('cmp_pct')}% on {_l3.get('att')} att, "
                     f"{_l3.get('yds')} pass yds/g, {_l3.get('td')} TD / {_l3.get('int')} INT · "
                     f"L5 {_l5.get('cmp_pct')}% {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('cmp_pct')}% {_sea.get('yds')} yds/g {_sea.get('td')} TD/g"
@@ -1177,7 +1179,7 @@ def render_prompt(templates, struct):
             if _rb1:
                 _n = _rb1.get('name'); _l3 = _rb1.get('l3') or {}; _l5 = _rb1.get('l5') or {}; _sea = _rb1.get('season') or {}
                 _lines.append(
-                    f"    RB1 {_n}: L3 {_l3.get('car')} car/g at {_l3.get('ypc')} YPC, {_l3.get('yds')} rush yds/g, "
+                    f"    RB1 {_n}{_stale_tag(_rb1)}: L3 {_l3.get('car')} car/g at {_l3.get('ypc')} YPC, {_l3.get('yds')} rush yds/g, "
                     f"{_l3.get('rec')}/{_l3.get('tgt')} rec on targets · "
                     f"L5 {_l5.get('car')} car/g {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('yds')} yds/g {_sea.get('rush_td')} rush TD/g"
@@ -1187,7 +1189,7 @@ def render_prompt(templates, struct):
                 if not _wr: continue
                 _n = _wr.get('name'); _l3 = _wr.get('l3') or {}; _l5 = _wr.get('l5') or {}; _sea = _wr.get('season') or {}
                 _lines.append(
-                    f"    {_label} {_n}: L3 {_l3.get('rec')}/{_l3.get('tgt')} for {_l3.get('yds')} yds/g, {_l3.get('td')} TD/g · "
+                    f"    {_label} {_n}{_stale_tag(_wr)}: L3 {_l3.get('rec')}/{_l3.get('tgt')} for {_l3.get('yds')} yds/g, {_l3.get('td')} TD/g · "
                     f"L5 {_l5.get('rec')}/{_l5.get('tgt')} for {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('yds')} yds/g"
                 )
