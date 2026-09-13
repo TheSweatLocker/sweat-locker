@@ -983,6 +983,19 @@ function AlignmentStrip({ctx}: any) {
     kind: isAligned ? 'ok' : isDisagree ? 'warn' : 'neutral',
   });
 
+  // 2026-09-12 v1.0.1 #12a: backend-driven chips via align.chips_extra[].
+  // Server emits {key, label, value, tooltip, kind, priority} objects — the
+  // app iterates them and renders alongside hardcoded chips, sorted priority
+  // desc. Enables adding new models/signals (GOAT composite, extreme_public
+  // fade, sweat_pick badge, future models) WITHOUT an app rebuild. Tap a
+  // chip to see its tooltip explanation.
+  const chipsExtra: {key: string; label: string; value: string;
+                     tooltip?: string; kind: 'ok'|'warn'|'info'|'neutral';
+                     priority?: number}[] = Array.isArray(align.chips_extra) ? align.chips_extra : [];
+  const chipsExtraSorted = [...chipsExtra].sort(
+    (a, b) => (b.priority ?? 0) - (a.priority ?? 0)
+  );
+
   return (
     <ScrollView
       horizontal showsHorizontalScrollIndicator={false}
@@ -994,6 +1007,23 @@ function AlignmentStrip({ctx}: any) {
           <Text style={[styles.alignChipLabel]}>{chip.label}</Text>
           <Text style={[styles.alignChipValue, {color: chipTextColorFor(chip.kind)}]}>{chip.value}</Text>
         </View>
+      ))}
+      {chipsExtraSorted.map((chip, i) => (
+        <TouchableOpacity
+          key={`extra-${chip.key ?? i}`}
+          activeOpacity={chip.tooltip ? 0.7 : 1}
+          onPress={() => {
+            if (chip.tooltip) {
+              Alert.alert(chip.label, chip.tooltip);
+            }
+          }}
+          style={[styles.alignChip, chipStyleFor(chip.kind || 'neutral')]}
+        >
+          <Text style={styles.alignChipLabel}>{chip.label}</Text>
+          <Text style={[styles.alignChipValue, {color: chipTextColorFor(chip.kind || 'neutral')}]}>
+            {chip.value}{chip.tooltip ? ' ⓘ' : ''}
+          </Text>
+        </TouchableOpacity>
       ))}
     </ScrollView>
   );
