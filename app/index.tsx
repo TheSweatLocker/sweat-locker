@@ -15293,8 +15293,12 @@ setJerryHistory(prev => {
                         : {bg: THEME.loss + '22', border: THEME.loss + '55', text: THEME.loss, icon: '⚠'};
                     return (
                       <View style={{marginTop:10, padding:12, borderRadius:10, backgroundColor:THEME.surface, borderWidth:1, borderColor:THEME.border, gap:12}}>
-                        {/* COVERAGE PILL */}
-                        {cov && (
+                        {/* COVERAGE PILL — hide when coverage is 0 (v1.0.1 #8).
+                            Backend emits pct=0 when signals haven't populated yet
+                            (LR None + edge None + no context signals). Rendering
+                            "SIGNAL COVERAGE 0/N (0%)" reads as "bad prop" — it's
+                            actually "signal not computed yet." Hide until non-zero. */}
+                        {cov && (cov.pct ?? 0) > 0 && (
                           <View style={{flexDirection:'row', alignItems:'center', gap:8, flexWrap:'wrap'}}>
                             <View style={{backgroundColor: covColors.bg, borderColor: covColors.border, borderWidth:1, borderRadius:6, paddingHorizontal:8, paddingVertical:4, flexDirection:'row', alignItems:'center', gap:5}}>
                               <Text style={{color: covColors.text, fontSize:10, fontWeight:'800'}}>{covColors.icon}</Text>
