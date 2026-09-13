@@ -953,6 +953,17 @@ def apply_calibration(prop: dict, jerry_verdict: Optional[str] = None,
                 # borderline: still promotable but never STRONG+
                 new_conv = min(new_conv, 60)
                 jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_juice{o}_cap60'
+            elif o <= -150:
+                # 2026-09-13 Andy morning-audit finding: Sun 9/13 slate had
+                # 33 hits_over PRIMEs, most sitting -150 to -179 (slipping
+                # through the -180 cap). Star-hitter juice + generic signal-
+                # gate produces PRIME-flood spam. Cap at STRONG-floor 65
+                # (prevents PRIME promotion while allowing STRONG for real
+                # multi-signal outliers). Sample n=~300 hits_over at -150
+                # to -180: 65% baseline hit rate, book implied 60-65% —
+                # near flat EV so PRIME confidence unjustified.
+                new_conv = min(new_conv, 65)
+                jc_reason = (jc_reason + '·' if jc_reason else '') + f'hits_over_juice{o}_capSTRONG65'
         except (TypeError, ValueError): pass
 
     # 4b. bb_under juice trap (2026-08-09) — mirrors hits_over rule.
