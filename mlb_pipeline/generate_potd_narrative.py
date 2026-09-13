@@ -341,7 +341,9 @@ def build_prompt(potd):
     sport = (potd.get("sport") or "MLB").upper()
     if sport == "MLB":
         return build_mlb_prompt(potd)
-    # Non-MLB POTDs: fall back to a minimal sport-tagged prompt
+    if sport in ("NFL", "NCAAF"):
+        return build_football_prompt(potd, sport)
+    # Other sports: minimal fallback (still tighten later)
     game = potd.get("game") or {}
     home = game.get("home_team") or "Home"
     away = game.get("away_team") or "Away"
@@ -355,6 +357,98 @@ def build_prompt(potd):
         f"Rules: Use sport-specific metrics only. Lead with bold play title. "
         f"End with a one-line conviction stamp."
     )
+
+
+def build_football_prompt(potd, sport):
+    """Strict, hallucination-hardened prompt for NFL / NCAAF POTDs.
+
+    2026-09-13 written after production POTD hallucinated a fictitious
+    "Frank Thomas" head coach + invented DVOA + made-up player game log
+    for Caleb Williams OVER 32.5 Pass Attempts pick. Root cause: the
+    prior non-MLB fallback prompt gave the LLM zero guardrails — it
+    filled the vacuum with training-data recall.
+
+    Discipline this prompt enforces:
+      - Only cite team/player names that appear in this prompt block
+      - No made-up stats, ranks, or DVOA/EPA numbers
+      - No tout language (no "printing money", no "lock", no
+        "shootout script" unless it's in the model read)
+      - Argue FOR the pick side; ban contradiction
+      - Prop picks: only the subject player may be named
+      - No head-coach / OC / OL / DL names invented from thin air
+    """
+    game = potd.get("game") or {}
+    ctx  = potd.get("context") or {}
+    home = game.get("home_team") or "Home"
+    away = game.get("away_team") or "Away"
+    lean = potd.get("leanDisplay") or "Model Edge"
+    score = potd.get("score") or {}
+    tier  = (score.get("tierLabel") or potd.get("tier") or "").upper()
+    conv  = score.get("total") or potd.get("conviction")
+    # Player prop detection — if pick starts with a player name (not a team),
+    # treat as prop and lock the subject.
+    is_prop = bool(potd.get("propType")) or "OVER" in lean.upper() or "UNDER" in lean.upper()
+    prop_player = potd.get("propPlayer") or potd.get("player_name")
+
+    facts = []
+    facts.append(f"SPORT: {sport}")
+    facts.append(f"MATCHUP (only these team names may appear in prose): {away} @ {home}")
+    facts.append(f"PICK: {lean}")
+    if tier:  facts.append(f"TIER: {tier}")
+    if conv is not None: facts.append(f"CONVICTION: {conv}")
+    if is_prop and prop_player:
+        facts.append(f"PROP SUBJECT (the ONLY player name allowed in prose): {prop_player}")
+    # Market
+    if ctx.get("close_spread")  is not None: facts.append(f"Market spread: {ctx['close_spread']}")
+    if ctx.get("close_total")   is not None: facts.append(f"Market total: {ctx['close_total']}")
+    if ctx.get("close_home_ml") is not None: facts.append(f"Home ML: {ctx['close_home_ml']}")
+    if ctx.get("close_away_ml") is not None: facts.append(f"Away ML: {ctx['close_away_ml']}")
+    if is_prop and ctx.get("prop_line") is not None:
+        facts.append(f"Prop line: {ctx['prop_line']}")
+    if is_prop and ctx.get("prop_odds") is not None:
+        facts.append(f"Prop odds: {ctx['prop_odds']}")
+    # Model
+    if ctx.get("projected_spread") is not None: facts.append(f"Model projected spread: {ctx['projected_spread']}")
+    if ctx.get("projected_total")  is not None: facts.append(f"Model projected total: {ctx['projected_total']}")
+    # Env
+    if ctx.get("roof"): facts.append(f"Roof: {ctx['roof']}")
+    if ctx.get("temp") is not None: facts.append(f"Temp: {ctx['temp']}°F")
+    if ctx.get("wind") is not None: facts.append(f"Wind: {ctx['wind']} mph")
+    if ctx.get("div_game"): facts.append("Division game: yes")
+    # Cohort / confluence
+    tags = ctx.get("cohort_tags") or []
+    if tags: facts.append(f"Cohort tags: {', '.join(tags)}")
+    cbd = ctx.get("signal_confluence_breakdown") or {}
+    if isinstance(cbd, dict) and cbd:
+        _sig = ', '.join(f"{k}→{v}" for k, v in cbd.items())
+        facts.append(f"Confluence signals (lens→side): {_sig}")
+
+    prompt_body = "\n".join(f"- {f}" for f in facts)
+
+    return f"""You are writing the Play of the Day narrative for The Sweat Locker.
+
+FACTS BLOCK (source of truth — cite ONLY numbers and names that appear below):
+{prompt_body}
+
+STRICT RULES — violating any of these ships a broken card:
+1. NEVER invent player names, coach names, OC/OL/DL personnel, or stats not in the FACTS block.
+   {"You may reference only " + prop_player + " (the prop subject). No other player names." if is_prop and prop_player else "You may name only the two teams above. No player names."}
+2. NEVER cite DVOA, EPA rank, pressure rate, or any numeric stat not in the FACTS block.
+3. NEVER use tout language: "printing money", "lock", "hammer", "smash", "gold mine", "gift",
+   "free money". No "shoot-out script" or "run-heavy identity" unless a signal above supports it.
+4. Argue FOR the pick side. If your reasoning ends up arguing the OPPOSITE side, STOP — you have
+   the direction wrong.
+5. If the model projection contradicts the pick side, cite the actual signal that DID support
+   the pick (confluence lens, cohort tag, market side) — do not invent supporting narrative.
+6. Numbers you cite MUST appear verbatim in the FACTS block. If you can't ground a claim in
+   a listed fact, cut the claim.
+
+FORMAT:
+- Lead with the pick in bold: **{lean}**
+- 2-3 sentences of grounded analysis (facts from above only)
+- End with a single conviction stamp line: **That's the play.**
+
+Do NOT include disclaimers, hedges, or "let me verify" language."""
 
 
 def main():
