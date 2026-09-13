@@ -245,7 +245,19 @@ def compute_refit(prop_type: str, direction: str, signals: dict,
     # not real 100% confidence. Cap at 95 preserves ordering + relative
     # ranking but ends the "100" display bug. Retrain with broader feature
     # diversity is a bigger task queued in the tier-calibration merge.
-    conv = max(0.0, min(95.0, conv))
+    # 2026-09-13 ROOT-CAUSE: prior `max(0.0, min(95.0, conv))` clamp preserved
+    # negative raw scores as literal 0.0, which then persisted in
+    # mlb_pipeline_props.refit_conviction and broke the publishable view's
+    # COALESCE(refit, conv) fallback (COALESCE only substitutes on NULL,
+    # not zero). Six bb_over PRIMEs per day were hidden on Prop Jerry for
+    # 5 straight days because their refit landed at 0.0 while conviction
+    # was 73-77. Fix: when the model's raw score puts conviction at floor
+    # (<= 0), that IS a "no support" signal — return None so downstream
+    # sees NULL and falls back to legacy conviction rather than a
+    # false-zero display sort.
+    if conv <= 0:
+        return None
+    conv = min(95.0, conv)
     # 2026-08-10: prefer v2 trained_at (fresh) over v1's stale stamp.
     # If v2 was merged in, use its trained_at; else fall back to v1.
     stamp = weights.get("v2_trained_at") or weights.get("trained_at", "v1")
@@ -264,41 +276,63 @@ def run(game_date: str | None = None, dry_run: bool = False) -> None:
     print(f"  refit weights v={weights.get('trained_at','?')[:10]}, "
           f"{len(covered)} prop types covered")
 
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
-        headers=H_READ,
-        params={"game_date": f"eq.{gd}",
-                # 2026-08-23: also fetch `tier` so we can gate PRIME
-                # hits_over promotions on refit disagreement (see below).
-                "select": "id,prop_type,direction,conviction,tier,signals",
-                "limit": 500},
-        timeout=30,
-    )
-    props = r.json() if r.status_code == 200 else []
-    print(f"  {len(props)} props to consider")
+    # 2026-09-13 PAGINATION FIX. Prior "limit": 500 silently truncated to
+    # the first 500 rows — on a full Sunday MLB slate today's props table
+    # had 3252 rows, meaning ~85% never got refit applied. Stale
+    # refit_conviction=0.0 values from earlier training snapshots persisted
+    # forever on the untouched rows, hiding valid PRIMEs on Prop Jerry
+    # because the view's COALESCE(refit, conv) returned 0 for display sort.
+    # Root cause of "6 bb_over PRIMEs vanished per day for 5 days straight".
+    # Paginate 1000/page (PostgREST default cap) via Range header.
+    props: list = []
+    _page = 0
+    while True:
+        _start, _end = _page * 1000, _page * 1000 + 999
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props",
+            headers={**H_READ, "Range-Unit": "items", "Range": f"{_start}-{_end}"},
+            params={"game_date": f"eq.{gd}",
+                    "select": "id,prop_type,direction,conviction,tier,signals,refit_conviction"},
+            timeout=30,
+        )
+        if r.status_code not in (200, 206):
+            print(f"  ⚠ page {_page} fetch failed: {r.status_code} {r.text[:120]}")
+            break
+        page_rows = r.json() or []
+        if not isinstance(page_rows, list):
+            break
+        props.extend(page_rows)
+        if len(page_rows) < 1000:
+            break
+        _page += 1
+        if _page > 10:  # 10k safety cap
+            print(f"  ⚠ pagination safety cap hit at {len(props)} rows")
+            break
+    print(f"  {len(props)} props to consider (paginated across {_page + 1} pages)")
 
     updated = skipped = hits_capped = stale_zeros_cleared = 0
     for p in props:
         result = compute_refit(p["prop_type"], p["direction"],
                                 p.get("signals") or {}, weights)
         if result is None:
-            # 2026-09-07 STALE-ZERO CLEANUP. Root cause of watchdog critical
-            # block (8 bb_over props today flagged trap zone). Prior:
-            # compute_refit returning None meant "skip this row" — which
-            # left stale refit_conviction=0.0 values from BEFORE the
-            # FIRED-EMPTY GUARD (2026-08-23) sitting forever. Downstream
-            # trap-zone watchdog then flagged them as "PRIME on refit=0.0,
-            # apply_refit_verdict_override should have downgraded" —
-            # correctly, because refit=0 legit means "no signal support,
-            # tier is meaningless." Root fix: proactively NULL any
-            # existing refit_conviction when compute now returns None,
-            # so trap-zone check sees NULL (skip) not 0.0 (critical).
+            # 2026-09-13 EXPANDED STALE-ZERO CLEANUP. Prior version only
+            # cleared existing zeros when the current run returned None. But
+            # apply_prop_refit was silently truncated to 500 rows/run (fixed
+            # this same commit), so most days most rows never re-entered
+            # this path — stale zeros accumulated for weeks. Now: any
+            # existing refit_conviction=0 gets NULLed here regardless of
+            # whether the current compute path hit or skipped, so a single
+            # end-to-end run scrubs the entire slate. Combined with
+            # compute_refit no longer emitting 0.0 (returns None instead
+            # when raw <= floor), zeros no longer accumulate at write time
+            # either. Belt-and-suspenders: view uses NULLIF(refit,0) as a
+            # third backstop.
             current_refit = p.get("refit_conviction")
             if current_refit is not None and current_refit == 0:
                 pr = requests.patch(
                     f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?id=eq.{p['id']}",
                     headers=H_WRITE,
-                    json={"refit_conviction": None},
+                    json={"refit_conviction": None, "refit_version": None},
                     timeout=10,
                 )
                 if pr.status_code in (200, 204):
