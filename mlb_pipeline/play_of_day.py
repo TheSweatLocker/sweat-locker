@@ -2885,12 +2885,29 @@ def _v2_total_edge(ctx):
     # Lazy-load shared lookup tables once per process (~700 pitchers, 30 teams)
     cache = _V2_BUCKET_CACHE
     if 'pitchers' not in cache:
+        # 2026-09-13 PAGINATION FIX. limit=2000 was silently capped at 1000
+        # by PostgREST. mlb_pitcher_stats has ~1300 rows (all MLB pitchers
+        # with any 2026 IP), so ~23% of pitchers were missing from the
+        # bucket cache. Missing-pitcher lookup returned None → V2 inning-
+        # split projection fell back to season averages → wrong POTD
+        # candidate rankings when the actual starter's early-innings ERA
+        # differed materially from his season ERA. Range-header pagination
+        # pulls the full pitcher set. Same landmine class as 39a12c28.
         try:
-            r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?select=player_name,innings_1_3_era,innings_1_3_ip,innings_4_6_era,innings_7_9_era&limit=2000",
-                headers=HEADERS, timeout=15,
-            )
-            cache['pitchers'] = {p['player_name']: p for p in (r.json() or [])}
+            pitchers_all = []
+            for _page in range(4):  # 4 * 1000 = 4k safety cap
+                _lo = _page * 1000
+                r = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats",
+                    headers={**HEADERS, "Range": f"{_lo}-{_lo+999}", "Range-Unit": "items"},
+                    params={"select": "player_name,innings_1_3_era,innings_1_3_ip,innings_4_6_era,innings_7_9_era"},
+                    timeout=15,
+                )
+                if r.status_code not in (200, 206): break
+                chunk = r.json() if isinstance(r.json(), list) else []
+                pitchers_all.extend(chunk)
+                if len(chunk) < 1000: break
+            cache['pitchers'] = {p['player_name']: p for p in pitchers_all}
         except Exception:
             cache['pitchers'] = {}
         try:
