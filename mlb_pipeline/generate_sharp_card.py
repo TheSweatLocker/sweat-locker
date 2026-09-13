@@ -394,15 +394,28 @@ def _fetch_all(today: str) -> dict:
         # sport, only include kickoff_utc for football (they're the only
         # ones with the "already played" stale-card bug). Basketball/hockey
         # tables also lack kickoff_utc — skip the future-only filter there.
+        # 2026-09-13 FIX: SELECT was missing close_spread + close_total.
+        # `_compose_other_sport_sides` reads close_spread for two decisions:
+        #   1. chalky-STRONG fade (line 786): |spread| > 20 + juiced ML → drop
+        #   2. sole-pick juice swap (line 809): ML < -300 → swap to spread
+        # Without close_spread in the fetch, g.get('close_spread') returned
+        # None on every football row, so the swap branch fell through to the
+        # "no spread available → skip" `continue` — silently dropping every
+        # heavy-fav ML pick. Root cause of missing PRIME/STRONG NFL picks on
+        # Sharp Card 9/13 today: JAX (PRIME -470 ML), DET (STRONG -325 ML),
+        # LAC (STRONG -500 ML) all invisible on the card despite valid
+        # spreads of 8.5, 7.0, 9.5 respectively. Adding close_spread and
+        # close_total fixes both discipline gates in one shot.
         if sport in ('nfl', 'ncaaf'):
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'close_home_ml,close_away_ml,kickoff_utc')
+                    'close_home_ml,close_away_ml,close_spread,close_total,'
+                    'kickoff_utc')
         elif sport == 'ncaab':
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'close_home_ml,close_away_ml')
+                    'close_home_ml,close_away_ml,close_spread,close_total')
         else:  # nba, nhl
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'home_ml_close,away_ml_close')
+                    'home_ml_close,away_ml_close,close_spread,close_total')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
         # Future-only filter only applies to football (only sports that ship
