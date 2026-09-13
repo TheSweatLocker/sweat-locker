@@ -307,6 +307,25 @@ jobs:
           cd mlb_pipeline
           python nfl_weekly_starters.py || echo "NFL starters pull failed (non-fatal)"
 
+      # 2026-09-13: nflverse rosters refresh — authoritative player→team
+      # mapping independent of games-played data. Solves the Kirk Cousins
+      # ATL→LV class of bug where nfl_player_stats lags offseason moves
+      # until the traded player logs a game for their new team. Runs
+      # BEFORE game read generation so key-players aggregator has fresh
+      # roster to consult. nflverse CSV refreshes weekly Tue/Wed, so
+      # this step runs every workflow invocation to catch late signings /
+      # in-season trades. Non-fatal — if the pull fails, aggregator falls
+      # back to most-recent-game heuristic and logs the fallback.
+      - name: Refresh NFL rosters (nflverse — authoritative)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_rosters_pull.py || echo "NFL rosters pull failed (non-fatal)"
+
       # Backfill L4 team ATS / O/U / ML tendencies on today's rows
       # (2026-08-17). Activates the 10 NFL team_form signals in
       # signal_sources. Runs AFTER nfl_game_context.py (rows must
