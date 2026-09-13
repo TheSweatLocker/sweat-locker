@@ -309,10 +309,27 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
         if _page > 10:  # 10k safety cap
             print(f'  ⚠ existing-rows pagination safety cap hit at {len(existing_rows)}')
             break
+    # 2026-09-13: also pull tier + conviction so the pre-insert guard below
+    # can log any attempted overwrite of scored data. Detects the exact
+    # bug fingerprint (existing scored row + stub-insert payload) even
+    # if the ignore-duplicates upsert silently prevents it.
+    existing_scored_keys: set = set()
+    for offset in range(0, 10000, 1000):
+        rs = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                          headers={**H_READ, 'Range-Unit': 'items', 'Range': f'{offset}-{offset+999}'},
+                          params={'game_date': f'eq.{game_date}',
+                                  'select': 'player_name,prop_type,direction,tier,conviction',
+                                  'tier': 'in.(PRIME,STRONG,LEAN)'},
+                          timeout=20)
+        if rs.status_code not in (200, 206): break
+        page = [p for p in (rs.json() or []) if isinstance(p, dict) and p.get('player_name')]
+        for p in page:
+            existing_scored_keys.add((p['player_name'].lower(), p['prop_type'], p['direction']))
+        if len(page) < 1000: break
     existing_by_key: dict = {}
     for p in existing_rows:
         existing_by_key[(p['player_name'].lower(), p['prop_type'], p['direction'])] = p
-    print(f'  existing prop rows: {len(existing_by_key)} (paginated across {_page + 1} pages)')
+    print(f'  existing prop rows: {len(existing_by_key)} (paginated across {_page + 1} pages, {len(existing_scored_keys)} scored)')
 
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
                      headers=H_READ,
@@ -524,6 +541,23 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     'conviction': 0,
                     'lineup_state': 'coverage_stub',
                 }
+                # 2026-09-13 OVERWRITE WATCHDOG. Log any attempt to insert a
+                # COVERAGE stub for a natural key that already has a scored
+                # row (tier PRIME/STRONG/LEAN). With ignore-duplicates in
+                # effect this can no longer destroy data, but the fingerprint
+                # itself is worth surfacing — persistent hits mean sweep is
+                # missing existing rows (pagination broke again, natural-key
+                # normalization drifted, etc.). Cheap detector; expected
+                # count is 0 on a healthy run.
+                _stub_key = (display.lower(), full_type, direction)
+                if _stub_key in existing_scored_keys:
+                    # Guard would-be-destructive write. Skip counter incremented
+                    # for visibility; ignore-duplicates would silently no-op
+                    # otherwise.
+                    print(f'  🛡  stub-over-scored blocked: {display} {full_type} {direction} '
+                          f'(existing scored row protected by ignore-duplicates)')
+                    skipped += 1
+                    continue
                 if dry_run:
                     written += 1; continue
                 # 2026-09-13 DEFENSIVE UPSERT MODE. Prior `merge-duplicates`
