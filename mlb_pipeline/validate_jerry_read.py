@@ -326,6 +326,151 @@ def validate_pitcher_names(prose: str, struct: dict) -> dict:
     }
 
 
+def validate_nfl_player_names(prose: str, struct: dict) -> dict:
+    """2026-09-13 Phase 3 hallucination validator (NFL parallel to
+    validate_pitcher_names for MLB). Detects any Firstname Lastname
+    pattern in Jerry's prose that is NOT in the allowed whitelist.
+
+    Whitelist sources:
+      - struct.home_qb_name / struct.away_qb_name (from nfl_game_context)
+      - struct.key_players.{home,away}.{qb,rb1,wr1,wr2,te1}.name
+        (from Phase 2 rolling aggregator)
+      - struct.injuries.{home,away}[].name (from Phase 1 injury wiring)
+      - Team names (home_team + away_team) — city + nickname words
+      - Common NFL figures (coaches, commissioners) — future work
+
+    Returns {'valid': bool, 'suspects': [...], 'whitelist_size': int}
+    matching the validate_pitcher_names shape so the run() loop can
+    dispatch by sport.
+    """
+    if not prose or not isinstance(struct, dict):
+        return {'valid': True, 'suspects': [], 'whitelist_size': 0}
+
+    whitelist: set = set()
+
+    def _add(name):
+        if not (isinstance(name, str) and name.strip()): return
+        n = _ascii_lower(name.strip())
+        whitelist.add(n)
+        parts = n.split()
+        if len(parts) >= 2:
+            whitelist.add(parts[-1])
+            whitelist.add(parts[0])
+
+    # QB names from nfl_game_context passthrough
+    for key in ('home_qb_name', 'away_qb_name'):
+        _add(struct.get(key))
+
+    # KEY PLAYERS block from Phase 2 (per team, per position slot)
+    kp = struct.get('key_players')
+    if isinstance(kp, dict):
+        for side_key in ('home', 'away'):
+            side = kp.get(side_key)
+            if not isinstance(side, dict): continue
+            for slot in ('qb', 'rb1', 'wr1', 'wr2', 'te1'):
+                entry = side.get(slot)
+                if isinstance(entry, dict):
+                    _add(entry.get('name'))
+
+    # INJURY REPORT block from Phase 1 (per team, list of Q/D/OUT)
+    inj = struct.get('injuries')
+    if isinstance(inj, dict):
+        for side_key in ('home', 'away'):
+            for item in (inj.get(side_key) or []):
+                if isinstance(item, dict):
+                    _add(item.get('name'))
+
+    # Team names (city + nickname). Jerry can reference teams — split
+    # multi-word city names into their tokens ('Los Angeles Chargers'
+    # → los, angeles, chargers). matchup key is "AWAY @ HOME" string.
+    matchup = struct.get('matchup') or ''
+    if isinstance(matchup, str) and '@' in matchup:
+        for side in matchup.split('@'):
+            for word in side.strip().split():
+                whitelist.add(_ascii_lower(word))
+
+    # Firstname Lastname pattern — same regex family as MLB validator,
+    # tuned for NFL prose. Excludes sentence starts and single-word
+    # candidates (like "Aaron" or "Josh" alone).
+    NAME_CHAR = r"[a-zA-Z'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝàáâãäåæçèéêëìíîïñòóôõöøùúûüý-]"
+    name_re = re.compile(
+        r"(?<!\. )(?<!\.\n)(?<![A-Z])"
+        rf"([A-Z]{NAME_CHAR}{{2,}}"
+        r"(?: (?:de|van|von|le|la|St\.|Jr\.|III|II))?"
+        rf" [A-Z]{NAME_CHAR}{{2,}})"
+        r"(?![a-zA-Z])"
+    )
+
+    # NFL-specific stopwords: team city names, common position words,
+    # sport terms, pseudo-headers. Prevents "Kansas City" from flagging
+    # as "Kansas Kansas" etc.
+    _FIRST_WORD_STOP = {
+        'take', 'back', 'fade', 'lean', 'consider', 'against', 'facing', 'versus', 'vs',
+        'the', 'a', 'an', 'his', 'her', 'their', 'our', 'my', 'this', 'that',
+        'if', 'when', 'while', 'unless', 'though', 'although', 'because', 'since',
+        'over', 'under', 'above', 'below', 'through', 'during', 'after', 'before',
+        'and', 'but', 'or', 'so', 'yet', 'nor',
+        'sharp', 'public', 'monte', 'model', 'models', 'simulator', 'panel',
+        'in', 'of', 'at', 'on', 'for', 'to', 'from', 'with', 'without',
+        'ml', 'rl', 'total', 'over/under', 'week',
+        # NFL city prefixes
+        'los', 'san', 'new', 'chicago', 'washington', 'baltimore', 'boston',
+        'kansas', 'philadelphia', 'seattle', 'toronto', 'cincinnati', 'detroit',
+        'minnesota', 'houston', 'oakland', 'pittsburgh', 'milwaukee',
+        'arizona', 'atlanta', 'miami', 'tampa', 'texas', 'green', 'las',
+        'buffalo', 'denver', 'cleveland', 'jacksonville', 'indianapolis',
+        'tennessee', 'carolina', 'dallas', 'nashville',
+        # NFL pseudo-header first words
+        'money', 'external', 'internal', 'historical', 'what', 'why', 'how',
+        'data', 'signal', 'signals', 'context', 'pattern', 'patterns',
+        'flow', 'reading', 'analysis', 'summary', 'result', 'results',
+        'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh',
+        'last', 'next', 'previous', 'recent', 'career', 'season', 'year',
+        'sunday', 'monday', 'thursday', 'friday', 'saturday',
+        'weather', 'wind', 'temp', 'temperature', 'field', 'dome',
+        # role words that show up capitalized in headers
+        'quarterback', 'runningback', 'wideout', 'defense', 'offense',
+        'starting', 'backup', 'starter', 'coach', 'coaching',
+        'red', 'green', 'blue', 'yellow', 'gold',
+    }
+    _LAST_WORD_STOP = {
+        # NFL team-name endings
+        'bills', 'dolphins', 'patriots', 'jets', 'ravens', 'bengals', 'browns',
+        'steelers', 'texans', 'colts', 'jaguars', 'titans', 'broncos', 'chiefs',
+        'raiders', 'chargers', 'cowboys', 'giants', 'eagles', 'commanders',
+        'bears', 'lions', 'packers', 'vikings', 'falcons', 'panthers', 'saints',
+        'buccaneers', 'cardinals', 'rams', '49ers', 'seahawks',
+        # market/prop terms
+        'ml', 'rl', 'over', 'under', 'epa', 'cpoe', 'ypa', 'ypc', 'ypg', 'ppg',
+        'attempts', 'completions', 'yards', 'yard', 'td', 'tds', 'int',
+        # venue-word suffixes
+        'field', 'park', 'stadium', 'coliseum', 'center', 'arena', 'dome',
+        # pseudo-header second words
+        'flow', 'movement', 'edge', 'signal', 'analysis', 'context', 'pattern',
+        'trend', 'card', 'report', 'model', 'game', 'week', 'season',
+    }
+
+    suspects: list = []
+    for match in name_re.finditer(prose):
+        candidate = match.group(1)
+        low = _ascii_lower(candidate)
+        parts = low.split()
+        if len(parts) < 2: continue
+        # skip if either bookend is a stopword
+        if parts[0] in _FIRST_WORD_STOP or parts[-1] in _LAST_WORD_STOP:
+            continue
+        # accept if full name OR last name in whitelist
+        if low in whitelist or parts[-1] in whitelist:
+            continue
+        suspects.append(candidate)
+
+    return {
+        'valid': len(suspects) == 0,
+        'suspects': suspects[:10],
+        'whitelist_size': len(whitelist),
+    }
+
+
 def substitute_generic_starter_refs(prose: str, struct: dict, sport: str = 'MLB') -> str:
     """Sport-universal Layer D scrub. Generalizes the MLB "the opposing
     starter" scrub to other sports where Jerry may leak generic role

@@ -1325,6 +1325,27 @@ def run():
             except ImportError:
                 pass
 
+        # 2026-09-13 Phase 3 NFL name-hallucination validator. Scans
+        # generated prose for Firstname Lastname patterns not in the
+        # allowed whitelist (KEY PLAYERS + INJURY REPORT + QB name +
+        # team roster from struct). Flags suspects, caps conviction to
+        # LEAN (55) if any survive — hallucinated player names materially
+        # damage trust and should never ride at STRONG+.
+        if narrative and parsed.get('short_read') and parsed.get('long_read'):
+            try:
+                from validate_jerry_read import validate_nfl_player_names
+                combined = f"{parsed.get('short_read')}\n\n{parsed.get('long_read')}"
+                name_report = validate_nfl_player_names(combined, struct)
+                if not name_report['valid'] and name_report['suspects']:
+                    _susp = name_report['suspects'][:3]
+                    print(f"  ⚠ NFL name hallucination: {_susp} "
+                          f"(whitelist size={name_report['whitelist_size']})")
+                    if (parsed.get('conviction') or 0) > 55:
+                        parsed['conviction'] = 55
+                        print(f"  🔒 conviction capped→55 (LEAN) due to unverified player names: {_susp}")
+            except ImportError:
+                pass  # validator not installed — skip gracefully
+
         if upsert_read(g, struct, narrative or "", parsed=parsed):
             call_str = ''
             if parsed.get('call_market'):
