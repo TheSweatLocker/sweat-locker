@@ -267,6 +267,16 @@ const prettyCohort = (raw: string): string => {
 // rebuild. See fetchSportRegistry() below and getSports() / getSportEmoji().
 const SPORTS_FALLBACK = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
 const SPORT_EMOJI_FALLBACK: Record<string,string> = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
+// 2026-09-12 v1.0.1 #2: pre-launch date labels for offseason sports so
+// Receipts renders "Coming Nov 3" instead of "no data" when a sport
+// hasn't started yet. Sport start dates from project_ncaab_v4_deferred_814
+// + season schedules. Once a sport starts, its record populates from
+// surface_records and the sentinel is no longer shown.
+const SPORT_LAUNCH_LABEL: Record<string,string> = {
+  NHL:   'Season starts Oct 7',
+  NBA:   'Season starts Oct 21',
+  NCAAB: 'Season starts Nov 3',
+};
 const BET_TYPES = ['Spread', 'Moneyline', 'Total (O/U)', 'Player Prop', 'Parlay'];
 const BOOKS = ['Hard Rock', 'DraftKings', 'FanDuel', 'ESPN Bet', 'BetMGM', 'Caesars', 'Bet365'];
 const RESULTS = ['Pending', 'Win', 'Loss', 'Push'];
@@ -15834,7 +15844,10 @@ setJerryHistory(prev => {
                           </Text>
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginTop:4}}>
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
-                              {d.hasData ? `${d.wins}-${d.losses}` : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data')}
+                              {d.hasData
+                                 ? `${d.wins}-${d.losses}`
+                                 : (SPORT_LAUNCH_LABEL[receiptsSport]
+                                    || (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data'))}
                             </Text>
                             {/* 2026-09-07: Ladder is a COMPOUNDING product —
                                 one play/day, winnings roll onto the next
@@ -15869,7 +15882,9 @@ setJerryHistory(prev => {
                                   <View key={sp.id} style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingVertical:2}}>
                                     <Text style={{color:THEME.textMuted,fontSize:11}}>{sp.icon} {sp.label}</Text>
                                     <Text style={{color: spHitColor, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
-                                      {!spD.hasData ? '—' : `${spD.hitPct.toFixed(0)}%`}
+                                      {!spD.hasData
+                                         ? (SPORT_LAUNCH_LABEL[sp.id] || '—')
+                                         : `${spD.hitPct.toFixed(0)}%`}
                                     </Text>
                                   </View>
                                 );
