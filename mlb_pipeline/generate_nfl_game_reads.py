@@ -310,6 +310,115 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
     return per_team
 
 
+def fetch_team_pace_rolling(teams_needed: set | None = None) -> dict:
+    """2026-09-13 Phase 4 read enrichment: per-team L3/L5/season pace + yards
+    rolling stats derived from nfl_player_stats.
+
+    For each team, sums player-level stats per (season, week) to get team
+    totals, then averages across L3/L5 recent games + season:
+      - plays_pg  = sum(attempts + carries) / games
+      - pass_yds_pg
+      - rush_yds_pg
+      - total_yds_pg
+      - pass_att_pg
+      - rush_att_pg
+      - sacks_taken_pg (QB sacks stat)
+
+    Returns per-team dict — consumed by build_struct to attach a
+    `team_rolling` section next to `team_snapshot`. Jerry can then cite
+    "LAC averaging 64 plays/gm L3, 335 total yds/gm" instead of the
+    current generic "efficient offense" phrasing.
+
+    Loads current + prior season, in-process aggregation. Same fetch
+    scope as fetch_key_players_rolling but doesn't restrict position.
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from collections import defaultdict as _dd
+    now_et = _dt.now(_tz.utc) - _td(hours=4)
+    cur_season = now_et.year if now_et.month >= 6 else now_et.year - 1
+    prior_season = cur_season - 1
+
+    rows: list = []
+    for _page in range(40):
+        _lo = _page * 1000
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/nfl_player_stats",
+            headers={**SB_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_lo+999}'},
+            params={
+                "season": f"in.({prior_season},{cur_season})",
+                "season_type": "eq.REG",
+                "select": (
+                    "team,season,week,position,attempts,carries,"
+                    "passing_yards,rushing_yards,sacks"
+                ),
+            },
+            timeout=30,
+        )
+        if r.status_code not in (200, 206): break
+        page = r.json() or []
+        if not isinstance(page, list): break
+        rows.extend(page)
+        if len(page) < 1000: break
+
+    # Sum player rows into (team, season, week) buckets
+    by_game = _dd(lambda: {
+        'plays': 0, 'pass_att': 0, 'rush_att': 0,
+        'pass_yds': 0, 'rush_yds': 0, 'sacks_taken': 0,
+    })
+    for row in rows:
+        if not isinstance(row, dict): continue
+        team = row.get('team')
+        season = row.get('season')
+        week = row.get('week')
+        if not (team and season and week): continue
+        if teams_needed and team not in teams_needed: continue
+        b = by_game[(team, season, week)]
+        att = row.get('attempts') or 0
+        car = row.get('carries') or 0
+        b['plays'] += att + car
+        b['pass_att'] += att
+        b['rush_att'] += car
+        b['pass_yds'] += row.get('passing_yards') or 0
+        b['rush_yds'] += row.get('rushing_yards') or 0
+        # sacks stat comes from QB row (sacks TAKEN by the offense)
+        if row.get('position') == 'QB':
+            b['sacks_taken'] += row.get('sacks') or 0
+
+    # Group by team, sorted (season, week) desc
+    by_team = _dd(list)
+    for (team, season, week), bucket in by_game.items():
+        by_team[team].append({'season': season, 'week': week, **bucket})
+    for team in by_team:
+        by_team[team].sort(key=lambda g: (g.get('season') or 0, g.get('week') or 0),
+                           reverse=True)
+
+    def _agg(games):
+        if not games: return None
+        n = len(games)
+        return {
+            'games': n,
+            'plays_pg': round(sum(g['plays'] for g in games) / n, 1),
+            'pass_att_pg': round(sum(g['pass_att'] for g in games) / n, 1),
+            'rush_att_pg': round(sum(g['rush_att'] for g in games) / n, 1),
+            'pass_yds_pg': round(sum(g['pass_yds'] for g in games) / n, 1),
+            'rush_yds_pg': round(sum(g['rush_yds'] for g in games) / n, 1),
+            'total_yds_pg': round(sum(g['pass_yds'] + g['rush_yds'] for g in games) / n, 1),
+            'sacks_taken_pg': round(sum(g['sacks_taken'] for g in games) / n, 2),
+        }
+
+    per_team: dict = {}
+    for team, games in by_team.items():
+        per_team[team] = {
+            'l3': _agg(games[:3]),
+            'l5': _agg(games[:5]),
+            'season': _agg(games),
+        }
+
+    print(f"  fetched team pace: {len(per_team)} teams · {len(by_game)} team-game buckets "
+          f"from {len(rows)} player-game rows ({prior_season}+{cur_season} seasons)")
+    return per_team
+
+
 def fetch_current_nfl_injuries():
     """2026-09-13 Phase 1 read enrichment: pull Q/D/OUT list for the
     current NFL week, grouped by team → list of {player_name, position,
@@ -492,7 +601,7 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
-def build_struct(game, stats, contexts=None, injuries=None, key_players=None):
+def build_struct(game, stats, contexts=None, injuries=None, key_players=None, team_pace=None):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
     spread, total, hml, aml = extract_market(game)
@@ -753,6 +862,18 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None):
         if _kp:
             struct['key_players'] = _kp
 
+    # 2026-09-13 Phase 4 read enrichment: attach team-level pace + yards
+    # rolling stats per side. Jerry can cite "LAC 64 plays/gm L3, 335 total
+    # yds/gm" — the team unit context the current reads lack.
+    if team_pace:
+        _tp = {}
+        _home_tp = team_pace.get(_home_abbrev) or team_pace.get(home)
+        _away_tp = team_pace.get(_away_abbrev) or team_pace.get(away)
+        if _home_tp: _tp['home'] = _home_tp
+        if _away_tp: _tp['away'] = _away_tp
+        if _tp:
+            struct['team_rolling'] = _tp
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
@@ -909,10 +1030,46 @@ def render_prompt(templates, struct):
                 )
         key_players_block = "\n".join(_lines) + "\n\n"
 
+    # 2026-09-13 Phase 4 read enrichment: TEAM PACE block. Team-level
+    # rolling averages (plays/gm, pass/rush yds/gm, sacks taken/gm).
+    # Gives Jerry team-unit context to complement per-player KEY PLAYERS.
+    team_pace_block = ""
+    _tp = struct.get('team_rolling') or {}
+    if _tp:
+        _lines = ["TEAM PACE (rolling — cite verbatim when discussing team-level offense/defense pressure):"]
+        for _side_label, _side in ((away, 'away'), (home, 'home')):
+            _team_tp = _tp.get(_side) or {}
+            _l3 = _team_tp.get('l3') or {}
+            _l5 = _team_tp.get('l5') or {}
+            _sea = _team_tp.get('season') or {}
+            if not _l3 and not _sea: continue
+            _lines.append(f"  {_side_label}:")
+            if _l3:
+                _lines.append(
+                    f"    L3: {_l3.get('plays_pg')} plays/g "
+                    f"({_l3.get('pass_att_pg')} pass att, {_l3.get('rush_att_pg')} rush att) · "
+                    f"{_l3.get('total_yds_pg')} tot yds/g "
+                    f"({_l3.get('pass_yds_pg')} pass + {_l3.get('rush_yds_pg')} rush) · "
+                    f"{_l3.get('sacks_taken_pg')} sacks taken/g"
+                )
+            if _l5:
+                _lines.append(
+                    f"    L5: {_l5.get('plays_pg')} plays/g · "
+                    f"{_l5.get('total_yds_pg')} tot yds/g"
+                )
+            if _sea:
+                _lines.append(
+                    f"    Season ({_sea.get('games')}g): {_sea.get('plays_pg')} plays/g · "
+                    f"{_sea.get('total_yds_pg')} tot yds/g · "
+                    f"{_sea.get('sacks_taken_pg')} sacks taken/g"
+                )
+        team_pace_block = "\n".join(_lines) + "\n\n"
+
     context_block = (
         facts_block
         + injury_block
         + key_players_block
+        + team_pace_block
         + "NFL GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
         + json.dumps(_struct_for_json, indent=2, default=str)
     )
@@ -1264,6 +1421,13 @@ def run():
     # with injuries block, gives ESPN-analyst caliber source material.
     key_players_by_team = fetch_key_players_rolling()
 
+    # 2026-09-13 Phase 4 read enrichment: team-level L3/L5/season pace +
+    # yards rolling stats derived from nfl_player_stats sums. Unlocks
+    # concrete team-pace citations ("LAC 64 plays/gm L3, 335 total yds/gm")
+    # so Jerry can talk about the offense as a unit, not just individual
+    # position leaders.
+    team_pace_by_team = fetch_team_pace_rolling()
+
     # 2026-09-02: Thu-lock — cache key ties to NFL week's Thursday start.
     # Subsequent-day runs check same key, find it, skip. Only Thursday
     # morning cron generates fresh (or manual --force for injury regen).
@@ -1273,7 +1437,8 @@ def run():
     done = 0
     for g in games:
         struct = build_struct(g, stats, contexts=contexts, injuries=injuries_by_team,
-                              key_players=key_players_by_team)
+                              key_players=key_players_by_team,
+                              team_pace=team_pace_by_team)
         away, home = struct["matchup"].split(" @ ")
         key = f"game_read_{g.get('id')}_nfl_week_{week_key}"
         if not force:
