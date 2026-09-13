@@ -1139,6 +1139,27 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         if _td_:
             struct['team_defense'] = _td_
 
+    # 2026-09-13 Phase 5b: surface weather from ctx as a first-class
+    # section. temp + wind exist on nfl_game_context (from nfl_weather_pull)
+    # but were buried inside the JSON dump. Materiality flags (wind
+    # >=15mph or temp <=32F) flag when weather actually shifts the game.
+    if ctx:
+        _temp = ctx.get('temp')
+        _wind = ctx.get('wind')
+        if _temp is not None or _wind is not None:
+            _w = {'temp_f': _temp, 'wind_mph': _wind}
+            _material_reasons = []
+            try:
+                if _wind is not None and float(_wind) >= 15:
+                    _material_reasons.append(f"wind {float(_wind):.0f}mph")
+                if _temp is not None and float(_temp) <= 32:
+                    _material_reasons.append(f"temp {float(_temp):.0f}F")
+            except (TypeError, ValueError):
+                pass
+            _w['material'] = bool(_material_reasons)
+            _w['material_reasons'] = _material_reasons
+            struct['weather'] = _w
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
@@ -1391,12 +1412,36 @@ def render_prompt(templates, struct):
                 )
         team_defense_block = "\n".join(_lines) + "\n\n"
 
+    # 2026-09-13 Phase 5b: WEATHER block. Small but distinct — Jerry
+    # should cite weather ONLY when material (wind >=15mph or temp <=32F).
+    # Non-material weather goes in the block as "not material — do not
+    # cite" so Jerry doesn't reach for it to fabricate an angle on a
+    # calm 65-degree game.
+    weather_block = ""
+    _w = struct.get('weather') or {}
+    if _w:
+        _temp = _w.get('temp_f')
+        _wind = _w.get('wind_mph')
+        if _w.get('material'):
+            _reasons = ' + '.join(_w.get('material_reasons') or [])
+            weather_block = (
+                f"WEATHER (material — cite this): temp {_temp}F, wind {_wind}mph. "
+                f"Triggers: {_reasons}. "
+                f"Consider UNDER lean per LEAD SIGNAL HIERARCHY item 4.\n\n"
+            )
+        else:
+            weather_block = (
+                f"WEATHER (not material — do NOT cite unless dome vs outdoor matters): "
+                f"temp {_temp}F, wind {_wind}mph.\n\n"
+            )
+
     context_block = (
         facts_block
         + injury_block
         + key_players_block
         + team_pace_block
         + team_defense_block
+        + weather_block
         + "NFL GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
         + json.dumps(_struct_for_json, indent=2, default=str)
     )
