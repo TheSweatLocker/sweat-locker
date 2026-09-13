@@ -149,6 +149,92 @@ def fetch_team_stats():
     return {r.get("team"): r for r in rows}
 
 
+def fetch_current_nfl_injuries():
+    """2026-09-13 Phase 1 read enrichment: pull Q/D/OUT list for the
+    current NFL week, grouped by team → list of {player_name, position,
+    injury_status, body_part}.
+
+    Wired into build_struct so Jerry has structured injury context per
+    game. Prevents both hallucinated player names AND missed critical
+    outages (e.g. ARI RB1 James Conner OUT foot Wk2 2026 — currently
+    invisible to reads). Filters to skill positions (QB/RB/WR/TE) + a
+    few defensive stars (EDGE/CB/S) so noise stays low.
+
+    Season inference: current year from ET-today. Week inference: NFL
+    Week N == (thu - 2026 kickoff) / 7 + 1, floored to reasonable range.
+    """
+    # 2026-09-13: read (season, week) DIRECTLY from nfl_game_context so we
+    # stay in sync with whatever week convention that table uses (the DB
+    # is off-by-one from the real NFL calendar in some cases — e.g. games
+    # on 2026-09-13 are stored as week=1 in ctx even though real NFL calls
+    # that Week 2). What matters is that nfl_injuries follows the same
+    # convention as nfl_game_context, so pulling week from ctx guarantees
+    # a matching join.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    today_iso = (_dt.now(_tz.utc) - _td(hours=4)).strftime('%Y-%m-%d')
+    _ctx_probe = requests.get(
+        f"{SUPABASE_URL}/rest/v1/nfl_game_context",
+        headers=SB_READ,
+        params={
+            "game_date": f"gte.{today_iso}",
+            "select": "season,week",
+            "order": "game_date.asc",
+            "limit": "1",
+        },
+        timeout=10,
+    )
+    _seed = (_ctx_probe.json() or [{}])[0] if _ctx_probe.status_code == 200 else {}
+    season = _seed.get('season') or (_dt.now(_tz.utc) - _td(hours=4)).year
+    week = _seed.get('week') or 1
+
+    KEEP_POS = {'QB', 'RB', 'WR', 'TE', 'FB', 'OL', 'OT', 'G', 'C',
+                'EDGE', 'DE', 'DT', 'LB', 'ILB', 'OLB', 'CB', 'S', 'K'}
+    IGNORE_STATUS = {'Full', 'DNP', None, ''}
+    rows: list = []
+    for _page in range(3):  # 3 * 1000 safety cap
+        _lo = _page * 1000
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/nfl_injuries",
+            headers={**SB_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_lo+999}'},
+            params={
+                "season": f"eq.{season}",
+                "week": f"eq.{week}",
+                "select": "team,player_name,position,injury_status,body_part",
+            },
+            timeout=15,
+        )
+        if r.status_code not in (200, 206): break
+        page = r.json() or []
+        if not isinstance(page, list): break
+        rows.extend(page)
+        if len(page) < 1000: break
+
+    by_team: dict = {}
+    for row in rows:
+        if not isinstance(row, dict): continue
+        status = row.get('injury_status')
+        if status in IGNORE_STATUS: continue
+        pos = (row.get('position') or '').upper()
+        if pos not in KEEP_POS: continue
+        team = row.get('team')
+        if not team: continue
+        by_team.setdefault(team, []).append({
+            'name': row.get('player_name'),
+            'pos': pos,
+            'status': status,
+            'body_part': row.get('body_part'),
+        })
+    # Sort each team's list: OUT first, then Doubtful, then Questionable
+    _STATUS_ORDER = {'Out': 0, 'Doubtful': 1, 'Questionable': 2}
+    for team, items in by_team.items():
+        items.sort(key=lambda x: (_STATUS_ORDER.get(x.get('status'), 9),
+                                    0 if x.get('pos') in ('QB', 'RB', 'WR', 'TE') else 1,
+                                    x.get('name') or ''))
+    print(f"  fetched injuries: {sum(len(v) for v in by_team.values())} "
+          f"Q/D/O across {len(by_team)} teams (season={season}, week={week})")
+    return by_team
+
+
 def fetch_nfl_contexts():
     """2026-08-09 Phase 2: pull nfl_game_context rows with model/panel
     predictions + primary_play. Keyed by (home_team, away_team) for
@@ -245,7 +331,7 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
-def build_struct(game, stats, contexts=None):
+def build_struct(game, stats, contexts=None, injuries=None):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
     spread, total, hml, aml = extract_market(game)
@@ -470,6 +556,26 @@ def build_struct(game, stats, contexts=None):
         if facts:
             struct["pre_parsed_facts"] = facts
 
+    # 2026-09-13 Phase 1 read enrichment: attach current-week Q/D/OUT
+    # injuries per team. Team codes match nfl_injuries.team column (32
+    # standard NFL abbrevs). Away/home team names from the Odds API can
+    # be full ("Cleveland Browns"), so map via _short_team for lookup.
+    # Includes only skill positions and key defense — see KEEP_POS in
+    # fetch_current_nfl_injuries. When the current NFL pipeline runs,
+    # every read gets a concrete injury list Jerry can cite verbatim
+    # (e.g. "James Conner OUT — Foot"), instead of hallucinating names
+    # or missing critical outages entirely.
+    if injuries:
+        _home_abbrev = _short_team(home) or home
+        _away_abbrev = _short_team(away) or away
+        _inj = {}
+        _home_list = injuries.get(_home_abbrev) or injuries.get(home) or []
+        _away_list = injuries.get(_away_abbrev) or injuries.get(away) or []
+        if _home_list: _inj['home'] = _home_list[:15]  # cap noise per team
+        if _away_list: _inj['away'] = _away_list[:15]
+        if _inj:
+            struct['injuries'] = _inj
+
     struct["casual_summary"] = _build_casual_summary(struct)
     return struct
 
@@ -563,8 +669,29 @@ def render_prompt(templates, struct):
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
         facts_block = "\n".join(_lines) + "\n\n"
+    # 2026-09-13 Phase 1 read enrichment: INJURY REPORT block hoisted above
+    # the JSON so Jerry can't skim past it. When a skill position (QB/RB/WR/
+    # TE) is OUT or Doubtful, ESPN-caliber prose leads with that fact. Making
+    # the injury list conspicuous in the prompt keeps that behavior consistent.
+    injury_block = ""
+    _inj = struct.get('injuries') or {}
+    if _inj:
+        _away_short, _home_short = away, home
+        _lines = ["INJURY REPORT (verified from official reports — cite by name when relevant to the pick, lead with any OUT/Doubtful at QB/RB1/WR1/TE1):"]
+        for _label, _side in (('away', 'away'), ('home', 'home')):
+            _team_inj = _inj.get(_side) or []
+            if not _team_inj: continue
+            _team_name = _away_short if _side == 'away' else _home_short
+            _lines.append(f"  {_team_name}:")
+            for _item in _team_inj:
+                _n = _item.get('name'); _p = _item.get('pos')
+                _s = _item.get('status'); _b = _item.get('body_part') or 'undisclosed'
+                _lines.append(f"    - {_n} ({_p}) — {_s} · {_b}")
+        injury_block = "\n".join(_lines) + "\n\n"
+
     context_block = (
         facts_block
+        + injury_block
         + "NFL GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n"
         + json.dumps(_struct_for_json, indent=2, default=str)
     )
@@ -901,6 +1028,14 @@ def run():
     contexts = fetch_nfl_contexts()
     print(f"  Phase 2 contexts loaded: {len(contexts)}")
 
+    # 2026-09-13 Phase 1 read enrichment: current-week injuries per team.
+    # Wired into build_struct so every game read has structured Q/D/OUT
+    # context. Grounds Jerry's prose to concrete injury facts (prevents
+    # "Frank Thomas"-class hallucinated player names) AND surfaces
+    # critical outages the current reads miss (e.g. ARI RB1 James Conner
+    # OUT foot Wk2 2026 was invisible until this wiring).
+    injuries_by_team = fetch_current_nfl_injuries()
+
     # 2026-09-02: Thu-lock — cache key ties to NFL week's Thursday start.
     # Subsequent-day runs check same key, find it, skip. Only Thursday
     # morning cron generates fresh (or manual --force for injury regen).
@@ -909,7 +1044,7 @@ def run():
 
     done = 0
     for g in games:
-        struct = build_struct(g, stats, contexts=contexts)
+        struct = build_struct(g, stats, contexts=contexts, injuries=injuries_by_team)
         away, home = struct["matchup"].split(" @ ")
         key = f"game_read_{g.get('id')}_nfl_week_{week_key}"
         if not force:
