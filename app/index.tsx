@@ -16594,7 +16594,7 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                   ))}
                                 </View>
                                 <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, fontStyle:'italic', lineHeight:14}}>
-                                  3 of 5 gates must hit. Prior 5-of-5 rule left the ladder empty most days — loosened Aug 20 to keep it firing.
+                                  Ladder publishes when 3 of 5 quality gates fire on a pick.
                                 </Text>
                               </View>
                             </>
