@@ -1241,6 +1241,14 @@ def render_prompt(templates, struct):
             for _k in ('spread', 'home_ml', 'away_ml'):
                 _mkt.pop(_k, None)
             _struct_for_json['market'] = _mkt
+    # 2026-09-13: away/home defined early so injury_block + key_players_block
+    # can use them for team-name labels. Prior code assigned inside a later
+    # scope which broke Phase 1 injury rendering when reached first.
+    _matchup = struct.get("matchup") or " @ "
+    if ' @ ' in _matchup:
+        away, home = _matchup.split(" @ ", 1)
+    else:
+        away, home = '', ''
     facts_block = ""
     if _pf:
         _lines = ["CONFIRMED FACTS (source of truth — quote these VERBATIM in prose, do not re-derive from other fields):"]
@@ -1436,11 +1444,26 @@ def render_prompt(templates, struct):
         _lr_total = pp.get('_lr_total_shadow') or {}
         _lr_ml_p = _lr_ml.get('p_home_win') if isinstance(_lr_ml, dict) else None
         _lr_tot_p = _lr_total.get('p_over') if isinstance(_lr_total, dict) else None
-        _pass_reason = _e_sub if _e_tier in ('COVERAGE', 'PASS', 'SKIP') else None
-        if _pass_reason or (_e_tier in ('COVERAGE', 'PASS', 'SKIP')):
+        # Mirror defer_call_to_ensemble_nfl COVERAGE→LEAN promotion:
+        # COVERAGE with conv>=60 + valid market/side/label is a real pick
+        # displayed as LEAN, NOT a PASS. Without this, borderline picks
+        # would render as PASS in the engine block while the defer
+        # promoted them to LEAN on the card — badge/prose mismatch again.
+        _COVERAGE_LEAN_FLOOR = 60
+        _valid_pick_shape = (_e_market in ('ml', 'spread', 'rl', 'total')
+                             and _e_side and _e_label)
+        _cov_promotable = (_e_tier == 'COVERAGE'
+                           and isinstance(_e_conv, (int, float))
+                           and int(_e_conv) >= _COVERAGE_LEAN_FLOOR
+                           and _valid_pick_shape)
+        if _cov_promotable:
+            _e_tier = 'LEAN'  # display as LEAN, same as defer_call_to_ensemble
+        _is_pass = (_e_tier in ('COVERAGE', 'PASS', 'SKIP')) or not _valid_pick_shape
+        if _is_pass:
+            _pass_reason = _e_sub or 'no publishable edge'
             engine_block = (
                 f"ENGINE PICK: PASS (tier={_e_tier}, conv={_e_conv}). "
-                f"Reason: {_pass_reason or 'no publishable edge'}. "
+                f"Reason: {_pass_reason}. "
                 f"Your prose must explain the PASS — do NOT argue for a side. "
                 f"The card will show 'Pass' and the read is the explanation.\n\n"
             )

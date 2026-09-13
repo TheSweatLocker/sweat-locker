@@ -375,7 +375,20 @@ def render_prompt(templates, struct):
         _e_label = _pp.get('label')
         _e_conv = _pp.get('conviction')
         _e_sub = _pp.get('sub')
-        if _e_tier in ('COVERAGE', 'PASS', 'SKIP') or not (_e_market and _e_side and _e_label):
+        # Mirror the NFL COVERAGE→LEAN promotion so borderline picks
+        # (COVERAGE tier + conv≥60 + valid shape) render as real picks
+        # not PASS. Keeps engine block in sync with any downstream
+        # normalization.
+        _valid_pick_shape = (_e_market in ('ml', 'spread', 'rl', 'total')
+                             and _e_side and _e_label)
+        _cov_promotable = (_e_tier == 'COVERAGE'
+                           and isinstance(_e_conv, (int, float))
+                           and int(_e_conv) >= 60
+                           and _valid_pick_shape)
+        if _cov_promotable:
+            _e_tier = 'LEAN'
+        _is_pass = (_e_tier in ('COVERAGE', 'PASS', 'SKIP')) or not _valid_pick_shape
+        if _is_pass:
             engine_block = (
                 f"ENGINE PICK: PASS (tier={_e_tier}, conv={_e_conv}). "
                 f"Reason: {_e_sub or 'no publishable edge'}. "
