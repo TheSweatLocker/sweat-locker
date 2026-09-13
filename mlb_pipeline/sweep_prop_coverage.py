@@ -526,18 +526,26 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                 }
                 if dry_run:
                     written += 1; continue
-                # 2026-09-12: add on_conflict clause. H_WRITE already sends
-                # Prefer: resolution=merge-duplicates but PostgREST needs
-                # ?on_conflict=<uniq-cols> in the URL to route the upsert;
-                # without it, existing rows return 23505 and Andy sees 1000+
-                # violations per cron in the supabase error feed. Same class
-                # as the mlb_lr_dissent fix (d15319b1). Constraint columns:
-                # (game_date, player_name, prop_type, direction, prop_line)
-                # per supabase/migrations/20260826d_mlb_pipeline_props_dedup.sql
+                # 2026-09-13 DEFENSIVE UPSERT MODE. Prior `merge-duplicates`
+                # semantics silently REPLACED existing scored rows with the
+                # COVERAGE-tier stub payload whenever pagination missed an
+                # existing row (fixed in this same commit) or a race
+                # condition landed. That behavior destroyed pitcher PRIME
+                # scoring end-to-end. Switch to `ignore-duplicates`: the
+                # sweep is a coverage safety net — if a row already exists
+                # for the natural key, leave it alone. The PATCH path
+                # above already handles book-field updates on existing rows.
+                # The 863f7cd1 fix retained: on_conflict clause is what
+                # PostgREST needs to route to the resolution handler at all
+                # (without it we get 23505 spam); the resolution changes
+                # from merge-duplicates → ignore-duplicates so the sweep
+                # can NEVER overwrite scored data even if the pagination
+                # fetch above misses a row.
+                _insert_headers = {**H_WRITE, 'Prefer': 'resolution=ignore-duplicates'}
                 wr = requests.post(
                     f'{SB}/rest/v1/mlb_pipeline_props'
                     '?on_conflict=game_date,player_name,prop_type,direction,prop_line',
-                    headers=H_WRITE, json=payload, timeout=15)
+                    headers=_insert_headers, json=payload, timeout=15)
                 if wr.status_code in (200, 201, 204):
                     written += 1
                 else:
