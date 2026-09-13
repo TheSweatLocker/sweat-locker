@@ -826,25 +826,8 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         if facts:
             struct["pre_parsed_facts"] = facts
 
-    # 2026-09-13 Phase 1 read enrichment: attach current-week Q/D/OUT
-    # injuries per team. Team codes match nfl_injuries.team column (32
-    # standard NFL abbrevs). Away/home team names from the Odds API can
-    # be full ("Cleveland Browns"), so map via _short_team for lookup.
-    # Includes only skill positions and key defense — see KEEP_POS in
-    # fetch_current_nfl_injuries. When the current NFL pipeline runs,
-    # every read gets a concrete injury list Jerry can cite verbatim
-    # (e.g. "James Conner OUT — Foot"), instead of hallucinating names
-    # or missing critical outages entirely.
     _home_abbrev = _short_team(home) or home
     _away_abbrev = _short_team(away) or away
-    if injuries:
-        _inj = {}
-        _home_list = injuries.get(_home_abbrev) or injuries.get(home) or []
-        _away_list = injuries.get(_away_abbrev) or injuries.get(away) or []
-        if _home_list: _inj['home'] = _home_list[:15]  # cap noise per team
-        if _away_list: _inj['away'] = _away_list[:15]
-        if _inj:
-            struct['injuries'] = _inj
 
     # 2026-09-13 Phase 2 read enrichment: attach QB1/RB1/WR1/WR2/TE1 with
     # L3/L5/season stats per team. Names come from volume-leader detection
@@ -853,14 +836,70 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
     # completion; Hampton 12 carries/game L3") instead of the current
     # generic prose. Skip block if either team has no rolling data
     # (rookie-heavy squad, early Week 1) — better to omit than fabricate.
+    # NOTE: attached BEFORE injuries so injury-tagging can cross-reference.
+    _kp_home = _kp_away = None
     if key_players:
         _kp = {}
-        _home_kp = key_players.get(_home_abbrev) or key_players.get(home)
-        _away_kp = key_players.get(_away_abbrev) or key_players.get(away)
-        if _home_kp: _kp['home'] = _home_kp
-        if _away_kp: _kp['away'] = _away_kp
+        _kp_home = key_players.get(_home_abbrev) or key_players.get(home)
+        _kp_away = key_players.get(_away_abbrev) or key_players.get(away)
+        if _kp_home: _kp['home'] = _kp_home
+        if _kp_away: _kp['away'] = _kp_away
         if _kp:
             struct['key_players'] = _kp
+
+    # 2026-09-13 Phase 1 read enrichment: attach current-week Q/D/OUT
+    # injuries per team. Team codes match nfl_injuries.team column (32
+    # standard NFL abbrevs). Away/home team names from the Odds API can
+    # be full ("Cleveland Browns"), so map via _short_team for lookup.
+    # Includes only skill positions and key defense — see KEEP_POS in
+    # fetch_current_nfl_injuries.
+    #
+    # 2026-09-13 STARTER TAGGING (v2 refinement — Andy 9/13):
+    # A 3rd-string QB going OUT (Dillon Gabriel CLE) is not a
+    # read-worthy fact. Cross-reference against KEY PLAYERS block:
+    # if injured player's name matches QB1/RB1/WR1/WR2/TE1 slot for
+    # THEIR team, tag as `role='STARTER'` so the prompt knows to
+    # feature them. Otherwise mark `role='DEPTH'` — still listed for
+    # completeness but Jerry is instructed NOT to lead with them.
+    def _starter_names_for(kp_side: dict | None) -> set:
+        if not isinstance(kp_side, dict): return set()
+        out = set()
+        for slot in ('qb', 'rb1', 'wr1', 'wr2', 'te1'):
+            entry = kp_side.get(slot)
+            if isinstance(entry, dict) and entry.get('name'):
+                out.add(entry['name'].strip().lower())
+        return out
+
+    def _tag_injury_list(injury_list: list, starter_names: set) -> list:
+        tagged: list = []
+        for item in injury_list or []:
+            if not isinstance(item, dict): continue
+            nm = (item.get('name') or '').strip().lower()
+            role = 'STARTER' if nm in starter_names else 'DEPTH'
+            tagged.append({**item, 'role': role})
+        # Sort STARTER first, then by existing status ordering
+        tagged.sort(key=lambda x: (0 if x.get('role') == 'STARTER' else 1,
+                                    x.get('name') or ''))
+        return tagged
+
+    if injuries:
+        _inj = {}
+        _home_list = injuries.get(_home_abbrev) or injuries.get(home) or []
+        _away_list = injuries.get(_away_abbrev) or injuries.get(away) or []
+        _home_starters = _starter_names_for(_kp_home)
+        _away_starters = _starter_names_for(_kp_away)
+        _home_tagged = _tag_injury_list(_home_list, _home_starters)
+        _away_tagged = _tag_injury_list(_away_list, _away_starters)
+        # Trim: keep ALL starters + first N depth entries so noise stays down
+        DEPTH_CAP = 8
+        _home_final = ([x for x in _home_tagged if x.get('role') == 'STARTER']
+                       + [x for x in _home_tagged if x.get('role') == 'DEPTH'][:DEPTH_CAP])
+        _away_final = ([x for x in _away_tagged if x.get('role') == 'STARTER']
+                       + [x for x in _away_tagged if x.get('role') == 'DEPTH'][:DEPTH_CAP])
+        if _home_final: _inj['home'] = _home_final
+        if _away_final: _inj['away'] = _away_final
+        if _inj:
+            struct['injuries'] = _inj
 
     # 2026-09-13 Phase 4 read enrichment: attach team-level pace + yards
     # rolling stats per side. Jerry can cite "LAC 64 plays/gm L3, 335 total
@@ -968,23 +1007,44 @@ def render_prompt(templates, struct):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
         facts_block = "\n".join(_lines) + "\n\n"
     # 2026-09-13 Phase 1 read enrichment: INJURY REPORT block hoisted above
-    # the JSON so Jerry can't skim past it. When a skill position (QB/RB/WR/
-    # TE) is OUT or Doubtful, ESPN-caliber prose leads with that fact. Making
-    # the injury list conspicuous in the prompt keeps that behavior consistent.
+    # the JSON. When a STARTER (QB1/RB1/WR1/WR2/TE1 per KEY PLAYERS) is
+    # OUT or Doubtful, ESPN-caliber prose leads with that fact. Depth
+    # injuries are still listed for completeness but Jerry is told NOT
+    # to feature them in the read.
+    #
+    # 2026-09-13 STARTER TAGGING (v2 — Andy 9/13): each entry carries
+    # role='STARTER' or role='DEPTH', cross-referenced against KEY
+    # PLAYERS during build_struct. Fixes weird "Dillon Gabriel (3rd string
+    # QB) OUT" surface. STARTER rows are grouped and rendered first with
+    # explicit "[STARTER]" tag; DEPTH rows follow with "[depth]" tag and
+    # explicit instruction NOT to lead with them.
     injury_block = ""
     _inj = struct.get('injuries') or {}
     if _inj:
         _away_short, _home_short = away, home
-        _lines = ["INJURY REPORT (verified from official reports — cite by name when relevant to the pick, lead with any OUT/Doubtful at QB/RB1/WR1/TE1):"]
+        _lines = [
+            "INJURY REPORT (verified from official reports — cite STARTER injuries by name if relevant to the pick, lead with any [STARTER] OUT/Doubtful. Depth injuries listed for completeness — do NOT feature them in prose unless they materially change the depth chart):"
+        ]
         for _label, _side in (('away', 'away'), ('home', 'home')):
             _team_inj = _inj.get(_side) or []
             if not _team_inj: continue
             _team_name = _away_short if _side == 'away' else _home_short
+            _starters = [x for x in _team_inj if x.get('role') == 'STARTER']
+            _depth = [x for x in _team_inj if x.get('role') != 'STARTER']
             _lines.append(f"  {_team_name}:")
-            for _item in _team_inj:
-                _n = _item.get('name'); _p = _item.get('pos')
-                _s = _item.get('status'); _b = _item.get('body_part') or 'undisclosed'
-                _lines.append(f"    - {_n} ({_p}) — {_s} · {_b}")
+            if _starters:
+                for _item in _starters:
+                    _n = _item.get('name'); _p = _item.get('pos')
+                    _s = _item.get('status'); _b = _item.get('body_part') or 'undisclosed'
+                    _lines.append(f"    [STARTER] {_n} ({_p}) — {_s} · {_b}")
+            else:
+                _lines.append("    [STARTER] (all starters healthy)")
+            if _depth:
+                _lines.append("    [depth — do NOT lead with these; only cite if they materially change the depth chart]:")
+                for _item in _depth:
+                    _n = _item.get('name'); _p = _item.get('pos')
+                    _s = _item.get('status'); _b = _item.get('body_part') or 'undisclosed'
+                    _lines.append(f"      - {_n} ({_p}) — {_s} · {_b}")
         injury_block = "\n".join(_lines) + "\n\n"
 
     # 2026-09-13 Phase 2 read enrichment: KEY PLAYERS block. Hoisted like
