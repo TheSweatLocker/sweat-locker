@@ -1849,6 +1849,49 @@ def build_card():
     today = today_et()
     print(f"Building Sweat Card for {today}...")
 
+    # 2026-09-13 HARD LOCK — parity with sharp_card (commit 1af1e835).
+    # Andy screenshots today: 12:30 PM ET FOOTBALL section showed JAX/DET/BUF/
+    # DAL/Over 38.5. 1:53 PM ET FOOTBALL section showed DAL/LAC/MIA/PHI/GB.
+    # Sweat Card was regenerated at 14:28 UTC (10:28 AM ET) then AGAIN at
+    # 18:44 UTC (2:44 PM ET) — well past the 11 AM ET hard lock the Sharp
+    # Card already enforces. Users saw picks vanish and get replaced as
+    # earlier games kicked off + composer re-ran on live data. Trust killer:
+    # a user who bet BUF ML at noon then sees BUF removed at 2 PM assumes
+    # cherry-picking. Fix: refuse republish past SWEAT_CARD_HARD_LOCK_ET_HOUR
+    # (default 11 = 11 AM ET), same door as Sharp Card. Emergency override:
+    # SWEAT_CARD_EMERGENCY_UNLOCK=1 (distinct env so a stray flag can't sneak
+    # through). Once locked, backend re-scoring flows to tomorrow's cron, not
+    # today's published card.
+    import os as _os
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour  # EDT — TODO: DST switch
+    _HARD_LOCK_HOUR = int(_os.environ.get('SWEAT_CARD_HARD_LOCK_ET_HOUR', '11'))
+    _emergency = _os.environ.get('SWEAT_CARD_EMERGENCY_UNLOCK') == '1'
+    if _et_hour >= _HARD_LOCK_HOUR and not _emergency:
+        try:
+            r_ex = requests.get(
+                f"{SUPABASE_URL}/rest/v1/jerry_cache",
+                headers=HEADERS,
+                params={"cache_key": f"eq.sweat_card_{today}", "select": "data"},
+                timeout=10,
+            )
+            if r_ex.status_code == 200 and r_ex.json():
+                _ex_data = (r_ex.json()[0].get('data') or {})
+                # Guard: only lock if card actually has content (not an empty stub).
+                # Content-check varies by shape — count any top-level items list.
+                _has_content = any(
+                    isinstance(_ex_data.get(k), list) and len(_ex_data.get(k)) > 0
+                    for k in ('football_picks', 'top_props', 'potd_picks',
+                              'total_edges', 'skip_alerts')
+                )
+                if _has_content:
+                    print(f"  🔒🔒 sweat_card_{today} HARD-LOCK — {_et_hour:02d}:00 ET "
+                          f"past {_HARD_LOCK_HOUR:02d}:00 lock. Republish REFUSED. "
+                          f"Emergency override: SWEAT_CARD_EMERGENCY_UNLOCK=1")
+                    return
+        except Exception as _e:
+            print(f"  ⚠ sweat card hard-lock check failed: {_e} — proceeding")
+
     # Slate density check — drives content padding decisions below.
     # Standard MLB-season days (most days) hit `standard` mode and render
     # exactly as before. Thin / empty days pull in audit roll-up + recap +
