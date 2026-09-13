@@ -360,8 +360,62 @@ def render_prompt(templates, struct):
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
         facts_block = "\n".join(_lines) + "\n\n"
+    # 2026-09-13 Phase 6 NCAAF port: ENGINE PICK block. Same rationale
+    # as the NFL Phase 6 fix — Jerry sees primary_play buried in JSON,
+    # writes analytical prose from his own read, then downstream
+    # normalizes the CALL to match ensemble. Prose and badge could
+    # contradict. Hoist the engine pick to the top so Jerry defends the
+    # side rather than derives his own.
+    engine_block = ""
+    _pp = struct.get('primary_play') if isinstance(struct.get('primary_play'), dict) else None
+    if _pp:
+        _e_tier = str(_pp.get('tier') or '').upper()
+        _e_market = _pp.get('type')
+        _e_side = _pp.get('side')
+        _e_label = _pp.get('label')
+        _e_conv = _pp.get('conviction')
+        _e_sub = _pp.get('sub')
+        if _e_tier in ('COVERAGE', 'PASS', 'SKIP') or not (_e_market and _e_side and _e_label):
+            engine_block = (
+                f"ENGINE PICK: PASS (tier={_e_tier}, conv={_e_conv}). "
+                f"Reason: {_e_sub or 'no publishable edge'}. "
+                f"Your prose must explain the PASS — do NOT argue for a side.\n\n"
+            )
+        else:
+            _lines = [
+                "ENGINE PICK (source of truth — your prose MUST argue FOR this side; do not derive a different pick):",
+                f"  {_e_label} · market={_e_market} · side={_e_side} · tier={_e_tier} · conv={_e_conv}",
+            ]
+            if _e_sub:
+                _lines.append(f"  Engine reason: {_e_sub}")
+            # LR shadow for NCAAF (fields mirror NFL if present)
+            _lr_ml = _pp.get('_lr_ml_shadow') or {}
+            _lr_tot = _pp.get('_lr_total_shadow') or {}
+            _lr_ml_p = _lr_ml.get('p_home_win') if isinstance(_lr_ml, dict) else None
+            _lr_tot_p = _lr_tot.get('p_over') if isinstance(_lr_tot, dict) else None
+            if _lr_ml_p is not None:
+                try:
+                    _pv = float(_lr_ml_p)
+                    _lr_side = 'HOME' if _pv >= 0.55 else ('AWAY' if _pv < 0.45 else 'PASS')
+                    _agrees = _lr_side == str(_e_side).upper()
+                    _lines.append(
+                        f"  LR shadow (ML): p_home_win={_pv:.2f} → {_lr_side} "
+                        f"({'AGREES' if _agrees else 'DISAGREES' if _lr_side != 'PASS' else 'NEUTRAL'} with engine)"
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if _lr_tot_p is not None:
+                try:
+                    _pv = float(_lr_tot_p)
+                    _lr_tside = 'OVER' if _pv >= 0.55 else ('UNDER' if _pv < 0.45 else 'PASS')
+                    _lines.append(f"  LR shadow (total): p_over={_pv:.2f} → {_lr_tside}")
+                except (TypeError, ValueError):
+                    pass
+            engine_block = "\n".join(_lines) + "\n\n"
+
     context_block = (
         facts_block
+        + engine_block
         + 'NCAAF GAME CONTEXT (analytical — do not search for scores; when raw fields conflict with CONFIRMED FACTS above, the facts win):\n'
         + json.dumps(_struct_for_json, indent=2, default=str)
     )
