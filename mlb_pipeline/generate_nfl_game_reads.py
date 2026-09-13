@@ -1593,8 +1593,21 @@ def parse_nfl_synthesis(raw: str) -> dict:
     means we store prose only (like pre-Phase 2 behavior).
     """
     import re as _re
+    # 2026-09-13 v2: accept both `---NAME---` and `**NAME**` delimiters.
+    # Claude sometimes emits bold-markdown headers instead of the triple-
+    # dash form the template asks for (verified on KC @ DEN generation
+    # 9/13: full 300-word LONG section rendered under **LONG** with a `---`
+    # separator between). Prior regex required `---NAME---` and silently
+    # returned None on the bold form → entire prose lost. Broader delimiter
+    # matches either variant, still stops at the next known section header.
     def _section(name):
-        m = _re.search(rf"---{name}---\s*(.*?)(?=---[A-Z]+---|$)", raw, _re.S)
+        # Try triple-dash first (template canonical form)
+        m = _re.search(rf"---{name}---\s*(.*?)(?=---[A-Z]+---|\*\*[A-Z]+\*\*|$)",
+                       raw, _re.S)
+        if m: return m.group(1).strip()
+        # Fallback: bold-markdown header (**NAME**)
+        m = _re.search(rf"\*\*{name}\*\*\s*(.*?)(?=\*\*[A-Z]+\*\*|---[A-Z]+---|$)",
+                       raw, _re.S)
         return m.group(1).strip() if m else None
 
     short = _section("SHORT") or ""
