@@ -23,8 +23,18 @@
  * cleared.
  */
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Platform, StatusBar } from 'react-native';
+import Constants from 'expo-constants';
 import { THEME } from '../theme';
+
+// 2026-09-12 v1.0.1 #17: banner was pushing content above the app title on
+// iOS (renders at Y=0 under the notch). No SafeAreaView / SafeAreaProvider
+// in this app, so read the status-bar inset directly from expo-constants
+// (device-aware) + a StatusBar fallback on Android for a defensive floor.
+// Result: banner sits BELOW the notch/status bar on both platforms.
+const TOP_INSET = (Platform.OS === 'ios'
+  ? (Constants.statusBarHeight || 44)
+  : (StatusBar.currentHeight || 24));
 
 type Severity = 'info' | 'warning' | 'critical';
 
@@ -123,6 +133,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 8,
+    paddingTop: TOP_INSET + 8,   // 2026-09-12 v1.0.1 #17: keep banner below notch
     gap: 8,
   },
   msg: {
