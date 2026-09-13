@@ -852,9 +852,20 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
 
 def main(force: bool = False, sport: str | None = None,
          game_date: str | None = None, limit: int | None = None,
-         tier_gate: set[str] | None = None):
-    gd = game_date or today_et()
-    print(f'=== generate_prop_jerry_synthesis · {gd} ===')
+         tier_gate: set[str] | None = None, days: int = 1):
+    # 2026-09-12 DAYS-WINDOW support. Andy audit finding: NFL prop synth was
+    # only running for today's game_date, missing Sun 9/13 slate whenever
+    # a Sat cron fired (which iterates game_date=eq.2026-09-12 = empty for NFL).
+    # Extending to iterate over the next N game_dates lets the daily cron
+    # cover the full upcoming window without needing per-day manual invokes.
+    # Default days=1 preserves prior behavior; --days 3 covers Sun+Mon slates.
+    from datetime import date as _date, timedelta as _td
+    start = _date.fromisoformat(game_date) if game_date else _date.fromisoformat(today_et())
+    game_dates = [(start + _td(days=i)).isoformat() for i in range(max(1, days))]
+    if len(game_dates) > 1:
+        print(f'=== generate_prop_jerry_synthesis · window {game_dates[0]}→{game_dates[-1]} ({len(game_dates)}d) ===')
+    else:
+        print(f'=== generate_prop_jerry_synthesis · {game_dates[0]} ===')
     if tier_gate:
         print(f'  tier-gate active: only synthesizing {sorted(tier_gate)}')
     template = load_prompt()
@@ -862,9 +873,10 @@ def main(force: bool = False, sport: str | None = None,
         print('  ⛔ no prop_jerry_synthesis prompt — run seed_prop_jerry_prompt.py first'); return
     sports = [sport] if sport else list(PROPS_TABLE.keys())
     total = 0
-    for s in sports:
-        total += run_for_sport(s, gd, template, force=force, limit=limit, tier_gate=tier_gate)
-    print(f'\n=== wrote {total} prop_jerry_reads ===')
+    for gd in game_dates:
+        for s in sports:
+            total += run_for_sport(s, gd, template, force=force, limit=limit, tier_gate=tier_gate)
+    print(f'\n=== wrote {total} prop_jerry_reads across {len(game_dates)} date(s) ===')
 
 
 if __name__ == '__main__':
@@ -882,9 +894,12 @@ if __name__ == '__main__':
     # Post-launch: pair with render_prop_template.py to fill deterministic
     # short_read for the skipped props so app renders cleanly.
     p.add_argument('--tier-gate', help='Comma-separated tiers to synthesize (e.g. PRIME,STRONG). Others skipped.')
+    p.add_argument('--days', type=int, default=1,
+                   help='Iterate the next N game_dates from --date (or today). '
+                        'Use --days 3 to cover Sat cron + Sun/Mon slates in one invocation.')
     args = p.parse_args()
     gate = None
     if args.tier_gate:
         gate = {t.strip().upper() for t in args.tier_gate.split(',') if t.strip()}
     main(force=args.force, sport=args.sport, game_date=args.date,
-         limit=args.limit, tier_gate=gate)
+         limit=args.limit, tier_gate=gate, days=args.days)

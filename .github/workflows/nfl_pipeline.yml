@@ -518,7 +518,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_prop_jerry_synthesis.py --sport NFL --force --tier-gate NONE || echo "NFL prop Jerry synthesis failed (non-fatal)"
+          # 2026-09-12: --days 3 covers today + Sun/Mon slates. Prior single-day
+          # default caused Sun 9/13 PRIME props to never synth on Sat cron
+          # (game_date=today = 9/12 for NFL = empty). Andy audit finding.
+          python generate_prop_jerry_synthesis.py --sport NFL --days 3 --force --tier-gate NONE || echo "NFL prop Jerry synthesis failed (non-fatal)"
 
       # 2026-09-13 Jerry-read orphan sweep for NFL. Same class as MLB
       # cleanup after final dedup — NFL 9/13 audit found 55 orphan
