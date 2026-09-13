@@ -254,28 +254,69 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             'td': _avg(games, 'receiving_tds'), 'games': len(games),
         }
 
-    # 2026-09-13 v2 refinement (Andy 9/13): Current-team gate.
-    # Prior version picked leaders based on ALL games any player had for
-    # a team across both loaded seasons. Kirk Cousins had 27 ATL games
-    # from 2024+2025 with high pass attempts → aggregator returned him
-    # as ATL QB1 for 2026 Week 2 even though he moved to LV in the
-    # offseason. Same class hits any offseason trade: Aaron Rodgers
-    # moved to PIT, DK Metcalf to PIT, etc.
+    # 2026-09-13 v3 (Andy 9/13 escalation): Consult nfl_rosters_current
+    # as authoritative source for player→team mapping. nflverse rosters
+    # CSV is refreshed weekly and reflects actual offseason moves
+    # regardless of games-played data. Cousins ATL→LV, Rodgers → PIT,
+    # DK Metcalf → PIT all correctly reflected there.
     #
-    # Fix: for each player, determine their CURRENT team as the team
-    # of their most-recent (season, week) game. Only allow them to be
-    # a candidate for THAT team's position leader. Filters out
-    # historical-team ghosts entirely.
+    # Populated by mlb_pipeline/nfl_rosters_pull.py.
+    # If the roster table is empty (script not yet run), fall back to
+    # "team of most-recent game" heuristic — still filters some ghosts
+    # but is imperfect. Log the fallback so we know when to run the pull.
     player_current_team: dict = {}
-    for (team, position, player_name), games in by_key.items():
-        # games is already sorted (season, week) desc — [0] is most recent
-        if games:
-            most_recent = games[0]
-            key = (position, player_name)
-            existing = player_current_team.get(key)
-            candidate = (most_recent.get('season') or 0, most_recent.get('week') or 0, team)
-            if not existing or candidate[:2] > existing[:2]:
-                player_current_team[key] = candidate
+    try:
+        _rc_rows: list = []
+        for _p in range(5):
+            _lo = _p * 1000
+            _r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/nfl_rosters_current",
+                headers={**SB_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_lo+999}'},
+                params={
+                    "season": f"eq.{cur_season}",
+                    "select": "team,player_name,position,status,depth_chart_position",
+                },
+                timeout=20,
+            )
+            if _r.status_code not in (200, 206): break
+            _page = _r.json() or []
+            if not isinstance(_page, list) or not _page: break
+            _rc_rows.extend(_page)
+            if len(_page) < 1000: break
+        if _rc_rows:
+            for _r in _rc_rows:
+                if not isinstance(_r, dict): continue
+                _n = (_r.get('player_name') or '').strip()
+                _p_ = (_r.get('position') or '').strip()
+                _t = (_r.get('team') or '').strip()
+                if not (_n and _p_ and _t): continue
+                # Roster-derived current-team, keyed by (position, name)
+                player_current_team[(_p_, _n)] = (cur_season, 99, _t)
+            print(f'  key-players: consulted nfl_rosters_current '
+                  f'({len(_rc_rows)} rows) for team mapping')
+        else:
+            print(f'  ⚠ nfl_rosters_current EMPTY — falling back to '
+                  f'most-recent-game heuristic. Run nfl_rosters_pull.py.')
+            for (team, position, player_name), games in by_key.items():
+                if games:
+                    most_recent = games[0]
+                    key = (position, player_name)
+                    existing = player_current_team.get(key)
+                    candidate = (most_recent.get('season') or 0,
+                                 most_recent.get('week') or 0, team)
+                    if not existing or candidate[:2] > existing[:2]:
+                        player_current_team[key] = candidate
+    except Exception as _e:
+        print(f'  ⚠ nfl_rosters_current fetch failed ({_e}) — using heuristic')
+        for (team, position, player_name), games in by_key.items():
+            if games:
+                most_recent = games[0]
+                key = (position, player_name)
+                existing = player_current_team.get(key)
+                candidate = (most_recent.get('season') or 0,
+                             most_recent.get('week') or 0, team)
+                if not existing or candidate[:2] > existing[:2]:
+                    player_current_team[key] = candidate
 
     # Stale-data flag: if a team has ZERO current-season games at a position,
     # any leader we surface is prior-season only — flag it so the prompt
