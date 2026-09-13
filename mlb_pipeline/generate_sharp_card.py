@@ -625,11 +625,69 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
     for d in playbook:
         k = f"{d.get('player_name')}|{d.get('prop_type')}|{d.get('direction')}|{d.get('prop_line')}"
         playbook_by_key[k] = d
+
+    # 2026-09-12 DIRECTION-FLIP GUARD (v1.0.1 item #1 / feedback_fade_not_suppress_803).
+    # apply_prop_refit + prop_tier_calibration can FLIP the winning direction
+    # for a (player, family) — e.g. Alcantara ha_over PRIME → ha_under STRONG.
+    # The flip lands in prop_jerry_reads with the new direction; the raw
+    # mlb_pipeline_props row for the ORIGINAL direction stays at its old tier.
+    # Prior composer iterated mp rows and could publish "Alcantara Over 5.5 HA"
+    # while Jerry read said "fade the over". 14d audit: 102 such mismatches.
+    #
+    # Fix: fetch canonical direction per (player, family) from prop_jerry_reads.
+    # If a mp row's direction doesn't match the canonical, skip it — the other
+    # direction's mp row (if publishable) will surface with the correct side.
+    _mlb_gd = None
+    try:
+        _mlb_gd = (mlb_props[0].get('game_date') if mlb_props else None) or _today_et()
+    except Exception:
+        _mlb_gd = _today_et()
+    jerry_canonical: dict = {}   # (player_name, family) -> winning_direction
+    try:
+        _jr = requests.get(
+            f'{SB}/rest/v1/prop_jerry_reads',
+            params={'sport': 'eq.MLB', 'game_date': f'eq.{_mlb_gd}',
+                    'call_verdict': 'in.(PRIME,STRONG,LEAN,BACK)',
+                    'select': 'player_name,prop_type,direction,conviction'},
+            headers={'apikey': K, 'Authorization': f'Bearer {K}'},
+            timeout=10)
+        if _jr.status_code == 200:
+            for jrow in (_jr.json() or []):
+                if not isinstance(jrow, dict): continue
+                _pt = jrow.get('prop_type') or ''
+                _fam = _pt[:-len('_over')] if _pt.endswith('_over') else (
+                       _pt[:-len('_under')] if _pt.endswith('_under') else _pt)
+                _k = (jrow.get('player_name'), _fam)
+                _dir = jrow.get('direction')
+                # If multiple jerry_reads exist for the same family (rare), keep
+                # the one with the higher conviction — that's the winner post-flip.
+                _existing = jerry_canonical.get(_k)
+                if _existing is None or (jrow.get('conviction') or 0) > _existing[1]:
+                    jerry_canonical[_k] = (_dir, jrow.get('conviction') or 0)
+    except Exception as _e:
+        # Never block composition on the lookup failure — fall through to
+        # legacy behavior (composer publishes based on mp row direction).
+        print(f'  ⚠ direction-flip guard lookup failed (non-fatal): {_e}')
+
     picks = []
     # 2026-09-06 gate: track why props got dropped so we can spot silent
     # regressions (e.g., pipeline flooding kill_gate flags on real signal).
-    dropped = {'coverage_kill': 0, 'playbook_gate': 0, 'lr_tier_drift': 0}
+    dropped = {'coverage_kill': 0, 'playbook_gate': 0, 'lr_tier_drift': 0,
+               'direction_flip': 0}
     for p in mlb_props:
+        # 2026-09-12 DIRECTION-FLIP GUARD. Skip if a jerry_read for the same
+        # (player, family) exists with a DIFFERENT direction — that's the
+        # canonical winner post-flip. The other-direction mp row (if
+        # publishable) surfaces with the correct side; if it isn't
+        # publishable, we correctly drop this (player, family) entirely
+        # rather than ship contradiction.
+        _pt = p.get('prop_type') or ''
+        _fam = _pt[:-len('_over')] if _pt.endswith('_over') else (
+               _pt[:-len('_under')] if _pt.endswith('_under') else _pt)
+        _canonical = jerry_canonical.get((p.get('player_name'), _fam))
+        if _canonical is not None and _canonical[0] != p.get('direction'):
+            dropped['direction_flip'] += 1
+            continue
         # ── Hard gate: publishability (signal-quality flags trump tier) ──
         publishable, reason = _is_prop_publishable(p)
         if not publishable:
@@ -683,7 +741,8 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
         })
     if any(dropped.values()):
         print(f'  ⛔ Prop gate dropped: coverage_kill={dropped["coverage_kill"]} '
-              f'playbook_gate={dropped["playbook_gate"]} lr_tier_drift={dropped["lr_tier_drift"]}')
+              f'playbook_gate={dropped["playbook_gate"]} lr_tier_drift={dropped["lr_tier_drift"]} '
+              f'direction_flip={dropped["direction_flip"]}')
     return picks
 
 
