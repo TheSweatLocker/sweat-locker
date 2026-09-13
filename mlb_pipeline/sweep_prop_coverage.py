@@ -275,16 +275,44 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
     if not ODDS_API_KEY:
         print('  ⛔ ODDS_API_KEY missing'); return
 
-    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
-                     headers=H_READ,
-                     params={'game_date': f'eq.{game_date}',
-                             'select': 'id,player_name,prop_type,direction,prop_line,book_line,book_over_odds,book_under_odds'},
-                     timeout=15)
-    existing_rows = [p for p in (r.json() if r.status_code == 200 else []) if p.get('player_name')]
+    # 2026-09-13 PAGINATION FIX. Prior single-request fetch silently capped
+    # at PostgREST's 1000-row default. Full Sunday MLB slate had 3252 rows;
+    # the ~2200 rows past position 1000 were invisible to the sweep, so
+    # existing_by_key lookups for them returned None → the upsert at line
+    # 509 wrote a COVERAGE stub payload (tier='COVERAGE', conviction=0,
+    # signals={}). Because H_WRITE sends `Prefer: resolution=merge-duplicates`
+    # and the URL now has `on_conflict=<uniq-cols>`, that stub payload
+    # REPLACED the existing scored rows on every sweep run. Root cause of
+    # "pitcher PRIME wipe" — Jackson Jobe outs_under conv=83 morning → SKIP
+    # conv=0 after the 15:43 UTC sweep run. Fix: paginate 1000/page via
+    # Range header so every existing row is visible before the upsert
+    # decides insert-vs-patch. Same class as apply_prop_refit fix in the
+    # same commit (21e9a883) and the pattern logged in
+    # project_postgrest_truncation_audit_912.
+    existing_rows: list = []
+    _page = 0
+    while True:
+        _start, _end = _page * 1000, _page * 1000 + 999
+        r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                         headers={**H_READ, 'Range-Unit': 'items', 'Range': f'{_start}-{_end}'},
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': 'id,player_name,prop_type,direction,prop_line,book_line,book_over_odds,book_under_odds'},
+                         timeout=20)
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ page {_page} existing-rows fetch failed: {r.status_code}')
+            break
+        page = [p for p in (r.json() or []) if isinstance(p, dict) and p.get('player_name')]
+        existing_rows.extend(page)
+        if len(page) < 1000:
+            break
+        _page += 1
+        if _page > 10:  # 10k safety cap
+            print(f'  ⚠ existing-rows pagination safety cap hit at {len(existing_rows)}')
+            break
     existing_by_key: dict = {}
     for p in existing_rows:
         existing_by_key[(p['player_name'].lower(), p['prop_type'], p['direction'])] = p
-    print(f'  existing prop rows: {len(existing_by_key)}')
+    print(f'  existing prop rows: {len(existing_by_key)} (paginated across {_page + 1} pages)')
 
     r = requests.get(f'{SB}/rest/v1/mlb_game_context',
                      headers=H_READ,
