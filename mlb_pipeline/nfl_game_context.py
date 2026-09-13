@@ -286,13 +286,21 @@ def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
     if not team_abbr or not opponent_abbr:
         return {}
     try:
-        # Query nfl_player_stats for the most-recent QB start for this team
-        # to determine current starting QB
+        # 2026-09-13 COLUMN NAME FIX. Prior version queried `recent_team`
+        # but nfl_player_stats has `team` (not `recent_team`) — PostgREST
+        # returned 42703 error, r.json() was an error dict, the .get('...',
+        # 0) >= 15 filter dropped everything silently, and this function
+        # returned {} for every single NFL game. Result: home_qb_name /
+        # away_qb_name have been NULL on every row in nfl_game_context
+        # since this code shipped (2026-08-21). All downstream QB vs DEF
+        # columns (home_qb_vs_team_career_qb_rating, etc.) were NULL too.
+        # NFL reads have been shipping without any QB context — Phase 1
+        # read enrichment root cause. Fix: use the correct column name.
         r = requests.get(
             f'{SB}/rest/v1/nfl_player_stats',
             headers=H_READ,
             params={
-                'recent_team': f'eq.{team_abbr}',
+                'team': f'eq.{team_abbr}',
                 'position': 'eq.QB',
                 'select': 'player_id,player_name,season,week,attempts',
                 'order': 'season.desc,week.desc',
