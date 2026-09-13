@@ -53,12 +53,18 @@ export type StatusChipProps = {
 };
 
 // ─── Alignment → chip config ─────────────────────────────────────────────
+// 2026-09-12 v1.0.1 #14: labels renamed from "Strongly aligned" / "Aligned"
+// / "Soft-aligned" to "Market …" to make explicit that this chip reflects
+// MARKET consensus (books + external picks + money %), not a model call.
+// Andy 9/10 audit: HOU@PHI showed green "Strongly aligned" chip on a card
+// that read "LOW CONVICTION — Downgraded to LEAN" — both true (market
+// aligned, model coin-flip) but the label read as internal contradiction.
 const ALIGN_CFG: Record<Alignment, {color: string; label: string; icon: string}> = {
-  aligned_strong:  {color: THEME.win,       label: 'Strongly aligned', icon: '●●●'},
-  aligned:         {color: THEME.win,       label: 'Aligned',          icon: '●●○'},
-  aligned_soft:    {color: THEME.aligned,   label: 'Soft-aligned',     icon: '●○○'},
-  split:           {color: THEME.warn,      label: 'Split',            icon: '◐'},
-  no_data:         {color: THEME.textMuted, label: 'No data',          icon: '·'},
+  aligned_strong:  {color: THEME.win,       label: 'Market strong',    icon: '●●●'},
+  aligned:         {color: THEME.win,       label: 'Market aligned',   icon: '●●○'},
+  aligned_soft:    {color: THEME.aligned,   label: 'Market soft',      icon: '●○○'},
+  split:           {color: THEME.warn,      label: 'Market split',     icon: '◐'},
+  no_data:         {color: THEME.textMuted, label: 'No market data',   icon: '·'},
   no_ext_data:     {color: THEME.textMuted, label: 'No externals',     icon: '·'},
   no_money_data:   {color: THEME.textMuted, label: 'No money data',    icon: '·'},
 };
