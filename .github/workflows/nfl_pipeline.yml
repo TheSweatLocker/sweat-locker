@@ -516,6 +516,24 @@ jobs:
           cd mlb_pipeline
           python nfl_prop_signal_discipline.py --days 8 || echo "prop discipline non-fatal"
 
+      # 2026-09-14: NFL refit_conviction seed. Unblocks Jerry BACK/FADE
+      # emission by mapping tier + within-tier conviction to a numeric
+      # refit_conviction value. Prior state: NFL props had
+      # refit_conviction=NULL → LLM prompt sees "REFIT_CONVICTION: n/a"
+      # → LLM defaults to PASS (158 of 446 Jerry reads on 9/13 = 35%).
+      # Refit values come from the Week 1 backtest per-tier hit rates
+      # (STRONG=63, LEAN=57, LIGHT=33). Interim until nfl_prop_logreg_
+      # predict.py ships a proper LR-derived refit signal.
+      - name: NFL refit_conviction seed (tier-hit-rate → refit_conviction)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_prop_refit_seed.py --days 8 || echo "prop refit seed non-fatal"
+
       # 2026-09-10: NFL prop injury filter. Post-generation demotion pass —
       # reads nfl_injuries + demotes tier/conviction for Out/Doubtful/
       # Questionable players. Root cause was ctx.panel_injury_outs being an
