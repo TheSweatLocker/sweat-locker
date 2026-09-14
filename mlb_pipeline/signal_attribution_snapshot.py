@@ -54,15 +54,21 @@ def _today_et() -> str:
 
 def _fetch_games(sport: str, game_date: str) -> list[dict]:
     tbl = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+    # 2026-09-13 sport-specific offense-rating column:
+    #   NFL   → home_off_rating (only exists on NFL ctx)
+    #   NCAAF → home_off_epa_pp (only exists on NCAAF ctx)
+    # Aliasing to a common name (`home_off_rating`) via PostgREST select
+    # so build_signal_rows can read one canonical field regardless of sport.
+    base_cols = ('game_id,season,week,season_week,game_date,'
+                 'home_team,away_team,cohort_tags,align_status,'
+                 'primary_play,spread_anchor_weight')
+    if sport == 'NFL':
+        cols = f'{base_cols},home_off_rating,away_off_rating'
+    else:  # NCAAF
+        cols = f'{base_cols},home_off_rating:home_off_epa_pp,away_off_rating:away_off_epa_pp'
     r = requests.get(f'{SB}/rest/v1/{tbl}',
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
-                     params={
-                         'game_date': f'eq.{game_date}',
-                         'select': ('game_id,season,week,season_week,game_date,'
-                                    'home_team,away_team,home_off_epa_pp,'
-                                    'away_off_epa_pp,cohort_tags,align_status,'
-                                    'primary_play,spread_anchor_weight'),
-                     },
+                     params={'game_date': f'eq.{game_date}', 'select': cols},
                      timeout=20)
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
@@ -95,19 +101,23 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
     }
     out: list[dict] = []
 
-    # EPA_GAP
-    he = ctx.get('home_off_epa_pp')
-    ae = ctx.get('away_off_epa_pp')
+    # OFF_RATING_GAP (was EPA_GAP; renamed for column-name accuracy —
+    # home_off_rating is the aggregate offense signal both sports carry.
+    # Real EPA-per-game / EPA-per-play cols exist per sport but under
+    # different names — this is the cleanest single field).
+    he = ctx.get('home_off_rating')
+    ae = ctx.get('away_off_rating')
     try:
         if he is not None and ae is not None:
             gap = float(he) - float(ae)
-            if abs(gap) >= 0.05:
+            # Threshold: 0.5 rating pts is meaningful on the ~50-120 scale
+            if abs(gap) >= 0.5:
                 leader = 'HOME' if gap > 0 else 'AWAY'
                 kind = ('ok' if (is_ml_or_spread and leader == pick_side)
                         else 'warn' if is_ml_or_spread
                         else 'neutral')
-                out.append({**base, 'signal_key': 'EPA_GAP',
-                            'signal_value': round(gap, 3),
+                out.append({**base, 'signal_key': 'OFF_RATING_GAP',
+                            'signal_value': round(gap, 2),
                             'signal_side': leader, 'kind': kind})
     except (TypeError, ValueError): pass
 
