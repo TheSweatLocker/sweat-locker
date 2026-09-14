@@ -87,6 +87,15 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
     try:
         from ensemble_scorer import score_game
         from game_context import _compose_ensemble_sub
+        # 2026-09-13: NFL W1 losers audit found _lr_ml_shadow empty on
+        # MIA/GB/PHI/LAC — root cause: this recompute built a fresh new_pp
+        # from scorer output and never ran defensive_gates, whose
+        # unconditional LR-shadow backfill (defensive_gates.py:1044-1055)
+        # is where _lr_ml_shadow gets stamped every pass. NCAAF's
+        # recompute_ncaaf_primary_play.py:129 already does this correctly
+        # — porting the same call here. Also gives us the LR-warn cap +
+        # anchor cap + juice trap on the recomputed pick.
+        from defensive_gates import apply_all_defensive_gates
     except ImportError as e:
         print(f'  FAIL importing scorer: {e}'); return
 
@@ -120,8 +129,31 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
                 for c in top.contributions[:8]
             ],
         }
+        # 2026-09-13: apply defensive gates (LR override, juice trap,
+        # anchor, publish gate, and — critically — unconditional
+        # _lr_ml_shadow / _lr_total_shadow backfill). Without this,
+        # the fresh scorer output ships with no LR data, breaking
+        # every downstream gate that reads primary_play._lr_ml_shadow
+        # (LR-warn cap in nfl_ncaaf_signal_discipline, POTD gate,
+        # Sharp Card LR conflict check, watchdogs). Sport='NFL'
+        # is critical — default is MLB and silently no-ops on NFL.
+        try:
+            _rebuilt = apply_all_defensive_gates(new_pp, g, sport='NFL')
+            if isinstance(_rebuilt, dict):
+                new_pp = _rebuilt
+        except Exception as _e:
+            # Never break the recompute over a gate failure — same
+            # convention as ncaaf recompute + MLB recompute.
+            print(f'  ! defensive_gates raised: {_e} (continuing)')
+
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
-        if new_key == old_key: continue
+        # 2026-09-13: also patch when the visible pick hasn't changed
+        # but the LR shadow was missing on old_pp — otherwise the
+        # freshly-computed shadow gets discarded and downstream gates
+        # keep no-op-ing. Cheap fix; PATCH per-game is fine.
+        _shadow_was_missing = not isinstance(old_pp.get('_lr_ml_shadow'), dict)
+        if new_key == old_key and not _shadow_was_missing:
+            continue
         changed += 1
 
         marker = f'  {g.get("game_date")} {g.get("away_team","?"):5s} @ {g.get("home_team","?"):5s}  {old_key[:34]:34s} → {new_key[:34]}'
