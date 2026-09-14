@@ -56,10 +56,18 @@ type Props = {
                                  // (1440 → 288 requests/user/day per mount).
 };
 
-const SEVERITY_STYLE: Record<Severity, { bg: string; fg: string }> = {
-  info:     { bg: THEME.sharp,   fg: THEME.ink },
-  warning:  { bg: THEME.warn,    fg: THEME.ink },
-  critical: { bg: THEME.loss,    fg: '#FFFFFF' },
+// 2026-09-13 v1.0.1 #4 (part 3 — admin note gold styling): `info` was a
+// solid cyan block that read as "just another chip" — users skimmed
+// past it. Per project_home_screen_hot_streak_907 spec, informational
+// admin notes should share the SAME gold-accent visual language as the
+// hot-streak banner + gold Adaptive Record chips: subtle gold tint on
+// background, gold text, gold accent stripe on the left. Warning +
+// critical stay saturated (they signal urgency; the color IS the
+// signal). Only info gets the "important message from us" polish.
+const SEVERITY_STYLE: Record<Severity, { bg: string; fg: string; borderLeft?: string }> = {
+  info:     { bg: THEME.accent + '18', fg: THEME.accent, borderLeft: THEME.accent },
+  warning:  { bg: THEME.warn,          fg: THEME.ink },
+  critical: { bg: THEME.loss,          fg: '#FFFFFF' },
 };
 
 export default function AdminNoticeBanner({
@@ -110,7 +118,16 @@ export default function AdminNoticeBanner({
   const s = SEVERITY_STYLE[notice.severity] || SEVERITY_STYLE.info;
 
   return (
-    <View style={[styles.banner, { backgroundColor: s.bg }]}>
+    <View style={[
+      styles.banner,
+      { backgroundColor: s.bg },
+      s.borderLeft
+        ? { borderLeftWidth: 3, borderLeftColor: s.borderLeft }
+        : null,
+    ]}>
+      {notice.severity === 'info' && (
+        <Text style={{ fontSize: 14 }}>ℹ️</Text>
+      )}
       <Text style={[styles.msg, { color: s.fg }]} numberOfLines={3}>
         {notice.message}
       </Text>
