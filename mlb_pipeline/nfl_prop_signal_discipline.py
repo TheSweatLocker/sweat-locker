@@ -350,17 +350,46 @@ def main():
     from collections import Counter
     new_tiers = Counter(); orig_tiers = Counter()
     reassigned = 0
+    # 2026-09-14 PRIME→STRONG CAP through Week 3. Backtest verdict on
+    # Week 1 (n=48 PRIME graded): 24-24 = 50% at -110 = -2.18u. PRIME gate
+    # produces a coin flip because there's no LR shadow calibration on NFL
+    # props (nfl_prop_logreg_predict.py doesn't exist yet) — every PRIME
+    # rides purely on multi-signal confluence which isn't a proven edge
+    # driver at that tier. Meanwhile STRONG hit 62.7% (+11.64u) and LEAN
+    # hit 56.8% (+11.82u) — those tiers are well-calibrated. Cap PRIME
+    # down to STRONG until either (a) Week 3 grades land + we get n≥100
+    # graded PRIME to statistically validate the gate, or (b) an LR
+    # predictor ships and gates PRIME behind p_lr ≥ 0.60. Signals
+    # breakdown records the cap so users see honest reasoning.
+    _now = datetime.now(timezone.utc)
+    # Enforce cap until 2026-09-23 (post-Week 3 Sunday grades land). Adjust
+    # the cutoff date after backtest re-audit or LR ship.
+    _PRIME_CAP_UNTIL = datetime(2026, 9, 23, tzinfo=timezone.utc)
+    _cap_active = _now < _PRIME_CAP_UNTIL
+    prime_capped = 0
     for p in props:
         orig = p.get('tier') or ''
         orig_conv = p.get('conviction') or 0
         orig_tiers[orig] += 1
         new_tier, new_conv, breakdown = compute_confluence_tier(p)
+        # Cap PRIME → STRONG during the interim window.
+        if _cap_active and new_tier == 'PRIME':
+            new_tier = 'STRONG'
+            # Keep conviction but cap at STRONG ceiling (84).
+            new_conv = min(new_conv, 84)
+            breakdown = {**breakdown,
+                         'prime_capped_to_strong': True,
+                         'cap_reason': 'week_1_backtest_50pct_prime_hit_rate_no_lr_gate'}
+            prime_capped += 1
         new_tiers[new_tier] += 1
         if new_tier != orig or new_conv != orig_conv:
             p['_new_tier'] = new_tier
             p['_new_conviction'] = new_conv
             p['_confluence_breakdown'] = breakdown
             reassigned += 1
+    if _cap_active and prime_capped:
+        print(f'  PRIME→STRONG cap active (until {_PRIME_CAP_UNTIL.date()}): '
+              f'{prime_capped} props downgraded')
 
     # ── Fix 2: dedupe alt-line conflicts ────────────────
     demotions = dedupe_alt_lines(props)
