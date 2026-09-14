@@ -3382,11 +3382,15 @@ function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
 // ─── SPORT WEATHER (shared shell — NCAAF/NFL/etc) ───────────────────────
 // Reads temp/wind/dome from ctx (whichever sport). Hides on domes or
 // when weather columns are still null (pre-pull).
-function SportWeatherCard({ctx}: any) {
+// 2026-09-14 v1.0.1 #6: wrapped in config_ui_sections toggle so a
+// weather-source outage can be muted by SQL (both sports at once).
+function SportWeatherCard({ctx, sport = 'NCAAF'}: any) {
+  const isEnabled = useSectionEnabled(sport, 'game_detail', 'weather', true);
   const temp = ctx?.temp;
   const wind = ctx?.wind;
   const dome = ctx?.dome;
   const src  = ctx?.weather_source;
+  if (!isEnabled) return null;
   if (dome === true) return null;                // don't waste a card on domes
   // 2026-09-01: gate on weather_source not null (only set when a real
   // pull succeeded). Prior version rendered "0°F" on games where the
@@ -3544,6 +3548,7 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
 // The view refresh cadence lives in each sport's pipeline workflow (calls
 // refresh_home_road_tendencies RPC after the resolver).
 function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled(sport || 'NFL', 'game_detail', 'trends_tendencies', true);
   const [homeRow, setHomeRow] = React.useState<any>(null);
   const [awayRow, setAwayRow] = React.useState<any>(null);
   const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
@@ -3585,6 +3590,7 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
     })();
   }, [viewName, homeTeam, awayTeam, season]);
 
+  if (!isEnabled) return null;
   if (!viewName) return null;
   if (loading) return null;  // silent — no flicker
   if (!homeRow && !awayRow) return null;  // no data (offseason / backfill pending)
@@ -3729,7 +3735,7 @@ function NFLSlot({ctx, game, cohortRecords}: any) {
   return (
     <>
       <NFLJerryLockNote />
-      <SportWeatherCard ctx={ctx} />
+      <SportWeatherCard ctx={ctx} sport="NFL" />
       <NFLQBMatchupCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLInjuriesCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
