@@ -146,6 +146,21 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
             # convention as ncaaf recompute + MLB recompute.
             print(f'  ! defensive_gates raised: {_e} (continuing)')
 
+        # 2026-09-13 second pass: preserve every shadow field written by
+        # upstream steps before this recompute (nfl_ml_logreg_predict writes
+        # _logreg_shadow; nfl_goat_composite writes _goat_shadow). Preserve
+        # step runs AFTER defensive_gates because the LR-override PRIME path
+        # builds a fresh new_pp and discards _goat_shadow / _logreg_shadow
+        # even when we pre-populate them (verified with dry run: 6/12 → 4/12
+        # coverage regression on games that hit the PRIME override). Explicit
+        # copy-forward list beats "carry everything starting with _" because
+        # some `_pre_*` fields would leak stale tier info onto a fresh pick.
+        _SHADOW_FIELDS_TO_PRESERVE = ('_goat_shadow', '_logreg_shadow')
+        if isinstance(old_pp, dict):
+            for _shadow_key in _SHADOW_FIELDS_TO_PRESERVE:
+                if _shadow_key in old_pp and _shadow_key not in new_pp:
+                    new_pp[_shadow_key] = old_pp[_shadow_key]
+
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
         # 2026-09-13: also patch when the visible pick hasn't changed
         # but the LR shadow was missing on old_pp — otherwise the

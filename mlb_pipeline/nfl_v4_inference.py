@@ -76,14 +76,45 @@ def build_current_epa() -> dict:
         return {}
     season = datetime.now(timezone.utc).year
     print(f'  fetching pbp for season {season}...')
+    pbp = None
     try:
         pbp = nfl.import_pbp_data([season], downcast=True)
     except Exception as e:
-        # Off-season / early week 1 — pbp may not have any data yet
-        print(f'  pbp fetch failed (likely pre-season {season}): {e}')
-        return {}
-    if len(pbp) == 0:
+        # 2026-09-13: nfl_data_py raises `NameError: name 'Error' is not defined`
+        # when the season's pbp parquet doesn't exist yet (early Week 1 before
+        # nflverse publishes the full-week file). Falling back to the prior
+        # season lets V4 still fire — at Week 1 there's no rolling-window data
+        # anyway, and last year's L4 EPA is a reasonable warm-start prior for
+        # returning teams. Previous behavior returned {} → V4 wrote nothing
+        # → 0/12 v4_spread coverage on the 9/13 slate.
+        print(f'  pbp fetch for {season} failed: {type(e).__name__}: {e}')
+        print(f'  falling back to prior season {season - 1}...')
+        try:
+            pbp = nfl.import_pbp_data([season - 1], downcast=True)
+            print(f'  prior-season pbp: {len(pbp)} rows')
+        except Exception as e2:
+            print(f'  prior-season fetch also failed: {type(e2).__name__}: {e2}')
+            return {}
+    if pbp is None or len(pbp) == 0:
         print('  pbp empty — nothing to compute'); return {}
+    # 2026-09-13: nfl_data_py 2025 parquet no longer has raw per-play
+    # `pass_epa` / `rush_epa` columns — they were team-level rollups in
+    # older releases and have since been dropped in favor of the
+    # `total_home_pass_epa` / `total_away_pass_epa` game-level columns.
+    # Compute pass/rush EPA on the fly by filtering on play_type. Passes
+    # are `play_type == 'pass'`; rushes are `play_type == 'run'`. Falls
+    # back to overall epa mean if play_type column is also gone.
+    if 'pass_epa' not in pbp.columns or 'rush_epa' not in pbp.columns:
+        if 'play_type' in pbp.columns:
+            pbp = pbp.copy()
+            pbp['pass_epa'] = pbp['epa'].where(pbp['play_type'] == 'pass')
+            pbp['rush_epa'] = pbp['epa'].where(pbp['play_type'] == 'run')
+        else:
+            # No play_type either — set both to overall epa so aggregation
+            # doesn't crash. Model quality degrades to non-split EPA.
+            pbp = pbp.copy()
+            pbp['pass_epa'] = pbp['epa']
+            pbp['rush_epa'] = pbp['epa']
     off = (pbp.groupby(['posteam','week'])
               .agg(off_epa=('epa','mean'),
                    pass_epa=('pass_epa','mean'),
