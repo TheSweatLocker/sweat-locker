@@ -547,6 +547,15 @@ export default function GameDetailV2({
           </Section>
         )}
 
+        {/* 2026-09-13 Signals row — Andy directive: surface WHICH signals
+            fired (EPA gap, cohort match, LR shadow, anchor status, GOAT)
+            with tap-to-explain info markers. Sits right under Model
+            Consensus so users see the "how" behind the numbers, not just
+            the outputs. Silent-hides if no signals materially fire. */}
+        {(gamesSport === 'NFL' || gamesSport === 'NCAAF') && (
+          <SignalsRow ctx={ctx} gamesSport={gamesSport} />
+        )}
+
         {/* 2026-09-01: gate on non-OC pick presence. Was rendering
             empty "No handicapper picks pulled yet" on most NHL/UFC/
             some NCAAF cards. */}
@@ -1621,6 +1630,154 @@ function LensGrid({ctx, gamesSport}: any) {
     </View>
   );
 }
+
+// ─── SIGNALS ROW (2026-09-13 · game card model transparency) ───────
+// Andy 9/13: "Are we surfacing any of these in model section in game
+// card we should be with info markers to explain each what it is."
+// Renders compact chip row under Model Consensus showing which of our
+// signals actually FIRED for this game + tap to explain via glossary.
+// Chip color = supports pick (green) / neutral (grey) / disagrees (amber).
+// Silent-hide if no signals materially fire (thin ctx = don't fake it).
+function SignalsRow({ctx, gamesSport}: any) {
+  const [openTerm, setOpenTerm] = useState<string | null>(null);
+  const pp = ctx?.primary_play || {};
+  const pickSide = (pp.side || '').toUpperCase();  // HOME / AWAY / OVER / UNDER
+  const isML = (pp.type === 'ml' || pp.type === 'spread' || pp.type === 'rl');
+
+  type ChipDef = {term: string; label: string; value: string;
+                  kind: 'ok' | 'warn' | 'neutral'};
+  const chips: ChipDef[] = [];
+
+  // EPA gap
+  const homeEpa = Number(ctx?.home_off_epa_pp);
+  const awayEpa = Number(ctx?.away_off_epa_pp);
+  if (isFinite(homeEpa) && isFinite(awayEpa)) {
+    const gap = homeEpa - awayEpa;
+    if (Math.abs(gap) >= 0.05) {
+      const leader = gap > 0 ? 'HOME' : 'AWAY';
+      const supports = !isML || (leader === pickSide);
+      chips.push({
+        term: 'EPA_GAP',
+        label: `EPA gap ${gap > 0 ? '+' : ''}${gap.toFixed(2)}`,
+        value: `${leader} leads`,
+        kind: supports ? 'ok' : 'warn',
+      });
+    }
+  }
+
+  // Cohort tags
+  const cohortTags = Array.isArray(ctx?.cohort_tags) ? ctx.cohort_tags : [];
+  const knownCohorts = ['heavy_home_dog', 'div_home_underdog', 'primetime_road_fav',
+                         'div_game', 'revenge', 'short_week', 'nfl_division_game'];
+  for (const tag of cohortTags.slice(0, 3)) {
+    const t = String(tag).toLowerCase();
+    if (knownCohorts.some(k => t.includes(k))) {
+      const term = t.includes('heavy_home_dog') ? 'HEAVY_HOME_DOG'
+                 : t.includes('div_home_underdog') ? 'DIV_HOME_UNDERDOG'
+                 : t.includes('primetime_road_fav') ? 'PRIMETIME_ROAD_FAV'
+                 : t.includes('div') ? 'DIV_GAME'
+                 : t.includes('revenge') ? 'REVENGE'
+                 : t.includes('short_week') ? 'SHORT_WEEK'
+                 : 'CONF';
+      chips.push({term, label: tag.replace(/_/g, ' '), value: 'active', kind: 'ok'});
+    }
+  }
+
+  // LR shadow — pulled from primary_play._lr_ml_shadow / _lr_total_shadow
+  const lrMl = pp._lr_ml_shadow || {};
+  const lrTot = pp._lr_total_shadow || {};
+  const lrMlP = Number(lrMl.p_home_win);
+  if (isFinite(lrMlP)) {
+    const lrSide = lrMlP >= 0.55 ? 'HOME' : lrMlP < 0.45 ? 'AWAY' : 'PASS';
+    if (lrSide !== 'PASS') {
+      const agrees = isML && lrSide === pickSide;
+      chips.push({
+        term: 'LR_SHADOW',
+        label: `LR ${lrSide} ${lrMlP.toFixed(2)}`,
+        value: agrees ? 'agrees' : 'disagrees',
+        kind: agrees ? 'ok' : 'warn',
+      });
+    }
+  }
+
+  // Anchor status
+  const anchorW = Number(ctx?.spread_anchor_weight);
+  if (isFinite(anchorW) && anchorW > 0) {
+    chips.push({
+      term: 'ANCHOR',
+      label: `Anchor ${anchorW.toFixed(2)}`,
+      value: 'pulled toward market',
+      kind: 'neutral',
+    });
+  }
+
+  // GOAT model — from align_status.chips_extra
+  const alignStatus = ctx?.align_status || {};
+  const chipsExtra = Array.isArray(alignStatus.chips_extra) ? alignStatus.chips_extra : [];
+  const goatChip = chipsExtra.find((c: any) => c?.key === 'goat');
+  if (goatChip && goatChip.value && goatChip.value !== 'PASS') {
+    const goatSide = String(goatChip.value).split('·')[0].trim().toUpperCase();
+    const agrees = isML && (goatSide === pickSide || goatChip.value?.includes(pickSide));
+    chips.push({
+      term: 'GOAT',
+      label: `GOAT ${goatChip.value}`,
+      value: agrees ? 'agrees' : 'independent',
+      kind: agrees ? 'ok' : 'neutral',
+    });
+  }
+
+  if (chips.length === 0) return null;
+
+  return (
+    <View style={{marginBottom: 6}}>
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {chips.map((c, i) => {
+          const bg = c.kind === 'ok' ? THEME.win + '18'
+                   : c.kind === 'warn' ? THEME.warn + '18'
+                   : THEME.surface;
+          const fg = c.kind === 'ok' ? THEME.win
+                   : c.kind === 'warn' ? THEME.warn
+                   : THEME.text;
+          return (
+            <TouchableOpacity
+              key={`${c.term}-${i}`}
+              onPress={() => setOpenTerm(openTerm === c.term ? null : c.term)}
+              style={{
+                flexDirection: 'row', alignItems: 'center', gap: 4,
+                paddingHorizontal: 8, paddingVertical: 5,
+                borderRadius: 6, backgroundColor: bg,
+                borderWidth: 1, borderColor: THEME.border,
+              }}>
+              <Text style={{color: fg, fontSize: 10, fontWeight: '800',
+                            letterSpacing: 0.3}}>{c.label}</Text>
+              <Text style={{color: fg + 'AA', fontSize: 9, fontWeight: '600'}}>
+                · {c.value}
+              </Text>
+              <Text style={{color: fg + 'CC', fontSize: 10, marginLeft: 2}}>ⓘ</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      {openTerm && (() => {
+        const help = _explainGlossary(openTerm);
+        if (!help) return null;
+        return (
+          <View style={{marginTop: 8, padding: 10, backgroundColor: THEME.surface,
+                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: THEME.accent}}>
+            <Text style={{color: THEME.accent, fontSize: 10, fontWeight: '800',
+                          letterSpacing: 0.5, marginBottom: 4}}>
+              {openTerm.replace(/_/g, ' ')}
+            </Text>
+            <Text style={{color: THEME.text, fontSize: 12, lineHeight: 17}}>
+              {help.help}
+            </Text>
+          </View>
+        );
+      })()}
+    </View>
+  );
+}
+
 
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
 function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) {

@@ -34,6 +34,28 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'PANEL': {help: 'Panel projection — averages 4 external projection sources into a stable "market consensus" baseline for totals.'},
   'JERRY': {help: 'LLM synthesis narrator — reads all model + cohort + splits data and writes the plain-english call. Not a model itself, just the translator.'},
   'CONF': {help: 'Signal Confluence — a net count of how many of our 40+ situational rules (cohorts, tendencies, sharp-money patterns, cohort splits) fire on each side. Positive number = home advantage; negative = away. Different from V3/V4/MC which project a spread or total — CONF is a "how many of our rules agree" meter. Bigger absolute value = broader agreement.'},
+
+  // ─── SIGNAL BREAKDOWN CHIPS (2026-09-13 · game card Signals row) ───
+  'EPA_GAP': {help: 'The offensive efficiency gap between the two teams — how much more expected points one team adds per play than the other. Bigger absolute value = clearer advantage. Sign shows which team leads.'},
+  'CPOE': {help: 'Completion % Over Expected — how much better (or worse) a QB is completing passes vs the league average given each throw\'s difficulty. Positive = elite accuracy; negative = below-league. 5+ point gap between the two QBs is a real edge.'},
+  'CPOE_GAP': {help: 'CPOE difference between the two starting QBs. Positive gap for the pick side = QB accuracy advantage. 5+ = flag.'},
+  'LR_SHADOW': {help: 'Independent logistic regression model running in parallel to the main ensemble. When it agrees with the pick, that\'s bonus confidence. When it disagrees, we treat it as a heads-up — not a reason to flip.'},
+  'ANCHOR': {help: 'Market anchor — Weeks 1-3 the model output gets pulled partway toward the market spread to prevent early-season miscalibration from producing wild picks. "Off" means the model\'s standing on its own; "0.4"/"0.75" show how much of the anchor is applied.'},
+  'GOAT': {help: 'Proprietary independent win-probability model. Fuses team quality, player projections, live matchup data, and historical outcomes. Runs in parallel to the primary pick — agreement strengthens conviction; dissent flags the game for closer look.'},
+
+  // ─── COHORT TAGS (fired via signals, hit-rate anchored) ───
+  'HEAVY_HOME_DOG': {help: 'Situational cohort — the home team is a +7 or larger underdog. Historically covers 65% of the time (n=81 since 2022). Uncommon spot but a legitimate market bias.'},
+  'DIV_HOME_UNDERDOG': {help: 'Division game where the home team is the underdog. Historically bites into the road favorite\'s spread — divisional familiarity + home crowd tightens the game.'},
+  'PRIMETIME_ROAD_FAV': {help: 'Road favorite in a primetime slot (SNF, MNF, TNF). Historically the market over-weights the primetime spotlight; road chalks cover below trend.'},
+  'DIV_GAME': {help: 'Division game — historically plays closer and lower-scoring than the season averages suggest. Cohort UNDER lean.'},
+  'REVENGE': {help: 'One team lost the prior meeting by 10+ points. Historically the revenge-motivated side outperforms market expectations.'},
+  'SHORT_WEEK': {help: 'One team is on 4 or fewer days rest (post-TNF, post-MNF turnaround). Historically underperforms — rest matters.'},
+
+  // ─── OTHER MODEL / DATA POINTS ───
+  'PANEL_PRED': {help: 'Panel model prediction — aggregates fantasy-style per-player projections into team totals. Complementary lens to EPA-based models. Best signal when it AGREES with the EPA model.'},
+  'PROJECTED_SPREAD': {help: 'Our EPA-matchup model\'s spread projection. Positive means home favored, negative means away favored. Compare vs market to see edge direction.'},
+  'MODEL_TOTAL': {help: 'Our model\'s projected total for the game. Compare vs market total — gaps of 2+ points signal real over/under lean.'},
+  'MARKET_ANCHORED': {help: 'This game\'s model output was pulled toward the market spread because early-season sample is thin. Reduces PRIME/STRONG picks based on wild model output alone.'},
   'V3': {help: 'V3 legacy projection — earlier formula-based model for spread/total. Kept for cross-check against V4 (ML model). Divergence between V3 and V4 flags noisy games.'},
   'lens_consensus': {help: '5-of-6 model lenses agreeing on a side. Highest-hitting configuration we track.'},
 
