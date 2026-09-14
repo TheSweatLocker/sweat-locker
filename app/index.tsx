@@ -5283,9 +5283,42 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   try {
     // Use ET date to match pipeline's game_date
     const etStr = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+    // 2026-09-13 SCALING #13a: explicit column SELECT vs prior SELECT * on
+    // mlb_game_context (317 cols × 30 games = ~500KB/load). Cut down to
+    // the ~70 columns consumers actually read (grep of mlbGameContext[…]
+    // access sites — NRFI badge, MC HIGH-CONF, Numbers Panel, prop
+    // context, etc). ~85% egress reduction @ 1500 users. Matches the
+    // targeted-SELECT pattern already used by nfl_game_context (line
+    // 5440+) and ncaaf_game_context (line 5490+) fetches. If a
+    // downstream consumer reads a field not listed here, either add it
+    // or move that consumer to the game-detail fetch (line 6332) which
+    // still SELECTs *.
     const result = await supabase
       .from('mlb_game_context')
-      .select('*')
+      .select(
+        'game_id,game_date,home_team,away_team,fetched_at,'
+        + 'close_spread,close_total,open_spread,open_total,'
+        + 'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,home_ml_open,away_ml_open,'
+        + 'projected_total,projected_spread,over_lean,confidence,'
+        + 'model_pred_home_runs,model_pred_away_runs,model_pred_total,model_pred_spread,'
+        + 'jerry_pred_home_runs,jerry_pred_away_runs,jerry_pred_total,jerry_pred_spread,'
+        + 'panel_implied_margin,panel_implied_total,'
+        + 'primary_play,primary_play_computed_at,supplementary_play,splits_summary,'
+        + 'signal_confluence_net,signal_confluence_breakdown,'
+        + 'signal_confluence_v2_net,signal_confluence_v2_breakdown,'
+        + 'sweat_score,sweat_tier,sweat_tier_max,sweat_tier_locked_at,'
+        + 'home_pitcher,away_pitcher,pitcher_context,'
+        + 'home_runs_per_game,away_runs_per_game,home_era,away_era,'
+        + 'venue,temperature,wind_speed,wind_direction,wind_blowing_in,precipitation,'
+        + 'is_dome,park_run_factor,'
+        + 'mc_probabilities,mc_high_conf_side,mc_high_conf_flag,mc_high_conf_pct,'
+        + 'nrfi_score,nrfi_ensemble_pick,nrfi_ensemble_tier,nrfi_ensemble_conf,'
+        + 'home_lineup,away_lineup,lineup_confirmed,'
+        + 'matched_patterns,consensus_fade_flag,consensus_fade_side,consensus_fade_pct,'
+        + 'babip_regression_flag,'
+        + 'umpire,umpire_note,umpire_over_rate,umpire_run_factor,'
+        + 'data_completeness,model_confidence'
+      )
       .eq('game_date', etStr)
       .limit(30);
     let data = result?.data;
