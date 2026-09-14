@@ -15278,7 +15278,7 @@ setJerryHistory(prev => {
                           </View>
                           {confidence != null && (
                             <Text style={{color: THEME.textDim, fontSize:10, fontWeight:'700', marginTop:4, letterSpacing:0.3}}>
-                              {refit != null ? 'refit' : 'conv'} {Math.round(confidence)}
+                              {'score'} {Math.round(confidence)}
                             </Text>
                           )}
                         </>
@@ -15503,7 +15503,12 @@ setJerryHistory(prev => {
                                 {chartRows.map((r: any, ri: number) => (
                                   <View key={ri} style={{flex:1, alignItems:'center'}}>
                                     <Text style={{color:THEME.textMuted, fontSize:8, fontWeight:'700', letterSpacing:0.2}}>
-                                      {r.home ? '' : '@'}{teamAbbrev(r.opp) || String(r.opp || '').slice(0,3).toUpperCase()}
+                                      {/* 2026-09-14 v1.0.1: 3-state home flag.
+                                          MLB backfill_prop_lookback populates r.home as bool.
+                                          NFL nfl_generate_props doesn't (nfl_player_stats has
+                                          no home/away column — deferred to follow-up). When
+                                          undefined, show no prefix rather than misleading @. */}
+                                      {r.home === false ? '@' : ''}{teamAbbrev(r.opp) || String(r.opp || '').slice(0,3).toUpperCase()}
                                     </Text>
                                   </View>
                                 ))}

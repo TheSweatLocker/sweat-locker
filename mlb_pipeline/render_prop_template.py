@@ -236,8 +236,14 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
         #   league_baseline — internal baseline, not signal
         #   games_used — sample size, shown elsewhere
         #   direction / _direction / _line — internal metadata
+        # 2026-09-14 v1.0.1: hide internal fade-jerry-pass state (screenshot
+        # audit — "Fade Jerry Pass: True" leaking to Prop Jerry cards, users
+        # don't know what Jerry is). Rendered as "Contrarian angle" if we
+        # want to expose the flavor elsewhere.
         _SKIP_KEYS = {'label', 'opp_col', 'league_baseline', 'games_used',
-                      'direction', 'season_avg', 'implied_high', 'implied_low'}
+                      'direction', 'season_avg', 'implied_high', 'implied_low',
+                      'fade_jerry_pass', 'fade_jerry_pass_orig_tier',
+                      'fade_jerry_pass_orig_conv'}
         prose_bullets = []
         keyname_bullets = []
         for k, v in prop_signals.items():
@@ -257,12 +263,46 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
             else:
                 # Format as "Key: value" chip — cleaner than raw uppercase key
                 pretty_key = k.replace('_', ' ').title()
-                # Suffix percentage-looking values
-                fmt_val = f'{v_str}%' if k.endswith('_pct') and not v_str.endswith('%') else v_str
+                # 2026-09-14 v1.0.1: fraction-to-percent normalization.
+                # Screenshot audit (Kelce card) exposed "Opp Pct:
+                # 0.25806451612903225%" — backend was writing the raw
+                # fraction, then we appended "%" literally. For _pct keys
+                # with value 0.0-1.0, treat as fraction and multiply.
+                # Round to 1 decimal so we never leak float noise again.
+                if k.endswith('_pct'):
+                    try:
+                        v_num = float(v_str)
+                        # Fraction (0.0 - 1.0) → multiply. Bigger (already
+                        # in percent form) → just round.
+                        if 0.0 <= v_num <= 1.0:
+                            v_num = v_num * 100
+                        fmt_val = f'{v_num:.1f}%'
+                    except (TypeError, ValueError):
+                        # Non-numeric — fall back to append-% behavior
+                        fmt_val = f'{v_str}%' if not v_str.endswith('%') else v_str
+                else:
+                    fmt_val = v_str
                 keyname_bullets.append(f'{pretty_key}: {fmt_val}')
-        # Prose wins first; pad with humanized key-name chips only if <5.
+        # 2026-09-14 v1.0.1: sentiment gate for prose bullets. Prior
+        # version dumped every prose bullet into `for_side` without
+        # checking whether the prose was bullish or bearish for the
+        # shown direction. Screenshot audit (Kelce O 3.5 receptions
+        # card) showed "Opp DEN ranks #9 in pass defense — top-10 unit,
+        # tough matchup" listed under PLAYBOOK CONFIRMS — that's a
+        # NEGATIVE signal for an OVER prop, not a confirm. Route bearish
+        # prose to against_side so it lands under "risks" instead.
+        _BEARISH_KEYWORDS = (
+            'tough matchup', 'tough', 'top-10', 'top-5', 'elite defense',
+            'elite defensive', 'shutdown', 'hard matchup', 'risk',
+            'regression', 'concern', 'fatigue', 'below',
+        )
         for p in prose_bullets:
-            for_side.append((1.0, p))
+            p_lower = p.lower()
+            is_bearish = any(kw in p_lower for kw in _BEARISH_KEYWORDS)
+            if is_bearish:
+                against_side.append((1.0, p))
+            else:
+                for_side.append((1.0, p))
         for p in keyname_bullets:
             for_side.append((0.3, p))
 
