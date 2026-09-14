@@ -2801,13 +2801,12 @@ setEvData(evOpps.slice(0,20));
       // week-number equality.
       //   NFL:   Week 1 Thu = 2026-09-04. Roll fwd on Tue(2)+Wed(3) ET.
       //   NCAAF: Week 1 = 2026-08-24 (Sun). Roll fwd on Tue(2) ET.
-      // 2026-09-13 anchor correction: Sweat Shop 2026 season NFL Week 1
-      // opener is Thu 9/11 (TNF). Prior anchor 9/4 was a real-world-NFL
-      // mental model that doesn't match this environment's schedule.
-      // Verified vs nfl_game_context.week column (stores week=1 for
-      // game_date 9/10-9/15). See feedback_nfl_2026_week1_anchor.
+      // 2026-09-13 anchor (final): Andy authority — Week 1 = 9/9-9/15,
+      // Week 2 starts 9/16. Anchor is 2026-09-09 (Tue). Prior attempts
+      // used 9/4 (real-world NFL mental model) and 9/11 (TNF-of-Week1),
+      // both wrong for this environment. See feedback_nfl_2026_week1_anchor.
       const _seasonWeekAnchors: {[k: string]: Date} = {
-        NFL: new Date('2026-09-11T00:00:00-04:00'),   // 2026 Week 1 Thu (TNF opener)
+        NFL: new Date('2026-09-09T00:00:00-04:00'),   // 2026 Week 1 start (Tue)
         NCAAF: new Date('2026-08-24T00:00:00-04:00'), // 2026 Week 1 start
       };
       const _seasonWeekOf = (sportKey: string, dateIso: string): number | null => {
@@ -2825,9 +2824,9 @@ setEvData(evOpps.slice(0,20));
         const nowEt = new Date(todayStart);
         const days = Math.floor((nowEt.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
         const baseWk = days < 0 ? 0 : Math.floor(days / 7) + 1;
-        // Roll forward: NFL Tue/Wed → next week; NCAAF Tue → next week
+        // Roll forward: NFL Tue → next week (post-Mon MNF); NCAAF Tue → next week
         const dowEt = nowEt.getDay(); // Sun=0..Sat=6
-        if (sportKey === 'NFL' && (dowEt === 2 || dowEt === 3)) return baseWk + 1;
+        if (sportKey === 'NFL' && dowEt === 2) return baseWk + 1;
         if (sportKey === 'NCAAF' && dowEt === 2) return baseWk + 1;
         return baseWk;
       };
