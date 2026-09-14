@@ -1100,17 +1100,17 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
             return max(1, aug_days // 7 + 1)
         return max(1, min(18, days_since_wk1 // 7 + 1))
 
-    # 2026-09-13 canonical season_week: real-NFL-calendar week from
-    # game_date. Week 1 Thu = 2026-09-04 (2026-anchored — writer only
-    # runs during 2026 season; different year would need a per-season
-    # anchor). Preseason games clamp to 0. Client filters by this
-    # column instead of client-side date arithmetic — see migration
-    # 20260913f.
+    # 2026-09-13 canonical season_week: Sweat Shop 2026 season NFL Week 1
+    # opener is Thu 2026-09-11 (TNF). Anchor corrected from 9/4 (real-
+    # world NFL mental model) per feedback_nfl_2026_week1_anchor. Verified
+    # against nfl_game_context.week column which stores week=1 for
+    # game_date 9/10-9/15. Preseason clamps to 0. Client filters by this
+    # column via migration 20260913f + 20260913g (anchor rebackfill).
     def _season_week(_dt, _season):
         from datetime import date as __date
         # 2026 anchor only for now — extend when 2027+ ship
         if _season != 2026: return None
-        wk1_thu = __date(2026, 9, 4)
+        wk1_thu = __date(2026, 9, 11)
         delta = (_dt.date() - wk1_thu).days
         if delta < 0: return 0
         return delta // 7 + 1

@@ -2801,8 +2801,13 @@ setEvData(evOpps.slice(0,20));
       // week-number equality.
       //   NFL:   Week 1 Thu = 2026-09-04. Roll fwd on Tue(2)+Wed(3) ET.
       //   NCAAF: Week 1 = 2026-08-24 (Sun). Roll fwd on Tue(2) ET.
+      // 2026-09-13 anchor correction: Sweat Shop 2026 season NFL Week 1
+      // opener is Thu 9/11 (TNF). Prior anchor 9/4 was a real-world-NFL
+      // mental model that doesn't match this environment's schedule.
+      // Verified vs nfl_game_context.week column (stores week=1 for
+      // game_date 9/10-9/15). See feedback_nfl_2026_week1_anchor.
       const _seasonWeekAnchors: {[k: string]: Date} = {
-        NFL: new Date('2026-09-04T00:00:00-04:00'),   // 2026 Week 1 Thu
+        NFL: new Date('2026-09-11T00:00:00-04:00'),   // 2026 Week 1 Thu (TNF opener)
         NCAAF: new Date('2026-08-24T00:00:00-04:00'), // 2026 Week 1 start
       };
       const _seasonWeekOf = (sportKey: string, dateIso: string): number | null => {
