@@ -58,6 +58,21 @@ jobs:
           cd mlb_pipeline
           python ncaaf_historical_odds_backfill.py --year 2026 || echo "ncaaf odds backfill non-fatal"
 
+      # 2026-09-14: NHL + NBA historical odds backfill via The Odds API
+      # historical endpoint. Fills close_* on newly-resolved 2026-27
+      # regular-season games week-over-week so training corpus grows.
+      # Only touches game_results rows with NULL close_home_ml so it's
+      # a no-op once a game's lines have been captured. Non-fatal.
+      - name: NHL + NBA historical odds backfill (The Odds API)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_historical_odds_hoops_hockey.py --sport nhl || echo "nhl odds backfill non-fatal"
+          python backfill_historical_odds_hoops_hockey.py --sport nba || echo "nba odds backfill non-fatal"
+
       # 2026-09-03: LR predictors are trained from resolved outcomes and
       # drift as data grows. Weekly retrain keeps coefficients calibrated.
       # Non-fatal per model — one failure doesn't kill the others.
@@ -73,9 +88,11 @@ jobs:
           python nfl_ml_logreg_train.py    || echo "nfl_ml_logreg non-fatal"
           python ncaaf_ml_logreg_train.py  || echo "ncaaf_ml_logreg non-fatal"
           python ncaaf_total_logreg_train.py || echo "ncaaf_total_logreg non-fatal"
-          # NBA/NHL/NCAAB scaffolds exit cleanly on missing features until backfill.
-          python nba_ml_logreg_train.py    || echo "nba_ml_logreg data-blocked (expected)"
-          python nhl_ml_logreg_train.py    || echo "nhl_ml_logreg data-blocked (expected)"
+          # 2026-09-14: NHL + NBA newly unblocked (v1.0.1 #12 backfill).
+          # NHL 1335 games test acc 64.8% +7.5pp; NBA 1324 games 67.1% +10.3pp.
+          # NCAAB still data-blocked pending Nov 3 season start.
+          python nba_ml_logreg_train.py    || echo "nba_ml_logreg non-fatal"
+          python nhl_ml_logreg_train.py    || echo "nhl_ml_logreg non-fatal"
           python ncaab_ml_logreg_train.py  || echo "ncaab_ml_logreg data-blocked (expected)"
 
       # 2026-09-13: signal-registry refit reads freshly-graded signal_attribution
@@ -106,7 +123,7 @@ jobs:
         run: |
           cd mlb_pipeline
           # Compose glob of everything the retrain could produce
-          CHANGED_FILES="models/prop_refit_weights_v2.json models/mlb_ml_logreg.json models/mlb_prop_logreg.json models/mlb_total_logreg.json models/nfl_ml_logreg.json models/ncaaf_ml_logreg.json models/ncaaf_total_logreg.json"
+          CHANGED_FILES="models/prop_refit_weights_v2.json models/mlb_ml_logreg.json models/mlb_prop_logreg.json models/mlb_total_logreg.json models/nfl_ml_logreg.json models/ncaaf_ml_logreg.json models/ncaaf_total_logreg.json models/nhl_ml_logreg.json models/nba_ml_logreg.json"
           if git diff --quiet $CHANGED_FILES; then
             echo "No model change this week"
           else

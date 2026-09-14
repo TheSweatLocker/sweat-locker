@@ -697,6 +697,14 @@ def _load_lr_model(filename: str):
 _LR_MODEL_MLB_ML      = _load_lr_model('mlb_ml_logreg.json')
 _LR_MODEL_NFL_ML      = _load_lr_model('nfl_ml_logreg.json')
 _LR_MODEL_NCAAF_ML    = _load_lr_model('ncaaf_ml_logreg.json')
+# 2026-09-14: NHL + NBA LR ML models. Trained on 2024-25 season market
+# features backfilled via The Odds API historical (v1.0.1 #12). NHL test
+# acc 64.8% (+7.5pp lift over 57.4% baseline); NBA 67.1% (+10.3pp over
+# 56.8%). Both features arrays: NHL uses close_puckline (single INT =
+# home puckline odds), NBA uses close_spread. See backfill_historical
+# _odds_hoops_hockey.py + project_v1_0_1_client_priorities #12.
+_LR_MODEL_NHL_ML      = _load_lr_model('nhl_ml_logreg.json')
+_LR_MODEL_NBA_ML      = _load_lr_model('nba_ml_logreg.json')
 _LR_MODEL_MLB_TOTAL   = _load_lr_model('mlb_total_logreg.json')
 _LR_MODEL_NCAAF_TOTAL = _load_lr_model('ncaaf_total_logreg.json')
 # 2026-09-08: NFL total LR model. Trained on 6 seasons (2020-2025 =
@@ -743,6 +751,8 @@ def apply_ml_lr_override(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict
         'MLB':   _LR_MODEL_MLB_ML,
         'NFL':   _LR_MODEL_NFL_ML,
         'NCAAF': _LR_MODEL_NCAAF_ML,
+        'NHL':   _LR_MODEL_NHL_ML,
+        'NBA':   _LR_MODEL_NBA_ML,
     }
     model = _model_map.get(sport)
     if model is None: return pp
@@ -1003,7 +1013,8 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # 2026-09-03 LR ML OVERRIDE — supervised models replace legacy ML
     # picks per sport. Runs AFTER other gates so juice-trap/MC-dissent
     # output still gets a chance; LR fires as a final override for ML.
-    if sport in ('MLB', 'NFL', 'NCAAF'):
+    # 2026-09-14: NHL + NBA added post-backfill (see project_v1_0_1 #12).
+    if sport in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA'):
         pp = apply_ml_lr_override(pp, ctx, sport=sport)
     # 2026-09-03 MLB TOTAL LR OVERRIDE — supervised total model.
     # Test acc 59.8%, PRIME_OVER 69% n=71, PRIME_UNDER 62% n=111.
@@ -1043,9 +1054,10 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # ~100 features), no reason to cache.
     if isinstance(pp, dict):
         try:
-            if sport in ('MLB', 'NFL', 'NCAAF'):
+            if sport in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA'):
                 _map = {'MLB': _LR_MODEL_MLB_ML, 'NFL': _LR_MODEL_NFL_ML,
-                        'NCAAF': _LR_MODEL_NCAAF_ML}
+                        'NCAAF': _LR_MODEL_NCAAF_ML,
+                        'NHL': _LR_MODEL_NHL_ML, 'NBA': _LR_MODEL_NBA_ML}
                 _model = _map.get(sport)
                 if _model is not None:
                     _pred = _lr_predict_ml(ctx, model=_model)
