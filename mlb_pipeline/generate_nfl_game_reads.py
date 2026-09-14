@@ -672,16 +672,24 @@ def fetch_current_nfl_injuries():
     KEEP_POS = {'QB', 'RB', 'WR', 'TE', 'FB', 'OL', 'OT', 'G', 'C',
                 'EDGE', 'DE', 'DT', 'LB', 'ILB', 'OLB', 'CB', 'S', 'K'}
     IGNORE_STATUS = {'Full', 'DNP', None, ''}
+    # 2026-09-13 v3 (Andy 9/13 "mahomes is starting"): DB has multiple
+    # injury rows per player across weeks. Mahomes had:
+    #   W0: Questionable (preseason ACL monitor)
+    #   W1: Questionable (Wed injury report, ACL monitor)
+    #   W2: injury_status=Full (9/13 game-day update — healthy)
+    # Pulling ONLY the ctx-mapped week returned the stale W1 Q status.
+    # Fix: pull ALL current-season rows and dedupe by (team,player) to
+    # the MOST RECENT (week, report_date) — captures game-day updates
+    # that supersede early-week reports.
     rows: list = []
-    for _page in range(3):  # 3 * 1000 safety cap
+    for _page in range(10):  # 10 * 1000 safety cap
         _lo = _page * 1000
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/nfl_injuries",
             headers={**SB_READ, 'Range-Unit': 'items', 'Range': f'{_lo}-{_lo+999}'},
             params={
                 "season": f"eq.{season}",
-                "week": f"eq.{week}",
-                "select": "team,player_name,position,injury_status,body_part",
+                "select": "team,player_name,position,injury_status,practice_status,body_part,week,report_date,updated_at",
             },
             timeout=15,
         )
@@ -690,7 +698,36 @@ def fetch_current_nfl_injuries():
         if not isinstance(page, list): break
         rows.extend(page)
         if len(page) < 1000: break
+    # Dedupe: keep most recent row per (team, player) by (week, report_date, updated_at) desc
+    _latest_per_player: dict = {}
+    for row in rows:
+        if not isinstance(row, dict): continue
+        team = row.get('team')
+        player = row.get('player_name')
+        if not (team and player): continue
+        key = (team, player)
+        sort_key = (
+            row.get('week') or 0,
+            str(row.get('report_date') or ''),
+            str(row.get('updated_at') or ''),
+        )
+        existing = _latest_per_player.get(key)
+        if not existing or sort_key > existing[0]:
+            _latest_per_player[key] = (sort_key, row)
+    rows = [pair[1] for pair in _latest_per_player.values()]
 
+    # 2026-09-13 v2 (Andy 9/13): filter out chronic-monitor Q tags.
+    # Mahomes reported "Questionable · Knee - ACL (Surgery)" for weeks
+    # while practicing full — the injury_status is a season-long
+    # recovery flag, not a game-day risk. Same class hits any player
+    # with a surgical rehab (Kyle Pitts foot, etc.). Rule: if
+    # practice_status == 'Full' AND injury_status == 'Questionable',
+    # drop from the injury list entirely — they're active, playing,
+    # and shouldn't be featured. Only genuine game-day uncertainty
+    # (limited or DNP practice → Q status) makes the list.
+    #
+    # Doubtful/Out entries pass regardless of practice_status —
+    # those are real outages.
     by_team: dict = {}
     for row in rows:
         if not isinstance(row, dict): continue
@@ -700,11 +737,16 @@ def fetch_current_nfl_injuries():
         if pos not in KEEP_POS: continue
         team = row.get('team')
         if not team: continue
+        practice = (row.get('practice_status') or '').strip()
+        # Chronic-monitor Q filter: Q + Full practice → drop
+        if status == 'Questionable' and practice == 'Full':
+            continue
         by_team.setdefault(team, []).append({
             'name': row.get('player_name'),
             'pos': pos,
             'status': status,
             'body_part': row.get('body_part'),
+            'practice_status': practice or None,
         })
     # Sort each team's list: OUT first, then Doubtful, then Questionable
     _STATUS_ORDER = {'Out': 0, 'Doubtful': 1, 'Questionable': 2}
