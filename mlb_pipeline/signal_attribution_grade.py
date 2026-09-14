@@ -77,8 +77,12 @@ def _grade_pick(pick_market: str, pick_side: str,
     return None
 
 
-def _fetch_results(sport: str, date_lo: str) -> dict:
-    """{game_id: {home_score, away_score, close_spread, close_total}}."""
+def _fetch_results(sport: str, date_lo: str) -> tuple[dict, dict]:
+    """Returns two lookup dicts:
+      1. by game_id (works when signal_attribution and results share IDs — NCAAF)
+      2. by (game_date, home_team, away_team) tuple (NFL — MD5 ctx vs
+         date+teams results ID mismatch per project_nfl_game_id_mismatch_911)
+    """
     tbl = 'nfl_game_results' if sport == 'NFL' else 'ncaaf_game_results'
     all_rows: list = []
     for page in range(5):
@@ -87,7 +91,7 @@ def _fetch_results(sport: str, date_lo: str) -> dict:
                                   'Range': f'{page*1000}-{(page+1)*1000-1}'},
                          params={
                              'game_date': f'gte.{date_lo}',
-                             'select': 'game_id,home_score,away_score,close_spread,close_total',
+                             'select': 'game_id,game_date,home_team,away_team,home_score,away_score,close_spread,close_total',
                          },
                          timeout=20)
         if r.status_code not in (200, 206): break
@@ -95,7 +99,33 @@ def _fetch_results(sport: str, date_lo: str) -> dict:
         if not isinstance(page_rows, list): break
         all_rows.extend(page_rows)
         if len(page_rows) < 1000: break
-    return {r['game_id']: r for r in all_rows if isinstance(r, dict) and r.get('game_id')}
+    by_id = {r['game_id']: r for r in all_rows if isinstance(r, dict) and r.get('game_id')}
+    by_tuple = {(r.get('game_date'), r.get('home_team'), r.get('away_team')): r
+                for r in all_rows if isinstance(r, dict)}
+    return by_id, by_tuple
+
+
+def _fetch_ctx_teams(sport: str, date_lo: str) -> dict:
+    """Map ctx game_id → (game_date, home_team, away_team) so we can
+    bridge NFL's MD5-vs-abbrev id mismatch."""
+    tbl = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+    all_rows: list = []
+    for page in range(5):
+        r = requests.get(f'{SB}/rest/v1/{tbl}',
+                         headers={**H_READ, 'Range-Unit': 'items',
+                                  'Range': f'{page*1000}-{(page+1)*1000-1}'},
+                         params={
+                             'game_date': f'gte.{date_lo}',
+                             'select': 'game_id,game_date,home_team,away_team',
+                         },
+                         timeout=20)
+        if r.status_code not in (200, 206): break
+        page_rows = r.json() or []
+        if not isinstance(page_rows, list): break
+        all_rows.extend(page_rows)
+        if len(page_rows) < 1000: break
+    return {r['game_id']: (r.get('game_date'), r.get('home_team'), r.get('away_team'))
+            for r in all_rows if isinstance(r, dict) and r.get('game_id')}
 
 
 def _fetch_pending(sport: str, date_lo: str) -> list:
@@ -128,17 +158,28 @@ def run(sport: Optional[str] = None, days: int = 3) -> None:
     print(f'=== signal_attribution_grade · since {date_lo} · sports={sports} ===')
 
     for sp in sports:
-        results = _fetch_results(sp, date_lo)
-        settled = {gid: r for gid, r in results.items() if r.get('home_score') is not None}
+        results_by_id, results_by_tuple = _fetch_results(sp, date_lo)
+        ctx_teams = _fetch_ctx_teams(sp, date_lo)  # ctx.game_id → tuple bridge
+        settled_by_id = {gid: r for gid, r in results_by_id.items()
+                         if r.get('home_score') is not None}
         pending = _fetch_pending(sp, date_lo)
-        print(f'  {sp}: {len(settled)} settled games · {len(pending)} pending signal rows')
+        print(f'  {sp}: {len(settled_by_id)} settled games · {len(pending)} pending signal rows')
 
         graded = 0
         skipped_no_result = 0
         by_result = {'W': 0, 'L': 0, 'P': 0}
         for row in pending:
             gid = row.get('game_id')
-            settled_game = settled.get(gid)
+            settled_game = settled_by_id.get(gid)
+            # 2026-09-13: NFL game_id mismatch bridge — signal_attribution
+            # uses the ctx MD5 id; nfl_game_results uses date+teams. Look
+            # up the ctx row's teams then re-query results by tuple.
+            if not settled_game:
+                bridge = ctx_teams.get(gid)
+                if bridge:
+                    settled_game = results_by_tuple.get(bridge)
+                    if settled_game and settled_game.get('home_score') is None:
+                        settled_game = None
             if not settled_game:
                 skipped_no_result += 1
                 continue
