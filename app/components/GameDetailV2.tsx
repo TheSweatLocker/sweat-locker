@@ -1530,11 +1530,13 @@ function hasAnyLensValue(ctx: any, gamesSport: string): boolean {
        mc.mc_expected_margin, mc.mc_expected_total, mc.mc_mean_total]
     : gamesSport === 'NCAAF'
     ? [ctx?.projected_spread, ctx?.projected_total,
-       ctx?.model_pred_spread, ctx?.model_pred_total,
+       ctx?.v4_spread ?? ctx?.model_pred_spread,
+       ctx?.v4_total  ?? ctx?.model_pred_total,
        mc.mc_expected_margin, mc.mc_expected_total, mc.mc_mean_total,
        ctx?.signal_confluence_net]
     : [ctx?.projected_spread, ctx?.projected_total,
-       ctx?.model_pred_spread, ctx?.model_pred_total,
+       ctx?.v4_spread ?? ctx?.model_pred_spread,
+       ctx?.v4_total  ?? ctx?.model_pred_total,
        ctx?.signal_confluence_net];
   return candidates.some(v => v != null);
 }
@@ -1554,13 +1556,21 @@ function LensGrid({ctx, gamesSport}: any) {
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
   ] : gamesSport === 'NCAAF' ? [
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-    {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
+    // 2026-09-14: NCAAF ctx writes v4_spread/v4_total; the model_pred_*
+    // names only exist on MLB ctx. Prior universal read on model_pred_*
+    // silently rendered NCAAF v4 tile empty.
+    {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
+                  t: ctx?.v4_total  ?? ctx?.model_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ] : [
-    // Other non-MLB sports have fewer lens fields
+    // 2026-09-14: NFL + other non-MLB sports also use v4_spread/v4_total.
+    // NFL 9/15 MNF DEN@KC verified v4_spread=1.71, v4_total=44.15 on ctx
+    // — model_pred_* names don't exist on NFL ctx.
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-    {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
+    {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
+                  t: ctx?.v4_total  ?? ctx?.model_pred_total},
+    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ];
 
@@ -1586,6 +1596,18 @@ function LensGrid({ctx, gamesSport}: any) {
           const isOpen = openLens === r.name.toUpperCase();
           const nameUp = r.name.toUpperCase();
           const helpAvailable = !!_explainGlossary(nameUp);
+          // 2026-09-14: CONF-specific "split" label. When net=0 but the
+          // breakdown had 2+ signals that cancelled, the raw margin
+          // renders as muted "0.00" and reads as empty. Show "N · split"
+          // instead so users understand signals fired but balanced out.
+          // For every other tile, net=0 legitimately means "no lens
+          // signal" and the — display is right.
+          let confSplitLabel: string | null = null;
+          if (r.name === 'Conf' && r.m === 0) {
+            const cb = safeJSON(ctx?.signal_confluence_breakdown);
+            const cbN = cb && typeof cb === 'object' ? Object.keys(cb).length : 0;
+            if (cbN >= 2) confSplitLabel = `${cbN} · split`;
+          }
           return (
             <TouchableOpacity
               key={i}
@@ -1593,7 +1615,7 @@ function LensGrid({ctx, gamesSport}: any) {
               onPress={() => helpAvailable && setOpenLens(isOpen ? null : nameUp)}
               style={[
                 styles.lens,
-                {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: missing ? 0.5 : 1},
+                {borderTopColor: missing ? C.border : sideColor(mgnSide), opacity: (missing && !confSplitLabel) ? 0.5 : 1},
                 isOpen && {backgroundColor: C.accent + '18'},
               ]}
             >
@@ -1604,8 +1626,8 @@ function LensGrid({ctx, gamesSport}: any) {
                 )}
               </View>
 
-              <Text style={[styles.lensMargin, {color: missing ? C.textDim : sideColor(mgnSide)}]}>
-                {missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))}
+              <Text style={[styles.lensMargin, {color: confSplitLabel ? C.textMuted : (missing ? C.textDim : sideColor(mgnSide))}]}>
+                {confSplitLabel ? confSplitLabel : (missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2)))}
               </Text>
               <Text style={[styles.lensTotal, {
                 color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
