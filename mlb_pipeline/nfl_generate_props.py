@@ -548,11 +548,44 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
     # Try current + prior season REG in order — get freshest team assignment.
     from datetime import datetime as _dt
     curr = _dt.utcnow().year
+    row = None
     for s in (curr, curr - 1, curr - 2):
         row = _pull(s, 'REG')
-        if row: return row
-    # Last resort: any season with a team
-    return _pull(None)
+        if row: break
+    if row is None:
+        row = _pull(None)  # last resort: any season with a team
+    if row is None: return None
+    # 2026-09-14 DEPTH-CHART OVERRIDE. player_id_lookup was returning
+    # stale team assignments for offseason movers (Kenneth Walker III
+    # showing team=SEA on MNF DEN@KC because his 2025 stats are all
+    # SEA). Cross-reference nfl_current_depth_chart.json — if the
+    # scrape confirms this player is on a different team than
+    # nfl_player_stats says, override with the scrape's team. Preserves
+    # the player_id (still valid across teams) + all stat rows for
+    # rolling averages; only rewrites `team`. Downstream cross-team
+    # leak guard (line 959) then correctly matches against event teams.
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        _dc_p = _P(__file__).parent / 'nfl_current_depth_chart.json'
+        if _dc_p.exists():
+            _dc = _json.loads(_dc_p.read_text(encoding='utf-8'))
+            _per_team = _dc.get('per_team') or {}
+            _pname = row.get('player_name') or name
+            _pname_norm = str(_pname).lower().strip()
+            for _team_abbr, _slots in _per_team.items():
+                if not isinstance(_slots, dict): continue
+                for _sname in _slots.values():
+                    if not _sname: continue
+                    if str(_sname).lower().strip() == _pname_norm:
+                        if row.get('team') != _team_abbr:
+                            row = dict(row)  # avoid mutating cached memo
+                            row['team'] = _team_abbr
+                            row['_team_source'] = 'depth_chart_override'
+                        break
+    except Exception:
+        pass  # scrape file missing / malformed → keep stats-derived team
+    return row
 
 
 # ─────────────────────────────────────────────────────────────
