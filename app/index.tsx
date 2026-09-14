@@ -2824,9 +2824,25 @@ setEvData(evOpps.slice(0,20));
         const nowEt = new Date(todayStart);
         const days = Math.floor((nowEt.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
         const baseWk = days < 0 ? 0 : Math.floor(days / 7) + 1;
-        // Roll forward: NFL Tue → next week (post-Mon MNF); NCAAF Tue → next week
+        // 2026-09-14 v1.0.1 #16 fix — sport-specific roll semantics.
+        //
+        // NFL anchor = 2026-09-09 (Tue). Play-week Thu → Mon (MNF). The
+        // baseWk math naturally advances on Tue via `floor(7/7)+1=2`, so
+        // NO manual roll is needed on Tue. Prior code did `if dow===2 return
+        // baseWk+1` which DOUBLE-COUNTED — users on Tue 9/16 saw "This Week"
+        // resolve to Week 3 instead of Week 2, so Week 2 TNF 9/18 + Sun 9/20
+        // slates all landed in the "Next Week" tab. Same bug as Andy's 9/12
+        // NCAAF report but the fix is NFL-specific: remove the roll.
+        //
+        // NCAAF anchor = 2026-08-24 (Sun). Play-week Wed → Tue. Because the
+        // anchor is Sunday but the play-week ENDS on Tuesday, baseWk still
+        // reflects the OLD week on Tue (e.g. Tue 9/2 baseWk=2 but user is
+        // still in Week 1's Sat-Tue tail). The Tue roll here keeps the
+        // "This Week" tab pinned to the current-Sat slate through Tue. The
+        // real fix is to anchor NCAAF to a Wed and drop the roll — queued
+        // for v1.0.2 alongside a full nfl_schedule/ncaaf_schedule week
+        // column canonicalization. Interim: keep the roll ONLY for NCAAF.
         const dowEt = nowEt.getDay(); // Sun=0..Sat=6
-        if (sportKey === 'NFL' && dowEt === 2) return baseWk + 1;
         if (sportKey === 'NCAAF' && dowEt === 2) return baseWk + 1;
         return baseWk;
       };
