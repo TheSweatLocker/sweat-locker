@@ -138,6 +138,40 @@ jobs:
           # (Dimers/Action/BettingPros). Adds ~200MB but only runs on external pull step.
           python -m playwright install --with-deps chromium || echo "chromium install failed (non-fatal — Playwright scrapers will skip)"
 
+      # 2026-09-14 YESTERDAY-CATCH-UP BLOCK. Front-loaded so records on
+      # the app are current BEFORE the ~30min pick-build sequence starts.
+      # Sunday 9/13 exposed the gap: Sunday afternoon cron aggregated at
+      # 5:16 PM ET (before late slate + SNF) → Sharp Card was frozen at
+      # "1-1" until Monday's pipeline hit its own late-run aggregate step
+      # ~40min in. Users saw stale data all morning.
+      #
+      # This block does three things for YESTERDAY (ET) only:
+      #   1. Grade any props still ungraded (grade_props inside catch-up
+      #      window). Sunday's overnight can miss late-boxscore stats.
+      #   2. Grade jerry_reads across all sports (script iterates internally).
+      #   3. Aggregate daily_surface_records + recompute rolling
+      #      surface_records so the app's per-surface tiles reflect
+      #      final graded state.
+      # Every step continue-on-error — this block only exists to keep the
+      # record fresh for the app; a failure here can never block today's
+      # pick generation.
+      - name: Yesterday catch-up — grade + aggregate + surface_records
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          _YESTERDAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4,days=1)).date().isoformat())")
+          echo "→ Yesterday catch-up for $_YESTERDAY"
+          python grade_props.py --date "$_YESTERDAY" || echo "grade_props catch-up non-fatal"
+          python grade_jerry_reads.py --sport MLB || echo "grade_jerry_reads MLB non-fatal"
+          python grade_jerry_reads.py --sport NFL || echo "grade_jerry_reads NFL non-fatal"
+          python grade_jerry_reads.py --sport NCAAF || echo "grade_jerry_reads NCAAF non-fatal"
+          python resolve_potd.py || echo "resolve_potd catch-up non-fatal"
+          python aggregate_daily_records.py --backfill 2 || echo "aggregate catch-up non-fatal"
+          python compute_surface_records.py || echo "surface_records catch-up non-fatal"
+
       # 2026-08-27: EVERY step in this workflow now uses continue-on-error.
       # Prior policy — mandatory steps died on any error and killed everything
       # downstream — caused 2 consecutive days of 0 props + 0 MC + 0 ladder
