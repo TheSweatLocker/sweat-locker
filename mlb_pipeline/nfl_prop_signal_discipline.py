@@ -175,25 +175,49 @@ def compute_confluence_tier(prop: dict) -> tuple[str, int, dict]:
         return (base_tier, min(60, 40 + int(edge_pct)),
                 {**breakdown, 'reason': 'null_player_team_guard'})
 
-    # PRIME: extreme confluence — season-avg must confirm (season stability
-    # anchors against recent-form noise), high edge, high hit rate, meaningful
-    # sample. Deliberately conservative — Week 1 signals mostly draw from
-    # LAST season's game logs; PRIME needs to survive that staleness.
+    # 2026-09-13 CONVICTION BLENDING (v1.0.1 #18 — Andy explicit blocker).
+    # Prior formulas `min(CAP, FLOOR + int(edge_pct))` snapped every PRIME
+    # to exactly 95, most STRONGs to exactly 85. Root cause: edge_pct
+    # qualifiers cluster right above the tier thresholds (PRIME needs
+    # edge≥18, real edge_pct 18-25 is common), and CAP is only 15pt
+    # above FLOOR — so the FLOOR + int(edge_pct) sum hit the cap in
+    # nearly every case. Conviction stopped meaning "how confident" and
+    # became "which tier bucket."
+    #
+    # Fix: blend edge_pct + score (0-5.75 scale) + hit_pct (0-1.0) so
+    # conviction actually varies within a tier. Coefficients tuned so a
+    # bare-threshold pick lands near tier floor and a max-confluence pick
+    # lands near cap. Starting coefficients per spec; retune from
+    # backtest post-Sunday once graded data lands.
+    #
+    # Downstream gate audit (per v1.0.1 #18 spec): no NFL-specific code
+    # branches on conviction >= 95 or 85. Existing gates use `>= 60`
+    # (prop_ensemble_scorer.py:652,683) + `>= 65` (line 785) — all safely
+    # below the new formula's tier floors. Tier assignment logic unchanged.
+    _hp = hit_pct if hit_pct is not None else 0.0
+
+    # PRIME: extreme confluence — season-avg must confirm, high edge,
+    # high hit rate, meaningful sample. Blended: floor 40 + edge_weight
+    # 1.5 + score_weight 3.5 + hit_pct_weight 10.
     if (edge_pct >= 18 and score >= 4.5 and a_season is True
         and hit_pct is not None and hit_pct >= 0.70 and hit_n >= 7):
-        return ('PRIME', min(95, 80 + int(edge_pct)),
+        conv = 40 + 1.5 * edge_pct + 3.5 * score + 10 * _hp
+        return ('PRIME', max(80, min(97, int(round(conv)))),
                 {**breakdown, 'reason': 'prime_gate'})
     # STRONG: solid edge + strong confluence
     if edge_pct >= 12 and score >= 3.25:
-        return ('STRONG', min(85, 65 + int(edge_pct)),
+        conv = 30 + 1.5 * edge_pct + 2.5 * score + 8 * _hp
+        return ('STRONG', max(65, min(84, int(round(conv)))),
                 {**breakdown, 'reason': 'strong_gate'})
     # LEAN: moderate edge + some agreement
     if edge_pct >= 8 and score >= 2.25:
-        return ('LEAN', min(75, 50 + int(edge_pct)),
+        conv = 25 + 1.2 * edge_pct + 2.0 * score + 5 * _hp
+        return ('LEAN', max(50, min(68, int(round(conv)))),
                 {**breakdown, 'reason': 'lean_gate'})
     # LIGHT: bare edge, no confluence
     if edge_pct >= 5:
-        return ('LIGHT', min(60, 35 + int(edge_pct)),
+        conv = 20 + 1.0 * edge_pct + 1.0 * score + 4 * _hp
+        return ('LIGHT', max(35, min(58, int(round(conv)))),
                 {**breakdown, 'reason': 'light_bare_edge'})
     return ('SKIP', 0, {**breakdown, 'reason': 'below_light_threshold'})
 
