@@ -642,6 +642,35 @@ jobs:
           cd mlb_pipeline
           python generate_nfl_game_reads.py || echo "game reads failed (non-fatal)"
 
+      # 2026-09-13: signal_attribution snapshot — captures every signal
+      # that fired per game at pick-lock time (EPA gap, LR shadow, GOAT,
+      # cohorts, anchor). Idempotent upsert on natural key. Grader
+      # (separate step post-game) resolves each snapshot into a hit rate
+      # rollup fed back into the game-card tooltip. See migration
+      # 20260913i_signal_attribution + client SignalsRow enrichment.
+      - name: Snapshot NFL signal attribution (per-game per-signal)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport NFL || echo "signal snapshot failed (non-fatal)"
+
+      # 2026-09-13: signal_attribution grader — resolves pending snapshots
+      # from the last 7 days against final scores. Runs every cron; only
+      # PATCHes rows whose game has settled + result IS NULL. Cheap +
+      # idempotent.
+      - name: Grade NFL signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport NFL --days 7 || echo "signal grade failed (non-fatal)"
+
       # 2026-09-02: Thu-lock injury regen check. Runs on every cron
       # (cheap query — silent no-op unless a QB1 has status change
       # since last lock). Fires generate_nfl_game_reads.py --force

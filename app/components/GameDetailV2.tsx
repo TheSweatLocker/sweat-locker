@@ -1634,12 +1634,39 @@ function LensGrid({ctx, gamesSport}: any) {
 // ─── SIGNALS ROW (2026-09-13 · game card model transparency) ───────
 // Andy 9/13: "Are we surfacing any of these in model section in game
 // card we should be with info markers to explain each what it is."
+// PLUS "we should be tracking what each says and keeping record."
 // Renders compact chip row under Model Consensus showing which of our
-// signals actually FIRED for this game + tap to explain via glossary.
+// signals actually FIRED for this game + tap to explain via glossary +
+// LIVE HIT RATE from v_signal_records (populated by
+// signal_attribution_snapshot + signal_attribution_grade cron pair).
 // Chip color = supports pick (green) / neutral (grey) / disagrees (amber).
-// Silent-hide if no signals materially fire (thin ctx = don't fake it).
+// Silent-hide if no signals materially fire.
 function SignalsRow({ctx, gamesSport}: any) {
   const [openTerm, setOpenTerm] = useState<string | null>(null);
+  const [signalRecords, setSignalRecords] = useState<Record<string, any>>({});
+
+  // 2026-09-13: fetch per-(sport, signal_key, kind) hit rate rollup
+  // from v_signal_records so each chip's tooltip can show real track
+  // record: "LR AGREES: 68% (n=87) last 30d". Gated at 5+ samples per
+  // key/kind combo (view enforces). Falls back gracefully to glossary-
+  // only text when a signal has no graded history yet (Week 1-2 state).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const {data, error} = await supabase.from('v_signal_records')
+          .select('signal_key,kind,wins_30d,losses_30d,hit_pct_30d,wins_lifetime,losses_lifetime,hit_pct_lifetime')
+          .eq('sport', gamesSport);
+        if (cancelled || error) return;
+        const map: Record<string, any> = {};
+        for (const row of (data || [])) {
+          map[`${row.signal_key}|${row.kind}`] = row;
+        }
+        setSignalRecords(map);
+      } catch (_) { /* silent — SignalsRow degrades to definition-only */ }
+    })();
+    return () => { cancelled = true; };
+  }, [gamesSport]);
   const pp = ctx?.primary_play || {};
   const pickSide = (pp.side || '').toUpperCase();  // HOME / AWAY / OVER / UNDER
   const isML = (pp.type === 'ml' || pp.type === 'spread' || pp.type === 'rl');
@@ -1761,13 +1788,38 @@ function SignalsRow({ctx, gamesSport}: any) {
       {openTerm && (() => {
         const help = _explainGlossary(openTerm);
         if (!help) return null;
+        // Find the chip we tapped so we know its kind for the hit-rate lookup
+        const chipObj = chips.find(c => c.term === openTerm);
+        const kind = chipObj?.kind;
+        const rec = kind ? signalRecords[`${openTerm}|${kind}`] : null;
+        const has30d = rec && (rec.wins_30d + rec.losses_30d) >= 5;
+        const hasAll = rec && (rec.wins_lifetime + rec.losses_lifetime) >= 5;
         return (
           <View style={{marginTop: 8, padding: 10, backgroundColor: THEME.surface,
                         borderRadius: 8, borderLeftWidth: 3, borderLeftColor: THEME.accent}}>
             <Text style={{color: THEME.accent, fontSize: 10, fontWeight: '800',
                           letterSpacing: 0.5, marginBottom: 4}}>
               {openTerm.replace(/_/g, ' ')}
+              {kind ? ` — ${kind.toUpperCase()}` : ''}
             </Text>
+            {(has30d || hasAll) && (
+              <View style={{flexDirection: 'row', gap: 12, marginBottom: 6}}>
+                {has30d && (
+                  <Text style={{color: THEME.text, fontSize: 11, fontWeight: '800',
+                                fontVariant: ['tabular-nums']}}>
+                    30d: <Text style={{color: THEME.accent}}>{rec.hit_pct_30d}%</Text>
+                    {' '}({rec.wins_30d}-{rec.losses_30d})
+                  </Text>
+                )}
+                {hasAll && (
+                  <Text style={{color: THEME.textMuted, fontSize: 11, fontWeight: '700',
+                                fontVariant: ['tabular-nums']}}>
+                    Lifetime: {rec.hit_pct_lifetime}%
+                    {' '}({rec.wins_lifetime}-{rec.losses_lifetime})
+                  </Text>
+                )}
+              </View>
+            )}
             <Text style={{color: THEME.text, fontSize: 12, lineHeight: 17}}>
               {help.help}
             </Text>
