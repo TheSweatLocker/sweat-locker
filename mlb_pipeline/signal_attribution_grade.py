@@ -47,8 +47,17 @@ def _f(v):
 
 def _grade_pick(pick_market: str, pick_side: str,
                 home_score: float, away_score: float,
-                close_spread, close_total) -> str:
-    """Return W / L / P for the pick side."""
+                close_spread, close_total, sport: str = 'NFL') -> str:
+    """Return W / L / P for the pick side.
+
+    2026-09-14: close_spread sign convention DIFFERS by sport:
+      NFL   → POSITIVE = HOME favored (e.g., cs=+3.5 means home laying 3.5)
+      MLB   → NEGATIVE = HOME favored (e.g., cs=-1.5 means home laying 1.5)
+      NCAAF → NEGATIVE = HOME favored (same as MLB)
+    So the home-cover formula must flip based on sport, else spreads on
+    MLB/NCAAF grade with inverted magnitude and consistently mis-label
+    one-run/one-point home wins as covers when they aren't.
+    """
     margin = home_score - away_score
     total = home_score + away_score
     if pick_market == 'ml':
@@ -59,10 +68,12 @@ def _grade_pick(pick_market: str, pick_side: str,
     if pick_market in ('spread', 'rl'):
         sp = _f(close_spread)
         if sp is None: return None
-        # close_spread convention (per Sweat Shop): positive = home favored.
-        # HOME cover: (margin - sp) > 0. AWAY cover: (margin - sp) < 0.
-        # Push if exact.
-        diff = margin - sp
+        # Normalize to NFL convention (positive = home favored) so the
+        # cover math is a single formula. For MLB/NCAAF, negate the
+        # spread. Everywhere below treats home_line as "points home is
+        # laying (positive if favored)".
+        home_line = sp if sport == 'NFL' else -sp
+        diff = margin - home_line
         if diff == 0: return 'P'
         home_cover = diff > 0
         return 'W' if ((pick_side == 'HOME' and home_cover) or
@@ -208,6 +219,7 @@ def run(sport: Optional[str] = None, days: int = 3) -> None:
                 float(settled_game.get('away_score') or 0),
                 settled_game.get('close_spread'),
                 settled_game.get('close_total'),
+                sport=sp,
             )
             if not result:
                 skipped_no_result += 1

@@ -157,6 +157,15 @@ def _football_extractors(g: dict) -> dict:
     """Shared extractor for NFL + NCAAF (both have same column shape).
     Total-direction from projected/panel/sp_plus/model + ml direction from
     spread models. OU / ATS split-adj tendencies.
+
+    2026-09-14 KNOWN BUG (queued for dedicated refactor):
+    close_spread sign convention differs between NFL (POSITIVE = home fav)
+    and NCAAF (NEGATIVE = home fav), and sp_plus_pred_spread stores home
+    margin (opposite sign to NCAAF close_spread) — so `v + cs` deltas
+    below are only correct on one of the two sports for each field. Not
+    fixing inline because a proper fix needs a per-field sign registry;
+    quick sign-flip on cs alone would rebreak sp_plus math. Tracked in
+    [[project_close_spread_sign_bug_914]].
     """
     out = {}
     ct = _f(g.get('close_total'))

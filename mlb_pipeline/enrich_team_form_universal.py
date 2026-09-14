@@ -66,14 +66,27 @@ def _et_today() -> str:
 
 
 def _grade_ats(home_score: float, away_score: float, close_spread: float | None,
-                team_is_home: bool) -> str | None:
-    """W = team covered, L = didn't, P = pushed. close_spread is HOME's
-    line (negative if home favored)."""
+                team_is_home: bool, sport: str = 'MLB') -> str | None:
+    """W = team covered, L = didn't, P = pushed.
+
+    2026-09-14: close_spread sign convention differs by sport (verified by
+    matching against ML favorite side on live 9/13-9/14 data):
+      NFL   → POSITIVE  = HOME favored (cs=+3.5 means home lays 3.5)
+      MLB   → NEGATIVE  = HOME favored (cs=-1.5 means home lays 1.5)
+      NCAAF → NEGATIVE  = HOME favored (same as MLB)
+      NBA/NHL/NCAAB — follow MLB convention (NEG = home favored) per DB
+        writer inspection; safe default.
+    Prior code used `home_margin + sp` universally, which is correct for
+    MLB/NCAAF/NBA/NHL/NCAAB but INVERTED for NFL — silently flipping
+    every NFL ATS record this function computes. Fix: sport-aware sign.
+    """
     if home_score is None or away_score is None or close_spread is None: return None
     try: sp = float(close_spread)
     except (TypeError, ValueError): return None
     home_margin = home_score - away_score
-    home_ats = home_margin + sp  # positive = home covers
+    # Normalize to a "points home is laying" scalar (positive iff home favored).
+    home_line = sp if sport == 'NFL' else -sp
+    home_ats = home_margin - home_line  # positive = home covers
     if abs(home_ats) < 0.01: return 'P'
     if team_is_home:
         return 'W' if home_ats > 0 else 'L'
@@ -127,8 +140,8 @@ def compute_team_venue_form(sport: str, team_name: str, game_date: str,
     for g in games:
         home = g.get(hs); away = g.get(as_)
         spread = g.get(csp); total = g.get(cto)
-        # ATS
-        ats = _grade_ats(home, away, spread, team_is_home=is_home)
+        # ATS — pass sport for sign-convention (NFL positive=home fav; rest negative)
+        ats = _grade_ats(home, away, spread, team_is_home=is_home, sport=sport)
         if ats == 'W': ats_w += 1
         elif ats == 'L': ats_l += 1
         # ML

@@ -259,9 +259,14 @@ def _outcome_summary(neighbors: list, sport: str) -> dict:
         if cs is not None and hs != as_:
             try:
                 cs_f = float(cs)
-                # spread stored as home spread (- = home favorite)
+                # 2026-09-14 sign-convention fix. NFL stores POSITIVE = home
+                # favored; MLB/NCAAF store NEGATIVE = home favored. Normalize
+                # to a "home_line" scalar (positive iff home favored) so the
+                # cover math is one formula. Prior universal `home_margin +
+                # cs_f` silently flipped covers on any NFL similar-games run.
+                home_line = cs_f if sport == 'NFL' else -cs_f
                 home_margin = hs - as_
-                covered = home_margin + cs_f > 0
+                covered = (home_margin - home_line) > 0
                 rl_dec += 1
                 if covered: home_covered += 1
             except (TypeError, ValueError): pass
