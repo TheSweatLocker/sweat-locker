@@ -2791,8 +2791,60 @@ setEvData(evOpps.slice(0,20));
       // roll on NFL, post-Tue on NCAAF), else todayStart. This way, mid-week
       // viewers still see only upcoming games from the current play-week.
       const weekTodayLow = weekTodayStart > todayStart ? weekTodayStart : todayStart;
+
+      // 2026-09-13 SEASON WEEK CANONICALIZATION. Mirror of SQL helper
+      // current_nfl_season_week() from migration 20260913f. Client
+      // computes the same integer for each game's commence_time and
+      // compares to currentWeek — same semantics as the backend column
+      // nfl_game_context.season_week. Kills the "10-day-forward-window"
+      // bleed class of bugs by moving from date-range arithmetic to
+      // week-number equality.
+      //   NFL:   Week 1 Thu = 2026-09-04. Roll fwd on Tue(2)+Wed(3) ET.
+      //   NCAAF: Week 1 = 2026-08-24 (Sun). Roll fwd on Tue(2) ET.
+      const _seasonWeekAnchors: {[k: string]: Date} = {
+        NFL: new Date('2026-09-04T00:00:00-04:00'),   // 2026 Week 1 Thu
+        NCAAF: new Date('2026-08-24T00:00:00-04:00'), // 2026 Week 1 start
+      };
+      const _seasonWeekOf = (sportKey: string, dateIso: string): number | null => {
+        const anchor = _seasonWeekAnchors[sportKey];
+        if (!anchor) return null;
+        const t = new Date(dateIso);
+        if (isNaN(t.getTime())) return null;
+        const days = Math.floor((t.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
+        if (days < 0) return 0;
+        return Math.floor(days / 7) + 1;
+      };
+      const _currentSeasonWeek = (sportKey: string): number | null => {
+        const anchor = _seasonWeekAnchors[sportKey];
+        if (!anchor) return null;
+        const nowEt = new Date(todayStart);
+        const days = Math.floor((nowEt.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
+        const baseWk = days < 0 ? 0 : Math.floor(days / 7) + 1;
+        // Roll forward: NFL Tue/Wed → next week; NCAAF Tue → next week
+        const dowEt = nowEt.getDay(); // Sun=0..Sat=6
+        if (sportKey === 'NFL' && (dowEt === 2 || dowEt === 3)) return baseWk + 1;
+        if (sportKey === 'NCAAF' && dowEt === 2) return baseWk + 1;
+        return baseWk;
+      };
+
+      const thisSeasonWk = isWeekly ? _currentSeasonWeek(gamesSport) : null;
+      const nextSeasonWk = thisSeasonWk != null ? thisSeasonWk + 1 : null;
+
       const filtered = rData.filter((game: any) => {
         const t = new Date(game.commence_time);
+        // Weekly sports: canonical season-week filter takes priority
+        // (backend-parity per current_nfl_season_week() SQL helper).
+        // Date-range fallback kept for UFC and pre-fix rows without
+        // computable season_week.
+        if (isWeekly && thisSeasonWk != null) {
+          const gwk = _seasonWeekOf(gamesSport, game.commence_time);
+          if (gwk != null) {
+            if (day === 'today') return gwk === thisSeasonWk && t >= weekTodayLow;
+            if (day === 'tomorrow') return gwk === nextSeasonWk;
+            if (day === 'yesterday') return t >= yesterdayStart && t < todayStart;
+            return true;
+          }
+        }
         if (day === 'today') return isWeekly ? (t >= weekTodayLow && t <= weekTodayEnd) : (t >= todayStart && t <= todayEnd);
         if (day === 'tomorrow') return isWeekly ? (t >= weekTomorrowStart && t <= weekTomorrowEnd) : (t >= tomorrowStart && t <= tomorrowEnd);
         if (day === 'yesterday') return t >= yesterdayStart && t < todayStart;
