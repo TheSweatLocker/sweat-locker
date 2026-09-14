@@ -592,18 +592,53 @@ def player_id_lookup(name: str, position: Optional[str] = None) -> Optional[dict
 # Row build + orchestration
 # ─────────────────────────────────────────────────────────────
 @functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None)
+def _nfl_home_team_for(season: int, week: int) -> tuple[tuple, ...]:
+    """Return tuple of (home_team, away_team) pairs for a given (season, week).
+    Memoized because ~272 games/season × 20 seasons = ~5400 unique keys max
+    and each result reuses across every player in that game. Returns as
+    tuple-of-tuples so the LRU cache value is hashable-safe."""
+    try:
+        r = _retry_session.get(f'{SB}/rest/v1/nfl_game_results',
+                         headers=H_READ,
+                         params={'season': f'eq.{season}',
+                                 'week': f'eq.{week}',
+                                 'select': 'home_team,away_team'},
+                         timeout=10)
+        if r.status_code != 200: return tuple()
+        return tuple((g.get('home_team',''), g.get('away_team','')) for g in (r.json() or []))
+    except Exception:
+        return tuple()
+
+
+def _nfl_is_home(season: int, week: int, player_team: str, opp: str) -> bool | None:
+    """Return True if player was HOME that game, False if road, None if
+    lookup fails. Cheap — matches by team-pair in the memoized week list."""
+    if not (season and week and player_team and opp): return None
+    for home, away in _nfl_home_team_for(int(season), int(week)):
+        if home == player_team and away == opp: return True
+        if away == player_team and home == opp: return False
+    return None
+
+
 def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
                              n: int = 10) -> list[dict]:
     """Return last-N per-week rows for a player's stat.
 
     2026-08-23: NFL parallel to MLB fetch_mlb_player_recent_rows. Uses
     nfl_player_stats (per-week per-player) as source. Rows returned
-    newest-first: {season, week, opponent, value, home_away?}.
+    newest-first: {season, week, opponent, value, home}.
     Falls back to prior season if current has <3 rows (Week 1 case).
 
     2026-09-09: memoized on (player_id, stat_col, season, n). Cuts duplicate
     fetches when multiple markets on the same player+stat re-query. Callers
     MUST NOT mutate the returned list — cached instance is shared.
+
+    2026-09-14 v1.0.1: `home` boolean derived by joining nfl_game_results
+    at read time (nfl_player_stats has no is_home column). Screenshot
+    audit showed Prop Jerry bar charts rendered "@KC" for every game
+    including KC home games because r.home was undefined. See app
+    render at index.tsx bar chart labels.
     """
     if not player_id or not stat_col: return []
     def _pull(sn):
@@ -613,7 +648,7 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
                              params={'player_id': f'eq.{player_id}',
                                      'season': f'eq.{sn}',
                                      'season_type': 'eq.REG',
-                                     'select': f'season,week,opponent_team,{stat_col}',
+                                     'select': f'season,week,team,opponent_team,{stat_col}',
                                      'order': 'week.desc', 'limit': str(n)},
                              timeout=10)
             if r.status_code != 200: return []
@@ -629,12 +664,18 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
         if v is None: continue
         try: val = float(v)
         except (TypeError, ValueError): continue
-        out.append({
+        entry = {
             'season': row.get('season'),
             'week': row.get('week'),
             'opp': row.get('opponent_team'),
             'value': val,
-        })
+        }
+        # Derive home/away from nfl_game_results (memoized per season+week).
+        home_flag = _nfl_is_home(row.get('season'), row.get('week'),
+                                   row.get('team'), row.get('opponent_team'))
+        if home_flag is not None:
+            entry['home'] = home_flag
+        out.append(entry)
     return out
 
 
@@ -744,6 +785,13 @@ def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[
         elif l5_hits <= 1:  # 0-of-5 or 1-of-5 — cold streak on this direction
             bonus -= 5
             sig['l5_cold'] = f'L5 only {l5_hits}-of-{len(l5)} on {"OVER" if is_over else "UNDER"} {line} — fade risk'
+        else:
+            # 2026-09-14 v1.0.1: mixed-signal fallback so cards never render
+            # thin. Rashee Rice screenshot audit had only 2 playbook bullets
+            # because L5 landed 2-of-5 (didn't clear 4-of-5 or ≤1-of-5 gates).
+            # Neutral prose keeps card content floor at ≥3 items.
+            avg = round(sum(l5)/len(l5), 1)
+            sig['l5_mixed'] = f'L5 avg {avg} — {l5_hits}-of-{len(l5)} {"OVER" if is_over else "UNDER"} {line} · mixed form'
 
     # L10 hit count — bigger sample
     l10 = values[:10]
@@ -757,6 +805,12 @@ def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[
         elif l10_hits <= 2:
             bonus -= 4
             sig['l10_cold'] = f'L10 only {l10_hits}-of-{len(l10)} on this direction — trend against'
+        else:
+            # 2026-09-14 v1.0.1: neutral L10 for the middle band (3-7 of 10).
+            # No conviction bonus — just context so the card floor stays
+            # above 3 bullets even when both L5 and L10 land mid-range.
+            avg = round(sum(l10)/len(l10), 1)
+            sig['l10_mixed'] = f'L10 {l10_hits}-of-{len(l10)} on {"OVER" if is_over else "UNDER"} {line} · avg {avg}'
 
     # Store raw rows for chart rendering (mirror MLB _stat_last10)
     sig['_stat_last10'] = recent_rows
