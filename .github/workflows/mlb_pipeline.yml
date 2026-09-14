@@ -1372,6 +1372,30 @@ jobs:
           cd mlb_pipeline
           python resolve_potd.py
 
+      # 2026-09-13: MLB signal_attribution snapshot + grade. Same infra
+      # as NFL/NCAAF (migration 20260913i). Captures LR_ML_SHADOW,
+      # LR_TOTAL_SHADOW, SPLITS_SHARP per MLB game at Sharp Card lock,
+      # grades against final scores post-game. Feeds v_signal_records
+      # so the weekly refit picks up MLB signal performance alongside
+      # football. Non-fatal.
+      - name: Snapshot MLB signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport MLB || echo "MLB signal snapshot failed (non-fatal)"
+
+      - name: Grade MLB signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport MLB --days 7 || echo "MLB signal grade failed (non-fatal)"
+
       # 2026-08-27: Single source of truth for per-surface, per-sport,
       # per-window W/L/P + units_net. Both the Receipts tab and the Sharp
       # Card read from surface_records so their numbers never diverge.

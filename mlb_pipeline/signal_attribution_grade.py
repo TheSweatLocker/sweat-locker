@@ -14,7 +14,7 @@ kind=ok gets marked W when the pick hits, L when it misses. That
 gives us "when LR agrees with pick, hit rate = X%" over time.
 
 Run:
-  python signal_attribution_grade.py                 # today's date, NFL + NCAAF
+  python signal_attribution_grade.py                 # today's date, NFL + NCAAF + MLB
   python signal_attribution_grade.py --days 7
   python signal_attribution_grade.py --sport NFL
 """
@@ -77,13 +77,22 @@ def _grade_pick(pick_market: str, pick_side: str,
     return None
 
 
+_RESULTS_TBL = {
+    'NFL':   'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'MLB':   'mlb_game_results',
+}
+
+
 def _fetch_results(sport: str, date_lo: str) -> tuple[dict, dict]:
     """Returns two lookup dicts:
-      1. by game_id (works when signal_attribution and results share IDs — NCAAF)
+      1. by game_id (works when signal_attribution and results share IDs — NCAAF, MLB)
       2. by (game_date, home_team, away_team) tuple (NFL — MD5 ctx vs
          date+teams results ID mismatch per project_nfl_game_id_mismatch_911)
     """
-    tbl = 'nfl_game_results' if sport == 'NFL' else 'ncaaf_game_results'
+    tbl = _RESULTS_TBL.get(sport)
+    if not tbl:
+        return {}, {}
     all_rows: list = []
     for page in range(5):
         r = requests.get(f'{SB}/rest/v1/{tbl}',
@@ -105,10 +114,19 @@ def _fetch_results(sport: str, date_lo: str) -> tuple[dict, dict]:
     return by_id, by_tuple
 
 
+_CTX_TBL = {
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'MLB':   'mlb_game_context',
+}
+
+
 def _fetch_ctx_teams(sport: str, date_lo: str) -> dict:
     """Map ctx game_id → (game_date, home_team, away_team) so we can
-    bridge NFL's MD5-vs-abbrev id mismatch."""
-    tbl = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+    bridge NFL's MD5-vs-abbrev id mismatch. MLB/NCAAF ids match results
+    directly so this map is unused for them but cheap to compute."""
+    tbl = _CTX_TBL.get(sport)
+    if not tbl: return {}
     all_rows: list = []
     for page in range(5):
         r = requests.get(f'{SB}/rest/v1/{tbl}',
@@ -152,7 +170,7 @@ def _fetch_pending(sport: str, date_lo: str) -> list:
 
 def run(sport: Optional[str] = None, days: int = 3) -> None:
     date_lo = (date.today() - timedelta(days=days)).isoformat()
-    sports = [sport] if sport else ['NFL', 'NCAAF']
+    sports = [sport] if sport else ['NFL', 'NCAAF', 'MLB']
     from datetime import datetime as _dt, timezone as _tz
     now_iso = _dt.now(_tz.utc).isoformat()
     print(f'=== signal_attribution_grade · since {date_lo} · sports={sports} ===')
@@ -217,7 +235,7 @@ def run(sport: Optional[str] = None, days: int = 3) -> None:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--sport', choices=['NFL', 'NCAAF'])
+    p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB'])
     p.add_argument('--days', type=int, default=3)
     args = p.parse_args()
     run(sport=args.sport, days=args.days)

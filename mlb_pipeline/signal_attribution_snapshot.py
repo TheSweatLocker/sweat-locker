@@ -52,20 +52,39 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+_TBL_BY_SPORT = {
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'MLB':   'mlb_game_context',
+}
+
+
 def _fetch_games(sport: str, game_date: str) -> list[dict]:
-    tbl = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+    tbl = _TBL_BY_SPORT.get(sport)
+    if not tbl: return []
     # 2026-09-13 sport-specific offense-rating column:
     #   NFL   → home_off_rating (only exists on NFL ctx)
     #   NCAAF → home_off_epa_pp (only exists on NCAAF ctx)
+    #   MLB   → no offense-rating field on ctx (uses splits_summary /
+    #           cohort v2 elsewhere); slim column set
     # Aliasing to a common name (`home_off_rating`) via PostgREST select
     # so build_signal_rows can read one canonical field regardless of sport.
-    base_cols = ('game_id,season,week,season_week,game_date,'
-                 'home_team,away_team,cohort_tags,align_status,'
-                 'primary_play,spread_anchor_weight')
     if sport == 'NFL':
-        cols = f'{base_cols},home_off_rating,away_off_rating'
-    else:  # NCAAF
-        cols = f'{base_cols},home_off_rating:home_off_epa_pp,away_off_rating:away_off_epa_pp'
+        cols = ('game_id,season,week,season_week,game_date,'
+                'home_team,away_team,cohort_tags,align_status,'
+                'primary_play,spread_anchor_weight,'
+                'home_off_rating,away_off_rating')
+    elif sport == 'NCAAF':
+        cols = ('game_id,season,week,season_week,game_date,'
+                'home_team,away_team,cohort_tags,align_status,'
+                'primary_play,spread_anchor_weight,'
+                'home_off_rating:home_off_epa_pp,'
+                'away_off_rating:away_off_epa_pp')
+    else:  # MLB — no cohort_tags/spread_anchor_weight/off_rating on ctx.
+        # Season derived from game_date year on writer side; week is N/A.
+        # splits_summary + primary_play carry everything we need.
+        cols = ('game_id,game_date,home_team,away_team,'
+                'primary_play,align_status,splits_summary')
     r = requests.get(f'{SB}/rest/v1/{tbl}',
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
                      params={'game_date': f'eq.{game_date}', 'select': cols},
@@ -136,6 +155,35 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
                             'signal_side': lr_side, 'kind': kind})
         except (TypeError, ValueError): pass
 
+    # LR_TOTAL_SHADOW (from primary_play._lr_total_shadow) — MLB-heavy but
+    # also fires on NCAAF/NFL when total LR models are populated.
+    lrt = pp.get('_lr_total_shadow') or {}
+    if isinstance(lrt, dict) and pick_market == 'total':
+        try:
+            po = float(lrt.get('p_over'))
+            lrt_side = ('OVER' if po >= 0.55 else 'UNDER' if po < 0.45 else 'NEUTRAL')
+            if lrt_side != 'NEUTRAL':
+                kind = 'ok' if lrt_side == pick_side else 'warn'
+                out.append({**base, 'signal_key': 'LR_TOTAL_SHADOW',
+                            'signal_value': round(po, 4),
+                            'signal_side': lrt_side, 'kind': kind})
+        except (TypeError, ValueError): pass
+
+    # SPLITS_SHARP (MLB — from ctx.splits_summary sharp side, when confident).
+    # Only fires when a sharp side is present + the magnitude is meaningful.
+    ss = ctx.get('splits_summary') or {}
+    if isinstance(ss, dict):
+        try:
+            sharp = str(ss.get('sharp_side') or '').upper()
+            magnitude = float(ss.get('sharp_money_pct') or 0)
+            if sharp in ('HOME', 'AWAY', 'OVER', 'UNDER') and magnitude >= 60:
+                kind = ('ok' if (pick_side and sharp == pick_side)
+                        else 'warn' if pick_side else 'neutral')
+                out.append({**base, 'signal_key': 'SPLITS_SHARP',
+                            'signal_value': round(magnitude, 1),
+                            'signal_side': sharp, 'kind': kind})
+        except (TypeError, ValueError): pass
+
     # ANCHOR
     aw = ctx.get('spread_anchor_weight')
     try:
@@ -187,7 +235,7 @@ def run(sport: Optional[str] = None,
         game_date: Optional[str] = None,
         dry_run: bool = False) -> None:
     gd = game_date or _today_et()
-    sports = [sport] if sport else ['NFL', 'NCAAF']
+    sports = [sport] if sport else ['NFL', 'NCAAF', 'MLB']
     print(f'=== signal_attribution_snapshot · {gd} · sports={sports} '
           f'{"(DRY)" if dry_run else "(APPLY)"} ===')
     for sp in sports:
@@ -209,7 +257,7 @@ def run(sport: Optional[str] = None,
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--sport', choices=['NFL', 'NCAAF'])
+    p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB'])
     p.add_argument('--date', dest='game_date')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
