@@ -553,7 +553,8 @@ export default function GameDetailV2({
             Consensus so users see the "how" behind the numbers, not just
             the outputs. Silent-hides if no signals materially fire. */}
         {(gamesSport === 'NFL' || gamesSport === 'NCAAF') && (
-          <SignalsRow ctx={ctx} gamesSport={gamesSport} />
+          <SignalsRow ctx={ctx} gamesSport={gamesSport}
+                      cohortTagRecords={cohortTagRecords} />
         )}
 
         {/* 2026-09-01: gate on non-OC pick presence. Was rendering
@@ -1641,7 +1642,7 @@ function LensGrid({ctx, gamesSport}: any) {
 // signal_attribution_snapshot + signal_attribution_grade cron pair).
 // Chip color = supports pick (green) / neutral (grey) / disagrees (amber).
 // Silent-hide if no signals materially fire.
-function SignalsRow({ctx, gamesSport}: any) {
+function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
   const [openTerm, setOpenTerm] = useState<string | null>(null);
   const [signalRecords, setSignalRecords] = useState<Record<string, any>>({});
 
@@ -1692,22 +1693,45 @@ function SignalsRow({ctx, gamesSport}: any) {
     }
   }
 
-  // Cohort tags
+  // Cohort tags — chip color + value DRIVEN by real cohort_tag_records
+  // hit rate, not assumed to be a "follow" signal. Andy 9/13 audit found
+  // nfl_home_fav lifetime 48.5% (486-516 over 1002) — coin flip. Marking
+  // it green was misleading. Rule now:
+  //   hit >= 58% + n >= 30 → 'ok' (follow signal, real edge)
+  //   hit 52-58% or n < 30 → 'neutral' (marginal, informational)
+  //   hit < 52% + n >= 30 → 'warn' (coin flip or fade candidate)
   const cohortTags = Array.isArray(ctx?.cohort_tags) ? ctx.cohort_tags : [];
-  const knownCohorts = ['heavy_home_dog', 'div_home_underdog', 'primetime_road_fav',
-                         'div_game', 'revenge', 'short_week', 'nfl_division_game'];
+  const knownCohorts = ['heavy_home_dog', 'heavy_home_fav', 'div_home_underdog',
+                         'div_home_cover', 'primetime_road_fav', 'home_fav',
+                         'div_game', 'revenge', 'short_week', 'nfl_division_game',
+                         'shootout'];
   for (const tag of cohortTags.slice(0, 3)) {
     const t = String(tag).toLowerCase();
-    if (knownCohorts.some(k => t.includes(k))) {
-      const term = t.includes('heavy_home_dog') ? 'HEAVY_HOME_DOG'
-                 : t.includes('div_home_underdog') ? 'DIV_HOME_UNDERDOG'
-                 : t.includes('primetime_road_fav') ? 'PRIMETIME_ROAD_FAV'
-                 : t.includes('div') ? 'DIV_GAME'
-                 : t.includes('revenge') ? 'REVENGE'
-                 : t.includes('short_week') ? 'SHORT_WEEK'
-                 : 'CONF';
-      chips.push({term, label: tag.replace(/_/g, ' '), value: 'active', kind: 'ok'});
+    if (!knownCohorts.some(k => t.includes(k))) continue;
+    const term = t.includes('heavy_home_fav') ? 'COHORT_HEAVY_HOME_FAV'
+               : t.includes('heavy_home_dog') ? 'HEAVY_HOME_DOG'
+               : t.includes('div_home_underdog') ? 'DIV_HOME_UNDERDOG'
+               : t.includes('div_home_cover') ? 'COHORT_DIV_HOME_COVER'
+               : t.includes('primetime_road_fav') ? 'PRIMETIME_ROAD_FAV'
+               : t.includes('shootout') ? 'COHORT_SHOOTOUT'
+               : t.includes('home_fav') ? 'COHORT_HOME_FAV'
+               : t.includes('div') ? 'DIV_GAME'
+               : t.includes('revenge') ? 'REVENGE'
+               : t.includes('short_week') ? 'SHORT_WEEK'
+               : 'CONF';
+    // Real hit-rate lookup — cohort_tag_records is keyed by tag+market
+    const rec = cohortTagRecords[`${t}|ats`] || cohortTagRecords[`${t}|ml`];
+    let kind: 'ok' | 'warn' | 'neutral' = 'neutral';
+    let value = 'active';
+    if (rec && rec.sample_n >= 30) {
+      const hp = Number(rec.hit_rate);
+      if (hp >= 58) { kind = 'ok'; value = `${hp}% · follow`; }
+      else if (hp < 52) { kind = 'warn'; value = `${hp}% · fade`; }
+      else { kind = 'neutral'; value = `${hp}%`; }
+    } else if (rec) {
+      value = `${Number(rec.hit_rate)}% · n=${rec.sample_n}`;
     }
+    chips.push({term, label: tag.replace(/_/g, ' '), value, kind});
   }
 
   // LR shadow — pulled from primary_play._lr_ml_shadow / _lr_total_shadow
