@@ -632,6 +632,26 @@ jobs:
           cd mlb_pipeline
           python recompute_nfl_primary_play.py --days 14 || echo "nfl recompute non-fatal"
 
+      # 2026-09-13: LR-warn hard-cap + anchor-cap discipline. Data from
+      # first signal_attribution grading run (NCAAF 9/12 slate, n=228)
+      # showed:
+      #   LR shadow agrees → 93.6% hit (44-3)
+      #   LR shadow warns  →  4.3% hit (1-22)   ← MASSIVE 89-pt spread
+      #   Anchor fires     → 30.0% hit (12-28)
+      # Gates: if LR strongly opposes pick (p>=0.60 opposite) OR anchor
+      # fires + tier is PRIME/STRONG → cap to LEAN. Applied AFTER
+      # primary_play recompute so it reflects the enriched signal state,
+      # BEFORE Sharp Card composition so the cap propagates to the card.
+      - name: NFL signal-discipline gates (LR-warn cap + anchor cap)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_ncaaf_signal_discipline.py --sport NFL || echo "NFL discipline gates failed (non-fatal)"
+
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

@@ -312,6 +312,39 @@ jobs:
           cd mlb_pipeline
           python recompute_ncaaf_primary_play.py --days 10 || echo "ncaaf recompute non-fatal"
 
+      # 2026-09-13: same LR-warn cap + anchor-cap discipline as NFL.
+      # NCAAF 9/12 slate first-look data (n=228): LR-warn hits 4.3%,
+      # anchored hits 30%. Applied after recompute, before Jerry reads.
+      - name: NCAAF signal-discipline gates (LR-warn cap + anchor cap)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_ncaaf_signal_discipline.py --sport NCAAF || echo "NCAAF discipline gates failed (non-fatal)"
+
+      # Also snapshot + grade NCAAF signal attribution (parity with NFL cron)
+      - name: Snapshot NCAAF signal attribution
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport NCAAF || echo "NCAAF signal snapshot failed (non-fatal)"
+
+      - name: Grade NCAAF signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport NCAAF --days 7 || echo "NCAAF signal grade failed (non-fatal)"
+
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
