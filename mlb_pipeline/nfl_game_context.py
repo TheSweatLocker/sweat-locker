@@ -269,6 +269,37 @@ def _regress_to_mean(stats_dict: dict, shrink: float = 0.4) -> dict:
     return out
 
 
+# 2026-09-14 AUTHORITATIVE QB1 MAP (verified 2026 Week 2 depth charts).
+# Andy: "we need to verify every starter for each team" — heuristic picker
+# (attempts-desc / most-recent-real-start) still misfired on offseason team
+# swaps (Kirk Cousins → LV, Tua → ATL, Justin Fields → NYJ, etc.) because
+# nfl_player_stats reflects LAST season's team assignments. This map is the
+# single source of truth; heuristic only fires when a team is missing here
+# (rookie surprises, mid-season change). Update after weekly starter news.
+# Watch flags in memory: Mahomes (knee) + Jones (Achilles) both recovered
+# for W1; LV has Cousins as QB1 with rookie Fernando Mendoza pushing.
+_NFL_QB1_MAP: dict[str, str] = {
+    # AFC East
+    'BUF': 'Josh Allen',       'MIA': 'Malik Willis',    'NE':  'Drake Maye',        'NYJ': 'Geno Smith',
+    # AFC North
+    'BAL': 'Lamar Jackson',    'CIN': 'Joe Burrow',      'CLE': 'Deshaun Watson',    'PIT': 'Aaron Rodgers',
+    # AFC South
+    'HOU': 'C.J. Stroud',      'IND': 'Daniel Jones',    'JAX': 'Trevor Lawrence',   'TEN': 'Cam Ward',
+    # AFC West
+    'DEN': 'Bo Nix',           'KC':  'Patrick Mahomes', 'LV':  'Kirk Cousins',      'LAC': 'Justin Herbert',
+    # NFC East
+    'DAL': 'Dak Prescott',     'NYG': 'Jaxson Dart',     'PHI': 'Jalen Hurts',       'WAS': 'Jayden Daniels',
+    # NFC North
+    'CHI': 'Caleb Williams',   'DET': 'Jared Goff',      'GB':  'Jordan Love',       'MIN': 'Kyler Murray',
+    # NFC South
+    # ATL: Cooper Rush is starting Wk 2 — Tua + Penix both banged up.
+    # Revisit when either is medically cleared.
+    'ATL': 'Cooper Rush',      'CAR': 'Bryce Young',     'NO':  'Tyler Shough',      'TB':  'Baker Mayfield',
+    # NFC West
+    'ARI': 'Jacoby Brissett',  'LA':  'Matthew Stafford','SF':  'Brock Purdy',       'SEA': 'Sam Darnold',
+}
+
+
 def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
     """Look up starting QB for `team_abbr` and their career+recent stats vs
     `opponent_abbr` defense from nfl_qb_vs_team table.
@@ -285,36 +316,125 @@ def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:
     """
     if not team_abbr or not opponent_abbr:
         return {}
+    # 2026-09-14 AUTHORITATIVE MAP PATH. Andy corrected the heuristic
+    # multiple times ("Cousins on ATL", "Rivers retired", "Mariota is
+    # a backup somewhere") — the underlying nfl_player_stats join
+    # cannot handle offseason team swaps because it reflects last
+    # season's team assignments. Map the QB1 by team first; only fall
+    # through to the heuristic when the team isn't in the map (e.g.,
+    # mid-season injury swap where the map hasn't been updated yet).
+    mapped_qb = _NFL_QB1_MAP.get(team_abbr.upper())
+    if mapped_qb:
+        # Try to bind a player_id + career-vs-opponent stats to the mapped
+        # QB name. If nfl_qb_vs_team has a row for this player against opp,
+        # attach it; otherwise return the name-only skeleton so downstream
+        # reads still get the right QB even without career splits.
+        try:
+            # Look up player_id via nfl_player_stats (any season, any team)
+            # for the mapped name — the QB may have played for a prior team
+            # so team filter is intentionally OMITTED here.
+            _pr = requests.get(
+                f'{SB}/rest/v1/nfl_player_stats',
+                headers=H_READ,
+                params={
+                    'player_name': f'eq.{mapped_qb}',
+                    'position': 'eq.QB',
+                    'select': 'player_id,player_name',
+                    'order': 'season.desc,week.desc',
+                    'limit': '1',
+                }, timeout=10,
+            )
+            pid_rows = _pr.json() if _pr.status_code == 200 else []
+            qb_pid = pid_rows[0].get('player_id') if pid_rows else None
+        except Exception:
+            qb_pid = None
+        if qb_pid:
+            try:
+                _vs = requests.get(
+                    f'{SB}/rest/v1/nfl_qb_vs_team',
+                    headers=H_READ,
+                    params={
+                        'qb_id': f'eq.{qb_pid}',
+                        'opponent_team': f'eq.{opponent_abbr}',
+                        'select': 'career_starts,career_qb_rating,career_yds_per_att,career_cmp_pct,career_td_int_ratio,recent_n_starts,recent_pass_yds_avg,recent_pass_td_avg,recent_int_avg,recent_qb_rating',
+                    }, timeout=10,
+                )
+                vs_rows = _vs.json() if _vs.status_code == 200 else []
+            except Exception:
+                vs_rows = []
+            if vs_rows:
+                row = vs_rows[0]
+                return {'qb_id': qb_pid, 'qb_name': mapped_qb, **{k: row.get(k) for k in row}}
+            return {'qb_id': qb_pid, 'qb_name': mapped_qb}
+        # No player_id resolved — still return the name so game card is correct.
+        return {'qb_name': mapped_qb}
+    # Fall-through heuristic — only reached for teams not in the map above.
     try:
-        # 2026-09-13 COLUMN NAME FIX. Prior version queried `recent_team`
-        # but nfl_player_stats has `team` (not `recent_team`) — PostgREST
-        # returned 42703 error, r.json() was an error dict, the .get('...',
-        # 0) >= 15 filter dropped everything silently, and this function
-        # returned {} for every single NFL game. Result: home_qb_name /
-        # away_qb_name have been NULL on every row in nfl_game_context
-        # since this code shipped (2026-08-21). All downstream QB vs DEF
-        # columns (home_qb_vs_team_career_qb_rating, etc.) were NULL too.
-        # NFL reads have been shipping without any QB context — Phase 1
-        # read enrichment root cause. Fix: use the correct column name.
-        r = requests.get(
-            f'{SB}/rest/v1/nfl_player_stats',
-            headers=H_READ,
-            params={
-                'team': f'eq.{team_abbr}',
-                'position': 'eq.QB',
-                'select': 'player_id,player_name,season,week,attempts',
-                'order': 'season.desc,week.desc',
-                'limit': '10',
-            }, timeout=10,
-        )
-        recent = r.json() if r.status_code == 200 else []
-        # Filter to actual starts (>= 15 attempts) and get most-recent QB
-        starters = [row for row in recent if isinstance(row, dict)
-                    and (row.get('attempts') or 0) >= 15]
-        if not starters:
+        # 2026-09-14 STARTER PICKER REWRITE. Prior version ordered by
+        # (season desc, week desc, limit 10, attempts >= 15) which put
+        # Week 17/18 rest-game backups (Chris Oladokun at KC 2025 W18,
+        # Jarrett Stidham at DEN 2025 POST) ahead of the actual season-
+        # long starters (Mahomes, Bo Nix). Result on the MNF DEN@KC
+        # game card 9/15: "Chris Oladokun / Jarrett Stidham" instead of
+        # "Mahomes / Nix". Same root cause as the Kirk-Cousins-on-ATL
+        # bug from 9/12 — data-lookup heuristic didn't distinguish real
+        # starters from garbage-time cameos.
+        #
+        # New strategy (in order):
+        #   1. THIS season regular-season starts w/ attempts >= 20 → most
+        #      recent. Once Week 1-2 land, this alone answers correctly.
+        #   2. Prior season regular-season starts w/ attempts >= 25 (skips
+        #      rest games) — most-frequent QB by count in the LAST 8 games.
+        #      "Most frequent in recent bulk" beats "most recent single
+        #      game" for identifying THE starter.
+        #   3. Empty {} if no signal.
+        # season_type filter excludes POST games entirely (playoff blowout
+        # backups don't count as regular starters).
+        from datetime import datetime as _dt, timezone as _tz
+        _current_season = _dt.now(_tz.utc).year
+        starters_rows: list = []
+        def _fetch(season, min_att):
+            resp = requests.get(
+                f'{SB}/rest/v1/nfl_player_stats',
+                headers=H_READ,
+                params={
+                    'team': f'eq.{team_abbr}',
+                    'position': 'eq.QB',
+                    'season': f'eq.{season}',
+                    'season_type': 'eq.REG',
+                    'select': 'player_id,player_name,season,week,attempts',
+                    'order': 'week.desc',
+                    'limit': '18',
+                }, timeout=10,
+            )
+            rows = resp.json() if resp.status_code == 200 else []
+            if not isinstance(rows, list): return []
+            return [r for r in rows if isinstance(r, dict)
+                    and (r.get('attempts') or 0) >= min_att
+                    and r.get('player_id')]
+        # 1. Current season regular starts (attempts >= 20 is a real start).
+        cur = _fetch(_current_season, 20)
+        if cur:
+            starters_rows = cur
+        else:
+            # 2. Fall back to prior season with attempts>=25 to filter out
+            # rest-week backups. Then pick MOST FREQUENT QB by starts count
+            # in the last 8 games — not just the most-recent single row.
+            prior = _fetch(_current_season - 1, 25)
+            if prior:
+                counts: dict = {}
+                names: dict = {}
+                for r in prior[:8]:  # last 8 games w/ real starts
+                    pid = r['player_id']
+                    counts[pid] = counts.get(pid, 0) + 1
+                    names[pid] = r.get('player_name')
+                # Sort by (count desc, most-recent-week among ties)
+                top_pid = max(counts, key=lambda p: counts[p])
+                starters_rows = [{'player_id': top_pid, 'player_name': names[top_pid]}]
+        if not starters_rows:
             return {}
-        qb_id = starters[0].get('player_id')
-        qb_name = starters[0].get('player_name')
+        qb_id = starters_rows[0].get('player_id')
+        qb_name = starters_rows[0].get('player_name')
         if not qb_id:
             return {}
 
