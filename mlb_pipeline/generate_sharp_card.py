@@ -407,8 +407,15 @@ def _fetch_all(today: str) -> dict:
         # spreads of 8.5, 7.0, 9.5 respectively. Adding close_spread and
         # close_total fixes both discipline gates in one shot.
         if sport in ('nfl', 'ncaaf'):
+            # 2026-09-13: added spread_anchor_weight for anchor-refuse gate
+            # in _compose_other_sport_sides. Data (n=228, NCAAF 9/12): picks
+            # with any anchor active hit 30% (12-28) — worse than random.
+            # Refuse-anchored beats cap-to-LEAN because Sharp Card audience
+            # is buying signal + FOOTBALL_INCLUDE_LEAN=False anyway; making
+            # the drop explicit surfaces it in the discipline-drops log.
             cols = ('game_id,home_team,away_team,primary_play,'
                     'close_home_ml,close_away_ml,close_spread,close_total,'
+                    'spread_anchor_weight,'
                     'kickoff_utc')
         elif sport == 'ncaab':
             cols = ('game_id,home_team,away_team,primary_play,'
@@ -764,10 +771,26 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
     dropped_lean = dropped_chalk = dropped_pass = 0
     dropped_lr_conflict = 0
+    dropped_anchor = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
         if not isinstance(pp, dict): continue
+        # 2026-09-13 ANCHOR REFUSE (football-only). Any pick where the
+        # market spread anchor fired (weight > 0) is refused from the
+        # Sharp Card entirely. Signal_attribution data as of 9/13: anchor-
+        # fired picks hit 30% (12-28) — anchored picks are the ensemble
+        # saying "market disagrees strongly, we're blending toward it"
+        # and historically we lose that trade. Refuse > cap because Sharp
+        # Card is our highest-conviction surface.
+        if is_football:
+            try:
+                aw = float(g.get('spread_anchor_weight') or 0)
+                if aw > 0:
+                    dropped_anchor += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
         # 2026-09-06 sanitize: primary_play.type='pass' means Jerry chose
         # NO ACTION. Don't publish these — they'd render as broken items
         # on the sharp card. If we want a "no plays tonight" empty state
@@ -854,8 +877,9 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             'units': units,
             'juice_swapped': juice_swapped,
         })
-    if is_football and (dropped_lean or dropped_chalk or dropped_pass):
-        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  no-play={dropped_pass}')
+    if is_football and (dropped_lean or dropped_chalk or dropped_pass or dropped_anchor):
+        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  '
+              f'no-play={dropped_pass}  anchor={dropped_anchor}')
     elif dropped_pass:
         print(f'  {sport} no-play drops: {dropped_pass}')
     if dropped_lr_conflict:
