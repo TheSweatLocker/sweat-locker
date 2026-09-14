@@ -12516,28 +12516,14 @@ setJerryHistory(prev => {
         run). Signals to users when a cron miss + stale card is being displayed
         — critical during GHA outages so users don't act on old lines. Color-
         graded: <30min = normal, 30min-3h = accent, >3h = warn. */}
-    {sweatCard.fetched_at_iso && (()=>{
-      const then = new Date(sweatCard.fetched_at_iso);
-      const mins = Math.max(0, Math.round((Date.now() - then.getTime())/60000));
-      const label = mins < 1 ? 'just now'
-                  : mins < 60 ? `${mins} min ago`
-                  : mins < 60*24 ? `${Math.floor(mins/60)}h ${mins%60}m ago`
-                  : `${Math.floor(mins/(60*24))}d ago`;
-      const color = mins > 180 ? THEME.warn : mins > 30 ? THEME.textDim : THEME.textMuted;
-      const stale = mins > 180;
-      return (
-        <View style={{flexDirection:'row',alignItems:'center',gap:4,marginBottom:12}}>
-          <Text style={{color, fontSize: 9, fontWeight: '700'}}>
-            {stale ? '⚠ ' : '•'} Data as of {label}
-          </Text>
-          {stale && (
-            <Text style={{color: THEME.warn, fontSize: 9, fontWeight: '700', fontStyle: 'italic'}}>
-              stale — pipeline may have missed a run
-            </Text>
-          )}
-        </View>
-      );
-    })()}
+    {/* 2026-09-13 Andy directive: removed "Data as of X ago / pipeline
+        may have missed a run" freshness stamp. That was engineering-
+        internal state leaking to the surface — users don't care about
+        cron cadence and the "stale" warning read as us admitting a
+        problem on their card. If pipeline actually misses a run,
+        AdminNoticeBanner is the right surface (admin_notice table + gold
+        info styling shipped in e8e5215c). Silent by default: only speak
+        up when there's real news, not routine cron intervals. */}
 
     {/* Slow-slate message (2026-08-13): when card is thin (< 3 picks or
         density='light'), lead with a "sitting on hands" note so users
