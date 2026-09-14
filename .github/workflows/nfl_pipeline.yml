@@ -343,6 +343,22 @@ jobs:
           cd mlb_pipeline
           python backfill_nfl_team_tendencies.py || echo "nfl tendencies backfill failed (non-fatal)"
 
+      # 2026-09-14: this-season ATS/OU records populated directly from
+      # nfl_game_results — feeds NFLSituationalCard's THIS SEASON display
+      # ("KC 0-0 ATS · DEN 1-0 O/U"). enrich_team_trends.py depends on
+      # teamrankings.com data which lags 2-4 weeks into a new season, so
+      # this direct backfill covers early-season display until teamrankings
+      # catches up. Non-fatal + idempotent.
+      - name: Backfill NFL season ATS/OU records from game results
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_nfl_season_records_from_results.py || echo "nfl season records backfill failed (non-fatal)"
+
       # 2026-08-17: teamrankings season aggregates + enrichment for
       # season_trend signals. Runs AFTER rolling tendencies so both
       # signal sets stack. Non-fatal.

@@ -5482,6 +5482,16 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'home_team_stats_summary,away_team_stats_summary,'
           + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
           + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
+          // 2026-09-14: this-season ATS + OU records for the Situational
+          // card display. Backend populates via backfill_nfl_season_records_
+          // from_results.py (early-season) + enrich_team_trends.py (once
+          // teamrankings has data). NFLSituationalCard renders "1-0 ATS ·
+          // 0-1 O/U" so users see honest this-season sample, with rolling
+          // l10 kept behind the scenes for weighting.
+          + 'home_season_ats_wins,home_season_ats_losses,home_season_cover_pct,'
+          + 'home_season_ou_overs,home_season_ou_unders,home_season_over_pct,'
+          + 'away_season_ats_wins,away_season_ats_losses,away_season_cover_pct,'
+          + 'away_season_ou_overs,away_season_ou_unders,away_season_over_pct,'
           + 'home_madden_ovr,away_madden_ovr,home_qb_madden_ovr,away_qb_madden_ovr,'
           + 'home_top100_count,away_top100_count,'
           + 'temp,wind,roof,'
