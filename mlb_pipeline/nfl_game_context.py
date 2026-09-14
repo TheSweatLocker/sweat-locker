@@ -270,15 +270,15 @@ def _regress_to_mean(stats_dict: dict, shrink: float = 0.4) -> dict:
 
 
 # 2026-09-14 AUTHORITATIVE QB1 MAP (verified 2026 Week 2 depth charts).
-# Andy: "we need to verify every starter for each team" — heuristic picker
-# (attempts-desc / most-recent-real-start) still misfired on offseason team
-# swaps (Kirk Cousins → LV, Tua → ATL, Justin Fields → NYJ, etc.) because
-# nfl_player_stats reflects LAST season's team assignments. This map is the
-# single source of truth; heuristic only fires when a team is missing here
-# (rookie surprises, mid-season change). Update after weekly starter news.
-# Watch flags in memory: Mahomes (knee) + Jones (Achilles) both recovered
-# for W1; LV has Cousins as QB1 with rookie Fernando Mendoza pushing.
-_NFL_QB1_MAP: dict[str, str] = {
+# Loaded from nfl_current_depth_chart.json at import time (produced by
+# nfl_live_depth_scrape.py, refreshed daily via nfl_pipeline.yml). Falls
+# back to the hardcoded snapshot if the file is missing or malformed —
+# that snapshot is still authoritative for the moment (verified by Andy
+# 2026-09-14 with only ATL differing from nflverse — Tua+Penix both hurt,
+# Cooper Rush starting; the scrape file honors this override via the
+# scrape script's ATL fallback).
+
+_NFL_QB1_MAP_FALLBACK: dict[str, str] = {
     # AFC East
     'BUF': 'Josh Allen',       'MIA': 'Malik Willis',    'NE':  'Drake Maye',        'NYJ': 'Geno Smith',
     # AFC North
@@ -298,6 +298,54 @@ _NFL_QB1_MAP: dict[str, str] = {
     # NFC West
     'ARI': 'Jacoby Brissett',  'LA':  'Matthew Stafford','SF':  'Brock Purdy',       'SEA': 'Sam Darnold',
 }
+
+# Load the live depth-chart scrape at module import.
+# nfl_current_depth_chart.json schema:
+#   {source, freshness, scraped_at_utc, per_team: {TEAM: {QB1, RB1, WR1, WR2, TE1}}}
+_NFL_DEPTH_CHART: dict[str, dict[str, str]] = {}
+_NFL_QB1_MAP: dict[str, str] = dict(_NFL_QB1_MAP_FALLBACK)
+try:
+    import json as _json
+    from pathlib import Path as _Path
+    _dc_path = _Path(__file__).parent / 'nfl_current_depth_chart.json'
+    if _dc_path.exists():
+        _dc = _json.loads(_dc_path.read_text(encoding='utf-8'))
+        _per_team = _dc.get('per_team') or {}
+        if isinstance(_per_team, dict) and _per_team:
+            _NFL_DEPTH_CHART = _per_team
+            # Overlay QB1 from the scrape on top of the fallback map.
+            # Scrape can only ADD/OVERRIDE — never remove — so hardcoded
+            # emergency overrides (e.g. ATL Cooper Rush for the Penix
+            # injury) survive if the scrape hasn't caught up.
+            for _team, _slots in _per_team.items():
+                if isinstance(_slots, dict) and _slots.get('QB1'):
+                    # Preserve Andy's manual override on ATL if scrape shows Penix.
+                    if _team == 'ATL' and str(_slots.get('QB1')).lower().startswith('michael penix'):
+                        continue
+                    _NFL_QB1_MAP[_team] = _slots['QB1']
+            print(f'  [nfl_game_context] loaded depth chart for {len(_NFL_DEPTH_CHART)} teams '
+                  f'(freshness={_dc.get("freshness","?")} source={_dc.get("source","?")})')
+except Exception as _e:
+    print(f'  [nfl_game_context] depth-chart JSON load failed ({_e}) — using hardcoded fallback')
+
+
+def get_current_starter_by_position(team_abbr: str, position: str) -> str | None:
+    """Return the current authoritative starter name for `team_abbr` at
+    `position` (QB1/RB1/WR1/WR2/TE1). Reads from the live depth-chart
+    scrape (nfl_current_depth_chart.json) with fallback to the hardcoded
+    QB1 map. Consumers: generate_nfl_game_reads.fetch_key_players_rolling,
+    prop generators, watchdog checks. Position is case-sensitive: pass
+    'QB1' / 'RB1' / 'WR1' / 'WR2' / 'TE1' — NOT lowercase.
+    """
+    if not team_abbr: return None
+    key = str(team_abbr).upper()
+    slots = _NFL_DEPTH_CHART.get(key) or {}
+    val = slots.get(position)
+    if val: return val
+    # Fallback: only QB1 covered by hardcoded map.
+    if position == 'QB1':
+        return _NFL_QB1_MAP_FALLBACK.get(key)
+    return None
 
 
 def get_qb_vs_team_stats(team_abbr: str, opponent_abbr: str) -> dict:

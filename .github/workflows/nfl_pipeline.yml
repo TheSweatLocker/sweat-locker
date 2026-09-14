@@ -326,6 +326,27 @@ jobs:
           cd mlb_pipeline
           python nfl_rosters_pull.py || echo "NFL rosters pull failed (non-fatal)"
 
+      # 2026-09-14: LIVE DEPTH CHART SCRAPE. nflverse rosters.csv reflects
+      # last-season team assignments early in the season (verified with
+      # Kirk Cousins ATL→LV, Waddle MIA→DEN, Etienne JAX→NO all showing on
+      # wrong teams). depth_charts_2026.csv + ESPN team depth chart HTML
+      # are both fresh within ~24hr. Script writes per-team QB1/RB1/WR1/
+      # WR2/TE1 to mlb_pipeline/nfl_current_depth_chart.json which
+      # nfl_game_context.py loads at import to build _NFL_QB1_MAP and to
+      # power the get_current_starter_by_position() helper consumed by
+      # generate_nfl_game_reads. File is committed post-scrape so all
+      # downstream pipeline steps (game context build, game reads, prop
+      # generation) see the same fresh roster.
+      - name: Scrape live NFL depth chart (nflverse + ESPN fallback)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_live_depth_scrape.py || echo "NFL live depth scrape failed (non-fatal)"
+
       # Backfill L4 team ATS / O/U / ML tendencies on today's rows
       # (2026-08-17). Activates the 10 NFL team_form signals in
       # signal_sources. Runs AFTER nfl_game_context.py (rows must

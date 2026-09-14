@@ -350,21 +350,26 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             if player_current_team.get((p, n), (0, 0, None))[2] == team
         }
         result = {}
-        # 2026-09-14: authoritative QB1 override. fetch_key_players_rolling
-        # was picking QB1 by cumulative L5 attempts — which for teams whose
-        # W1 starter is injured (ATL Penix, WAS Daniels prior to return)
-        # surfaced the W1 attempts-leader even after the depth chart moved.
-        # Use the map from nfl_game_context._NFL_QB1_MAP as the canonical
-        # QB1; look up their game rows in `entries` so stats aggregate off
-        # the intended QB. Falls through to attempts-count only if the map
-        # has no entry AND stats have no QB rows for the team.
-        qb_rows = None
-        _qb_name_authoritative = None
+        # 2026-09-14: authoritative depth-chart override for every skill
+        # position. fetch_key_players_rolling was picking QB1/RB1/WR1/WR2/TE1
+        # by cumulative rolling stats — which surfaces stale results when
+        # players change teams (Cousins ATL→LV, Waddle MIA→DEN, Etienne
+        # JAX→NO). Cross-reference with get_current_starter_by_position
+        # (reads nfl_current_depth_chart.json, refreshed daily) so the
+        # picks reflect current roster reality. Rolling stats still
+        # aggregate from whatever team the player was on at stat-time
+        # (fine for L5/season splits — the player is the same). Falls
+        # through to attempts-/carries-/targets-count picker for any
+        # position the depth chart file doesn't cover.
+        _authoritative: dict[str, str | None] = {'QB1': None, 'RB1': None,
+                                                 'WR1': None, 'WR2': None, 'TE1': None}
         try:
-            from nfl_game_context import _NFL_QB1_MAP as _QB_MAP
-            _qb_name_authoritative = _QB_MAP.get(team)
+            from nfl_game_context import get_current_starter_by_position as _get_starter
+            for _slot in ('QB1','RB1','WR1','WR2','TE1'):
+                _authoritative[_slot] = _get_starter(team, _slot)
         except Exception:
-            _qb_name_authoritative = None
+            pass
+        _qb_name_authoritative = _authoritative.get('QB1')
         qbs = [((p, n), games) for (p, n), games in entries.items() if p == 'QB']
         if _qb_name_authoritative:
             # First look for the authoritative QB in this team's roster-gated
@@ -395,44 +400,83 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                 'l5': _agg_qb(games[:5]), 'season': _agg_qb(games),
                 'stale': _stale_flag(games),
             }
-        # RB1 = highest L5 carries
-        rbs = [((p, n), games) for (p, n), games in entries.items() if p == 'RB']
-        if rbs:
-            (p, n), games = max(rbs, key=lambda x: sum((g.get('carries') or 0) for g in x[1][:5]))
-            result['rb1'] = {
-                'name': n, 'l3': _agg_rb(games[:3]),
-                'l5': _agg_rb(games[:5]), 'season': _agg_rb(games),
-                'stale': _stale_flag(games),
-            }
-        # WR1 & WR2 by L5 targets
-        wrs = sorted(
-            [((p, n), games) for (p, n), games in entries.items() if p == 'WR'],
-            key=lambda x: sum((g.get('targets') or 0) for g in x[1][:5]),
-            reverse=True,
-        )
-        if len(wrs) >= 1:
-            (_, n), games = wrs[0]
-            result['wr1'] = {
-                'name': n, 'l3': _agg_rec(games[:3]),
-                'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
-                'stale': _stale_flag(games),
-            }
-        if len(wrs) >= 2:
-            (_, n), games = wrs[1]
-            result['wr2'] = {
-                'name': n, 'l3': _agg_rec(games[:3]),
-                'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
-                'stale': _stale_flag(games),
-            }
-        # TE1 by L5 targets
-        tes = [((p, n), games) for (p, n), games in entries.items() if p == 'TE']
-        if tes:
-            (_, n), games = max(tes, key=lambda x: sum((g.get('targets') or 0) for g in x[1][:5]))
-            result['te1'] = {
-                'name': n, 'l3': _agg_rec(games[:3]),
-                'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
-                'stale': _stale_flag(games),
-            }
+        # 2026-09-14: for RB1/WR1/WR2/TE1, prefer the authoritative name
+        # from the depth-chart scrape (fetched into _authoritative above).
+        # If the mapped name exists among entries (roster-gated player-game
+        # rows), aggregate stats off that specific player. If not (e.g. a
+        # new addition without prior-team stats yet), emit a name-only
+        # skeleton with stale=True so Jerry writes the right player even
+        # without prior data. Falls through to the rolling-stats picker
+        # only when the depth chart has no entry for that slot.
+        def _pick_via_authoritative(slot: str, pool_pos: str, stat_agg_fn,
+                                     stat_field: str):
+            """Return dict for the position slot using authoritative name
+            when available, else rolling-stats picker on `pool_pos` rows."""
+            mapped = _authoritative.get(slot)
+            pool = [((pp, nn), games) for (pp, nn), games in entries.items()
+                    if pp == pool_pos]
+            if mapped:
+                matched = [((pp, nn), games) for (pp, nn), games in pool if nn == mapped]
+                if matched:
+                    (_, n_), games = matched[0]
+                    return {'name': n_, 'l3': stat_agg_fn(games[:3]),
+                            'l5': stat_agg_fn(games[:5]), 'season': stat_agg_fn(games),
+                            'stale': _stale_flag(games)}
+                # Authoritative name but no stat rows (player just joined team).
+                return {'name': mapped, 'l3': None, 'l5': None, 'season': None,
+                        'stale': True}
+            if not pool: return None
+            (_, n_), games = max(pool,
+                                  key=lambda x: sum((g.get(stat_field) or 0) for g in x[1][:5]))
+            return {'name': n_, 'l3': stat_agg_fn(games[:3]),
+                    'l5': stat_agg_fn(games[:5]), 'season': stat_agg_fn(games),
+                    'stale': _stale_flag(games)}
+
+        _rb1 = _pick_via_authoritative('RB1', 'RB', _agg_rb, 'carries')
+        if _rb1: result['rb1'] = _rb1
+
+        # WR1 + WR2 need a paired pick — if authoritative has WR1 and WR2,
+        # use both; else fall back to rolling-stats top-2 (excluding the
+        # authoritative WR1 if it was picked, to avoid duplicate).
+        _picked_wrs: list[str] = []
+        _wr1_map = _authoritative.get('WR1')
+        _wr2_map = _authoritative.get('WR2')
+        wr_pool = [((pp, nn), games) for (pp, nn), games in entries.items() if pp == 'WR']
+        wr_pool_sorted = sorted(wr_pool,
+                                 key=lambda x: sum((g.get('targets') or 0) for g in x[1][:5]),
+                                 reverse=True)
+        def _wr_entry(mapped_name: str) -> dict:
+            matched = [((pp, nn), games) for (pp, nn), games in wr_pool if nn == mapped_name]
+            if matched:
+                (_, n_), games = matched[0]
+                return {'name': n_, 'l3': _agg_rec(games[:3]),
+                        'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
+                        'stale': _stale_flag(games)}
+            return {'name': mapped_name, 'l3': None, 'l5': None,
+                    'season': None, 'stale': True}
+        if _wr1_map:
+            result['wr1'] = _wr_entry(_wr1_map)
+            _picked_wrs.append(_wr1_map)
+        elif wr_pool_sorted:
+            (_, n_), games = wr_pool_sorted[0]
+            result['wr1'] = {'name': n_, 'l3': _agg_rec(games[:3]),
+                             'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
+                             'stale': _stale_flag(games)}
+            _picked_wrs.append(n_)
+        if _wr2_map and _wr2_map not in _picked_wrs:
+            result['wr2'] = _wr_entry(_wr2_map)
+        elif not _wr2_map:
+            # Fall back to rolling top-2 excluding already-picked WR1.
+            for (_, n_), games in wr_pool_sorted:
+                if n_ in _picked_wrs: continue
+                result['wr2'] = {'name': n_, 'l3': _agg_rec(games[:3]),
+                                 'l5': _agg_rec(games[:5]),
+                                 'season': _agg_rec(games),
+                                 'stale': _stale_flag(games)}
+                break
+
+        _te1 = _pick_via_authoritative('TE1', 'TE', _agg_rec, 'targets')
+        if _te1: result['te1'] = _te1
         if result:
             per_team[team] = result
 

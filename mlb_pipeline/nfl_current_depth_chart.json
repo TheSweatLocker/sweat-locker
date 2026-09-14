@@ -1,0 +1,231 @@
+{
+  "source": "espn_html",
+  "freshness": "ESPN live HTML @ 2026-09-14T16:14:31.967178+00:00",
+  "scraped_at_utc": "2026-09-14T16:14:31.968949+00:00",
+  "per_team": {
+    "ARI": {
+      "QB1": "Jacoby Brissett",
+      "RB1": "Jeremiyah Love",
+      "WR1": "Marvin Harrison Jr.",
+      "WR2": "Michael Wilson",
+      "TE1": "Trey McBride"
+    },
+    "ATL": {
+      "QB1": "Michael Penix Jr.",
+      "RB1": "Bijan Robinson",
+      "WR1": "Drake London",
+      "WR2": "Jahan Dotson",
+      "TE1": "Kyle Pitts Sr."
+    },
+    "BAL": {
+      "QB1": "Lamar Jackson",
+      "RB1": "Derrick Henry",
+      "WR1": "Zay Flowers",
+      "WR2": "Rashod Bateman",
+      "TE1": "Mark Andrews"
+    },
+    "BUF": {
+      "QB1": "Josh Allen",
+      "RB1": "James Cook III",
+      "WR1": "DJ Moore",
+      "WR2": "Khalil Shakir",
+      "TE1": "Dalton Kincaid"
+    },
+    "CAR": {
+      "QB1": "Bryce Young",
+      "RB1": "Chuba Hubbard",
+      "WR1": "Tetairoa McMillan",
+      "WR2": "Jalen Coker",
+      "TE1": "Tommy Tremble"
+    },
+    "CHI": {
+      "QB1": "Caleb Williams",
+      "RB1": "D'Andre Swift",
+      "WR1": "Rome Odunze",
+      "WR2": "Luther Burden III",
+      "TE1": "Colston Loveland"
+    },
+    "CIN": {
+      "QB1": "Joe Burrow",
+      "RB1": "Chase Brown",
+      "WR1": "Ja'Marr Chase",
+      "WR2": "Tee Higgins",
+      "TE1": "Mike Gesicki"
+    },
+    "CLE": {
+      "QB1": "Deshaun Watson",
+      "RB1": "Quinshon Judkins",
+      "WR1": "Jerry Jeudy",
+      "WR2": "KC Concepcion",
+      "TE1": "Harold Fannin Jr."
+    },
+    "DAL": {
+      "QB1": "Dak Prescott",
+      "RB1": "Javonte Williams",
+      "WR1": "CeeDee Lamb",
+      "WR2": "George Pickens",
+      "TE1": "Jake Ferguson"
+    },
+    "DEN": {
+      "QB1": "Bo Nix",
+      "RB1": "J.K. Dobbins",
+      "WR1": "Jaylen Waddle",
+      "WR2": "Courtland Sutton",
+      "TE1": "Evan Engram"
+    },
+    "DET": {
+      "QB1": "Jared Goff",
+      "RB1": "Jahmyr Gibbs",
+      "WR1": "Amon-Ra St. Brown",
+      "WR2": "Jameson Williams",
+      "TE1": "Sam LaPorta"
+    },
+    "GB": {
+      "QB1": "Jordan Love",
+      "RB1": "MarShawn Lloyd",
+      "WR1": "Christian Watson",
+      "WR2": "Jayden Reed",
+      "TE1": "Tucker Kraft"
+    },
+    "HOU": {
+      "QB1": "C.J. Stroud",
+      "RB1": "David Montgomery",
+      "WR1": "Nico Collins",
+      "WR2": "Kayshon Boutte",
+      "TE1": "Dalton Schultz"
+    },
+    "IND": {
+      "QB1": "Daniel Jones",
+      "RB1": "Jonathan Taylor",
+      "WR1": "Alec Pierce",
+      "WR2": "Josh Downs",
+      "TE1": "Tyler Warren"
+    },
+    "JAX": {
+      "QB1": "Trevor Lawrence",
+      "RB1": "Bhayshul Tuten",
+      "WR1": "Brian Thomas Jr.",
+      "WR2": "Parker Washington",
+      "TE1": "Brenton Strange"
+    },
+    "KC": {
+      "QB1": "Patrick Mahomes",
+      "RB1": "Kenneth Walker III",
+      "WR1": "Rashee Rice",
+      "WR2": "Xavier Worthy",
+      "TE1": "Travis Kelce"
+    },
+    "LA": {
+      "QB1": "Matthew Stafford",
+      "RB1": "Kyren Williams",
+      "WR1": "Puka Nacua",
+      "WR2": "Davante Adams",
+      "TE1": "Colby Parkinson"
+    },
+    "LAC": {
+      "QB1": "Justin Herbert",
+      "RB1": "Omarion Hampton",
+      "WR1": "Ladd McConkey",
+      "WR2": "Quentin Johnston",
+      "TE1": "Charlie Kolar"
+    },
+    "LV": {
+      "QB1": "Kirk Cousins",
+      "RB1": "Ashton Jeanty",
+      "WR1": "Tre Tucker",
+      "WR2": "Jalen Nailor",
+      "TE1": "Brock Bowers"
+    },
+    "MIA": {
+      "QB1": "Malik Willis",
+      "RB1": "De'Von Achane",
+      "WR1": "Malik Washington",
+      "WR2": "Caleb Douglas",
+      "TE1": "Greg Dulcich"
+    },
+    "MIN": {
+      "QB1": "Kyler Murray",
+      "RB1": "Aaron Jones Sr.",
+      "WR1": "Justin Jefferson",
+      "WR2": "Jordan Addison",
+      "TE1": "T.J. Hockenson"
+    },
+    "NE": {
+      "QB1": "Drake Maye",
+      "RB1": "Rhamondre Stevenson",
+      "WR1": "Romeo Doubs",
+      "WR2": "DeMario Douglas",
+      "TE1": "Hunter Henry"
+    },
+    "NO": {
+      "QB1": "Tyler Shough",
+      "RB1": "Travis Etienne Jr.",
+      "WR1": "Chris Olave",
+      "WR2": "Devaughn Vele",
+      "TE1": "Juwan Johnson"
+    },
+    "NYG": {
+      "QB1": "Jaxson Dart",
+      "RB1": "Cam Skattebo",
+      "WR1": "Malik Nabers",
+      "WR2": "Malachi Fields",
+      "TE1": "Isaiah Likely"
+    },
+    "NYJ": {
+      "QB1": "Geno Smith",
+      "RB1": "Breece Hall",
+      "WR1": "Garrett Wilson",
+      "WR2": "Adonai Mitchell",
+      "TE1": "Mason Taylor"
+    },
+    "PHI": {
+      "QB1": "Jalen Hurts",
+      "RB1": "Saquon Barkley",
+      "WR1": "DeVonta Smith",
+      "WR2": "Dontayvion Wicks",
+      "TE1": "Dallas Goedert"
+    },
+    "PIT": {
+      "QB1": "Aaron Rodgers",
+      "RB1": "Jaylen Warren",
+      "WR1": "DK Metcalf",
+      "WR2": "Michael Pittman Jr.",
+      "TE1": "Darnell Washington"
+    },
+    "SEA": {
+      "QB1": "Sam Darnold",
+      "RB1": "Jadarian Price",
+      "WR1": "Jaxon Smith-Njigba",
+      "WR2": "Rashid Shaheed",
+      "TE1": "AJ Barner"
+    },
+    "SF": {
+      "QB1": "Brock Purdy",
+      "RB1": "Christian McCaffrey",
+      "WR1": "Mike Evans",
+      "WR2": "Deebo Samuel Sr.",
+      "TE1": "George Kittle"
+    },
+    "TB": {
+      "QB1": "Baker Mayfield",
+      "RB1": "Bucky Irving",
+      "WR1": "Emeka Egbuka",
+      "WR2": "Chris Godwin Jr.",
+      "TE1": "Cade Otton"
+    },
+    "TEN": {
+      "QB1": "Cam Ward",
+      "RB1": "Tony Pollard",
+      "WR1": "Carnell Tate",
+      "WR2": "Wan'Dale Robinson",
+      "TE1": "Gunnar Helm"
+    },
+    "WAS": {
+      "QB1": "Jayden Daniels",
+      "RB1": "Jacory Croskey-Merritt",
+      "WR1": "Terry McLaurin",
+      "WR2": "Stefon Diggs",
+      "TE1": "Chig Okonkwo"
+    }
+  }
+}
