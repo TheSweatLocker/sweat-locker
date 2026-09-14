@@ -492,7 +492,13 @@ def agg_potd(date: str) -> dict | None:
     rows = r.json()
     if not rows: return None
     row = rows[0]
-    v = (row.get('result') or '').upper()[:1]
+    # 2026-09-14: was `.upper()[:1]` — mapped "Pending" → "P" and silently
+    # classified un-graded rows as pushes. Explicit word-map so only real
+    # Win/Loss/Push land in the record; "no-pick", "No Play", "Pending"
+    # all correctly return None.
+    _v_raw = (row.get('result') or '').strip().upper()
+    v = {'WIN': 'W', 'LOSS': 'L', 'PUSH': 'P',
+         'W': 'W', 'L': 'L', 'P': 'P'}.get(_v_raw)
     if v not in ('W','L','P'): return None
     stake = 2.0
     odds = row.get('odds_american') or row.get('odds')
@@ -512,7 +518,13 @@ def agg_dawg_of_day(date: str) -> dict | None:
     rows = r.json()
     if not rows: return None
     row = rows[0]
-    v = (row.get('result') or '').upper()[:1]
+    # 2026-09-14: was `.upper()[:1]` — mapped "Pending" → "P" and silently
+    # classified un-graded rows as pushes. Explicit word-map so only real
+    # Win/Loss/Push land in the record; "no-pick", "No Play", "Pending"
+    # all correctly return None.
+    _v_raw = (row.get('result') or '').strip().upper()
+    v = {'WIN': 'W', 'LOSS': 'L', 'PUSH': 'P',
+         'W': 'W', 'L': 'L', 'P': 'P'}.get(_v_raw)
     if v not in ('W','L','P'): return None
     stake = 1.0
     odds = row.get('odds')  # dawg has +100 to +250 range
@@ -532,7 +544,13 @@ def agg_daily_degen(date: str) -> dict | None:
     rows = r.json()
     if not rows: return None
     row = rows[0]
-    v = (row.get('result') or '').upper()[:1]
+    # 2026-09-14: was `.upper()[:1]` — mapped "Pending" → "P" and silently
+    # classified un-graded rows as pushes. Explicit word-map so only real
+    # Win/Loss/Push land in the record; "no-pick", "No Play", "Pending"
+    # all correctly return None.
+    _v_raw = (row.get('result') or '').strip().upper()
+    v = {'WIN': 'W', 'LOSS': 'L', 'PUSH': 'P',
+         'W': 'W', 'L': 'L', 'P': 'P'}.get(_v_raw)
     if v not in ('W','L','P'): return None
     stake = 1.0
     # Combined parlay odds — approximate from legs if not stored

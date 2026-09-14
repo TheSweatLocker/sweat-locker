@@ -60,7 +60,16 @@ MIN_DELTA = 1.5  # legacy threshold — retained for backward refs but not used 
 # Lottery tickets above +250 historically lose more than the price implies
 # (books know more than the model does at extreme prices). Below +100 isn't
 # really a dog.
-JERRY_DOG_MAGNITUDE_GATE = 1.0   # Jerry must see dog winning by >=this on spread
+# 2026-09-14: was 1.0 → dropped to 0.5. Andy audit: 9/12, 9/13, 9/14 all
+# had zero Dawg because no dog had Jerry projecting an outright win by 1
+# full run. Jerry has drifted toward market close on recent slates so the
+# absolute-magnitude gate collapsed. Loosening to 0.5 keeps the "Jerry
+# points at the dog" hard requirement (still a real disagreement signal)
+# while allowing dogs where Jerry sees a coin-flip through. Conviction
+# scoring downstream still gates weak signals — the base bump for Jerry
+# magnitude is proportional so weaker magnitude → lower conviction → LEAN
+# tier or below (see MIN_PUBLISH_CONVICTION w/ fallback path below).
+JERRY_DOG_MAGNITUDE_GATE = 0.5   # Jerry must see dog winning by >=this on spread
 MIN_ML_PRICE = 100               # any actual dog (existing)
 MAX_ML_PRICE = 250               # below the "books know something" zone
 
@@ -954,14 +963,41 @@ def run():
     # conviction Dawg has cleared the v3 edge gate + xERA gate + ML gate
     # AND has at least one supporting signal beyond raw edge. Below 65,
     # the upside doesn't justify the social commitment of publishing.
-    MIN_PUBLISH_CONVICTION = 65
+    # 2026-09-14 FALLBACK PATH. Prior behavior: below MIN_PUBLISH_CONVICTION
+    # → return without publishing. That caused 3 consecutive missing-Dawg
+    # days on 9/12-9/14 per Andy audit. New behavior: below 65 but at
+    # or above SOFT_FLOOR (45), publish the top candidate as LEAN with a
+    # low_conviction_warning flag so the home card renders "Barks softly"
+    # instead of nothing. Only below 45 (or actual 0) does the surface
+    # skip entirely, and even then we upsert a placeholder row so the
+    # aggregator records the empty state.
+    MIN_PUBLISH_CONVICTION = 65      # PRIME/STRONG floor for full confidence
+    SOFT_FLOOR = 30                  # LEAN fallback floor — anything above still publishes
+    # 2026-09-14: SOFT_FLOOR lowered 45→30 after finding today's slate had
+    # only 1 candidate (CHW at conviction 36). Andy flagged 3-consecutive
+    # missing Dawg days — the "empty surface" UX bug is worse than a
+    # LEAN-tier low-conviction Dawg tagged with a warning. Publish anything
+    # that clears the Jerry-direction + price gates so users see the
+    # engine's best-available take. Real "no dog on the board" days (very
+    # rare) still hit the None path below.
+    _low_conf_fallback = False
     if top['conviction'] < MIN_PUBLISH_CONVICTION:
-        print(f"\n  ⚠️ Top candidate {top['team']} at conviction {top['conviction']} below publish floor ({MIN_PUBLISH_CONVICTION})")
-        print(f"  No eligible Dawg today — best of {len(dawg_candidates)} candidate(s) wasn't strong enough.")
-        print(f"\n  Candidate ranking:")
-        for d in dawg_candidates[:5]:
-            print(f"    [{d['conviction']}] {d['team']} — {d['matchup']}  (ML {d.get('team_ml', 0):+d})")
-        return
+        if top['conviction'] >= SOFT_FLOOR:
+            print(f"\n  ⚠️ Top candidate {top['team']} at conviction {top['conviction']} below PRIME/STRONG floor "
+                  f"({MIN_PUBLISH_CONVICTION}) — publishing as LEAN with low_conviction_warning.")
+            _low_conf_fallback = True
+            top['tier'] = 'LEAN'
+            # signals is a dict of {key: str} that build_narrative joins with " | ";
+            # value must be a string.
+            top.setdefault('signals', {})['low_conviction_warning'] = (
+                f'Barks softly - conviction {top["conviction"]}/100, below PRIME/STRONG floor')
+        else:
+            print(f"\n  WARN: top candidate {top['team']} at conviction {top['conviction']} below soft floor ({SOFT_FLOOR})")
+            print(f"  No eligible Dawg today - best of {len(dawg_candidates)} candidate(s) wasn't strong enough.")
+            print(f"\n  Candidate ranking:")
+            for d in dawg_candidates[:5]:
+                print(f"    [{d['conviction']}] {d['team']} - {d['matchup']}  (ML {d.get('team_ml', 0):+d})")
+            return
 
     print(f"\n🐕 Dawg of the Day: {top['team']} ({top['tier']} {top['conviction']})")
     print(f"  {top['matchup']}")

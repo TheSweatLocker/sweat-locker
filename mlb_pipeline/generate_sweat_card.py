@@ -253,14 +253,25 @@ def fetch_yesterday_recap():
             # ago (6/13 Misiorowski ER Under stuck as Pending on a CG
             # shutout was the trigger). Match by player_name + prop
             # parsed from the original label.
+            # 2026-09-14: also pull NFL props. Prior code only queried
+            # mlb_pipeline_props → NFL top_8 picks (Caleb Williams pass_attempts
+            # on 9/13's Sweat Card was rank 1, stayed "Pending" all week even
+            # after NFL prop grader ran) fell through to the stored "Pending"
+            # cache value. NCAAF has no props surface. Union the two prop
+            # tables into a single lookup keyed by (player_name, prop_type).
             live_props = sb_get("mlb_pipeline_props", {
+                "game_date": f"eq.{yesterday}",
+                "result": "not.is.null",
+                "select": "player_name,prop_type,prop_line,direction,result",
+            }) or []
+            live_props_nfl = sb_get("nfl_pipeline_props", {
                 "game_date": f"eq.{yesterday}",
                 "result": "not.is.null",
                 "select": "player_name,prop_type,prop_line,direction,result",
             }) or []
             # Build lookup keyed by (player_name_lower, prop_type_lower)
             prop_lookup = {}
-            for p in live_props:
+            for p in list(live_props) + list(live_props_nfl):
                 k = ((p.get("player_name") or "").lower(),
                      (p.get("prop_type") or "").lower())
                 prop_lookup[k] = p.get("result")

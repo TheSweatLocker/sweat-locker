@@ -698,7 +698,9 @@ def run(game_date: str | None = None, threshold: int = 70,
         json={
             "cache_key": f"best_bet_{gd}",
             "game_id": f"best_bet_{gd}",
-            "sport": "MLB",
+            # 2026-09-14: was hardcoded "MLB" — NFL POTDs got filed as MLB
+            # in jerry_cache, breaking downstream sport-scoped queries.
+            "sport": winner_sport,
             "narrative": narrative_line,
             "data": payload_data,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -717,7 +719,10 @@ def run(game_date: str | None = None, threshold: int = 70,
             headers=H_WRITE,
             json={
                 "bet_date": gd,
-                "sport": "MLB",
+                # 2026-09-14: was hardcoded "MLB" — daily_surface_records
+                # filed every NFL POTD under sport=MLB in Receipts, and
+                # the grader picked the wrong prop table.
+                "sport": winner_sport,
                 "game": f"{ctx['away_team']} @ {ctx['home_team']}",
                 "lean": f"{call} (Jerry {conv}/100)",
                 "sweat_score": conv,  # column name preserved; source is now Jerry

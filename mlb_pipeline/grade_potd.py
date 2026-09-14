@@ -78,7 +78,37 @@ PROP_TABLE_BY_SPORT = {
 # Trailing-word → prop_type key. Order matters: check the longer
 # multi-word phrases before single-word ones so "hits allowed"
 # resolves as `ha_*` before "hits" alone matches `hits_*`.
+# 2026-09-14: NFL entries added after Caleb Williams pass_attempts POTD
+# (9/13) failed to parse and was marked "no-pick" instead of "Loss". NFL
+# stat names must appear before MLB ones ONLY if they'd cross-match
+# ("interceptions" is unique to NFL so order doesn't matter here).
 _PROP_STAT_ALIASES = [
+    # NFL passing
+    ('pass attempts',      'pass_attempts'),
+    ('pass completions',   'pass_completions'),
+    ('passing yards',      'pass_yds'),
+    ('pass yards',         'pass_yds'),
+    ('pass yds',           'pass_yds'),
+    ('pass touchdowns',    'pass_tds'),
+    ('pass tds',           'pass_tds'),
+    ('pass interceptions', 'pass_interceptions'),
+    ('interceptions',      'pass_interceptions'),
+    # NFL rushing
+    ('rushing yards',      'rush_yds'),
+    ('rush yards',         'rush_yds'),
+    ('rush yds',           'rush_yds'),
+    ('rush touchdowns',    'rush_tds'),
+    ('rush tds',           'rush_tds'),
+    ('rush attempts',      'rush_attempts'),
+    ('carries',            'rush_attempts'),
+    # NFL receiving
+    ('receiving yards',    'rec_yds'),
+    ('rec yards',          'rec_yds'),
+    ('rec yds',            'rec_yds'),
+    ('receiving tds',      'rec_tds'),
+    ('rec tds',            'rec_tds'),
+    ('receptions',         'receptions'),
+    # MLB (unchanged)
     ('hits allowed',   'ha'),
     ('earned runs',    'er'),
     ('total bases',    'total_bases'),
@@ -142,22 +172,35 @@ def _grade_prop_via_pipeline(sport: str, game_id: str, date_str: str,
 
     Match keys are (game_date, game_id, player_name, prop_type, direction)
     — same tuple `apply_prop_refit` writes the graded `result` to.
+
+    2026-09-14: game_id is DROPPED from the match for NFL (and any sport
+    where the ctx MD5 id differs from the results-side date+abbrev id).
+    `_lookup_game_id_by_teams` returns the results-table id, but
+    `nfl_pipeline_props.game_id` uses the ctx hash — the two never match
+    → filter returns 0 rows → POTD grader returned no-pick. Since
+    (game_date, player_name, prop_type, direction) is unique per POTD,
+    dropping game_id is safe.
     """
     tbl = PROP_TABLE_BY_SPORT.get(sport)
-    if not tbl or not game_id or not prop:
+    if not tbl or not prop:
         return None
+    # Sports whose game_id in the prop table matches game_id in results.
+    # MLB uses shared ids; NFL has the mismatch; NCAAF has no props table.
+    _use_game_id = sport == 'MLB' and bool(game_id)
     try:
+        params = {
+            'game_date': f'eq.{date_str}',
+            'player_name': f'eq.{prop["player_name"]}',
+            'prop_type': f'eq.{prop["prop_type"]}',
+            'direction': f'eq.{prop["direction"]}',
+            'select': 'result,final_value,prop_line',
+            'limit': '1',
+        }
+        if _use_game_id:
+            params['game_id'] = f'eq.{game_id}'
         r = requests.get(f'{SB}/rest/v1/{tbl}',
                          headers=H_R,
-                         params={
-                             'game_date': f'eq.{date_str}',
-                             'game_id': f'eq.{game_id}',
-                             'player_name': f'eq.{prop["player_name"]}',
-                             'prop_type': f'eq.{prop["prop_type"]}',
-                             'direction': f'eq.{prop["direction"]}',
-                             'select': 'result,final_value,prop_line',
-                             'limit': '1',
-                         }, timeout=15)
+                         params=params, timeout=15)
         if r.status_code != 200 or not r.json():
             return None
         row = r.json()[0]
