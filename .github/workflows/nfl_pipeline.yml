@@ -534,6 +534,25 @@ jobs:
           cd mlb_pipeline
           python nfl_prop_refit_seed.py --days 8 || echo "prop refit seed non-fatal"
 
+      # 2026-09-14: Fade-Jerry-PASS materializer. Backtest agent showed
+      # Jerry PASS verdicts on NFL props hit 33.6% (n=110) — inverse
+      # (fade) = 66.4% = +9pp above -110 breakeven. This step scans for
+      # PASS reads and flips the opposite-direction prop/jerry_read pair
+      # to a BACK bet at conviction 66. Runs AFTER Jerry synth so it
+      # sees the fresh PASS verdicts, and AFTER prop_signal_discipline
+      # so it can safely upgrade SKIP/LIGHT tiers without stepping on
+      # legitimate confluence picks. Idempotent via signals.fade_jerry_pass
+      # guard.
+      - name: Fade Jerry PASS on NFL props (Wk 1 backtest signal)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_prop_fade_jerry_pass.py --days 8 || echo "fade jerry pass non-fatal"
+
       # 2026-09-10: NFL prop injury filter. Post-generation demotion pass —
       # reads nfl_injuries + demotes tier/conviction for Out/Doubtful/
       # Questionable players. Root cause was ctx.panel_injury_outs being an
