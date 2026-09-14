@@ -286,18 +286,67 @@ def fetch_yesterday_recap():
                 if not label:
                     return stored
                 # Labels look like "Jacob Misiorowski Under 1.5 er under"
-                # — try suffix prop_type match.
-                low = label.lower()
-                # Try each known prop_type as suffix
-                for pt in ("er_over", "er_under", "ks_over", "ks_under",
-                           "ha_over", "ha_under", "bb_over", "bb_under",
-                           "outs_over", "outs_under", "hits_over",
-                           "hits_under"):
-                    pt_human = pt.replace("_", " ")  # "er over"
+                # — try suffix prop_type match. Also handle NFL labels
+                # like "Caleb Williams Over 32.5 Pass Attempts" whose
+                # suffix is a space-separated stat name (not underscore).
+                # 2026-09-14: strip trailing "(Jerry 95/100)" parenthetical
+                # first — NFL prop labels routinely include it and the
+                # endswith(pt_human) match otherwise never fires.
+                import re as _re
+                label_clean = _re.sub(r'\s*\([^)]*\)\s*$', '', label).strip()
+                low = label_clean.lower()
+                # 2026-09-14: added NFL prop_types + also try each stat's
+                # display-name form (space-separated, not underscore). NFL
+                # labels are "... Over 32.5 Pass Attempts" not "pass attempts_over".
+                _pt_specs = [
+                    # MLB (underscore convention matches label suffix)
+                    ("er_over", "er over"), ("er_under", "er under"),
+                    ("ks_over", "ks over"), ("ks_under", "ks under"),
+                    ("ha_over", "ha over"), ("ha_under", "ha under"),
+                    ("bb_over", "bb over"), ("bb_under", "bb under"),
+                    ("outs_over", "outs over"), ("outs_under", "outs under"),
+                    ("hits_over", "hits over"), ("hits_under", "hits under"),
+                    # NFL — label ends with the human stat name only
+                    # (direction "Over/Under" comes before). Match on the
+                    # human suffix like "pass attempts".
+                    ("pass_attempts_over", "pass attempts"),
+                    ("pass_attempts_under", "pass attempts"),
+                    ("pass_yds_over", "pass yds"), ("pass_yds_under", "pass yds"),
+                    ("pass_yds_over", "passing yards"), ("pass_yds_under", "passing yards"),
+                    ("pass_tds_over", "pass tds"), ("pass_tds_under", "pass tds"),
+                    ("pass_tds_over", "pass touchdowns"), ("pass_tds_under", "pass touchdowns"),
+                    ("pass_completions_over", "pass completions"),
+                    ("pass_completions_under", "pass completions"),
+                    ("pass_interceptions_over", "interceptions"),
+                    ("pass_interceptions_under", "interceptions"),
+                    ("rush_yds_over", "rush yds"), ("rush_yds_under", "rush yds"),
+                    ("rush_yds_over", "rushing yards"), ("rush_yds_under", "rushing yards"),
+                    ("rush_tds_over", "rush tds"), ("rush_tds_under", "rush tds"),
+                    ("rush_attempts_over", "rush attempts"),
+                    ("rush_attempts_under", "rush attempts"),
+                    ("rush_attempts_over", "carries"), ("rush_attempts_under", "carries"),
+                    ("rec_yds_over", "rec yds"), ("rec_yds_under", "rec yds"),
+                    ("rec_yds_over", "receiving yards"), ("rec_yds_under", "receiving yards"),
+                    ("rec_tds_over", "rec tds"), ("rec_tds_under", "rec tds"),
+                    ("receptions_over", "receptions"),
+                    ("receptions_under", "receptions"),
+                ]
+                for pt, pt_human in _pt_specs:
+                    # direction check — NFL labels have Over/Under before the
+                    # stat name; MLB labels have them at start (e.g.,
+                    # "Player Under 1.5 er under" — the "under" IS the last
+                    # token). Both approaches fall out from endswith(pt_human).
                     if low.endswith(pt_human):
+                        # Direction sanity: pt says over/under, label must have
+                        # matching Over or Under somewhere (stops "pass tds"
+                        # under from matching a "pass tds" over prop).
+                        if pt.endswith('_over') and 'over' not in low: continue
+                        if pt.endswith('_under') and 'under' not in low: continue
                         # Player name is everything before the line + dir tokens.
                         # Strip trailing "Over/Under N.N <pt_human>" pattern.
-                        name_part = label[: low.rfind(pt_human)].strip()
+                        # 2026-09-14: use label_clean (parenthetical stripped)
+                        # so rfind indexes align with the low string.
+                        name_part = label_clean[: low.rfind(pt_human)].strip()
                         # Remove trailing "Over 1.5" / "Under 0.5"
                         toks = name_part.rsplit(" ", 2)
                         if len(toks) >= 2 and toks[-2] in ("Over", "Under"):
@@ -323,13 +372,29 @@ def fetch_yesterday_recap():
             # by the resolver (the resolver writes per-pick into top_8),
             # so the standalone POTD/DotD lines on the recap previously
             # showed without a W/L. 2026-05-24: pull from top_8 by type.
+            # 2026-09-14: use _resolved_result() so NFL-prop POTDs pick up
+            # the live-graded result from nfl_pipeline_props instead of
+            # the frozen "Pending" written at lock time.
             potd_pk = next((p for p in y_data["top_8"] if p.get("type") == "POTD"), None)
             if potd_pk and recap.get("potd"):
-                recap["potd"]["result"] = potd_pk.get("result")
+                recap["potd"]["result"] = _resolved_result(potd_pk)
             dawg_pk = next((p for p in y_data["top_8"] if p.get("type") == "DotD"), None)
             if dawg_pk and recap.get("dawg"):
-                recap["dawg"]["result_status"] = dawg_pk.get("result")
-        if y_data.get("top_8_summary"):
+                recap["dawg"]["result_status"] = _resolved_result(dawg_pk)
+        # 2026-09-14: recompute top_8_summary from freshly-resolved
+        # results instead of using the frozen y_data summary (which
+        # stored NFL props as Pending at lock time).
+        if recap.get("top_8"):
+            _wins = sum(1 for p in recap["top_8"] if p.get("result") in ("Win", "W"))
+            _losses = sum(1 for p in recap["top_8"] if p.get("result") in ("Loss", "L"))
+            _pushes = sum(1 for p in recap["top_8"] if p.get("result") in ("Push", "P"))
+            _pending = sum(1 for p in recap["top_8"] if p.get("result") in ("Pending", None, ""))
+            _total = len(recap["top_8"])
+            recap["top_8_summary"] = {
+                "wins": _wins, "losses": _losses, "pushes": _pushes,
+                "pending": _pending, "resolved": _total - _pending,
+            }
+        elif y_data.get("top_8_summary"):
             recap["top_8_summary"] = y_data["top_8_summary"]
 
     return recap
