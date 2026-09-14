@@ -350,9 +350,45 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             if player_current_team.get((p, n), (0, 0, None))[2] == team
         }
         result = {}
-        # QB1 = highest L5 attempts
+        # 2026-09-14: authoritative QB1 override. fetch_key_players_rolling
+        # was picking QB1 by cumulative L5 attempts — which for teams whose
+        # W1 starter is injured (ATL Penix, WAS Daniels prior to return)
+        # surfaced the W1 attempts-leader even after the depth chart moved.
+        # Use the map from nfl_game_context._NFL_QB1_MAP as the canonical
+        # QB1; look up their game rows in `entries` so stats aggregate off
+        # the intended QB. Falls through to attempts-count only if the map
+        # has no entry AND stats have no QB rows for the team.
+        qb_rows = None
+        _qb_name_authoritative = None
+        try:
+            from nfl_game_context import _NFL_QB1_MAP as _QB_MAP
+            _qb_name_authoritative = _QB_MAP.get(team)
+        except Exception:
+            _qb_name_authoritative = None
         qbs = [((p, n), games) for (p, n), games in entries.items() if p == 'QB']
-        if qbs:
+        if _qb_name_authoritative:
+            # First look for the authoritative QB in this team's roster-gated
+            # entries. If not present (backup with no rows this year), still
+            # surface the name — the rest of the read handles stale gracefully.
+            matched = [((p, n), games) for (p, n), games in qbs if n == _qb_name_authoritative]
+            if matched:
+                (p, n), games = matched[0]
+                result['qb'] = {
+                    'name': n, 'l3': _agg_qb(games[:3]),
+                    'l5': _agg_qb(games[:5]), 'season': _agg_qb(games),
+                    'stale': _stale_flag(games),
+                }
+            else:
+                # Name-only skeleton — Jerry read gets the right QB even if
+                # stats aren't attached yet (backup called into service, no
+                # prior team data on file).
+                result['qb'] = {
+                    'name': _qb_name_authoritative,
+                    'l3': None, 'l5': None, 'season': None,
+                    'stale': True,
+                }
+        elif qbs:
+            # Fall-through: no map entry, use attempts-count picker.
             (p, n), games = max(qbs, key=lambda x: sum((g.get('attempts') or 0) for g in x[1][:5]))
             result['qb'] = {
                 'name': n, 'l3': _agg_qb(games[:3]),
