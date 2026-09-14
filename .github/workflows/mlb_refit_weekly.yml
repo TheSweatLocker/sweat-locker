@@ -78,6 +78,30 @@ jobs:
           python nhl_ml_logreg_train.py    || echo "nhl_ml_logreg data-blocked (expected)"
           python ncaab_ml_logreg_train.py  || echo "ncaab_ml_logreg data-blocked (expected)"
 
+      # 2026-09-13: signal-registry refit reads freshly-graded signal_attribution
+      # rows (LR_SHADOW, GOAT, ANCHOR, cohort chips, EPA_GAP, ...) plus prop
+      # decisions + game ensemble sources. Writes hit_rate/sample_n/tier into
+      # signal_registry so the ensemble scorer picks up real Week-N performance
+      # data instead of my static seed weights. Non-fatal.
+      - name: Signal registry refit (all sports, 90d window)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refit_signal_registry.py --days 90 || echo "refit_signal_registry non-fatal"
+
+      # 2026-09-13: rebuild NFL + NCAAF cohort_tag_records from the fresh set of
+      # graded games. Feeds the "48.5% · fade" chip labels + colors on the game
+      # card SignalsRow (data-driven, not assumed). Non-fatal.
+      - name: Cohort tag records rebuild (NFL + NCAAF)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python build_cohort_tag_records.py || echo "build_cohort_tag_records non-fatal"
+
       - name: Commit fresh weights if changed
         run: |
           cd mlb_pipeline

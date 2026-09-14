@@ -242,6 +242,53 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
     return dict(firings)
 
 
+def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
+    """Return {signal_key: {right, wrong}} from signal_attribution table.
+
+    2026-09-13: closes the loop for signals surfaced on the game card
+    SignalsRow (LR_SHADOW, GOAT, ANCHOR, EPA_GAP, COHORT_*, DIV_GAME, etc.)
+    that don't necessarily vote in _ensemble_sources. Grading semantics:
+      kind='ok'   → signal agrees with pick; W = right, L = wrong
+      kind='warn' → signal disagrees; W = wrong (fade voice was correct
+                    to distrust the pick? no — pick WON so warn was wrong),
+                    L = right (pick lost, warn voice was correct)
+      kind='neutral' → informational, excluded from tally
+    """
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    # Paginate — attribution rows can exceed the 1000 PostgREST cap
+    # over long windows on a busy sport.
+    all_rows: list = []
+    for page in range(20):
+        r = requests.get(f'{SB}/rest/v1/signal_attribution',
+                         headers={**H_READ, 'Range-Unit': 'items',
+                                  'Range': f'{page*1000}-{(page+1)*1000-1}'},
+                         params={'sport': f'eq.{sport}',
+                                 'game_date': f'gte.{cutoff}',
+                                 'result': 'in.(W,L)',
+                                 'kind': 'in.(ok,warn)',
+                                 'select': 'signal_key,kind,result'},
+                         timeout=30)
+        if r.status_code not in (200, 206): break
+        page_rows = r.json() or []
+        if not isinstance(page_rows, list): break
+        all_rows.extend(page_rows)
+        if len(page_rows) < 1000: break
+    print(f'  [{sport}] signal_attribution graded rows (last {days}d): {len(all_rows)}')
+
+    firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
+    for row in all_rows:
+        key = row.get('signal_key')
+        if not key: continue
+        kind = str(row.get('kind', '')).lower()
+        result = str(row.get('result', '')).upper()
+        won = (result == 'W')
+        # ok+W or warn+L → the signal's voice was right; ok+L or warn+W → wrong.
+        signal_was_right = (kind == 'ok' and won) or (kind == 'warn' and not won)
+        if signal_was_right: firings[key]['right'] += 1
+        else:                firings[key]['wrong'] += 1
+    return dict(firings)
+
+
 def merge_firings(*dicts) -> dict[str, dict]:
     """Combine multiple {signal_key → {right,wrong}} dicts, summing counts."""
     out: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
@@ -342,9 +389,10 @@ def run(sport: str, days: int, dry_run: bool = False, min_n: int = 20) -> None:
     print(f'\n=== refit_signal_registry · {sport} · last {days}d ===')
     prop = collect_prop_firings(sport, days)
     game = collect_game_firings(sport, days)
-    merged = merge_firings(prop, game)
+    attr = collect_attribution_firings(sport, days)
+    merged = merge_firings(prop, game, attr)
     print(f'  [{sport}] unique signals with firings: {len(merged)} '
-          f'(prop={len(prop)}, game={len(game)})')
+          f'(prop={len(prop)}, game={len(game)}, attr={len(attr)})')
     rows = build_rows(sport, merged, min_n)
 
     # Tier distribution summary before write
