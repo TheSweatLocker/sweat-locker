@@ -13639,34 +13639,33 @@ setJerryHistory(prev => {
   </TouchableOpacity>
 </View>
 
-           {/* L1 pre-pipeline banner (2026-05-19): shows during the
-                6am-11am ET window OR whenever today's mlb_game_context
-                is empty. Replaces the silent "yesterday's pitchers shown
-                as today's" failure mode by being explicit about state. */}
+           {/* 2026-09-15: consolidated MLB pipeline state banner. Prior
+                behavior stacked TWO banners ("MORNING PIPELINE RUNNING" +
+                "MLB MODEL ACTIVE") — redundant per Andy screenshot audit.
+                Now one banner that changes state based on the pipeline
+                phase: pre-11am/empty-ctx → "PIPELINE RUNNING", else
+                "MODEL ACTIVE". Same visual footprint, no stacking. */}
            {gamesSport==='MLB' && gamesDay==='today' && (() => {
              const etHour = parseInt(new Date().toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',hour12:false}));
              const preWindow = etHour < 11;
              const noContext = Object.keys(mlbGameContext || {}).length === 0;
-             if (!preWindow && !noContext) return null;
+             const isRunning = preWindow || noContext;
+             const barColor = isRunning ? THEME.hrb : THEME.sharp;
+             const label = isRunning ? '🔄 MORNING PIPELINE RUNNING' : '⚾ MLB MODEL ACTIVE';
+             const meta = isRunning ? null : '🔄 by 11am + 4pm ET';
+             const body = isRunning
+               ? "Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes."
+               : 'Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.';
              return (
-               <View style={{backgroundColor:THEME.hrb + '1A',borderRadius:12,padding:12,marginBottom:10,borderWidth:1,borderColor:THEME.hrb + '4C'}}>
-                 <View style={{flexDirection:'row',alignItems:'center',gap:8,marginBottom:6}}>
-                   <Text style={{fontSize:14}}>🔄</Text>
-                   <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:12}}>MORNING PIPELINE RUNNING</Text>
+               <View style={{backgroundColor:barColor + '15',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:barColor + '40'}}>
+                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                   <Text style={{color:barColor,fontWeight:'800',fontSize:12}}>{label}</Text>
+                   {meta && <Text style={{color:THEME.textMuted,fontSize:10}}>{meta}</Text>}
                  </View>
-                 <Text style={{color:THEME.textDim,fontSize:12,lineHeight:17}}>Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes.</Text>
+                 <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>{body}</Text>
                </View>
              );
            })()}
-           {gamesSport==='MLB'&&(
-  <View style={{backgroundColor:THEME.sharp + '0F',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:THEME.sharp + '33'}}>
-    <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-      <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:12}}>⚾ MLB MODEL ACTIVE</Text>
-      <Text style={{color:THEME.textMuted,fontSize:10}}>🔄 by 11am + 4pm ET</Text>
-    </View>
-    <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.</Text>
-  </View>
-)}
 {gamesSport==='UFC' && ufcEvent && (() => {
   // Hide the header once the event date has passed (between events,
   // before the Thursday scraper writes the next card).
@@ -15994,20 +15993,14 @@ setJerryHistory(prev => {
                 // Showing sharp_card 3-1 misrepresents the actual engine
                 // record. Sides record is authoritative when it exists.
                 if (key === 'sharp') {
-                  const sidesKey = `${sport}_sides`.toLowerCase();
-                  const sidesRec = surfaceRecords[`${sport}|${sidesKey}|${winKey}`];
-                  if (sidesRec) {
-                    // Sides surface wins — full engine record
-                    const w = sidesRec.wins||0, l = sidesRec.losses||0;
-                    return {
-                      units: Number(sidesRec.units_net) || 0,
-                      wins: w, losses: l,
-                      hitPct: w+l > 0 ? (w/(w+l))*100 : 0,
-                      hasData: (w+l) > 0,
-                    };
-                  }
-                  // Fallback: sharp_card (MLB uses this — the ONLY authoritative
-                  // MLB sides record since MLB doesn't have a 'mlb_sides' surface).
+                  // 2026-09-15: unified to sharp_card ONLY across all sports
+                  // per Andy audit (Sharp NFL showed 1-4 on Home vs 7-3 on
+                  // Jerry tab — same label, different underlying surface).
+                  // Prior code preferred <sport>_sides for NFL/NCAAF (broader
+                  // engine record) but that made Home ≠ Jerry for the same
+                  // "Sharp" label — inconsistent UX. Sharp Card is what
+                  // users actually SEE as our recommendation, so its record
+                  // is the authoritative "Sharp" number everywhere.
                   const cardRec = surfaceRecords[`${sport}|sharp_card|${winKey}`];
                   if (cardRec) {
                     const w = cardRec.wins||0, l = cardRec.losses||0;
