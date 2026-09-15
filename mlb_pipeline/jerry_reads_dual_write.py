@@ -240,9 +240,22 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
         'game_date': game_date,
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'prompt_version': prompt_version,
+        # 2026-09-15 read enrichment: was {source, matchup} only — every
+        # other field build_struct populated (market, model, efficiency,
+        # confluence, primary_play, sweat, cohort_tags, pre_parsed_facts,
+        # casual_summary, and future key_players/injuries) got silently
+        # dropped before write. Same class of bug as NFL's whitelist. Fix:
+        # whitelist all enrichment keys the shared upsert might see across
+        # sports — additive/safe (missing keys just don't show up).
         'input_snapshot': {
+            **{k: (struct or {}).get(k) for k in (
+                'matchup', 'market', 'model', 'efficiency', 'confluence',
+                'primary_play', 'sweat', 'cohort_tags', 'pre_parsed_facts',
+                'casual_summary', 'key_players', 'injuries', 'team_snapshot',
+                'signals', 'align_status', 'season', 'week', 'season_type',
+                'neutral_site', 'conference_game',
+            ) if (struct or {}).get(k) is not None},
             'source': f'generate_{sport.lower()}_game_reads',
-            'matchup': (struct or {}).get('matchup'),
         },
         'short_read': _short_final,
         'long_read': parsed.get('long_read') or narrative or None,
