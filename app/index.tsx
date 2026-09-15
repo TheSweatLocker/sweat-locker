@@ -8097,10 +8097,28 @@ if(mkt.key === 'pitcher_props') {
               fb: true,
             };
           };
-          const merged = (viewRes.data || []).map((p: any) => {
-            const {jerry, fb} = _resolveJerry(p);
-            return {...p, prop_jerry: jerry, jerry_direction_fallback: fb};
-          });
+          // 2026-09-15 HOTFIX: LEAN-flood filter for MLB batter-family props.
+          // Un-ban on 9/15 morning surfaced ~180 rows/day for runs/rbis/
+          // total_bases/hr in v_mlb_props_publishable — the app renders all
+          // of them (no category tabs yet in PROP_TYPE_LABELS + each card
+          // spawns render_sections), pushing Prop Jerry into visible lag
+          // and previously into an apparent crash. Hide these four family
+          // groups client-side until (1) PROP_TYPE_LABELS gets entries for
+          // runs/rbis/total_bases/hr and (2) the LEAN-tier flood is gated
+          // to STRONG+ on the server view. See project_lr_under_family_unban_913.
+          const _HIDE_UNTIL_CATEGORY_TABS = new Set([
+            'runs_over','runs_under',
+            'rbis_over','rbis_under',
+            'total_bases_over','total_bases_under',
+            'hr_over','hr_under',
+          ]);
+          const merged = (viewRes.data || [])
+            .filter((p: any) => sport.toUpperCase() !== 'MLB'
+                                || !_HIDE_UNTIL_CATEGORY_TABS.has(String(p.prop_type || '').toLowerCase()))
+            .map((p: any) => {
+              const {jerry, fb} = _resolveJerry(p);
+              return {...p, prop_jerry: jerry, jerry_direction_fallback: fb};
+            });
           setPipelineMLBProps(merged);
         }
         setPipelineMLBLoading(false);

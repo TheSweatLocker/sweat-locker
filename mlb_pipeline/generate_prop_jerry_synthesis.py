@@ -428,12 +428,23 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # once they publish; without tabs the plays land in mlb_pipeline_props
     # + jerry_reads but users may not have a curated surface to browse them.
     # Sharp Card composer will still surface them via top-conviction gates.
+    # 2026-09-15 HOTFIX (re-ban after un-ban regression). Original un-ban
+    # of the 4 UNDER families was gated on the app having category tabs
+    # for runs/rbis/total_bases/hr — those tabs never landed, and by
+    # afternoon a full slate produced ~180 LEAN-tier rows in
+    # v_mlb_props_publishable which the app tried to render simultaneously.
+    # Prop Jerry visibly lagged + appeared to crash. Ban restored on all
+    # 8 variants (over + under) until (a) PROP_TYPE_LABELS in app/index.tsx
+    # gets entries for these families AND (b) the server-side view gates
+    # them to STRONG+ tier so LEAN volume doesn't flood the render loop.
+    # Client-side filter shipped alongside as belt-and-suspenders — see
+    # fetchPipelineProps in app/index.tsx around line 8104.
     _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',
-        'total_bases_over',
-        'hr_over',
-        'runs_over',
-        'batter_ks_over', 'batter_ks_under',
+        'rbis_over',        'rbis_under',
+        'total_bases_over', 'total_bases_under',
+        'hr_over',          'hr_under',
+        'runs_over',        'runs_under',
+        'batter_ks_over',   'batter_ks_under',
         'hits_under',
     }
     if sport == 'MLB':
