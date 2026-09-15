@@ -1805,12 +1805,15 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     <View style={{marginBottom: 6}}>
       <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
         {chips.map((c, i) => {
-          const bg = c.kind === 'ok' ? THEME.win + '18'
-                   : c.kind === 'warn' ? THEME.warn + '18'
-                   : THEME.surface;
-          const fg = c.kind === 'ok' ? THEME.win
-                   : c.kind === 'warn' ? THEME.warn
-                   : THEME.text;
+          // 2026-09-15: FIX undefined THEME reference — this file uses
+          // local C palette (defined at line 103). THEME was a copy-paste
+          // leak that crashed NFL game detail on open.
+          const bg = c.kind === 'ok' ? C.accent + '18'
+                   : c.kind === 'warn' ? C.warn + '18'
+                   : C.surface;
+          const fg = c.kind === 'ok' ? C.accent
+                   : c.kind === 'warn' ? C.warn
+                   : C.text;
           return (
             <TouchableOpacity
               key={`${c.term}-${i}`}
@@ -1819,7 +1822,7 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
                 flexDirection: 'row', alignItems: 'center', gap: 4,
                 paddingHorizontal: 8, paddingVertical: 5,
                 borderRadius: 6, backgroundColor: bg,
-                borderWidth: 1, borderColor: THEME.border,
+                borderWidth: 1, borderColor: C.border,
               }}>
               <Text style={{color: fg, fontSize: 10, fontWeight: '800',
                             letterSpacing: 0.3}}>{c.label}</Text>
@@ -1841,9 +1844,9 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
         const has30d = rec && (rec.wins_30d + rec.losses_30d) >= 5;
         const hasAll = rec && (rec.wins_lifetime + rec.losses_lifetime) >= 5;
         return (
-          <View style={{marginTop: 8, padding: 10, backgroundColor: THEME.surface,
-                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: THEME.accent}}>
-            <Text style={{color: THEME.accent, fontSize: 10, fontWeight: '800',
+          <View style={{marginTop: 8, padding: 10, backgroundColor: C.surface,
+                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: C.accent}}>
+            <Text style={{color: C.accent, fontSize: 10, fontWeight: '800',
                           letterSpacing: 0.5, marginBottom: 4}}>
               {openTerm.replace(/_/g, ' ')}
               {kind ? ` — ${kind.toUpperCase()}` : ''}
@@ -1851,14 +1854,14 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
             {(has30d || hasAll) && (
               <View style={{flexDirection: 'row', gap: 12, marginBottom: 6}}>
                 {has30d && (
-                  <Text style={{color: THEME.text, fontSize: 11, fontWeight: '800',
+                  <Text style={{color: C.text, fontSize: 11, fontWeight: '800',
                                 fontVariant: ['tabular-nums']}}>
-                    30d: <Text style={{color: THEME.accent}}>{rec.hit_pct_30d}%</Text>
+                    30d: <Text style={{color: C.accent}}>{rec.hit_pct_30d}%</Text>
                     {' '}({rec.wins_30d}-{rec.losses_30d})
                   </Text>
                 )}
                 {hasAll && (
-                  <Text style={{color: THEME.textMuted, fontSize: 11, fontWeight: '700',
+                  <Text style={{color: C.textMuted, fontSize: 11, fontWeight: '700',
                                 fontVariant: ['tabular-nums']}}>
                     Lifetime: {rec.hit_pct_lifetime}%
                     {' '}({rec.wins_lifetime}-{rec.losses_lifetime})
@@ -1866,7 +1869,7 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
                 )}
               </View>
             )}
-            <Text style={{color: THEME.text, fontSize: 12, lineHeight: 17}}>
+            <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>
               {help.help}
             </Text>
           </View>
