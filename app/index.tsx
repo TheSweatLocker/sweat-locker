@@ -14500,7 +14500,36 @@ setJerryHistory(prev => {
     'MLB' string check — a leftover from when only MLB had reads.
     Now every sport with a jerry_reads row for the game gets the
     narrative + call chip on its game list card. */}
-{game.id && jerryReads[game.id] && (()=>{
+{/* 2026-09-15 NFL EARLY-WEEK GATE — Andy's "bad info worse than no
+    info" rule. NFL data early in the week (Mon-Wed) is thin: openers
+    just posted, no injury reports, no line movement, model projections
+    running on prior-week data. Rather than surface half-baked takes,
+    hide Jerry reads + primary_play + tier badges until Thursday of the
+    NFL play-week (post-Thursday-morning cron). Users still see the
+    schedule + market lines + money-flow strip (those come from odds
+    and align_status data which is live all week).
+
+    Gate: for NFL games, if now < Thu 12:00 UTC (~8am ET) of this
+    week's play-week, hide the Jerry block. Every other sport
+    (MLB daily, NCAAF weekly but Wed-back, NBA/NHL/NCAAB) is
+    unaffected. */}
+{game.id && jerryReads[game.id] && (() => {
+  if (gamesSport !== 'NFL') return true;
+  const nowD = new Date();
+  // NFL play-week Thursday = anchor 2026-09-09 Tue + (thisWk-1)*7 + 2
+  // days. Simpler: find the Thursday of the current calendar week
+  // (Mon-Sun), guarded to current-play-week only.
+  const dow = nowD.getDay(); // 0=Sun ... 4=Thu ... 6=Sat
+  // Days FORWARD to next Thursday (0 if today is Thu, positive otherwise)
+  const daysToThu = (4 - dow + 7) % 7;
+  const thuThisWeek = new Date(nowD);
+  thuThisWeek.setDate(thuThisWeek.getDate() + daysToThu);
+  thuThisWeek.setHours(8, 0, 0, 0); // 8am LOCAL — close enough to 8am ET for our users (edge case: west-coast users on Mon 5am ET → still Mon local, gated)
+  // If today IS Thu but before 8am, gate is on. If today is Thu 8am+ or Fri/Sat/Sun/Mon, gate is off (Thu-Mon = live play-week window)
+  // Simpler bool: gate is ON only Tue/Wed of any week, AND on Thu before 8am.
+  const inHiddenWindow = (dow === 2 || dow === 3) || (dow === 4 && nowD.getHours() < 8);
+  return !inHiddenWindow;
+})() && (()=>{
   const jr = jerryReads[game.id];
   // 2026-09-15: fallback synth when short_read is NULL. Class of bug:
   // generate_jerry_synthesis LLM call occasionally times out or returns
@@ -14661,6 +14690,25 @@ setJerryHistory(prev => {
   const alML: any = al?.ml;
   const jr = game.id ? jerryReads[game.id] : null;
   const chips: React.ReactNode[] = [];
+  // 2026-09-15 NFL EARLY-WEEK GATE — hide primary_play tier chip + Jerry
+  // pick chip + model-aligned chip during Tue/Wed and Thu-before-8am.
+  // Money-flow / market chips (below in Sweat Badges block) stay visible
+  // so users can still monitor line movement. Match the same window used
+  // for the Jerry snippet gate above so both hide/show together.
+  const _nowET = new Date();
+  const _dowET = _nowET.getDay();
+  const _NFL_EARLY_WEEK_HIDDEN = gamesSport === 'NFL'
+    && ((_dowET === 2 || _dowET === 3) || (_dowET === 4 && _nowET.getHours() < 8));
+  // NFL early-week hidden state — nullify BOTH pp AND jr's directional
+  // fields so all take-derived chips vanish. Alignment ML market chip
+  // (books + externals + money %) stays visible because that's market
+  // data not a take. Model chip is auto-gated too — its derivation
+  // needs pp?.side which is null now.
+  let _jrForChips: any = jr;
+  if (_NFL_EARLY_WEEK_HIDDEN) {
+    pp = null;
+    _jrForChips = null;
+  }
   // 2026-08-20: dropped the "TIER · label" prefix on the game-card chip
   // per user feedback. Show the PICK label only ("Boston Red Sox ML",
   // "Over 7.5", etc.) — no tier confidence label. Tier chips remain on
