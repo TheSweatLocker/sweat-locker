@@ -129,6 +129,15 @@ MLB_STAT_MAP = {
     'bb':    'walks',          # pitcher BB
     'outs':  'outs',
     'er':    'earned_runs',
+    # 2026-09-15 project_lr_under_family_unban_913: add batter UNDER
+    # families that were un-banned in generate_prop_jerry_synthesis.py.
+    # L5/L10 lookback needs to render on their cards or the graphs stay
+    # blank per project_mlb_prop_l5_l10_gap_912. Each maps to the
+    # MLB Stats API field name in _MLB_API_STAT below.
+    'hr':          'home_runs',
+    'rbis':        'rbis',
+    'runs':        'runs_scored',
+    'total_bases': 'total_bases',
 }
 NFL_STAT_MAP = {
     # 2026-08-22 CRITICAL FIX (silent-bug audit finding #3): keys MUST match
@@ -258,9 +267,14 @@ def _mlb_player_id(player_name: str) -> Optional[int]:
 _MLB_API_STAT = {
     # batter — hitting group
     'hits':         ('hitting', 'hits'),
-    # 2026-09-12 REVERTED batter family additions (total_bases/rbis/
-    # runs/home_runs/batter_ks) — see MLB_STAT_MAP comment. Those families
-    # aren't publishable on Sweat Card per historical discipline.
+    # 2026-09-15 project_lr_under_family_unban_913: re-added batter UNDER
+    # families for L5/L10 API fetches. Keys must match MLB_STAT_MAP values
+    # (2026-08-22 critical fix). Camel-case API field names per MLB Stats
+    # API gameLog schema (statsapi.mlb.com/api/v1/people/{id}/stats).
+    'home_runs':    ('hitting', 'homeRuns'),
+    'rbis':         ('hitting', 'rbi'),
+    'runs_scored':  ('hitting', 'runs'),
+    'total_bases':  ('hitting', 'totalBases'),
     # pitcher — pitching group
     'strikeouts':   ('pitching', 'strikeOuts'),
     'hits_allowed': ('pitching', 'hits'),

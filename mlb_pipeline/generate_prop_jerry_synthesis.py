@@ -413,11 +413,26 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # Kill by prop_type. If user later approves specific batter families
     # (e.g., promotes hits_under to publishable), remove from this set
     # AND add to MLB_STAT_MAP in backfill_prop_lookback so graphs render.
+    # 2026-09-15 SELECTIVE UN-BAN (project_lr_under_family_unban_913).
+    # LR shadow 30d retro grade on the 4 UNDER families dropped from the ban:
+    #   hr_under          207 promoted, 149-15, 90.9% hit
+    #   rbis_under        183 promoted, 104-46, 69.3% hit
+    #   total_bases_under 217 promoted, 116-66, 63.7% hit
+    #   runs_under        196 promoted,  98-64, 60.5% hit
+    # Total 467 wins hidden over 30d just from these 4. Ban lumped both sides
+    # but ONLY the OVER side of these families was a trainwreck
+    # (hr_over 12.6%, rbis_over 31%, total_bases_over 32.4%, runs_over 45.7%
+    # — all kept banned). UNDER side is where LR quietly prints.
+    #
+    # UI floor: Prop Jerry needs tabs / render support for these 4 families
+    # once they publish; without tabs the plays land in mlb_pipeline_props
+    # + jerry_reads but users may not have a curated surface to browse them.
+    # Sharp Card composer will still surface them via top-conviction gates.
     _MLB_BANNED_PROP_TYPES = {
-        'rbis_over', 'rbis_under',
-        'total_bases_over', 'total_bases_under',
-        'hr_over', 'hr_under',
-        'runs_over', 'runs_under',
+        'rbis_over',
+        'total_bases_over',
+        'hr_over',
+        'runs_over',
         'batter_ks_over', 'batter_ks_under',
         'hits_under',
     }
