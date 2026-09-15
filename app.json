@@ -4,12 +4,7 @@
     "slug": "sweatlocker",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/splash-logo.png",
-    "splash": {
-      "image": "./assets/images/splash-logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#22323E"
-    },
+    "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.sweatlocker.app",
@@ -19,7 +14,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/splash-logo.png",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#22323E"
       },
       "package": "com.sweatlocker.app"
@@ -29,16 +24,17 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#22323E",
-          "image": "./assets/images/splash-logo.png",
+          "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain"
         }
       ],
       "expo-font",
       "expo-router",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-image",
+      "expo-status-bar"
     ],
     "scheme": "sweatlocker",
-    "newArchEnabled": true,
     "extra": {
       "eas": {
         "projectId": "074e9e82-8903-42b2-b90b-fcb2fe20a1f2"

@@ -576,7 +576,38 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         # at 85.6% vs current 52.1%. Fold in enriched fields (l5/l10/season)
         # + odds + prop_type onehot for the model input. Original scorer's
         # tier/conviction preserved in signals for audit.
-        if _LR_MODEL_MLB_PROP is not None:
+        #
+        # 2026-09-15 FAMILY EXCLUSION — hits_over and hits_under have
+        # scorer rules the LR override was blindly ignoring:
+        #   hits_over → generate_props.py:393-394 forces COVERAGE (sharp
+        #     play break-even at -180 juice; LR's ~0.55 LEAN threshold
+        #     is underwater on juice). LR promoted 128 hits_over rows to
+        #     LEAN/STRONG/PRIME today → 227 total hits props flooded the
+        #     app render loop → Andy hit visible lag.
+        #   hits_under → generate_props.py:324-328 has NO LEAN band
+        #     (only PRIME≥85 or STRONG≥75 else SKIP). LR stamped 62 LEAN
+        #     rows at conv 53-60 — losing plays.
+        # Both re-banned from LR override until juice-aware tier calibration
+        # lands (v1.1). Other families (bb/ks/ha/er/outs) still get LR
+        # authority since their scorer floors align with LR's tier
+        # thresholds within margin.
+        _LR_OVERRIDE_BANNED_FAMILIES = {'hits_over', 'hits_under'}
+        _pt = (prop.get('prop_type') or '').lower()
+        if _pt in _LR_OVERRIDE_BANNED_FAMILIES:
+            # Leave scorer tier authoritative for this family; still
+            # stamp shadow signals so lr_vs_legacy_grader can compare.
+            if _LR_MODEL_MLB_PROP is not None:
+                _prop_for_lr_shadow = dict(prop)
+                _prop_for_lr_shadow['player_l5_hit_count']  = lb.get('l5')
+                _prop_for_lr_shadow['player_l10_hit_count'] = lb.get('l10')
+                _prop_for_lr_shadow['player_season_hit_pct'] = lb.get('season_pct')
+                _lr_shadow = _lr_predict_prop(_prop_for_lr_shadow)
+                if _lr_shadow:
+                    existing_signals['_lr_p_hit_shadow']    = _lr_shadow['p_hit']
+                    existing_signals['_lr_tier_raw_shadow'] = _lr_shadow['tier']
+                    existing_signals['_lr_family_banned']   = True
+                    patch['signals'] = existing_signals
+        elif _LR_MODEL_MLB_PROP is not None:
             # Merge lookback vals into prop dict so LR sees fresh L5/L10
             _prop_for_lr = dict(prop)
             _prop_for_lr['player_l5_hit_count']  = lb.get('l5')
