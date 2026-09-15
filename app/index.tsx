@@ -2895,17 +2895,50 @@ setEvData(evOpps.slice(0,20));
             .order('game_date', {ascending: true})
             .limit(200);
           if (fb?.data && fb.data.length > 0) {
-            mappedGames = fb.data.map((g: any) => ({
-              id: g.game_id,
-              sport_key: sport === 'NFL' ? 'americanfootball_nfl' : 'americanfootball_ncaaf',
-              commence_time: g.kickoff_utc || (g.game_date + 'T20:00:00Z'),
-              home_team: g.home_team,
-              away_team: g.away_team,
-              // Minimal bookmakers shim so downstream renderers don't crash;
-              // Games tab will show teams + kickoff even without book lines.
-              bookmakers: [],
-              _backend_fallback: true,
-            }));
+            mappedGames = fb.data.map((g: any) => {
+              // 2026-09-15: synthesize a bookmakers[0] shim from ctx close_*
+              // columns so games-tab odds display (spread/total/ML) renders.
+              // Prior behavior: bookmakers=[] → getGameSummary returned N/A
+              // for every field despite ctx having full line data. Andy hit
+              // this on NFL Week 2 games where Odds API hasn't posted yet
+              // but nfl_game_context is already populated. Sport key varies
+              // by sport (NFL positive close_spread = home fav; NCAAF/others
+              // negative = home fav).
+              const synthMarkets: any[] = [];
+              if (g.close_spread != null) {
+                // NFL: positive close_spread = home fav → home's line = -close_spread
+                // NCAAF: negative close_spread = home fav → home's line = close_spread
+                const homeLine = sport === 'NFL' ? -Number(g.close_spread) : Number(g.close_spread);
+                const awayLine = -homeLine;
+                synthMarkets.push({key: 'spreads', outcomes: [
+                  {name: g.home_team, point: homeLine, price: -110},
+                  {name: g.away_team, point: awayLine, price: -110},
+                ]});
+              }
+              if (g.close_total != null) {
+                synthMarkets.push({key: 'totals', outcomes: [
+                  {name: 'Over',  point: Number(g.close_total), price: -110},
+                  {name: 'Under', point: Number(g.close_total), price: -110},
+                ]});
+              }
+              if (g.close_home_ml != null || g.close_away_ml != null) {
+                synthMarkets.push({key: 'h2h', outcomes: [
+                  {name: g.home_team, price: g.close_home_ml ?? 0},
+                  {name: g.away_team, price: g.close_away_ml ?? 0},
+                ]});
+              }
+              return {
+                id: g.game_id,
+                sport_key: sport === 'NFL' ? 'americanfootball_nfl' : 'americanfootball_ncaaf',
+                commence_time: g.kickoff_utc || (g.game_date + 'T20:00:00Z'),
+                home_team: g.home_team,
+                away_team: g.away_team,
+                bookmakers: synthMarkets.length > 0
+                  ? [{key: 'ctx_fallback', title: 'Consensus', markets: synthMarkets}]
+                  : [],
+                _backend_fallback: true,
+              };
+            });
             console.log(`[fetchGames] ${sport} Odds API returned 0 → backend fallback: ${mappedGames.length} games from ${ctxTable}`);
           }
         } catch (fbErr) {
