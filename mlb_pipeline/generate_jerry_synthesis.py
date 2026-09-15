@@ -1141,20 +1141,42 @@ def run(force: bool = False, game_date: str | None = None,
         # game-list Jerry box for any read where the LLM omitted call_text
         # but did emit a directional market/side/line. Now the DB always
         # gets a non-null call_text so the badge renders correctly.
-        if not parsed.get('call_text'):
-            mkt = (parsed.get('call_market') or 'pass').lower()
-            side = parsed.get('call_side') or ''
-            line = parsed.get('call_line')
-            if mkt == 'pass':
+        #
+        # 2026-09-15: canonicalize call_text ALWAYS, not just when missing.
+        # Claude 9/15 evening regen wrote generic "Away ML" / "Home ML" /
+        # "Away RL 1.5" for ML/RL picks — badge showed "Away ML" instead
+        # of "Milwaukee Brewers ML". Ensemble scorer picks the side; there
+        # is exactly ONE canonical team-based label. Don't trust LLM for
+        # the badge string — regenerate from struct every time.
+        _mkt = (parsed.get('call_market') or 'pass').lower()
+        _side = (parsed.get('call_side') or '').upper()
+        _line = parsed.get('call_line')
+        _existing_text = (parsed.get('call_text') or '').strip()
+        # Detect generic LLM-emitted labels — always canonical-overwrite these
+        _generic_patterns = ('HOME ML','AWAY ML','HOME RL','AWAY RL','OVER','UNDER')
+        _is_generic = _existing_text.upper() in _generic_patterns \
+                      or (_existing_text.upper().startswith(('HOME ','AWAY '))
+                          and any(k in _existing_text.upper() for k in ('ML','RL')))
+        if _mkt != 'pass' and _side in ('HOME', 'AWAY'):
+            _team = g.get('home_team') if _side == 'HOME' else g.get('away_team')
+            if _team and (not _existing_text or _is_generic):
+                if _mkt == 'ml':
+                    parsed['call_text'] = f'{_team} ML'
+                elif _mkt == 'rl':
+                    _sign = '+' if isinstance(_line, (int, float)) and _line > 0 else ''
+                    parsed['call_text'] = f'{_team} {_sign}{_line}' if _line is not None else f'{_team} RL'
+        elif not _existing_text:
+            # No text at all — fall back to old reconstruction path
+            if _mkt == 'pass':
                 parsed['call_text'] = 'PASS'
-            elif mkt == 'total' and side:
-                parsed['call_text'] = f"{side.title()} {line or ''}".strip()
-            elif mkt == 'ml' and side:
-                parsed['call_text'] = f"{side.title()} ML"
-            elif mkt == 'rl' and side:
-                parsed['call_text'] = f"{side.title()} RL {line or ''}".strip()
-            elif mkt == 'fight' and side:
-                parsed['call_text'] = f"Fighter {side}"
+            elif _mkt == 'total' and _side:
+                parsed['call_text'] = f"{_side.title()} {_line or ''}".strip()
+            elif _mkt == 'ml' and _side:
+                parsed['call_text'] = f"{_side.title()} ML"
+            elif _mkt == 'rl' and _side:
+                parsed['call_text'] = f"{_side.title()} RL {_line or ''}".strip()
+            elif _mkt == 'fight' and _side:
+                parsed['call_text'] = f"Fighter {_side}"
 
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             # Display fallback: prefer call_text; if missing, reconstruct from
