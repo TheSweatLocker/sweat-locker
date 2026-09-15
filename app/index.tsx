@@ -7674,9 +7674,19 @@ if(mkt.key === 'pitcher_props') {
     try {
       const today = new Date();
       const dateStr = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+      // 2026-09-15 v1.0.1 #13a: explicit column list vs prior SELECT *.
+      // Table has 44 cols; UI mapping (below) consumes 33. ~25% cut per row
+      // × 10 rows/query. Consumer inventory verified against the .map()
+      // below — if a new UI field is added, extend this list too.
       const { data, error } = await supabase
         .from('mlb_hr_watch')
-        .select('*')
+        .select('player_name,team,home_team,hr,pa,hr_rate,ba,'
+          + 'opp_pitcher,opp_xera,opp_hard_hit,opp_barrel,'
+          + 'venue,park_factor,temp,wind_out,wind_speed,wind_dir,'
+          + 'score,contact_score,power_score,env_score,hr_bonus,opp_score,'
+          + 'fb_score,platoon_score,recency_score,savant_score,'
+          + 'projected_hr_prob,book_odds,book_source,due_signal,'
+          + 'matchup,is_fallback')
         .eq('game_date', dateStr)
         .order('score', { ascending: false })
         .limit(10);
