@@ -1,0 +1,59 @@
+name: MLB Prop close-line freezer (fast cron)
+
+# 2026-09-15 — closes the "close_over_odds / close_under_odds all NULL"
+# gap. freeze_prop_closing_lines.py only fires when a game is within
+# the sport-specific freeze window (MLB=5min, NFL=15min) before commence.
+# The main mlb_pipeline invokes it inside the 2 PM ET cron — hours
+# before any game actually starts — so it silently no-ops every day.
+# Result confirmed 9/15: 0/877 today's props have close_over_odds
+# populated. Same for close_under_odds (0/684).
+#
+# This workflow fires the freeze script every 10 minutes between 22:00
+# UTC (6 PM ET) and 04:00 UTC (midnight ET), covering typical MLB /
+# NFL / NCAAF game-start windows across US time zones. Script is
+# idempotent (skips rows where close_locked_at is already set) and
+# cheap outside game windows (early-returns after commence-time
+# lookup finds no eligible games).
+#
+# See mlb_pipeline/freeze_prop_closing_lines.py for the actual work.
+
+on:
+  schedule:
+    # Every 10 min from 22:00 UTC through 04:00 UTC next day.
+    # Covers 6 PM ET → midnight ET (all MLB windows + NFL SNF/MNF).
+    - cron: '*/10 22-23 * * *'
+    - cron: '*/10 0-4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mlb-prop-close-freeze
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Freeze prop closing lines (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python freeze_prop_closing_lines.py --sport ALL || echo "prop close freezer non-fatal"
