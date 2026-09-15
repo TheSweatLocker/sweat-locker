@@ -561,6 +561,12 @@ def fetch_picks(game_date: str, sports: list[str]) -> list[dict]:
                 'original_odds': odds,
                 'tier': tier,
                 'conviction': pp.get('conviction', 0),
+                # 2026-09-15: propagate LR shadows into the pick dict so
+                # build_prime_teased_single can gate on LR agreement without
+                # re-fetching primary_play per candidate. Matches the POTD
+                # LR-agreement gate pattern (jerry_anchor_potd d07e8425).
+                '_lr_ml_shadow': pp.get('_lr_ml_shadow'),
+                '_lr_total_shadow': pp.get('_lr_total_shadow'),
             })
     return picks
 
@@ -1082,7 +1088,49 @@ def build_prime_teased_single(picks: list[dict], exclude_games: set = None) -> O
     # (totals crossing key numbers reliably, spreads have more variance).
     tease_candidates.sort(key=lambda p: (-p.get('conviction', 0),
                                          0 if p['market'] == 'total' else 1))
-    pick = tease_candidates[0]
+
+    # 2026-09-15 LR-agreement gate. Same rationale as the POTD gate
+    # (d07e8425) — LR total shadow is our proven-85%-L30 signal. If LR
+    # disagrees with a candidate PRIME pick's side, skip. Walk down the
+    # sorted list until we find a candidate LR agrees with (or run out).
+    #
+    # LR direction rule: for totals, p_over >= 0.60 supports OVER,
+    # p_over <= 0.40 supports UNDER. For ML/RL/spread, p_home_win
+    # >= 0.60 supports HOME, <= 0.40 supports AWAY. Gate uses the
+    # side-appropriate p threshold; skips silently if LR shadow is
+    # absent (rare — most PRIME picks carry one).
+    LR_GATE = 0.60
+    pick = None
+    skipped_lr = []
+    for cand in tease_candidates:
+        side = (cand.get('side') or '').upper()
+        market = cand.get('market')
+        p_support = None
+        if market == 'total':
+            lts = cand.get('_lr_total_shadow') or {}
+            p_over = lts.get('p_over') if isinstance(lts, dict) else None
+            if p_over is not None:
+                p_over = float(p_over)
+                p_support = p_over if side == 'OVER' else (1 - p_over)
+        elif market in ('rl', 'spread'):
+            lms = cand.get('_lr_ml_shadow') or {}
+            p_home = lms.get('p_home_win') if isinstance(lms, dict) else None
+            if p_home is not None:
+                p_home = float(p_home)
+                p_support = p_home if side == 'HOME' else (1 - p_home)
+        # No LR data → let it through (backward-compat with sports that
+        # don't have LR wired yet). Only DROP when LR is present and
+        # below gate.
+        if p_support is not None and p_support < LR_GATE:
+            skipped_lr.append(f"{cand.get('pick')} p={p_support:.2f}")
+            continue
+        pick = cand
+        break
+
+    if pick is None:
+        if skipped_lr:
+            print(f'  ⏸ PRIME teased single: {len(skipped_lr)} candidates skipped by LR gate — no eligible pick')
+        return None
     sport = pick['sport']
     step = TEASER_STEP.get(sport, 1.5)
     orig_line = float(pick['original_line'])
