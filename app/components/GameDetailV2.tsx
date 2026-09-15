@@ -4870,8 +4870,8 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
         {/* Header row */}
         <View style={styles.bookTableHeader}>
           <Text style={[styles.bookTh, {flex: 1.6}]}>Book</Text>
-          <Text style={[styles.bookTh, {flex: 1.2, textAlign: 'right'}]}>Spread</Text>
-          <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>Total</Text>
+          <Text style={[styles.bookTh, {flex: 1.6, textAlign: 'right'}]}>Spread</Text>
+          <Text style={[styles.bookTh, {flex: 1.2, textAlign: 'right'}]}>Total</Text>
           <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML A</Text>
           <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML H</Text>
         </View>
@@ -4890,7 +4890,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 {isHRB ? '★ ' : ''}{bm.title || bm.key}
               </Text>
               <TouchableOpacity
-                style={{flex: 1.2}}
+                style={{flex: 1.6}}
                 onPress={() => homeSpread && addLeg('spread', `${abbrev3(homeTeam)} ${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}`, homeSpread.price, homeSpread.point, bm.title)}
                 activeOpacity={0.6}
               >
@@ -4901,7 +4901,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={{flex: 1}}
+                style={{flex: 1.2}}
                 onPress={() => overTot && addLeg('total', `O ${overTot.point}`, overTot.price, overTot.point, bm.title)}
                 activeOpacity={0.6}
               >
@@ -5497,16 +5497,20 @@ const styles = StyleSheet.create({
   parlayCtaText: {color: '#000', fontWeight: '700', fontSize: 13, letterSpacing: 0.3},
 
   // All book lines table
+  // 2026-09-15: bumped text sizes + column widths — Andy audit: "text hard
+  // to see and looks misaligned". Spread column widened to fit "-1.5 (-105)"
+  // without wrap; base bookTd size 11 → 12 for readability; header size 9 →
+  // 10; row padding 6 → 8 for breathing room.
   bookTableHeader: {
-    flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4,
-    borderBottomWidth: 1, borderBottomColor: C.border, gap: 6, marginBottom: 4,
+    flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 6,
+    borderBottomWidth: 1, borderBottomColor: C.border, gap: 8, marginBottom: 4,
   },
-  bookTh: {fontSize: 9, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
+  bookTh: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5},
   bookTableRow: {
-    flexDirection: 'row', paddingVertical: 6, paddingHorizontal: 4, gap: 6,
+    flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 6, gap: 8,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  bookTd: {fontSize: 11, color: C.text, fontVariant: ['tabular-nums']},
+  bookTd: {fontSize: 12, color: C.text, fontVariant: ['tabular-nums']},
 
   // Numbers
   numbersHeading: {fontSize: 10, color: C.textMuted, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4},
