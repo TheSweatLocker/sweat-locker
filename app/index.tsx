@@ -20,6 +20,7 @@ import { useSubscription } from './contexts/SubscriptionContext';
 import { Paywall } from './components/Paywall';
 import { Sport } from './lib/sportPeriods';
 import { abbrev as teamAbbrev } from './lib/teamAbbrev';
+import { withCache, invalidateCachePrefix } from './lib/cache';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 import StatusChip from './components/StatusChip';
@@ -6072,10 +6073,18 @@ const fetchUiNotes = async () => {
 // to force any dependent render to re-run after the mutation lands.
 const fetchSportRegistry = async () => {
   try {
-    const {data} = await supabase.from('sport_registry')
-      .select('sport,emoji,display_order,active,state,state_message,today_note,tomorrow_note,tab_scope,return_date,ladder_eligible')
-      .eq('active', true)
-      .order('display_order', {ascending: true});
+    // 2026-09-15 v1.0.1 #13c: withCache 30-min TTL + SWR. sport_registry
+    // rows change on the order of days-to-weeks (new sport added, state
+    // flipped). Every mount + tab-switch used to re-query. Cache wraps
+    // only the network call — setState still runs on cache hit so all
+    // downstream deps re-render as before.
+    const data = await withCache('sport_registry_v1', async () => {
+      const r = await supabase.from('sport_registry')
+        .select('sport,emoji,display_order,active,state,state_message,today_note,tomorrow_note,tab_scope,return_date,ladder_eligible')
+        .eq('active', true)
+        .order('display_order', {ascending: true});
+      return r.data;
+    }, {ttlMs: 30 * 60 * 1000, staleWhileRevalidate: true});
     if (data && data.length > 0) {
       SPORTS = (data as any[]).map(r => r.sport);
       SPORT_EMOJI = (data as any[]).reduce((acc: Record<string,string>, r: any) => {
@@ -6092,8 +6101,17 @@ const fetchSportRegistry = async () => {
 const fetchSweatCard = async () => {
   setSweatCardLoading(true);
   try {
-    const { data: rows } = await supabase.rpc('get_todays_sweat_card');
-    const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    // 2026-09-15 v1.0.1 #13c: withCache 3-min TTL + SWR. Sweat Card is
+    // stable within a pipeline run cadence (~5-15 min between refreshes);
+    // caching the RPC response cuts every-mount re-fetch and lets tab
+    // switches feel instant. Cache key stamps ET day so a rollover
+    // doesn't bleed yesterday's card. Pull-to-refresh busts via
+    // invalidateCachePrefix('sweat_card_') on refresh handler.
+    const etDay = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+    const row = await withCache(`sweat_card_${etDay}`, async () => {
+      const { data: rows } = await supabase.rpc('get_todays_sweat_card');
+      return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    }, {ttlMs: 3 * 60 * 1000, staleWhileRevalidate: true});
     if (row?.data) {
       // 2026-08-09: pass through server timestamp so card can render a
       // "data as of X" freshness stamp. RPC returns `fetched_at` alongside
@@ -9998,6 +10016,14 @@ setJerryHistory(prev => {
 
   const onRefresh=()=>{
     setRefreshing(true);
+    // 2026-09-15 v1.0.1 #13c: pull-to-refresh busts every withCache entry
+    // so the user gets a hard hit-Supabase refresh (matches the mental
+    // model — "I pulled down, give me new data"). Fire-and-forget; cache
+    // busting is fast even with cold AsyncStorage. Prefixes covered:
+    //   sport_registry_ · sweat_card_
+    // (add each new cache key prefix here if withCache adopters grow)
+    invalidateCachePrefix('sport_registry_').catch(() => {});
+    invalidateCachePrefix('sweat_card_').catch(() => {});
     if(activeTab==='odds')fetchOdds(oddsSport);
     else if(activeTab==='games') {
       fetchGames(gamesSport,gamesDay,true);
