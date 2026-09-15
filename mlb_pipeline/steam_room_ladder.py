@@ -229,8 +229,11 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         gate_notes.append(f'consensus={consensus}/5')
 
     # Odds + edge
-    home_ml_odds = row.get('home_ml_close') or row.get('home_ml')
-    away_ml_odds = row.get('away_ml_close') or row.get('away_ml')
+    # Column-name coalesce: MLB uses `home_ml_close`/`away_ml_close`,
+    # NFL/NCAAF use `close_home_ml`/`close_away_ml`. Fall through to the
+    # right one for each sport.
+    home_ml_odds = row.get('home_ml_close') or row.get('close_home_ml') or row.get('home_ml')
+    away_ml_odds = row.get('away_ml_close') or row.get('close_away_ml') or row.get('away_ml')
     odds = None
     label = (pp.get('label') or '').lower()
     if is_side and market == 'ml':
@@ -499,16 +502,41 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
         # don't exist in mlb_game_context (only _close columns) — whole query
         # returned a PostgREST error dict instead of a list, isinstance list
         # check silently skipped every sport, ladder never fired.
+        # 2026-09-15: per-sport SELECT. `signal_confluence_support` only
+        # exists in mlb_game_context. NFL/NCAAF/NCAAB have
+        # `signal_confluence_net` and `signal_confluence_breakdown`
+        # instead. Prior monolithic SELECT 400-errored on those sports
+        # ("column X does not exist"), silently skipping every non-MLB
+        # game from the ladder scan. Now: build the select list per-
+        # sport, omit columns that don't exist. Downstream check_qualifier
+        # reads via .get() with `or 0` defaults so missing values gate
+        # to 0 without crashing.
+        # ML odds column names differ per sport. MLB: home_ml_close/away_ml_close.
+        # NFL+NCAAF: close_home_ml/close_away_ml. Coalesced downstream in
+        # check_qualifier via .get() fallback chain.
+        ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
+        base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
+                     'mc_probabilities,' + ml_cols + ','
+                     'consensus_fade_flag,signal_confluence_breakdown')
+        if sport == 'MLB':
+            select_cols = base_cols + ',signal_confluence_support'
+        else:
+            # NFL/NCAAF/NCAAB path — use net (which they DO have) as
+            # a confluence proxy so check_qualifier sees a real value
+            # instead of always defaulting to 0. Map at the row level below.
+            select_cols = base_cols + ',signal_confluence_net'
         r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
-            params={'game_date': f'eq.{game_date}',
-                    'select': 'game_id,game_date,home_team,away_team,primary_play,'
-                              'mc_probabilities,signal_confluence_support,'
-                              'home_ml_close,away_ml_close,'
-                              'consensus_fade_flag'},
+            params={'game_date': f'eq.{game_date}', 'select': select_cols},
             timeout=15).json()
         if not isinstance(r, list):
             print(f'  ⚠️  {sport} query failed: {r}')
             continue
+        # For non-MLB sports, alias signal_confluence_net → _support so
+        # downstream check_qualifier code path works without special-casing.
+        if sport != 'MLB':
+            for row in r:
+                if isinstance(row, dict) and 'signal_confluence_net' in row:
+                    row['signal_confluence_support'] = row.get('signal_confluence_net')
         for row in r:
             rung = check_qualifier(row, sport)
             if rung: candidates.append(rung)
@@ -595,13 +623,21 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
         for sport in sports:
             ctx_tbl = CTX_TABLE.get(sport)
             if not ctx_tbl: continue
+            # 2026-09-15: per-sport SELECT (same fix as scan_qualifiers).
+            ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
+            base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
+                         'mc_probabilities,' + ml_cols + ',consensus_fade_flag')
+            select_cols = (base_cols + ',signal_confluence_support'
+                           if sport == 'MLB'
+                           else base_cols + ',signal_confluence_net')
             r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
-                params={'game_date': f'eq.{game_date}',
-                        'select': 'game_id,game_date,home_team,away_team,primary_play,'
-                                  'mc_probabilities,signal_confluence_support,'
-                                  'home_ml_close,away_ml_close,consensus_fade_flag'},
+                params={'game_date': f'eq.{game_date}', 'select': select_cols},
                 timeout=15).json()
             if not isinstance(r, list): continue
+            if sport != 'MLB':
+                for row in r:
+                    if isinstance(row, dict) and 'signal_confluence_net' in row:
+                        row['signal_confluence_support'] = row.get('signal_confluence_net')
             for row in r:
                 pp = row.get('primary_play') or {}
                 # In relaxed mode, accept any picked play with a tier + label
