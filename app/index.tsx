@@ -2100,8 +2100,10 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // all sports. User can edit legs (Phase 2).
   const [ledgerSuggestions, setLedgerSuggestions] = useState<any[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(false);
-  // 2026-08-18: transparency parity with Sharp Card — MTD + prev-month record
-  const [ledgerRecord, setLedgerRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0});
+  // 2026-08-18: transparency parity with Sharp Card — MTD + prev-month record.
+  // 2026-09-15: added yesterday tally (yestW/L/P/unitsNet). Prev-month kept as
+  // fallback when yesterday has no graded combos; render prefers yesterday.
+  const [ledgerRecord, setLedgerRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number,yestW:number,yestL:number,yestP:number,yestUnitsNet:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yestW:0,yestL:0,yestP:0,yestUnitsNet:0});
   const [steamFlags, setSteamFlags] = useState<any[]>([]);
   const [steamHistorySample, setSteamHistorySample] = useState<Record<string, any[]>>({});
   const [steamPicksIdx, setSteamPicksIdx] = useState<Record<string, {primary:any, supplementary:any}>>({});
@@ -9729,7 +9731,13 @@ setJerryHistory(prev => {
       // derived from d30 minus mtd as a temporary proxy until server
       // exposes 'prev_month' window explicitly.
       const today = new Date().toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-      const [{data: suggs}, {data: srRows}] = await Promise.all([
+      // Yesterday ET for the footer recap (2026-09-15: replaced prev-month
+      // tag with yesterday tally per Andy — prev-month was reading as stale;
+      // yesterday is the live "how did the Ledger do" signal users want).
+      const nowD = new Date();
+      const yesterdayET = new Date(nowD.getTime() - 24*60*60*1000)
+        .toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
+      const [{data: suggs}, {data: srRows}, {data: yRows}] = await Promise.all([
         supabase.from('ledger_suggestions')
           .select('id,kind,sport_scope,legs,combined_odds,combined_prob,reasoning,rank,auto_generated')
           .eq('game_date', today)
@@ -9737,6 +9745,13 @@ setJerryHistory(prev => {
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes,units_net')
           .eq('sport','MLB').eq('surface','ledger'),
+        // Yesterday tally: raw ledger_snapshots filtered to MLB (matches the
+        // MTD source-of-truth — surface_records.ledger MLB row is derived
+        // from the same set). Sum W/L/P + unit_pnl for a one-line footer.
+        supabase.from('ledger_snapshots')
+          .select('result,unit_pnl')
+          .eq('sport_scope','MLB')
+          .eq('game_date', yesterdayET),
       ]);
       setLedgerSuggestions(suggs || []);
       const byWin: Record<string, any> = {};
@@ -9750,12 +9765,21 @@ setJerryHistory(prev => {
       const lPrev = Math.max(0, (d30.losses || 0) - (mtd.losses || 0));
       const pPrev = Math.max(0, (d30.pushes || 0) - (mtd.pushes || 0));
       const unitsNetPrev = Math.round((Number(d30.units_net || 0) - Number(mtd.units_net || 0))*100)/100;
+      // Yesterday aggregation from raw snapshots
+      let yestW=0, yestL=0, yestP=0, yestUnitsNet=0;
+      for (const r of (yRows || [])) {
+        if (r.result === 'W') yestW++;
+        else if (r.result === 'L') yestL++;
+        else if (r.result === 'P') yestP++;
+        yestUnitsNet += Number(r.unit_pnl || 0);
+      }
       setLedgerRecord({
         w: mtd.wins || 0, l: mtd.losses || 0, p: mtd.pushes || 0,
         unitsNet: Math.round(Number(mtd.units_net || 0)*100)/100,
         wPrev, lPrev, pPrev, unitsNetPrev,
+        yestW, yestL, yestP, yestUnitsNet: Math.round(yestUnitsNet*100)/100,
       });
-    } catch (e) { setLedgerSuggestions([]); setLedgerRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0}); }
+    } catch (e) { setLedgerSuggestions([]); setLedgerRecord({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yestW:0,yestL:0,yestP:0,yestUnitsNet:0}); }
     setLedgerLoading(false);
   }, []);
 
@@ -17237,9 +17261,11 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         const r = ledgerRecord;
                         const total = r.w + r.l;
                         const totalPrev = r.wPrev + r.lPrev;
+                        const totalYest = r.yestW + r.yestL + r.yestP;
                         const hitPct = total > 0 ? Math.round(1000 * r.w / total) / 10 : 0;
                         const uColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textDim;
                         const uColorPrev = r.unitsNetPrev > 0 ? THEME.win : r.unitsNetPrev < 0 ? THEME.loss : THEME.textDim;
+                        const uColorYest = r.yestUnitsNet > 0 ? THEME.win : r.yestUnitsNet < 0 ? THEME.loss : THEME.textDim;
                         const monthName = new Date().toLocaleDateString('en-US', {month: 'long'});
                         const prevMonthName = new Date(new Date().setMonth(new Date().getMonth()-1)).toLocaleDateString('en-US', {month: 'short'});
                         const roi = total > 0 ? (r.unitsNet / total) * 100 : null;
@@ -17268,16 +17294,23 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                                 <Text style={{color:THEME.textDim, fontSize:10, marginTop:2}}>per combo</Text>
                               </View>
                             </View>
-                            {totalPrev > 0 && (
+                            {(totalYest > 0 || totalPrev > 0) && (
                               <View style={{flexDirection:'row', justifyContent:'flex-end', marginTop:10, paddingTop:8, borderTopWidth:0.5, borderTopColor:THEME.border+'44'}}>
-                                {/* 2026-09-12: reworded from "{Aug}: 25-27 · +5.00u"
-                                    which Andy read as a date range (Aug 25-27) instead
-                                    of a full-month record. Now says "{Aug} record: 25-27
-                                    · +5.00u" so the numbers unambiguously read as
-                                    wins-losses. */}
-                                <Text style={{color:THEME.textDim, fontSize:10}}>
-                                  {prevMonthName} record: {r.wPrev}-{r.lPrev} · <Text style={{color:uColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
-                                </Text>
+                                {/* 2026-09-15: replaced prev-month tag with
+                                    yesterday recap — the live "how did Ledger do"
+                                    signal is more useful than a stale month
+                                    boundary. Falls back to prev-month if no
+                                    graded combos yesterday (early-morning
+                                    edge case before grader runs). */}
+                                {totalYest > 0 ? (
+                                  <Text style={{color:THEME.textDim, fontSize:10}}>
+                                    Yesterday: {r.yestW}-{r.yestL}{r.yestP ? `-${r.yestP}` : ''} · <Text style={{color:uColorYest, fontWeight:'700'}}>{r.yestUnitsNet >= 0 ? '+' : ''}{r.yestUnitsNet.toFixed(2)}u</Text>
+                                  </Text>
+                                ) : (
+                                  <Text style={{color:THEME.textDim, fontSize:10}}>
+                                    {prevMonthName} record: {r.wPrev}-{r.lPrev} · <Text style={{color:uColorPrev, fontWeight:'700'}}>{r.unitsNetPrev >= 0 ? '+' : ''}{r.unitsNetPrev.toFixed(2)}u</Text>
+                                  </Text>
+                                )}
                               </View>
                             )}
                           </View>
