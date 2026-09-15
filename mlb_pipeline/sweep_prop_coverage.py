@@ -246,7 +246,26 @@ def build_signals(display: str, prop_type: str, prop_line: float, ctx: dict | No
             sigs['projection'] = f'Projected {prop_type} {proj_f:.2f} vs line {prop_line} · edge {edge_pct*100:+.1f}%'
             sigs['_edge_pct'] = round(edge_pct, 3)
         except (TypeError, ValueError): pass
-    # Context signals
+    # 2026-09-15: humanize context signals. Prior version wrote
+    # `sigs[dst] = f'{dst} {v}'` producing "l3_k 26.0", "xera 4.17",
+    # "park 118" — raw var names leaked into Prop Jerry PLAYBOOK
+    # CONFIRMS bullets. Andy hit this on Walker Buehler ha_under card
+    # (contrast with Misiorowski/Lowder cards that had proper prose).
+    # New: each signal has a human label + numeric formatter matching
+    # the style Misiorowski card uses. Examples:
+    #   xera 4.17 → "xERA 4.17"
+    #   l3_k 26.0 → "L3 K% 26.0%"
+    #   park 118 → "Park factor 118"
+    _SIGNAL_LABELS = {
+        'xera':       lambda v: f'xERA {float(v):.2f}',
+        'l3_era':     lambda v: f'L3 ERA {float(v):.2f}',
+        'l3_k':       lambda v: f'L3 K% {float(v):.1f}%',
+        'season_k':   lambda v: f'Season K% {float(v):.1f}%',
+        'bb_pct':     lambda v: f'BB% {float(v):.1f}%',
+        'opp_k_rate': lambda v: f'Opp K% {float(v):.1f}%',
+        'opp_wrc':    lambda v: f'Opp wRC+ {float(v):.0f}',
+        'park':       lambda v: f'Park factor {float(v):.0f}',
+    }
     for src, dst in [
         (f'{prefix}_sp_xera', 'xera'),
         (f'{prefix}_pitcher_last_3_era', 'l3_era'),
@@ -258,7 +277,13 @@ def build_signals(display: str, prop_type: str, prop_line: float, ctx: dict | No
         ('park_run_factor', 'park'),
     ]:
         v = _g(src)
-        if v is not None: sigs[dst] = f'{dst} {v}'
+        if v is None: continue
+        fmt = _SIGNAL_LABELS.get(dst)
+        try:
+            sigs[dst] = fmt(v) if fmt else f'{dst} {v}'
+        except (TypeError, ValueError):
+            # Non-numeric edge case — fall back to raw
+            sigs[dst] = f'{dst} {v}'
     return sigs, edge_pct
 
 
