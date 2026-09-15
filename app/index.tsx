@@ -16187,7 +16187,8 @@ setJerryHistory(prev => {
                               {d.hasData
                                  ? `${d.wins}-${d.losses}`
                                  : (SPORT_LAUNCH_LABEL[receiptsSport]
-                                    || (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data'))}
+                                    ? '0-0'
+                                    : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data'))}
                             </Text>
                             {/* 2026-09-07: Ladder is a COMPOUNDING product —
                                 one play/day, winnings roll onto the next
@@ -16223,7 +16224,7 @@ setJerryHistory(prev => {
                                     <Text style={{color:THEME.textMuted,fontSize:11}}>{sp.icon} {sp.label}</Text>
                                     <Text style={{color: spHitColor, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
                                       {!spD.hasData
-                                         ? (SPORT_LAUNCH_LABEL[sp.id] || '—')
+                                         ? (SPORT_LAUNCH_LABEL[sp.id] ? '0-0' : '—')
                                          : `${spD.hitPct.toFixed(0)}%`}
                                     </Text>
                                   </View>
