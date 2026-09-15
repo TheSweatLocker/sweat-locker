@@ -834,12 +834,21 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                 new_label = None
                 new_type = None
                 if close_spr is not None and team_name:
-                    # NCAAF/NFL convention: negative close_spread = home favorite
-                    # (line is applied to home team). Team's own spread = sign-flipped
-                    # when they're the away team.
+                    # 2026-09-15 BUG FIX: NFL close_spread is POSITIVE = home
+                    # favorite (opposite of MLB/NCAAF). Prior code assumed
+                    # negative=home-fav for both sports, so NFL home
+                    # favorites got labeled with the WRONG sign — Andy hit
+                    # this on CLE @ TB 9/20: TB is home favorite by 8.5
+                    # (ML -410) but label rendered "TB +8.5" as if TB were
+                    # the dog. Same class as project_close_spread_sign_bug_914.
+                    # Fix: sport-aware sign interpretation matching
+                    # ensemble_scorer._label_from_candidate line 1484-1487.
                     try:
                         spr = float(close_spr)
-                        team_spr = spr if lr_side == 'HOME' else -spr
+                        # For NFL, positive spread = home fav → home's own line is NEGATIVE spread.
+                        # For MLB/NCAAF/NBA/NHL/NCAAB, negative spread = home fav (home's line = spread itself).
+                        home_line = -spr if sport == 'NFL' else spr
+                        team_spr = home_line if lr_side == 'HOME' else -home_line
                         sign = '' if team_spr < 0 else '+'
                         new_label = f'{team_name} {sign}{team_spr:g}'
                         new_type = 'rl'
