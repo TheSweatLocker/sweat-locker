@@ -439,13 +439,21 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # them to STRONG+ tier so LEAN volume doesn't flood the render loop.
     # Client-side filter shipped alongside as belt-and-suspenders — see
     # fetchPipelineProps in app/index.tsx around line 8104.
+    #
+    # 2026-09-15 (later): hits_under REMOVED from ban. This family HAS
+    # full app support (PROP_TYPE_LABELS['hits'] + label formatter at
+    # index.tsx:15298 for hits_over/hits_under). Grouped with the other
+    # UNDER families by mistake during morning emergency. Andy hit the
+    # symptom immediately: 37 hits_under PRIME/STRONG rows in view (all
+    # LR p_hit 0.89-0.91 real edge) had NO jerry_reads → cards rendered
+    # raw prop with no L5/L10 chart, no short_read. Un-banned; prop synth
+    # backfills those 37 rows for tonight.
     _MLB_BANNED_PROP_TYPES = {
         'rbis_over',        'rbis_under',
         'total_bases_over', 'total_bases_under',
         'hr_over',          'hr_under',
         'runs_over',        'runs_under',
         'batter_ks_over',   'batter_ks_under',
-        'hits_under',
     }
     if sport == 'MLB':
         _before_ban = len(props)
