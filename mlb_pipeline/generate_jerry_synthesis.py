@@ -450,6 +450,37 @@ def parse_synthesis(raw: str) -> dict:
     long_ = _section("LONG") or ""
     call_block = _section("CALL") or ""
 
+    # 2026-09-15 fix (Ledger audit bug #6 upstream half): when Jerry's
+    # response omits the ---SHORT--- section (rare but happens on
+    # thin-data games), short becomes '' and every downstream consumer
+    # of short_read renders blank explanations. Symptom: Cubs ML leg
+    # on Daily Degen 9/15 shipped with reason=''. Daily Degen has its
+    # own fallback (a3fec236) but the source table should also never
+    # store empty short_read for a valid pick — otherwise every
+    # consumer needs its own fallback code path.
+    #
+    # Fallback ladder: (1) truncated LONG, (2) minimum-viable synthesis
+    # from CALL block. Both preserve the user-facing sentence contract.
+    if not short.strip():
+        if long_.strip():
+            short = long_.strip()[:220]
+            print(f"  ⚠ SHORT section missing — falling back to LONG truncated")
+        elif call_block.strip():
+            # Extract a sentence-shaped one-liner from the CALL fields.
+            # This runs before _field() below, so use a simple regex.
+            _m = re.search(r'MARKET:\s*(\w+)', call_block)
+            _mkt = (_m.group(1) if _m else '?').lower()
+            _s = re.search(r'SIDE:\s*(\w+)', call_block)
+            _side = (_s.group(1) if _s else '?').upper()
+            _l = re.search(r'LINE:\s*([\d.\-+]+)', call_block)
+            _line = _l.group(1) if _l else ''
+            _c = re.search(r'CONVICTION:\s*(\d+)', call_block)
+            _conv = _c.group(1) if _c else '?'
+            short = (f'Engine call: {_mkt.upper()} {_side} {_line} '
+                     f'(conviction {_conv}). Full narrative pending — '
+                     f'read the underlying pipeline signals for detail.').strip()
+            print(f"  ⚠ SHORT missing + LONG missing — synthesized floor from CALL")
+
     # Defense-in-depth (2026-08-03): globally strip markdown from CALL block
     # BEFORE field extraction. Jerry occasionally wraps field names AND values
     # in ** (e.g. "**MARKET:** **ML**"), which broke prior surround-only fixes.
