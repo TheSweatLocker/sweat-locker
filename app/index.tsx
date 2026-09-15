@@ -14502,7 +14502,21 @@ setJerryHistory(prev => {
     narrative + call chip on its game list card. */}
 {game.id && jerryReads[game.id] && (()=>{
   const jr = jerryReads[game.id];
-  const cleanShort = scrubJerryText(jr.short_read);
+  // 2026-09-15: fallback synth when short_read is NULL. Class of bug:
+  // generate_jerry_synthesis LLM call occasionally times out or returns
+  // empty and writes a scaffold row (prompt_version=synthesis_v1, call_*
+  // fields populated, short_read+long_read=NULL). Prior behavior: whole
+  // Jerry block hidden on null → card looked like Jerry had no read at
+  // all. Now: synthesize a short one-liner from call_text + conviction
+  // so at minimum the reader sees which side + conviction Jerry landed
+  // on. Server-side regen (generate_jerry_synthesis --force) still
+  // catches up on next cron; this is the graceful-degrade path.
+  let cleanShort = scrubJerryText(jr.short_read);
+  if (!cleanShort && jr.call_text && String(jr.call_market || '').toLowerCase() !== 'pass') {
+    const _tier = jr.conviction >= 80 ? 'PRIME' : jr.conviction >= 70 ? 'STRONG' : jr.conviction >= 60 ? 'LEAN' : 'LIGHT';
+    const _convStr = jr.conviction ? ` (Jerry ${Math.round(jr.conviction)})` : '';
+    cleanShort = `${_tier} · ${jr.call_text}${_convStr}. Full read pending.`;
+  }
   if (!cleanShort) return null;
   // 2026-09-06 PAYWALL GATE — Jerry short_read on the LIST card leaks
   // the actual pick reasoning (badge label + prose snippet) for free
