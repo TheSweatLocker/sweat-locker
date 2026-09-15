@@ -1047,6 +1047,85 @@ def build_teaser(picks: list[dict], sport_filter: Optional[str] = None) -> Optio
     }
 
 
+def build_prime_teased_single(picks: list[dict], exclude_games: set = None) -> Optional[dict]:
+    """Build a SINGLE-leg teased play on the highest-conviction PRIME
+    total/spread pick — the "cheat the line for more juice + better hit
+    probability" pattern Andy asked for on 2026-09-15.
+
+    Unlike build_teaser (which requires a paired PRIME leg and often
+    silently no-ops when the slate has only one strong pick), this
+    returns a single-leg suggestion suitable as a solo Ledger play.
+
+    Gate: PRIME tier ONLY, market in (total, rl, spread), original_line
+    present, absolute teased_odds cap at -300 (juice ceiling — beyond
+    that even the improved hit prob doesn't clear break-even).
+
+    Rationale: recent 50-pick Ledger audit found chalk_parlay +0.75u
+    ONLY positive kind. Everything else (teased_totals_combo,
+    teased_spreads_combo, teaser) lost money. User directive: kill the
+    losers but avoid empty Ledger days. Single-leg PRIME teased fills
+    the gap with the family that has EV structurally — cheated PRIMEs.
+    """
+    exclude_games = exclude_games or set()
+    tease_candidates = [
+        p for p in picks
+        if p.get('tier') == 'PRIME'
+        and p.get('market') in ('total', 'rl', 'spread')
+        and p.get('original_line') is not None
+        and p.get('original_odds') is not None
+        and p.get('game_id') not in exclude_games
+    ]
+    if not tease_candidates:
+        return None
+
+    # Highest conviction wins; break ties toward totals over spreads
+    # (totals crossing key numbers reliably, spreads have more variance).
+    tease_candidates.sort(key=lambda p: (-p.get('conviction', 0),
+                                         0 if p['market'] == 'total' else 1))
+    pick = tease_candidates[0]
+    sport = pick['sport']
+    step = TEASER_STEP.get(sport, 1.5)
+    orig_line = float(pick['original_line'])
+    orig_odds = pick['original_odds']
+    side = (pick.get('side') or '').upper()
+    market = pick['market']
+
+    if market == 'total':
+        if side == 'OVER': teased_line = orig_line - step
+        else:              teased_line = orig_line + step
+    elif market in ('rl', 'spread'):
+        # Move toward pick's coverage regardless of fav/dog
+        teased_line = orig_line + step if orig_line < 0 else orig_line + step
+    else:
+        return None
+
+    teased_odds = teaser_price(sport, market, orig_odds, step)
+    # Juice ceiling: even PRIME EV can't survive worse than -300.
+    if teased_odds is None or teased_odds < -300:
+        return None
+
+    return {
+        'kind': 'prime_teased_single',
+        'sport_scope': sport,
+        'legs': [{
+            'sport': sport, 'game_id': pick.get('game_id'),
+            'matchup': pick['matchup'], 'market': market,
+            'pick': pick['pick'], 'original_odds': orig_odds,
+            'original_line': orig_line, 'teased_line': teased_line,
+            'teased_odds': teased_odds, 'tier': pick['tier'],
+            'conviction': pick.get('conviction'),
+            'side': side or None,
+        }],
+        'combined_odds': teased_odds,
+        'reasoning': (
+            f'PRIME teased single: {pick["pick"]} → {teased_line} @ '
+            f'{"+" if teased_odds > 0 else ""}{teased_odds}. Cheated {step} '
+            f'{"runs" if sport == "MLB" else "points"} off the line for higher '
+            f'hit prob at PRIME conviction {pick.get("conviction")}.'
+        ),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # WRITE + RUN
 # ═══════════════════════════════════════════════════════════════════════
@@ -1120,48 +1199,48 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
         suggestions.append(chalk); register(chalk)
         print(f'  ✓ CHALK TRIO: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
 
-    # 2. Teased totals combo — RE-ENABLED 2026-09-11 with PRIME-only gate.
-    # Was paused 8/25 after bleeding -3u/day when LEAN/STRONG legs went in.
-    # User directive "prime plays that are teased" means we only tease legs
-    # we already believe strongly in; the composer now returns None unless
-    # 2 PRIME totals exist. On quiet slates it silently no-ops.
-    teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
-    if teased_totals:
-        suggestions.append(teased_totals); register(teased_totals)
-        print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
-    else:
-        print('  ⏸ TEASED TOTALS COMBO — no eligible PRIME totals pair today')
+    # 2026-09-15 LEDGER DISCIPLINE PASS. 50-pick audit found only
+    # chalk_parlay positive (+0.75u). Every other kind bled:
+    #   teased_totals_combo -1.45u (n=19 · 47%)
+    #   teaser              -3.65u (n=6 · 17%)
+    #   teased_spreads_combo -2.00u (n=2 · 0%)
+    #   chalk_prop_parlay   -5.00u (already dead-pathed)
+    # Total Ledger: -11.35u over 50 picks (-22.7% ROI).
+    #
+    # User directive 2026-09-15: kill the losers, avoid empty Ledger
+    # days. Replace the 3 losing kinds with `build_prime_teased_single`
+    # — a SINGLE-leg PRIME tease that cheats the line for higher hit
+    # prob without the pair-math tax. Keeps Ledger at 1-2 plays/day
+    # while dropping the losing kinds.
+    LEDGER_MULTI_TEASE_KILL = True
 
-    # 3. Teased spreads combo — 2026-08-18 per user: "Could also tease
-    # spreads across sports like Reds +2.5." Mirror of totals combo for
-    # RL/spread picks (MLB RL, NFL/NCAAF/NCAAB spreads).
-    teased_spreads = build_teased_spreads_combo(picks, exclude_games=used_games)
-    if teased_spreads:
-        suggestions.append(teased_spreads); register(teased_spreads)
-        print(f'  ✓ TEASED SPREADS COMBO: {teased_spreads["combined_odds"]:+d}')
+    if not LEDGER_MULTI_TEASE_KILL:
+        # DEAD PATH kept for archaeology + fast rollback. Re-enable by
+        # flipping the flag above.
+        teased_totals = build_teased_totals_combo(picks, exclude_games=used_games)
+        if teased_totals:
+            suggestions.append(teased_totals); register(teased_totals)
+            print(f'  ✓ TEASED TOTALS COMBO: {teased_totals["combined_odds"]:+d}')
+        teased_spreads = build_teased_spreads_combo(picks, exclude_games=used_games)
+        if teased_spreads:
+            suggestions.append(teased_spreads); register(teased_spreads)
+            print(f'  ✓ TEASED SPREADS COMBO: {teased_spreads["combined_odds"]:+d}')
+        for sf in ('MLB', 'NFL', 'NCAAF', 'NCAAB'):
+            t = build_teaser(picks, sport_filter=sf)
+            if t and all(l.get('game_id') not in used_games for l in t['legs']):
+                suggestions.append(t); register(t)
+                print(f'  ✓ {sf} TEASER: {t["combined_odds"]:+d}')
 
-    # 3. Single-sport teaser (spread/total tease + strong pair leg). Kept
-    # as fallback when neither trio nor totals-combo composes.
-    mlb_teaser = build_teaser(picks, sport_filter='MLB')
-    if mlb_teaser and all(l.get('game_id') not in used_games for l in mlb_teaser['legs']):
-        suggestions.append(mlb_teaser); register(mlb_teaser)
-        print(f'  ✓ MLB TEASER: {mlb_teaser["combined_odds"]:+d} · '
-              f'{mlb_teaser["legs"][0]["pick"]} → {mlb_teaser["legs"][0]["teased_line"]}')
-
-    nfl_teaser = build_teaser(picks, sport_filter='NFL')
-    if nfl_teaser and all(l.get('game_id') not in used_games for l in nfl_teaser['legs']):
-        suggestions.append(nfl_teaser); register(nfl_teaser)
-        print(f'  ✓ NFL TEASER: {nfl_teaser["combined_odds"]:+d}')
-
-    ncaaf_teaser = build_teaser(picks, sport_filter='NCAAF')
-    if ncaaf_teaser and all(l.get('game_id') not in used_games for l in ncaaf_teaser['legs']):
-        suggestions.append(ncaaf_teaser); register(ncaaf_teaser)
-        print(f'  ✓ NCAAF TEASER: {ncaaf_teaser["combined_odds"]:+d}')
-
-    ncaab_teaser = build_teaser(picks, sport_filter='NCAAB')
-    if ncaab_teaser and all(l.get('game_id') not in used_games for l in ncaab_teaser['legs']):
-        suggestions.append(ncaab_teaser); register(ncaab_teaser)
-        print(f'  ✓ NCAAB TEASER: {ncaab_teaser["combined_odds"]:+d}')
+    # 2. Single-leg PRIME teased — the winning cheat. Fires only when
+    # a PRIME total/spread exists that hasn't been used by chalk_parlay.
+    # Silent no-op on quiet slates; no bet is a bet.
+    prime_teased = build_prime_teased_single(picks, exclude_games=used_games)
+    if prime_teased:
+        suggestions.append(prime_teased); register(prime_teased)
+        leg0 = prime_teased['legs'][0]
+        print(f'  ✓ PRIME TEASED SINGLE: {leg0["pick"]} → {leg0["teased_line"]} '
+              f'@ {"+" if leg0["teased_odds"]>0 else ""}{leg0["teased_odds"]} '
+              f'(conv {leg0["conviction"]})')
 
     # 5. Hits parlay — KILLED 2026-09-10 per 30d audit.
     # Record: 1-3 (25%) at avg +188 = -0.60u. Occupying a Ledger slot that
