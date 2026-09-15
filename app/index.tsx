@@ -296,6 +296,11 @@ const BOOKMAKER_MAP = {
   'draftkings':'DraftKings','fanduel':'FanDuel','espnbet':'ESPN Bet',
   'betmgm':'BetMGM','caesars':'Caesars','bet365':'Bet365',
   'williamhill_us':'Caesars','hardrockbet':'Hard Rock','hardrock':'Hard Rock',
+  // 2026-09-15: UFC card uppercase-mangling. Odds API "rebet" key was
+  // rendered as "REBET" via the .toUpperCase() fallback at line ~15097,
+  // which Andy read as an app bug on UFC cards. Map to proper display.
+  'rebet':'Rebet','thescore':'theScore','betrivers':'BetRivers',
+  'pointsbet':'PointsBet','bally':'Bally','sugarhouse':'SugarHouse',
 };
 // Odds API uses slightly different names for some MLB teams — map alternates to canonical MLB Stats API names
 const MLB_TEAM_ALIASES: Record<string, string[]> = {
@@ -15094,7 +15099,7 @@ setJerryHistory(prev => {
                               preferredBook (Batch 2). Hard Rock keeps its 🎸
                               branding to stay recognizable; other books get
                               a neutral 📊 marker + their name. */}
-                          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6}}>{hrbLine.isHRB ? '🎸 HARD ROCK BET' : `📊 ${(hrbLine.bookLabel || 'BOOK').toUpperCase()}`}</Text>
+                          <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'800',marginBottom:6,letterSpacing:0.5}}>{hrbLine.isHRB ? '🎸 HARD ROCK BET' : `📊 ${hrbLine.bookLabel || 'Book'}`}</Text>
                           <View style={{flexDirection:'row',gap:6}}>
                             {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
                             {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
