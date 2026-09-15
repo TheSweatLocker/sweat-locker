@@ -632,10 +632,16 @@ def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
     if dry_run:
         print(f'  [DRY] would upsert rung: {rung}')
         return
-    # Insert rung. gates_passed is only in the payload once its migration
-    # (20260819_ladder_gates_passed.sql) is applied — strip it if the column
-    # isn't there yet so this doesn't 400 on days migration hasn't shipped.
-    write_row = {k: v for k, v in rung.items() if k != 'gates_passed'}
+    # 2026-09-15 fix: previously stripped gates_passed with a comment
+    # about the 20260819_ladder_gates_passed.sql migration not being
+    # applied. Migration IS applied — verified by direct PATCH round-trip
+    # today. Column stayed NULL on all 15 existing rows because this
+    # writer explicitly dropped it. Downstream retro auditing of "which
+    # gates passed for each qualifier" was blank as a result.
+    # Now: write gates_passed directly. Keep the qualification_notes
+    # summary line for backward-compat with old consumers that still
+    # parse it.
+    write_row = dict(rung)
     write_row['qualification_notes'] = (
         f"[gates={rung.get('gates_passed')}/5] " + (rung.get('qualification_notes') or '')
     )[:500]
