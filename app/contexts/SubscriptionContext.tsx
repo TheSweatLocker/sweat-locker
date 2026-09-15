@@ -31,6 +31,23 @@
  */
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+
+// 2026-09-15: Expo Go dev-only Pro-bypass. RevenueCat's native module
+// isn't bundled into Expo Go's shared shell, so Purchases.purchasePackage()
+// is a silent no-op — you tap Subscribe and nothing happens. Andy hit this
+// on the SDK 57 upgrade's first Expo Go QA session. Fix: detect Expo Go
+// via Constants.appOwnership === 'expo' AND __DEV__ AND enable via env
+// flag. Any dev-client, preview, or production build has appOwnership
+// 'standalone' or null, so this bypass is invisible in every non-Expo-Go
+// context — no risk of leaking free Pro to real users.
+//
+// Enable in .env with: EXPO_PUBLIC_EXPO_GO_DEV_PRO=1
+// (defaults ON in Expo Go since QA-with-paywall is the whole reason
+//  we're on Expo Go instead of dev-client)
+const IS_EXPO_GO = Constants.appOwnership === 'expo';
+const EXPO_GO_DEV_PRO = __DEV__ && IS_EXPO_GO
+  && (process.env.EXPO_PUBLIC_EXPO_GO_DEV_PRO !== '0');
 
 let Purchases: any = null;
 let LOG_LEVEL: any = { DEBUG: 'debug' };
@@ -79,13 +96,22 @@ const SubscriptionContext = createContext<SubscriptionContextValue>({
 export const useSubscription = () => useContext(SubscriptionContext);
 
 export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isPro, setIsPro] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isPro, setIsPro] = useState(EXPO_GO_DEV_PRO);
+  const [isLoading, setIsLoading] = useState(!EXPO_GO_DEV_PRO);
   const [customerInfo, setCustomerInfo] = useState<any | null>(null);
   const [offerings, setOfferings] = useState<any | null>(null);
 
   useEffect(() => {
     const init = async () => {
+      if (EXPO_GO_DEV_PRO) {
+        // 2026-09-15 Expo Go dev bypass — RC native module missing in
+        // Expo Go, so paywall was blocking Andy's SDK-57 QA session.
+        // Grant Pro locally so paywalled tabs render; no network call.
+        console.log('[Subscription] Expo Go dev mode — bypassing paywall, granting Pro');
+        setIsPro(true);
+        setIsLoading(false);
+        return;
+      }
       if (!Purchases) {
         // Module missing or native binding unavailable — free-tier stub
         setIsLoading(false);
