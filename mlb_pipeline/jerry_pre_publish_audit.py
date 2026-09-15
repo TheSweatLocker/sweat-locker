@@ -1132,7 +1132,21 @@ def auto_repair(sport: str, game_date: str) -> dict:
                         f'{summary["away_or_under_votes"]} AWAY/UNDER).] '
                         f'Original take: ' + (r.get('short_read') or '')[:400]
                     )
+                    # 2026-09-15 BUG FIX: prior payload flipped call_market
+                    # → 'pass' + conviction → 40 + prose, but LEFT
+                    # call_side / call_line / call_text untouched. Result:
+                    # row ends up with call_market='pass' alongside
+                    # call_text='Under 9.0' + call_side='UNDER'. App badge
+                    # renders from call_text (STRONG UNDER color) while
+                    # short_read says "we're passing" → user-visible
+                    # contradiction. Andy hit this on WSOX @ CLE 9/15.
+                    # Full null-out so no downstream renderer paints the
+                    # play as live.
                     payload = {'call_market': 'pass', 'conviction': 40,
+                               'call_side': None,
+                               'call_line': None,
+                               'call_text': None,
+                               'call_odds_est': None,
                                'short_read': user_short[:2000],
                                'long_read': user_long[:2000],
                                'audit_notes': audit_note[:1500]}
