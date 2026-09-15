@@ -169,18 +169,64 @@ def build_payload(row: dict) -> dict | None:
 
 
 def upsert_batch(payloads: list[dict], dry_run: bool) -> int:
+    """Upsert each payload as PATCH-if-exists (by game_date+home+away)
+    else INSERT. 2026-09-15 fix: nflverse ships game_id shape
+    `YYYY_WW_AWAY_HOME` (e.g. `2026_01_DEN_KC`) but upstream context
+    creation stamps rows with our internal `YYYYMMDD_AWAY_HOME` shape
+    (e.g. `20260915_DEN_KC`). Upserting on `on_conflict=game_id` used
+    to CREATE a duplicate row with nflverse's id, leaving the existing
+    row's scores forever NULL. Root cause of MNF DEN@KC 9/15 gap.
+
+    New logic: for each payload, look up the row by
+    (game_date, home_team, away_team) composite. If found, PATCH via
+    its actual game_id (whatever format it has). If not, INSERT new
+    with the nflverse-shaped game_id. Slower than batch upsert but
+    correct against any pre-existing id shape.
+    """
     if not payloads: return 0
     if dry_run:
-        print(f'  [DRY] would upsert {len(payloads)} rows')
-        # Show 3 sample payloads
+        print(f'  [DRY] would upsert {len(payloads)} rows via patch-then-insert')
         for p in payloads[:3]:
             print(f'    sample: {p.get("game_id")}: {p.get("home_team")} {p.get("home_score", "?")} - {p.get("away_score", "?")} {p.get("away_team")}')
         return len(payloads)
-    r = requests.post(f'{SB}/rest/v1/nfl_game_results?on_conflict=game_id',
-                      headers=H_W, json=payloads, timeout=60)
-    if r.status_code in (200, 201, 204): return len(payloads)
-    print(f'  ⚠ upsert failed {r.status_code}: {r.text[:300]}')
-    return 0
+
+    ok = 0
+    insert_batch: list[dict] = []
+    for p in payloads:
+        gd = p.get('game_date'); hm = p.get('home_team'); aw = p.get('away_team')
+        if not (gd and hm and aw):
+            continue
+        # Existing row lookup by composite
+        r_look = requests.get(f'{SB}/rest/v1/nfl_game_results',
+                              headers={'apikey': H_W['apikey'], 'Authorization': H_W['Authorization']},
+                              params={'select': 'game_id',
+                                      'game_date': f'eq.{gd}',
+                                      'home_team': f'eq.{hm}',
+                                      'away_team': f'eq.{aw}'},
+                              timeout=20)
+        existing = r_look.json() if r_look.status_code == 200 else []
+        if existing and isinstance(existing, list):
+            # PATCH the existing row's id — preserves whatever id
+            # shape upstream context writers stamped.
+            existing_id = existing[0].get('game_id')
+            # Drop game_id from payload so we don't overwrite the id itself
+            patch_payload = {k: v for k, v in p.items() if k != 'game_id'}
+            r_p = requests.patch(f'{SB}/rest/v1/nfl_game_results?game_id=eq.{existing_id}',
+                                 headers=H_W, json=patch_payload, timeout=30)
+            if r_p.status_code in (200, 201, 204):
+                ok += 1
+        else:
+            insert_batch.append(p)
+
+    # Bulk insert everything that didn't have an existing row
+    if insert_batch:
+        r_i = requests.post(f'{SB}/rest/v1/nfl_game_results?on_conflict=game_id',
+                            headers=H_W, json=insert_batch, timeout=60)
+        if r_i.status_code in (200, 201, 204):
+            ok += len(insert_batch)
+        else:
+            print(f'  ⚠ insert-batch failed {r_i.status_code}: {r_i.text[:300]}')
+    return ok
 
 
 def main():
