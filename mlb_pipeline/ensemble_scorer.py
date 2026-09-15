@@ -1559,6 +1559,37 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
         # Convert fight to 'ml' shape for downstream since app reads primary_play.type=='ml' universally
         ml_dec.market = 'ml'
 
+    # 2026-09-14 LR-ML PROMOTION. Per NFL Week 1 audit + Andy directive:
+    # when LR ML shadow is STRONG/PRIME AND agrees with our ML pick's
+    # side, boost ML conviction by +8 before the top-market race. This
+    # fixes the KC ML case: LR called KC ML STRONG (p_home=0.575), but
+    # ensemble picked a total COVERAGE. LR-strong-ML shouldn't lose the
+    # tiebreak to a low-tier total when the LR model has been proven the
+    # single strongest signal this season (10-6 SU / 6-2 PRIME @ 75% W1).
+    #
+    # Only boosts when LR agrees with ml_dec.side — never manufactures
+    # a pick out of nothing, only elevates one we were already going to
+    # publish. Cost: negligible (one lazy LR predict call per game).
+    if ml_dec.pick is not None and ml_dec.side:
+        try:
+            from defensive_gates import (
+                _lr_predict_ml,
+                _LR_MODEL_MLB_ML, _LR_MODEL_NFL_ML, _LR_MODEL_NCAAF_ML,
+                _LR_MODEL_NHL_ML, _LR_MODEL_NBA_ML,
+            )
+            _MODEL = {'MLB': _LR_MODEL_MLB_ML, 'NFL': _LR_MODEL_NFL_ML,
+                      'NCAAF': _LR_MODEL_NCAAF_ML, 'NHL': _LR_MODEL_NHL_ML,
+                      'NBA': _LR_MODEL_NBA_ML}.get(sport.upper())
+            if _MODEL is not None:
+                _pred = _lr_predict_ml(ctx, model=_MODEL)
+                if isinstance(_pred, dict):
+                    _lr_tier = _pred.get('suggested_tier')
+                    _lr_side = _pred.get('suggested_side')
+                    if _lr_tier in ('STRONG', 'PRIME') and _lr_side == ml_dec.side:
+                        ml_dec.conviction = min(100, (ml_dec.conviction or 0) + 8)
+        except Exception:
+            pass  # never break scoring if LR import/predict raises
+
     # Determine top market (highest conviction with a pick)
     picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
              if d.pick is not None]
