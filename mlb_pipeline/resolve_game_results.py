@@ -331,6 +331,16 @@ def run():
                                 f5_result = 'Over' if f5_total > float(f5_total_line) else 'Under' if f5_total < float(f5_total_line) else 'Push'
 
                             # Update Supabase
+                            # 2026-09-15: add total_runs to primary write path. Prior
+                            # payload wrote home_score + away_score but LEFT total_runs
+                            # NULL on every graded row that flowed through this path.
+                            # Downstream LR-total retro grading + MC audit + LR dissent
+                            # audit silently no-op'd because they filtered on total_runs
+                            # not null. Root of the "MLB LR total performance = 0-0"
+                            # audit blank I hit on 2026-09-15. margin_of_victory is
+                            # already populated by an earlier writer path — this one
+                            # doesn't need to touch it. Also NOT touching `margin`
+                            # (col doesn't exist — different schema shape).
                             print(f'  Attempting patch for game_id: {game_id}')
                             patch_resp = requests.patch(
                                 f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{game_id}',
@@ -338,6 +348,7 @@ def run():
                                 json={
                                     'home_score': home_score,
                                     'away_score': away_score,
+                                    'total_runs': total_runs,
                                     'home_win': home_win,
                                     'total_result': total_result,
                                     'run_line_result': run_line,
