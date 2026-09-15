@@ -386,17 +386,30 @@ export default function GameDetailV2({
         }
       }
 
-      // Fetch props (MLB only for now)
+      // Fetch props (MLB only for now).
+      // 2026-09-15 CRITICAL: was reading raw mlb_pipeline_props which
+      // bypasses view Rules 4/5/6/7 (batter-family bans, COVERAGE tier
+      // block, LEAN hits ban). Result: banned families (runs/rbis/
+      // total_bases/hr and hits_over) leaked into the Game Props section
+      // of game detail modal even though Prop Jerry hid them. Andy hit
+      // this on ATH @ TB: Heim total_bases_under, Aranda rbis_under,
+      // Mesa runs_over etc. all showed PRIME here. Fix: use the same
+      // view Prop Jerry uses — v_mlb_props_publishable — so every ban
+      // applies universally.
       if ((!gamePropsProp || gamePropsProp.length === 0) && gamesSport === 'MLB') {
         const {data: propData, error: propErr} = await client
-          .from('mlb_pipeline_props')
-          .select('player_name,player_team,prop_type,direction,prop_line,conviction,tier,signals')
+          .from('v_mlb_props_publishable')
+          .select('player_name,player_team,prop_type,direction,prop_line,display_conviction,tier,signals')
           .eq('game_date', gameDate)
           .eq('game_id', gid)
-          .order('conviction', {ascending: false})
+          .order('display_conviction', {ascending: false})
           .limit(15);
         if (propErr) console.warn('[GameDetailV2] props fetch error:', propErr.message);
-        if (!cancelled && propData) setFetchedProps(propData);
+        if (!cancelled && propData) {
+          // View returns display_conviction; map to conviction for downstream
+          // GamePropsPanel that expects that key.
+          setFetchedProps(propData.map((p: any) => ({...p, conviction: p.display_conviction})));
+        }
       }
     })();
 
