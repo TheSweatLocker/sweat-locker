@@ -102,9 +102,20 @@ def _normalize_team(name: str, sport: str) -> str:
     if not name:
         return name
     if sport == 'nba':
-        return name  # DB already uses full names
+        # 2026-09-15: NBA mostly uses full names, but "Los Angeles Clippers"
+        # is stored as "LA Clippers" in nba_game_results (found 89 NULL rows
+        # for that team after 9/15 backfill dry-run reported success but
+        # actually skipped every Clippers game). Also handle Lakers just in
+        # case — historical audit showed Lakers stored as "Los Angeles
+        # Lakers" (full) so no swap needed, but leave the mapping tolerant.
+        return _NBA_ODDS_TO_DB.get(name, name)
     # NHL: strip mascot; normalize accents (Montréal in DB has "é")
     return _NHL_ODDS_TO_DB.get(name, name)
+
+
+_NBA_ODDS_TO_DB = {
+    'Los Angeles Clippers': 'LA Clippers',
+}
 
 _NHL_ODDS_TO_DB = {
     'Anaheim Ducks': 'Anaheim',
@@ -292,23 +303,28 @@ def _extract_prices(game: dict, sport: str) -> dict | None:
 
 
 def upsert_row(sport: str, game_date: str, home: str, away: str,
-               prices: dict, dry_run: bool) -> bool:
+               prices: dict, dry_run: bool) -> int:
     """PATCH the matching {sport}_game_results row with close_* fields.
     Only updates NULL fields (never overwrites live-captured lines).
-    Returns True on success."""
+    Returns the number of rows actually written (0 on match miss, 1 on
+    success, 0 on failure). 2026-09-15: prior return was bool True on any
+    HTTP 204, which counted "PATCH filter matched 0 rows" as an upsert —
+    9/15 live run reported upserted=696 but DB delta was 0. Switched to
+    Prefer: return=representation so len(r.json()) gives actual affected
+    row count."""
     meta = SPORT_META[sport]
     # Filter prices to only cols this table accepts
     payload = {k: v for k, v in prices.items() if k in meta['target_cols']}
     if not payload:
-        return False
+        return 0
     if dry_run:
         _log(f'  DRY-RUN would PATCH {game_date} {away}@{home}: {payload}')
-        return True
+        return 1
     # Only patch if close_home_ml is still NULL (never overwrite)
     r = requests.patch(
         f'{SB}/rest/v1/{meta["results_table"]}',
         json=payload,
-        headers={**H_W, 'Prefer': 'return=minimal'},
+        headers={**H_W, 'Prefer': 'return=representation'},
         params={
             'game_date': f'eq.{game_date}',
             'home_team': f'eq.{home}',
@@ -319,8 +335,11 @@ def upsert_row(sport: str, game_date: str, home: str, away: str,
     )
     if not r.ok:
         _log(f'  PATCH FAILED {r.status_code}: {r.text[:200]}')
-        return False
-    return True
+        return 0
+    try:
+        return len(r.json() or [])
+    except Exception:
+        return 0
 
 
 def backfill_date(sport: str, game_date: str, dry_run: bool) -> tuple[int, int]:
