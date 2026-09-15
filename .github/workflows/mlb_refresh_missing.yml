@@ -1,0 +1,67 @@
+name: MLB refresh missing sweat_scores + jerry_reads
+
+# 2026-09-15 — fills the "late slate arrival" gap. The main mlb_pipeline
+# workflow runs at 10:00 / 11:15 / 12:30 UTC (morning waves) + 18:00 UTC
+# (2 PM ET refresh). Games added to mlb_game_context between the last
+# morning wave and 2 PM (typical case: 9:30 AM ET when MLB Stats API
+# publishes late-announced starters) never get sweat_scored until the
+# 2 PM refresh — a 4-5 hour dark window where jerry_synth silently
+# skips those games. Users see missing reads on the app.
+#
+# Concrete example: 2026-09-15 slate — DET@TOR, BOS@TEX, SD@COL rows
+# were added at 13:32 UTC (9:32 AM ET), after the last morning wave.
+# Users saw 12/15 games with reads until my manual play_of_day + synth
+# re-ran at 14:00 UTC (10 AM ET).
+#
+# This workflow ONLY runs the lightweight refresh script — no full
+# pipeline overhead. Idempotent: refresh_missing_sweat_scores.py exits
+# early when nothing is missing.
+#
+# See mlb_pipeline/refresh_missing_sweat_scores.py for the actual work.
+
+on:
+  schedule:
+    # ~1-hour cadence between the last morning wave (12:30 UTC / 8:30 AM ET)
+    # and the 2 PM ET main refresh (18:00 UTC). Catches every plausible
+    # late-add window.
+    - cron: '30 13 * * *'  # 9:30 AM EDT (13:30 UTC) — catches typical MLB Stats API 9:30 announce
+    - cron: '30 14 * * *'  # 10:30 AM EDT (14:30 UTC)
+    - cron: '30 15 * * *'  # 11:30 AM EDT (15:30 UTC)
+    - cron: '30 16 * * *'  # 12:30 PM EDT (16:30 UTC)
+    - cron: '30 17 * * *'  # 1:30 PM EDT (17:30 UTC) — last sweep before main 2 PM refresh
+  workflow_dispatch:
+
+# Match main pipeline concurrency policy: queue not cancel.
+concurrency:
+  group: mlb-refresh-missing
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv numpy scikit-learn
+
+      - name: Refresh missing sweat_scores + jerry_reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python refresh_missing_sweat_scores.py || echo "refresh_missing non-fatal"
