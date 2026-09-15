@@ -1160,28 +1160,31 @@ def apply_trap_game_gate(pp, ctx, sport='NCAAF'):
 
 
 def apply_ncaaf_total_lr_override(pp, ctx):
-    """NCAAF total LR override — DEMOTE-ONLY mode.
-    Test acc 52.4% (+3.5pp lift) — model too weak to promote picks, but
-    the coin-flip signal is legitimate for killing high-conviction legacy
-    totals the LR flags as toss-ups. STRONG cap applied on any lift."""
+    """NCAAF total LR — SHADOW-ONLY mode (2026-09-15).
+
+    Prior code demoted pipeline total picks to COVERAGE whenever LR said
+    'coin flip'. But per project_ncaaf_lr_total_dead_914 (verified on
+    82/82 NCAAF Wk3 slate): the model is inert — trained on 6 market-line
+    features only, no team EPA / pace / weather / SP+. p_over ranges
+    only [0.4578, 0.5500] across the entire slate. Test lift is 1.47pp
+    over baseline 50.30% (test 51.77%).
+
+    Effect of prior behavior: EVERY NCAAF total pick that flowed through
+    this gate got demoted to COVERAGE because LR always said 'NONE side'.
+    Pipeline totals were being silently killed by a useless model.
+
+    Fix: skip the demote entirely. Keep the shadow write for observability
+    (still populates primary_play._lr_total_shadow so downstream Sharp Card
+    LR-shadow-conflict gate can read it — same as NFL total mode). Once
+    the v1.1 retrain adds real team features, the shadow will start
+    carrying signal and we can reinstate the demote.
+    """
     if _LR_MODEL_NCAAF_TOTAL is None: return pp
     try:
         pred = _lr_predict_total(ctx, model=_LR_MODEL_NCAAF_TOTAL)
         if pred is None: return pp
         old_pp = pp if isinstance(pp, dict) else {}
-        was_total = str(old_pp.get('type','')).lower() == 'total'
-        if pred['suggested_side'] == 'NONE':
-            if was_total:
-                # 2026-09-03 REVISED: keep label, demote tier only.
-                old_pp['_lr_total_shadow'] = pred
-                old_pp['_pre_lr_tier']  = old_pp.get('tier')
-                old_pp['tier']  = 'COVERAGE'
-                old_pp['audit_note'] = f'NCAAF total LR coin flip (p_over={pred["p_over"]:.2f}) — legacy demoted'
-                return old_pp
-            # Not a total pick — just shadow the LR verdict
-            old_pp['_lr_total_shadow'] = pred
-            return old_pp
-        # LR has a lean — but NCAAF total model too weak to promote; shadow only
+        # Shadow-only: write the prediction, never mutate tier
         old_pp['_lr_total_shadow'] = pred
         return old_pp
     except Exception:
