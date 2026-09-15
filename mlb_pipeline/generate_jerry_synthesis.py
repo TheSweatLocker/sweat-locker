@@ -1103,10 +1103,25 @@ def run(force: bool = False, game_date: str | None = None,
                         if crit:
                             halluc_count += len(crit)
                             new_prose = strip_hallucinated_sentences(prose, crit)
-                            if new_prose != prose:
+                            # 2026-09-15 BUG FIX: strip could remove EVERY sentence
+                            # when all contain hallucinated stats → empty prose →
+                            # row written with short_read=long_read=NULL. Andy hit
+                            # this on the 9/15 slate: 9 of 15 MLB games ended up
+                            # with blank reads after my regen. Guard: if strip
+                            # would empty the prose, KEEP THE ORIGINAL flagged
+                            # prose so the row has SOMETHING, and let the
+                            # audit_note flag it for review. Better a slightly
+                            # wrong sentence than a blank card.
+                            if new_prose and new_prose.strip():
                                 parsed[key] = new_prose
                                 print(f"  🚨 Layer E stripped {len(crit)} hallucinated "
                                       f"claim(s) about {pname} from {key}")
+                            elif prose and prose.strip():
+                                # Strip emptied everything — keep original, flag audit
+                                parsed.setdefault('_hallucination_flags', []).append(
+                                    f'{pname}:{key} — all sentences flagged, kept original')
+                                print(f"  🚨 Layer E strip would empty {key} for {pname} — "
+                                      f"kept original prose so row isn't blank")
                             else:
                                 print(f"  🚨 Layer E flagged {len(crit)} hallucination(s) "
                                       f"about {pname} in {key} but strip failed — audit will block")
