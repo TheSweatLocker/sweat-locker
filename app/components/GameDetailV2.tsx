@@ -1766,7 +1766,11 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     } else if (rec) {
       value = `${Number(rec.hit_rate)}% · n=${rec.sample_n}`;
     }
-    chips.push({term, label: tag.replace(/_/g, ' '), value, kind});
+    // 2026-09-15: use COHORT_LABEL_MAP for user-facing labels — was
+    // showing raw "nfl home fav" text. Andy audit callout: "the whole
+    // shtick is doing the math and surfacing to user in plain language".
+    const prettyLabel = COHORT_LABEL_MAP[t] || tag.replace(/_/g, ' ');
+    chips.push({term, label: prettyLabel, value, kind});
   }
 
   // LR shadow — pulled from primary_play._lr_ml_shadow / _lr_total_shadow
@@ -1777,9 +1781,13 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     const lrSide = lrMlP >= 0.55 ? 'HOME' : lrMlP < 0.45 ? 'AWAY' : 'PASS';
     if (lrSide !== 'PASS') {
       const agrees = isML && lrSide === pickSide;
+      // 2026-09-15: plain-language label. Was "LR HOME 0.78" which reads
+      // as jargon (users don't know LR = logistic regression, or that
+      // 0.78 is a probability). New: "Model 78% HOME" reads directly.
+      const pctPickSide = lrSide === 'HOME' ? lrMlP : (1 - lrMlP);
       chips.push({
         term: 'LR_SHADOW',
-        label: `LR ${lrSide} ${lrMlP.toFixed(2)}`,
+        label: `Model ${Math.round(pctPickSide * 100)}% ${lrSide}`,
         value: agrees ? 'agrees' : 'disagrees',
         kind: agrees ? 'ok' : 'warn',
       });
