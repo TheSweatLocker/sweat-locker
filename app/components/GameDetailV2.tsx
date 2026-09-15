@@ -4087,6 +4087,15 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   if (!isEnabled) return null;
   const div = ctx?.div_game;
   const restGap = (rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3);
+  // 2026-09-15: SignalsRow (Cohort Signals) already renders cohort_tags as
+  // plain-language chips with real hit-rate colors. Rendering the same
+  // tags AGAIN here — plus a standalone "Divisional" chip that duplicates
+  // any div_game / nfl_division_game cohort tag — is the redundancy Andy
+  // flagged (NO@BAL "Home Favorite" appears 3x). This card now owns only
+  // game-context items unique to it: THIS SEASON ATS/OU records, roof,
+  // and rest edge. Cohort pattern chips live one section up.
+  const tagsHasDiv = Array.isArray(tags)
+    && tags.some((t: string) => String(t).toLowerCase().includes('div'));
   // 2026-09-14: this-season ATS + O/U records for both teams. Reads
   // ctx.home_season_ats_wins / _losses / _ou_overs / _unders — populated
   // by backfill_nfl_season_records_from_results.py during early season +
@@ -4103,7 +4112,8 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   const aSeasonOuU  = ctx?.away_season_ou_unders;
   const hasSeasonRec = hSeasonAtsW != null || hSeasonAtsL != null
                      || aSeasonAtsW != null || aSeasonAtsL != null;
-  const hasAny = div || roof || restGap || (tags && tags.length) || hasSeasonRec;
+  const showDivChip = div && !tagsHasDiv;
+  const hasAny = showDivChip || roof || restGap || hasSeasonRec;
   if (!hasAny) return null;
   const _hHome = abbrev3(homeTeam) || 'HOME';
   const _aAway = abbrev3(awayTeam) || 'AWAY';
@@ -4130,18 +4140,15 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
           </View>
         </View>
       )}
-      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
-        {div && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
-        {roof && <SitChip label={`Roof: ${roof.charAt(0).toUpperCase() + roof.slice(1)}`} />}
-        {restGap && (
-          <SitChip label={`Rest edge: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
-        )}
-        {Array.isArray(tags) && tags.map((t: string, i: number) => {
-          // Prefer the ATS record if present (most tags are ATS-side); else total.
-          const rec = cohortRecords?.[`${t}|ats`] || cohortRecords?.[`${t}|total`];
-          return <SitChip key={i} label={prettyCohortTag(t)} record={rec} />;
-        })}
-      </View>
+      {(showDivChip || roof || restGap) && (
+        <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+          {showDivChip && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
+          {roof && <SitChip label={`Roof: ${roof.charAt(0).toUpperCase() + roof.slice(1)}`} />}
+          {restGap && (
+            <SitChip label={`Rest edge: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
+          )}
+        </View>
+      )}
     </Section>
   );
 }
