@@ -76,6 +76,105 @@ def _conviction_tier(conv: int) -> str:
     return "lean"
 
 
+LR_GATE_MIN = 0.60
+LR_GATE_MIN_RL = 0.55
+
+
+def _revalidate_locked_potd_lr(gd: str, locked_data: dict, dry_run: bool = False) -> None:
+    """Re-check LR support on an already-locked POTD against the FRESHEST
+    primary_play._lr_*_shadow values. If support has dropped below gate
+    since lock time, WRITE a warning flag to jerry_cache.data so the app
+    can render reduced-confidence messaging without flipping the pick.
+
+    Never auto-swaps the locked pick — the morning-committed POTD stays
+    for user-trust reasons. Only surfaces the discrepancy.
+
+    Root cause context: jerry_anchor_potd runs at workflow L2045 which is
+    BEFORE the final primary_play recompute at L2219. LR shadows can move
+    materially between those two steps as close lines lock. When later
+    crons hit the publish-lock, they used to early-return without checking
+    whether the LR-support-at-lock still holds. 2026-09-15 fix.
+    """
+    pick_sport = (locked_data.get('sport') or 'MLB').upper()
+    ctx_table = _context_table(pick_sport)
+    if not ctx_table:
+        return
+    game_id = locked_data.get('game_id') or (locked_data.get('game') or {}).get('game_id')
+    if not game_id:
+        return
+    # Pick market + side from locked data
+    pick = locked_data.get('pick') or {}
+    call_mkt = str(pick.get('market') or pick.get('call_market') or
+                   locked_data.get('call_market') or '').lower()
+    call_side = str(pick.get('side') or pick.get('call_side') or
+                    locked_data.get('call_side') or '').upper()
+
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{ctx_table}",
+        headers=H_READ,
+        params={"game_id": f"eq.{game_id}", "game_date": f"eq.{gd}",
+                "select": "primary_play"},
+        timeout=10)
+    if r.status_code != 200 or not r.json():
+        return
+    pp = r.json()[0].get('primary_play') or {}
+    if isinstance(pp, str):
+        try: import json as _j; pp = _j.loads(pp)
+        except Exception: pp = {}
+    pp = pp or {}
+    ml_shadow = pp.get('_lr_ml_shadow') or {}
+    tot_shadow = pp.get('_lr_total_shadow') or {}
+
+    p_support = None
+    gate = LR_GATE_MIN
+    if call_mkt == 'ml' and ml_shadow.get('p_home_win') is not None:
+        p_home = float(ml_shadow['p_home_win'])
+        p_support = p_home if call_side == 'HOME' else (1 - p_home)
+    elif call_mkt == 'total' and tot_shadow.get('p_over') is not None:
+        p_over = float(tot_shadow['p_over'])
+        p_support = p_over if call_side == 'OVER' else (1 - p_over)
+    elif call_mkt in ('rl', 'spread') and ml_shadow.get('p_home_win') is not None:
+        p_home = float(ml_shadow['p_home_win'])
+        p_support = p_home if call_side == 'HOME' else (1 - p_home)
+        gate = LR_GATE_MIN_RL
+
+    if p_support is None:
+        return
+
+    lr_gate_flip = p_support < gate
+    if not lr_gate_flip:
+        print(f"  ✓ locked POTD LR re-validate: p_support={p_support:.3f} >= gate={gate} — still passing")
+        return
+
+    print(f"  ⚠ locked POTD LR-GATE FLIP: {call_side} {call_mkt} p_support={p_support:.3f} < gate={gate}")
+
+    if dry_run:
+        print("  [dry-run] would write lr_gate_flip=True to jerry_cache.data")
+        return
+
+    # Write warning flag to jerry_cache.data without changing the pick
+    from datetime import datetime as _dt, timezone as _tz
+    _iso = _dt.now(_tz.utc).isoformat()
+    patched_data = dict(locked_data)
+    patched_data['lr_gate_flip'] = True
+    patched_data['lr_gate_flip_details'] = {
+        'current_p_support': round(p_support, 4),
+        'gate_min': gate,
+        'call_market': call_mkt,
+        'call_side': call_side,
+        'detected_at': _iso,
+        'note': 'LR shadow softened after morning lock; pick unchanged — sizing recommended smaller',
+    }
+    H_W = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
+    pr = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/jerry_cache?cache_key=eq.best_bet_{gd}",
+        headers=H_W, json={'data': patched_data}, timeout=15,
+    )
+    if pr.status_code in (200, 204):
+        print(f"  ✓ wrote lr_gate_flip warning to jerry_cache.best_bet_{gd}")
+    else:
+        print(f"  ⚠ warning-flag write failed: {pr.status_code} {pr.text[:150]}")
+
+
 # 2026-09-09 POTD SOURCE EXPANSION — user directive from surface walkthrough.
 # Prior behavior: only considered jerry_reads (LLM narrative conviction,
 # capped 40-68 many days). Missed PRIMARY_PLAY (real resolved pick from
@@ -365,6 +464,26 @@ def run(game_date: str | None = None, threshold: int = 70,
                           f"({(_row.get('fetched_at') or '?')[:19]}) — skipping "
                           f"republish. Use --force or POTD_ALLOW_REPUBLISH=1 "
                           f"to override.")
+                    # 2026-09-15 LR RE-VALIDATION on publish-lock hit. Root
+                    # cause of LAD@CIN 9/15 POTD keeping p_over=0.472 despite
+                    # our 0.60 gate: jerry_anchor_potd locks at workflow L2045
+                    # BEFORE the final recompute at L2219 refreshes LR shadow.
+                    # When later crons re-check, they hit publish-lock and
+                    # early-return WITHOUT re-verifying the LR gate against
+                    # the fresh shadow. Users end up with a POTD whose LR
+                    # support has since dropped below gate.
+                    #
+                    # Fix: even when publish-locked, re-fetch fresh LR shadow
+                    # for the locked pick. If support < 0.60, WRITE a
+                    # warning flag (lr_gate_flip=True + fresh_lr_support)
+                    # to jerry_cache.data so the app can surface a "reduced
+                    # confidence — LR softened after lock" note without
+                    # flipping the pick. Never auto-swap the pick post-lock
+                    # (user trust in the morning-committed play).
+                    try:
+                        _revalidate_locked_potd_lr(gd, _data, dry_run=dry_run)
+                    except Exception as _re:
+                        print(f"  ⚠ LR re-validation on locked POTD failed: {_re}")
                     return
         except Exception as _e:
             print(f"  ⚠ publish-lock check failed: {_e} — proceeding")
