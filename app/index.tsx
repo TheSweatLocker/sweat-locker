@@ -14604,18 +14604,28 @@ setJerryHistory(prev => {
     else if (mkt === 'fight') badgeText = teamLabel || 'Fight';
     else badgeText = teamLabel ? `${teamLabel}` : 'Read';
   }
+  // 2026-09-15: when Jerry passes, HIDE the chip entirely. Prior UX
+  // showed a "Pass · 40" chip which reads like a play offering. New:
+  // no chip, prose subtly muted with a "Jerry passed" tag. Fixes the
+  // recurring badge/prose confusion class Andy flagged on WSOX 9/15.
   return (
     <View style={{marginBottom:10,padding:10,borderRadius:10,backgroundColor:THEME.surfaceAlt,borderWidth:1,borderColor:THEME.border}}>
       <View style={{flexDirection:'row',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
         <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:10,letterSpacing:0.5}}>🧠 JERRY</Text>
-        <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
-          <Text style={{color:chipColor,fontWeight:'800',fontSize:11}}>{badgeText} · {conv}</Text>
-        </View>
+        {isPass ? (
+          <View style={{backgroundColor:THEME.textDim + '18',borderColor:THEME.textDim + '33',borderWidth:1,paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
+            <Text style={{color:THEME.textDim,fontWeight:'800',fontSize:11,letterSpacing:0.3}}>NO PLAY</Text>
+          </View>
+        ) : (
+          <View style={{backgroundColor:chipColor + '22',borderColor:chipColor + '44',borderWidth:1,paddingHorizontal:8,paddingVertical:2,borderRadius:6}}>
+            <Text style={{color:chipColor,fontWeight:'800',fontSize:11}}>{badgeText} · {conv}</Text>
+          </View>
+        )}
         {isAmRead && (
           <Text style={{color:THEME.textMuted,fontSize:9,fontStyle:'italic'}}>AM · updates 2pm ET</Text>
         )}
       </View>
-      <Text style={{color:THEME.text,fontSize:12,lineHeight:17}}>{cleanShort}</Text>
+      <Text style={{color: isPass ? THEME.textDim : THEME.text, fontSize:12, lineHeight:17, fontStyle: isPass ? 'italic' : 'normal'}}>{cleanShort}</Text>
     </View>
   );
 })()}
