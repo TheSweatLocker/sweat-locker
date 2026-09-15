@@ -1471,9 +1471,14 @@ function MoneyBar({label, pct, color}: any) {
 
 // ─── LINE MOVEMENT STRIP (opening → current) ─────────────────────────────
 function LineMovementStrip({ctx, historicalOdds}: any) {
+  // 2026-09-15: added ctx.home_ml_open fallback. MLB ctx stores opening
+  // ML under home_ml_open / away_ml_open, but this component only checked
+  // historicalOdds.opening_ml_home (NFL-style key). Andy saw ATH @ TB with
+  // "ML (HOME) — → — no open" despite ctx.home_ml_open = -232 being
+  // populated.
   const openSp = ctx?.open_spread ?? historicalOdds?.opening_spread;
   const openTot = ctx?.open_total ?? historicalOdds?.opening_total;
-  const openHomeML = historicalOdds?.opening_ml_home;
+  const openHomeML = historicalOdds?.opening_ml_home ?? ctx?.home_ml_open;
   const closeSp = ctx?.close_spread;
   const closeTot = ctx?.close_total;
   const closeHomeML = ctx?.home_ml_close ?? ctx?.close_home_ml;
