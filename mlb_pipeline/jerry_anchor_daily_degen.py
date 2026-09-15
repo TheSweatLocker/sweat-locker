@@ -135,6 +135,28 @@ def build_jerry_parlay(gd: str) -> dict | None:
                     if pk['kind'] == 'game' and pk['data'].get('sport') == 'MLB']
     teams = fetch_team_names('MLB', mlb_game_ids)
 
+    # 2026-09-15 fix (bug #6): reason was writing empty string when
+    # short_read was empty on the source jerry_reads row (observed
+    # today on 9/15 Cubs ML leg). Fall through to long_read, then to
+    # a minimum-viable synthesized line so no leg ever renders with
+    # zero explanation on the app.
+    def _reason_for(d: dict, kind: str, matchup: str) -> str:
+        short = (d.get('short_read') or '').strip()
+        if short: return short[:220]
+        long_r = (d.get('long_read') or '').strip()
+        if long_r: return long_r[:220]
+        # Last-resort synthesized fallback so the app never shows a
+        # blank explanation. Downstream: fix the source jerry_reads
+        # writer so short_read is never empty, but this floor guarantees
+        # users always see SOMETHING.
+        tier = _conv_tier(d.get('conviction')).upper()
+        conv = d.get('conviction') or '?'
+        if kind == 'game':
+            pick = d.get('call_text') or 'pick'
+            return f'{tier} · {matchup} · {pick} (Jerry {conv}). Full read pending.'
+        p_name = d.get('player_name') or 'Player'
+        return f'{tier} · {p_name} prop (Jerry {conv}). Full read pending.'
+
     legs = []
     for pk in picks:
         d = pk['data']
@@ -147,7 +169,7 @@ def build_jerry_parlay(gd: str) -> dict | None:
                 'pick': d.get('call_text') or '?',
                 'tier': _conv_tier(d.get('conviction')),
                 'conviction': d.get('conviction'),
-                'reason': (d.get('short_read') or '')[:220],
+                'reason': _reason_for(d, 'game', matchup),
             })
         else:
             legs.append({
@@ -156,7 +178,7 @@ def build_jerry_parlay(gd: str) -> dict | None:
                 'pick': f'{d["player_name"]} · {d["direction"].upper()} {d["prop_line"]} {d["prop_type"]}',
                 'tier': _conv_tier(d.get('conviction')),
                 'conviction': d.get('conviction'),
-                'reason': (d.get('short_read') or '')[:220],
+                'reason': _reason_for(d, 'prop', d.get('player_name') or '?'),
             })
 
     return {
