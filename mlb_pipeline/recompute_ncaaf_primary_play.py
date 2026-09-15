@@ -45,13 +45,22 @@ def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
 
-def fetch_ctx_window(start_date: str, days: int) -> list[dict]:
-    end_date = (datetime.fromisoformat(start_date) + timedelta(days=days-1)).date().isoformat()
+def fetch_ctx_window(start_date: str, days: int, lookback: int = 0) -> list[dict]:
+    # 2026-09-15: added lookback param (ported from NFL fix 657a738d).
+    # Prior forward-only window orphaned any game whose primary_play was
+    # stamped once at seed-time and never re-touched by a later same-day
+    # recompute — root cause of NFL W1 LR-shadow gap. Same class of bug
+    # would trip NCAAF as its weekly cadence produces the same "long
+    # gap between seed + game" pattern. Default 0 for back-compat with
+    # legacy callers; argparse default in main() is 7 for daily cron.
+    anchor = datetime.fromisoformat(start_date)
+    start = (anchor - timedelta(days=lookback)).date().isoformat()
+    end   = (anchor + timedelta(days=days-1)).date().isoformat()
     out = []
     for off in range(0, 5000, 1000):
         r = requests.get(
             f'{SB}/rest/v1/ncaaf_game_context'
-            f'?game_date=gte.{start_date}&game_date=lte.{end_date}'
+            f'?game_date=gte.{start}&game_date=lte.{end}'
             f'&select=*&limit=1000&offset={off}',
             headers=H_R, timeout=30)
         chunk = r.json() if r.status_code == 200 else []
@@ -77,8 +86,9 @@ def patch_pp(game_id: str, pp: dict) -> bool:
     return False
 
 
-def run(start_date: str, days: int, dry_run: bool = False) -> None:
-    print(f'=== recompute_ncaaf_primary_play · {start_date} +{days-1}d ===')
+def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) -> None:
+    _lb_str = f' (-{lookback}d back)' if lookback else ''
+    print(f'=== recompute_ncaaf_primary_play · {start_date} +{days-1}d{_lb_str} ===')
     try:
         from ensemble_scorer import score_game
         from game_context import _compose_ensemble_sub
@@ -86,7 +96,7 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
     except ImportError as e:
         print(f'  FAIL importing scorer: {e}'); return
 
-    rows = fetch_ctx_window(start_date, days)
+    rows = fetch_ctx_window(start_date, days, lookback=lookback)
     print(f'  ctx rows in window: {len(rows)}')
 
     changed = 0; patched = 0; rerouted = 0
@@ -224,11 +234,17 @@ def run(start_date: str, days: int, dry_run: bool = False) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--date', help='Start date (default: today ET)')
-    ap.add_argument('--days', type=int, default=10, help='Window in days (default: 10)')
+    ap.add_argument('--date', help='Anchor date (default: today ET)')
+    ap.add_argument('--days', type=int, default=10, help='Forward window from anchor (default 10)')
+    ap.add_argument('--lookback', type=int, default=7,
+                    help='Days BEHIND anchor to include (default 7). Catches games '
+                         'from earlier in the current NCAAF week that were stamped '
+                         'once at seed-time and never re-touched by a later '
+                         'recompute pass — same class of bug as the NFL W1 '
+                         'LR-shadow gap fixed 2026-09-14.')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
-    run(args.date or _et_today(), args.days, args.dry_run)
+    run(args.date or _et_today(), args.days, args.dry_run, lookback=args.lookback)
 
 
 if __name__ == '__main__':
