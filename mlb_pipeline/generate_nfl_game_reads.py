@@ -1884,6 +1884,18 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
                 'matchup', 'primary_play', 'align_status', 'signals',
                 'team_snapshot', 'models', 'confluence', 'sweat',
                 'pre_parsed_facts',
+                # 2026-09-15 read enrichment: whitelist key_players + injuries.
+                # Phase 2 code (9/13) attached these to struct via
+                # fetch_key_players_rolling + fetch_current_nfl_injuries so
+                # the LLM could cite QB1/RB1/WR1 stats + injury designations
+                # by name — but this whitelist DROPPED them before write, so
+                # 0/30 recent NFL reads had them in input_snapshot despite
+                # the fetchers returning full data (32 teams of injuries,
+                # per-team QB/RB1/WR1 with L3/L5/season aggregates). Adding
+                # them here closes the loop; next generate_nfl_game_reads
+                # run will persist the enriched snapshot and the LLM prompt
+                # can reference them.
+                'key_players', 'injuries',
             ) if struct.get(k) is not None
         } | {'source': 'generate_nfl_game_reads'},
         'short_read': parsed.get('short_read') or narrative[:500],
