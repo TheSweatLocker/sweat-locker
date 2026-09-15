@@ -153,23 +153,43 @@ def _mlb_grade(res: dict, ct, cs) -> dict:
     return grades
 
 
-def _football_extractors(g: dict) -> dict:
+def _football_extractors(g: dict, sport: str = None) -> dict:
     """Shared extractor for NFL + NCAAF (both have same column shape).
     Total-direction from projected/panel/sp_plus/model + ml direction from
     spread models. OU / ATS split-adj tendencies.
 
-    2026-09-14 KNOWN BUG (queued for dedicated refactor):
-    close_spread sign convention differs between NFL (POSITIVE = home fav)
-    and NCAAF (NEGATIVE = home fav), and sp_plus_pred_spread stores home
-    margin (opposite sign to NCAAF close_spread) — so `v + cs` deltas
-    below are only correct on one of the two sports for each field. Not
-    fixing inline because a proper fix needs a per-field sign registry;
-    quick sign-flip on cs alone would rebreak sp_plus math. Tracked in
-    [[project_close_spread_sign_bug_914]].
+    2026-09-15 FIXED per [[project_close_spread_sign_bug_914]]:
+    Per-field sign registry normalizes all spread-shaped fields to
+    "home_margin" (positive = home wins by X). Prior code did `v + cs`
+    which double-counted signs when both v and cs used the same
+    convention (NFL projected_spread + NFL close_spread both positive =
+    home fav → false HOME signal on every NFL game where they agreed).
+
+    Normalization by field × sport:
+      close_spread NFL:      +cs = home wins by cs                 → cs
+      close_spread NCAAF:    -cs (negative=home fav flipped)       → -cs
+      projected_spread NCAAF: +v  (already home margin)            → v
+      projected_spread NFL:   +v  (positive=home fav = home margin)→ v
+      sp_plus_pred_spread:    +v  (already home margin)            → v
+      model_pred_home - away: +v  (already home margin)            → v
+
+    Then: delta = model_home_margin - market_home_margin
+      HOME lean iff delta > +0.5 (model thinks home wins by MORE)
+      AWAY lean iff delta < -0.5
+
+    Requires `sport` arg from caller (SPORT_CONFIG below now passes it).
     """
     out = {}
     ct = _f(g.get('close_total'))
     cs = _f(g.get('close_spread'))
+    # Sport-aware home_margin from close_spread. NFL stores POSITIVE = home fav;
+    # every other sport (MLB, NCAAF, NBA, NHL, NCAAB) stores NEGATIVE = home fav.
+    if cs is None:
+        market_hm = None
+    elif sport == 'NFL':
+        market_hm = cs
+    else:
+        market_hm = -cs
     mc = g.get('mc_probabilities') or {}
     if not isinstance(mc, dict): mc = {}
     oc = g.get('oddscrowd_snapshot') or {}
@@ -199,20 +219,25 @@ def _football_extractors(g: dict) -> dict:
             if oc_m >= 65:
                 out['oc_total_heavy'] = str(oc_t.get('pick', '')).lower()
 
-    if cs is not None:
+    if market_hm is not None:
+        # 2026-09-15 (per project_close_spread_sign_bug_914): normalized
+        # deltas. Each of these model fields ALREADY stores home_margin
+        # (positive = home wins by X). Compare against market_hm (also
+        # normalized above). Positive delta → model thinks home wins by
+        # MORE than market → HOME lean.
         for name, key in (('proj_ml', 'projected_spread'),
                           ('sp_plus_ml', 'sp_plus_pred_spread')):
             v = _f(g.get(key))
             if v is not None:
-                delta = v + cs
+                delta = v - market_hm
                 if abs(delta) >= 0.5:
                     out[name] = 'HOME' if delta > 0 else 'AWAY'
-        # From model pred points
+        # From model pred points — home_margin = mph - mpa, positive = home wins
         mph = _f(g.get('model_pred_home_points'))
         mpa = _f(g.get('model_pred_away_points'))
         if mph is not None and mpa is not None:
-            model_margin = mph - mpa   # positive = home wins by that much
-            delta = model_margin + cs   # close_spread is home spread (negative = home fav)
+            model_margin = mph - mpa
+            delta = model_margin - market_hm
             if abs(delta) >= 0.5:
                 out['model_ml'] = 'HOME' if delta > 0 else 'AWAY'
         if mc.get('mc_p_home_win') is not None:
@@ -480,11 +505,17 @@ def mine_sport(sport: str, days: int = 60, dry_run: bool = False):
         return []
 
     # Extract features per game once
+    # 2026-09-15: pass `sport` kwarg to extractors that accept it (per
+    # project_close_spread_sign_bug_914 — _football_extractors needs
+    # sport to normalize close_spread signs correctly).
+    import inspect as _inspect
+    _ext_fn = plugin['extractors']
+    _ext_accepts_sport = 'sport' in _inspect.signature(_ext_fn).parameters
     game_features = {}
     for g in ctx_rows:
         gid = g.get('game_id')
         if not gid or gid not in results: continue
-        feats = plugin['extractors'](g)
+        feats = _ext_fn(g, sport=sport) if _ext_accepts_sport else _ext_fn(g)
         game_features[gid] = feats
 
     # Compute grades per game
