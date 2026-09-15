@@ -48,14 +48,13 @@ ROLLING_FEATURES = [
     'home_l4_total_avg', 'away_l4_total_avg',
     'home_l4_over_rate', 'away_l4_over_rate',
 ]
-# 2026-09-15 ncaaf_total v1.05 scope decision. Rolling team stats
-# (L4 PPG/PA/total-avg/over-rate) computed cleanly from ncaaf_game_results
-# but ncaaf_game_context does NOT persist them, so at inference time they
-# would resolve to imputer medians = ~zero signal. Rather than train a
-# model with dead features that hides its own signal, we EXCLUDE them
-# from v1.05 and ship the market+ctx-only lift. Rolling features return
-# in v1.06 when ncaaf_game_context stamps them (queued follow-up).
-FEATURES = MARKET_FEATURES + CTX_FEATURES
+# 2026-09-15 ncaaf_total v1.06: rolling L4 team form re-enabled after
+# ncaaf_game_context started persisting these fields (see migration
+# 20260915b_ncaaf_ctx_l4_rolling_form.sql + load_team_rolling_form in
+# ncaaf_game_context.py). Trainer computes from ncaaf_game_results;
+# inference now reads matching columns from ncaaf_game_context. Prior
+# v1.05 shipped without rolling features to avoid dead-signal masking.
+FEATURES = MARKET_FEATURES + CTX_FEATURES + ROLLING_FEATURES
 
 _ROLLING_WINDOW = 4  # last-4 games per team
 

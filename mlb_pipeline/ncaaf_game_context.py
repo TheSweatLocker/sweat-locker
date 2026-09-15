@@ -298,6 +298,70 @@ def load_team_games_played(season: int) -> dict:
     return out
 
 
+def load_team_rolling_form(season: int, window: int = 4) -> dict:
+    """Return {team: {'ppg', 'pa', 'total_avg', 'over_rate'}} rolled over the
+    team's last-N completed games (this season). Used by build_context_row
+    to stamp home_l4_/away_l4_ features onto ncaaf_game_context — same
+    features the ncaaf_total_logreg trainer computes in _compute_rolling.
+
+    2026-09-15 v1.06: adds real non-market signal to the LR total model.
+    Trainer had these features already but omitted them because ctx didn't
+    persist them (would resolve to imputer median at inference = no signal).
+    This helper closes that loop.
+
+    Bulk-loads the season's games once + walks per-team in chronological
+    order so N teams × N games is one paginated read, not N × 4 queries.
+    """
+    from collections import defaultdict, deque
+    hist: dict = defaultdict(lambda: deque(maxlen=window))
+    all_games: list = []
+    for page in range(10):  # 10k safety cap; a season is ~4k rows
+        lo = page * 1000
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_game_results',
+            headers={**H_READ, 'Range': f'{lo}-{lo+999}', 'Range-Unit': 'items'},
+            params={'season': f'eq.{season}',
+                    'home_score': 'not.is.null', 'away_score': 'not.is.null',
+                    'close_total': 'not.is.null',
+                    'select': 'game_date,game_id,home_team,away_team,'
+                              'home_score,away_score,close_total',
+                    'order': 'game_date.asc'},
+            timeout=20,
+        )
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        all_games.extend(chunk)
+        if len(chunk) < 1000: break
+
+    all_games.sort(key=lambda g: (g.get('game_date') or '', g.get('game_id') or ''))
+    for g in all_games:
+        home = g.get('home_team'); away = g.get('away_team')
+        hs = _f(g.get('home_score')); as_ = _f(g.get('away_score'))
+        ct = _f(g.get('close_total'))
+        if not home or not away or hs is None or as_ is None:
+            continue
+        actual_tot = hs + as_
+        over_hit = None if ct is None else (1.0 if actual_tot > ct else 0.0)
+        hist[home].append({'pf': hs, 'pa': as_, 'tot_line': ct, 'over_hit': over_hit})
+        hist[away].append({'pf': as_, 'pa': hs, 'tot_line': ct, 'over_hit': over_hit})
+
+    # Snapshot the final rolling window per team (last N completed games).
+    out: dict = {}
+    for team, dq in hist.items():
+        if not dq: continue
+        pfs = [g['pf'] for g in dq]
+        pas = [g['pa'] for g in dq]
+        tots = [g['tot_line'] for g in dq if g['tot_line'] is not None]
+        overs = [g['over_hit'] for g in dq if g['over_hit'] is not None]
+        out[team] = {
+            'ppg':       sum(pfs) / len(pfs) if pfs else None,
+            'pa':        sum(pas) / len(pas) if pas else None,
+            'total_avg': sum(tots) / len(tots) if tots else None,
+            'over_rate': sum(overs) / len(overs) if overs else None,
+        }
+    return out
+
+
 def _blend_pg(stats: dict, field: str, per_game: bool = True) -> Optional[float]:
     """Blend a volumetric field between current + prior season by team's
     current-season games played. weight_current = min(1.0, cur_games / 3).
@@ -838,7 +902,8 @@ def _build_ncaaf_team_summary(team: str, stats: dict, all_stats: dict) -> Option
 
 
 def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
-                       returning_prod: Optional[dict] = None) -> Optional[dict]:
+                       returning_prod: Optional[dict] = None,
+                       rolling_form: Optional[dict] = None) -> Optional[dict]:
     home = g.get('home_team'); away = g.get('away_team')
     if not home or not away:
         return None
@@ -952,6 +1017,24 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     home_summary = _build_ncaaf_team_summary(home, home_stats, team_stats)
     away_summary = _build_ncaaf_team_summary(away, away_stats, team_stats)
 
+    # 2026-09-15 v1.06: stamp rolling L4 team form onto ctx. Feeds
+    # ncaaf_total_logreg — trainer computes these same features from
+    # ncaaf_game_results, but at inference time _lr_predict_total reads
+    # from ctx. Silent no-op if migration hasn't landed (upsert() strips
+    # unknown cols on 400 per the existing convention below).
+    rf = (rolling_form or {}).get(home) or {}
+    ra = (rolling_form or {}).get(away) or {}
+    roll_fields = {
+        'home_l4_ppg':        rf.get('ppg'),
+        'home_l4_pa':         rf.get('pa'),
+        'home_l4_total_avg':  rf.get('total_avg'),
+        'home_l4_over_rate':  rf.get('over_rate'),
+        'away_l4_ppg':        ra.get('ppg'),
+        'away_l4_pa':         ra.get('pa'),
+        'away_l4_total_avg':  ra.get('total_avg'),
+        'away_l4_over_rate':  ra.get('over_rate'),
+    }
+
     row = {
         'game_id': g['game_id'],
         'game_date': g['game_date'],
@@ -976,6 +1059,7 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         **ret_fields,
         **def_fields,
         **vol_fields,
+        **roll_fields,
         'signal_confluence_net': conf_net,
         'signal_confluence_breakdown': breakdown,
     }
@@ -1187,8 +1271,17 @@ def run(dry_run: bool = False) -> None:
     returning_prod = load_returning_production(season)
     print(f'  returning_production: {len(returning_prod)} teams')
 
+    # 2026-09-15 v1.06: preload rolling L4 team form (PPG/PA/total-avg/
+    # over-rate) so build_context_row can stamp home_l4_*/away_l4_* onto
+    # each ctx row. Feeds ncaaf_total_logreg — trainer already computes
+    # these but had no ctx path to read them at inference. See the
+    # helper's docstring for the full loop.
+    rolling_form = load_team_rolling_form(season, window=4)
+    print(f'  rolling_l4_form: {len(rolling_form)} teams')
+
     rows = [build_context_row(g, team_stats, stats_source=stats_source,
-                                returning_prod=returning_prod) for g in games]
+                                returning_prod=returning_prod,
+                                rolling_form=rolling_form) for g in games]
     rows = [r for r in rows if r]
     written = upsert(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
