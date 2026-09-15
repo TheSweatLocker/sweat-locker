@@ -737,9 +737,31 @@ def compute_projections(home_stats: dict, away_stats: dict, roof: str,
             away_pts = total * fav_share
             home_pts = total * (1 - fav_share)
 
+    # 2026-09-15 · project_nfl_k_pts_calibration_bug_912.
+    # projected_spread output above collapses to HFA ± noise (2.42pt range
+    # across the league) because K_PTS=0.15 vs true regression slope ~0.44
+    # for off_rating_diff. Market anchor masks this by pulling every game
+    # toward market, but the raw formula has no predictive spread of its own.
+    #
+    # projected_spread_v2 uses model_pred_home_points - model_pred_away_points
+    # as the basis. Regression on 315 games showed pred_delta → market
+    # correlates 0.51 (vs 0.46 for off_rating_diff), with slope 0.80 +
+    # intercept 0.90. This encodes the offense × defense × venue matchup
+    # that lives inside the per-team point projection, which is where
+    # the differentiation actually is.
+    #
+    # Shipped ALONGSIDE the legacy formula (not replacing) so ensemble +
+    # anchor readers keep reading `projected_spread` until we validate v2
+    # over a graded window. When ready to swap: change consumers to read
+    # projected_spread_v2 (or add K_PTS_V2 = 0.80 / HFA_V2 = 0.90 constants
+    # and rewrite line 681 above).
+    pred_delta_home = round(home_pts, 1) - round(away_pts, 1)
+    projected_spread_v2 = round(0.80 * pred_delta_home + 0.90, 2)
+
     out.update({
         'power_diff': power_diff,
         'projected_spread': projected_spread,
+        'projected_spread_v2': projected_spread_v2,
         'projected_total': round(total, 2),
         'model_pred_home_points': round(home_pts, 1),
         'model_pred_away_points': round(away_pts, 1),
