@@ -2219,6 +2219,31 @@ jobs:
           python recompute_primary_play.py --force || echo "final recompute non-fatal"
           python jerry_pick_scrub.py --sport MLB || echo "jerry scrub non-fatal"
 
+      # 2026-09-15: POTD LR-agreement RE-VALIDATION post final-recompute.
+      # jerry_anchor_potd first runs at the earlier "Jerry-anchor
+      # tonight's POTD" step (workflow ~L2045) which locks POTD before
+      # the FINAL recompute above refreshes LR shadow. If LR support
+      # on the locked pick drops below the 0.60 gate after the fresh
+      # recompute, users end up with a POTD whose LR support has
+      # silently softened (the LAD@CIN 9/15 case that inspired this).
+      #
+      # This second invocation hits jerry_anchor's publish-lock code
+      # path (rejects re-anchor) but triggers the _revalidate_locked_
+      # potd_lr helper shipped in d07e8425. That helper re-fetches
+      # fresh LR from primary_play and — if the locked pick's support
+      # is now < 0.60 — writes lr_gate_flip=True to jerry_cache.data
+      # so the app can render a "reduced confidence" note without
+      # flipping the pick (user trust in morning-committed play stays
+      # intact). Non-fatal.
+      - name: POTD LR re-validation (post-final-recompute)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_anchor_potd.py --threshold 70 || echo "POTD LR revalidate non-fatal"
+
       # 2026-09-09 CONSISTENCY WATCHDOG — cross-table sanity check that
       # runs AFTER the final recompute+scrub barrier and BEFORE the Sweat
       # Card publishes. Fails the step (exit 2) if any CRITICAL check
