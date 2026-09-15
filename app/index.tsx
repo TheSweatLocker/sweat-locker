@@ -14667,6 +14667,47 @@ setJerryHistory(prev => {
   }
   if (isPro !== false && alML?.verdict && alML.verdict !== 'no_data') {
     chips.push(<StatusChip key="al" variant="alignment" alignment={alML.verdict} />);
+    // 2026-09-15 v1.0.1 #14 (2nd pass): companion Model chip. Market
+    // chip above reflects books + externals + money — server-computed
+    // in align_status.overall.verdict. Model chip below reflects our
+    // OWN pipeline (LR shadow + lens ensemble) vs the pick side. When
+    // both fire on the same card, users see the honest picture:
+    // "Market strong ●●● / Model split ◇" reads as informed hedging
+    // instead of an apparent contradiction the way "Strongly aligned"
+    // + "LOW CONVICTION LEAN" did on HOU@PHI 9/10.
+    //
+    // Verdict derivation (in priority order):
+    //   1. LR shadow disagrees with pick side + high confidence
+    //      (≥0.60 on non-pick side) → 'model_disagrees'
+    //   2. LR shadow agrees + p(pick_side) ≥ 0.60 → 'model_strong'
+    //   3. LR shadow agrees, weaker → 'model_aligned'
+    //   4. Lens majority (lens_count/lens_total) matches pick →
+    //      map to strong/aligned by ratio
+    //   5. Lens majority disagrees → 'model_split'
+    //   6. No LR + no lens data → skip (silent)
+    const pickSide = String(pp?.side || '').toUpperCase();
+    const lr = pp?._lr_ml_shadow;
+    let modelVerdict: string | null = null;
+    if (pickSide && (pickSide === 'HOME' || pickSide === 'AWAY')) {
+      if (lr && typeof lr.p_home_win === 'number') {
+        const pPick = pickSide === 'HOME' ? lr.p_home_win : (1 - lr.p_home_win);
+        if (pPick >= 0.60)      modelVerdict = 'model_strong';
+        else if (pPick >= 0.53) modelVerdict = 'model_aligned';
+        else if (pPick <= 0.40) modelVerdict = 'model_disagrees';
+        else                    modelVerdict = 'model_split';
+      } else if (alML.lens_count != null && alML.lens_total > 0 && alML.lens_side) {
+        const lensPickSide = alML.lens_side === 'H' ? 'HOME' : alML.lens_side === 'A' ? 'AWAY' : null;
+        const lensAgrees = lensPickSide === pickSide;
+        const ratio = alML.lens_count / alML.lens_total;
+        if (lensAgrees && ratio >= 0.66)      modelVerdict = 'model_strong';
+        else if (lensAgrees && ratio >= 0.50) modelVerdict = 'model_aligned';
+        else if (!lensAgrees && ratio >= 0.66) modelVerdict = 'model_disagrees';
+        else                                   modelVerdict = 'model_split';
+      }
+    }
+    if (modelVerdict) {
+      chips.push(<StatusChip key="ml" variant="alignment" alignment={modelVerdict as any} />);
+    }
   }
 
   // 2026-09-01: Sweat Badges — cross-sport signal chips that add

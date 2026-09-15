@@ -20,7 +20,18 @@ import { THEME, TIER_COLOR, OUTCOME_COLOR, Tier, Outcome } from '../theme';
 type Variant = 'tier' | 'outcome' | 'alignment' | 'score' | 'custom';
 
 type Alignment = 'aligned_strong' | 'aligned' | 'aligned_soft' | 'split'
-                | 'no_data' | 'no_ext_data' | 'no_money_data';
+                | 'no_data' | 'no_ext_data' | 'no_money_data'
+                // 2026-09-15 v1.0.1 #14 (2nd pass): companion Model chip
+                // paired with the Market chip so users see BOTH sides.
+                // Original bug: HOU@PHI 9/10 showed a green "Strongly aligned"
+                // chip above a card that read "LOW CONVICTION — LEAN" — the
+                // market chip was honest (6/6 books + 87% money on HOME) but
+                // the model was coin-flip. First pass renamed the chip to
+                // "Market …". Second pass adds these Model variants so a card
+                // can display both — "Market strong ●●●" + "Model split ◐"
+                // makes the internal disagreement legible instead of an
+                // apparent contradiction.
+                | 'model_strong' | 'model_aligned' | 'model_split' | 'model_disagrees';
 
 export type StatusChipProps = {
   variant: Variant;
@@ -67,6 +78,13 @@ const ALIGN_CFG: Record<Alignment, {color: string; label: string; icon: string}>
   no_data:         {color: THEME.textMuted, label: 'No market data',   icon: '·'},
   no_ext_data:     {color: THEME.textMuted, label: 'No externals',     icon: '·'},
   no_money_data:   {color: THEME.textMuted, label: 'No money data',    icon: '·'},
+  // 2026-09-15 v1.0.1 #14 (2nd pass): Model chip config. Uses ▲/△ triangles
+  // to distinguish from Market chip's ● circles at a glance — same color
+  // scale (win/aligned/warn/loss) so severity reads consistently.
+  model_strong:    {color: THEME.win,       label: 'Model strong',     icon: '▲▲▲'},
+  model_aligned:   {color: THEME.win,       label: 'Model aligned',    icon: '▲▲△'},
+  model_split:     {color: THEME.warn,      label: 'Model split',      icon: '◇'},
+  model_disagrees: {color: THEME.loss,      label: 'Model disagrees',  icon: '▽'},
 };
 
 // ─── Outcome → chip config ─────────────────────────────────────────────
