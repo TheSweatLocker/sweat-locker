@@ -1041,7 +1041,22 @@ def run(force: bool = False, game_date: str | None = None,
             style_struct['call_market'] = parsed.get('call_market')
             style_struct['call_side'] = parsed.get('call_side')
             style_struct['call_line'] = parsed.get('call_line')
-            num_report = _validate(parsed.get("short_read"), parsed.get("long_read"), struct)
+            # 2026-09-16 HARMONIZE: when analyst-mode is on, pass the
+            # flattened PROVIDED_FACTS numeric set as extra_allowed so
+            # this validator doesn't double-flag Layer F-verified stats.
+            # Prior behavior: analyst reads with 25 verified numbers
+            # still shipped with "Numeric integrity flag" audit text
+            # pasted into short_read because pitcher xERA/bullpen ERA
+            # weren't in the raw struct whitelist.
+            _extra_allowed = None
+            if analyst_mode and analyst_facts:
+                try:
+                    from analyst_facts import _flatten_numeric_facts
+                    _extra_allowed = _flatten_numeric_facts(analyst_facts)
+                except Exception:
+                    pass
+            num_report = _validate(parsed.get("short_read"), parsed.get("long_read"),
+                                    struct, extra_allowed=_extra_allowed)
             name_report = validate_pitcher_names(combined_prose, name_whitelist)
             style_report = validate_style_rules(parsed.get("short_read"),
                                                  parsed.get("long_read"), style_struct)
@@ -1063,7 +1078,8 @@ def run(force: bool = False, game_date: str | None = None,
                             parsed2['long_read'] = scrub(parsed2.get('long_read'))
                         except ImportError: pass
                         combined2 = (parsed2.get("short_read") or "") + "\n" + (parsed2.get("long_read") or "")
-                        num2 = _validate(parsed2.get("short_read"), parsed2.get("long_read"), struct)
+                        num2 = _validate(parsed2.get("short_read"), parsed2.get("long_read"),
+                                          struct, extra_allowed=_extra_allowed)
                         name2 = validate_pitcher_names(combined2, name_whitelist)
                         style2 = validate_style_rules(parsed2.get("short_read"),
                                                        parsed2.get("long_read"), style_struct)

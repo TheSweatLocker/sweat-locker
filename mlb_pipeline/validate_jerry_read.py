@@ -1198,8 +1198,19 @@ def validate_line_movement(call_direction: str | None, call_line: float | None,
 
 
 def validate(short_read: str, long_read: str, input_struct: dict,
-             tolerance_pct: float = 1.0) -> dict:
+             tolerance_pct: float = 1.0,
+             extra_allowed: set | None = None) -> dict:
     """Validate Jerry's output against input struct.
+
+    Args:
+        extra_allowed: 2026-09-16 addition. Analyst-writeup-v1 path passes
+            the flattened PROVIDED_FACTS numeric set here so Layer F-verified
+            stats (pitcher xERA, bullpen ERA, wRC+ vs opp hand, etc.) don't
+            get double-flagged as hallucinations by this validator's narrower
+            struct-only whitelist. Before this: analyst reads with 25 Layer-F-
+            verified numbers were still shipping with "Numeric integrity flag"
+            audit text pasted into short_read because those numbers weren't
+            in the raw input_struct. Now the union of both whitelists is used.
 
     Returns:
         {
@@ -1216,6 +1227,8 @@ def validate(short_read: str, long_read: str, input_struct: dict,
 
     allowed = set()
     _flatten_struct(input_struct, allowed)
+    if extra_allowed:
+        allowed |= extra_allowed
     allowed_count = len(allowed)
 
     hallucinated = []
