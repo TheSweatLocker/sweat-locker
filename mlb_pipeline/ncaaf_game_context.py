@@ -1050,6 +1050,12 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'open_total': g.get('open_total'),
         'close_home_ml': g.get('close_home_ml'),
         'close_away_ml': g.get('close_away_ml'),
+        # 2026-09-16: mirror close→open on first pull so Line Movement
+        # box has an anchor. upsert layer preserves existing DB open on
+        # subsequent runs (see upsert helper). Columns added by
+        # 20260916e migration.
+        'open_home_ml': g.get('open_home_ml') or g.get('close_home_ml'),
+        'open_away_ml': g.get('open_away_ml') or g.get('close_away_ml'),
         'neutral_site': g.get('neutral_site'),
         'conference_game': g.get('conference_game'),
         'stats_source': stats_source,
@@ -1202,6 +1208,33 @@ def upsert(rows: list, dry_run: bool = False) -> int:
                   f"conf={r.get('signal_confluence_net'):+d}  ss={r['sweat_score']} {r['sweat_tier']}"
                   + (f"  → {pp.get('tier')} {pp.get('label')}" if pp else ''))
         return len(rows)
+
+    # 2026-09-16: preserve existing OPEN values so subsequent pulls don't
+    # overwrite the true week-open. See nfl_game_context.upsert_context
+    # for identical pattern + rationale.
+    _gids = [r['game_id'] for r in rows if r.get('game_id')]
+    _existing_opens: dict = {}
+    if _gids:
+        try:
+            import requests as _req
+            _ids_csv = ','.join(f'"{g}"' for g in _gids)
+            _resp = _req.get(
+                f'{SB}/rest/v1/ncaaf_game_context',
+                params={'game_id': f'in.({_ids_csv})',
+                        'select': 'game_id,open_spread,open_total,open_home_ml,open_away_ml'},
+                headers=H_READ, timeout=15)
+            if _resp.status_code == 200:
+                for _e in _resp.json():
+                    _existing_opens[_e['game_id']] = _e
+        except Exception as _e:
+            print(f'  ⚠ NCAAF open-preserve lookup failed ({_e}) — proceeding')
+    for _row in rows:
+        _prev = _existing_opens.get(_row.get('game_id'))
+        if not _prev: continue
+        for _ok in ('open_spread', 'open_total', 'open_home_ml', 'open_away_ml'):
+            if _prev.get(_ok) is not None:
+                _row[_ok] = _prev[_ok]
+
     # 2026-08-29: DYNAMIC strip-on-400. Prior version had a hardcoded
     # STRIP_CANDIDATES list and every time we added a new ctx field
     # (like def_pass_ypg / def_rush_ypg / _explosiveness_allowed today),

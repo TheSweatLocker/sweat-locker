@@ -1339,8 +1339,16 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
             row['close_away_ml'] = _i(o.get('price'))
 
     # Mirror close → open on first pull
+    # 2026-09-16: added open_home_ml / open_away_ml. Prior code only
+    # mirrored spread + total, leaving ML open NULL forever. Andy
+    # audit: NFL Line Movement box showed "ML (HOME) — → -218 · no
+    # open" on every game. Schema columns added by 20260916e migration;
+    # this ingest patch actually populates them on Wed-morning pulls
+    # so the client can render open → close movement over the week.
     row.setdefault('open_spread', row.get('close_spread'))
     row.setdefault('open_total', row.get('close_total'))
+    row.setdefault('open_home_ml', row.get('close_home_ml'))
+    row.setdefault('open_away_ml', row.get('close_away_ml'))
 
     # Model
     home_stats = team_stats.get(home) or {}
@@ -1686,6 +1694,35 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
                   f"conf={r.get('signal_confluence_net'):+d}  ss={r['sweat_score']} {r['sweat_tier']}"
                   + (f"  → {pp.get('tier')} {pp.get('label')}" if pp else ''))
         return len(rows)
+
+    # 2026-09-16: preserve existing OPEN values so subsequent daily pulls
+    # don't overwrite the true week-open. build_row mirrors close→open
+    # on first pull (row is freshly assembled from live event data each
+    # run), which would replace the real week-open with today's close on
+    # every re-run. Fetch existing open_* per game_id and prefer that
+    # over the newly-mirrored value. Applies to spread/total/ML opens.
+    gids = [r['game_id'] for r in rows if r.get('game_id')]
+    existing_opens = {}
+    if gids:
+        try:
+            ids_csv = ','.join(f'"{g}"' for g in gids)
+            _r = requests.get(
+                f'{SB}/rest/v1/nfl_game_context',
+                params={'game_id': f'in.({ids_csv})',
+                        'select': 'game_id,open_spread,open_total,open_home_ml,open_away_ml'},
+                headers=H_READ, timeout=15)
+            if _r.status_code == 200:
+                for existing in _r.json():
+                    existing_opens[existing['game_id']] = existing
+        except Exception as _e:
+            print(f'  ⚠ open-preserve lookup failed ({_e}) — proceeding with fresh mirror')
+    for row in rows:
+        prev = existing_opens.get(row.get('game_id'))
+        if not prev: continue
+        for open_key in ('open_spread', 'open_total', 'open_home_ml', 'open_away_ml'):
+            if prev.get(open_key) is not None:
+                row[open_key] = prev[open_key]
+
     # 2026-08-28: normalize batch keys — PostgREST returns
     # PGRST102 "All object keys must match" when different rows in
     # the same batch have different key sets. This happens naturally
