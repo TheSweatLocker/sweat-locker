@@ -52,6 +52,37 @@ def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
+def nfl_week_write_locked():
+    """True during the game-play window (Thu 8am ET → Mon 11:59pm ET),
+    False otherwise (Tue / Wed / Thu-before-8am).
+
+    Semantics: NFL Wk N reads + primary_play freeze at Thu 8am ET
+    (matches the existing jerry_cache Thu-lock key). Tue is the dead
+    day; Wed is generation prep for the upcoming week; Thu 8am is the
+    lock cutover. Between Thu 8am and Mon night, no writes should
+    overwrite the frozen slate — cron regens, ensemble drift, scrub
+    reruns all no-op. Tue/Wed writes freely (preparing next week).
+
+    Override: NFL_UNLOCK_WEEK=1 env bypasses (emergency injury regen
+    or QB1 swap scenarios).
+
+    2026-09-16: added per Andy directive "make sure aren't overwritten,
+    want model / LR / primary play ready to go and not overwritable".
+    """
+    if os.environ.get('NFL_UNLOCK_WEEK') == '1':
+        return False
+    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    dow = now_et.weekday()  # Mon=0 Tue=1 Wed=2 Thu=3 Fri=4 Sat=5 Sun=6
+    # Tue / Wed — free to generate next week
+    if dow in (1, 2):
+        return False
+    # Thu before 8am ET — final generation window
+    if dow == 3 and now_et.hour < 8:
+        return False
+    # Thu 8am+ through Mon 11:59pm — LOCKED (games in play)
+    return True
+
+
 def nfl_week_start_thu():
     """Return the Thursday of the current NFL week as YYYY-MM-DD.
 
@@ -1888,6 +1919,25 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     game_id = game.get('id')  # Odds API game id
     # commence_time to game_date ET
     ct = game.get('commence_time', '')[:10] or today_et()
+
+    # 2026-09-16 WEEK-LOCK GUARD. Once we're past Thu 8am ET, existing
+    # jerry_reads rows for the week are frozen. Skip write if a row
+    # exists and week is locked. Override: NFL_UNLOCK_WEEK=1 env.
+    # Skips are silent-safe — the row already in DB is what the app
+    # renders. See nfl_week_write_locked() for the semantics.
+    if nfl_week_write_locked():
+        try:
+            existing = sb_get('jerry_reads',
+                              {'sport': 'eq.NFL',
+                               'game_id': f'eq.{game_id}',
+                               'game_date': f'eq.{ct}',
+                               'select': 'id,short_read'})
+            if existing and (existing[0].get('short_read') or '').strip():
+                print(f"  🔒 week-locked: existing jerry_reads row for {game_id} — skip write "
+                      f"(NFL_UNLOCK_WEEK=1 to override)")
+                return True
+        except Exception:
+            pass  # sb_get failure — let the write proceed (fail-safe)
     payload = {
         'sport': 'NFL',
         'game_id': game_id,
@@ -2091,19 +2141,45 @@ def run():
             if analyst_gate('NFL', gid_for_gate):
                 # Look up the persisted ctx row. build_struct() uses the
                 # same (home,away) → (_short_team) fallback (line 972),
-                # so mirror it here.
+                # so try that first.
                 ctx_for_facts = None
                 if contexts:
                     ctx_for_facts = (contexts.get((home, away))
                                      or contexts.get((_short_team(home), _short_team(away))))
                     if not ctx_for_facts:
-                        # Last-ditch: scan values for a matching home+away pair
+                        # Scan values for a matching home+away pair
                         for _c in contexts.values():
                             if not isinstance(_c, dict): continue
                             _ch = _c.get('home_team'); _ca = _c.get('away_team')
                             if _ch and _ca and (_ch == home or _short_team(_ch) == _short_team(home)) \
                                and (_ca == away or _short_team(_ca) == _short_team(away)):
                                 ctx_for_facts = _c; break
+                if not ctx_for_facts and gid_for_gate:
+                    # 2026-09-16 last-resort: hit DB directly by game_id.
+                    # Contexts dict misses when odds-API team name
+                    # ("Los Angeles Rams") differs from ctx abbrev ("LA")
+                    # in a way _short_team can't reconcile. game_id is
+                    # the same across both sources, so a direct fetch
+                    # always resolves.
+                    try:
+                        _r = requests.get(
+                            f'{SUPABASE_URL}/rest/v1/nfl_game_context',
+                            headers=SB_READ,
+                            params={'game_id': f'eq.{gid_for_gate}',
+                                    'select': 'game_id,home_team,away_team,'
+                                              'close_spread,close_total,primary_play,'
+                                              'projected_spread,projected_total,'
+                                              'v4_spread,v4_total,'
+                                              'home_rest,away_rest,div_game,'
+                                              'roof,wind,temp,cohort_tags,'
+                                              'season,week'},
+                            timeout=10)
+                        if _r.status_code == 200:
+                            _rows = _r.json()
+                            if isinstance(_rows, list) and _rows:
+                                ctx_for_facts = _rows[0]
+                    except Exception as _e:
+                        print(f'  ⚠ direct ctx lookup failed: {_e}')
                 if ctx_for_facts:
                     facts = build_provided_facts(ctx_for_facts, sport='NFL')
                     struct['_analyst_facts'] = facts

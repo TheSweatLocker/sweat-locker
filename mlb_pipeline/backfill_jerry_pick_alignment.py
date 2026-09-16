@@ -118,6 +118,22 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool) -> None:
     sports = [sport_filter] if sport_filter else ['MLB', 'NFL', 'NCAAF', 'NBA', 'NCAAB', 'NHL']
     total_updated = 0
     for sport in sports:
+        # 2026-09-16 NFL week-lock guard. Once past Thursday 8am ET,
+        # jerry_reads call_* fields are frozen for the week. Env
+        # NFL_UNLOCK_WEEK=1 or --force flag override. Prevents mid-week
+        # ensemble drift from flipping the pick out from under the
+        # locked writeup (drift → writeup argues X, badge shows Y).
+        # See generate_nfl_game_reads.nfl_week_write_locked() for shared
+        # semantics; imported inline to keep this script standalone.
+        if sport == 'NFL':
+            try:
+                from generate_nfl_game_reads import nfl_week_write_locked
+                if nfl_week_write_locked():
+                    print(f'  🔒 NFL: week-locked (post Thu 8am) — skipping alignment '
+                          f'to preserve locked picks. NFL_UNLOCK_WEEK=1 to override.')
+                    continue
+            except Exception as _e:
+                print(f'  ⚠ NFL lock check failed ({_e}) — proceeding with alignment')
         ctx_by_gid = load_ctx(sport, date_from, date_to)
         reads = load_reads(sport, date_from, date_to)
         if not reads:

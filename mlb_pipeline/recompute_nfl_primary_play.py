@@ -95,6 +95,26 @@ def patch_pp(game_id: str, pp: dict) -> bool:
 def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) -> None:
     _lb_str = f' (-{lookback}d back)' if lookback else ''
     print(f'=== recompute_nfl_primary_play · {start_date} +{days-1}d{_lb_str} ===')
+
+    # 2026-09-16 WEEK-LOCK GUARD. Once Thu 8am ET passes, primary_play
+    # for the week is frozen (locks LR shadow + tier + call into the
+    # writeup they were generated against). NFL_UNLOCK_WEEK=1 env
+    # override or explicit --force flag bypasses. Prevents mid-week
+    # ensemble drift from flipping picks out from under locked jerry
+    # writeups. Shares nfl_week_write_locked() semantics with
+    # generate_nfl_game_reads.upsert_jerry_read_nfl + the alignment
+    # backfill so all three lock in sync.
+    import os as _os
+    if _os.environ.get('NFL_UNLOCK_WEEK') != '1' and not dry_run:
+        try:
+            from generate_nfl_game_reads import nfl_week_write_locked
+            if nfl_week_write_locked():
+                print('  🔒 NFL week-locked (post Thu 8am ET) — skipping recompute. '
+                      'NFL_UNLOCK_WEEK=1 or --dry-run to inspect.')
+                return
+        except Exception as _e:
+            print(f'  ⚠ lock-check import failed ({_e}) — proceeding')
+
     try:
         from ensemble_scorer import score_game
         from game_context import _compose_ensemble_sub
