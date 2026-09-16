@@ -3893,7 +3893,12 @@ function NFLTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
   // Hooks: ALL hooks must run before ANY conditional return.
   // Fix: moved useEffect above the early return, added a hasSummary guard
   // inside the effect body so it stays a no-op when not needed.
-  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'team_matchup', true);
+  // 2026-09-15: DEFAULT FLIPPED true→false. Was gated via config_ui_sections
+  // DB row (see original 9/8 note) but no one ever flipped the row, so the
+  // section kept rendering every deploy. Andy has flagged it as redundant
+  // with Team Stats multiple times. Hide by default; DB toggle can still
+  // set enabled=true to re-surface it if needed.
+  const isEnabled = useSectionEnabled('NFL', 'game_detail', 'team_matchup', false);
   const [fallback, setFallback] = useState<{home?: any; away?: any} | null>(null);
   const hasSummary = ctx?.home_team_stats_summary || ctx?.away_team_stats_summary;
   React.useEffect(() => {
