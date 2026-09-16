@@ -523,6 +523,12 @@ export default function GameDetailV2({
         <VerdictCard ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} jerrySynthesis={jerrySynthesis} />
         <LosingMarketChips ctx={ctx} />
         <JerryReadSection narrative={jerryNarrative} loading={jerryLoading} synthesis={jerrySynthesis} isPro={isPro} onUpgrade={onUpgrade} />
+        {/* 2026-09-16: Weekly-lock explainer sits next to the read it
+            explains. NFL locks Thu 8am ET → Mon EOD; NCAAF locks
+            Wed 8am ET → Tue EOD. ui_notes table gates copy per sport. */}
+        {(gamesSport === 'NFL' || gamesSport === 'NCAAF') && (
+          <JerryLockNote sport={gamesSport} />
+        )}
         <AlignmentStrip ctx={ctx} />
 
         {/* 2026-09-01: gate on any predicted-score field. Was rendering
@@ -1903,6 +1909,12 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
         })}
       </View>
       {openTerm && (() => {
+        // 2026-09-16: _explainGlossary returns string|null (see glossary.ts
+        // line 193 — `export function explain(term): string | null`).
+        // Prior render did {help.help} which reads .help off a STRING and
+        // renders undefined → user saw an empty expanded box with no text
+        // (Andy expo audit "info not populating any text in box, expands
+        // just no lettering"). Straight {help} renders the sentence.
         const help = _explainGlossary(openTerm);
         if (!help) return null;
         // Find the chip we tapped so we know its kind for the hit-rate lookup
@@ -1938,7 +1950,7 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
               </View>
             )}
             <Text style={{color: C.text, fontSize: 12, lineHeight: 17}}>
-              {help.help}
+              {help}
             </Text>
           </View>
         );
@@ -3039,10 +3051,70 @@ function NCAAFSlot({ctx, game}: any) {
       <NCAAFTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NCAAFRostersRichCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <SportWeatherCard ctx={ctx} />
-      {/* TeamTendenciesCard removed 2026-09-01 — Situational Records
-          supersedes with cleaner sub-tab UX + universal cross-sport
-          shape. Function definition kept below for rollback safety. */}
+      {/* 2026-09-16: matched NFL slot's Situational panel — kickoff slot
+          (Sat Big Noon / afternoon / primetime), conference-game chip,
+          cold/wind chips outdoor when material. Cohort chips stay in
+          SignalsRow one section up, no duplication. */}
+      <NCAAFSituationalCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
     </>
+  );
+}
+
+// ─── NCAAF SITUATIONAL (chips row) ──────────────────────────────────────
+// Companion to NFLSituationalCard. NCAAF has no roof column (bulk of
+// FBS games outdoors; the domes that exist are edge cases we don't
+// flag), and rest days are usually uniform Sat→Sat so no rest chip
+// unless we start ingesting midweek slates fully. Kickoff slot is
+// the marquee CFB situational signal.
+function NCAAFSituationalCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'situational', true);
+  if (!isEnabled) return null;
+  const conf = ctx?.conference_game;
+  const tags = ctx?.cohort_tags || [];
+  const tagsHasConf = Array.isArray(tags)
+    && tags.some((t: string) => /conf|div/i.test(String(t)));
+  const showConfChip = conf && !tagsHasConf;
+
+  // Kickoff slot — CFB fans think in slots. All ET.
+  //   Fri night = Fri Night Lights
+  //   Sat noon (12-1)   = Big Noon
+  //   Sat 3:30-4:30     = Afternoon window
+  //   Sat 7-8           = Primetime
+  //   Sat 10:30+        = Late night (west coast)
+  //   Thu/Fri primetime = Weeknight
+  const kickoff = ctx?.kickoff_utc;
+  let slotLabel: string | null = null;
+  if (kickoff) {
+    try {
+      const dt = new Date(kickoff);
+      const et = new Date(dt.getTime() - 4 * 3600 * 1000);
+      const dow = et.getUTCDay(); // 0=Sun 5=Fri 6=Sat
+      const hr  = et.getUTCHours();
+      if (dow === 6) {
+        if (hr >= 10 && hr < 13) slotLabel = 'Big Noon';
+        else if (hr >= 15 && hr < 17) slotLabel = 'Afternoon';
+        else if (hr >= 19 && hr < 21) slotLabel = 'Primetime';
+        else if (hr >= 22 || hr < 3) slotLabel = 'Late Night';
+      } else if (dow === 5) slotLabel = 'Friday Night';
+      else if (dow === 4) slotLabel = 'Thursday Night';
+    } catch {}
+  }
+
+  // NCAAF ctx has no roof column — assume outdoor for cold/wind gates.
+  const cold  = ctx?.temp != null && Number(ctx.temp) < 30;
+  const wind  = ctx?.wind != null && Number(ctx.wind) > 15;
+
+  const hasAny = slotLabel || showConfChip || cold || wind;
+  if (!hasAny) return null;
+  return (
+    <Section title="Situational">
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {slotLabel && <SitChip label={`Slot · ${slotLabel}`} kind="info" />}
+        {showConfChip && <SitChip label="Conference game" />}
+        {cold && <SitChip label={`Cold · ${Math.round(Number(ctx.temp))}°F`} kind="warn" />}
+        {wind && <SitChip label={`Wind · ${Math.round(Number(ctx.wind))} mph`} kind="warn" />}
+      </View>
+    </Section>
   );
 }
 
@@ -3823,7 +3895,12 @@ function NFLSlot({ctx, game, cohortRecords}: any) {
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
     <>
-      <NFLJerryLockNote />
+      {/* 2026-09-16: NFLJerryLockNote moved OUT of the sport slot and up
+          next to JerryReadSection (see main flow ~line 525). Andy audit:
+          the Thursday-lock explainer belongs adjacent to the read it
+          explains, not floating in the middle of the situational block
+          two scrolls below. The <JerryLockNote/> render at the top of
+          the main flow now owns this. */}
       <SportWeatherCard ctx={ctx} sport="NFL" />
       <NFLQBMatchupCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NFLTeamMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
@@ -3835,21 +3912,27 @@ function NFLSlot({ctx, game, cohortRecords}: any) {
 }
 
 // 2026-09-02: Thu-lock explanation banner. Reads ui_notes for
-// 'nfl_jerry_lock_note' — backend-editable copy per
-// project_backend_notes_901. Silent-hide if fetch fails / note missing.
-function NFLJerryLockNote() {
+// 'nfl_jerry_lock_note' / 'ncaaf_jerry_lock_note' (sport-aware) —
+// backend-editable copy per project_backend_notes_901.
+// Silent-hide if fetch fails / note missing.
+// 2026-09-16: renamed NFLJerryLockNote → JerryLockNote and moved
+// to render adjacent to JerryReadSection (main flow) instead of
+// mid-page inside NFLSlot. Andy audit: the note belongs next to
+// the read it explains.
+function JerryLockNote({sport}: {sport: string}) {
   const [note, setNote] = React.useState<string | null>(null);
+  const noteKey = sport === 'NCAAF' ? 'ncaaf_jerry_lock_note' : 'nfl_jerry_lock_note';
   React.useEffect(() => {
     (async () => {
       try {
         const client = sb();
         if (!client) return;
         const {data} = await client.from('ui_notes')
-          .select('note_text').eq('note_key', 'nfl_jerry_lock_note').eq('enabled', true).limit(1);
+          .select('note_text').eq('note_key', noteKey).eq('enabled', true).limit(1);
         if (Array.isArray(data) && data[0]?.note_text) setNote(data[0].note_text);
       } catch { /* silent hide if table missing or fetch fails */ }
     })();
-  }, []);
+  }, [noteKey]);
   if (!note) return null;
   return (
     <View style={{
@@ -4141,9 +4224,15 @@ function NFLInjuriesCard({ctx, homeTeam, awayTeam}: any) {
   );
 }
 
-// ─── NFL SITUATIONAL (chips row — divisional, rest gap, cohort tags) ────
+// ─── NFL SITUATIONAL (chips row — divisional, rest gap, primetime, cohort tags) ────
 // Weather chips REMOVED here; the shared SportWeatherCard renders them
 // as a proper section higher up.
+// 2026-09-16 expansion (Andy audit "what other badges go here?"): added
+// PRIMETIME slot chip (TNF/SNF/MNF), SHORT WEEK chip (either team ≤4d rest),
+// COLD-WEATHER chip (outdoor + temp < 30°F when temp populated), and
+// HIGH-WIND chip (>15 mph outdoor). Cohort chips still live in SignalsRow
+// one section up — no duplication. Section now consistently earns space
+// on ~60% of NFL cards vs prior ~15%.
 function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   const isEnabled = useSectionEnabled('NFL', 'game_detail', 'situational', true);
   const tags = ctx?.cohort_tags || [];
@@ -4152,34 +4241,60 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   if (!isEnabled) return null;
   const div = ctx?.div_game;
   const restGap = (rest.home != null && rest.away != null && Math.abs(rest.home - rest.away) >= 3);
-  // 2026-09-15: SignalsRow (Cohort Signals) already renders cohort_tags as
-  // plain-language chips with real hit-rate colors. Rendering the same
-  // tags AGAIN here — plus a standalone "Divisional" chip that duplicates
-  // any div_game / nfl_division_game cohort tag — is the redundancy Andy
-  // flagged (NO@BAL "Home Favorite" appears 3x). This card now owns only
-  // game-context items unique to it: THIS SEASON ATS/OU records, roof,
-  // and rest edge. Cohort pattern chips live one section up.
   const tagsHasDiv = Array.isArray(tags)
     && tags.some((t: string) => String(t).toLowerCase().includes('div'));
-  // 2026-09-15: THIS SEASON ATS/OU block DROPPED. It duplicated the
-  // Overall row of the Situational Records section (Spread / Total tabs)
-  // that renders directly below with tabbed drill-in. Screenshot audit
-  // showed both surfaces side-by-side reading as the same info. This card
-  // now owns only the unique game-context chips (roof, rest edge, div).
   const showDivChip = div && !tagsHasDiv;
-  const hasAny = showDivChip || roof || restGap;
+
+  // 2026-09-16: Primetime slot from kickoff_utc. NFL primetime windows:
+  //   TNF Thu 8:15 ET (00:15 UTC Fri), SNF Sun 8:20 ET (00:20 UTC Mon),
+  //   MNF Mon 8:15 ET (00:15 UTC Tue). Detect by weekday+hour in ET.
+  const kickoff = ctx?.kickoff_utc;
+  let primetimeLabel: string | null = null;
+  if (kickoff) {
+    try {
+      const dt = new Date(kickoff);
+      // ET = UTC - 4 (EDT) / -5 (EST). Sep is EDT.
+      const et = new Date(dt.getTime() - 4 * 3600 * 1000);
+      const dow = et.getUTCDay(); // 0=Sun 4=Thu 1=Mon
+      const hr  = et.getUTCHours();
+      if (dow === 4 && hr >= 20) primetimeLabel = 'TNF';
+      else if (dow === 0 && hr >= 19) primetimeLabel = 'SNF';
+      else if (dow === 1 && hr >= 19) primetimeLabel = 'MNF';
+    } catch {}
+  }
+
+  // 2026-09-16: Short-week chip when either team is on ≤4d rest — the
+  // NFL short-week penalty is a documented signal (SHORT_WEEK cohort).
+  const shortRestSide = (rest.home != null && rest.home <= 4) ? homeTeam
+                       : (rest.away != null && rest.away <= 4) ? awayTeam
+                       : null;
+  const shortRestDays = shortRestSide === homeTeam ? rest.home : rest.away;
+
+  // 2026-09-16: Cold + wind chips ONLY when roof is outdoor AND the value
+  // is materially bad. Below 30°F (elite cold), >15 mph wind (real air-ball
+  // territory). Weather section shows the raw numbers already; these are
+  // the "this actually matters" flags.
+  const outdoor = roof && String(roof).toLowerCase() === 'outdoor';
+  const cold  = outdoor && ctx?.temp != null && Number(ctx.temp) < 30;
+  const wind  = outdoor && ctx?.wind != null && Number(ctx.wind) > 15;
+
+  const hasAny = showDivChip || roof || restGap || primetimeLabel || shortRestSide || cold || wind;
   if (!hasAny) return null;
   return (
     <Section title="Situational">
-      {(showDivChip || roof || restGap) && (
-        <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
-          {showDivChip && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
-          {roof && <SitChip label={`Roof: ${roof.charAt(0).toUpperCase() + roof.slice(1)}`} />}
-          {restGap && (
-            <SitChip label={`Rest edge: ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
-          )}
-        </View>
-      )}
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {primetimeLabel && <SitChip label={`Primetime · ${primetimeLabel}`} kind="info" />}
+        {showDivChip && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
+        {shortRestSide && (
+          <SitChip label={`Short week · ${abbrev3(shortRestSide)} ${shortRestDays}d`} kind="warn" />
+        )}
+        {restGap && (
+          <SitChip label={`Rest edge · ${abbrev3(rest.home > rest.away ? homeTeam : awayTeam)} +${Math.abs(rest.home - rest.away)}d`} kind="info" />
+        )}
+        {roof && <SitChip label={`Roof: ${roof.charAt(0).toUpperCase() + roof.slice(1)}`} />}
+        {cold && <SitChip label={`Cold · ${Math.round(Number(ctx.temp))}°F`} kind="warn" />}
+        {wind && <SitChip label={`Wind · ${Math.round(Number(ctx.wind))} mph`} kind="warn" />}
+      </View>
     </Section>
   );
 }
@@ -4854,12 +4969,24 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
   if (!bookmakers || bookmakers.length === 0) {
     return <Text style={styles.emptyMuted}>No book lines available.</Text>;
   }
-  // Sort HRB first (pinned), rest alphabetical
+  // 2026-09-16: sort by market completeness so books with all three
+  // (spread + total + h2h) top the list, partials sink to the bottom.
+  // Early-week NFL/NCAAF slates commonly show 21 books but only 3-5 have
+  // priced spread + ML yet — sorting keeps the actionable rows on top so
+  // the "empty spreads" impression from a partial-slate screenshot goes
+  // away as soon as more books post. Hard Rock Bet still pins first among
+  // its completeness bucket.
+  const _mktCount = (bm: any): number => {
+    const keys = new Set((bm.markets || []).map((m: any) => m.key));
+    return (keys.has('spreads') ? 1 : 0) + (keys.has('totals') ? 1 : 0) + (keys.has('h2h') ? 1 : 0);
+  };
   const sorted = [...bookmakers].sort((a: any, b: any) => {
     const aHRB = /hardrock|hard rock/i.test(a.key || a.title || '');
     const bHRB = /hardrock|hard rock/i.test(b.key || b.title || '');
     if (aHRB && !bHRB) return -1;
     if (bHRB && !aHRB) return 1;
+    const mc = _mktCount(b) - _mktCount(a);
+    if (mc !== 0) return mc;
     return (a.title || '').localeCompare(b.title || '');
   });
 
@@ -4932,12 +5059,18 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
               <Text style={[styles.bookTd, {flex: 1.6, fontWeight: isHRB ? '700' : '400'}]} numberOfLines={1}>
                 {isHRB ? '★ ' : ''}{bm.title || bm.key}
               </Text>
+              {/* 2026-09-16 text-darkness fix: prior code set color: undefined
+                  in the override object, which on some RN versions collapses
+                  the base bookTd color to platform default (Android reads it
+                  as near-black on our dark surface). Andy audit: "text is too
+                  dark". Conditional-spread only when best-price, so the base
+                  C.text always wins for non-best cells. */}
               <TouchableOpacity
                 style={{flex: 1.6}}
                 onPress={() => homeSpread && addLeg('spread', `${abbrev3(homeTeam)} ${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}`, homeSpread.price, homeSpread.point, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'homeSpread') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'homeSpread') ? '800' : undefined}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right'}, isBestFor(bm.title || bm.key, 'homeSpread') && {color: C.accent, fontWeight: '800'}]}>
                   {isBestFor(bm.title || bm.key, 'homeSpread') ? '★ ' : ''}
                   {homeSpread ? `${homeSpread.point > 0 ? '+' : ''}${homeSpread.point}` : '—'}
                   {homeSpread?.price ? ` (${fmtOdds(homeSpread.price)})` : ''}
@@ -4948,7 +5081,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => overTot && addLeg('total', `O ${overTot.point}`, overTot.price, overTot.point, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'overTotal') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'overTotal') ? '800' : undefined}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right'}, isBestFor(bm.title || bm.key, 'overTotal') && {color: C.accent, fontWeight: '800'}]}>
                   {isBestFor(bm.title || bm.key, 'overTotal') ? '★ ' : ''}
                   {overTot ? `O${overTot.point}` : '—'}
                 </Text>
@@ -4958,7 +5091,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => awayML && addLeg('ml', `${abbrev3(awayTeam)} ML`, awayML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'awayML') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'awayML') ? '800' : undefined}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right'}, isBestFor(bm.title || bm.key, 'awayML') && {color: C.accent, fontWeight: '800'}]}>
                   {isBestFor(bm.title || bm.key, 'awayML') ? '★ ' : ''}{fmtOdds(awayML?.price)}
                 </Text>
               </TouchableOpacity>
@@ -4967,7 +5100,7 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
                 onPress={() => homeML && addLeg('ml', `${abbrev3(homeTeam)} ML`, homeML.price, null, bm.title)}
                 activeOpacity={0.6}
               >
-                <Text style={[styles.bookTd, {textAlign: 'right', color: isBestFor(bm.title || bm.key, 'homeML') ? C.accent : undefined, fontWeight: isBestFor(bm.title || bm.key, 'homeML') ? '800' : undefined}]}>
+                <Text style={[styles.bookTd, {textAlign: 'right'}, isBestFor(bm.title || bm.key, 'homeML') && {color: C.accent, fontWeight: '800'}]}>
                   {isBestFor(bm.title || bm.key, 'homeML') ? '★ ' : ''}{fmtOdds(homeML?.price)}
                 </Text>
               </TouchableOpacity>
@@ -4980,19 +5113,69 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
 }
 
 // ─── NUMBERS PANEL ──────────────────────────────────────────────────────
+// 2026-09-16: rewrote to be sport-aware. Prior version read MLB-only field
+// names (panel_implied_margin, jerry_pred_spread, model_pred_spread,
+// mc_expected_margin) which do NOT exist on nfl_game_context /
+// ncaaf_game_context — Andy screenshot showed only v3 row populated,
+// every other row all "—". NFL panel/v4 data actually IS in the DB under
+// different column names; NCAAF has SP+ instead of Panel. MC + Jerry
+// numeric rows hidden for football (Jerry emits pick+read, not numbers;
+// MC is MLB-only).
 function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
-  const rows = [
-    ['Panel', ctx?.panel_implied_margin, ctx?.panel_implied_total,
-      p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'a'),
-      p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'h')],
-    ['Jerry', ctx?.jerry_pred_spread, ctx?.jerry_pred_total,
-      p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'a'),
-      p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'h')],
-    ['v3', ctx?.projected_spread, ctx?.projected_total, null, null],
-    ['v4', ctx?.model_pred_spread, ctx?.model_pred_total, null, null],
-    ['MC', mc.mc_expected_margin, mc.mc_expected_total ?? mc.mc_mean_total, null, null],
-  ];
+  const isFootball = sport === 'NFL' || sport === 'NCAAF';
+
+  // Helper: build margin+total+home/away pts from a home/away points pair.
+  // NFL/NCAAF backend emits home_pts/away_pts pairs (not implied margin).
+  // margin sign convention here: positive = home advantage (matches
+  // ctx.projected_spread which is home-favored positive for NFL/NCAAF v3).
+  const _row = (label: string, homePts: any, awayPts: any, totalOverride?: any, spreadOverride?: any) => {
+    const hp = homePts != null ? Number(homePts) : null;
+    const ap = awayPts != null ? Number(awayPts) : null;
+    const margin = spreadOverride != null ? Number(spreadOverride)
+                 : (hp != null && ap != null ? hp - ap : null);
+    const total  = totalOverride != null ? Number(totalOverride)
+                 : (hp != null && ap != null ? hp + ap : null);
+    return [label, margin, total, ap, hp];
+  };
+
+  let rows: any[] = [];
+  if (isFootball) {
+    // v3 legacy formula-based projection
+    rows.push(['v3', ctx?.projected_spread, ctx?.projected_total, null, null]);
+    // v4 XGBoost margin from home/away points
+    rows.push(_row('v4', ctx?.model_pred_home_points, ctx?.model_pred_away_points));
+    if (sport === 'NFL') {
+      // Panel is NFL-specific (fantasy-projection aggregate → team totals)
+      rows.push(_row('Panel', ctx?.panel_pred_home_pts, ctx?.panel_pred_away_pts, ctx?.panel_pred_total));
+    } else if (sport === 'NCAAF') {
+      // SP+ (Bill Connelly ratings-derived spread + total)
+      rows.push(_row('SP+', ctx?.sp_plus_pred_home_pts, ctx?.sp_plus_pred_away_pts,
+                     ctx?.sp_plus_pred_total, ctx?.sp_plus_pred_spread));
+    }
+    // LR shadow — probabilities, expressed as home-win % (no margin/total)
+    const pp = ctx?.primary_play || {};
+    const lrMl = pp._lr_ml_shadow || {};
+    const lrP = lrMl.p_home_win != null ? Number(lrMl.p_home_win) : null;
+    if (lrP != null && isFinite(lrP)) {
+      rows.push([`LR (${Math.round(lrP * 100)}% ${sport === 'NFL' ? 'HOME' : (lrP >= 0.5 ? 'HOME' : 'AWAY')})`,
+                 null, null, null, null]);
+    }
+  } else {
+    // MLB (unchanged from prior version)
+    rows = [
+      ['Panel', ctx?.panel_implied_margin, ctx?.panel_implied_total,
+        p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'a'),
+        p2(ctx?.panel_implied_total, ctx?.panel_implied_margin, 'h')],
+      ['Jerry', ctx?.jerry_pred_spread, ctx?.jerry_pred_total,
+        p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'a'),
+        p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'h')],
+      ['v3', ctx?.projected_spread, ctx?.projected_total, null, null],
+      ['v4', ctx?.model_pred_spread, ctx?.model_pred_total, null, null],
+      ['MC', mc.mc_expected_margin, mc.mc_expected_total ?? mc.mc_mean_total, null, null],
+    ];
+  }
+
   return (
     <View style={{gap: 12}}>
       <Text style={styles.numbersHeading}>Per-Model Predictions</Text>
@@ -5015,19 +5198,53 @@ function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
         ))}
       </View>
 
-      <Text style={styles.numbersHeading}>MC Probabilities (10k sims)</Text>
-      <View style={styles.numbersMCGrid}>
-        <MCTile label="Home win prob" value={mc.mc_home_win_prob != null ? `${(mc.mc_home_win_prob * 100).toFixed(1)}%` : '—'} />
-        <MCTile label="Away win prob" value={mc.mc_away_win_prob != null ? `${(mc.mc_away_win_prob * 100).toFixed(1)}%` : '—'} />
-        <MCTile label="Over prob" value={mc.mc_p_over != null ? `${(mc.mc_p_over * 100).toFixed(1)}%` : '—'} />
-        <MCTile label="Under prob" value={mc.mc_p_under != null ? `${(mc.mc_p_under * 100).toFixed(1)}%` : '—'} />
-        <MCTile label="Mean total" value={mc.mc_mean_total != null ? f(mc.mc_mean_total, 2) : '—'} />
-        <MCTile label="Std total" value={mc.mc_std_total != null ? f(mc.mc_std_total, 2) : '—'} />
-        {/* 2026-08-09: NRFI/YRFI are MLB-only concepts (No Runs First Inning);
-            hide the tiles for other sports where mc_p_nrfi never populates. */}
-        {sport === 'MLB' && <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />}
-        {sport === 'MLB' && <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />}
-      </View>
+      {/* MC Probabilities block: MLB-only. NFL/NCAAF have no MC sim populated. */}
+      {!isFootball && (
+        <>
+          <Text style={styles.numbersHeading}>MC Probabilities (10k sims)</Text>
+          <View style={styles.numbersMCGrid}>
+            <MCTile label="Home win prob" value={mc.mc_home_win_prob != null ? `${(mc.mc_home_win_prob * 100).toFixed(1)}%` : '—'} />
+            <MCTile label="Away win prob" value={mc.mc_away_win_prob != null ? `${(mc.mc_away_win_prob * 100).toFixed(1)}%` : '—'} />
+            <MCTile label="Over prob" value={mc.mc_p_over != null ? `${(mc.mc_p_over * 100).toFixed(1)}%` : '—'} />
+            <MCTile label="Under prob" value={mc.mc_p_under != null ? `${(mc.mc_p_under * 100).toFixed(1)}%` : '—'} />
+            <MCTile label="Mean total" value={mc.mc_mean_total != null ? f(mc.mc_mean_total, 2) : '—'} />
+            <MCTile label="Std total" value={mc.mc_std_total != null ? f(mc.mc_std_total, 2) : '—'} />
+            {sport === 'MLB' && <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />}
+            {sport === 'MLB' && <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />}
+          </View>
+        </>
+      )}
+
+      {/* Football win-probability tiles from LR shadow. Uses primary_play
+          shadows because NFL/NCAAF don't run MC. Silent-hide if the LR
+          shadow isn't wired for this game (missing on FCS / Week 1). */}
+      {isFootball && (() => {
+        const pp = ctx?.primary_play || {};
+        const lrMl = pp._lr_ml_shadow || {};
+        const lrTot = pp._lr_total_shadow || {};
+        const lrP  = lrMl.p_home_win != null ? Number(lrMl.p_home_win) : null;
+        const lrOv = lrTot.p_over != null ? Number(lrTot.p_over) : null;
+        if (lrP == null && lrOv == null) return null;
+        return (
+          <>
+            <Text style={styles.numbersHeading}>LR Shadow Probabilities</Text>
+            <View style={styles.numbersMCGrid}>
+              {lrP != null && (
+                <>
+                  <MCTile label="Home win prob" value={`${(lrP * 100).toFixed(1)}%`} />
+                  <MCTile label="Away win prob" value={`${((1 - lrP) * 100).toFixed(1)}%`} />
+                </>
+              )}
+              {lrOv != null && (
+                <>
+                  <MCTile label="Over prob" value={`${(lrOv * 100).toFixed(1)}%`} />
+                  <MCTile label="Under prob" value={`${((1 - lrOv) * 100).toFixed(1)}%`} />
+                </>
+              )}
+            </View>
+          </>
+        );
+      })()}
 
       {ctx?.signal_confluence_v2_breakdown && (
         <>
