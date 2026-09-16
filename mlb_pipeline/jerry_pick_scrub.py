@@ -379,15 +379,23 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
         ) or _oc_dissent_flip
         if _hard_bad_prose:
-            # Null out contradictory prose (both fields). UI falls back to
-            # "analysis pending" — better than misleading text.
-            # 2026-09-16: track the game_id so main() can chain-invoke
-            # generate_jerry_synthesis --game-id after the loop. Without
-            # this chain the row stays "analysis pending" until the next
-            # scheduled synth run — which is what put 9 blank reads in
-            # production two mornings in a row (9/15 + 9/16).
-            payload['short_read'] = None
-            payload['long_read']  = None
+            # 2026-09-16 STOP-NULLING: previously wrote short_read = None
+            # and let the client render "analysis pending". That path relied
+            # on a client-side fallback added 9/15 which is NOT in the v1.0
+            # TestFlight build users are actually on — so users saw the
+            # Jerry card VANISH on cross-market flips. Two consecutive
+            # mornings shipped 3-9 blank cards to production.
+            #
+            # New behavior: write a canonical template that names the new
+            # call so the card ALWAYS renders. chain-regen (main()) then
+            # overwrites with real LLM prose in the same pipeline pass;
+            # if that fails the template stays as the graceful floor.
+            _new_text = _side_readable or (pp.get('label') or '').strip()
+            if not _new_text:
+                _new_text = f"{pp_type.upper()} {pp_side}".strip()
+            _tmpl = (f"Model recomputed to {_new_text}. Fresh read regenerating.")
+            payload['short_read'] = _tmpl
+            payload['long_read']  = _tmpl
             nulled_gids.append(j['game_id'])
             _flip_kind = ('cross-market' if _prose_cross_market
                           else 'same-market-side-flip')
