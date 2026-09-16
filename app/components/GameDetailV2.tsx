@@ -4101,50 +4101,16 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   // and rest edge. Cohort pattern chips live one section up.
   const tagsHasDiv = Array.isArray(tags)
     && tags.some((t: string) => String(t).toLowerCase().includes('div'));
-  // 2026-09-14: this-season ATS + O/U records for both teams. Reads
-  // ctx.home_season_ats_wins / _losses / _ou_overs / _unders — populated
-  // by backfill_nfl_season_records_from_results.py during early season +
-  // enrich_team_trends.py once teamrankings catches up. Rolling l10 kept
-  // in ctx (home_ats_l10_at_home etc.) for backend weighting; display
-  // shows honest small-sample this-season only.
-  const hSeasonAtsW = ctx?.home_season_ats_wins;
-  const hSeasonAtsL = ctx?.home_season_ats_losses;
-  const aSeasonAtsW = ctx?.away_season_ats_wins;
-  const aSeasonAtsL = ctx?.away_season_ats_losses;
-  const hSeasonOuO  = ctx?.home_season_ou_overs;
-  const hSeasonOuU  = ctx?.home_season_ou_unders;
-  const aSeasonOuO  = ctx?.away_season_ou_overs;
-  const aSeasonOuU  = ctx?.away_season_ou_unders;
-  const hasSeasonRec = hSeasonAtsW != null || hSeasonAtsL != null
-                     || aSeasonAtsW != null || aSeasonAtsL != null;
+  // 2026-09-15: THIS SEASON ATS/OU block DROPPED. It duplicated the
+  // Overall row of the Situational Records section (Spread / Total tabs)
+  // that renders directly below with tabbed drill-in. Screenshot audit
+  // showed both surfaces side-by-side reading as the same info. This card
+  // now owns only the unique game-context chips (roof, rest edge, div).
   const showDivChip = div && !tagsHasDiv;
-  const hasAny = showDivChip || roof || restGap || hasSeasonRec;
+  const hasAny = showDivChip || roof || restGap;
   if (!hasAny) return null;
-  const _hHome = abbrev3(homeTeam) || 'HOME';
-  const _aAway = abbrev3(awayTeam) || 'AWAY';
-  const _fmtRec = (w: any, l: any) => {
-    if (w == null && l == null) return null;
-    return `${w ?? 0}-${l ?? 0}`;
-  };
-  const hAts = _fmtRec(hSeasonAtsW, hSeasonAtsL);
-  const aAts = _fmtRec(aSeasonAtsW, aSeasonAtsL);
-  const hOu  = _fmtRec(hSeasonOuO,  hSeasonOuU);
-  const aOu  = _fmtRec(aSeasonOuO,  aSeasonOuU);
   return (
     <Section title="Situational">
-      {hasSeasonRec && (
-        <View style={{marginBottom: 8, gap: 3}}>
-          <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '700', letterSpacing: 0.4}}>
-            THIS SEASON
-          </Text>
-          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
-            {hAts && <SitChip label={`${_hHome} ${hAts} ATS`} kind="info" />}
-            {hOu  && <SitChip label={`${_hHome} ${hOu} O/U`} kind="info" />}
-            {aAts && <SitChip label={`${_aAway} ${aAts} ATS`} kind="info" />}
-            {aOu  && <SitChip label={`${_aAway} ${aOu} O/U`} kind="info" />}
-          </View>
-        </View>
-      )}
       {(showDivChip || roof || restGap) && (
         <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
           {showDivChip && <SitChip label="Divisional" record={cohortRecords?.['nfl_div_home_cover|ats']} />}
