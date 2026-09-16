@@ -139,6 +139,44 @@ def fetch_season_stats(season: int, classification: str = None) -> dict:
     return out
 
 
+def fetch_games_count(season: int) -> dict:
+    """Return {team: games_played} for the season by counting rows in
+    ncaaf_game_results.
+
+    2026-09-16: added because CFBD /stats/season returns cumulative
+    yardage / turnover totals but not games count. Without games,
+    team_stats_rolling matview computes pass_yds_pg as NULL (divide
+    by NULL) → app shows "—" for every volumetric-per-game stat.
+    Andy Temple/Toledo screenshot audit surfaced this on Wk3.
+    """
+    if not SB or not SB_KEY:
+        print('  ⚠ SUPABASE_URL/KEY missing — games count skipped')
+        return {}
+    from collections import Counter
+    out: Counter = Counter()
+    # Paginated pull; ncaaf_game_results may be >1000 rows per season.
+    limit = 1000; offset = 0
+    while True:
+        r = requests.get(
+            f'{SB}/rest/v1/ncaaf_game_results',
+            headers={'apikey': SB_KEY, 'Authorization': f'Bearer {SB_KEY}'},
+            params={'season': f'eq.{season}',
+                    'home_score': 'not.is.null',   # completed games only
+                    'select': 'home_team,away_team',
+                    'limit': str(limit), 'offset': str(offset)},
+            timeout=15,
+        )
+        if r.status_code != 200: break
+        rows = r.json() if isinstance(r.json(), list) else []
+        if not rows: break
+        for row in rows:
+            if row.get('home_team'): out[row['home_team']] += 1
+            if row.get('away_team'): out[row['away_team']] += 1
+        if len(rows) < limit: break
+        offset += limit
+    return dict(out)
+
+
 def fetch_sp_ratings(season: int) -> dict:
     """Return {team: {sp_overall, sp_offense, sp_defense}}."""
     rows = cfbd_get('/ratings/sp', {'year': season})
@@ -202,8 +240,13 @@ def run(seasons: list) -> None:
         vol_fbs = fetch_season_stats(season)
         vol_fcs = fetch_season_stats(season, classification='fcs')
         vol = {**vol_fbs, **vol_fcs}
+        # 2026-09-16: games count — required for per-game divisions in
+        # team_stats_rolling matview. CFBD volume stats are cumulative
+        # (no games count returned), so pull from ncaaf_game_results.
+        gc = fetch_games_count(season)
         print(f'  advanced: {len(adv)} (FBS {len(adv_fbs)} + FCS {len(adv_fcs)}) · '
-              f'SP+: {len(sp)} · vol: {len(vol)} (FBS {len(vol_fbs)} + FCS {len(vol_fcs)}) teams')
+              f'SP+: {len(sp)} · vol: {len(vol)} (FBS {len(vol_fbs)} + FCS {len(vol_fcs)}) · '
+              f'games: {len(gc)} teams')
         team_set = set(adv.keys()) | set(sp.keys()) | set(vol.keys())
         rows = []
         for team in sorted(team_set):
@@ -212,6 +255,7 @@ def run(seasons: list) -> None:
                 'season': season,
                 'season_type': 'regular',
                 'updated_at': datetime.utcnow().isoformat(),
+                'games': gc.get(team),
             }
             row.update(adv.get(team, {}))
             row.update(sp.get(team, {}))
