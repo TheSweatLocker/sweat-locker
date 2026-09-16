@@ -45,11 +45,23 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
 
   // ─── COHORT TAGS (fired via signals, hit-rate anchored) ───
   'HEAVY_HOME_DOG': {help: 'Situational cohort — the home team is a +7 or larger underdog. Historically covers 65% of the time (n=81 since 2022). Uncommon spot but a legitimate market bias.'},
+  'HEAVY_HOME_FAV': {help: 'Home team is a 7-point-or-more favorite. Historically a trap zone — heavy home chalks cover -1.5 only ~29% of the time; look for the underdog spread or the moneyline dog. When the chip is yellow ("fade"), the hit rate on this cohort is below 52% in the size shown.'},
+  'HOME_FAV': {help: 'Home team is favored (any margin). A broad cohort — the specific hit rate on the chip is what to read. Yellow ("fade") means home favorites have covered below 52% in this sample.'},
   'DIV_HOME_UNDERDOG': {help: 'Division game where the home team is the underdog. Historically bites into the road favorite\'s spread — divisional familiarity + home crowd tightens the game.'},
+  'DIV_HOME_COVER': {help: 'Division game with a historical bias toward the home team covering the spread. Yellow ("fade") means the pattern has hit below 52% recently — treat as a hint, not a lock.'},
   'PRIMETIME_ROAD_FAV': {help: 'Road favorite in a primetime slot (SNF, MNF, TNF). Historically the market over-weights the primetime spotlight; road chalks cover below trend.'},
+  'SHOOTOUT': {help: 'Cohort flagged when both teams have high offensive efficiency + low defensive efficiency — projects to a high-scoring game. Backs the OVER on totals. Yellow = the cohort has underperformed lately.'},
   'DIV_GAME': {help: 'Division game — historically plays closer and lower-scoring than the season averages suggest. Cohort UNDER lean.'},
   'REVENGE': {help: 'One team lost the prior meeting by 10+ points. Historically the revenge-motivated side outperforms market expectations.'},
   'SHORT_WEEK': {help: 'One team is on 4 or fewer days rest (post-TNF, post-MNF turnaround). Historically underperforms — rest matters.'},
+
+  // 2026-09-15: COHORT_-prefixed aliases. SignalsRow emits some cohort
+  // term keys with a COHORT_ prefix; without these aliases the ⓘ tap on
+  // the yellow "fade" chips returned null and nothing rendered.
+  'COHORT_HEAVY_HOME_FAV': {help: 'Home team is a 7-point-or-more favorite. Historically a trap zone — heavy home chalks cover -1.5 only ~29% of the time; look for the underdog spread or the moneyline dog. When the chip is yellow ("fade"), the hit rate on this cohort is below 52% in the size shown.'},
+  'COHORT_HOME_FAV': {help: 'Home team is favored (any margin). A broad cohort — the specific hit rate on the chip is what to read. Yellow ("fade") means home favorites have covered below 52% in this sample.'},
+  'COHORT_DIV_HOME_COVER': {help: 'Division game with a historical bias toward the home team covering the spread. Yellow ("fade") means the pattern has hit below 52% recently — treat as a hint, not a lock.'},
+  'COHORT_SHOOTOUT': {help: 'Cohort flagged when both teams have high offensive efficiency + low defensive efficiency — projects to a high-scoring game. Backs the OVER on totals. Yellow = the cohort has underperformed lately.'},
 
   // ─── OTHER MODEL / DATA POINTS ───
   'PANEL_PRED': {help: 'Panel model prediction — aggregates fantasy-style per-player projections into team totals. Complementary lens to EPA-based models. Best signal when it AGREES with the EPA model.'},
@@ -180,8 +192,13 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
 /** Get a term's plain-english help, or null if not glossed. */
 export function explain(term: string): string | null {
   if (!term) return null;
-  // Try exact, then case-insensitive fallback for user-typed variants
+  // Try exact, then case-insensitive fallback for user-typed variants.
+  // 2026-09-15: also try the term with a COHORT_ prefix stripped — the
+  // Signals row emits some cohort keys as COHORT_HOME_FAV but glossary
+  // may only have HOME_FAV. Belt-and-suspenders so no ⓘ tap dead-ends.
+  const stripped = term.trim().replace(/^COHORT_/i, '');
   return GLOSSARY[term]?.help
       ?? GLOSSARY[term.trim()]?.help
+      ?? GLOSSARY[stripped]?.help
       ?? null;
 }
