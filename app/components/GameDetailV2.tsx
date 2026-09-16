@@ -1800,16 +1800,38 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
   if (isFinite(lrMlP)) {
     const lrSide = lrMlP >= 0.55 ? 'HOME' : lrMlP < 0.45 ? 'AWAY' : 'PASS';
     if (lrSide !== 'PASS') {
+      // 2026-09-16: pickSide only means HOME/AWAY when Jerry picks ML;
+      // for totals/spread picks the "agrees/disagrees" tag was
+      // misleading (always disagrees since pickSide=OVER/UNDER). Show
+      // LR chip as neutral info when the pick isn't an ML — it's still
+      // a useful independent signal on the game direction.
       const agrees = isML && lrSide === pickSide;
-      // 2026-09-15: plain-language label. Was "LR HOME 0.78" which reads
-      // as jargon (users don't know LR = logistic regression, or that
-      // 0.78 is a probability). New: "Model 78% HOME" reads directly.
+      const disagrees = isML && lrSide !== pickSide;
       const pctPickSide = lrSide === 'HOME' ? lrMlP : (1 - lrMlP);
       chips.push({
         term: 'LR_SHADOW',
         label: `Model ${Math.round(pctPickSide * 100)}% ${lrSide}`,
-        value: agrees ? 'agrees' : 'disagrees',
-        kind: agrees ? 'ok' : 'warn',
+        value: agrees ? 'agrees' : disagrees ? 'disagrees' : 'info',
+        kind: agrees ? 'ok' : disagrees ? 'warn' : 'neutral',
+      });
+    }
+  }
+
+  // LR TOTAL shadow chip — same signal exposure for totals. NCAAF has
+  // v1.05 rolling-features LR total; NFL has none today (project memory
+  // project_lr_totals_investigation_908). Show only when populated.
+  const lrTotP = Number(lrTot?.p_over);
+  if (isFinite(lrTotP)) {
+    const lrTotSide = lrTotP >= 0.55 ? 'OVER' : lrTotP <= 0.45 ? 'UNDER' : 'PASS';
+    if (lrTotSide !== 'PASS') {
+      const pctPickSide = lrTotSide === 'OVER' ? lrTotP : (1 - lrTotP);
+      const totAgree = (pickSide === lrTotSide);
+      const totDisagree = (pickSide === 'OVER' || pickSide === 'UNDER') && pickSide !== lrTotSide;
+      chips.push({
+        term: 'LR_TOTAL',
+        label: `Model ${Math.round(pctPickSide * 100)}% ${lrTotSide}`,
+        value: totAgree ? 'agrees' : totDisagree ? 'disagrees' : 'total lean',
+        kind: totAgree ? 'ok' : totDisagree ? 'warn' : 'neutral',
       });
     }
   }
