@@ -2244,7 +2244,22 @@ def run():
         # current behavior. Verified/unverifiable counts print for audit.
         if analyst_mode and narrative and parsed.get('short_read') and parsed.get('long_read'):
             try:
-                from analyst_facts import scan_hallucinated_stats
+                from analyst_facts import scan_hallucinated_stats, auto_repair_epa_ambiguity
+                # 2026-09-16 STEP 1 — deterministic auto-repair for the
+                # bare-EPA ambiguity class. Beats LLM retry when the
+                # fact resolves cleanly (rank matches off XOR def).
+                short_before = parsed.get('short_read') or ''
+                long_before = parsed.get('long_read') or ''
+                short_after, s_repairs = auto_repair_epa_ambiguity(
+                    short_before, struct['_analyst_facts'])
+                long_after, l_repairs = auto_repair_epa_ambiguity(
+                    long_before, struct['_analyst_facts'])
+                if s_repairs or l_repairs:
+                    parsed['short_read'] = short_after
+                    parsed['long_read'] = long_after
+                    n_reps = len(s_repairs) + len(l_repairs)
+                    print(f"  🔧 Layer F auto-repaired {n_reps} EPA ambiguity/ies "
+                          f"({', '.join(r[1] for r in (s_repairs + l_repairs))})")
                 combined = f"{parsed.get('short_read')}\n\n{parsed.get('long_read')}"
                 f_report = scan_hallucinated_stats(combined, struct['_analyst_facts'])
                 cm = f_report['confirmed_mismatch']

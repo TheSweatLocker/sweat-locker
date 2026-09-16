@@ -395,6 +395,120 @@ def scan_hallucinated_stats(prose: str, provided_facts: dict) -> dict:
             'verified': verified}
 
 
+# ═══ AUTO-REPAIR — off/def qualifier inline patcher ══════════════════
+#
+# Deterministic fix for the bare "pass EPA" / "rush EPA" ambiguity.
+# For each occurrence in prose, scan the surrounding window for the
+# team reference + a rank number, look up whether the rank matches
+# off_pass_epa or def_pass_epa for that team, and inline-inject the
+# correct qualifier. Beats LLM retry for this class of ambiguity —
+# no roundtrip, guaranteed correct outcome when the rank matches
+# exactly one side. Falls through (leaves untouched) when both sides
+# match the rank or neither does.
+#
+# Called from generate_nfl_game_reads.py Layer F block BEFORE the
+# corrective-retry step. Repaired prose re-scans clean and ships as
+# analyst voice. Prevents "pass EPA" ambiguity from forcing games
+# down to the quant-template fallback.
+
+_EPA_INLINE_RES = [
+    (re.compile(r'\bpass(?:ing)?\s+EPA\b(?!\s+allowed)(?!/play)', re.IGNORECASE),
+     'pass_epa', 'pass EPA'),
+    (re.compile(r'\brush(?:ing)?\s+EPA\b(?!\s+allowed)(?!/play)', re.IGNORECASE),
+     'rush_epa', 'rush EPA'),
+]
+
+# Find a rank ("2nd", "#4", "ranked 8", etc.) in the same clause as
+# the bare EPA phrase. Look up to 80 chars before and 40 after.
+_RANK_NEAR_RE = re.compile(
+    r'\b(?:ranks?|ranked|is|sits?|#)\s*(?:the\s+)?(\d+(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|dead\s+last)\b',
+    re.IGNORECASE)
+
+def _find_rank_near(prose: str, match_start: int, match_end: int) -> Optional[int]:
+    """Look for a rank number within +/- window of the EPA phrase."""
+    left = max(0, match_start - 80)
+    right = min(len(prose), match_end + 40)
+    window = prose[left:right]
+    rank_matches = list(_RANK_NEAR_RE.finditer(window))
+    if not rank_matches: return None
+    # Pick the rank closest to the EPA phrase position within the window.
+    # match_start relative to window = match_start - left.
+    epa_pos_in_window = match_start - left
+    best = min(rank_matches, key=lambda m: abs(m.start() - epa_pos_in_window))
+    return _norm_rank(best.group(1))
+
+def _find_team_near(prose: str, match_start: int, provided_facts: dict) -> Optional[str]:
+    """Scan back from EPA phrase for the nearest team reference that
+    resolves to a key in provided_facts.team_stats_rank. Look at up to
+    120 chars before to catch subject-precedes-verb patterns."""
+    window_start = max(0, match_start - 120)
+    window = prose[window_start:match_start]
+    # Scan every capitalized-word sequence + known alias, prefer nearest.
+    candidates = list(re.finditer(
+        r'\b(?:[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*|[A-Z]{2,4}|(?:'
+        + '|'.join(re.escape(k) for k in _NFL_TEAM_ALIASES)
+        + r'))\b', window, re.IGNORECASE))
+    for m in reversed(candidates):  # closest to EPA first
+        team_key = _resolve_team_key(m.group(0), provided_facts)
+        if team_key: return team_key
+    return None
+
+def auto_repair_epa_ambiguity(prose: str, provided_facts: dict) -> tuple:
+    """Inline-patch bare "pass EPA" / "rush EPA" with the correct off/def
+    qualifier when the surrounding rank unambiguously matches one side.
+
+    Returns (repaired_prose, list_of_repairs) where each repair is
+    (original_phrase, injected_qualifier, reason). If auto-repair
+    can't resolve (rank matches both or neither, or no team/rank
+    context), the phrase is left as-is for Layer F to flag.
+
+    2026-09-16: shipped per Andy directive "I need every writeup to
+    be solid this week" — trades LLM retry roundtrip for a
+    deterministic string substitution when the fact resolves cleanly.
+    """
+    if not prose: return prose, []
+    team_ranks = provided_facts.get('team_stats_rank') or {}
+    repairs = []
+    # Process in reverse position order so earlier substitutions don't
+    # invalidate later match spans.
+    all_hits = []
+    for pattern, kind, orig_phrase in _EPA_INLINE_RES:
+        for m in pattern.finditer(prose):
+            all_hits.append((m.start(), m.end(), kind, m.group(0)))
+    all_hits.sort(key=lambda x: -x[0])  # right-to-left
+
+    out = prose
+    for start, end, kind, matched_text in all_hits:
+        rank_cited = _find_rank_near(out, start, end)
+        team_key = _find_team_near(out, start, provided_facts)
+        if rank_cited is None or team_key is None:
+            continue  # not enough context — leave for Layer F flag
+        team_stats = team_ranks.get(team_key, {})
+        off_key = f'off_{kind}'   # off_pass_epa / off_rush_epa
+        def_key = f'def_{kind}'   # def_pass_epa / def_rush_epa
+        off_rank = team_stats.get(off_key, {}).get('rank')
+        def_rank = team_stats.get(def_key, {}).get('rank')
+        off_int = int(str(off_rank).split('/')[0]) if off_rank else None
+        def_int = int(str(def_rank).split('/')[0]) if def_rank else None
+        matches_off = off_int == rank_cited
+        matches_def = def_int == rank_cited
+        if matches_off and not matches_def:
+            qualifier = 'offensive '
+        elif matches_def and not matches_off:
+            qualifier = 'defensive '
+        else:
+            # Ambiguous (both match, or neither) — leave for Layer F to flag
+            continue
+        # Inject the qualifier just before the "pass EPA" / "rush EPA"
+        # preserving the original casing of the phrase.
+        replaced_phrase = qualifier + matched_text
+        out = out[:start] + replaced_phrase + out[end:]
+        repairs.append((matched_text, qualifier.strip(),
+                        f'{team_key} rank {rank_cited} → {qualifier.strip()} '
+                        f'({off_key}={off_rank}, {def_key}={def_rank})'))
+    return out, repairs
+
+
 def feature_enabled(sport: str, feature: str) -> bool:
     """Check feature_flags row (sport, feature)=enabled. Default false —
     every rollout is opt-in. Feature flag rows land via SQL migration
