@@ -1581,10 +1581,19 @@ function LensGrid({ctx, gamesSport}: any) {
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
+  ] : gamesSport === 'NFL' ? [
+    // 2026-09-14: NFL uses v4_spread/v4_total (model_pred_* is MLB-only).
+    // 2026-09-15: MC lens DROPPED for NFL — we do not run a Monte Carlo
+    // simulator for NFL (only MLB + NCAAF have one). Rendering an empty
+    // MC "—" tile every NFL card advertised a slot we never populate;
+    // NFL grid is now V3 / V4 / CONF (3 real lenses, no phantom column).
+    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
+                  t: ctx?.v4_total  ?? ctx?.model_pred_total},
+    {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ] : [
-    // 2026-09-14: NFL + other non-MLB sports also use v4_spread/v4_total.
-    // NFL 9/15 MNF DEN@KC verified v4_spread=1.71, v4_total=44.15 on ctx
-    // — model_pred_* names don't exist on NFL ctx.
+    // Fallback for NHL / NBA / NCAAB / UFC — keep MC slot since those
+    // sports may still populate mc_probabilities via their own simulators.
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
