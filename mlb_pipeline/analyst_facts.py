@@ -180,21 +180,46 @@ NUMBER_ORDINAL = {'first':1,'second':2,'third':3,'fourth':4,'fifth':5,
                   'eleventh':11,'twelfth':12}
 
 # Prose phrase → team_stats_rolling stat_key(s). Longest match wins per pattern.
+# 2026-09-16: EPA + yards patterns require an explicit off/def qualifier.
+# Andy caught the KC ML writeup that said "ranked 2nd in pass EPA" —
+# KC is 2nd in DEF pass EPA (elite) but 19th in OFF pass EPA (bad).
+# Bare "pass EPA" without a qualifier is ambiguous → the reader
+# defaults to the wrong interpretation. Fix: only map explicitly
+# qualified phrases. Bare EPA/yards get caught by AMBIGUOUS_PATTERNS
+# below and flagged as confirmed_mismatch (forces regen).
 STAT_ALIASES = [
-    (r'pass(?:ing)?\s+yards?(?:\s+per\s+game)?(?:\s+allowed)?', {
-        'off': 'pass_yds_pg', 'def': 'pass_yds_allowed_pg'}),
-    (r'rush(?:ing)?\s+yards?(?:\s+per\s+game)?(?:\s+allowed)?', {
-        'off': 'rush_yds_pg', 'def': 'rush_yds_allowed_pg'}),
+    # Yards — must say "allowed" for defensive
+    (r'(?:allowing|allow(?:ed|s)?|d\s+allow(?:ed|s|ing)?|defensive|defense)\s+(?:just\s+)?(?:pass(?:ing)?\s+)?(?:yards?)(?:\s+per\s+game)?', {
+        'def': 'pass_yds_allowed_pg'}),
+    (r'pass(?:ing)?\s+yards?(?:\s+per\s+game)?\s+allowed', {'def': 'pass_yds_allowed_pg'}),
+    (r'pass(?:ing)?\s+yards?(?:\s+per\s+game)?(?!\s+allowed)', {'off': 'pass_yds_pg'}),
+    (r'rush(?:ing)?\s+yards?(?:\s+per\s+game)?\s+allowed', {'def': 'rush_yds_allowed_pg'}),
+    (r'rush(?:ing)?\s+yards?(?:\s+per\s+game)?(?!\s+allowed)', {'off': 'rush_yds_pg'}),
     (r'total\s+(?:offense|yards?(?:\s+per\s+game)?)', {'off': 'total_yds_pg'}),
     (r'(?:total\s+)?yards?\s+allowed', {'def': 'yds_allowed_pg'}),
     (r'points?\s+allowed(?:\s+per\s+game)?', {'def': 'points_allowed_pg'}),
     (r'pass(?:ing)?\s+td[s]?(?:\s+per\s+game)?', {'off': 'pass_tds_pg'}),
     (r'rush(?:ing)?\s+td[s]?(?:\s+per\s+game)?', {'off': 'rush_tds_pg'}),
-    (r'pass(?:ing)?\s+EPA(?:/play)?', {'off': 'off_pass_epa', 'def': 'def_pass_epa'}),
-    (r'rush(?:ing)?\s+EPA(?:/play)?', {'off': 'off_rush_epa', 'def': 'def_rush_epa'}),
+    # EPA — must have off/def qualifier or "allowed"
+    (r'def(?:ensive)?\s+pass(?:ing)?\s+EPA(?:/play)?', {'def': 'def_pass_epa'}),
+    (r'pass(?:ing)?\s+EPA(?:/play)?\s+allowed', {'def': 'def_pass_epa'}),
+    (r'off(?:ensive)?\s+pass(?:ing)?\s+EPA(?:/play)?', {'off': 'off_pass_epa'}),
+    (r'def(?:ensive)?\s+rush(?:ing)?\s+EPA(?:/play)?', {'def': 'def_rush_epa'}),
+    (r'rush(?:ing)?\s+EPA(?:/play)?\s+allowed', {'def': 'def_rush_epa'}),
+    (r'off(?:ensive)?\s+rush(?:ing)?\s+EPA(?:/play)?', {'off': 'off_rush_epa'}),
     (r'sacks?(?:\s+suffered)?(?:\s+per\s+game)?', {'off': 'sacks_suffered_pg'}),
     (r'int(?:erception)?s?(?:\s+per\s+game)?', {'off': 'ints_pg'}),
     (r'penalty\s+yards?(?:\s+per\s+game)?', {'off': 'penalty_yds_pg'}),
+]
+
+# Ambiguous phrases the LLM MUST NOT emit — "pass EPA" without off/def
+# qualifier reads different ways to different bettors. Layer F flags
+# these as confirmed_mismatch to force regen with a clearer citation.
+AMBIGUOUS_PATTERNS = [
+    (re.compile(r'\b(?<!off\s)(?<!offensive\s)(?<!def\s)(?<!defensive\s)pass(?:ing)?\s+EPA\b(?!\s+allowed)', re.IGNORECASE),
+     'bare "pass EPA" — must specify "offensive", "defensive", or "allowed"'),
+    (re.compile(r'\b(?<!off\s)(?<!offensive\s)(?<!def\s)(?<!defensive\s)rush(?:ing)?\s+EPA\b(?!\s+allowed)', re.IGNORECASE),
+     'bare "rush EPA" — must specify "offensive", "defensive", or "allowed"'),
 ]
 
 RANK_CLAIM_RES = [
@@ -298,6 +323,15 @@ def scan_hallucinated_stats(prose: str, provided_facts: dict) -> dict:
     confirmed_mismatch, unverifiable, verified = [], [], []
     team_ranks = provided_facts.get('team_stats_rank') or {}
     situational = provided_facts.get('situational_records') or {}
+
+    # 2026-09-16 EPA-ambiguity check. Bare "pass EPA" / "rush EPA" without
+    # off/def qualifier is a hallucination trigger — reader defaults to
+    # wrong interpretation (KC ML writeup 9/16 said "2nd in pass EPA"
+    # meaning DEF, but reads as OFF where KC is 19th). Flag as
+    # confirmed_mismatch to force regen with a clearer citation.
+    for pattern, reason in AMBIGUOUS_PATTERNS:
+        for m in pattern.finditer(prose):
+            confirmed_mismatch.append((m.group(0), reason))
 
     for pattern in RANK_CLAIM_RES:
         for m in pattern.finditer(prose):
