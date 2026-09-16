@@ -1740,13 +1740,19 @@ def parse_nfl_synthesis(raw: str) -> dict:
     # returned None on the bold form → entire prose lost. Broader delimiter
     # matches either variant, still stops at the next known section header.
     def _section(name):
+        # 2026-09-16 FIX: lookahead only terminates on the REAL section
+        # names (SHORT/LONG/CALL), not on any all-caps markdown block.
+        # Analyst-writeup prompt uses **MATCHUP**, **FORM**, **CONTEXT**,
+        # **READ** as sub-headers inside LONG — old regex treated them as
+        # section terminators and returned empty long_read → upsert fell
+        # back to raw narrative → Layer F saw truthy long_read that was
+        # actually the whole raw dump. Explicit terminator list fixes it.
+        _term = r"(?=---(?:SHORT|LONG|CALL)---|\*\*(?:SHORT|LONG|CALL)\*\*|$)"
         # Try triple-dash first (template canonical form)
-        m = _re.search(rf"---{name}---\s*(.*?)(?=---[A-Z]+---|\*\*[A-Z]+\*\*|$)",
-                       raw, _re.S)
+        m = _re.search(rf"---{name}---\s*(.*?){_term}", raw, _re.S)
         if m: return m.group(1).strip()
         # Fallback: bold-markdown header (**NAME**)
-        m = _re.search(rf"\*\*{name}\*\*\s*(.*?)(?=\*\*[A-Z]+\*\*|---[A-Z]+---|$)",
-                       raw, _re.S)
+        m = _re.search(rf"\*\*{name}\*\*\s*(.*?){_term}", raw, _re.S)
         return m.group(1).strip() if m else None
 
     short = _section("SHORT") or ""
@@ -2083,17 +2089,21 @@ def run():
             from analyst_facts import analyst_gate, build_provided_facts
             gid_for_gate = str(g.get('id') or '')
             if analyst_gate('NFL', gid_for_gate):
-                # Look up the persisted ctx row via context map (contexts
-                # dict is keyed by home_team_name; we already have it).
+                # Look up the persisted ctx row. build_struct() uses the
+                # same (home,away) → (_short_team) fallback (line 972),
+                # so mirror it here.
                 ctx_for_facts = None
                 if contexts:
                     ctx_for_facts = (contexts.get((home, away))
-                                     or contexts.get((away, home))
-                                     or next((c for c in contexts.values()
-                                              if isinstance(c, dict)
-                                              and c.get('home_team') == home
-                                              and c.get('away_team') == away),
-                                             None))
+                                     or contexts.get((_short_team(home), _short_team(away))))
+                    if not ctx_for_facts:
+                        # Last-ditch: scan values for a matching home+away pair
+                        for _c in contexts.values():
+                            if not isinstance(_c, dict): continue
+                            _ch = _c.get('home_team'); _ca = _c.get('away_team')
+                            if _ch and _ca and (_ch == home or _short_team(_ch) == _short_team(home)) \
+                               and (_ca == away or _short_team(_ca) == _short_team(away)):
+                                ctx_for_facts = _c; break
                 if ctx_for_facts:
                     facts = build_provided_facts(ctx_for_facts, sport='NFL')
                     struct['_analyst_facts'] = facts
