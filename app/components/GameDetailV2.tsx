@@ -1140,7 +1140,12 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   addPred('Panel', ctx?.panel_implied_total, ctx?.panel_implied_margin);
   addPred('Jerry', ctx?.jerry_pred_total, ctx?.jerry_pred_spread);
   addPred('v3',    ctx?.projected_total,   ctx?.projected_spread);
-  addPred('v4',    ctx?.model_pred_total,  ctx?.model_pred_spread);
+  // 2026-09-16: v4 lens with fallback. MLB writes model_pred_spread /
+  // model_pred_total; NFL + NCAAF write v4_spread / v4_total. Prior
+  // MLB-only column read silently omitted the v4 lens from
+  // Predicted Score on NFL/NCAAF cards — Andy noted these are missing.
+  addPred('v4',    ctx?.model_pred_total ?? ctx?.v4_total,
+                    ctx?.model_pred_spread ?? ctx?.v4_spread);
   addPred('MC',    mc.mc_expected_total ?? mc.mc_mean_total, mc.mc_expected_margin);
   // 2026-08-25 — cross-sport predicted-score fields so this component
   // renders for NCAAF / NFL / NBA / NCAAB, not just MLB. Each sport's
