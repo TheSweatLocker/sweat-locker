@@ -65,38 +65,52 @@ def load_models() -> Optional[dict]:
     }
 
 
+def _fetch_nflverse_pbp(season: int):
+    """Direct nflverse parquet fetch — bypasses buggy nfl_data_py.
+
+    2026-09-16: nfl_data_py.import_pbp_data([2026]) raises
+    `NameError: name 'Error' is not defined` on library init, so we
+    hit the parquet URL directly. Falls back to nfl_data_py only
+    if the direct fetch fails.
+    """
+    import pandas as pd
+    url = f'https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet'
+    try:
+        df = pd.read_parquet(url)
+        print(f'  nflverse parquet {season}: {len(df)} plays loaded')
+        return df
+    except Exception as e:
+        print(f'  nflverse parquet {season} fetch failed: {type(e).__name__}: {e}')
+        # Library fallback (may itself fail)
+        try:
+            import nfl_data_py as nfl
+            df = nfl.import_pbp_data([season], downcast=True)
+            print(f'  nfl_data_py fallback: {len(df)} plays')
+            return df
+        except Exception as e2:
+            print(f'  nfl_data_py fallback also failed: {type(e2).__name__}: {e2}')
+            return None
+
+
 def build_current_epa() -> dict:
     """Pull current season pbp, compute L4 team EPA. Returns dict keyed
     by team abbreviation. Cached per run to avoid re-pull."""
     try:
-        import nfl_data_py as nfl
         import pandas as pd
     except ImportError:
-        print('  ⚠ nfl_data_py / pandas not installed — feature assembly aborted')
+        print('  ⚠ pandas not installed — feature assembly aborted')
         return {}
     season = datetime.now(timezone.utc).year
     print(f'  fetching pbp for season {season}...')
-    pbp = None
-    try:
-        pbp = nfl.import_pbp_data([season], downcast=True)
-    except Exception as e:
-        # 2026-09-13: nfl_data_py raises `NameError: name 'Error' is not defined`
-        # when the season's pbp parquet doesn't exist yet (early Week 1 before
-        # nflverse publishes the full-week file). Falling back to the prior
-        # season lets V4 still fire — at Week 1 there's no rolling-window data
-        # anyway, and last year's L4 EPA is a reasonable warm-start prior for
-        # returning teams. Previous behavior returned {} → V4 wrote nothing
-        # → 0/12 v4_spread coverage on the 9/13 slate.
-        print(f'  pbp fetch for {season} failed: {type(e).__name__}: {e}')
-        print(f'  falling back to prior season {season - 1}...')
-        try:
-            pbp = nfl.import_pbp_data([season - 1], downcast=True)
-            print(f'  prior-season pbp: {len(pbp)} rows')
-        except Exception as e2:
-            print(f'  prior-season fetch also failed: {type(e2).__name__}: {e2}')
-            return {}
+    pbp = _fetch_nflverse_pbp(season)
     if pbp is None or len(pbp) == 0:
-        print('  pbp empty — nothing to compute'); return {}
+        # Only fall back to prior season if current is genuinely absent.
+        # A 200-response empty parquet is still a real "no games yet" signal.
+        print(f'  no current-season pbp — falling back to prior season {season - 1}')
+        pbp = _fetch_nflverse_pbp(season - 1)
+        if pbp is None or len(pbp) == 0:
+            print('  both current and prior season fetch failed')
+            return {}
     # 2026-09-13: nfl_data_py 2025 parquet no longer has raw per-play
     # `pass_epa` / `rush_epa` columns — they were team-level rollups in
     # older releases and have since been dropped in favor of the
@@ -260,9 +274,32 @@ def run(game_date: str, dry_run: bool = False) -> int:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET')
+    p.add_argument('--days-ahead', type=int, default=10,
+                   help='When --date is not set, iterate today..today+N days '
+                        '(default 10) to cover future-week games. Weekly NFL '
+                        'slate lands 3-6 days ahead of run day, so a single '
+                        'today-only inference call misses the whole slate.')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date or _et_today(), dry_run=args.dry_run)
+    if args.date:
+        # Explicit date: run just that day (existing behavior).
+        run(game_date=args.date, dry_run=args.dry_run)
+    else:
+        # 2026-09-16: previously only ran for today. NFL games sit 3-6
+        # days out, so every workflow invocation missed them. Now iterate
+        # a rolling window so v4 lands for the upcoming slate.
+        from datetime import date as _date, timedelta as _td
+        try:
+            base = _date.fromisoformat(_et_today())
+        except Exception:
+            base = _date.today()
+        total_written = 0
+        for i in range(args.days_ahead + 1):
+            d = (base + _td(days=i)).isoformat()
+            written = run(game_date=d, dry_run=args.dry_run)
+            total_written += (written or 0)
+        print(f'\n=== window total: {total_written} V4 predictions across '
+              f'{args.days_ahead + 1} days ===')
 
 
 if __name__ == '__main__':
