@@ -9378,27 +9378,45 @@ setJerryHistory(prev => {
         const uniqueGids = Array.from(new Set(flags.map((f:any) => f.game_id))).slice(0, 40);
         if (uniqueGids.length) {
           // 2026-08-18: include away_team/home_team so LineMovementCard has
-          // a matchup fallback when line_history sample is empty (some
-          // flagged games rendered as "matchup pending sample" placeholder).
-          // 2026-09-11: dropped `commence_time` from the SELECT — that column
-          // does not exist on `mlb_game_context` (never did — kickoff_utc
-          // is only on the football *_context tables) and the query was
-          // 400-ing every Steam Room open, drowning Supabase logs in 42703
-          // errors. Time-badge fallback below now reads whatever the
-          // downstream badge does (game_date is enough for date display).
-          const {data: ourPicks} = await supabase
-            .from('mlb_game_context')
-            .select('game_id,game_date,away_team,home_team,primary_play,supplementary_play')
-            .in('game_id', uniqueGids);
-          const picksIdx: Record<string, any> = {};
-          (ourPicks || []).forEach((row: any) => {
-            picksIdx[row.game_id] = {
-              primary: row.primary_play, supplementary: row.supplementary_play,
-              away_team: row.away_team, home_team: row.home_team,
-              commence_time: null,  // MLB context has no commence_time; badge falls through
-              game_date: row.game_date,
-            };
+          // a matchup fallback when line_history sample is empty.
+          // 2026-09-16: extended fetch to NFL + NCAAF contexts too. Prior
+          // MLB-only fetch left non-MLB Strongest Signals cards showing
+          // just "HOME" (raw side) with no matchup — Andy screenshot
+          // audit surfaced this on a MLB TOTAL card whose matchup
+          // wasn't in picksIdx AND line_history sample was empty. Split
+          // the flag list by sport, fetch each sport's ctx table, merge.
+          const flagsBySport: Record<string, string[]> = {};
+          flags.forEach((f: any) => {
+            const sp = String(f.sport || 'MLB').toUpperCase();
+            if (!uniqueGids.includes(f.game_id)) return;
+            (flagsBySport[sp] ||= []).push(f.game_id);
           });
+          const picksIdx: Record<string, any> = {};
+          const sportFetches = [
+            {sport: 'MLB',   tbl: 'mlb_game_context'},
+            {sport: 'NFL',   tbl: 'nfl_game_context'},
+            {sport: 'NCAAF', tbl: 'ncaaf_game_context'},
+          ];
+          await Promise.all(sportFetches.map(async ({sport, tbl}) => {
+            const gids = Array.from(new Set(flagsBySport[sport] || []));
+            if (!gids.length) return;
+            // supplementary_play only exists on mlb_game_context; drop
+            // it for the football tables to avoid a 42703 (column missing).
+            const cols = sport === 'MLB'
+              ? 'game_id,game_date,away_team,home_team,primary_play,supplementary_play'
+              : 'game_id,game_date,away_team,home_team,primary_play';
+            const {data: rows} = await supabase
+              .from(tbl).select(cols).in('game_id', gids);
+            (rows || []).forEach((row: any) => {
+              picksIdx[row.game_id] = {
+                primary: row.primary_play,
+                supplementary: row.supplementary_play,  // undefined for NFL/NCAAF, fine
+                away_team: row.away_team, home_team: row.home_team,
+                commence_time: null,
+                game_date: row.game_date,
+              };
+            });
+          }));
           setSteamPicksIdx(picksIdx);
           // 2026-09-03 STALE-FLAG FILTER: drop any flag whose game_id
           // resolves to a game_date < today ET. Prior 24h window let

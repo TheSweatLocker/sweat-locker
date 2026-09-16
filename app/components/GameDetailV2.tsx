@@ -2457,15 +2457,26 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
         <Text style={sitStyles.teamHeadName}>{abbrev3(homeTeam)}</Text>
       </View>
 
-      {/* Filter rows */}
-      {rows.map(([labelL, filterA, labelR, filterH], i) => (
-        <SitRow
-          key={i}
-          leftLabel={labelL}  leftRec={awayByFilter[filterA]}
-          rightLabel={labelR} rightRec={homeByFilter[filterH]}
-          market={market}
-        />
-      ))}
+      {/* Filter rows — 2026-09-16: hide when BOTH teams have no games
+          for the (market × filter) cell. Andy screenshot: PSU@ORE showed
+          "7-3 ATS road" for Portland State with nothing for Oregon —
+          asymmetric records read as data bug to users. If neither side
+          has data for the filter, skip the row entirely. */}
+      {rows.map(([labelL, filterA, labelR, filterH], i) => {
+        const lr = awayByFilter[filterA];
+        const rr = homeByFilter[filterH];
+        const lTot = (Number(lr?.wins) || 0) + (Number(lr?.losses) || 0) + (Number(lr?.pushes) || 0);
+        const rTot = (Number(rr?.wins) || 0) + (Number(rr?.losses) || 0) + (Number(rr?.pushes) || 0);
+        if (lTot === 0 && rTot === 0) return null;
+        return (
+          <SitRow
+            key={i}
+            leftLabel={labelL}  leftRec={lr}
+            rightLabel={labelR} rightRec={rr}
+            market={market}
+          />
+        );
+      })}
 
       {loading && <Text style={rsStyles.empty}>Loading…</Text>}
     </View>
@@ -2803,10 +2814,17 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
         <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>{abbrev3(homeTeam)}</Text>
       </View>
 
-      {/* Stat rows */}
-      {statKeys.map(k => (
-        <StatRow key={k} statKey={k} awayRow={awayByKey[k]} homeRow={homeByKey[k]} />
-      ))}
+      {/* Stat rows — 2026-09-16: hide rows where BOTH teams have no value
+          (raw_value null on both sides). Prevents a stack of "— label —"
+          empty rows on games where CFBD hasn't populated volumetric stats
+          yet. Row still renders if at least one team has data — asymmetric
+          info (e.g., FBS opponent stat vs FCS blank) still surfaces. */}
+      {statKeys.map(k => {
+        const a = awayByKey[k]; const h = homeByKey[k];
+        const bothEmpty = (!a || a.raw_value == null) && (!h || h.raw_value == null);
+        if (bothEmpty) return null;
+        return <StatRow key={k} statKey={k} awayRow={a} homeRow={h} />;
+      })}
 
       {loading && <Text style={rsStyles.empty}>Loading…</Text>}
     </View>
