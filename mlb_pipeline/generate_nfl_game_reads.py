@@ -102,8 +102,11 @@ def sb_get(path, params=None):
 
 
 def load_templates():
+    # 2026-09-16: also fetch game_read_rules_analyst_v1 for the analyst-
+    # writeup feature flag path. render_prompt() swaps rules → rules_analyst
+    # when analyst_facts.analyst_gate() returns True for the game.
     rows = sb_get("prompt_templates", {
-        "name": "in.(game_read_wrapper,game_read_universal,game_read_rules)",
+        "name": "in.(game_read_wrapper,game_read_universal,game_read_rules,game_read_rules_analyst_v1)",
         "is_active": "is.true",
         "select": "name,sport,template",
     })
@@ -111,10 +114,12 @@ def load_templates():
     wrapper = out.get(("game_read_wrapper", "ALL"))
     universal = out.get(("game_read_universal", "ALL"))
     rules = out.get(("game_read_rules", "NFL")) or out.get(("game_read_rules", "NHL"))  # NFL falls back to market template until Phase 2
+    rules_analyst = out.get(("game_read_rules_analyst_v1", "NFL"))
     if not (wrapper and universal and rules):
         print(f"  ⚠️ missing template rows — have: {list(out.keys())}")
         return None
-    return {"wrapper": wrapper, "universal": universal, "rules": rules}
+    return {"wrapper": wrapper, "universal": universal, "rules": rules,
+            "rules_analyst": rules_analyst}
 
 
 def fetch_odds_games():
@@ -1652,6 +1657,18 @@ def render_prompt(templates, struct):
     )
     m = struct["market"]
     away, home = struct["matchup"].split(" @ ")
+
+    # 2026-09-16 analyst-mode branch. When struct['_analyst_facts'] is set
+    # (populated in the main loop when analyst_gate() is true for this
+    # game), use the analyst rules template with {FACTS_JSON} injected.
+    # Otherwise the current quant template renders as before.
+    analyst_facts = struct.get('_analyst_facts')
+    if analyst_facts and templates.get('rules_analyst'):
+        rules_body = templates['rules_analyst'].replace(
+            '{FACTS_JSON}', json.dumps(analyst_facts, indent=2, default=str))
+    else:
+        rules_body = templates['rules']
+
     return (
         templates["wrapper"]
         .replace("{today_et}", now_et_human())
@@ -1669,7 +1686,7 @@ def render_prompt(templates, struct):
         .replace("{full_score_context}", "")
         .replace("{model_context}", "")
         .replace("{sport_context}", context_block)
-        .replace("{sport_rules}", templates["rules"])
+        .replace("{sport_rules}", rules_body)
         .replace("{universal_rules}", templates["universal"])
         .replace("{data_quality_note}", "")
     )
@@ -2055,6 +2072,38 @@ def run():
             if sb_get("jerry_cache", {"cache_key": f"eq.{key}", "select": "cache_key"}):
                 print(f"  • {away} @ {home}: locked (Thu {week_key}), skip")
                 continue
+
+        # 2026-09-16 analyst-writeup v1 gate. When enabled for this game,
+        # build PROVIDED_FACTS from team_situational_records +
+        # team_stats_rolling + nfl_injuries and stash in struct so
+        # render_prompt swaps to the analyst rules template. Off = the
+        # current quant path runs unchanged.
+        analyst_mode = False
+        try:
+            from analyst_facts import analyst_gate, build_provided_facts
+            gid_for_gate = str(g.get('id') or '')
+            if analyst_gate('NFL', gid_for_gate):
+                # Look up the persisted ctx row via context map (contexts
+                # dict is keyed by home_team_name; we already have it).
+                ctx_for_facts = None
+                if contexts:
+                    ctx_for_facts = (contexts.get((home, away))
+                                     or contexts.get((away, home))
+                                     or next((c for c in contexts.values()
+                                              if isinstance(c, dict)
+                                              and c.get('home_team') == home
+                                              and c.get('away_team') == away),
+                                             None))
+                if ctx_for_facts:
+                    facts = build_provided_facts(ctx_for_facts, sport='NFL')
+                    struct['_analyst_facts'] = facts
+                    analyst_mode = True
+                    print(f"  🧠 {away} @ {home}: analyst_writeup_v1 gate ON")
+                else:
+                    print(f"  ⚠ analyst gate on but no ctx row — falling back")
+        except ImportError:
+            pass
+
         prompt = render_prompt(templates, struct)
         narrative = call_claude(prompt)
         if not narrative:
@@ -2097,6 +2146,58 @@ def run():
                             elif (parsed.get('conviction') or 0) > 55:
                                 parsed['conviction'] = 55
                                 print(f"  🔒 conviction capped→55 (LEAN) due to unverified numbers: {num2.get('hallucinated_numbers',[])[:3]}")
+            except ImportError:
+                pass
+
+        # 2026-09-16 LAYER F — analyst-mode strict cross-reference.
+        # Runs AFTER number + retry above so we only Layer-F the surviving
+        # prose. Confirmed mismatch = one corrective retry with the
+        # mismatches spelled out. Still bad = fall back to quant template
+        # (drop _analyst_facts + re-render + re-call), then RE-RUN the
+        # number validator on the fallback so we never ship worse than
+        # current behavior. Verified/unverifiable counts print for audit.
+        if analyst_mode and narrative and parsed.get('short_read') and parsed.get('long_read'):
+            try:
+                from analyst_facts import scan_hallucinated_stats
+                combined = f"{parsed.get('short_read')}\n\n{parsed.get('long_read')}"
+                f_report = scan_hallucinated_stats(combined, struct['_analyst_facts'])
+                cm = f_report['confirmed_mismatch']
+                if cm:
+                    _cm_short = [f"{c[0].strip()[:40]}→{c[1][:40]}" for c in cm[:3]]
+                    print(f"  🚨 Layer F caught {len(cm)} stat mismatch(es): {_cm_short}")
+                    # Corrective retry: append the specific mismatches to the
+                    # prompt as an instruction to the LLM.
+                    corrective_note = ("\n\n# CORRECTIVE — YOUR PREVIOUS ATTEMPT HAD STAT ERRORS\n"
+                                       "You cited stats that don't match PROVIDED_FACTS. Fix them:\n"
+                                       + "\n".join(f"  - {c[0].strip()} — {c[1]}"
+                                                    for c in cm[:5])
+                                       + "\nRe-write BOTH SHORT and LONG sections with only stats "
+                                         "that appear in PROVIDED_FACTS. Return the same three-section format.")
+                    retry_narr = call_claude(prompt + corrective_note)
+                    if retry_narr:
+                        retry_parsed = parse_nfl_synthesis(retry_narr)
+                        if retry_parsed.get('short_read') and retry_parsed.get('long_read'):
+                            retry_combined = f"{retry_parsed['short_read']}\n\n{retry_parsed['long_read']}"
+                            retry_report = scan_hallucinated_stats(retry_combined, struct['_analyst_facts'])
+                            if not retry_report['confirmed_mismatch']:
+                                narrative = retry_narr; parsed = retry_parsed
+                                print(f"  ✓ Layer F retry cleaned ({len(retry_report['verified'])} verified)")
+                            else:
+                                print(f"  🔻 Layer F retry still bad — fallback to quant template")
+                                fallback_struct = dict(struct); fallback_struct.pop('_analyst_facts', None)
+                                fallback_prompt = render_prompt(templates, fallback_struct)
+                                fallback_narr = call_claude(fallback_prompt)
+                                if fallback_narr:
+                                    fallback_parsed = parse_nfl_synthesis(fallback_narr)
+                                    if fallback_parsed.get('short_read'):
+                                        narrative = fallback_narr; parsed = fallback_parsed
+                                        print(f"  ↩︎ fell back to quant template")
+                    else:
+                        print(f"  ⚠ Layer F retry: claude returned nothing")
+                else:
+                    v = len(f_report.get('verified') or [])
+                    uv = len(f_report.get('unverifiable') or [])
+                    print(f"  ✓ Layer F clean · verified={v} unverifiable={uv}")
             except ImportError:
                 pass
 
