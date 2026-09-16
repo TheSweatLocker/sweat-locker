@@ -41,6 +41,33 @@ _VALID_MARKETS = {'ml', 'spread', 'rl', 'total', 'prop', 'lean', 'pass', None}
 _VALID_SIDES = {'HOME', 'AWAY', 'OVER', 'UNDER', None}
 
 
+def smart_truncate_short(text: str, max_chars: int = 350) -> str:
+    """Cap short_read at max_chars but back up to last sentence boundary.
+
+    2026-09-16: added after HOU@TTU screenshot showed short_read of 480ch
+    that included the first paragraph of a multi-paragraph LLM SHORT
+    section, cut off mid-sentence at 'projected point margi'. LLM
+    sometimes ignores the 40-60 word prompt constraint and writes
+    long-form into the SHORT slot. This truncates gracefully so the
+    user sees complete sentences instead of chopped mid-word text.
+
+    Rules:
+      - Input <= max_chars: return unchanged.
+      - Input > max_chars: cut at max_chars, then back up to the last
+        sentence-ending punctuation (. ! ?) if within the second half
+        of the cut so we're not throwing away most of the content.
+      - Final fallback: append ellipsis at hard cut.
+    """
+    if not text or len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    for sep in ('. ', '! ', '? ', '.\n', '!\n', '?\n', '."', '.', '!', '?'):
+        idx = cut.rfind(sep)
+        if idx > max_chars * 0.5:
+            return cut[:idx + len(sep.rstrip())].rstrip() + (sep.rstrip()[-1] if sep.rstrip() and sep.rstrip()[-1] not in '.!?' else '')
+    return cut.rstrip() + '…'
+
+
 def parse_synthesis(raw: str) -> dict:
     """Parse a Jerry LLM synthesis into structured pick fields.
 
@@ -110,8 +137,13 @@ def parse_synthesis(raw: str) -> dict:
     if side not in _VALID_SIDES:
         side = None
 
+    # 2026-09-16: smart-truncate short_read at last complete sentence
+    # (see smart_truncate_short docstring). Applies to both the section-
+    # parsed path AND the free-form fallback since LLM ignores the
+    # 40-60 word ask both ways.
+    short_out = smart_truncate_short(short or '') if short else None
     return {
-        'short_read': short or None,
+        'short_read': short_out,
         'long_read': long_ or None,
         'call_market': market,
         'call_side': side,

@@ -301,6 +301,14 @@ const BOOKMAKER_MAP = {
   // which Andy read as an app bug on UFC cards. Map to proper display.
   'rebet':'Rebet','thescore':'theScore','betrivers':'BetRivers',
   'pointsbet':'PointsBet','bally':'Bally','sugarhouse':'SugarHouse',
+  // 2026-09-16: internal synthetic bookmaker (backend ctx close_*
+  // columns) leaks its raw key onto NCAAF cards when Odds API returns
+  // no bookmaker for the game. Render as friendly 'Consensus' matching
+  // the .title we already set at line ~2942.
+  'ctx_fallback':'Consensus',
+  // 2026-09-16: UFC path was showing 'betonlineag' raw; add label so
+  // it goes through the map like other cards.
+  'betonlineag':'BetOnline',
 };
 // Odds API uses slightly different names for some MLB teams — map alternates to canonical MLB Stats API names
 const MLB_TEAM_ALIASES: Record<string, string[]> = {

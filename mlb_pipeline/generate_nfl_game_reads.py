@@ -1826,6 +1826,15 @@ def parse_nfl_synthesis(raw: str) -> dict:
         print(f"  ⚠ parser invalid NFL call_side {side!r} — nulling")
         side = None
 
+    # 2026-09-16: smart-truncate short_read at last sentence boundary.
+    # LLM occasionally writes multi-paragraph SHORT (ignoring the 40-60
+    # word ask) → user sees text cut mid-word. Cap at 350ch respecting
+    # sentence-end punctuation. Shared helper in jerry_reads_dual_write.
+    try:
+        from jerry_reads_dual_write import smart_truncate_short
+        short = smart_truncate_short(short) if short else short
+    except ImportError:
+        pass
     return {
         "short_read": short,
         "long_read": long_,

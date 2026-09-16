@@ -609,6 +609,20 @@ def main():
         print(f"     App fallback will render instead. Fix upstream context data.")
         return
 
+    # 2026-09-16: strip leading/trailing quote wrap. LLM sometimes wraps
+    # the entire POTD in quotation marks (per "Play of the Day: ..."
+    # style framing), and the client renders raw with visible " chars
+    # on the home screen. Strip curly + straight quotes at boundaries.
+    _n = narrative.strip()
+    _quote_chars = ('"', '"', '"', "'", "'", "'")
+    while _n and _n[0] in _quote_chars:
+        _n = _n[1:].lstrip()
+    while _n and _n[-1] in _quote_chars:
+        _n = _n[:-1].rstrip()
+    if _n != narrative.strip():
+        print(f"  🔧 stripped surrounding quotes from narrative")
+    narrative = _n
+
     # Write narrative into BOTH the data.narrative JSONB field (app reads from
     # there) and the narrative column (legacy + audit). Single update.
     potd["narrative"] = narrative

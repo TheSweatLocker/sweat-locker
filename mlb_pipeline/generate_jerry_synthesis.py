@@ -578,6 +578,15 @@ def parse_synthesis(raw: str) -> dict:
         print(f"  ⚠ PERSONA VIOLATION: MARKET=pass with CONVICTION={conviction} — "
               f"expected READ (ml/rl/total with conv 30-49) instead")
 
+    # 2026-09-16: smart-truncate short_read at last sentence boundary
+    # (see jerry_reads_dual_write.smart_truncate_short). Fixes the
+    # mid-word chop in the games-tab display when LLM writes multi-
+    # paragraph SHORT ignoring the word-count constraint.
+    try:
+        from jerry_reads_dual_write import smart_truncate_short
+        short = smart_truncate_short(short) if short else short
+    except ImportError:
+        pass
     return {
         "short_read": short,
         "long_read": long_,
@@ -1334,9 +1343,18 @@ def run(force: bool = False, game_date: str | None = None,
 
 
 def upsert_jerry_read_sport(game: dict, parsed: dict, struct: dict,
-                             game_date: str, sport: str) -> bool:
+                             game_date: str, sport: str,
+                             analyst_mode: bool = False) -> bool:
     """Sport-universal upsert — same schema as upsert_jerry_read but writes
-    the sport tag correctly for non-MLB sports."""
+    the sport tag correctly for non-MLB sports.
+
+    2026-09-16: analyst_mode param stamps prompt_version=
+    'jerry_synthesis_analyst_v1' when set. Downstream legacy writers
+    (jerry_pre_publish_audit, jerry_anchor_potd, apply_refit_verdict_
+    override, collapse_pitcher_thesis_contradictions) check this marker
+    and skip prose overwrites to preserve the analyst voice for the
+    day. See analyst_facts.is_analyst_prose_row() for the check.
+    """
     # 2026-08-22 Option C: force call_* to ensemble pick before persist
     parsed = defer_call_to_ensemble(parsed, struct)
     payload = {
@@ -1344,7 +1362,8 @@ def upsert_jerry_read_sport(game: dict, parsed: dict, struct: dict,
         "game_id": game.get("game_id"),
         "game_date": game_date,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": ("jerry_synthesis_analyst_v1" if analyst_mode
+                           else PROMPT_VERSION),
         "input_snapshot": struct,
         **parsed,
     }

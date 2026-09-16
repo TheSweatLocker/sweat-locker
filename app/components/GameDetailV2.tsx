@@ -1410,7 +1410,13 @@ function MoneyMarket({label, data}: any) {
   // cross-source confirmation. Blast radius: every NCAAF total (thin
   // source coverage) + any market where OC/FR haven't reported yet.
   const multiSource = sources >= 2;
-  const sharp = multiSource && (Math.abs(div) >= 20 || money >= 60);
+  // 2026-09-16: SHARP chip previously fired on money>=60 alone, even
+  // when divergence was 0pp (81% money / 81% bets = public consensus,
+  // NOT sharp). Andy screenshot: OVER SHARP with +0pp divergence.
+  // Fix: require actual divergence >= 5pp before tagging SHARP.
+  // multiSource + money>=60 alone is downgraded to consensus, not
+  // sharp. Extreme still requires large money-vs-bets gap.
+  const sharp = multiSource && Math.abs(div) >= 5 && (Math.abs(div) >= 20 || money >= 60);
   const extremeSharp = multiSource && (Math.abs(div) >= 50 || (money >= 80 && bets <= 30));
   return (
     <View style={[
