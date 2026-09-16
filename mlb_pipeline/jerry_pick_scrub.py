@@ -154,6 +154,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     jerry_rows = r.json() or []
 
     fixed = 0
+    nulled_gids: list[str] = []  # 2026-09-16 track rows we null-out for chain-regen
     for j in jerry_rows:
         c = ctx_by_gid.get(j['game_id'])
         if not c: continue
@@ -380,8 +381,14 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         if _hard_bad_prose:
             # Null out contradictory prose (both fields). UI falls back to
             # "analysis pending" — better than misleading text.
+            # 2026-09-16: track the game_id so main() can chain-invoke
+            # generate_jerry_synthesis --game-id after the loop. Without
+            # this chain the row stays "analysis pending" until the next
+            # scheduled synth run — which is what put 9 blank reads in
+            # production two mornings in a row (9/15 + 9/16).
             payload['short_read'] = None
             payload['long_read']  = None
+            nulled_gids.append(j['game_id'])
             _flip_kind = ('cross-market' if _prose_cross_market
                           else 'same-market-side-flip')
             _orig_note = (
@@ -415,7 +422,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             fixed += 1
         else:
             print(f'    patch failed {pr.status_code}: {pr.text[:150]}')
-    return (len(jerry_rows), fixed)
+    return (len(jerry_rows), fixed, nulled_gids)
 
 
 def main():
@@ -433,12 +440,36 @@ def main():
 
     print(f'=== jerry_pick_scrub · {gd} · {"/".join(sports)}{" [DRY]" if args.dry_run else ""} ===')
     total_c = total_f = 0
+    # 2026-09-16: track nulled game_ids per sport so we can chain-invoke
+    # generate_jerry_synthesis to regen matching prose in the same
+    # pipeline pass. Prior behavior left "analysis pending" until the
+    # next scheduled synth — the reason 9 MLB reads were blank in
+    # production on both 9/15 and 9/16 mornings.
+    nulled_by_sport: dict[str, list[str]] = {}
     for sp in sports:
-        c, f = scrub_sport(sp, gd, game_ids, dry_run=args.dry_run)
+        c, f, nulled = scrub_sport(sp, gd, game_ids, dry_run=args.dry_run)
         if c or f:
-            print(f'  {sp}: checked {c}, fixed {f}')
+            print(f'  {sp}: checked {c}, fixed {f}, nulled {len(nulled)}')
         total_c += c; total_f += f
+        if nulled:
+            nulled_by_sport[sp] = nulled
     print(f'DONE - checked {total_c}, fixed {total_f}')
+
+    # Chain-regen for any nulled rows so users never see "analysis
+    # pending" cards in production. Skips on --dry-run.
+    if not args.dry_run and nulled_by_sport:
+        import subprocess, sys
+        for sp, gids in nulled_by_sport.items():
+            print(f'  chain-regen {sp}: {len(gids)} game(s) nulled — invoking '
+                  f'generate_jerry_synthesis --game-id')
+            cmd = [sys.executable, 'generate_jerry_synthesis.py',
+                   '--sport', sp, '--date', gd,
+                   '--game-id', ','.join(gids), '--force']
+            try:
+                rc = subprocess.call(cmd, timeout=900)
+                print(f'    chain-regen {sp} exit={rc}')
+            except Exception as e:
+                print(f'    chain-regen {sp} FAILED: {e}')
 
 
 if __name__ == '__main__':

@@ -765,10 +765,14 @@ def _fetch_games_for_sport(sport: str, gd: str) -> list:
 
 
 def run(force: bool = False, game_date: str | None = None,
-        limit: int | None = None, sport: str = 'MLB') -> None:
+        limit: int | None = None, sport: str = 'MLB',
+        game_ids: list[str] | None = None) -> None:
     gd = game_date or today_et()
     sport = sport.upper()
-    print(f"=== generate_jerry_synthesis · {sport} · {gd} ===")
+    filter_ids = set(game_ids) if game_ids else None
+    print(f"=== generate_jerry_synthesis · {sport} · {gd}"
+          + (f" · game_ids={len(filter_ids)}" if filter_ids else "")
+          + " ===")
 
     reg = SPORT_REGISTRY.get(sport)
     if not reg:
@@ -788,6 +792,15 @@ def run(force: bool = False, game_date: str | None = None,
     games = _fetch_games_for_sport(sport, gd)
     if not games:
         print(f"  ⚠ no {sport} games on slate"); return
+    if filter_ids:
+        # 2026-09-16 game_ids filter — used by jerry_pick_scrub after a
+        # cross-market null-out to regen JUST the affected rows instead
+        # of touching the full slate. Also usable ad-hoc for debugging.
+        before = len(games)
+        games = [g for g in games if g.get('game_id') in filter_ids]
+        print(f"  filtered {before} → {len(games)} games by --game-id")
+        if not games:
+            print(f"  ⚠ no games matched --game-id filter"); return
     print(f"  slate: {len(games)} {sport} games")
     props_by_game = fetch_props_by_game()
     potd = fetch_potd()
@@ -1256,5 +1269,12 @@ if __name__ == "__main__":
     p.add_argument("--limit", type=int)
     p.add_argument("--sport", default="MLB",
                    help="MLB (default). NBA/NFL/NCAAF/NCAAB when their pipelines ship.")
+    p.add_argument("--game-id", dest="game_id",
+                   help="Comma-separated game_id(s) to restrict regen to. "
+                        "Used by jerry_pick_scrub after cross-market null-outs.")
     args = p.parse_args()
-    run(force=args.force, game_date=args.date, limit=args.limit, sport=args.sport)
+    gids = None
+    if args.game_id:
+        gids = [g.strip() for g in args.game_id.split(',') if g.strip()]
+    run(force=args.force, game_date=args.date, limit=args.limit,
+        sport=args.sport, game_ids=gids)
