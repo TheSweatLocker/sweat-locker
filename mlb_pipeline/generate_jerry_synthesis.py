@@ -886,7 +886,41 @@ def run(force: bool = False, game_date: str | None = None,
         except Exception as e:
             print(f"  ⚠ game bucket lookup: {e}")
 
-        prompt = render_prompt(template, g, struct)
+        # 2026-09-16 analyst-writeup v1 gate (MLB port). Same pattern as
+        # NFL: check feature flag; if on, build MLB PROVIDED_FACTS,
+        # swap to analyst prompt template, run Layer F post. Off = the
+        # current quant path runs unchanged.
+        analyst_mode = False
+        analyst_facts = None
+        analyst_prompt_body = None
+        try:
+            from analyst_facts import analyst_gate, build_facts
+            if sport == 'MLB' and analyst_gate('MLB', gid):
+                analyst_facts = build_facts(g, 'MLB')
+                # Try to load MLB analyst prompt template
+                _ar = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prompt_templates",
+                    headers=SB_READ,
+                    params={"name": "eq.jerry_synthesis_analyst_v1",
+                            "sport": "eq.MLB", "is_active": "eq.true",
+                            "select": "template"},
+                    timeout=10)
+                _rows = _ar.json() if _ar.status_code == 200 else []
+                if _rows:
+                    analyst_prompt_body = _rows[0]['template']
+                    analyst_mode = True
+                    print(f"  🧠 {away} @ {home}: analyst v1 gate ON")
+        except Exception as _e:
+            print(f"  ⚠ analyst gate check failed: {_e}")
+
+        if analyst_mode and analyst_prompt_body:
+            # Analyst prompt already contains {FACTS_JSON} + full framing —
+            # bypass the standard render_prompt (which uses the quant template).
+            prompt = (analyst_prompt_body
+                      .replace('{FACTS_JSON}',
+                               json.dumps(analyst_facts, indent=2, default=str)))
+        else:
+            prompt = render_prompt(template, g, struct)
         raw = call_claude(prompt)
         if not raw:
             print(f"  ⚠ {away} @ {home}: no response, skip")
@@ -897,6 +931,51 @@ def run(force: bool = False, game_date: str | None = None,
             print(f"  ⚠ {away} @ {home}: parse missing short/long sections")
             print(f"     raw head: {raw[:200]!r}")
             continue
+
+        # 2026-09-16 MLB Layer F — cross-reference numeric claims in prose
+        # against the flattened PROVIDED_FACTS numeric set. Retries once
+        # with corrective note; falls back to quant path if still bad.
+        if analyst_mode and analyst_facts:
+            try:
+                from analyst_facts import scan_stats
+                combined = f"{parsed.get('short_read')}\n\n{parsed.get('long_read')}"
+                f_report = scan_stats(combined, analyst_facts, 'MLB')
+                cm = f_report['confirmed_mismatch']
+                if cm:
+                    print(f"  🚨 MLB Layer F caught {len(cm)} numeric mismatch(es)")
+                    corrective = (prompt +
+                                  "\n\n# CORRECTIVE — cited numbers not in PROVIDED_FACTS\n"
+                                  "Your last attempt cited these numbers that don't appear "
+                                  "anywhere in PROVIDED_FACTS:\n"
+                                  + "\n".join(f'  - {c[0]}' for c in cm[:5])
+                                  + "\nRewrite BOTH SHORT and LONG using ONLY the numeric "
+                                    "values that appear in PROVIDED_FACTS. Return the "
+                                    "same three-section format.")
+                    retry_raw = call_claude(corrective)
+                    if retry_raw:
+                        retry_parsed = parse_synthesis(retry_raw)
+                        if retry_parsed.get('short_read') and retry_parsed.get('long_read'):
+                            retry_combined = f"{retry_parsed['short_read']}\n\n{retry_parsed['long_read']}"
+                            retry_report = scan_stats(retry_combined, analyst_facts, 'MLB')
+                            if not retry_report['confirmed_mismatch']:
+                                raw = retry_raw; parsed = retry_parsed
+                                print(f"  ✓ MLB Layer F retry cleaned "
+                                      f"({len(retry_report['verified'])} verified)")
+                            else:
+                                # Fall back to quant template
+                                print(f"  🔻 MLB Layer F retry still bad — quant fallback")
+                                fallback_prompt = render_prompt(template, g, struct)
+                                fb_raw = call_claude(fallback_prompt)
+                                if fb_raw:
+                                    fb_parsed = parse_synthesis(fb_raw)
+                                    if fb_parsed.get('short_read'):
+                                        raw = fb_raw; parsed = fb_parsed
+                                        print(f"  ↩︎ MLB fell back to quant")
+                else:
+                    v = len(f_report.get('verified') or [])
+                    print(f"  ✓ MLB Layer F clean · verified={v}")
+            except ImportError:
+                pass
 
         # Post-LLM brand-name sanitizer (2026-08-03) — belt-and-suspenders
         # for the prompt's BRAND ATTRIBUTION GUARDRAIL. Removes any leaked

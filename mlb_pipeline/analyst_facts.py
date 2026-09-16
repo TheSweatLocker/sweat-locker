@@ -87,6 +87,119 @@ def _notable_injuries(team: str, season: int, week: Optional[int]) -> list:
             for x in rows if x.get('injury_status')]
 
 
+def build_provided_facts_mlb(ctx: dict) -> dict:
+    """Assemble PROVIDED_FACTS for an MLB game.
+
+    2026-09-16: MLB analyst v1.1 port. Same architecture as NFL —
+    humanize market side, pull sourced pitcher / bullpen / lineup /
+    park / weather / umpire facts so the LLM cites from a bounded set
+    and Layer F can cross-reference every claim.
+
+    Unlike NFL, MLB analyst facts center on the starting-pitcher matchup
+    (xERA, K/9, L3 form, splits vs opposing side) + bullpen edge, since
+    those move the needle more than team-level ATS records in baseball.
+    """
+    if not ctx: return {}
+    home = ctx.get('home_team') or ''
+    away = ctx.get('away_team') or ''
+
+    # Humanize market side — MLB spread sign convention is OPPOSITE NFL:
+    # negative close_spread = home fav in MLB. (Documented in
+    # project_close_spread_sign_bug_914.)
+    cs = ctx.get('close_spread')
+    ct = ctx.get('close_total')
+    hml = ctx.get('home_ml_close') or ctx.get('close_home_ml')
+    aml = ctx.get('away_ml_close') or ctx.get('close_away_ml')
+    market: dict = {'close_total': ct}
+    if hml is not None and aml is not None:
+        # Favorite is whoever has more negative ML
+        if hml < 0 and (aml is None or hml < aml):
+            market['favorite'] = home
+            market['favorite_ml'] = hml
+            market['underdog'] = away
+            market['underdog_ml'] = aml
+        elif aml < 0 and (hml is None or aml < hml):
+            market['favorite'] = away
+            market['favorite_ml'] = aml
+            market['underdog'] = home
+            market['underdog_ml'] = hml
+
+    pp = ctx.get('primary_play') or {}
+    if isinstance(pp, str):
+        try: pp = json.loads(pp)
+        except Exception: pp = {}
+
+    def _sp_block(side: str) -> dict:
+        return {
+            'name': ctx.get(f'{side}_pitcher'),
+            'xera': ctx.get(f'{side}_sp_xera'),
+            'era_last_3': ctx.get(f'{side}_pitcher_last_3_era'),
+            'k_pct_last_3': ctx.get(f'{side}_pitcher_last_3_k_pct'),
+            'first_inning_era': ctx.get(f'{side}_first_inning_era'),
+            'first_inning_whip': ctx.get(f'{side}_first_inning_whip'),
+            'vs_opp_team_era_career': ctx.get(f'{side}_pitcher_vs_team_era'),
+            'vs_opp_team_avg_career': ctx.get(f'{side}_pitcher_vs_team_avg'),
+            'vs_opp_team_k9_career': ctx.get(f'{side}_pitcher_vs_team_k_per_9'),
+            'vs_opp_team_ip_career': ctx.get(f'{side}_pitcher_vs_team_ip'),
+            'projected_ks': ctx.get(f'{side}_pitcher_projected_ks'),
+            'projected_bb': ctx.get(f'{side}_pitcher_projected_bb'),
+            'projected_hits': ctx.get(f'{side}_pitcher_projected_hits'),
+            'projected_outs': ctx.get(f'{side}_pitcher_projected_outs'),
+            'home_era': ctx.get(f'{side}_pitcher_home_era'),
+            'away_era': ctx.get(f'{side}_pitcher_away_era'),
+        }
+
+    def _lineup_block(side: str) -> dict:
+        return {
+            'wrc_plus_season': ctx.get(f'{side}_wrc_plus'),
+            'wrc_plus_vs_opp_hand': ctx.get(f'{side}_wrc_vs_opp_hand'),
+            'wrc_proxy_l14': ctx.get(f'{side}_wrc_proxy_l14'),
+            'barrel_pct_team': ctx.get(f'{side}_team_barrel_pct'),
+        }
+
+    return {
+        'matchup': f'{away} @ {home}',
+        'sport': 'MLB',
+        'market': market,
+        'primary_pick': {
+            'label': pp.get('label'), 'tier': pp.get('tier'),
+            'conviction': pp.get('conviction'), 'type': pp.get('type'),
+            'side': pp.get('side'),
+        },
+        'model_projections': {
+            'projected_spread': ctx.get('projected_spread'),
+            'projected_total': ctx.get('projected_total'),
+        },
+        'starting_pitchers': {home: _sp_block('home'), away: _sp_block('away')},
+        'bullpens': {
+            home: {'era': ctx.get('home_bullpen_era'),
+                   'relievers_3d': ctx.get('home_bp_relievers_3d')},
+            away: {'era': ctx.get('away_bullpen_era'),
+                   'relievers_3d': ctx.get('away_bp_relievers_3d')},
+        },
+        'lineups': {home: _lineup_block('home'), away: _lineup_block('away')},
+        'venue': {
+            'park_run_factor': ctx.get('park_run_factor'),
+            'temperature': ctx.get('temperature'),
+            'wind_speed': ctx.get('wind_speed'),
+            'wind_direction': ctx.get('wind_direction'),
+            'wind_blowing_in': ctx.get('wind_blowing_in'),
+        },
+        'umpire': {
+            'name': ctx.get('umpire'),
+            'note': ctx.get('umpire_note'),
+        },
+        'team_state': {
+            home: {'days_rest': ctx.get('home_days_rest'),
+                   'streak': ctx.get('home_streak')},
+            away: {'days_rest': ctx.get('away_days_rest'),
+                   'streak': ctx.get('away_streak')},
+        },
+        'sample_note': ('MLB pitcher xERA and L3 form are the reliable '
+                        'signals; team-level records are noisy in-season.'),
+    }
+
+
 def build_provided_facts(ctx: dict, sport: str = 'NFL',
                           current_season: Optional[int] = None) -> dict:
     """Assemble the PROVIDED_FACTS payload the LLM should cite from.
@@ -171,6 +284,15 @@ def build_provided_facts(ctx: dict, sport: str = 'NFL',
         }
 
     return facts
+
+
+def build_facts(ctx: dict, sport: str) -> dict:
+    """Sport-dispatched facts builder. NFL uses the team-stat/rank
+    architecture; MLB uses pitcher / bullpen / lineup / park."""
+    sport = (sport or 'NFL').upper()
+    if sport == 'MLB':
+        return build_provided_facts_mlb(ctx)
+    return build_provided_facts(ctx, sport=sport)
 
 
 # ═══ LAYER F — STRICT CROSS-REFERENCE ════════════════════════════════
@@ -507,6 +629,98 @@ def auto_repair_epa_ambiguity(prose: str, provided_facts: dict) -> tuple:
                         f'{team_key} rank {rank_cited} → {qualifier.strip()} '
                         f'({off_key}={off_rank}, {def_key}={def_rank})'))
     return out, repairs
+
+
+# ═══ MLB LAYER F — numeric-claim cross-reference ═════════════════════
+#
+# MLB doesn't have the team-rank architecture NFL uses; its facts are
+# pitcher-centric (xERA, ERA, K/9). Layer F for MLB flattens the facts
+# dict into a numeric-value set and scans prose for cited numbers that
+# don't appear anywhere in facts. Simpler than NFL's rank-vs-team
+# match but catches the class of "invented pitcher xERA" hallucination.
+#
+# Number patterns: floats with 1-3 decimals (xERA 2.51, K/9 9.4),
+# integers with common MLB units (K, IP, ERA formatted as %).
+
+_MLB_NUMBER_RE = re.compile(r'\b\d+(?:\.\d{1,3})?\b')
+_MLB_STAT_HINT_RE = re.compile(
+    r'\b(?:xERA|ERA|K/9|BB/9|WHIP|K%|BB%|wRC\+?|BABIP|barrel%|K/BB|OPS)\b',
+    re.IGNORECASE)
+
+
+def _flatten_numeric_facts(facts: dict) -> set:
+    """Collect every numeric value from provided_facts into a set of
+    string representations for O(1) presence checks. Includes both
+    the raw float and rounded variants (2, 2.5, 2.51) so LLM's
+    typical rounding doesn't false-flag."""
+    out = set()
+    def _add(v):
+        if v is None: return
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return
+        out.add(str(int(f)) if f == int(f) else str(f))
+        # Common rounding variants
+        for prec in (1, 2, 3):
+            r = round(f, prec)
+            out.add(f'{r:.{prec}f}')
+            if r == int(r): out.add(str(int(r)))
+    def _walk(o):
+        if isinstance(o, dict):
+            for v in o.values(): _walk(v)
+        elif isinstance(o, list):
+            for v in o: _walk(v)
+        else: _add(o)
+    _walk(facts)
+    return out
+
+
+def scan_hallucinated_stats_mlb(prose: str, provided_facts: dict) -> dict:
+    """MLB Layer F. Scans prose for numeric claims that don't appear
+    anywhere in provided_facts. Returns three buckets matching the
+    NFL scanner shape so the caller stays sport-agnostic:
+      - confirmed_mismatch: numbers cited that aren't in facts
+      - unverifiable: parser noise / claims without stat hint nearby
+      - verified: numbers cited that DO appear in facts
+    """
+    confirmed_mismatch, unverifiable, verified = [], [], []
+    if not prose: return {'confirmed_mismatch': [], 'unverifiable': [], 'verified': []}
+    facts_nums = _flatten_numeric_facts(provided_facts)
+    # Walk each numeric hit, look at surrounding 40 chars for a stat
+    # hint (xERA / ERA / K/9 etc.). If a hint is present and the number
+    # isn't in facts → likely hallucinated. If no hint nearby → treat
+    # as filler (year, ordinal, etc.) and skip.
+    for m in _MLB_NUMBER_RE.finditer(prose):
+        num_str = m.group(0)
+        # Skip obviously safe numbers: years, single-digit small ints,
+        # game-day dates
+        try:
+            f = float(num_str)
+        except ValueError:
+            continue
+        if 1900 <= f <= 2100 and f == int(f): continue  # year
+        if 0 <= f <= 5 and f == int(f): continue  # small ints (# games, # runs)
+        left = max(0, m.start() - 40); right = min(len(prose), m.end() + 40)
+        window = prose[left:right]
+        if not _MLB_STAT_HINT_RE.search(window):
+            continue  # no stat context — not a claim
+        if num_str in facts_nums:
+            verified.append((f'{num_str} @ ...{window[-40:]}', 'in facts'))
+        else:
+            confirmed_mismatch.append(
+                (f'{num_str} in "{window.strip()[-60:]}"',
+                 f'not in provided_facts numeric set'))
+    return {'confirmed_mismatch': confirmed_mismatch,
+            'unverifiable': unverifiable, 'verified': verified}
+
+
+def scan_stats(prose: str, provided_facts: dict, sport: str) -> dict:
+    """Sport-dispatched Layer F scanner."""
+    sport = (sport or 'NFL').upper()
+    if sport == 'MLB':
+        return scan_hallucinated_stats_mlb(prose, provided_facts)
+    return scan_hallucinated_stats(prose, provided_facts)
 
 
 def feature_enabled(sport: str, feature: str) -> bool:
