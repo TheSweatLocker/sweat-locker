@@ -1869,23 +1869,24 @@ def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
     conviction = pp.get('conviction')
     line = pp.get('line')
     tier = str(pp.get('tier') or '').upper()
-    # 2026-09-12 UNBLOCK: NFL Week 2 slate had 16 of 27 games force-passed
-    # because ensemble is still calibrating and tiering games to COVERAGE.
-    # Original rule was ALL COVERAGE → force PASS. New rule: COVERAGE with
-    # conviction >= 60 ships as a LEAN pick (visible to users) instead of
-    # PASS. COVERAGE conv < 60 + PASS/SKIP tiers keep the pass path — those
-    # are genuinely soft. This surfaces the ensemble's best guess when it
-    # exists but doesn't manufacture picks on games with no signal at all.
-    _COVERAGE_LEAN_FLOOR = 60
+    # 2026-09-16: DROP the conv=60 floor on COVERAGE promotions. Andy
+    # audited DET@BUF (COVERAGE conv=59): badge showed "Over 54.5"
+    # (from primary_play.label) but Jerry chip showed "Pass" (because
+    # the old floor demoted <60 COVERAGE to PASS). That's the exact
+    # drift class we've been chasing all week. New rule: if
+    # primary_play has a real label + side + valid market, jerry_reads
+    # call_* mirrors it — badge and chip stay in sync regardless of
+    # conviction. COVERAGE gets treated as LEAN for display; only true
+    # PASS/SKIP tiers (no label) fall to the pass path.
     _cov_promotable = (tier == 'COVERAGE'
-                       and isinstance(conviction, (int, float))
-                       and int(conviction) >= _COVERAGE_LEAN_FLOOR
                        and market in _NFL_VALID_MARKETS and side and label)
     if _cov_promotable:
-        # Downgrade tier for display but keep the pick — treat as LEAN
+        # Treat as LEAN for display — the pick surfaces, badge/chip aligned
         tier = 'LEAN'
-    # Engine PASS path — LLM prose can stay, but badge shows PASS + engine reason
-    if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in _NFL_VALID_MARKETS or not side or not label:
+    # Engine PASS path — only when there's genuinely nothing to publish
+    # (PASS/SKIP tier, or missing market/side/label). COVERAGE-with-label
+    # now promotes above.
+    if tier in ('PASS', 'SKIP') or market not in _NFL_VALID_MARKETS or not side or not label:
         engine_sub = str(pp.get('sub') or '').strip()
         new_short = (f'Engine passed — no publishable edge on this game. '
                      f'{engine_sub}' if engine_sub else 'Engine passed — no publishable edge on this game.')
