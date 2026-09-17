@@ -225,14 +225,16 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
 
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>
-            {/* 2026-09-10: "SWEAT CARD L30D" fixed label, no sport prefix.
-                Prior version added "MLB " when the fallback kicked in
-                (viewing NFL but showing MLB data), producing "MLB SWEAT
-                CARD L30D" which overflowed the strip width. Sport info
-                is redundant with the ADAPTIVE RECORD CHIPS row above,
-                which already shows per-sport breakdowns. Drop the prefix
-                and keep the label compact. */}
-            CARD L30D
+            {/* 2026-09-17: relabeled "CARD L30D" → "SWEAT CARD L30D" so
+                users can distinguish it from the SHARP CARD chip row
+                above. Both are technically "card" records but from
+                different denominators (top-8 curated Sweat Card here
+                vs the full 15-pick Sharp Card in the chip row). Same
+                word "CARD" for two different numbers was confusing —
+                Andy 9/17 audit ("what triggers those record why do i
+                see them now"). Fixed length assumes strip fits — no
+                sport prefix (kept per prior 9/10 note). */}
+            SWEAT CARD L30D
           </Text>
           <View style={styles.statRow}>
             <Text style={styles.statValue}>

@@ -12524,11 +12524,20 @@ setJerryHistory(prev => {
              onOpenLedger={() => { setActiveTab('steam'); setSteamSubTab('ledger'); }}
            />
 
-           {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Replaces the
-               single-sport-hardcoded feel of the RecapStrip with a compact
-               chip row showing top 2-3 in-season sports by hit-rate. Sits
-               above the RecapStrip. Silent-hides if <2 sports have data.
-               Data source: surfaceRecords (same fetch as chip below). */}
+           {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Chip row
+               showing top 2-3 in-season sports by hit-rate on THE SHARP
+               (Steam Room tab picks — 15-pick composed slate). Sits above
+               the RecapStrip (which shows the SWEAT CARD top-8 curated
+               dashboard slice — different denominator).
+               NAMING (per Andy 9/17): "Sweat Card" = dashboard/home
+               top-8, "The Sharp" = Steam Room 15-pick slate. There is
+               NO "Sharp Card" — do not use that phrase in labels.
+               DB surface name is still `sharp_card` for legacy reasons.
+               2026-09-17: raised minSample 5 → 10 and added a hit%/units
+               floor so we don't surface losing sports at trap-small
+               samples (NFL 1-4 at n=5 was rendering as "NFL 20%" and
+               undermining trust). Added "L30D · THE SHARP" label
+               under the chips so users know what window + surface. */}
            {(() => {
              if (!surfaceRecords || !Object.keys(surfaceRecords).length) return null;
              const rows: {sport: string; w: number; l: number; pct: number; un: number}[] = [];
@@ -12536,14 +12545,24 @@ setJerryHistory(prev => {
                const rec = surfaceRecords[`${sp}|sharp_card|d30`] || surfaceRecords[`${sp}|sharp_card|mtd`];
                if (!rec) continue;
                const w = rec.wins || 0, l = rec.losses || 0;
-               if (w + l < 5) continue;
-               rows.push({sport: sp, w, l, pct: w / (w + l), un: Number(rec.units_net) || 0});
+               const total = w + l;
+               // 2026-09-17: min n=10 AND either net-positive OR ≥50% hit rate.
+               // Killed the NFL 1-4 (n=5, 20%, -6u) that was surfacing as
+               // "NFL 20%" and made us look bad. If a sport genuinely has
+               // 10+ picks and is under water, silent-hide is better than
+               // publishing a losing record on the home hero.
+               if (total < 10) continue;
+               const pct = w / total;
+               const un = Number(rec.units_net) || 0;
+               if (pct < 0.50 && un <= 0) continue;
+               rows.push({sport: sp, w, l, pct, un});
              }
              if (rows.length < 2) return null;
              rows.sort((a, b) => (b.pct - a.pct) || (b.un - a.un));
              const top = rows.slice(0, 3);
              return (
-               <View style={{flexDirection: 'row', gap: 6, marginBottom: 10}}>
+               <View style={{marginBottom: 10}}>
+                 <View style={{flexDirection: 'row', gap: 6}}>
                  {top.map(r => {
                    const c = r.pct >= 0.60 ? THEME.win : r.pct >= 0.52 ? THEME.accent : THEME.textDim;
                    return (
@@ -12558,6 +12577,10 @@ setJerryHistory(prev => {
                      </View>
                    );
                  })}
+                 </View>
+                 <Text style={{color: THEME.textDim, fontSize: 9, fontWeight: '700', letterSpacing: 0.6, textAlign: 'center', marginTop: 5}}>
+                   L30D · THE SHARP
+                 </Text>
                </View>
              );
            })()}

@@ -38,9 +38,9 @@ Compliance / ToS.
 
 ### 7. Sport terminology
 
-- **Sweat Card** = the dashboard/home screen (yesterday recap + POTD + Dawg + composite)
-- **Sharp Card** = the Steam Room tab (composed picks from `sharp_card` surface)
-- Do not conflate the two. When you say "Sharp Card" you mean the Steam Room tab; the dashboard is Sweat Card.
+- **Sweat Card** = the dashboard/home screen (yesterday recap + POTD + Dawg + composite; top-8 curated)
+- **The Sharp** = the Steam Room tab (composed 15-pick slate; internal DB surface still named `sharp_card` for legacy reasons, but user-facing label is always "The Sharp" — never "Sharp Card" or "Sharp Plays")
+- Do not conflate the two — different denominators, different discipline. When Andy or docs use "the Sharp record" they mean the Steam Room slate; when they say "Sweat Card" they mean the dashboard top-8.
 
 ## Working conventions
 
@@ -49,7 +49,7 @@ Compliance / ToS.
 - **Prop odds band**: -300 to +150. Anything outside → SKIP.
 - **Batter Hits O 0.5 juice trap**: worse than -200 → don't publish even if PRIME.
 - **Heavy fav ML trap**: -200+ moneylines have a documented 29% cover rate on -1.5.
-- **POTD juice gate**: max -200 juice.
+- **POTD juice gate**: max **-250** juice (loosened from -200 on 9/12 with LR ≥ 0.60 guardrail — see jerry_anchor_potd.py:590).
 - **Sides > totals discipline**: card composition prefers sides over totals in tight races.
 - **No NRFI/YRFI on cards** unless PRIME+ AND extreme edge.
 
