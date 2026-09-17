@@ -89,11 +89,18 @@ CREATE INDEX IF NOT EXISTS home_banners_active_idx
 
 -- Cron upsert convenience: unique on (kind, origin) so cron can
 -- INSERT ... ON CONFLICT (kind, origin) DO UPDATE and never create
--- dupe auto-banners across runs. Admin rows have kind=NULL so they
--- don't collide with cron rows.
+-- dupe auto-banners across runs. NON-PARTIAL index (dropped the
+-- WHERE kind IS NOT NULL predicate 2026-09-17 migration recovery)
+-- because ON CONFLICT can't use a partial index as its arbiter
+-- without a matching predicate hint, and the seed INSERT + cron
+-- both need plain ON CONFLICT (kind, origin) semantics.
+--
+-- Admin rows with kind=NULL still coexist safely: PostgreSQL treats
+-- NULL as distinct in unique indexes by default (NULL != NULL), so
+-- multiple (NULL, 'admin') pairs are allowed. Only rows with an
+-- actual kind value get deduped on (kind, origin).
 CREATE UNIQUE INDEX IF NOT EXISTS home_banners_kind_origin_uniq
-  ON public.home_banners (kind, origin)
-  WHERE kind IS NOT NULL;
+  ON public.home_banners (kind, origin);
 
 -- RLS: readable by anon + authenticated. Writable only by service role
 -- (cron script + admin console). No user writes.
