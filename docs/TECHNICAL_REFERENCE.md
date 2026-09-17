@@ -666,6 +666,86 @@ Ladder + Dawg are the underperformers — flagged for calibration review.
 
 ---
 
+## 9. Home Tab Banners (server-driven)
+
+**What it does:** the gold-tinted rotating banner strip at the top of the Home tab — "🎯 MLB Prime Props L7D: 222-46 (83%) +123.1u", "🔥 The Sharp last 3d: hot", "📈 Ledger 3-day green streak", etc. Silent when nothing qualifies. Rotates every 8s if multiple candidates.
+
+**Table:** `public.home_banners` (see `supabase/migrations/20260917d_home_banners.sql`).
+
+| column | purpose |
+|---|---|
+| `icon` | emoji (🎯🔥📈🏈⚾🎓 etc). Default 🔥. |
+| `message` | banner text (whatever will render verbatim) |
+| `deep_link` | tap target: `sharp` / `ladder` / `ledger` / `daily_degen` / `jerry` / NULL (non-tappable) |
+| `sport` | `'MLB'`/`'NFL'`/`'NCAAF'`/NULL — NULL = show for any sport |
+| `route` | `'home'`/`'games'`/`'jerry'`/`'steam'`/`'mybets'`/NULL — NULL = show on any screen (banner component in Home only uses `'home'`) |
+| `priority` | int, higher = more prominent. Client sorts DESC + shows top 3 in rotation |
+| `starts_at` | when the banner becomes visible (default NOW) |
+| `expires_at` | when it stops rendering (NULL = never; recommend always setting for admin pushes) |
+| `origin` | `'auto'` (from cron) or `'admin'` (manual push) |
+| `kind` | stable identifier for cron dedup — `prime_props_l7d_MLB`, `sharp_3d_hot_ALL`, etc. NULL for admin rows |
+| `dismissible` | client x-button on the banner (schema-ready, not yet rendered) |
+
+**Auto-cron:** `mlb_pipeline/compute_home_banners.py` — recomputes 5 classes and UPSERTs into `home_banners`:
+
+| priority | kind pattern | when it fires |
+|---|---|---|
+| 100 | `prime_props_l7d_<SPORT>` | `surface_records[SPORT\|prop_prime\|d7]` n≥30, hit≥70%, net positive |
+| 90  | `sharp_3d_hot_<SPORT>` | last 3 daily_surface_records sums to n≥5, hit≥60%, +5u+ |
+| 80  | `sport_7d_run_<SPORT>` | `surface_records[SPORT\|sharp_card\|d7]` n≥10, hit≥65%, net positive |
+| 70  | `daily_degen_streak` | 2+ consecutive win-only daily_surface_records rows |
+| 60  | `ledger_green_streak` | 3+ consecutive positive-pnl days across ledger surfaces |
+
+24h TTL — a class that stops qualifying lapses cleanly on TTL expiry. Cron rerun UPSERTs by `(kind, origin)` so no dupes.
+
+**Client:** `app/components/HomeStreakBanner.tsx` — no hardcoded templates. Polls the table every 5 min, filters by `currentSport` + `route='home'`, sorts by priority DESC, rotates top-3 every 8s. Deep-link string maps to the parent's tab-switch callbacks (`onOpenSharp`, `onOpenLadder`, `onOpenLedger`, `onOpenDailyDegen`, `onOpenJerry`).
+
+**How to change what shows:**
+
+Ad-hoc admin push (appears within 5 min):
+```sql
+INSERT INTO home_banners (icon, message, deep_link, sport, route, priority, expires_at, origin)
+VALUES ('🏈', 'NFL Sunday early slate — 5 PRIME plays live', 'sharp',
+        'NFL', 'home', 85, NOW() + INTERVAL '6 hours', 'admin');
+```
+
+All-sport push:
+```sql
+INSERT INTO home_banners (icon, message, priority, expires_at, origin)
+VALUES ('🔥', 'Weekend hot streak — check the Sharp', 75,
+        NOW() + INTERVAL '48 hours', 'admin');
+```
+
+Kill a live one early:
+```sql
+UPDATE home_banners SET expires_at = NOW() WHERE id = <id>;
+```
+
+Change an auto-banner template — edit `compute_home_banners.py` and rerun (or wait for next daily). Change a threshold — same file, no client rebuild.
+
+Add a new auto class — add a block to `compute()` in `compute_home_banners.py` calling `_upsert_banner(icon, message, deep_link, sport, priority, kind, dry_run)`. Pick a `kind` string that doesn't collide with existing ones.
+
+**How to change safely:**
+- `kind` values are stable identifiers cron uses to UPSERT — renaming a kind creates a duplicate. If you rename, DELETE the old row first.
+- Client polls every 5 min; edits are visible within that window without an app rebuild.
+- Sport-scoped rows silent-hide when `currentSport` doesn't match — verify the tab context before pushing.
+
+**Wiring:** cron runs on-demand today (`python mlb_pipeline/compute_home_banners.py`). Wire into the daily MLB workflow post-scoring for automatic refresh.
+
+**Symptom → check debug:**
+| symptom | check |
+|---|---|
+| No banner on Home | `SELECT * FROM home_banners WHERE (expires_at IS NULL OR expires_at > NOW()) AND (route IS NULL OR route='home') ORDER BY priority DESC;` — if empty, cron hasn't run or nothing qualifies. |
+| Wrong copy | `SELECT id, message FROM home_banners WHERE kind='<kind>' AND origin='auto';` — edit `compute_home_banners.py` template + rerun. |
+| Stale banner won't go | `expires_at` still in the future — either wait or UPDATE to NOW(). |
+| Duplicate banners | `origin='auto'` unique on (kind, origin) — check the cron isn't inserting NULL kinds. |
+
+**Related:**
+- Section 5 (Pipeline Map) for where cron slots in
+- `admin_notice` table (feeds `AdminNoticeBanner` above home_banners) — for urgent operational messages (info/warning/critical), separate from hot-streak marketing
+
+---
+
 ## 8. How to Add a New Sport
 
 _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones. Covers:
@@ -690,3 +770,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 | 2026-09-08 | grading + surfaces | Section 7 filled in: 4-stage flow (resolve → grade → compose → aggregate), 19-surface registry, client read pattern, current metrics snapshot, symptom → check debug table. |
 | 2026-09-08 | GOAT NFL | Section 3.6 added: fused-signal composite shipped shadow-only. Composite formula, chip payload, backend-driven `chips_extra` pattern, promotion path documented. |
 | 2026-09-09 | pick generation | Section 6 filled in: universal 4-stage flow (ingest → enrich → score → bridge), sport-by-sport source map, ensemble → gates → LR chain deep-dive, prop pipeline sub-flow, surface → source table, add-a-sport 8-step checklist. |
+| 2026-09-17 | home banners | Section 9 added: server-driven Home tab banner strip. `home_banners` table schema + 5 auto-cron classes + admin push SQL examples + debug flow. Un-hardcodes prior client-side hot-streak component per Andy directive. |
