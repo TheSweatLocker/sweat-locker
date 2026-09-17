@@ -596,7 +596,7 @@ export default function GameDetailV2({
             rollup-tables architecture. */}
         {showRecentSchedule && (
           <Section title="Recent Schedule" hint="last 5 · ATS · O/U">
-            <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} />
+            <RecentScheduleCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
           </Section>
         )}
 
@@ -1920,13 +1920,21 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
         // Find the chip we tapped so we know its kind for the hit-rate lookup
         const chipObj = chips.find(c => c.term === openTerm);
         const kind = chipObj?.kind;
+        // 2026-09-16 chip↔tooltip color match. Prior tooltip always painted
+        // border + header text in accent green regardless of chip kind, so
+        // tapping a yellow "warn" chip surfaced a green-bordered tooltip
+        // titled "COHORT HOME FAV — WARN". Andy audit: "green background /
+        // warn text mismatch". Now the accent color echoes the chip's kind.
+        const kindColor = kind === 'warn' ? C.warn
+                        : kind === 'ok'   ? C.accent
+                        : C.textMuted;
         const rec = kind ? signalRecords[`${openTerm}|${kind}`] : null;
         const has30d = rec && (rec.wins_30d + rec.losses_30d) >= 5;
         const hasAll = rec && (rec.wins_lifetime + rec.losses_lifetime) >= 5;
         return (
           <View style={{marginTop: 8, padding: 10, backgroundColor: C.surface,
-                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: C.accent}}>
-            <Text style={{color: C.accent, fontSize: 10, fontWeight: '800',
+                        borderRadius: 8, borderLeftWidth: 3, borderLeftColor: kindColor}}>
+            <Text style={{color: kindColor, fontSize: 10, fontWeight: '800',
                           letterSpacing: 0.5, marginBottom: 4}}>
               {openTerm.replace(/_/g, ' ')}
               {kind ? ` — ${kind.toUpperCase()}` : ''}
@@ -2073,12 +2081,24 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
 //
 // Renders nothing when either team has zero rows (pre-season or matview
 // not yet refreshed). Silent empty state — better than a placeholder.
-function RecentScheduleCard({sport, homeTeam, awayTeam}: any) {
+function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
   const [awayRows, setAwayRows] = React.useState<any[]>([]);
   const [homeRows, setHomeRows] = React.useState<any[]>([]);
   const [h2hRows,  setH2hRows]  = React.useState<any[]>([]);
   const [tab, setTab] = React.useState<'away'|'h2h'|'home'>('away');
   const [loading, setLoading] = React.useState(true);
+
+  // 2026-09-16 season-filter for football. Prior version pulled last 5
+  // games regardless of season — on NFL Wk 1-4 and NCAAF Wk 1-5 that
+  // filled the L5 tab with 4 prior-season games mixed with 1-2 current.
+  // Users read "3-6 ATS" and "7-3 O/U" as a THIRD source of record data
+  // separate from Situational Records + Team Stats (both properly
+  // current-season-only after the blend-kill migration). Same principle
+  // here: football → current season only, take what's played. MLB
+  // unchanged (baseball rolls forward continuously, L5 always current).
+  const seasonFilter = (sport === 'NFL' || sport === 'NCAAF')
+    ? (Number(season) || (new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1))
+    : null;
 
   React.useEffect(() => {
     const client = sb();
@@ -2086,16 +2106,23 @@ function RecentScheduleCard({sport, homeTeam, awayTeam}: any) {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      const away = client.from('team_recent_games')
+        .select('*').eq('sport', sport).eq('team', awayTeam);
+      const home = client.from('team_recent_games')
+        .select('*').eq('sport', sport).eq('team', homeTeam);
+      const h2h  = client.from('team_recent_games')
+        .select('*').eq('sport', sport).eq('team', homeTeam).eq('opp', awayTeam);
+      if (seasonFilter != null) {
+        away.eq('season', seasonFilter);
+        home.eq('season', seasonFilter);
+        // H2H stays cross-season — divisional matchups repeat only twice
+        // per year, so an L5 in-season filter would empty the tab for
+        // most non-divisional pairings. Historical H2H is genuine signal.
+      }
       const [awayR, homeR, h2hR] = await Promise.all([
-        client.from('team_recent_games')
-          .select('*').eq('sport', sport).eq('team', awayTeam)
-          .order('seq', {ascending: true}).limit(5),
-        client.from('team_recent_games')
-          .select('*').eq('sport', sport).eq('team', homeTeam)
-          .order('seq', {ascending: true}).limit(5),
-        client.from('team_recent_games')
-          .select('*').eq('sport', sport).eq('team', homeTeam).eq('opp', awayTeam)
-          .order('game_date', {ascending: false}).limit(5),
+        away.order('seq', {ascending: true}).limit(5),
+        home.order('seq', {ascending: true}).limit(5),
+        h2h.order('game_date', {ascending: false}).limit(5),
       ]);
       if (cancelled) return;
       setAwayRows(Array.isArray(awayR?.data) ? awayR.data : []);
@@ -2104,7 +2131,7 @@ function RecentScheduleCard({sport, homeTeam, awayTeam}: any) {
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [sport, homeTeam, awayTeam]);
+  }, [sport, homeTeam, awayTeam, seasonFilter]);
 
   // Silent hide when we have nothing to show for either team AND no H2H
   if (!loading && awayRows.length === 0 && homeRows.length === 0 && h2hRows.length === 0) {

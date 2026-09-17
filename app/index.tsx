@@ -8143,20 +8143,23 @@ if(mkt.key === 'pitcher_props') {
               fb: true,
             };
           };
-          // 2026-09-15 HOTFIX: LEAN-flood filter for MLB batter-family props.
-          // Un-ban on 9/15 morning surfaced ~180 rows/day for runs/rbis/
-          // total_bases/hr in v_mlb_props_publishable — the app renders all
-          // of them (no category tabs yet in PROP_TYPE_LABELS + each card
-          // spawns render_sections), pushing Prop Jerry into visible lag
-          // and previously into an apparent crash. Hide these four family
-          // groups client-side until (1) PROP_TYPE_LABELS gets entries for
-          // runs/rbis/total_bases/hr and (2) the LEAN-tier flood is gated
-          // to STRONG+ on the server view. See project_lr_under_family_unban_913.
+          // 2026-09-16 SELECTIVE UN-BAN v2 (project_lr_under_family_unban_913).
+          // Third un-ban pass. Prior 9/15 morning try re-banned same day
+          // because tabs/labels never landed + view didn't tier-gate → LEAN
+          // flood. Tonight's build ships all three:
+          //   (a) PROP_TYPE_LABELS entries for hr/rbis/runs/total_bases added
+          //   (b) label formatters for the 4 UNDER variants added below
+          //   (c) view Rule 4 revised OVER-only + Rule 5 tier-gates UNDERs
+          //       to STRONG+ (migration 20260916h)
+          // Client-side filter now only hides the 4 OVER variants (permanent
+          // ban — 30d hit rates 12-46%, all trainwrecks). batter_ks kept out
+          // pending dedicated review.
           const _HIDE_UNTIL_CATEGORY_TABS = new Set([
-            'runs_over','runs_under',
-            'rbis_over','rbis_under',
-            'total_bases_over','total_bases_under',
-            'hr_over','hr_under',
+            'runs_over',
+            'rbis_over',
+            'total_bases_over',
+            'hr_over',
+            'batter_ks_over','batter_ks_under',
           ]);
           const merged = (viewRes.data || [])
             .filter((p: any) => sport.toUpperCase() !== 'MLB'
@@ -15316,6 +15319,12 @@ setJerryHistory(prev => {
           ha:    {label: 'HITS ALLOWED', emoji: '🥎'},
           outs:  {label: 'OUTS',  emoji: '⏱'},
           er:    {label: 'ER',    emoji: '🔥'},
+          // 2026-09-16 project_lr_under_family_unban_913: 4 batter UNDER
+          // families un-banned tonight (STRONG+ only, view Rule 5).
+          hr:          {label: 'HR',    emoji: '💥'},
+          rbis:        {label: 'RBI',   emoji: '🏃'},
+          runs:        {label: 'RUNS',  emoji: '🏠'},
+          total_bases: {label: 'TOTAL BASES', emoji: '📊'},
           // 2026-09-02: NFL prop type labels
           pass_yds:      {label: 'PASS YDS',  emoji: '🎯'},
           rush_yds:      {label: 'RUSH YDS',  emoji: '🏃'},
@@ -15449,6 +15458,18 @@ setJerryHistory(prev => {
                 prop.prop_type === 'er_under'  ? `Under ${prop.prop_line} Earned Runs` :
                 prop.prop_type === 'hits_over' ? 'Over 0.5 Hits' :
                 prop.prop_type === 'hits_under'? 'Under 0.5 Hits (0-fer)' :
+                // 2026-09-16: 4 batter UNDER families un-banned tonight.
+                // OVER variants are still hidden client-side + view-banned,
+                // but include OVER labels here as belt-and-suspenders in
+                // case any leak through and to keep the render loop safe.
+                prop.prop_type === 'hr_under'          ? `Under ${prop.prop_line} HR` :
+                prop.prop_type === 'hr_over'           ? `Over ${prop.prop_line} HR` :
+                prop.prop_type === 'rbis_under'        ? `Under ${prop.prop_line} RBI` :
+                prop.prop_type === 'rbis_over'         ? `Over ${prop.prop_line} RBI` :
+                prop.prop_type === 'runs_under'        ? `Under ${prop.prop_line} Runs Scored` :
+                prop.prop_type === 'runs_over'         ? `Over ${prop.prop_line} Runs Scored` :
+                prop.prop_type === 'total_bases_under' ? `Under ${prop.prop_line} Total Bases` :
+                prop.prop_type === 'total_bases_over'  ? `Over ${prop.prop_line} Total Bases` :
                 (_nflNoun && _dir) ? `${_dir} ${prop.prop_line} ${_nflNoun}` :
                 // Last-resort: strip underscores so it never dumps raw code
                 String(prop.prop_type || '').replace(/_/g, ' ').replace(/\b\w/g, s => s.toUpperCase())
