@@ -129,6 +129,25 @@ SHARP_CARD_PER_SPORT_MAX = {
     'UFC':   3,    # was 5 per-card
 }
 
+# 2026-09-17 MLB MARKET SPLIT (Andy audit: "if PRIME props doing so well
+# why not more prime props in sharp?"). MLB sides run 45-55% hit rate at
+# -110 juice — losing money. MLB PRIME props run 79-84% hit rate — real
+# +EV even at prop juice. Data-driven allocation weights toward props.
+#
+# 30d surface_records:
+#   MLB `prop`  MTD: 79% hit / +533u / +34% ROI (n=1554)
+#   MLB `sharp` MTD: 51% hit / -10.37u / -5.58% ROI (n=193) — bleeding
+#
+# Reserving 10 of MLB's 15 slots for props (was implicit split ~6:9 by
+# conviction sort, which favored sides when tiers matched). Sides get
+# up to 5 slots — enough coverage for the day's clear game leans without
+# loading the deck with juice traps.
+#
+# When props are short (early season / thin slate), unused prop slots
+# spill to sides so total MLB output isn't reduced.
+SHARP_CARD_MLB_PROPS_TARGET = 10
+SHARP_CARD_MLB_SIDES_TARGET = 5
+
 # 2026-09-09 COLD-STREAK AUTO-TIGHTENING (user directive from surface walkthrough).
 # When Sharp Card is running cold, publish a smaller + higher-conviction deck.
 # Read 7-day rolling hit rate from daily_surface_records.sharp_card; if
@@ -1105,6 +1124,31 @@ def run(dry_run: bool = False, force: bool = False):
                                              mlb_sides, mlb_props)
     if _floor_added:
         print(f'  ✚ market floor added: {len(_floor_added)} backfill picks')
+
+    # 2026-09-17 MLB MARKET SPLIT — pre-cap sides + props separately
+    # so props (79% hit rate) get slot priority over sides (51% hit rate).
+    # See SHARP_CARD_MLB_PROPS_TARGET / SHARP_CARD_MLB_SIDES_TARGET rationale.
+    # Sort each pool by tier priority then conviction desc BEFORE capping so
+    # we take the strongest of each market rather than a mixed-in ordering.
+    def _rank(it):
+        return (_TIER_PRIORITY.get(it.get('tier'), 9),
+                -float(it.get('conviction') or it.get('units') or 0))
+    _pre_sides = len(mlb_sides)
+    _pre_props = len(mlb_props)
+    mlb_sides = sorted(mlb_sides, key=_rank)
+    mlb_props = sorted(mlb_props, key=_rank)
+    # Reserve prop slots first; unused prop capacity spills to sides.
+    props_taken = mlb_props[:SHARP_CARD_MLB_PROPS_TARGET]
+    prop_slack  = max(0, SHARP_CARD_MLB_PROPS_TARGET - len(props_taken))
+    sides_cap   = SHARP_CARD_MLB_SIDES_TARGET + prop_slack
+    sides_taken = mlb_sides[:sides_cap]
+    if len(mlb_sides) > len(sides_taken) or len(mlb_props) > len(props_taken):
+        print(f'  ⚖ MLB market split: sides {_pre_sides}→{len(sides_taken)} '
+              f'(cap {sides_cap}), props {_pre_props}→{len(props_taken)} '
+              f'(cap {SHARP_CARD_MLB_PROPS_TARGET}) — data-driven '
+              f'prop-heavy allocation')
+    mlb_sides = sides_taken
+    mlb_props = props_taken
     nfl       = _compose_other_sport_sides(sources['nfl_ctx'], 'NFL')
     ncaaf     = _compose_other_sport_sides(sources['ncaaf_ctx'], 'NCAAF')
     ncaab     = _compose_other_sport_sides(sources['ncaab_ctx'], 'NCAAB')
