@@ -132,14 +132,21 @@ def event_to_game_row(event: dict, aliases: dict, sport_phase: str) -> Optional[
     # game_id: nflverse convention is <season>_<week>_<away>_<home>
     # We don't have week/season from Odds API directly. Use start-time-derived
     # game_id: YYYYMMDD_AWAY_HOME (unique per date + matchup).
+    # 2026-09-16 UTC-vs-ET DATE FIX (mirror of ncaaf_odds_pull fix). Anchor
+    # game_date + game_id on ET calendar day, not UTC. TNF kickoffs (8:15pm
+    # ET Thu) push into UTC Fri; prior code stamped those as game_date=Fri
+    # which surfaced Thu-night games as Friday picks on the Sweat Card.
+    # Consistent ET anchoring here matches NCAAF fix and prevents cross-
+    # midnight ingest duplicates.
     commence = event.get('commence_time', '')
     try:
         dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        date_str = dt.date().isoformat()
+        et_dt = dt - timedelta(hours=4)  # EDT window; late-Nov flip to EST -5
+        date_str = et_dt.date().isoformat()
     except Exception:
-        dt = _et_now()
+        dt = _et_now(); et_dt = dt
         date_str = dt.date().isoformat()
-    game_id = f'{dt.strftime("%Y%m%d")}_{away_abbrev}_{home_abbrev}'
+    game_id = f'{et_dt.strftime("%Y%m%d")}_{away_abbrev}_{home_abbrev}'
 
     # 2026-08-28 schema-drift cleanup: table column is `game_type` not
     # `season_type`, and `gametime` not `kickoff_utc`. Script had been

@@ -160,7 +160,18 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     # Use canonical form in game_id so ingest is idempotent even when
     # source spelling varies. Actual display names still stored as
     # `home_team` / `away_team` (from resolver output).
-    game_id = f'ncaaf_{dt.strftime("%Y%m%d")}_{away_c}_{home_c}'
+    # 2026-09-16 UTC-vs-ET DATE MISMATCH BUG.
+    # Prior version used dt.strftime (UTC date) here while game_date field
+    # was set from et_dt.strftime (ET date, line 122). For Thu-night NCAAF
+    # kickoffs (8pm+ ET), UTC crosses midnight → game_id landed with the
+    # UTC date (Fri) while game_date said Thu. Next puller run — same
+    # matchup, slightly different Odds API commence_time — created a
+    # SECOND row with a different game_id (e.g., ncaaf_20260919_... vs
+    # ncaaf_20260918_...) even though it's the same game.
+    # Andy 9/16 audit found Texas Tech @ Houston in ncaaf_game_context
+    # twice (close_spread -7.5 vs -13.5). Use the ET-anchored date so
+    # the id matches game_date and stays stable across UTC-boundary pulls.
+    game_id = f'ncaaf_{et_dt.strftime("%Y%m%d")}_{away_c}_{home_c}'
 
     row = {
         'game_id': game_id,
