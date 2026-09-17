@@ -174,13 +174,19 @@ def compute_v3(ctx: dict) -> Optional[dict]:
     }
 
 
-def run(game_date: str, dry_run: bool = False) -> int:
-    print(f'=== NFL V3 regression · {game_date} ===')
-    r = requests.get(f'{SB}/rest/v1/nfl_game_context', headers=H_READ,
-        params={'game_date': f'eq.{game_date}',
-                'select': 'game_id,home_team,away_team,projected_spread,projected_total,'
-                          'home_rest,away_rest,div_game,roof,temp,wind,stats_source'},
-        timeout=15)
+def run(game_date: str, dry_run: bool = False, days: int = 14) -> int:
+    # 2026-09-17: default expanded from today-only to today+14 window.
+    # Prior single-date filter was silent no-op on days with no scheduled
+    # games (Tue/Wed/Thu in-season) — Sunday games never got V3 scored
+    # because the Sat cron ran with game_date=Sat and found nothing.
+    from datetime import datetime as _dt, timedelta as _td
+    end_date = (_dt.strptime(game_date,'%Y-%m-%d') + _td(days=days-1)).strftime('%Y-%m-%d')
+    print(f'=== NFL V3 regression · {game_date} → {end_date} ({days}d) ===')
+    url = (f'{SB}/rest/v1/nfl_game_context?game_date=gte.{game_date}'
+           f'&game_date=lte.{end_date}'
+           f'&select=game_id,home_team,away_team,projected_spread,projected_total,'
+           f'home_rest,away_rest,div_game,roof,temp,wind,stats_source')
+    r = requests.get(url, headers=H_READ, timeout=15)
     if r.status_code != 200:
         print(f'  fetch failed: {r.status_code}'); return 0
     games = r.json()
@@ -219,10 +225,12 @@ def run(game_date: str, dry_run: bool = False) -> int:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET')
+    p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET (window start)')
+    p.add_argument('--days', type=int, default=14,
+                   help='window size in days (default 14 — Thu-lookahead through following Wed)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date or _et_today(), dry_run=args.dry_run)
+    run(game_date=args.date or _et_today(), dry_run=args.dry_run, days=args.days)
 
 
 if __name__ == '__main__':

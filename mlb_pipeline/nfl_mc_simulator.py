@@ -177,17 +177,25 @@ def simulate_game(home_off: float, away_off: float,
     return result
 
 
-def run(game_date: str, dry_run: bool = False) -> int:
-    """Load today's NFL games + team stats; simulate each; upsert results."""
-    print(f'=== NFL MC simulator · {game_date} ===')
+def run(game_date: str, dry_run: bool = False, days: int = 14) -> int:
+    """Load upcoming NFL games + team stats; simulate each; upsert results.
+
+    2026-09-17: default expanded from today-only to today+14 window.
+    Prior single-date filter silently returned zero on Tue/Wed/Thu with
+    no scheduled games, so Sunday's MC blobs never landed on the Sat
+    cron. Now the same run covers the full upcoming week.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    end_date = (_dt.strptime(game_date,'%Y-%m-%d') + _td(days=days-1)).strftime('%Y-%m-%d')
+    print(f'=== NFL MC simulator · {game_date} → {end_date} ({days}d) ===')
     season = int(game_date[:4])
     team_stats = load_team_stats(season)
     print(f'  loaded {len(team_stats)} team stat rows')
 
-    r = requests.get(f'{SB}/rest/v1/nfl_game_context', headers=H_READ,
-        params={'game_date': f'eq.{game_date}',
-                'select': 'game_id,home_team,away_team,close_total,stats_source'},
-        timeout=15)
+    url = (f'{SB}/rest/v1/nfl_game_context?game_date=gte.{game_date}'
+           f'&game_date=lte.{end_date}'
+           f'&select=game_id,home_team,away_team,close_total,stats_source')
+    r = requests.get(url, headers=H_READ, timeout=15)
     if r.status_code != 200:
         print(f'  fetch failed: {r.status_code}'); return 0
     games = r.json()
@@ -247,10 +255,12 @@ def run(game_date: str, dry_run: bool = False) -> int:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET')
+    p.add_argument('--date', help='YYYY-MM-DD; defaults to today ET (window start)')
+    p.add_argument('--days', type=int, default=14,
+                   help='window size in days (default 14 — covers full upcoming NFL week)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_date=args.date or _et_today(), dry_run=args.dry_run)
+    run(game_date=args.date or _et_today(), dry_run=args.dry_run, days=args.days)
 
 
 if __name__ == '__main__':
