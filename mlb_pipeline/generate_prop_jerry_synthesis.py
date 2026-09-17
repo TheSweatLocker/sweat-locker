@@ -448,48 +448,29 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # LR p_hit 0.89-0.91 real edge) had NO jerry_reads → cards rendered
     # raw prop with no L5/L10 chart, no short_read. Un-banned; prop synth
     # backfills those 37 rows for tonight.
-    # 2026-09-16 SELECTIVE UN-BAN v2 (project_lr_under_family_unban_913).
-    # Third attempt at this un-ban. Prior 9/15 morning try re-banned same
-    # day because tabs never landed + view didn't tier-gate → LEAN flood.
-    # This pass ships the missing pieces together:
-    #   (a) PROP_TYPE_LABELS + label formatters shipped in app tonight
-    #   (b) view Rule 4 restricted to OVER variants only (this file drops
-    #       UNDER variants from the ban) AND adds tier gate STRONG+ for
-    #       the 4 UNDER families (see 20260916h migration).
-    #   (c) MLB_STAT_MAP + _MLB_API_STAT already have entries for hr/rbis/
-    #       runs/total_bases (kept from 9/15 attempt).
-    # OVERs stay permanently banned (30d hit rates 12-46%, all trainwrecks).
-    # batter_ks_over/_under stay banned pending dedicated review.
+    # 2026-09-17 EMERGENCY RE-BAN. The 9/16 selective UN-BAN un-banned
+    # 4 UNDER families server-side (STRONG+ tier gate). The client-side
+    # PROP_TYPE_LABELS + label formatters for hr/rbis/runs/total_bases
+    # WERE shipped in tonight's git but the v1.0.1 client build hasn't
+    # landed on TestFlight yet. So Testflight (v1.0) shows raw uppercase
+    # "TOTAL_BASES" / "RBIS" / "HR" tab chips + raw prop_type render on
+    # every card that leaks through. Andy 9/17 AM: "sick of this not
+    # being handled." Restoring full ban across all 8 variants until
+    # the v1.0.1 client is live on TestFlight. When it lands, revert to
+    # the selective ban and re-apply migration 20260916h.
     _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',
-        'total_bases_over',
-        'hr_over',
-        'runs_over',
+        'rbis_over',        'rbis_under',
+        'total_bases_over', 'total_bases_under',
+        'hr_over',          'hr_under',
+        'runs_over',        'runs_under',
         'batter_ks_over',   'batter_ks_under',
-    }
-    # UNDER variants pass through the flat ban but the composer applies
-    # a STRONG+ tier gate to them so LEAN volume can't flood the render
-    # loop (root cause of the 9/15 morning regression).
-    _MLB_STRONG_ONLY = {
-        'hr_under', 'rbis_under', 'total_bases_under', 'runs_under',
     }
     if sport == 'MLB':
         _before_ban = len(props)
-        _dropped_ban = _dropped_tier = 0
-        _kept = []
-        for p in props:
-            pt = p.get('prop_type')
-            if pt in _MLB_BANNED_PROP_TYPES:
-                _dropped_ban += 1; continue
-            if pt in _MLB_STRONG_ONLY:
-                tier = (p.get('tier') or '').upper()
-                if tier not in ('STRONG', 'PRIME', 'ELITE'):
-                    _dropped_tier += 1; continue
-            _kept.append(p)
-        props = _kept
-        if _dropped_ban or _dropped_tier:
-            print(f'  [{sport}] dropped {_dropped_ban} banned batter-family props · '
-                  f'{_dropped_tier} sub-STRONG UNDER-family props (tier gate)')
+        props = [p for p in props if p.get('prop_type') not in _MLB_BANNED_PROP_TYPES]
+        if _before_ban != len(props):
+            print(f'  [{sport}] dropped {_before_ban - len(props)} banned batter-family props '
+                  f'(client v1.0.1 not yet live — full ban restored)')
 
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
     # the entire bucket ROI injection path. Fallback = pre-8/1 behavior.
