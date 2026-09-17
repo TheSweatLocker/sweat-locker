@@ -255,6 +255,31 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
         # surface on the card. Signal still lives in the raw row for
         # backtest / audit_prop_playbook_shadow.
         _SKIP_KEYS.add('book_recalibration')
+
+        # 2026-09-17: rewrite direction-agnostic `projection` signal so
+        # the ± sign reflects the SHOWN direction's edge, not raw
+        # (proj − line). Andy caught it on Aaron Nola HA_UNDER 5.5
+        # card: proj=5.40 vs line=5.5 rendered as "edge -1.8%" — reads
+        # bearish to a user, but projection BELOW the line SUPPORTS
+        # the UNDER pick (+1.8% edge for UNDER). Sweep signals are
+        # written once per family (before direction is chosen), so we
+        # can't flip at write-time; rewrite at render-time using the
+        # authoritative `_edge_pct` value the sweep also stored.
+        _proj_raw = prop_signals.get('projection')
+        _edge_pct = prop_signals.get('_edge_pct')
+        if isinstance(_proj_raw, str) and _edge_pct is not None and prop_direction:
+            _dir_l = prop_direction.lower()
+            try:
+                _e = float(_edge_pct)
+                _dir_edge = -_e if _dir_l == 'under' else _e
+                # Split around the ' · edge ' delimiter and rebuild.
+                _head, _sep, _tail = _proj_raw.partition(' · edge ')
+                if _sep:  # only rewrite if the shape matches
+                    prop_signals = dict(prop_signals)  # avoid mutating caller
+                    prop_signals['projection'] = f'{_head} · edge {_dir_edge*100:+.1f}% for {_dir_l.upper()}'
+            except (TypeError, ValueError):
+                pass
+
         prose_bullets = []
         keyname_bullets = []
         for k, v in prop_signals.items():
