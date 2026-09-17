@@ -48,18 +48,42 @@ def _american_to_payout(odds):
     return 0.91
 
 
+def _paged_get(url: str, params: dict, page: int = 1000) -> list:
+    """2026-09-16 shared pager (project_postgrest_truncation_audit_912).
+    prop_playbook_decisions + graded prop rows exceed 1000 over
+    multi-week windows — was silently truncated at 1000.
+    """
+    params.pop('limit', None)
+    out = []; offset = 0
+    while True:
+        r = requests.get(url, headers={**H, 'Range': f'{offset}-{offset+page-1}',
+                                       'Range-Unit': 'items'},
+                         params=params, timeout=45)
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        if not chunk: break
+        out += chunk
+        if len(chunk) < page: break
+        offset += page
+    return out
+
+
 def fetch_decisions(sport: str, days: int) -> list[dict]:
     """Playbook decisions in window."""
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yday = (date.today() - timedelta(days=1)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
-                     headers=H,
-                     params={'sport': f'eq.{sport}',
-                             'game_date': f'gte.{cutoff}',
-                             'game_date': f'lte.{yday}',
-                             'select': '*', 'limit': '5000'},
-                     timeout=30)
-    return r.json() if r.status_code == 200 else []
+    # 2026-09-16 duplicate-key game_date params bug: prior version had
+    # both 'game_date': f'gte.{cutoff}' AND 'game_date': f'lte.{yday}'
+    # in the same dict — Python dict semantics mean only the second
+    # kv survives → only the lte was applied, gte silently dropped.
+    # Combined into two separate PostgREST filters via requests-multi.
+    params = [
+        ('sport', f'eq.{sport}'),
+        ('game_date', f'gte.{cutoff}'),
+        ('game_date', f'lte.{yday}'),
+        ('select', '*'),
+    ]
+    return _paged_get(f'{SB}/rest/v1/prop_playbook_decisions', params)
 
 
 def fetch_prop_results(sport: str, days: int) -> dict:
@@ -68,15 +92,13 @@ def fetch_prop_results(sport: str, days: int) -> dict:
     if not table: return {}
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yday = (date.today() - timedelta(days=1)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/{table}',
-                     headers=H,
-                     params={'game_date': f'gte.{cutoff}',
-                             'game_date': f'lte.{yday}',
-                             'result': 'not.is.null',
-                             'select': 'player_name,prop_type,direction,prop_line,game_date,result,book_line,tier,refit_conviction',
-                             'limit': '5000'},
-                     timeout=30)
-    rows = r.json() if r.status_code == 200 else []
+    params = [
+        ('game_date', f'gte.{cutoff}'),
+        ('game_date', f'lte.{yday}'),
+        ('result', 'not.is.null'),
+        ('select', 'player_name,prop_type,direction,prop_line,game_date,result,book_line,tier,refit_conviction'),
+    ]
+    rows = _paged_get(f'{SB}/rest/v1/{table}', params)
     return {(r['player_name'], r['prop_type'], r['direction'],
              r.get('prop_line'), r['game_date']): r for r in rows}
 

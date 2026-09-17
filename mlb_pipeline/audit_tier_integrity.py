@@ -48,6 +48,31 @@ def get(path, **q):
         return json.loads(r.read())
 
 
+# 2026-09-16 pagination (project_postgrest_truncation_audit_912).
+# 30d graded MLB props easily exceed 1000; tier integrity audit was
+# checking tier-vs-hit-rate calibration against a truncated sample.
+def get_paged(path, page=1000, **q):
+    q.pop("limit", None)
+    qs = urllib.parse.urlencode(q, safe="=.,*()")
+    u = f"{URL}/rest/v1/{path}?{qs}"
+    all_rows = []
+    offset = 0
+    while True:
+        req = urllib.request.Request(u, headers={
+            **H, "Range": f"{offset}-{offset+page-1}", "Range-Unit": "items",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=45) as r:
+                chunk = json.loads(r.read())
+        except Exception:
+            break
+        if not isinstance(chunk, list) or not chunk: break
+        all_rows += chunk
+        if len(chunk) < page: break
+        offset += page
+    return all_rows
+
+
 def upsert(path, rows, on_conflict):
     qs = urllib.parse.urlencode({"on_conflict": on_conflict})
     u = f"{URL}/rest/v1/{path}?{qs}"
@@ -60,11 +85,11 @@ def upsert(path, rows, on_conflict):
 def fetch_30d_props():
     """Pull every graded prop from the last 30 days."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
-    rows = get("mlb_pipeline_props",
+    # 2026-09-16 paged — was limit="5000" silently capped at 1000.
+    rows = get_paged("mlb_pipeline_props",
                select="game_date,prop_type,direction,tier,result",
                game_date=f"gte.{cutoff}",
-               result="not.is.null",
-               limit="5000")
+               result="not.is.null")
     return rows
 
 

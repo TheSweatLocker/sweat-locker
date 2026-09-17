@@ -57,13 +57,41 @@ def get(path, **q):
         return json.loads(r.read())
 
 
+# 2026-09-16 pagination via Range headers
+# (project_postgrest_truncation_audit_912). Prior single get() call
+# with limit="5000" was silently capped at 1000 by PostgREST — signal
+# attribution ran against a truncated 30d sample, hiding real signal
+# performance patterns beyond the 1000th graded row.
+def get_paged(path, page=1000, **q):
+    """Fetch all rows for a query using Range-header pagination."""
+    q.pop("limit", None)   # strip client-passed limit; pager owns pagination
+    qs = urllib.parse.urlencode(q, safe="=.,*()")
+    u = f"{URL}/rest/v1/{path}?{qs}"
+    all_rows = []
+    offset = 0
+    while True:
+        req = urllib.request.Request(u, headers={
+            **H, "Range": f"{offset}-{offset+page-1}", "Range-Unit": "items",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=45) as r:
+                chunk = json.loads(r.read())
+        except Exception:
+            break
+        if not isinstance(chunk, list) or not chunk: break
+        all_rows += chunk
+        if len(chunk) < page: break
+        offset += page
+    return all_rows
+
+
 def fetch_resolved_picks(days_back=30):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    rows = get("mlb_pipeline_props",
+    # 2026-09-16: use paginated get — 30d MLB graded props easily exceed 1000.
+    rows = get_paged("mlb_pipeline_props",
                select="game_date,player_name,prop_type,direction,tier,conviction,signals,result",
                game_date=f"gte.{cutoff}",
-               result="not.is.null",
-               limit="5000")
+               result="not.is.null")
     return rows
 
 
