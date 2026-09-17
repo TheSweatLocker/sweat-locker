@@ -17,6 +17,7 @@ import TierChip from './components/TierChip';
 import LineMovementTab from './components/LineMovementTab';
 import AdminNoticeBanner from './components/AdminNoticeBanner';
 import { HomeStreakBanner } from './components/HomeStreakBanner';
+import { dbFetchCached } from './lib/db';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Paywall } from './components/Paywall';
 import { Sport } from './lib/sportPeriods';
@@ -1928,6 +1929,11 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
 const [dailyBestBetError, setDailyBestBetError] = useState('');
 const [modelEdgeData, setModelEdgeData] = useState([]);
 const [mlbGameContext, setMlbGameContext] = useState({});
+// 2026-09-17: last-known-good stale flag for the mlb_game_context fetch.
+// Populated by dbFetchCached when the live call fails and a cached
+// copy is served instead. Home + Games headers read this to render
+// the "showing last known · X min ago" banner.
+const [mlbContextStale, setMlbContextStale] = useState<{cachedAt: string} | null>(null);
   // Jerry synthesis reads (2026-07-31, Tier 2). Keyed by game_id. Rows shape:
   //   { call_text, conviction (0-100), short_read (40-60w card), long_read
   //     (200-300w detail), call_market, call_side, generated_at }
@@ -5387,12 +5393,31 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     // downstream consumer reads a field not listed here, either add it
     // or move that consumer to the game-detail fetch (line 6332) which
     // still SELECTs *.
-    const result = await supabase
-      .from('mlb_game_context')
-      .select(MLB_CTX_COLUMNS)
-      .eq('game_date', etStr)
-      .limit(30);
+    // 2026-09-17 SCALING: wrapped in dbFetchCached so a Supabase 429 or
+    // network hiccup during Sunday-morning peak returns yesterday's
+    // cached mlb_game_context instead of an infinite spinner. Result
+    // carries a `stale` flag + `cachedAt` ISO timestamp — the pre-
+    // pipeline banner block below reads `mlbContextStale` to render
+    // a subtle "showing last known · X min ago" line when stale.
+    // Cache key scopes by slate date so a new day's empty response
+    // never overwrites yesterday's populated cache.
+    const result = await dbFetchCached(
+      `mlb_game_context_${etStr}`,
+      () => supabase
+        .from('mlb_game_context')
+        .select(MLB_CTX_COLUMNS)
+        .eq('game_date', etStr)
+        .limit(30),
+      { label: 'fetchMLBGameContext', timeoutMs: 8000 },
+    );
     let data = result?.data;
+    if (result?.stale && result?.cachedAt) {
+      try {
+        setMlbContextStale({ cachedAt: result.cachedAt });
+      } catch {}
+    } else {
+      try { setMlbContextStale(null); } catch {}
+    }
     // If no games for today (pipeline hasn't run yet), leave context empty
     // and let the pre-pipeline banner explain. Removed the "fall back to most
     // recent" path 2026-05-19 — it was showing yesterday's pitchers as
@@ -12072,6 +12097,33 @@ setJerryHistory(prev => {
                     'info', 'NCAAB', NOW() + INTERVAL '4 hours');
       */}
       <AdminNoticeBanner supabase={supabase} currentSport={gamesSport} />
+      {/* 2026-09-17 SCALING: last-known-good stale-cache banner. Fires
+          when dbFetchCached had to serve a cached mlb_game_context because
+          the live fetch timed out / 429'd. Silent when fresh. */}
+      {mlbContextStale && (() => {
+        const _ago = (() => {
+          try {
+            const then = new Date(mlbContextStale.cachedAt).getTime();
+            const mins = Math.max(1, Math.round((Date.now() - then) / 60000));
+            if (mins < 60) return `${mins}m ago`;
+            const h = Math.round(mins / 60);
+            return `${h}h ago`;
+          } catch { return ''; }
+        })();
+        return (
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', gap: 6,
+            paddingHorizontal: 12, paddingVertical: 6,
+            backgroundColor: THEME.accent + '14',
+            borderLeftWidth: 3, borderLeftColor: THEME.accent,
+          }}>
+            <Text style={{fontSize: 12}}>💾</Text>
+            <Text style={{color: THEME.accent, fontSize: 11, fontWeight: '700', flex: 1}}>
+              Showing last-known data{_ago ? ` · ${_ago}` : ''} — live refresh will retry shortly
+            </Text>
+          </View>
+        );
+      })()}
       {!onboardingDone&&(
         // 2026-08-09 expanded to 3 steps for launch: Welcome → How to Read the
         // Card (tier hierarchy visual) → Age Gate. Middle step teaches users
