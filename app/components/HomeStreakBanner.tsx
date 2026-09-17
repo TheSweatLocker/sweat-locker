@@ -1,250 +1,133 @@
 /**
- * HomeStreakBanner — dynamic 1-line banner surfacing what's currently hot.
+ * HomeStreakBanner — server-controlled rotating banner on Home tab.
  *
- * 2026-09-17 · v1.0.1 #4 Part B (hot-streak banner, per
- * project_home_screen_hot_streak_907).
+ * 2026-09-17 v2 (per Andy directive): moved from client-side auto-
+ * computed banners + hardcoded templates → pure server-driven reads
+ * from public.home_banners. Adds/removes banner classes is now a SQL
+ * INSERT/UPDATE, no client rebuild.
  *
- * Sits at the top of the Home tab above the POTD hero. Silently hides when
- * nothing meets threshold — never surfaces filler stats.
+ * Data flow:
+ *   * Server-side cron `mlb_pipeline/compute_home_banners.py` (follow-up)
+ *     recomputes auto-banners from surface_records post-pipeline. Uses
+ *     ON CONFLICT (kind, origin) DO UPDATE so each auto-banner class
+ *     has one live row at a time.
+ *   * Admin manual pushes: INSERT INTO home_banners (icon, message,
+ *     deep_link, sport, route, priority, expires_at, origin='admin').
+ *   * Client reads all live rows (expires_at IS NULL OR expires_at > NOW),
+ *     filters by currentSport + route='home' (or null), sorts by
+ *     priority DESC, takes top 3, rotates every 8s.
  *
- * Eligible banner classes (highest-priority wins):
- *   1. Sharp Card 3-day hot streak    — 60%+ hit AND +5u+ over last 3 days
- *   2. Per-sport 7d run                — 65%+ hit AND 10+ picks AND net positive
- *   3. Ledger green streak             — 3+ consecutive positive-pnl days
- *   4. Daily Degen consecutive wins    — 2+ in a row
+ * Silent-hide when no active rows — no filler.
  *
- * Copy is composed client-side from templates (single source of truth here).
- * When the backend `home_streak_banners` table lands (v1.1 spec), swap the
- * template composer for a `.select()` on that table and delete this
- * scoring logic — the component render stays identical.
- *
- * Data path:
- *   * `surface_records` (window d7 + d30) — passed in via prop
- *   * `daily_surface_records` last ~5 days — fetched inside the component
+ * See supabase/migrations/20260917d_home_banners.sql for schema +
+ * seed row. Copy any live SQL update onto the row for changes.
  */
 import React from 'react';
 import {View, Text, TouchableOpacity, StyleSheet} from 'react-native';
 import {THEME} from '../theme';
 
-type SurfaceRecord = {
-  sport?: string;
-  surface?: string;
-  window_key?: string;
-  wins?: number;
-  losses?: number;
-  units_net?: number | string;
-  picks_count?: number;
-};
-
-type DailyRecord = {
-  record_date: string;
-  surface: string;
-  sport?: string | null;
-  wins: number;
-  losses: number;
-  /** Net PnL for the day — leg wins × payoff − leg losses × stake.
-   *  Despite the name, this is NOT gross return; it's already net.
-   *  Verified against daily_surface_records 9/16 sharp_card MLB. */
-  units_won?: number | string;
-  units_bet?: number | string;
-  pick_count?: number;
-};
-
 type Banner = {
+  id: number;
   icon: string;
-  text: string;
+  message: string;
+  deep_link?: string | null;
+  sport?: string | null;
+  route?: string | null;
   priority: number;
-  onPress?: () => void;
+  starts_at?: string | null;
+  expires_at?: string | null;
+  origin?: string;
+  kind?: string | null;
 };
 
 type Props = {
   supabase: any;
-  /** Aggregate rollups the parent already fetched
-   *  (surface_records rows keyed like `${sport}|${surface}|${window}`) */
-  surfaceRecords?: Record<string, SurfaceRecord>;
-  /** Optional taps — deep-link to the surface (e.g. Ladder banner opens
-   *  Steam Room → Ladder). No-op when not provided. */
+  /** Current sport tab (from parent). Banners with sport=null show
+   *  always; banners with a specific sport only show when matched. */
+  currentSport?: string;
+  /** Which screen is rendering the banner. Server rows with
+   *  route='home' or route=null show here; server rows scoped to
+   *  another route silent-hide. */
+  currentRoute?: string;
+  /** Poll interval (ms). Default 5 min — matches AdminNoticeBanner
+   *  cadence. Cron runs post-pipeline so 5-min catch-up is fine. */
+  pollIntervalMs?: number;
+
+  // Deep-link handlers — server rows include a deep_link string; the
+  // component maps that string to the parent's tab-switch callbacks.
   onOpenSharp?: () => void;
   onOpenLadder?: () => void;
   onOpenLedger?: () => void;
   onOpenDailyDegen?: () => void;
+  onOpenJerry?: () => void;
 };
 
-const _num = (v: any): number => {
-  const n = typeof v === 'number' ? v : parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
+const _resolveDeepLink = (
+  key: string | null | undefined,
+  h: Pick<Props, 'onOpenSharp' | 'onOpenLadder' | 'onOpenLedger' | 'onOpenDailyDegen' | 'onOpenJerry'>,
+): (() => void) | undefined => {
+  switch ((key || '').toLowerCase()) {
+    case 'sharp':       return h.onOpenSharp;
+    case 'ladder':      return h.onOpenLadder;
+    case 'ledger':      return h.onOpenLedger;
+    case 'daily_degen': return h.onOpenDailyDegen;
+    case 'jerry':       return h.onOpenJerry;
+    default:            return undefined;
+  }
 };
-
-function _composeBanners(
-  daily: DailyRecord[],
-  agg: Record<string, SurfaceRecord>,
-  handlers: {
-    onOpenSharp?: () => void;
-    onOpenLadder?: () => void;
-    onOpenLedger?: () => void;
-    onOpenDailyDegen?: () => void;
-  },
-): Banner[] {
-  const out: Banner[] = [];
-  const now = new Date();
-  const daysAgo = (d: string) => {
-    const t = new Date(d).getTime();
-    return Math.floor((now.getTime() - t) / (86_400_000));
-  };
-
-  // 0. PRIME props recent record (v1.0.1 flagship angle). Uses the
-  //    surface_records[MLB|prop_prime|d7] aggregate that our socials
-  //    numbers come from. Andy 9/17: "prime MLB props record over L7D
-  //    — that's the vision to promote whatever is hot recently." This
-  //    IS the highest-priority banner — PRIME props at 82%+ is our
-  //    strongest single stat. Fires at n>=30 + hit>=70% + net positive.
-  for (const sp of ['MLB', 'NFL', 'NCAAF']) {
-    const rec = agg[`${sp}|prop_prime|d7`];
-    if (!rec) continue;
-    const w = rec.wins || 0, l = rec.losses || 0;
-    const total = w + l;
-    const un = _num(rec.units_net);
-    if (total >= 30 && w / total >= 0.70 && un > 0) {
-      const pct = Math.round((w / total) * 100);
-      out.push({
-        icon: '🎯',
-        text: `${sp} Prime Props L7D: ${w}-${l} (${pct}%), +${un.toFixed(1)}u`,
-        priority: 100,   // top billing — flagship product angle
-        onPress: handlers.onOpenSharp,
-      });
-    }
-  }
-
-  // 1. Sharp Card last-3d hot streak — sum wins/losses/pnl across recent
-  //    graded days. Uses units_won - units_bet as PnL proxy.
-  const sharpRecent = daily.filter((r) => r.surface === 'sharp_card' && daysAgo(r.record_date) <= 3
-                                          && (r.sport === 'ALL' || (r.sport && ['MLB','NFL','NCAAF'].includes(r.sport))));
-  if (sharpRecent.length) {
-    // Prefer the ALL rollup rows if present; else sum per-sport rows.
-    const allRows = sharpRecent.filter((r) => r.sport === 'ALL');
-    const rows = allRows.length ? allRows : sharpRecent;
-    let w = 0, l = 0, pnl = 0;
-    for (const r of rows) {
-      w += r.wins || 0;
-      l += r.losses || 0;
-      pnl += _num(r.units_won);
-    }
-    const total = w + l;
-    if (total >= 5 && w / total >= 0.60 && pnl >= 5) {
-      out.push({
-        icon: '🔥',
-        text: `The Sharp is hot — ${w}-${l} last 3d, ${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}u`,
-        priority: 90,
-        onPress: handlers.onOpenSharp,
-      });
-    }
-  }
-
-  // 2. Per-sport 7d run — 65%+ hit AND 10+ picks AND net positive.
-  //    Reads from surface_records d7 aggregate (already fetched by parent).
-  for (const sp of ['MLB', 'NFL', 'NCAAF']) {
-    const k = `${sp}|sharp_card|d7`;
-    const rec = agg[k];
-    if (!rec) continue;
-    const w = rec.wins || 0, l = rec.losses || 0;
-    const total = w + l;
-    const un = _num(rec.units_net);
-    if (total >= 10 && w / total >= 0.65 && un > 0) {
-      const pct = Math.round((w / total) * 100);
-      out.push({
-        icon: sp === 'NFL' ? '🏈' : sp === 'NCAAF' ? '🎓' : '⚾',
-        text: `${sp} 7d: ${w}-${l} (${pct}%), +${un.toFixed(1)}u`,
-        priority: 75,
-        onPress: handlers.onOpenSharp,
-      });
-    }
-  }
-
-  // 3. Ledger green streak — 3+ consecutive positive-pnl days on ledger
-  //    surfaces (chalk_parlay + prime_teased_single). Same pnl proxy.
-  const ledgerBySport = daily
-    .filter((r) => ['chalk_parlay', 'prime_teased_single', 'ledger'].includes(r.surface))
-    .sort((a, b) => (a.record_date < b.record_date ? 1 : -1));  // newest first
-  const dayPnls: Record<string, number> = {};
-  for (const r of ledgerBySport) {
-    // units_won is already the net pnl (leg wins × payoff − leg losses × stake),
-    // not gross return. Verified 2026-09-17 against daily_surface_records
-    // 9/16 sharp_card MLB row (5-10 W-L, units_bet=27, units_won=-13.1).
-    dayPnls[r.record_date] = (dayPnls[r.record_date] || 0) + _num(r.units_won);
-  }
-  const sortedDays = Object.keys(dayPnls).sort().reverse();  // newest first
-  let streak = 0;
-  let streakPnl = 0;
-  for (const d of sortedDays) {
-    if (dayPnls[d] > 0) { streak++; streakPnl += dayPnls[d]; } else break;
-  }
-  if (streak >= 3) {
-    out.push({
-      icon: '📈',
-      text: `Ledger ${streak}-day green streak — +${streakPnl.toFixed(1)}u`,
-      priority: 60,
-      onPress: handlers.onOpenLedger,
-    });
-  }
-
-  // 4. Daily Degen consecutive wins — 2+ in a row.
-  const degens = daily
-    .filter((r) => r.surface === 'daily_degen')
-    .sort((a, b) => (a.record_date < b.record_date ? 1 : -1));
-  let degenWinStreak = 0;
-  for (const r of degens) {
-    if ((r.wins || 0) >= 1 && (r.losses || 0) === 0) degenWinStreak++;
-    else break;
-  }
-  if (degenWinStreak >= 2) {
-    out.push({
-      icon: '🎯',
-      text: `Daily Degen ${degenWinStreak} in a row — going for ${degenWinStreak + 1} tonight`,
-      priority: 70,
-      onPress: handlers.onOpenDailyDegen,
-    });
-  }
-
-  return out.sort((a, b) => b.priority - a.priority);
-}
 
 export function HomeStreakBanner({
   supabase,
-  surfaceRecords = {},
+  currentSport,
+  currentRoute = 'home',
+  pollIntervalMs = 300_000,
   onOpenSharp,
   onOpenLadder,
   onOpenLedger,
   onOpenDailyDegen,
+  onOpenJerry,
 }: Props) {
   const [banners, setBanners] = React.useState<Banner[] | null>(null);
   const [idx, setIdx] = React.useState(0);
 
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
+
+    async function poll() {
       if (!supabase) return;
       try {
-        const cutoff = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
-        const {data} = await supabase
-          .from('daily_surface_records')
-          .select('record_date,surface,sport,wins,losses,units_won,pick_count')
-          .gte('record_date', cutoff)
-          .in('surface', ['sharp_card', 'daily_degen', 'chalk_parlay', 'prime_teased_single', 'ledger']);
+        const nowIso = new Date().toISOString();
+        const {data, error} = await supabase
+          .from('home_banners')
+          .select('id,icon,message,deep_link,sport,route,priority,starts_at,expires_at,origin,kind')
+          .lte('starts_at', nowIso)
+          .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+          .order('priority', {ascending: false})
+          .limit(20);
         if (cancelled) return;
-        const composed = _composeBanners(
-          Array.isArray(data) ? (data as DailyRecord[]) : [],
-          surfaceRecords,
-          {onOpenSharp, onOpenLadder, onOpenLedger, onOpenDailyDegen},
-        );
-        setBanners(composed);
+        if (error) { setBanners([]); return; }
+        // Client-side scope filter — sport + route null means "any"
+        const scoped = (data || []).filter((r: Banner) => {
+          if (r.sport && currentSport && r.sport.toUpperCase() !== currentSport.toUpperCase()) return false;
+          if (r.route && currentRoute && r.route.toLowerCase() !== currentRoute.toLowerCase()) return false;
+          return true;
+        });
+        // Sort was server-side but re-sort defensively (in case server rows shifted mid-fetch)
+        scoped.sort((a: Banner, b: Banner) => b.priority - a.priority);
+        setBanners(scoped.slice(0, 3));
+        setIdx(0);
       } catch {
         if (!cancelled) setBanners([]);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [supabase, surfaceRecords]);
+    }
 
-  // Rotate through eligible banners every 8s. Silent-hide when none.
+    poll();
+    const t = setInterval(poll, pollIntervalMs);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [supabase, currentSport, currentRoute, pollIntervalMs]);
+
+  // Rotate every 8s if 2+ banners qualify. Same UX as prior client-
+  // computed HomeStreakBanner.
   React.useEffect(() => {
     if (!banners || banners.length <= 1) return;
     const t = setInterval(() => {
@@ -255,16 +138,18 @@ export function HomeStreakBanner({
 
   if (!banners || banners.length === 0) return null;
   const b = banners[idx % banners.length];
+  const onPress = _resolveDeepLink(b.deep_link, {
+    onOpenSharp, onOpenLadder, onOpenLedger, onOpenDailyDegen, onOpenJerry,
+  });
+
   const inner = (
     <View style={styles.wrap}>
-      <Text style={styles.icon}>{b.icon}</Text>
-      <Text style={styles.text} numberOfLines={2}>{b.text}</Text>
+      <Text style={styles.icon}>{b.icon || '🔥'}</Text>
+      <Text style={styles.text} numberOfLines={2}>{b.message}</Text>
     </View>
   );
-  return b.onPress ? (
-    <TouchableOpacity onPress={b.onPress} activeOpacity={0.8}>
-      {inner}
-    </TouchableOpacity>
+  return onPress ? (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.8}>{inner}</TouchableOpacity>
   ) : inner;
 }
 

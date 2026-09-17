@@ -12524,12 +12524,19 @@ setJerryHistory(prev => {
                d7/d30 aggregate lookups) + daily_surface_records (one
                small query for last-5-day streak detection). Replaces the
                prior inline block that only covered Sharp+Ladder MTD. */}
+           {/* 2026-09-17 v2: server-driven banners via home_banners table.
+               Component no longer takes surfaceRecords; it reads the
+               table on mount + polls every 5 min. Add/edit banners via
+               SQL — no client rebuild needed. See migration
+               20260917d_home_banners.sql for schema + example INSERTs. */}
            <HomeStreakBanner
              supabase={supabase}
-             surfaceRecords={surfaceRecords}
+             currentSport={gamesSport}
+             currentRoute="home"
              onOpenSharp={() => { setActiveTab('steam'); setSteamSubTab('sharp'); }}
              onOpenLadder={() => { setActiveTab('steam'); setSteamSubTab('ladder'); }}
              onOpenLedger={() => { setActiveTab('steam'); setSteamSubTab('ledger'); }}
+             onOpenJerry={() => setActiveTab('jerry')}
            />
 
            {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Chip row
