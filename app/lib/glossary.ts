@@ -40,6 +40,10 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'CPOE': {help: 'Completion % Over Expected — how much better (or worse) a QB is completing passes vs the league average given each throw\'s difficulty. Positive = elite accuracy; negative = below-league. 5+ point gap between the two QBs is a real edge.'},
   'CPOE_GAP': {help: 'CPOE difference between the two starting QBs. Positive gap for the pick side = QB accuracy advantage. 5+ = flag.'},
   'LR_SHADOW': {help: 'Independent logistic regression model running in parallel to the main ensemble. When it agrees with the pick, that\'s bonus confidence. When it disagrees, we treat it as a heads-up — not a reason to flip.'},
+  // Same signal as LR_SHADOW, just referenced as "LR" when rendered as a
+  // Model Consensus tile (2026-09-17). Kept both keys so the SignalsRow
+  // chip and the LensGrid tile both resolve their tooltip.
+  'LR': {help: 'Independent logistic regression model. Reads game history + team/matchup features and outputs a home-win probability. Shown as "H XX%" or "A XX%" — the direction it leans. When it agrees with the pick, that\'s bonus confidence. When it dissents, we take a closer look before backing.'},
   'ANCHOR': {help: 'Market anchor — Weeks 1-3 the model output gets pulled partway toward the market spread to prevent early-season miscalibration from producing wild picks. "Off" means the model\'s standing on its own; "0.4"/"0.75" show how much of the anchor is applied.'},
   'GOAT': {help: 'Proprietary independent win-probability model. Fuses team quality, player projections, live matchup data, and historical outcomes. Runs in parallel to the primary pick — agreement strengthens conviction; dissent flags the game for closer look.'},
 

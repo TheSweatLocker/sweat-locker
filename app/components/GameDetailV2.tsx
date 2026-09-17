@@ -1589,42 +1589,77 @@ function LensGrid({ctx, gamesSport}: any) {
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
-  ] : gamesSport === 'NCAAF' ? [
-    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-    // 2026-09-14: NCAAF ctx writes v4_spread/v4_total; the model_pred_*
-    // names only exist on MLB ctx. Prior universal read on model_pred_*
-    // silently rendered NCAAF v4 tile empty.
-    {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
-                  t: ctx?.v4_total  ?? ctx?.model_pred_total},
-    // 2026-09-17: SP+ lens added. NCAAF ctx has sp_plus_pred_spread +
-    // sp_plus_pred_total pre-computed from Bill Connelly's SP+ ratings
-    // (see ncaaf_game_context.compute_projections). Previously absent
-    // from the grid despite being one of the strongest college football
-    // signals — Andy 9/17: "shouldnt we have all nfl models listed?"
-    // (same class of gap on NCAAF).
-    {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: ctx?.sp_plus_pred_total},
-    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
-    {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
-  ] : gamesSport === 'NFL' ? [
-    // 2026-09-14: NFL uses v4_spread/v4_total (model_pred_* is MLB-only).
-    // 2026-09-15: MC lens DROPPED for NFL — we do not run a Monte Carlo
-    // simulator for NFL (only MLB + NCAAF have one). Rendering an empty
-    // MC "—" tile every NFL card advertised a slot we never populate.
-    // 2026-09-17: Panel lens added — NFL ctx has panel_pred_home_pts +
-    // panel_pred_away_pts + panel_pred_total from the injury/roster
-    // panel (nfl_generate_props.py + panel workflow). Andy 9/17: "seeing
-    // only v3, v4 and conf models... shouldnt we have all nfl models
-    // listed?" Panel was already in the DB, just not surfaced.
-    // NFL grid is now V3 / V4 / PANEL / CONF (4 lenses).
-    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-    {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
-                  t: ctx?.v4_total  ?? ctx?.model_pred_total},
-    {name: 'Panel', m: (ctx?.panel_pred_home_pts != null && ctx?.panel_pred_away_pts != null)
-                        ? (Number(ctx.panel_pred_home_pts) - Number(ctx.panel_pred_away_pts))
-                        : null,
-                     t: ctx?.panel_pred_total},
-    {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
-  ] : [
+  ] : gamesSport === 'NCAAF' ? (() => {
+    // 2026-09-17: pull LR shadow from primary_play._lr_ml_shadow. LR is
+    // a probability (p_home_win), not a spread — render as "H XX%" /
+    // "A XX%" via displayMargin override so the tile format stays
+    // consistent with the rest of the grid (sign color still driven
+    // by whether p_home is above/below 0.5).
+    const pp = ctx?.primary_play || {};
+    const lrP = Number(pp?._lr_ml_shadow?.p_home_win);
+    const lrTile = isFinite(lrP) ? {
+      name: 'LR',
+      m: (lrP - 0.5) * 10,          // sign-only proxy for color; not shown
+      t: null,
+      displayMargin: lrP >= 0.5
+        ? `H ${Math.round(lrP * 100)}%`
+        : `A ${Math.round((1 - lrP) * 100)}%`,
+    } : null;
+    return [
+      {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+      {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
+                    t: ctx?.v4_total  ?? ctx?.model_pred_total},
+      {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: ctx?.sp_plus_pred_total},
+      {name: 'MC',  m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
+      ...(lrTile ? [lrTile] : []),
+      {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
+    ];
+  })() : gamesSport === 'NFL' ? (() => {
+    // 2026-09-17 v2: full model surface. Was 3 tiles (v3/v4/conf), then
+    // added Panel (4 tiles), now LR + GOAT round out to 6 lenses. Andy
+    // 9/17: "I want all models for NFL and NCAAF queued and surfaced."
+    // LR + LOGREG are near-identical (NYG@LA: 0.7222 vs 0.7239) so
+    // showing both is noise — dropped LOGREG, kept LR as the shared
+    // ML probability read.
+    const pp = ctx?.primary_play || {};
+    const lrP = Number(pp?._lr_ml_shadow?.p_home_win);
+    const lrTile = isFinite(lrP) ? {
+      name: 'LR',
+      m: (lrP - 0.5) * 10,
+      t: null,
+      displayMargin: lrP >= 0.5
+        ? `H ${Math.round(lrP * 100)}%`
+        : `A ${Math.round((1 - lrP) * 100)}%`,
+    } : null;
+    // GOAT chip is parsed from _goat_shadow.chip.value ("TEAM · TIER").
+    const goatVal = String(pp?._goat_shadow?.chip?.value || '').trim();
+    let goatTile: any = null;
+    if (goatVal && goatVal !== 'PASS') {
+      const goatTeam = goatVal.split('·')[0].trim();
+      const goatTier = (goatVal.split('·')[1] || '').trim();
+      const home = String(ctx?.home_team || '');
+      const isHomeLean = goatTeam && (home.includes(goatTeam) || goatTeam.includes(home));
+      goatTile = {
+        name: 'GOAT',
+        m: isHomeLean ? 1 : -1,      // sign-only for color
+        t: null,
+        displayMargin: `${goatTeam}${goatTier ? ` · ${goatTier}` : ''}`,
+      };
+    }
+    return [
+      {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+      {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
+                    t: ctx?.v4_total  ?? ctx?.model_pred_total},
+      {name: 'Panel',
+        m: (ctx?.panel_pred_home_pts != null && ctx?.panel_pred_away_pts != null)
+             ? (Number(ctx.panel_pred_home_pts) - Number(ctx.panel_pred_away_pts))
+             : null,
+        t: ctx?.panel_pred_total},
+      ...(lrTile ? [lrTile] : []),
+      ...(goatTile ? [goatTile] : []),
+      {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
+    ];
+  })() : [
     // Fallback for NHL / NBA / NCAAB / UFC — keep MC slot since those
     // sports may still populate mc_probabilities via their own simulators.
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
@@ -1687,7 +1722,14 @@ function LensGrid({ctx, gamesSport}: any) {
               </View>
 
               <Text style={[styles.lensMargin, {color: confSplitLabel ? C.textMuted : (missing ? C.textDim : sideColor(mgnSide))}]}>
-                {confSplitLabel ? confSplitLabel : (missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2)))}
+                {/* 2026-09-17: displayMargin override lets LR (probability
+                    tile → "H 72%") and GOAT (composite tile → "KC · STRONG")
+                    render in the tile without breaking the numeric format
+                    used by v3/v4/panel/sp+/mc/conf. Sign color still driven
+                    by r.m so the border-top hue stays consistent. */}
+                {confSplitLabel ? confSplitLabel
+                  : (r as any).displayMargin ? (r as any).displayMargin
+                  : (missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2)))}
               </Text>
               <Text style={[styles.lensTotal, {
                 color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
