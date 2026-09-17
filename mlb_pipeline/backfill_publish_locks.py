@@ -87,9 +87,21 @@ def backfill_sweat_card(game_date: str, dry_run: bool = False) -> int:
             tier = (p.get('tier') or '').upper()
             conv = p.get('conviction')
             source = p.get('source_key') or p.get('source_id') or p.get('id')
-            market = p.get('market') or p.get('type')
+            # 2026-09-17: normalize market. sweat_card items sometimes
+            # carry `market='outs_under'` (the prop family) instead of
+            # the canonical 'prop' — earlier backfill wrote 2 rows as
+            # market='outs_under' which the grader (filters market='prop')
+            # never matched. Explicit 4-value canonical set.
+            pt = (p.get('type') or '').lower()
+            m_raw = (p.get('market') or '').lower()
+            if pt == 'prop' or p.get('prop_type') or m_raw not in ('ml','rl','total'):
+                market = 'prop' if (pt == 'prop' or p.get('prop_type')) else m_raw
+            else:
+                market = m_raw
+            if market not in ('prop','ml','rl','total'):
+                continue
             pick_sport = (p.get('sport') or sport or '').upper()
-            if not source or not market: continue
+            if not source: continue
             if lock_publish(pick_sport, market, source, tier, conv,
                             'sweat_card', dry_run=dry_run):
                 n += 1
@@ -118,11 +130,19 @@ def backfill_sharp_card(game_date: str, dry_run: bool = False) -> int:
             market = p.get('prop_type') and 'prop' or p.get('market') or p.get('type')
             pick_sport = (p.get('sport') or sport or '').upper()
             if market == 'prop':
-                # Sharp Card item for a prop — resolve to mlb_pipeline_props.id
-                sid = _lookup_prop_id(
-                    pick_sport, game_date,
-                    p.get('player_name'), p.get('prop_type'), p.get('direction'),
-                )
+                # 2026-09-17: prefer p['id'] (present when the composer
+                # wrote the item post-composer-lock-wire commit 29761759).
+                # Fall back to lookup only for legacy items missing id —
+                # that path relied on player_name / prop_type / direction
+                # being on the item, which sharp_card items only carry
+                # in the raw formatted `pick` string, so lookup returned
+                # None for every legacy row.
+                sid = p.get('id')
+                if not sid:
+                    sid = _lookup_prop_id(
+                        pick_sport, game_date,
+                        p.get('player_name'), p.get('prop_type'), p.get('direction'),
+                    )
                 if not sid: continue
                 if lock_publish(pick_sport, 'prop', sid, tier, conv,
                                 'sharp_card', dry_run=dry_run):

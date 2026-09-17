@@ -1200,8 +1200,30 @@ def write_suggestion(sugg: dict, game_date: str, rank: int, dry_run: bool = Fals
     }
     if dry_run: return True
     try:
-        r = requests.post(f'{SB}/rest/v1/ledger_suggestions', headers=H_WRITE, json=payload, timeout=10)
-        return r.status_code in (200, 201, 204)
+        # 2026-09-17: request the inserted id back so publish_lock can
+        # snapshot this ledger suggestion at publish time. market = the
+        # ledger `kind` (chalk_parlay / prime_teased_single / etc).
+        # Fail-soft on lock; the ledger write is what matters.
+        r = requests.post(
+            f'{SB}/rest/v1/ledger_suggestions',
+            headers={**H_WRITE, 'Prefer': 'return=representation'},
+            json=payload, timeout=10,
+        )
+        if r.status_code not in (200, 201, 204):
+            return False
+        try:
+            _rows = r.json() if r.text else []
+            _sid = _rows[0].get('id') if isinstance(_rows, list) and _rows else None
+            if _sid:
+                from prop_publish_lock import lock_publish as _lock
+                _sport = (sugg.get('sport_scope') or 'ALL').upper()
+                _lock(_sport, sugg['kind'], _sid,
+                      None,   # ledger suggestions don't carry PRIME/STRONG tier
+                      None,   # no per-suggestion conviction
+                      'ledger')
+        except Exception:
+            pass
+        return True
     except Exception:
         return False
 

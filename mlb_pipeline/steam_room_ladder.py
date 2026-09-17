@@ -690,6 +690,20 @@ def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
     inserted = pr.json()
     rung_id = inserted[0]['id'] if isinstance(inserted, list) and inserted else None
     if not rung_id: return
+    # 2026-09-17: PUBLISH-LOCK. Ladder's rung IS the pick a user
+    # sees — lock tier + conviction at publish time via shared
+    # publish_lock table. market='ladder', source_id=rung id.
+    # Fail-soft.
+    try:
+        from prop_publish_lock import lock_publish as _lock
+        _lock(rung.get('sport') or 'MLB',
+              'ladder',
+              rung_id,
+              (rung.get('tier') or '').upper(),
+              rung.get('conviction'),
+              'ladder')
+    except Exception as _e:
+        print(f'  ⚠ publish_lock (ladder) failed silently: {_e}')
     # Update ladder_state
     st = requests.patch(f'{SB}/rest/v1/ladder_state?id=eq.1',
         headers=H_WRITE, json={

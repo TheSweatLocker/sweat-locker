@@ -854,6 +854,17 @@ def upsert_daily_degen(game_date, legs, narrative):
     if r.status_code not in (200, 201, 204):
         print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
         return False
+    # 2026-09-17: PUBLISH-LOCK. Daily Degen is a single nightly parlay;
+    # lock at (sport=MULTI, market='daily_degen', source_id=game_date).
+    # Fail-soft.
+    try:
+        from prop_publish_lock import lock_publish as _lock
+        _lock('MULTI', 'daily_degen', game_date,
+              None,   # DD doesn't have PRIME/STRONG tier — parlay-scoped
+              avg_conv,
+              'daily_degen')
+    except Exception as _e:
+        print(f'  ⚠ publish_lock (daily_degen) failed silently: {_e}')
     return True
 
 
