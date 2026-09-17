@@ -250,3 +250,11 @@ export async function resolveAllPending(
   }
   return out;
 }
+
+
+// 2026-09-17: default-null export to satisfy Expo Router file scan.
+// Router treats every app/**/*.ts file as a potential route and warns
+// when there is no default export. This module ships only named
+// utility exports (resolveBet, resolveAllPending); default-null keeps
+// the router quiet without affecting any imports.
+export default null;
