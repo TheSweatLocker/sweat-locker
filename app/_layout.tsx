@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, StyleSheet } from 'react-native';
 import { SubscriptionProvider } from './contexts/SubscriptionContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 const logo = require('../assets/images/splash-logo.png');
@@ -22,23 +23,25 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <SubscriptionProvider>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="track-record" />
-        <Stack.Screen name="faq" />
-      </Stack>
+    <ErrorBoundary>
+      <SubscriptionProvider>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="track-record" />
+          <Stack.Screen name="faq" />
+        </Stack>
 
-      {showSplash && (
-        <Animated.View style={[styles.splash, { opacity: fadeAnim }]}>
-          <Image
-            source={logo}
-            style={styles.logo}
-            resizeMode="contain"
-          />
-        </Animated.View>
-      )}
-    </SubscriptionProvider>
+        {showSplash && (
+          <Animated.View style={[styles.splash, { opacity: fadeAnim }]}>
+            <Image
+              source={logo}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </Animated.View>
+        )}
+      </SubscriptionProvider>
+    </ErrorBoundary>
   );
 }
 
