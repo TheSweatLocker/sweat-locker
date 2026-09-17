@@ -77,6 +77,71 @@ def fetch_ctx_window(start_date: str, days: int, lookback: int = 0) -> list[dict
     return out
 
 
+def _normalize_pp_side_label(pp: dict, ctx: dict) -> dict:
+    """Guard: for rl/total picks, recompute label from side + line so a
+    downstream mutator that flips side but not label can't leave the
+    two contradicting each other.
+
+    2026-09-17: Andy caught NYG @ LA with side=AWAY + label='LA -7' +
+    line=None. The ensemble picked AWAY_RL (NYG +7 dissent) but the
+    label got stale-cached from a prior HOME_RL pass. Post-writer
+    normalizer re-derives label from side using NFL sign convention
+    (pos close_spread = home favorite).
+
+    Idempotent — running on an already-consistent pp is a no-op.
+    """
+    if not isinstance(pp, dict): return pp
+    ptype = str(pp.get('type') or '').lower()
+    side  = str(pp.get('side') or '').upper()
+    if ptype not in ('rl', 'total') or side not in ('HOME', 'AWAY', 'OVER', 'UNDER'):
+        return pp
+
+    home = ctx.get('home_team') or 'HOME'
+    away = ctx.get('away_team') or 'AWAY'
+    try:
+        raw_sp = float(ctx.get('close_spread')) if ctx.get('close_spread') is not None else None
+    except (TypeError, ValueError):
+        raw_sp = None
+    try:
+        raw_total = float(ctx.get('close_total')) if ctx.get('close_total') is not None else None
+    except (TypeError, ValueError):
+        raw_total = None
+
+    # NFL: pos close_spread = home favorite. Flip to home-perspective
+    # line so HOME +/- matches display. (MLB/NCAAF/etc use neg=home fav
+    # natively — those recompute scripts each have their own normalizer.)
+    home_line = -raw_sp if raw_sp is not None else None
+
+    new_label = pp.get('label')
+    new_line  = pp.get('line')
+    if ptype == 'rl':
+        if side == 'HOME' and home_line is not None:
+            expected = f'{home} {home_line:+g}'
+            new_line = home_line
+            new_label = expected
+        elif side == 'AWAY' and home_line is not None:
+            away_line = -home_line
+            expected = f'{away} {away_line:+g}'
+            new_line = away_line
+            new_label = expected
+    elif ptype == 'total':
+        if side == 'OVER' and raw_total is not None:
+            new_label = f'Over {raw_total:g}'
+            new_line = raw_total
+        elif side == 'UNDER' and raw_total is not None:
+            new_label = f'Under {raw_total:g}'
+            new_line = raw_total
+
+    if new_label != pp.get('label') or new_line != pp.get('line'):
+        pp = dict(pp)
+        prior_label = pp.get('label')
+        pp['label'] = new_label
+        pp['line']  = new_line
+        pp['_label_normalized_at'] = datetime.now(timezone.utc).isoformat()
+        pp['_label_prior'] = prior_label
+    return pp
+
+
 def patch_pp(game_id: str, pp: dict) -> bool:
     # nfl_game_context has no primary_play_computed_at col (same as
     # ncaaf_game_context). Skip the stamp.
@@ -191,6 +256,12 @@ def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) ->
             for _shadow_key in _SHADOW_FIELDS_TO_PRESERVE:
                 if _shadow_key in old_pp and _shadow_key not in new_pp:
                     new_pp[_shadow_key] = old_pp[_shadow_key]
+
+        # 2026-09-17: side-label consistency normalizer. If a downstream
+        # gate (defensive_gates, LR promotion, calibration flip) mutated
+        # `side` but not `label`, the two disagree on which team we're
+        # backing. Recompute label from side + close_spread every write.
+        new_pp = _normalize_pp_side_label(new_pp, g)
 
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
         # 2026-09-13: also patch when the visible pick hasn't changed
