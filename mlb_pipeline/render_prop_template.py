@@ -347,6 +347,45 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
         for p in keyname_bullets:
             for_side.append((0.3, p))
 
+        # 2026-09-17: projection-dissent warning bullet. Andy audit surfaced
+        # Tyler Alexander outs_under 3.5 as PRIME 82 while projection said
+        # 4.70 outs (+34% AGAINST the UNDER pick). LR cohort was driving
+        # PRIME (opener pattern), but projection actively disagreed. Rather
+        # than hide the disagreement OR cap the tier (per Andy 9/17: keep
+        # the play where it earns), surface the tension honestly so users
+        # see BOTH perspectives. Fires only when projection is clearly
+        # dissenting (|dir_edge| > 15%) AND LR is the tier authority.
+        # Lands in against_side so it shows under WHY <DIR> RISKS.
+        try:
+            _dis_edge = prop_signals.get('_edge_pct')
+            _dis_lr   = prop_signals.get('_lr_p_hit')
+            _proj_str = prop_signals.get('projection')
+            if (_dis_edge is not None and _dis_lr is not None and prop_direction
+                    and isinstance(_proj_str, str)):
+                _dis_e = float(_dis_edge)
+                _dir_l = prop_direction.lower()
+                _dir_edge = -_dis_e if _dir_l == 'under' else _dis_e
+                if _dir_edge < -0.15:
+                    _lr_pct = int(round(float(_dis_lr) * 100))
+                    # Pull the projected value out of "Projected X 4.70 vs line 3.5 · …"
+                    _proj_val = None
+                    _line_val = None
+                    try:
+                        _mid = _proj_str.split('vs line ', 1)[1].split(' ·', 1)[0].strip()
+                        _line_val = _mid
+                        _lhs = _proj_str.split('Projected', 1)[1].strip()
+                        _proj_val = _lhs.split()[1]  # "outs 4.70 vs …" → "4.70"
+                    except (IndexError, ValueError):
+                        pass
+                    if _proj_val and _line_val:
+                        against_side.append((1.5, (
+                            f'Projection dissent: model sees {_proj_val} vs {_dir_l.upper()} {_line_val} '
+                            f'({_dir_edge*100:+.1f}% for {_dir_l.upper()}) — pick driven by LR cohort '
+                            f'({_lr_pct}% hit rate) despite projection disagreement'
+                        )))
+        except (TypeError, ValueError):
+            pass
+
     for_side.sort(key=lambda x: -x[0])
     against_side.sort(key=lambda x: -x[0])
     return {'positive': [p for _, p in for_side[:5]], 'negative': [p for _, p in against_side[:3]]}
