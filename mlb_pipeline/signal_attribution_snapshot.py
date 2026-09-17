@@ -59,7 +59,7 @@ _TBL_BY_SPORT = {
 }
 
 
-def _fetch_games(sport: str, game_date: str) -> list[dict]:
+def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
     tbl = _TBL_BY_SPORT.get(sport)
     if not tbl: return []
     # 2026-09-13 sport-specific offense-rating column:
@@ -85,9 +85,14 @@ def _fetch_games(sport: str, game_date: str) -> list[dict]:
         # splits_summary + primary_play carry everything we need.
         cols = ('game_id,game_date,home_team,away_team,'
                 'primary_play,align_status,splits_summary')
-    r = requests.get(f'{SB}/rest/v1/{tbl}',
+    # 2026-09-17: expanded from today-only to days-window. Prior single-date
+    # filter silently returned 0 games on Tue/Wed/Thu (no games scheduled)
+    # → signal_attribution stayed empty for NFL/NCAAF weekend games.
+    from datetime import datetime as _dt, timedelta as _td
+    end_date = (_dt.strptime(game_date,'%Y-%m-%d') + _td(days=days-1)).strftime('%Y-%m-%d')
+    url = f'{SB}/rest/v1/{tbl}?game_date=gte.{game_date}&game_date=lte.{end_date}&select={cols}'
+    r = requests.get(url,
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
-                     params={'game_date': f'eq.{game_date}', 'select': cols},
                      timeout=20)
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
@@ -233,13 +238,14 @@ def upsert_batch(rows: list[dict]) -> int:
 
 def run(sport: Optional[str] = None,
         game_date: Optional[str] = None,
-        dry_run: bool = False) -> None:
+        dry_run: bool = False,
+        days: int = 14) -> None:
     gd = game_date or _today_et()
     sports = [sport] if sport else ['NFL', 'NCAAF', 'MLB']
-    print(f'=== signal_attribution_snapshot · {gd} · sports={sports} '
+    print(f'=== signal_attribution_snapshot · {gd}+{days-1}d · sports={sports} '
           f'{"(DRY)" if dry_run else "(APPLY)"} ===')
     for sp in sports:
-        games = _fetch_games(sp, gd)
+        games = _fetch_games(sp, gd, days=days)
         print(f'  {sp}: {len(games)} games in ctx')
         all_rows: list[dict] = []
         for ctx in games:
@@ -259,9 +265,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB'])
     p.add_argument('--date', dest='game_date')
+    p.add_argument('--days', type=int, default=14,
+                   help='window size in days from --date (default 14)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(sport=args.sport, game_date=args.game_date, dry_run=args.dry_run)
+    run(sport=args.sport, game_date=args.game_date, dry_run=args.dry_run, days=args.days)
 
 
 if __name__ == '__main__':
