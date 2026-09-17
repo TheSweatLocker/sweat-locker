@@ -354,21 +354,12 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
             _pt = str(row.get('prop_type', '')).lower()
             if _pt in ('hits_over', 'hits_under'):
                 continue
-            # 2026-09-17 EMERGENCY BAN — POTD composer never had a
-            # batter-family filter. rbis_under, total_bases_under etc.
-            # were landing as POTD despite being banned everywhere else.
-            # Andy 9/17 AM: "Under total bases as POTD, sick of this."
-            # Same list as generate_prop_jerry_synthesis / sweat_card /
-            # sharp_card / daily_degen — kept in sync until v1.0.1
-            # client ships with proper labels.
-            _POTD_BATTER_BAN = {
-                'rbis_over',        'rbis_under',
-                'total_bases_over', 'total_bases_under',
-                'hr_over',          'hr_under',
-                'runs_over',        'runs_under',
-                'batter_ks_over',   'batter_ks_under',
-            }
-            if _pt in _POTD_BATTER_BAN:
+            # 2026-09-17 SHARED POLICY via prop_ban_policy.py — single
+            # source of truth for batter-family bans across every
+            # composer. Same import used by prop_jerry_synth, sweat_card,
+            # sharp_card, daily_degen.
+            from prop_ban_policy import is_banned_mlb_prop
+            if sport == 'MLB' and is_banned_mlb_prop(_pt, row.get('tier')):
                 continue
             direction = str(row.get('direction') or '').upper()
             odds = row.get('book_over_odds') if direction == 'OVER' else row.get('book_under_odds')

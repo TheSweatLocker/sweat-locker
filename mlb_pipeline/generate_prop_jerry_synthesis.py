@@ -448,29 +448,18 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     # LR p_hit 0.89-0.91 real edge) had NO jerry_reads → cards rendered
     # raw prop with no L5/L10 chart, no short_read. Un-banned; prop synth
     # backfills those 37 rows for tonight.
-    # 2026-09-17 EMERGENCY RE-BAN. The 9/16 selective UN-BAN un-banned
-    # 4 UNDER families server-side (STRONG+ tier gate). The client-side
-    # PROP_TYPE_LABELS + label formatters for hr/rbis/runs/total_bases
-    # WERE shipped in tonight's git but the v1.0.1 client build hasn't
-    # landed on TestFlight yet. So Testflight (v1.0) shows raw uppercase
-    # "TOTAL_BASES" / "RBIS" / "HR" tab chips + raw prop_type render on
-    # every card that leaks through. Andy 9/17 AM: "sick of this not
-    # being handled." Restoring full ban across all 8 variants until
-    # the v1.0.1 client is live on TestFlight. When it lands, revert to
-    # the selective ban and re-apply migration 20260916h.
-    _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',        'rbis_under',
-        'total_bases_over', 'total_bases_under',
-        'hr_over',          'hr_under',
-        'runs_over',        'runs_under',
-        'batter_ks_over',   'batter_ks_under',
-    }
+    # 2026-09-17 SHARED POLICY. All prop-family ban decisions now route
+    # through prop_ban_policy.is_banned_mlb_prop so every composer +
+    # POTD + view uses one source of truth. To reactivate STRONG+ UNDER
+    # families post-v1.0.1: set env var MLB_ALLOW_STRONG_UNDER=true and
+    # reapply migration 20260916h (view-level). No per-file edits needed.
     if sport == 'MLB':
+        from prop_ban_policy import filter_mlb_props
         _before_ban = len(props)
-        props = [p for p in props if p.get('prop_type') not in _MLB_BANNED_PROP_TYPES]
-        if _before_ban != len(props):
-            print(f'  [{sport}] dropped {_before_ban - len(props)} banned batter-family props '
-                  f'(client v1.0.1 not yet live — full ban restored)')
+        props, _dropped = filter_mlb_props(props)
+        if _dropped:
+            print(f'  [{sport}] dropped {_dropped} banned prop-family rows '
+                  f'(shared prop_ban_policy)')
 
     # Kill switch (2026-08-01 Path B): JERRY_BUCKET_ROI_ENABLED=false disables
     # the entire bucket ROI injection path. Fallback = pre-8/1 behavior.

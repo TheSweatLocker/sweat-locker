@@ -488,21 +488,15 @@ def fetch_top_props():
             "limit": "50",  # bumped 20→50 so post-ban-filter set stays populated
         },
     )
-    # 2026-09-17 EMERGENCY RE-BAN — full ban restored until v1.0.1 client
-    # ships. See generate_prop_jerry_synthesis.py top-level comment. The
-    # STRONG+ tier gate leaked raw "TOTAL_BASES" / "RBIS" text into
-    # Testflight because client labels aren't live yet.
-    _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',        'rbis_under',
-        'total_bases_over', 'total_bases_under',
-        'hr_over',          'hr_under',
-        'runs_over',        'runs_under',
-        'batter_ks_over',   'batter_ks_under',
-    }
+    # 2026-09-17 SHARED POLICY via prop_ban_policy.py — single source of
+    # truth across all composers + POTD + view. Env-var toggle
+    # MLB_ALLOW_STRONG_UNDER=true reactivates the selective un-ban when
+    # v1.0.1 client is verified live.
+    from prop_ban_policy import filter_mlb_props
     before = len(rows)
-    rows = [p for p in rows if (p.get('prop_type') or '').lower() not in _MLB_BANNED_PROP_TYPES]
-    if before != len(rows):
-        print(f'  [sweat_card] ban filter dropped {before - len(rows)} banned prop-family rows')
+    rows, dropped = filter_mlb_props(rows)
+    if dropped:
+        print(f'  [sweat_card] ban filter dropped {dropped} banned prop-family rows')
     return rows
 
 

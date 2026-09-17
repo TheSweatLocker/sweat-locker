@@ -247,19 +247,12 @@ def fetch_pipeline_props():
         props = overlay_from_snapshots(props, gd, sport='MLB')
     except Exception:
         pass
-    # 2026-09-17 EMERGENCY RE-BAN — full ban across all 8 batter-family
-    # variants until v1.0.1 client is live on TestFlight.
-    _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',        'rbis_under',
-        'total_bases_over', 'total_bases_under',
-        'hr_over',          'hr_under',
-        'runs_over',        'runs_under',
-        'batter_ks_over',   'batter_ks_under',
-    }
+    # 2026-09-17 SHARED POLICY via prop_ban_policy.py.
+    from prop_ban_policy import filter_mlb_props
     before = len(props)
-    props = [p for p in props if (p.get('prop_type') or '').lower() not in _MLB_BANNED_PROP_TYPES]
-    if before != len(props):
-        print(f'  [daily_degen] ban filter dropped {before - len(props)} banned prop-family rows')
+    props, dropped = filter_mlb_props(props)
+    if dropped:
+        print(f'  [daily_degen] ban filter dropped {dropped} banned prop-family rows')
     return props
 
 

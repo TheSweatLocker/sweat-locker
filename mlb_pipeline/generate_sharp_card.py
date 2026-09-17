@@ -377,20 +377,12 @@ def _fetch_all(today: str) -> dict:
     except Exception:
         pass  # helper missing / snapshot fetch failed — fall through to live
 
-    # 2026-09-17 EMERGENCY RE-BAN — full ban across all 8 batter-family
-    # variants until v1.0.1 client ships (raw uppercase "TOTAL_BASES"
-    # was leaking to Testflight).
-    _MLB_BANNED_PROP_TYPES = {
-        'rbis_over',        'rbis_under',
-        'total_bases_over', 'total_bases_under',
-        'hr_over',          'hr_under',
-        'runs_over',        'runs_under',
-        'batter_ks_over',   'batter_ks_under',
-    }
+    # 2026-09-17 SHARED POLICY via prop_ban_policy.py.
+    from prop_ban_policy import filter_mlb_props
     _before = len(out['mlb_props'] or [])
-    out['mlb_props'] = [p for p in (out['mlb_props'] or []) if (p.get('prop_type') or '').lower() not in _MLB_BANNED_PROP_TYPES]
-    if _before != len(out['mlb_props']):
-        print(f'  [sharp_card] ban filter dropped {_before - len(out["mlb_props"])} banned prop-family rows')
+    out['mlb_props'], _dropped = filter_mlb_props(out['mlb_props'] or [])
+    if _dropped:
+        print(f'  [sharp_card] ban filter dropped {_dropped} banned prop-family rows')
     # 2026-09-05 FIX: NCAAF/NFL use `close_home_ml`/`close_away_ml`; MLB
     # uses `home_ml_close`/`away_ml_close`. Prior version requested MLB
     # column names for every sport → PostgREST 400 → silent empty list →
