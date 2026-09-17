@@ -364,6 +364,25 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         headers=H_WRITE, json=payload, timeout=20,
     )
     if r.status_code in (200, 201, 204):
+        # 2026-09-17: PUBLISH-LOCK. A prop with a jerry_read is a prop
+        # the user could have seen on the Prop Jerry tab. Snapshot
+        # source-prop tier at this moment via shared publish_lock table
+        # (migration 20260917e). First-publisher-wins — later mutations
+        # to the live tier field can't change what the grader counts.
+        # Fail-soft: silent on error so a Supabase hiccup doesn't
+        # cascade back to the synth write.
+        try:
+            from prop_publish_lock import lock_publish as _lock
+            _pid = prop.get('id')
+            if _pid:
+                _lock(sport,
+                      'prop',
+                      _pid,
+                      (prop.get('tier') or '').upper(),
+                      prop.get('conviction'),
+                      'prop_jerry')
+        except Exception:
+            pass
         return True
     # If the 'source' column doesn't exist yet (pre-migration), retry without it
     if r.status_code == 400 and 'source' in (r.text or ''):

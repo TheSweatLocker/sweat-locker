@@ -660,6 +660,11 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
             'units': _units_for_pick(pp.get('tier'), pp_type,
                                      side_ml if pp_type == 'ml' else -110,
                                      side_price_american=side_ml),
+            # 2026-09-17: preserve conviction + game_id so publish_lock
+            # at write-time can snapshot (sport, market, source_id) →
+            # tier + conviction. See prop_publish_lock.py.
+            'conviction': pp.get('conviction'),
+            'game_id': g.get('game_id'),
         })
     if lr_conflict_drops:
         print(f'  ⛔ MLB sides dropped by LR shadow gate: {lr_conflict_drops}')
@@ -782,6 +787,10 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             # impossible from the cache alone.
             'player_team': p.get('player_team'),
             'units': units,
+            # 2026-09-17: preserve mlb_pipeline_props.id + conviction so
+            # publish_lock at write-time can snapshot the effective tier.
+            'id': p.get('id'),
+            'conviction': _p_conv,
             'playbook_lifted': PROP_PLAYBOOK_ENABLED and pb and pb.get('playbook_tier')
                                 and effective_tier != p.get('tier'),
         })
@@ -1053,6 +1062,33 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
             by_sport[p['sport']] += 1
         print(f'         breakdown: {by_sport}')
         return
+    # 2026-09-17: PUBLISH-LOCK. Snapshot tier + conviction for every
+    # item at the moment it lands on the Sharp Card. First-publisher-
+    # wins semantics via shared publish_lock table (migration
+    # 20260917e). Grader honors these locks so mid-day tier mutations
+    # to the live row can never change what the record counts.
+    # Fail-soft: any lock error stays silent so a Supabase hiccup
+    # doesn't block the cache write.
+    try:
+        from prop_publish_lock import lock_publish as _lock
+        for _it in items:
+            if not isinstance(_it, dict): continue
+            _t  = (_it.get('type') or '').lower()
+            _market = _t if _t in ('prop','ml','rl','total') else None
+            if not _market: continue
+            _sport = (_it.get('sport') or '').upper()
+            if _market == 'prop':
+                _sid = _it.get('id')
+            else:
+                _sid = _it.get('game_id')
+            if not _sport or not _sid: continue
+            _lock(_sport, _market, _sid,
+                  (_it.get('tier') or '').upper(),
+                  _it.get('conviction'),
+                  'sharp_card')
+    except Exception as _e:
+        print(f'  ⚠ publish_lock (sharp_card) failed silently: {_e}')
+
     row = {
         'game_id': f'sharp_card_{today}',
         'cache_key': f'sharp_card_{today}',

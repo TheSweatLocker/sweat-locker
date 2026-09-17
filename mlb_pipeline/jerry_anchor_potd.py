@@ -817,6 +817,44 @@ def run(game_date: str | None = None, threshold: int = 70,
         print(f"  [DRY] would upsert best_bet_{gd} · {narrative_line}")
         return
 
+    # 2026-09-17: PUBLISH-LOCK. Snapshot POTD tier + conviction at
+    # publish time. First-publisher-wins semantics via shared
+    # publish_lock table (migration 20260917e). Grader honors this
+    # lock regardless of later mutations to the live row. Fail-soft.
+    try:
+        from prop_publish_lock import lock_publish as _lock
+        _mkt2 = (winner.get("call_market") or "").lower()
+        _source_id = None
+        if _mkt2 == "prop":
+            # Prop POTD — resolve to mlb_pipeline_props.id via the
+            # (player, prop_type, direction) key already on winner.
+            _tbl = "mlb_pipeline_props" if winner_sport == "MLB" else "nfl_pipeline_props"
+            try:
+                _pr = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/{_tbl}",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+                    params={
+                        "game_date": f"eq.{gd}",
+                        "player_name": f"eq.{winner.get('player_name')}",
+                        "prop_type": f"eq.{winner.get('prop_type') or winner.get('call_market')}",
+                        "direction": f"eq.{(winner.get('call_side') or '').lower()}",
+                        "select": "id", "limit": "1",
+                    }, timeout=8,
+                )
+                _rows = _pr.json() if _pr.status_code == 200 else []
+                _source_id = _rows[0]["id"] if _rows else None
+            except Exception:
+                _source_id = None
+        else:
+            _source_id = winner.get("game_id")
+        if _source_id and _mkt2:
+            _lock(winner_sport, _mkt2, _source_id,
+                  _conviction_tier(conv).upper() if callable(_conviction_tier) else "PRIME",
+                  conv,
+                  "potd")
+    except Exception as _e:
+        print(f"  ⚠ publish_lock (potd) failed silently: {_e}")
+
     # Upsert jerry_cache best_bet — actual unique constraint is on cache_key
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/jerry_cache?on_conflict=cache_key",

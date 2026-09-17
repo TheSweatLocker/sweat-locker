@@ -2463,6 +2463,42 @@ def build_card():
     card["_jerry_reads_latest_at"] = jr_latest
     card["_synced"] = (jr_latest is not None)
 
+    # 2026-09-17: PUBLISH-LOCK. Snapshot tier + conviction for every
+    # top_8 pick at the moment it lands on the Sweat Card. First-
+    # publisher-wins semantics via the shared publish_lock table
+    # (migration 20260917e). Grader honors these locks so mid-day
+    # tier mutations to the live row (generate_props --force wipes,
+    # LR override yo-yo) can never change what the record counts.
+    # Fail-soft: any lock error stays silent so a Supabase hiccup
+    # doesn't block the cache write.
+    try:
+        from prop_publish_lock import lock_publish as _lock
+        top_8_local = card.get("top_8") or []
+        for _p in top_8_local:
+            if not isinstance(_p, dict): continue
+            _pt = (_p.get("prop_type") or "").strip()
+            _t  = (_p.get("type") or "").lower()
+            _market = 'prop' if _pt else (_t if _t in ('ml','rl','total') else None)
+            if not _market: continue
+            _sport = (_p.get("sport") or "MLB").upper()
+            if _market == 'prop':
+                # source_id = mlb_pipeline_props.id if we have it,
+                # else derive from source_key ("mlb_pipeline_props:<id>").
+                _sid = _p.get("id") or _p.get("source_id")
+                _sk = _p.get("source_key") or ""
+                if not _sid and _sk and ":" in _sk:
+                    _sid = _sk.split(":", 1)[1]
+                if not _sid: continue
+            else:
+                _sid = _p.get("game_id")
+                if not _sid: continue
+            _lock(_sport, _market, _sid,
+                  (_p.get("tier") or "").upper(),
+                  _p.get("conviction"),
+                  "sweat_card")
+    except Exception as _e:
+        print(f"  ⚠ publish_lock (sweat_card) failed silently: {_e}")
+
     # Upsert to jerry_cache
     cache_key = f"sweat_card_{today}"
     payload = {
