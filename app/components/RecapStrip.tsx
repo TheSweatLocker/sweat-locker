@@ -225,16 +225,11 @@ export const RecapStrip: React.FC<Props> = ({ sport, onTap }) => {
 
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>
-            {/* 2026-09-17: relabeled "CARD L30D" → "SWEAT CARD L30D" so
-                users can distinguish it from the SHARP CARD chip row
-                above. Both are technically "card" records but from
-                different denominators (top-8 curated Sweat Card here
-                vs the full 15-pick Sharp Card in the chip row). Same
-                word "CARD" for two different numbers was confusing —
-                Andy 9/17 audit ("what triggers those record why do i
-                see them now"). Fixed length assumes strip fits — no
-                sport prefix (kept per prior 9/10 note). */}
-            SWEAT CARD L30D
+            {/* 2026-09-17: went "CARD L30D" → "SWEAT CARD L30D" → back to
+                "CARD L30D". Andy wants the short version. Chip row
+                above has its own "L30D · THE SHARP" label so the two
+                surfaces are already distinct enough by adjacency. */}
+            CARD L30D
           </Text>
           <View style={styles.statRow}>
             <Text style={styles.statValue}>
