@@ -153,6 +153,54 @@ def render_prompt(template: str, prop: dict, sport: str,
             f'match. Set VERDICT: BACK and CONVICTION consistent with the tier shown.'
         )
 
+    # 2026-09-17: LR-OVERRIDE DIRECTIVE. Andy caught the "🎤 JERRY'S FULL
+    # READ" panel saying "PASS. Book recalibration gutted our edge…" on
+    # Seth Lugo outs_under 15.5 while the tier badge showed PRIME 79.
+    # Same class as _calibration_fade — mechanical layer already committed
+    # to PRIME via LR shadow authority, but the LLM was drafting PASS
+    # prose because book_recalibration signal argued no edge.
+    #
+    # Fire directive when:
+    #   * book_recalibration ran and demoted (_recal_multiplier < 0.5)
+    #   * LR shadow re-promoted (LR-tier authority in backfill_prop_lookback)
+    #   * final tier survived at PRIME or STRONG (LR won the tie-break)
+    #
+    # Historical LR-override PRIME hit rate: 73.7% (n=19 over 14d). Real
+    # signal, not just aggregate noise — but the trace fields on the row
+    # (book_recalibration, _pre_recal_conviction) will confuse the LLM
+    # without this explicit directive.
+    lr_override_directive = ''
+    _recal_mult = sigs.get('_recal_multiplier')
+    _lr_p_hit = sigs.get('_lr_p_hit')
+    _final_tier = (prop.get('tier') or '').upper()
+    if (_recal_mult is not None
+            and _lr_p_hit is not None
+            and _final_tier in ('PRIME', 'STRONG')):
+        try:
+            if float(_recal_mult) < 0.5:
+                _lr_pct = int(round(float(_lr_p_hit) * 100))
+                _pre_recal = sigs.get('_pre_recal_conviction')
+                _proj = sigs.get('projection') or ''
+                lr_override_directive = (
+                    f'\n\n=== LR-OVERRIDE AUTHORITY (must honor) ===\n'
+                    f'The book_recalibration signal on this prop reads "no edge" and '
+                    f'suggests conviction drop from {_pre_recal} → {int(float(_pre_recal or 0) * float(_recal_mult))}. '
+                    f'IGNORE that as your primary framing.\n\n'
+                    f'The LR shadow (historical cohort classifier) rated this spot at '
+                    f'p_hit={_lr_p_hit:.3f} ({_lr_pct}% hit rate on cohort-similar spots) '
+                    f'and OVER-ROTE the book-recal demotion. Final tier is {_final_tier} '
+                    f'conv {prop.get("conviction")} — LR authority.\n\n'
+                    f'Your job: write BACK prose grounded in the L3/L5/L10 form + xERA + '
+                    f'opponent signals that ACTUALLY support the pick. Frame the thin '
+                    f'projection edge as "book has priced our projection signal in, but LR '
+                    f'catches a deeper cohort pattern" — that\'s the real story here. '
+                    f'Do NOT return PASS. Set VERDICT: BACK and CONVICTION close to the '
+                    f'tier shown ({prop.get("conviction")}). Reference the LR hit-rate '
+                    f'({_lr_pct}%) once as supporting evidence.'
+                )
+        except (TypeError, ValueError):
+            pass
+
     # Bucket ROI injection (2026-08-01 R-4): give Jerry the historical hit
     # rate + juice-adjusted ROI for this exact (tier, prop_type, direction)
     # bucket. Jerry uses this to decide BACK/FADE/PASS with real edge instead
@@ -190,6 +238,14 @@ def render_prompt(template: str, prop: dict, sport: str,
     # Jerry sees. Highest-priority context = highest place in prompt tail.
     if calibration_directive:
         rendered = f'{rendered}{calibration_directive}'
+
+    # LR-override directive lands AFTER calibration_directive — same class
+    # of "mechanical layer already committed, narrative must match" rule.
+    # Only one of these fires per prop in practice; both firing means
+    # calibration_fade AND LR-override both stamped this row, and both
+    # want BACK prose — the language just needs to match tier + conviction.
+    if lr_override_directive:
+        rendered = f'{rendered}{lr_override_directive}'
 
     # 2026-08-17: append playbook signal grounding LAST. Placed after
     # calibration directive so it doesn't override picks but IS the most
