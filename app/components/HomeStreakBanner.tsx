@@ -92,6 +92,29 @@ function _composeBanners(
     return Math.floor((now.getTime() - t) / (86_400_000));
   };
 
+  // 0. PRIME props recent record (v1.0.1 flagship angle). Uses the
+  //    surface_records[MLB|prop_prime|d7] aggregate that our socials
+  //    numbers come from. Andy 9/17: "prime MLB props record over L7D
+  //    — that's the vision to promote whatever is hot recently." This
+  //    IS the highest-priority banner — PRIME props at 82%+ is our
+  //    strongest single stat. Fires at n>=30 + hit>=70% + net positive.
+  for (const sp of ['MLB', 'NFL', 'NCAAF']) {
+    const rec = agg[`${sp}|prop_prime|d7`];
+    if (!rec) continue;
+    const w = rec.wins || 0, l = rec.losses || 0;
+    const total = w + l;
+    const un = _num(rec.units_net);
+    if (total >= 30 && w / total >= 0.70 && un > 0) {
+      const pct = Math.round((w / total) * 100);
+      out.push({
+        icon: '🎯',
+        text: `${sp} PRIME props last 7d: ${w}-${l} (${pct}%), +${un.toFixed(1)}u`,
+        priority: 100,   // top billing — flagship product angle
+        onPress: handlers.onOpenSharp,
+      });
+    }
+  }
+
   // 1. Sharp Card last-3d hot streak — sum wins/losses/pnl across recent
   //    graded days. Uses units_won - units_bet as PnL proxy.
   const sharpRecent = daily.filter((r) => r.surface === 'sharp_card' && daysAgo(r.record_date) <= 3
