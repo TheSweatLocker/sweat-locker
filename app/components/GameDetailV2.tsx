@@ -552,15 +552,15 @@ export default function GameDetailV2({
           </Section>
         )}
 
+        {/* 2026-09-17: Line Movement hint clarified from "opening → current" to
+            note the source. Line Movement shows the CLOSING CONSENSUS across
+            books (ctx.home_ml_close / close_spread / close_total). The HRB
+            odds box above shows Hard Rock's LIVE price, which can differ
+            (Andy 9/17: NO@BAL card showed HRB -425 vs Line Movement -380 on
+            same game — legitimately different books, different prices, but
+            users read as inconsistency). Explicit source label makes it
+            honest. */}
         {showLineMovement && (
-          {/* 2026-09-17: hint clarified from "opening → current" to note the
-              source. Line Movement shows the CLOSING CONSENSUS across books
-              (ctx.home_ml_close / close_spread / close_total). The HRB
-              odds box above shows Hard Rock's LIVE price, which can differ
-              (Andy 9/17: NO@BAL card showed HRB -425 vs Line Movement -380
-              on same game — legitimately different books, different prices,
-              but users read as inconsistency). Explicit source label makes
-              it honest. */}
           <Section title="Line Movement" hint="opening → close (consensus)">
             <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
           </Section>
