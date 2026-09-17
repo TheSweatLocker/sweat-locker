@@ -28,10 +28,12 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'PASS': {help: "We looked and don't see enough edge here. Publishing the pass is intentional — no bet is a bet."},
   'SKIP': {help: "Model and market conflict enough that no side is defensible. Move on."},
 
-  // ─── MODELS (MLB primary; used cross-sport where noted) ────────────
-  'MC': {help: 'Monte Carlo simulation — plays out the game 10,000 times using team + lineup + pitcher inputs and reports the win/total distribution.'},
-  'V4': {help: 'V4 XGBoost — our machine-learning runs model trained on ~5 seasons of MLB games. Best for direction, weaker for exact totals.'},
-  'PANEL': {help: 'Panel projection — averages 4 external projection sources into a stable "market consensus" baseline for totals.'},
+  // ─── MODELS (cross-sport; some sport-specific inputs) ─────────────
+  // 2026-09-17: reworded to be sport-neutral. Was leaking "MLB games"
+  // and "pitcher inputs" into NFL/NCAAF card tooltips.
+  'MC': {help: 'Monte Carlo simulation — plays the game out 10,000 times using team + roster + matchup inputs (starting pitcher on MLB, starting lineup on NFL/NCAAF) and reports the win / total distribution. Runs on MLB + NCAAF today; NFL uses V4 + Panel instead.'},
+  'V4': {help: 'V4 XGBoost — our machine-learning model trained on ~5 seasons of games per sport. Reads offensive + defensive efficiency, matchup, and venue features. Best for direction, weaker for exact totals.'},
+  'PANEL': {help: 'Panel projection — averages multiple external projection sources into a stable market-consensus baseline for spread + total. On NFL, this is the injury/roster-adjusted panel; on MLB, the 4-source consensus.'},
   'JERRY': {help: 'LLM synthesis narrator — reads all model + cohort + splits data and writes the plain-english call. Not a model itself, just the translator.'},
   'CONF': {help: 'Signal Confluence — a net count of how many of our 40+ situational rules (cohorts, tendencies, sharp-money patterns, cohort splits) fire on each side. Positive number = home advantage; negative = away. Different from V3/V4/MC which project a spread or total — CONF is a "how many of our rules agree" meter. Bigger absolute value = broader agreement.'},
 

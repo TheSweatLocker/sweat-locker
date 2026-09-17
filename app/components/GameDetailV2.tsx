@@ -561,7 +561,11 @@ export default function GameDetailV2({
         {/* 2026-09-01: gate on any lens producing a value. Was showing
             empty "Model Consensus" header on thin UFC/NHL/FCS cards. */}
         {showModelConsensus && hasAnyLensValue(ctx, gamesSport) && (
-          <Section title="Model Consensus" hint="margin (H+ / A−)">
+          // 2026-09-17: hint updated from "margin (H+ / A−)" to reflect
+          // mixed tile formats. NFL/NCAAF now show spread projections
+          // (v3/v4/panel/sp+/mc) alongside probability tiles (LR) and
+          // composite tiles (GOAT). Tap any tile → glossary tooltip.
+          <Section title="Model Consensus" hint="each model's read · tap for detail">
             <LensGrid ctx={ctx} gamesSport={gamesSport} />
           </Section>
         )}
