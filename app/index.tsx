@@ -313,10 +313,19 @@ const BOOKMAKER_MAP = {
   'betonlineag':'BetOnline',
 };
 // Odds API uses slightly different names for some MLB teams — map alternates to canonical MLB Stats API names
+// 2026-09-17: bidirectional alias map. Andy caught [fetchMLBContext]
+// miss on "Athletics @ Tampa Bay Rays" — DB stores away_team='Athletics'
+// (post Sacramento relocation), odds API + games list may send 'Oakland
+// Athletics' / 'Sacramento Athletics'. Prior map keyed only by canonical
+// ('Oakland Athletics'), so an incoming 'Athletics' string didn't
+// resolve to any variants. Added reverse entries for each short-form
+// variant so the alias lookup works from ANY known variant.
 const MLB_TEAM_ALIASES: Record<string, string[]> = {
   'Arizona Diamondbacks': ['Arizona Diamondbacks', 'ARI Diamondbacks', 'AZ Diamondbacks'],
   'Cleveland Guardians': ['Cleveland Guardians', 'Cleveland Indians'],
-  'Oakland Athletics': ['Oakland Athletics', "Oakland A's", 'Athletics'],
+  'Oakland Athletics': ['Oakland Athletics', 'Sacramento Athletics', "Oakland A's", 'Athletics'],
+  'Athletics': ['Athletics', 'Oakland Athletics', 'Sacramento Athletics', "Oakland A's"],
+  'Sacramento Athletics': ['Sacramento Athletics', 'Oakland Athletics', 'Athletics', "Oakland A's"],
   'Los Angeles Angels': ['Los Angeles Angels', 'LA Angels', 'Anaheim Angels'],
   'Chicago White Sox': ['Chicago White Sox', 'Chi White Sox'],
   'Tampa Bay Rays': ['Tampa Bay Rays', 'TB Rays'],

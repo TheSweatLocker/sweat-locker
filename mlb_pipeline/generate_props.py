@@ -4882,3 +4882,25 @@ def run():
 
 if __name__ == "__main__":
     run()
+    # 2026-09-17: AUTO-CHAIN backfill_prop_lookback. Andy caught the
+    # yo-yo where a manual `generate_props.py --force` mid-day wiped
+    # LR-override state (upsert Prefer:merge-duplicates is a row-level
+    # REPLACE, not a field-level merge), leaving PRIME rows demoted to
+    # SKIP until the next scheduled backfill run. Auto-chaining here
+    # ensures LR authority is restored in the same invocation so live-
+    # tier can't drift between publish and grade. Fail-soft: any error
+    # in the chained backfill is logged but doesn't fail generate_props.
+    try:
+        import subprocess as _sub
+        _et_today = (
+            (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
+        )
+        print()
+        print(f'  → auto-chaining backfill_prop_lookback --sport MLB --date {_et_today}')
+        _sub.run(
+            ['python', 'backfill_prop_lookback.py', '--sport', 'MLB', '--date', _et_today],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            check=False, timeout=600,
+        )
+    except Exception as _e:
+        print(f'  ⚠ auto-chain backfill_prop_lookback failed (non-fatal): {_e}')

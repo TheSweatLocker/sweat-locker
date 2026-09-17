@@ -1617,10 +1617,23 @@ function LensGrid({ctx, gamesSport}: any) {
         ? `H ${Math.round(lrP * 100)}%`
         : `A ${Math.round((1 - lrP) * 100)}%`,
     } : null;
+    // 2026-09-17: NCAAF ctx doesn't have v4_spread/v4_total or
+    // model_pred_spread/model_pred_total columns — only per-team point
+    // predictions (model_pred_home_points / model_pred_away_points).
+    // Compute the v4 margin + total from those instead of falling
+    // through to null. Andy caught Syracuse @ Pitt rendering v4 as "—"
+    // while the DB had valid predictions.
+    const _v4h = Number(ctx?.model_pred_home_points);
+    const _v4a = Number(ctx?.model_pred_away_points);
+    const _v4Margin = (isFinite(_v4h) && isFinite(_v4a))
+      ? (_v4h - _v4a)
+      : (ctx?.v4_spread ?? ctx?.model_pred_spread);
+    const _v4Total = (isFinite(_v4h) && isFinite(_v4a))
+      ? (_v4h + _v4a)
+      : (ctx?.v4_total ?? ctx?.model_pred_total);
     return [
       {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-      {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
-                    t: ctx?.v4_total  ?? ctx?.model_pred_total},
+      {name: 'v4', m: _v4Margin, t: _v4Total},
       {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: ctx?.sp_plus_pred_total},
       {name: 'MC',  m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
       ...(lrTile ? [lrTile] : []),
