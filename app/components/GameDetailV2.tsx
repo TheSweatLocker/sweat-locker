@@ -553,7 +553,15 @@ export default function GameDetailV2({
         )}
 
         {showLineMovement && (
-          <Section title="Line Movement" hint="opening → current">
+          {/* 2026-09-17: hint clarified from "opening → current" to note the
+              source. Line Movement shows the CLOSING CONSENSUS across books
+              (ctx.home_ml_close / close_spread / close_total). The HRB
+              odds box above shows Hard Rock's LIVE price, which can differ
+              (Andy 9/17: NO@BAL card showed HRB -425 vs Line Movement -380
+              on same game — legitimately different books, different prices,
+              but users read as inconsistency). Explicit source label makes
+              it honest. */}
+          <Section title="Line Movement" hint="opening → close (consensus)">
             <LineMovementStrip ctx={ctx} historicalOdds={historicalOdds} />
           </Section>
         )}
@@ -2245,7 +2253,21 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
           {tab === 'h2h' ? 'No prior head-to-head' : 'No games logged yet this season'}
         </Text>
       ) : (
-        rowsSorted.map((r, i) => <RecentGameRow key={r.game_id || i} row={r} />)
+        <>
+          {rowsSorted.map((r, i) => <RecentGameRow key={r.game_id || i} row={r} />)}
+          {/* 2026-09-17: thin-data note. Andy caught NO@BAL Week 2
+              rendering with 1 row and reading as broken. Below-3 hints
+              at the season stage so users know it's not an error — just
+              early data. Applies to team tabs only; H2H can legitimately
+              be 1-3 rows even mid-season. */}
+          {tab !== 'h2h' && rowsSorted.length < 3 && (
+            <Text style={rsStyles.empty}>
+              {rowsSorted.length === 1
+                ? 'Early season — 1 game logged so far'
+                : `Early season — ${rowsSorted.length} games logged so far`}
+            </Text>
+          )}
+        </>
       )}
 
       {loading && <Text style={rsStyles.empty}>Loading…</Text>}

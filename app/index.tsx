@@ -14869,7 +14869,18 @@ setJerryHistory(prev => {
     }
     // Skip alignment chip — leaks direction
   } else if (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase())) {
-    chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
+    // 2026-09-17: hide the tier chip when the Jerry snippet above
+    // already carries the SAME pick text. Andy caught NO +8.5 rendering
+    // twice on NO @ BAL card — once as the "JERRY | NO +8.5 · 80" badge
+    // inside the snippet, then again as this redundant tier chip below.
+    // If Jerry has a DIFFERENT take (rare), we still show both so the
+    // dissent surfaces. Match on trimmed lowercase text.
+    const _jerryPickText = String(jr?.call_text || '').trim().toLowerCase();
+    const _tierPickText = String(pp.label || '').trim().toLowerCase();
+    const _jerryHasSamePick = _jerryPickText && _jerryPickText === _tierPickText;
+    if (!_jerryHasSamePick) {
+      chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
+    }
   } else if (jr?.call_text && jr?.conviction != null &&
              String(jr.call_market || '').toLowerCase() !== 'pass') {
     // Use Jerry's take verbatim when there's no primary_play. Still
