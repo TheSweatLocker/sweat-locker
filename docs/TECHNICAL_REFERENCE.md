@@ -666,6 +666,119 @@ Ladder + Dawg are the underperformers — flagged for calibration review.
 
 ---
 
+## 10. Publish Lock — What You Saw Is What We Grade
+
+**What it does:** captures the tier + conviction the user actually saw when a pick first appeared on a user-visible surface. Grader honors the snapshot; later mutations to the live tier field can't change what the record counts. Fixes the mid-day yo-yo where `generate_props --force` wiped LR overrides and rows silently dropped from the PRIME record between publish and grade.
+
+**Andy 9/17 directive:** "prime prop integrity issue — comes off as we're cherry picking. This is brand-killing. Needs process that overwrite in the middle of day to stop." + "and this needs to be sport universal."
+
+### Table
+
+`public.publish_lock` (see [migration 20260917e](supabase/migrations/20260917e_prop_tier_publish_lock.sql)).
+
+| column | purpose |
+|---|---|
+| `sport` | MLB / NFL / NCAAF / NBA / NHL / NCAAB / UFC — universal |
+| `market` | `'prop'` / `'ml'` / `'rl'` / `'total'` / `'ladder'` / `'ledger'` |
+| `source_id` | prop row id (for `market='prop'`) or `game_id` (for sides) |
+| `tier_at_publish` | tier the composer decided at pick-time |
+| `conviction_at_publish` | 0-100 conviction at pick-time |
+| `published_at` | first-visible timestamp (never mutated on re-publish) |
+| `published_by` | which composer surface first locked it (audit trail) |
+
+Uniqueness on `(sport, market, source_id)`. **First publisher wins** via `ON CONFLICT DO NOTHING`.
+
+### Shared module
+
+`mlb_pipeline/prop_publish_lock.py` — every composer imports + calls at surface-write time:
+
+```python
+from prop_publish_lock import lock_publish
+lock_publish(sport, market, source_id, tier, conviction, published_by)
+```
+
+Idempotent (later calls no-op). Fail-soft (any lock exception silently swallowed so a Supabase hiccup can't cascade back to the composer write). Same shared-policy pattern as `prop_ban_policy.py`.
+
+### Wired composers (2026-09-17)
+
+| Composer | Publishes | Lock call |
+|---|---|---|
+| `generate_sweat_card.py` | Sweat Card top_8 | Iterates `card.top_8` pre-POST |
+| `generate_sharp_card.py` | Sharp Card items | Iterates `items` pre-POST, added `id` + `conviction` + `game_id` to composed dicts |
+| `jerry_anchor_potd.py` | POTD winner | Locks winner_read at final upsert |
+| `generate_prop_jerry_synthesis.py` | Prop Jerry per-prop reads | Locks source-prop after successful jerry_read write |
+
+**Not yet wired** (follow-up): Ladder, Ledger, Daily Degen composers + sides on `<sport>_game_context.primary_play` (same yo-yo class affects ML/RL/Total across NFL/NCAAF/NBA/NHL/NCAAB/UFC).
+
+### Grader integration
+
+`mlb_pipeline/compute_surface_records.py` — pulls all locks via `_fetch_publish_locks(sport_market_pairs=...)`. In the props record loop:
+
+```python
+locked = lock_map.get((sport, 'prop', str(r.get('id'))))
+if locked:
+    effective_tier = locked.get('tier_at_publish')
+    effective_conv = locked.get('conviction_at_publish')
+else:
+    effective_tier = r.get('tier')      # fallback for legacy/unpublished
+    effective_conv = r.get('conviction')
+```
+
+Legacy rows (pre-lock migration) fall through to live tier — backward-compat holds.
+
+### Backfill script
+
+`mlb_pipeline/backfill_publish_locks.py` — one-shot script that reads today's cache surfaces (`sweat_card_YYYY-MM-DD` + `sharp_card_YYYY-MM-DD` + `prop_jerry_reads`) and locks each pick at the tier CURRENTLY shown on the surface. Not perfect (locks whatever tier the surface has now, not what it had at first-render), but the best "what user saw" reading available without historical cache snapshots. Ship-forward the composer instrumentation ensures true first-publish semantics.
+
+```bash
+python mlb_pipeline/backfill_publish_locks.py --dry-run
+python mlb_pipeline/backfill_publish_locks.py
+```
+
+### Root cause of the mid-day yo-yo (documented)
+
+`generate_props.py` uses `Prefer: resolution=merge-duplicates` — that's **row-level REPLACE on conflict, not field-level merge**. LR-override state (`_lr_p_hit`, `_lr_tier_raw`, `_pre_lr_tier`) gets wiped when generate_props re-runs. `backfill_prop_lookback.py` restores the LR promotion but only if it runs AFTER. Daily workflow chains them right. Ad-hoc `--force` reruns of generate_props break the order → tier gets stuck at the book_recalibration-derived value (usually SKIP for LR-authored PRIMEs).
+
+**Grader was reading live tier at query time**, so any row whose tier flipped between publish and grade was silently dropped from the PRIME record. Andy 9/17 caught it on Seth Lugo outs_under 16.5: PRIME 79 all morning (LR-override), wiped to SKIP 20 by mid-day `generate_props --force`, would have been excluded from tonight's PRIME record.
+
+**Publish-lock defends the grader** regardless of live-tier drift. Follow-up (`generate_props.py --force` should auto-chain `backfill_prop_lookback` at end) will also stabilize live-tier display, but grading integrity is the load-bearing fix.
+
+### Policy call (Andy 9/17)
+
+Legacy records NOT retroactively corrected. "I don't even know if I want to dig into [historical damage]." Publish-lock only affects rows locked from this date forward. Old records stay as-is; accept the uncertainty. Forward records honest.
+
+### Verify
+
+```sql
+-- See all locks for today
+SELECT sport, market, source_id, tier_at_publish, conviction_at_publish,
+       published_at, published_by
+  FROM publish_lock
+ ORDER BY published_at DESC
+ LIMIT 20;
+
+-- Post-lock tier-drift audit (rows where lock ≠ live)
+SELECT p.player_name, p.prop_type, p.direction,
+       pl.tier_at_publish AS locked, p.tier AS live,
+       pl.conviction_at_publish AS locked_conv, p.conviction AS live_conv
+  FROM mlb_pipeline_props p
+  JOIN publish_lock pl
+    ON pl.source_id = p.id::text
+   AND pl.sport = 'MLB' AND pl.market = 'prop'
+ WHERE pl.tier_at_publish != p.tier
+   AND p.game_date = CURRENT_DATE;
+```
+
+### Follow-ups (queued)
+
+- Ladder + Ledger + Daily Degen composers get lock_publish calls
+- Sides extension: publish_lock for `<sport>_game_context.primary_play` writers
+- Watchdog: `publish_lock_tier_drift` — alert when locked row has live tier flip post-lock
+- Auto-chain: `generate_props.py --force` should auto-fire `backfill_prop_lookback` at end
+- v1.1: expose "locked at PRIME 79 on Sept 17 at 9:47am" provenance on the app card
+
+---
+
 ## 9. Home Tab Banners (server-driven)
 
 **What it does:** the gold-tinted rotating banner strip at the top of the Home tab — "🎯 MLB Prime Props L7D: 222-46 (83%) +123.1u", "🔥 The Sharp last 3d: hot", "📈 Ledger 3-day green streak", etc. Silent when nothing qualifies. Rotates every 8s if multiple candidates.
@@ -771,3 +884,4 @@ _Stub._ Checklist for plugging a new sport in without breaking the 6 wired ones.
 | 2026-09-08 | GOAT NFL | Section 3.6 added: fused-signal composite shipped shadow-only. Composite formula, chip payload, backend-driven `chips_extra` pattern, promotion path documented. |
 | 2026-09-09 | pick generation | Section 6 filled in: universal 4-stage flow (ingest → enrich → score → bridge), sport-by-sport source map, ensemble → gates → LR chain deep-dive, prop pipeline sub-flow, surface → source table, add-a-sport 8-step checklist. |
 | 2026-09-17 | home banners | Section 9 added: server-driven Home tab banner strip. `home_banners` table schema + 5 auto-cron classes + admin push SQL examples + debug flow. Un-hardcodes prior client-side hot-streak component per Andy directive. |
+| 2026-09-17 | publish lock | Section 10 added: universal `publish_lock` table + shared module + grader integration + backfill script. Fixes the mid-day tier yo-yo that silently dropped PRIME picks from records (brand-integrity fix). Root-cause traced to `generate_props.py` row-replace upsert wiping LR override state; grader now reads locked tier regardless of live-tier drift. Legacy records not corrected per Andy call. Follow-ups queued for Ladder / Ledger / Daily Degen composers + sides extension across all sports. |
