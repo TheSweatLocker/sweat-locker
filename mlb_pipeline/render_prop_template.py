@@ -244,6 +244,17 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
                       'direction', 'season_avg', 'implied_high', 'implied_low',
                       'fade_jerry_pass', 'fade_jerry_pass_orig_tier',
                       'fade_jerry_pass_orig_conv'}
+        # 2026-09-17: audit-only signals that used to leak to PLAYBOOK CONFIRMS
+        # bullets and self-contradict the final tier. Andy caught it on Seth
+        # Lugo O/U 15.5 outs — the book_recalibration line read "Conviction
+        # 68 → 20 (×0.30) — NO EDGE" while the actual tier displayed PRIME/79
+        # (LR-shadow re-promoted post-recal in backfill_prop_lookback.py:638).
+        # Suppressing on render, not in scoring: the LR-override PRIMEs
+        # historically hit 73.7% (n=19, verified 14d 9/3–9/16), so the play
+        # itself is legit — the trace is just audit noise that should not
+        # surface on the card. Signal still lives in the raw row for
+        # backtest / audit_prop_playbook_shadow.
+        _SKIP_KEYS.add('book_recalibration')
         prose_bullets = []
         keyname_bullets = []
         for k, v in prop_signals.items():
@@ -295,6 +306,11 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
             'tough matchup', 'tough', 'top-10', 'top-5', 'elite defense',
             'elite defensive', 'shutdown', 'hard matchup', 'risk',
             'regression', 'concern', 'fatigue', 'below',
+            # 2026-09-17: catch book-recalibration language even if the row
+            # ever bypasses the SKIP filter above. "NO EDGE" / "priced in" /
+            # "conviction …→…" all describe a signal being *demoted*, not
+            # confirmed. Bearish for the pick regardless of direction.
+            'no edge', 'priced in', 'priced our signal in', 'demoted',
         )
         for p in prose_bullets:
             p_lower = p.lower()

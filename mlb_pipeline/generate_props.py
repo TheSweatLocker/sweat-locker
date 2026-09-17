@@ -2376,7 +2376,13 @@ def score_pitcher_outs_under(g, side):
     # xERA — bad pitchers go shorter
     if xera >= 5.0:
         conviction += 16
-        signals['xera_high'] = f'xERA {xera:.2f} — short outing risk'
+        # 2026-09-17: copy was "short outing risk" — the word "risk" tripped
+        # the render sentiment gate in render_prop_template.py:294 and routed
+        # this SUPPORTING signal (short outing = fewer outs = HELPS an UNDER
+        # pick) to the "WHY UNDER RISKS" section. Andy caught it on the
+        # Seth Lugo outs_under 15.5 card. Reworded so the bullish framing
+        # survives sentiment routing.
+        signals['xera_high'] = f'xERA {xera:.2f} — trending short outings'
     elif xera >= 4.25:
         conviction += 8
     elif xera <= 3.0:
