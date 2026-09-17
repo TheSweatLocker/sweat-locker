@@ -79,10 +79,19 @@ def run(sport: str = 'MLB', game_date: str | None = None,
     gd = game_date or _et_today()
     print(f'=== write_line_snapshot · {sport} · {gd} ===')
 
+    # 2026-09-17: MLB uses home_ml_close / away_ml_close; NFL + NCAAF use
+    # close_home_ml / close_away_ml. Script was hard-coded to MLB naming
+    # → NFL/NCAAF fetch returned 42703 column-not-exist errors, silently
+    # left line_snapshot table empty for those sports → detect_line_movement
+    # found 0 flags → line_movement_flags stayed empty. Sport-aware select.
+    if sport == 'MLB':
+        home_ml_col, away_ml_col = 'home_ml_close', 'away_ml_close'
+    else:
+        home_ml_col, away_ml_col = 'close_home_ml', 'close_away_ml'
     r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
         params={'game_date': f'eq.{gd}',
-                'select': 'game_id,close_spread,close_total,home_ml_close,'
-                          'away_ml_close,oddscrowd_snapshot'},
+                'select': f'game_id,close_spread,close_total,{home_ml_col},'
+                          f'{away_ml_col},oddscrowd_snapshot'},
         timeout=15).json()
     if not isinstance(r, list):
         print(f'  fetch failed: {r}'); return 0
@@ -109,7 +118,7 @@ def run(sport: str = 'MLB', game_date: str | None = None,
             # Odds
             odds = None
             if market == 'ml':
-                odds = ctx.get('home_ml_close') if pick == 'HOME' else ctx.get('away_ml_close')
+                odds = ctx.get(home_ml_col) if pick == 'HOME' else ctx.get(away_ml_col)
                 # American to decimal
                 if odds is not None:
                     try:
