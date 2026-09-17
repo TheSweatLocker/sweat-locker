@@ -1853,8 +1853,15 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     let value = 'active';
     if (rec && rec.sample_n >= 30) {
       const hp = Number(rec.hit_rate);
+      // 2026-09-17: fade threshold tightened from < 52 → < 47. Andy
+      // caught "Home Favorite · 48.51% · fade" — fading a 48.51%
+      // trend nets 51.49% return, still BELOW breakeven ~52.4% at
+      // standard -110 juice. Real fade signal starts when the trend
+      // fires below 47% (fade rate 53%+ clears the juice). Widening
+      // the neutral band 47-58 means we stop calling coin-flip
+      // patterns "fade" when they aren't yet actionable.
       if (hp >= 58) { kind = 'ok'; value = `${hp}% · follow`; }
-      else if (hp < 52) { kind = 'warn'; value = `${hp}% · fade`; }
+      else if (hp < 47) { kind = 'warn'; value = `${hp}% · fade`; }
       else { kind = 'neutral'; value = `${hp}%`; }
     } else if (rec) {
       value = `${Number(rec.hit_rate)}% · n=${rec.sample_n}`;
@@ -1873,18 +1880,29 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
   if (isFinite(lrMlP)) {
     const lrSide = lrMlP >= 0.55 ? 'HOME' : lrMlP < 0.45 ? 'AWAY' : 'PASS';
     if (lrSide !== 'PASS') {
-      // 2026-09-16: pickSide only means HOME/AWAY when Jerry picks ML;
-      // for totals/spread picks the "agrees/disagrees" tag was
-      // misleading (always disagrees since pickSide=OVER/UNDER). Show
-      // LR chip as neutral info when the pick isn't an ML — it's still
-      // a useful independent signal on the game direction.
-      const agrees = isML && lrSide === pickSide;
-      const disagrees = isML && lrSide !== pickSide;
+      // 2026-09-17: category-error fix. Andy caught "Model 78% HOME ·
+      // disagrees" on NO +8.5 pick where BAL was -8.5 favorite. LR is
+      // a WIN probability (who wins outright), not a COVER probability
+      // (who covers the spread). BAL winning 78% ML is fully compatible
+      // with NO covering +8.5 — in fact V3/V4/PANEL/CONF all landed
+      // under 8.5 on that card, meaning consensus AGREED with the +8.5
+      // pick even as LR "disagreed" on straight-up winner. Was flagging
+      // agreement as disagreement on every spread pick where the model
+      // model liked the underdog.
+      //
+      // Fix: only apply agree/disagree logic when the pick is on the
+      // moneyline market (pp.type === 'ml') — that's the only case
+      // where LR's win prob is the same question. For spread (rl) and
+      // total picks, LR is a supplemental "who wins outright" lens —
+      // show as neutral info, not agree/disagree.
+      const isMoneyLine = pp.type === 'ml';
+      const agrees    = isMoneyLine && lrSide === pickSide;
+      const disagrees = isMoneyLine && lrSide !== pickSide;
       const pctPickSide = lrSide === 'HOME' ? lrMlP : (1 - lrMlP);
       chips.push({
         term: 'LR_SHADOW',
         label: `Model ${Math.round(pctPickSide * 100)}% ${lrSide}`,
-        value: agrees ? 'agrees' : disagrees ? 'disagrees' : 'info',
+        value: agrees ? 'agrees' : disagrees ? 'disagrees' : 'ml lens',
         kind: agrees ? 'ok' : disagrees ? 'warn' : 'neutral',
       });
     }
