@@ -200,7 +200,7 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
         # every time — spamming the Supabase error log. Merge-duplicates makes
         # the second write a no-op update instead of an error.
         r = requests.post(
-            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date',
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date,pick_side',
             headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
@@ -274,18 +274,30 @@ def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
 
 
 def load_nfl_alias_map() -> dict:
-    """Map full team name → canonical abbrev via nfl_team_aliases."""
+    """Map every team-name variant → canonical abbrev via nfl_team_aliases.
+    2026-09-16 EXPANSION: pull mascot + city + alt_names in addition to
+    full_name + odds_api_name. Dimers/Action/etc. use mascot-only labels
+    ('Lions', 'Bills', 'Patriots'), which the prior full-name-only alias
+    map didn't cover — every mascot-based source returned 0 games matched
+    despite the fetcher rendering the page cleanly. Adding mascot +
+    alt_names + city variants closes the matching gap so short-name
+    sources land in the slate.
+    """
     r = requests.get(
-        f'{SB}/rest/v1/nfl_team_aliases?select=canonical_name,full_name,odds_api_name',
+        f'{SB}/rest/v1/nfl_team_aliases?select=canonical_name,full_name,city,mascot,odds_api_name,espn_name,alt_names',
         headers=H_READ, timeout=15,
     )
     if r.status_code != 200: return {}
     aliases = {}
     for row in r.json():
         canon = row.get('canonical_name')
-        for field in ('full_name', 'odds_api_name'):
+        if not canon: continue
+        for field in ('full_name', 'odds_api_name', 'espn_name', 'city', 'mascot'):
             n = row.get(field)
-            if n and canon: aliases[n] = canon
+            if n: aliases[n] = canon
+        # alt_names is TEXT[] — list of strings
+        for n in (row.get('alt_names') or []):
+            if n: aliases[n] = canon
     return aliases
 
 
@@ -310,9 +322,18 @@ def fetch_dimers(slate: list, game_date: str, aliases: dict) -> tuple:
     if not text: return [], 200
 
     picks = []; seen = set()
+    # 2026-09-16 REGEX UPDATE — Dimers refactored page structure.
+    # New per-game block:
+    #   AWAY_NAME\n WP%\n [±]SPREAD\n HOME_NAME\n WP%\n [±]SPREAD
+    # Old regex expected an optional \d+ (rank) between name and WP%, which
+    # never matches new layout (spread comes AFTER, not before). Result:
+    # every NFL Dimers pull returned 0 picks (page renders fine, regex misses).
+    # New spec: optional [±]DIGIT.DIGIT spread between the two team blocks
+    # to absorb the away spread line before the home team name.
     chunk_re = re.compile(
-        r'([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%\s*\n'
-        r'\s*([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%',
+        r'([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(\d{1,2}\.\d)%\s*\n'
+        r'\s*[+\-]?\d+\.?\d*\s*\n'
+        r'\s*([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(\d{1,2}\.\d)%',
     )
     for m in chunk_re.finditer(text):
         away_name, away_wp, home_name, home_wp = m.groups()

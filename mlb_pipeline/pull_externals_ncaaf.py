@@ -208,7 +208,7 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
     try:
         # 2026-09-11: on_conflict — see pull_externals_nfl.py for full rationale.
         r = requests.post(
-            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date',
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date,pick_side',
             headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
@@ -416,9 +416,17 @@ def fetch_dimers(slate: list, game_date: str, aliases: dict) -> tuple:
     if not text: return [], 200
 
     picks = []; seen = set()
+    # 2026-09-16 REGEX UPDATE (mirror of NFL fix — Dimers refactored page
+    # layout). New per-game block:
+    #   AWAY_NAME\n WP%\n [±]SPREAD\n HOME_NAME\n WP%\n [±]SPREAD
+    # Old regex expected an optional \d+ (rank column) between name and
+    # WP%, which never matches new layout (spread is AFTER, not before,
+    # and starts with ± not \d). Every NCAAF Dimers pull returned 0
+    # picks (page rendered fine, regex missed).
     chunk_re = re.compile(
-        r'([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%\s*\n'
-        r'\s*([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(?:\d+\s*\n\s*)?(\d{1,2}\.\d)%',
+        r'([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(\d{1,2}\.\d)%\s*\n'
+        r'\s*[+\-]?\d+\.?\d*\s*\n'
+        r'\s*([A-Z][A-Za-z. ]{2,20}?)\s*\n\s*(\d{1,2}\.\d)%',
     )
     for m in chunk_re.finditer(text):
         away_name, away_wp, home_name, home_wp = m.groups()

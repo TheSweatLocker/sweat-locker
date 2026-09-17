@@ -200,7 +200,7 @@ def write_picks(picks: list, pull_id: Optional[str]) -> int:
     try:
         # 2026-09-11: on_conflict — see pull_externals_nfl.py for full rationale.
         r = requests.post(
-            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date',
+            f'{SB}/rest/v1/external_picks?on_conflict=source,game_id,surface,game_date,pick_side',
             headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=20,
         )
