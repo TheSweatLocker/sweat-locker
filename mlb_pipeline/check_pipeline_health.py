@@ -33,6 +33,31 @@ def get(u):
         return json.loads(r.read())
 
 
+def count_rows(table_path: str) -> int:
+    """Return exact row count for a PostgREST query using Content-Range.
+
+    Bypasses the 1000-row payload cap that would silently truncate a naive
+    `select=id` fetch. Used by the prop volume floor check (2026-09-17)
+    to protect against the Sept-11-class silent-truncation regression.
+    """
+    h = dict(H, **{'Prefer': 'count=exact', 'Range-Unit': 'items', 'Range': '0-0'})
+    req = urllib.request.Request(u_root(table_path), headers=h, method='GET')
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            cr = r.headers.get('Content-Range') or ''
+            # Format is "0-0/12345" — split on '/'
+            if '/' in cr:
+                tail = cr.split('/', 1)[1]
+                return int(tail) if tail.isdigit() else -1
+    except Exception:
+        pass
+    return -1
+
+
+def u_root(path: str) -> str:
+    return f'{URL}/rest/v1/{path.lstrip("/")}'
+
+
 def today_et():
     et = datetime.now(timezone.utc) - timedelta(hours=4)
     return et.strftime('%Y-%m-%d')
@@ -241,6 +266,42 @@ def main():
                 print(f'  ✓ Props book-line attach rate: {with_book}/{len(pitcher_props)} ({attach_rate*100:.0f}%)')
     except Exception as e:
         warnings.append(f'⚠️  Props book-line check failed: {e}')
+
+    # --- Prop volume floor: Sept-11-class truncation protection ---
+    # Pre-2026-09-11 the pipeline silently truncated the props fetch at the
+    # PostgREST 1000-row cap, so composers saw ~300 PRIME/day instead of
+    # ~250-300 out of the true ~3000-prop universe. If someone reverts one
+    # of the pagination fixes for "performance" the regression would be
+    # silent — attach-rate and grade counts would look fine, but the pool
+    # composers pick from would shrink 10x. This check catches that.
+    #
+    # Floor: 1500 total props. Below that on a full slate = truncation
+    # regression. Zero-slate days handled by `games` guard above (early
+    # return before we hit this block).
+    try:
+        n_props = count_rows(f'mlb_pipeline_props?game_date=eq.{date}')
+        if n_props < 0:
+            warnings.append('⚠️  Prop volume count query failed (Content-Range missing)')
+        elif n_props == 0:
+            # Slate exists but zero props — treat as issue only in afternoon
+            if is_afternoon:
+                issues.append(f'❌ 0 props on {date} — prop pipeline dead')
+        elif n_props < 500:
+            issues.append(
+                f'❌ Prop volume floor breach: only {n_props} props on {date}. '
+                f'Expected 2000-4000. Likely a pagination regression '
+                f'(Sept-11-class truncation). Check prop_synth / '
+                f'sharp_card_aggregator / grading_zero_fail fetch loops.'
+            )
+        elif n_props < 1500:
+            warnings.append(
+                f'⚠️  Prop volume low: {n_props} props on {date} '
+                f'(floor 1500). Monitor — may be quiet slate or partial regression.'
+            )
+        else:
+            print(f'  ✓ Prop volume: {n_props} props on {date}')
+    except Exception as e:
+        warnings.append(f'⚠️  Prop volume check failed: {e}')
 
     # --- Afternoon-run-specific checks ---
     if is_afternoon:
