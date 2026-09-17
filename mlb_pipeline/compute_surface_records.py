@@ -62,6 +62,27 @@ def _american_win_payout(odds) -> float:
     return 100.0 / abs(o)
 
 
+def _fetch_publish_locks(sport_market_pairs: list[tuple[str, str]]) -> dict:
+    """Return {(sport, market, source_id): {tier_at_publish, conviction_at_publish, published_at}}.
+
+    Paginated pull of `publish_lock` rows for the requested (sport,
+    market) filters. Empty result on API error — grader falls through
+    to live tier for any keys not present in the map.
+    """
+    out: dict = {}
+    for sport, market in sport_market_pairs:
+        url = (f'{SB}/rest/v1/publish_lock'
+               f'?sport=eq.{sport}&market=eq.{market}'
+               f'&select=source_id,tier_at_publish,conviction_at_publish,published_at')
+        try:
+            for row in _paged(url):
+                sid = str(row.get('source_id'))
+                out[(sport, market, sid)] = row
+        except Exception:
+            continue
+    return out
+
+
 def _classify(result) -> str | None:
     if not result:
         return None
@@ -225,21 +246,50 @@ def pick_prop() -> list[dict]:
         from prop_ban_policy import is_banned_mlb_prop
     except ImportError:
         is_banned_mlb_prop = lambda pt, tier=None: False
+    # 2026-09-17: publish-lock JOIN. Any prop row that appeared on a
+    # user surface (Sweat Card / Sharp Card / POTD / Prop Jerry etc)
+    # has a row in `publish_lock` with the tier + conviction at first-
+    # publish time. Grader prefers the LOCKED tier when present; falls
+    # back to live tier for legacy rows or rows that never got locked
+    # (early exits, etc.). Result: mid-day mutations to live tier
+    # (generate_props --force wipes, LR override yo-yo) can never change
+    # what the record counts. "What you saw is what we grade."
+    #
+    # See supabase/migrations/20260917e_prop_tier_publish_lock.sql for
+    # publish_lock schema. Publishers write via prop_publish_lock.py.
+    try:
+        lock_map = _fetch_publish_locks(sport_market_pairs=[
+            ('MLB', 'prop'), ('NFL', 'prop'),
+        ])
+    except Exception:
+        lock_map = {}
     for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
         url = (f'{SB}/rest/v1/{tbl}'
-               f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
-               f'&result=not.is.null&tier=in.(PRIME,STRONG)'
+               f'?select=id,game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
+               f'&result=not.is.null'
                f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
         try:
             for r in _paged(url):
                 cls = _classify(r.get('result'))
                 if cls is None: continue
-                if r.get('conviction') == 0: continue
+                # Prefer publish-lock over live tier when the row was
+                # actually published to a user surface. Fallback for
+                # legacy/unpublished rows: use live tier (backward compat).
+                locked = lock_map.get((sport, 'prop', str(r.get('id'))))
+                if locked:
+                    effective_tier = (locked.get('tier_at_publish') or '').upper()
+                    effective_conv = locked.get('conviction_at_publish')
+                else:
+                    effective_tier = (r.get('tier') or '').upper()
+                    effective_conv = r.get('conviction')
+                if effective_tier not in ('PRIME', 'STRONG'):
+                    continue
+                if effective_conv == 0: continue
                 # Apply current ban policy so historical rollups reflect
                 # the pool users see today (MLB only — NFL props table
                 # has no batter-family bans).
-                if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), r.get('tier')):
+                if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), effective_tier):
                     continue
                 try:
                     d = dt.date.fromisoformat(r['game_date'])
