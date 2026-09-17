@@ -627,6 +627,15 @@ def compute_projections(home_stats: dict, away_stats: dict,
             out['projected_total'] = round(total, 2)
             out['model_pred_home_points'] = round(h_pts, 1)
             out['model_pred_away_points'] = round(a_pts, 1)
+            # 2026-09-16: also populate sp_plus_pred_home_pts / away_pts / total.
+            # Columns already exist in schema but were never written — every
+            # NCAAF card's Numbers panel SP+ row showed a margin but null
+            # per-team points. Same SP+ math, same values, just plumbed to
+            # the SP+-labeled columns so the NumbersPanel can render the
+            # full row (margin + total + AWAY pts + HOME pts).
+            out['sp_plus_pred_home_pts'] = round(h_pts, 1)
+            out['sp_plus_pred_away_pts'] = round(a_pts, 1)
+            out['sp_plus_pred_total']    = round(total, 2)
     else:
         # Fallback: static base + split via spread
         total = BASE_TOTAL
