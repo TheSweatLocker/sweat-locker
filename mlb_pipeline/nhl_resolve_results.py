@@ -94,11 +94,15 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
         puckline = ctx.get('close_puckline')
         total = ctx.get('close_total')
 
+        # 2026-09-17: fall back to scoreboard's own team names when
+        # nhl_game_context is missing (backfill days, offline gaps). Prior
+        # code stored NULL home_team/away_team in results, breaking the
+        # UI + grader downstream.
         payload = {
             'game_id':       gid,
             'game_date':     game_date,
-            'home_team':     ctx.get('home_team'),
-            'away_team':     ctx.get('away_team'),
+            'home_team':     ctx.get('home_team') or f.get('home_team'),
+            'away_team':     ctx.get('away_team') or f.get('away_team'),
             'home_score':    hs,
             'away_score':    as_,
             'total_goals':   hs + as_,
@@ -117,7 +121,9 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
         note = ''
         if payload['spread_result']: note += f' spread={payload["spread_result"]}'
         if payload['total_result']:  note += f' total={payload["total_result"]}'
-        print(f'  {ctx.get("away_team","?"):<15} {as_}-{hs} {ctx.get("home_team","?"):<15} '
+        _away = ctx.get('away_team') or f.get('away_team') or '?'
+        _home = ctx.get('home_team') or f.get('home_team') or '?'
+        print(f'  {_away:<15} {as_}-{hs} {_home:<15} '
               f'{"OT" if f.get("went_to_ot") else "SO" if f.get("went_to_so") else "REG":<3}{note}')
 
         if dry_run: written += 1; continue
