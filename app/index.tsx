@@ -2299,6 +2299,14 @@ useEffect(() => {
   // copy (still-building banners etc) lands before first render of
   // sport-specific tabs. Foreground listener re-fetches on tab-back.
   fetchUiNotes();
+  // 2026-09-17: fire surface_records fetch on mount so the Home tab's
+  // Adaptive Record Chips (top of screen) populate on first load.
+  // Previously the fetch only fired when a user visited the Receipts
+  // tab, meaning chips silent-hid on cold home load and only appeared
+  // after a tab round-trip (Andy 9/17 audit: "refreshed up and dont
+  // see either now… clicked yesterday 8-0 block got taken to receipts
+  // then came back home and now NCAAF and MLB The Sharp L30D appeared").
+  fetchSurfaceRecords();
 }, []);
 // Refetch MLB tab data when app foregrounds — pipeline watchdog updates DB
 // every 30 min as lineups confirm + umpires land. Throttled to 5 min so a
@@ -15176,7 +15184,28 @@ setJerryHistory(prev => {
                           <View style={{flexDirection:'row',gap:6}}>
                             {hrbSpread&&gamesSport!=='UFC'&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>SPREAD</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbSpread.name.split(' ').pop()} {hrbSpread.point>0?'+':''}{hrbSpread.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbSpread.price>0?'+':''}{hrbSpread.price}</Text></View>}
                             {hrbTotal&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>TOTAL</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>O/U {hrbTotal.point}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{hrbTotal.price>0?'+':''}{hrbTotal.price}</Text></View>}
-                            {hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:THEME.textDim,fontSize:10}}>{game.away_team.split(' ').pop()}</Text></View>}
+                            {hrbLine.ml&&hrbLine.ml[0]&&(() => {
+                              // 2026-09-17: was hardcoded to game.away_team even when
+                              // hrbLine.ml[0] was the HOME outcome — Andy caught
+                              // WAS @ DAL rendering "-210 Commanders" while DAL was
+                              // the -218 favorite (label + price mismatched). Pick
+                              // FAVORITE by name-match on outcomes and label it
+                              // correctly. Same pattern as UFC render at 18585-18595.
+                              const mlHome = hrbLine.ml.find((o: any) => o?.name === game.home_team);
+                              const mlAway = hrbLine.ml.find((o: any) => o?.name === game.away_team);
+                              // Prefer the FAVORITE (more negative price) so users see the
+                              // headline ML market. Fallback to whichever exists.
+                              const pick = (mlHome && mlAway)
+                                ? (mlHome.price < mlAway.price ? {row: mlHome, team: game.home_team} : {row: mlAway, team: game.away_team})
+                                : (mlHome ? {row: mlHome, team: game.home_team} : (mlAway ? {row: mlAway, team: game.away_team} : {row: hrbLine.ml[0], team: hrbLine.ml[0]?.name || game.away_team}));
+                              return (
+                                <View style={{flex:1,alignItems:'center'}}>
+                                  <Text style={{color:THEME.textMuted,fontSize:9,fontWeight:'700'}}>ML</Text>
+                                  <Text style={{color:HRB_COLOR,fontWeight:'700',fontSize:13,marginTop:2}}>{pick.row.price>0?'+':''}{pick.row.price}</Text>
+                                  <Text style={{color:THEME.textDim,fontSize:10}}>{String(pick.team).split(' ').pop()}</Text>
+                                </View>
+                              );
+                            })()}
                           </View>
                         </View>
                       ):(
@@ -18594,7 +18623,23 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                             </>
                           );
                         })()}
-                        {gamesSport!=='UFC' && hrbLine.ml&&hrbLine.ml[0]&&<View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}><Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>ML</Text><Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{hrbLine.ml[0].price>0?'+':''}{hrbLine.ml[0].price}</Text><Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{selectedGame.away_team.split(' ').pop()}</Text></View>}
+                        {gamesSport!=='UFC' && hrbLine.ml&&hrbLine.ml[0]&&(() => {
+                          // 2026-09-17: same fix as list-view render at 15179 —
+                          // name-match ML outcomes to home/away so favorite label
+                          // is always correct, not hardcoded away_team.
+                          const mlHome = hrbLine.ml.find((o: any) => o?.name === selectedGame.home_team);
+                          const mlAway = hrbLine.ml.find((o: any) => o?.name === selectedGame.away_team);
+                          const pick = (mlHome && mlAway)
+                            ? (mlHome.price < mlAway.price ? {row: mlHome, team: selectedGame.home_team} : {row: mlAway, team: selectedGame.away_team})
+                            : (mlHome ? {row: mlHome, team: selectedGame.home_team} : (mlAway ? {row: mlAway, team: selectedGame.away_team} : {row: hrbLine.ml[0], team: hrbLine.ml[0]?.name || selectedGame.away_team}));
+                          return (
+                            <View style={{flex:1,backgroundColor:THEME.surfaceAlt,borderRadius:10,padding:10,alignItems:'center'}}>
+                              <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'700'}}>ML</Text>
+                              <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:16,marginTop:4}}>{pick.row.price>0?'+':''}{pick.row.price}</Text>
+                              <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{String(pick.team).split(' ').pop()}</Text>
+                            </View>
+                          );
+                        })()}
                       </View>
                       {hrbEV&&hrbEV.length>0&&(
                         <View>
