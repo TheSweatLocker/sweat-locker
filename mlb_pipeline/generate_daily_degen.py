@@ -247,6 +247,32 @@ def fetch_pipeline_props():
         props = overlay_from_snapshots(props, gd, sport='MLB')
     except Exception:
         pass
+    # 2026-09-16 BAN POLICY (Andy TestFlight audit: "Daily Degen has Runs
+    # over" which is on the permanent OVER ban list). Daily Degen reads
+    # mlb_pipeline_props directly and bypasses the
+    # generate_prop_jerry_synthesis _MLB_BANNED_PROP_TYPES filter — same
+    # class of bug as Sweat Card. Mirror the policy exactly:
+    #   OVER variants permanent ban (30d 12-46% hit rates).
+    #   UNDER variants STRONG+ tier only (LR shadow 60-91% at STRONG+).
+    #   batter_ks both sides banned pending dedicated review.
+    _MLB_BANNED_PROP_TYPES = {
+        'rbis_over', 'total_bases_over', 'hr_over', 'runs_over',
+        'batter_ks_over', 'batter_ks_under',
+    }
+    _MLB_STRONG_ONLY = {
+        'hr_under', 'rbis_under', 'total_bases_under', 'runs_under',
+    }
+    def _keep(p: dict) -> bool:
+        pt = (p.get('prop_type') or '').lower()
+        if pt in _MLB_BANNED_PROP_TYPES: return False
+        if pt in _MLB_STRONG_ONLY:
+            tier = (p.get('tier') or '').upper()
+            return tier in ('STRONG', 'PRIME', 'ELITE')
+        return True
+    before = len(props)
+    props = [p for p in props if _keep(p)]
+    if before != len(props):
+        print(f'  [daily_degen] ban filter dropped {before - len(props)} banned/sub-STRONG rows')
     return props
 
 

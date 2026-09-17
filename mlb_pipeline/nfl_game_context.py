@@ -737,31 +737,44 @@ def compute_projections(home_stats: dict, away_stats: dict, roof: str,
             away_pts = total * fav_share
             home_pts = total * (1 - fav_share)
 
-    # 2026-09-15 · project_nfl_k_pts_calibration_bug_912.
-    # projected_spread output above collapses to HFA ± noise (2.42pt range
-    # across the league) because K_PTS=0.15 vs true regression slope ~0.44
-    # for off_rating_diff. Market anchor masks this by pulling every game
-    # toward market, but the raw formula has no predictive spread of its own.
+    # 2026-09-16 · SWAP · project_nfl_k_pts_calibration_bug_912 resolved.
+    # Prior line 681 stored `projected_spread = power_diff × K_PTS + HFA`
+    # with K_PTS=0.15. The v1 formula collapsed to HFA±0.15 across the
+    # entire slate (all games projected between 0.95 and 3.23 on the
+    # 2026-09-18 slate — verified). Market anchor was masking this by
+    # pulling large-delta games toward market, so v3 lens looked
+    # populated but was really just Vegas-with-noise.
     #
-    # projected_spread_v2 uses model_pred_home_points - model_pred_away_points
-    # as the basis. Regression on 315 games showed pred_delta → market
-    # correlates 0.51 (vs 0.46 for off_rating_diff), with slope 0.80 +
-    # intercept 0.90. This encodes the offense × defense × venue matchup
-    # that lives inside the per-team point projection, which is where
-    # the differentiation actually is.
+    # The v2 formula uses per-team matchup-adjusted points
+    # (LEAGUE_AVG_PPG × off_idx × opp_def_idx) which HAS true offense/
+    # defense signal, then regresses that delta → market on 315 graded
+    # games (slope 0.80, intercept 0.90). Correlation 0.51 vs 0.46 for
+    # off_rating_diff. Documented at commit 2026-09-15.
     #
-    # Shipped ALONGSIDE the legacy formula (not replacing) so ensemble +
-    # anchor readers keep reading `projected_spread` until we validate v2
-    # over a graded window. When ready to swap: change consumers to read
-    # projected_spread_v2 (or add K_PTS_V2 = 0.80 / HFA_V2 = 0.90 constants
-    # and rewrite line 681 above).
+    # SWAP: projected_spread now = v2 (real model signal). Legacy v1
+    # kept as projected_spread_legacy for grading continuity — grading
+    # can still compute the old picks going forward if we ever need to
+    # backtest v1 vs v2 in-flight. `projected_spread_raw` (pre-anchor,
+    # legacy formula) is still written by the projection_anchor caller.
+    #
+    # Ensemble reads `projected_spread` unchanged — but it now sees a
+    # real spread projection instead of Vegas-with-noise. The anchor
+    # continues to fire on top; when model and market disagree by >6pts
+    # it still pulls partway toward market. Difference: on smaller
+    # disagreements (≤3pts), the model now gets to be its own voice
+    # instead of collapsing back to HFA.
     pred_delta_home = round(home_pts, 1) - round(away_pts, 1)
     projected_spread_v2 = round(0.80 * pred_delta_home + 0.90, 2)
 
+    # 2026-09-16 storage strategy note: no projected_spread_legacy column
+    # in schema. Old v1 predictions live in already-graded historical
+    # ctx rows (frozen at write time). Going forward projected_spread
+    # is v2. projected_spread_raw is set by the projection_anchor caller
+    # to whatever compute_projections returns (now = v2 pre-anchor).
     out.update({
         'power_diff': power_diff,
-        'projected_spread': projected_spread,
-        'projected_spread_v2': projected_spread_v2,
+        'projected_spread': projected_spread_v2,   # SWAP: v2 now default
+        'projected_spread_v2': projected_spread_v2,    # explicit v2 alias (kept for legibility)
         'projected_total': round(total, 2),
         'model_pred_home_points': round(home_pts, 1),
         'model_pred_away_points': round(away_pts, 1),

@@ -376,6 +376,32 @@ def _fetch_all(today: str) -> dict:
         out['mlb_props'] = overlay_from_snapshots(out['mlb_props'], today, sport='MLB')
     except Exception:
         pass  # helper missing / snapshot fetch failed — fall through to live
+
+    # 2026-09-16 BAN POLICY (Andy TestFlight audit). Same ban applies to
+    # Sharp Card — it reads mlb_pipeline_props directly and bypasses the
+    # generate_prop_jerry_synthesis _MLB_BANNED_PROP_TYPES filter. Mirror
+    # the policy exactly across every composer that surfaces batter props:
+    #   OVER variants permanent ban (30d 12-46% hit rates).
+    #   UNDER variants STRONG+ tier only (LR shadow 60-91% at STRONG+).
+    #   batter_ks both sides banned pending dedicated review.
+    _MLB_BANNED_PROP_TYPES = {
+        'rbis_over', 'total_bases_over', 'hr_over', 'runs_over',
+        'batter_ks_over', 'batter_ks_under',
+    }
+    _MLB_STRONG_ONLY = {
+        'hr_under', 'rbis_under', 'total_bases_under', 'runs_under',
+    }
+    def _keep_ban(p: dict) -> bool:
+        pt = (p.get('prop_type') or '').lower()
+        if pt in _MLB_BANNED_PROP_TYPES: return False
+        if pt in _MLB_STRONG_ONLY:
+            tier = (p.get('tier') or '').upper()
+            return tier in ('STRONG', 'PRIME', 'ELITE')
+        return True
+    _before = len(out['mlb_props'] or [])
+    out['mlb_props'] = [p for p in (out['mlb_props'] or []) if _keep_ban(p)]
+    if _before != len(out['mlb_props']):
+        print(f'  [sharp_card] ban filter dropped {_before - len(out["mlb_props"])} banned/sub-STRONG rows')
     # 2026-09-05 FIX: NCAAF/NFL use `close_home_ml`/`close_away_ml`; MLB
     # uses `home_ml_close`/`away_ml_close`. Prior version requested MLB
     # column names for every sport → PostgREST 400 → silent empty list →
