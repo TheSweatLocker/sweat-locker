@@ -64,6 +64,7 @@ STADIUMS: dict[str, dict] = {
     'KC':  {'lat': 39.0489, 'lng': -94.4839,  'dome': False, 'name': 'GEHA Field at Arrowhead'},
     'LAC': {'lat': 33.9535, 'lng': -118.3387, 'dome': False, 'name': 'SoFi Stadium'},   # open-air roof
     'LAR': {'lat': 33.9535, 'lng': -118.3387, 'dome': False, 'name': 'SoFi Stadium'},
+    'LA':  {'lat': 33.9535, 'lng': -118.3387, 'dome': False, 'name': 'SoFi Stadium'},   # 2026-09-17: nfl_game_context uses "LA" for Rams — alias to LAR
     'LV':  {'lat': 36.0908, 'lng': -115.1830, 'dome': True,  'name': 'Allegiant Stadium'},
     'MIA': {'lat': 25.9580, 'lng': -80.2389,  'dome': False, 'name': 'Hard Rock Stadium'},
     'MIN': {'lat': 44.9738, 'lng': -93.2578,  'dome': True,  'name': 'U.S. Bank Stadium'},
