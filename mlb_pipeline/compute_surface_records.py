@@ -217,9 +217,17 @@ def pick_prop() -> list[dict]:
     # timeout as tables grow. Lifetime picks lifetime data anyway; a
     # 2-year cutover is more than enough for tier calibration.
     _LIFETIME_LOWER = '2024-01-01'
+    # 2026-09-17 apply ban policy — see _pick_prop_tier docstring for full
+    # rationale. Legacy 'prop' surface (PRIME+STRONG combined) needs the
+    # same filter or it double-counts historically-published-but-now-banned
+    # families.
+    try:
+        from prop_ban_policy import is_banned_mlb_prop
+    except ImportError:
+        is_banned_mlb_prop = lambda pt, tier=None: False
     for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
         url = (f'{SB}/rest/v1/{tbl}'
-               f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
+               f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.(PRIME,STRONG)'
                f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
@@ -228,6 +236,11 @@ def pick_prop() -> list[dict]:
                 cls = _classify(r.get('result'))
                 if cls is None: continue
                 if r.get('conviction') == 0: continue
+                # Apply current ban policy so historical rollups reflect
+                # the pool users see today (MLB only — NFL props table
+                # has no batter-family bans).
+                if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), r.get('tier')):
+                    continue
                 try:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
@@ -678,15 +691,28 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
     hard-coded PRIME/STRONG. Root fix for "Receipts LEAN props 0-0" bug —
     surface_records had no rollup for non-PRIME prop tiers even though
     result column populates for all tiers.
+
+    2026-09-17: apply current ban policy (prop_ban_policy.is_banned_mlb_prop)
+    so historical rollups reflect the pool users can actually see today.
+    Without this filter, surface_records.prop_prime included ~1,075 wins
+    from batter families that were briefly un-banned then re-banned — a
+    published stat off this rollup would misrepresent the current product.
+    Voids already excluded via _classify returning None for non-W/L/P.
     """
     from datetime import date as _date_cls
     _CUTOVER = _date_cls.fromisoformat('2026-08-31')
     out = []
     # 2026-09-08 lifetime lower bound to prevent 57014 statement timeout.
     _LIFETIME_LOWER = '2024-01-01'
+    # Import ban policy once — falls back to no-filter if module missing
+    # (backward-compat for older environments).
+    try:
+        from prop_ban_policy import is_banned_mlb_prop
+    except ImportError:
+        is_banned_mlb_prop = lambda pt, tier=None: False
     for tbl, sport in [('mlb_pipeline_props', 'MLB')]:
         url = (f'{SB}/rest/v1/{tbl}'
-               f'?select=game_date,result,tier,conviction,direction,book_over_odds,book_under_odds'
+               f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.({tier_filter})'
                f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
@@ -694,6 +720,10 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
             for r in _paged(url):
                 cls = _classify(r.get('result'))
                 if cls is None: continue
+                # 2026-09-17 apply prop-family ban policy so historical
+                # rollups match the pool users see today (see docstring).
+                if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), r.get('tier')):
+                    continue
                 try:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
