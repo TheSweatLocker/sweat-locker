@@ -205,8 +205,21 @@ def _categorize_signals(sources: list, prop_signals: dict, prop_direction: str =
     prop_direction + playbook_side retained for API compat but not
     used for flipping.
     """
+    # 2026-09-17 (second fix): audit-only signal_keys must not surface
+    # as bullets, even when they appear as playbook `sources` with a
+    # contribution weight. Andy's Lugo 16.5 outs card 9/17 PM still
+    # showed the book_recalibration line under PLAYBOOK CONFIRMS even
+    # after the earlier _SKIP_KEYS fix — because SKIP_KEYS was gated
+    # inside `if not sources` (only ran on the prose-fallback path).
+    # This filter drops the same audit-only keys from the sources
+    # loop too. Keep this in sync with _SKIP_KEYS below.
+    _SOURCE_SKIP_KEYS = {'book_recalibration'}
+
     for_side, against_side = [], []
     for s in (sources or []):
+        _sk = str(s.get('signal_key') or '').strip().lower()
+        if _sk in _SOURCE_SKIP_KEYS:
+            continue
         contrib = float(s.get('contribution') or 0)
         prose = _clean_prose(s.get('prose') or s.get('signal_key', ''))
         (for_side if contrib >= 0 else against_side).append((abs(contrib), prose))
