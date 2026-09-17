@@ -344,6 +344,70 @@ AMBIGUOUS_PATTERNS = [
      'bare "rush EPA" — must specify "offensive", "defensive", or "allowed"'),
 ]
 
+# 2026-09-17 SELF-CONTRADICTION PATTERNS (Andy CAR@ATL audit).
+# Catches sentences where a RANGE claim (e.g., "both bottom-five") is
+# followed by explicit ranks that VIOLATE the range. Example that
+# leaked to production: "Both Carolina and Atlanta rank bottom-five in
+# offensive pass EPA (CAR 4th, ATL 32nd)" — CAR at 4th is TOP-5, not
+# bottom-5, so the framing sentence is self-contradictory.
+#
+# Layer F rank verification (RANK_CLAIM_RES) confirmed "CAR 4th" is
+# accurate but didn't catch that "both bottom-five" is a false claim
+# because the parenthetical numbers were correct in isolation.
+#
+# Detection: find "top-N" or "bottom-N" range framing then check if
+# any explicit rank in the same sentence violates the range. If a
+# "bottom-five" claim has a rank in {1..N-27} (i.e., top-27 of 32),
+# it's contradictory. Same for "top-five" with a bottom rank.
+#
+# NUMBER_ORDINAL is defined below in this module.
+_RANGE_FRAMING_RE = re.compile(
+    r'\b(top|bottom)[-\s]+(five|ten|fifteen|20|15|10|5|\d+)\b',
+    re.IGNORECASE)
+_INLINE_RANK_RE = re.compile(
+    r'\b(?P<team>[A-Z]{2,4})\s+(?P<rank>\d+)(?:st|nd|rd|th)?\b')
+
+
+def _detect_range_self_contradiction(prose: str) -> list:
+    """Return list of (sentence, reason) for sentences where a
+    'top-N' / 'bottom-N' range claim conflicts with an explicit
+    rank cited in the same sentence.
+    """
+    hits = []
+    # Split on sentence terminators + newlines
+    for sent in re.split(r'(?<=[.!?])\s+|\n', prose):
+        if not sent: continue
+        range_match = _RANGE_FRAMING_RE.search(sent)
+        if not range_match: continue
+        # Resolve range → threshold. "top-five" allowed = ranks 1..5.
+        # "bottom-five" allowed = ranks 28..32 (if 32-team NFL).
+        side = range_match.group(1).lower()
+        n_word = range_match.group(2).lower()
+        n_map = {'five': 5, 'ten': 10, 'fifteen': 15, '5': 5, '10': 10,
+                 '15': 15, '20': 20}
+        n = n_map.get(n_word)
+        if n is None:
+            try: n = int(n_word)
+            except (TypeError, ValueError): continue
+        # Assume 32-team league (NFL) — ncaaf would need 130+ but the
+        # range claim itself would be different framing there.
+        LEAGUE = 32
+        for rm in _INLINE_RANK_RE.finditer(sent):
+            try:
+                rank = int(rm.group('rank'))
+            except (TypeError, ValueError): continue
+            if rank < 1 or rank > LEAGUE: continue
+            team = rm.group('team')
+            if side == 'top' and rank > n:
+                hits.append((sent.strip()[:120],
+                    f'"{side}-{n}" range framing contradicted by "{team} {rank}"'))
+                break  # one flag per sentence is enough
+            if side == 'bottom' and rank < (LEAGUE - n + 1):
+                hits.append((sent.strip()[:120],
+                    f'"{side}-{n}" range framing contradicted by "{team} {rank}"'))
+                break
+    return hits
+
 RANK_CLAIM_RES = [
     # "GB is 2nd in passing yards", "Green Bay ranks 5th in ..."
     re.compile(r'(?P<team>[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*|[A-Z]{2,4})\s+(?:is|ranks?|sits?)\s+(?:the\s+)?(?P<rank>\d+(?:st|nd|rd|th)|#?\d+|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|dead\s+last)\s*(?:-?ranked)?\s+in\s+(?P<stat>[a-z][a-z\s/]+?)(?=[.,;]|\s+(?:and|but|allowing|which)|\s*$)', re.IGNORECASE),
@@ -454,6 +518,14 @@ def scan_hallucinated_stats(prose: str, provided_facts: dict) -> dict:
     for pattern, reason in AMBIGUOUS_PATTERNS:
         for m in pattern.finditer(prose):
             confirmed_mismatch.append((m.group(0), reason))
+
+    # 2026-09-17 Self-contradiction check (Andy CAR@ATL audit).
+    # "Both bottom-five in offensive pass EPA (CAR 4th, ATL 32nd)" leaked
+    # to production — parenthetical numbers correct but framing sentence
+    # false. Catch any sentence where a top-N/bottom-N range claim is
+    # contradicted by an explicit rank in the same sentence.
+    for sent, reason in _detect_range_self_contradiction(prose):
+        confirmed_mismatch.append((sent, reason))
 
     for pattern in RANK_CLAIM_RES:
         for m in pattern.finditer(prose):

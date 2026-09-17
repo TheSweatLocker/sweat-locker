@@ -1148,10 +1148,24 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
                 # Promote to VALIDATED if fade edge is meaningful (>= 55%)
                 # AND sample is decent, else DISCOVERY.
                 fade_tier = 'VALIDATED' if (fade_hr >= 0.55 and n >= 50) else 'DISCOVERY'
-                raw = prose or source["signal_key"]
-                if raw and raw[0].isalpha() and raw[0].islower():
-                    raw = raw[0].upper() + raw[1:]
-                fade_prose = f'Fade: {raw}'
+                # 2026-09-17 fade prose fix (Andy audit: Syracuse@Pitt read
+                # "Under 51.5: Fade: Model sees 54.01 vs market 51.50" was
+                # backwards — pick is UNDER but sub argues the OVER case).
+                # Prior template quoted the ORIGINAL signal's prose verbatim
+                # with a "Fade:" prefix. Users read it as "we picked X but
+                # the reasoning here argues for Y." Rewrite to lead with the
+                # fade CONCLUSION instead of the original signal claim.
+                pct = int(round(fade_hr * 100))
+                # Side-aware narrative: what direction is the fade going TO?
+                side_narrative = {
+                    'OVER':      'Historical trend: similar model-lows hit OVER',
+                    'UNDER':     'Historical trend: similar model-highs hit UNDER',
+                    'HOME_ML':   'Historical trend: similar spots hit HOME ML',
+                    'AWAY_ML':   'Historical trend: similar spots hit AWAY ML',
+                    'HOME_RL':   'Historical trend: similar spots hit HOME +pts',
+                    'AWAY_RL':   'Historical trend: similar spots hit AWAY +pts',
+                }.get(flipped_side, 'Historical trend fades this signal')
+                fade_prose = f'{side_narrative} {pct}% of the time (n={n})'
                 out.append(Opinion(
                     signal_key=f'{source["signal_key"]}__fade',
                     signal_class=cls,
