@@ -521,10 +521,105 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
     return picks, 200
 
 
-# Stubbed for Phase 3 iteration — reserve source keys so the pull_log
-# structure is complete and expansion doesn't need registry changes.
+# 2026-09-17: Covers.com NFL public consensus scraper.
+# Page: /consensus/topconsensus/nfl/overall — same server-rendered
+# table shape as MLB. NFL uses SPREAD consensus (not ML like MLB),
+# so we emit surface='spread' with pick_side against the spread.
+# Team codes are standard NFL abbreviations with only the first letter
+# capitalized (Ten/Nyg/Ne/Buf/Lac) — .upper() maps them directly to
+# slate abbrevs (TEN/NYG/NE/BUF/LAC).
 def fetch_covers(slate: list, game_date: str, aliases: dict) -> tuple:
-    return [], 200
+    from bs4 import BeautifulSoup
+    r = requests.get(
+        'https://contests.covers.com/consensus/topconsensus/nfl/overall',
+        headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
+        timeout=15,
+    )
+    if r.status_code != 200:
+        return [], r.status_code
+    soup = BeautifulSoup(r.text, 'html.parser')
+    table = soup.find('table')
+    if not table:
+        return [], 200
+
+    picks = []
+    # 2026-09-17: NFL runs weekly, so accept Covers rows for ANY slate
+    # game date, not just today. MLB scraper filters by today because MLB
+    # game_date matches the run date. NFL puller runs mid-week and needs
+    # to catch upcoming Sun/Mon games.
+    slate_dates = {g.get('game_date') for g in slate if g.get('game_date')}
+    for row in table.find_all('tr')[1:]:
+        cells = [c.get_text(' ', strip=True) for c in row.find_all(['td', 'th'])]
+        if len(cells) < 4: continue
+
+        matchup_txt = cells[0].replace('NFL', '').strip()   # e.g. "Ten Nyg"
+        date_txt    = cells[1]
+        consensus_txt = cells[2]                             # "18% 82%"
+        sides_txt   = cells[3]                               # "+5.5 -5.5"
+
+        row_date = _covers_date_to_iso(date_txt)
+        # Skip rows outside the slate window (Covers publishes weeks
+        # ahead; we only want the currently-tracked games).
+        if not row_date or row_date not in slate_dates:
+            continue
+
+        parts = matchup_txt.split()
+        if len(parts) < 2: continue
+        away_code, home_code = parts[0].upper(), parts[1].upper()
+
+        # Match to slate — slate uses standard NFL abbrevs, so upper()
+        # is enough. Some Covers codes may differ (e.g. LV vs OAK for
+        # Raiders); fall through to alias lookup if primary abbrev misses.
+        gid = find_game_id(slate, home_hint=home_code, away_hint=away_code)
+        if not gid:
+            continue
+
+        pct_matches = re.findall(r'(\d+)%', consensus_txt)
+        away_pct = int(pct_matches[0]) if len(pct_matches) >= 1 else None
+        home_pct = int(pct_matches[1]) if len(pct_matches) >= 2 else None
+
+        spread_matches = re.findall(r'([+\-]\d+\.?\d*)', sides_txt)
+        away_line = float(spread_matches[0]) if len(spread_matches) >= 1 else None
+        home_line = float(spread_matches[1]) if len(spread_matches) >= 2 else None
+
+        # Emit a spread-consensus pick for the higher-% side. NFL Covers
+        # column is against-the-spread consensus, not ML.
+        if home_pct is not None and away_pct is not None:
+            if home_pct > away_pct:
+                pick_side, pick_line, pct = 'HOME', home_line, home_pct
+            else:
+                pick_side, pick_line, pct = 'AWAY', away_line, away_pct
+            # Fade heavy consensus (>= 75%) — the public loading up
+            # against the spread is our fade signal.
+            fade_flag = 'fade' if pct >= 75 else 'neutral'
+            picks.append(ExternalPick(
+                game_id=gid, sport='NFL', game_date=row_date, source='covers',
+                # 2026-09-17: surface='rl' — external_picks has a check
+                # constraint (ext_picks_surface_ck) that only allows
+                # ml/rl/total/prop. NFL spread = "rl" (run line convention
+                # borrowed from baseball for the against-the-spread surface).
+                surface='rl', pick_side=pick_side, pick_line=pick_line,
+                odds_american=None,   # Covers publishes consensus, not book odds
+                confidence=f'{pct}% public',
+                raw_text=f'Public spread consensus: {away_pct}% away / {home_pct}% home',
+                fade_flag=fade_flag,
+            ))
+    return picks, 200
+
+
+def _covers_date_to_iso(date_txt: str) -> str:
+    """Convert 'Sun. Sep 27 1:00 pm ET' → '2026-09-27'. Best-effort."""
+    from datetime import datetime as _dt
+    m = re.search(r'(\w{3})\.?\s+(\w{3})\s+(\d+)', date_txt)
+    if not m:
+        return ''
+    month_abbr, day = m.group(2), m.group(3)
+    year = _et_now().year
+    try:
+        d = _dt.strptime(f'{month_abbr} {day} {year}', '%b %d %Y').date()
+        return d.isoformat()
+    except Exception:
+        return ''
 
 
 def fetch_vsin(slate: list, game_date: str, aliases: dict) -> tuple:
