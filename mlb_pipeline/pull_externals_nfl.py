@@ -265,10 +265,27 @@ def _team_matches(name: str, target: str) -> bool:
     return False
 
 
+# 2026-09-16 module-level alias cache. Set once from load_nfl_alias_map()
+# below (main() call site) so find_game_id can resolve mascot/city hints
+# into abbreviations without changing the shared find_game_id_fn
+# signature that shared scrapers (externals_scoresandodds,
+# externals_oddscrowd) expect.
+_ALIAS_CACHE: dict = {}
+
+
 def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
+    # 2026-09-16 alias resolution — ScoresAndOdds slugs like "49ers-vs-
+    # dolphins" arrive as mascot-only hints, but slate teams are abbrevs
+    # (SF / MIA). _team_matches substring compare fails ('sf' not in
+    # '49ers'). Resolve each hint through the alias map first so
+    # "49ers" → "SF" matches g['home_team']='SF'. Falls through to raw
+    # hint when no alias hit (backward-compat with sources whose names
+    # already match slate).
+    h_res = _ALIAS_CACHE.get(home_hint) or _ALIAS_CACHE.get(home_hint.title()) or home_hint
+    a_res = _ALIAS_CACHE.get(away_hint) or _ALIAS_CACHE.get(away_hint.title()) or away_hint
     for g in slate:
-        if _team_matches(g['home_team'], home_hint) and \
-           _team_matches(g['away_team'], away_hint):
+        if _team_matches(g['home_team'], h_res) and \
+           _team_matches(g['away_team'], a_res):
             return g['game_id']
     return None
 
@@ -593,6 +610,12 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
         return {'games': 0, 'sources_pulled': 0, 'picks_written': 0}
 
     aliases = load_nfl_alias_map()
+    # 2026-09-16: mirror aliases into module cache so find_game_id()
+    # can resolve mascot/city hints from shared scraper modules
+    # (externals_scoresandodds, externals_oddscrowd) without them
+    # having to plumb aliases through their signature.
+    _ALIAS_CACHE.clear()
+    _ALIAS_CACHE.update(aliases)
     print(f'  aliases: {len(aliases)} name→abbrev mappings')
 
     scheduled_at = datetime.now(timezone.utc)
