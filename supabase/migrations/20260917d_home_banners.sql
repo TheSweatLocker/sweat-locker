@@ -80,10 +80,12 @@ CREATE TABLE IF NOT EXISTS public.home_banners (
 );
 
 -- Hot-path index: the client query filters expires_at + sport + route
--- and sorts by priority. This covering index makes it cheap.
+-- and sorts by priority. Full index (no WHERE predicate) — NOW() is not
+-- IMMUTABLE so Postgres refuses it in an index predicate (2026-09-17
+-- migration failure recovery). Full index is cheap since the table
+-- stays small (dozens of rows, not millions).
 CREATE INDEX IF NOT EXISTS home_banners_active_idx
-  ON public.home_banners (priority DESC, starts_at DESC)
-  WHERE expires_at IS NULL OR expires_at > NOW();
+  ON public.home_banners (expires_at, priority DESC, starts_at DESC);
 
 -- Cron upsert convenience: unique on (kind, origin) so cron can
 -- INSERT ... ON CONFLICT (kind, origin) DO UPDATE and never create
