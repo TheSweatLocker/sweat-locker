@@ -178,6 +178,116 @@ export async function dbFetchWith<T = unknown>(
 }
 
 /**
+ * dbFetchCached — dbFetchWith + AsyncStorage last-known-good fallback.
+ *
+ * 2026-09-17 · v1.0.1 offline cache. Andy's launch context: Supabase 429
+ * during Sunday-morning peak leaves the app spinning forever. With this
+ * wrapper, screens serve a stale copy on network failure and can render
+ * a subtle "showing last known" banner.
+ *
+ * Contract:
+ *   * On fetch success — writes the result to AsyncStorage under `key`
+ *     with an ISO timestamp, returns `{data, error: null, stale: false}`.
+ *   * On fetch failure — reads the same key. If a cached copy exists,
+ *     returns `{data: cached, error: original, stale: true, cachedAt}`.
+ *     If no cache, returns the raw error (unchanged).
+ *
+ *   const {data, error, stale, cachedAt} = await dbFetchCached(
+ *     'sweat_card_2026-09-17',
+ *     () => supabase.rpc('get_todays_sweat_card')
+ *   );
+ *   if (stale) showBanner(`showing last known · ${cachedAt}`);
+ *
+ * Storage keys should scope by (surface + slate date) so a new day's
+ * empty response never overwrites yesterday's cached full-slate copy.
+ * Recommended shape: `${surface}_${YYYY-MM-DD}`.
+ *
+ * Notes:
+ *   * AsyncStorage is per-viewer, per-device — cache doesn't share
+ *     across users. Fine for retention purposes.
+ *   * On the RARE `AsyncStorage.setItem` failure (disk full, quota),
+ *     the cache write silently no-ops. Read path still functions.
+ *   * Cache reads are best-effort — a corrupt cached row logs + skips
+ *     rather than throws.
+ *   * Cache TTL is NOT enforced here — screens decide staleness policy
+ *     via the `stale` flag + `cachedAt` timestamp (some tolerate a
+ *     6-hour-old copy, some don't).
+ */
+type CachedDbResult<T> = DbResult<T> & {stale?: boolean; cachedAt?: string};
+
+// Deferred import so this file stays usable in non-RN contexts (tests,
+// SSR checks) that don't have AsyncStorage available. Any failure to
+// import falls through to a no-op cache — dbFetchCached behaves like
+// dbFetchWith.
+let _AsyncStorage: {
+  getItem: (k: string) => Promise<string | null>;
+  setItem: (k: string, v: string) => Promise<void>;
+} | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  _AsyncStorage = require('@react-native-async-storage/async-storage').default;
+} catch {
+  _AsyncStorage = null;
+}
+
+async function _cacheRead<T>(key: string): Promise<{data: T; cachedAt: string} | null> {
+  if (!_AsyncStorage) return null;
+  try {
+    const raw = await _AsyncStorage.getItem(`dbcache:${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !('data' in parsed)) return null;
+    return {data: parsed.data as T, cachedAt: parsed.cachedAt || ''};
+  } catch (e) {
+    try { console.log(`[dbFetchCached] cache read failed for ${key}: ${e}`); } catch {}
+    return null;
+  }
+}
+
+async function _cacheWrite<T>(key: string, data: T): Promise<void> {
+  if (!_AsyncStorage) return;
+  try {
+    const payload = JSON.stringify({data, cachedAt: new Date().toISOString()});
+    await _AsyncStorage.setItem(`dbcache:${key}`, payload);
+  } catch (e) {
+    // Silent no-op — disk full, quota, or a value larger than the
+    // AsyncStorage row cap. The live fetch already succeeded; the
+    // cache is a nice-to-have, not the primary result.
+    try { console.log(`[dbFetchCached] cache write failed for ${key}: ${e}`); } catch {}
+  }
+}
+
+export async function dbFetchCached<T = unknown>(
+  key: string,
+  factory: () => PromiseLike<{data: T | null; error: unknown | null}>,
+  opts: {timeoutMs?: number; label?: string} = {},
+): Promise<CachedDbResult<T>> {
+  const label = opts.label || `dbFetchCached[${key}]`;
+  const result = await dbFetchWith<T>(factory, {...opts, label});
+
+  // Successful fetch (data present, no error) — write cache + return fresh.
+  if (!result.error && result.data !== null && result.data !== undefined) {
+    // Also skip caching empty arrays — 0-row responses on a new slate
+    // shouldn't overwrite yesterday's populated cache.
+    if (!(Array.isArray(result.data) && result.data.length === 0)) {
+      await _cacheWrite(key, result.data);
+    }
+    return {...result, stale: false};
+  }
+
+  // Fetch failed OR returned null — try last-known-good.
+  const cached = await _cacheRead<T>(key);
+  if (!cached) return {...result, stale: false};
+
+  return {
+    data: cached.data,
+    error: result.error,
+    stale: true,
+    cachedAt: cached.cachedAt,
+  };
+}
+
+/**
  * Retryable error classifier. Timeouts, network errors, 5xx, and Supabase
  * pool-exhaustion messages are retryable. Schema errors (42703), RLS
  * denials, and 4xx-shaped errors are NOT retryable (retry won't help).
