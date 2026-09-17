@@ -1166,10 +1166,37 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
             signal_class=cls,
             side=side, strength=strength,
             hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=prose or source['signal_key'],
+            # 2026-09-16 humanize the signal_key fallback. Prior code fell
+            # back to the raw signal_key, then _compose_ensemble_sub
+            # applied .capitalize() → primary_play sub read as
+            # "NO +8.5: Nfl_away_spread_edge_panel" leaking internal
+            # naming through to users. Now: strip sport prefix, replace
+            # underscores with spaces, sentence-case. Same signal
+            # identity, readable prose.
+            display_prose=prose or _humanize_signal_key(source['signal_key']),
             is_recent=is_recent,
         ))
     return out
+
+
+# 2026-09-16 signal_key → reader-friendly prose fallback.
+# Called when display_prose_template is null so the primary_play sub
+# text doesn't leak raw underscored uppercased signal_key strings.
+def _humanize_signal_key(key: str) -> str:
+    if not key: return ''
+    s = key
+    # Strip sport prefix (nfl_, ncaaf_, mlb_, nba_, nhl_, ncaab_, ufc_)
+    for pfx in ('nfl_', 'ncaaf_', 'mlb_', 'nba_', 'nhl_', 'ncaab_', 'ufc_'):
+        if s.lower().startswith(pfx):
+            s = s[len(pfx):]
+            break
+    # Common suffix normalize
+    s = s.replace('_panel', ' (panel)').replace('_lens', ' (lens)')
+    s = s.replace('_', ' ').strip()
+    # Sentence case
+    if s and s[0].isalpha():
+        s = s[0].upper() + s[1:]
+    return s
 
 
 def _score_market(market: str, opinions: list[Opinion], ctx: dict,
