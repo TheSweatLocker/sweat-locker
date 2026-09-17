@@ -16,6 +16,7 @@ import Explainer from './components/Explainer';
 import TierChip from './components/TierChip';
 import LineMovementTab from './components/LineMovementTab';
 import AdminNoticeBanner from './components/AdminNoticeBanner';
+import { HomeStreakBanner } from './components/HomeStreakBanner';
 import { useSubscription } from './contexts/SubscriptionContext';
 import { Paywall } from './components/Paywall';
 import { Sport } from './lib/sportPeriods';
@@ -12452,55 +12453,24 @@ setJerryHistory(prev => {
              );
            })}
 
-           {/* 2026-09-07 HOT-STREAK BANNER (queue item 4b). Dynamic 1-liner
-               that surfaces the hottest metric across sports+surfaces when a
-               real streak fires. Silent-hides when nothing meets threshold —
-               no filler content. Reads surfaceRecords (already fetched by
-               fetchSurfaceRecords) so no extra roundtrip. Rank: Sharp Card
-               MTD +5u+ at 60%+ hit → Ladder win streak 3+ → per-sport 7d
-               hot (65%+ n>=10). First one that fires wins the banner. */}
-           {(() => {
-             if (!surfaceRecords || !Object.keys(surfaceRecords).length) return null;
-             // Prefer Sharp Card MTD hot (most reliable signal)
-             for (const sp of ['MLB','NFL','NCAAF','NCAAB','NBA','NHL']) {
-               const cardMtd = surfaceRecords[`${sp}|sharp_card|mtd`];
-               if (!cardMtd) continue;
-               const w = cardMtd.wins || 0, l = cardMtd.losses || 0;
-               const un = Number(cardMtd.units_net) || 0;
-               if (w + l < 10) continue;
-               const pct = w / (w + l);
-               if (pct >= 0.60 && un >= 5) {
-                 return (
-                   <TouchableOpacity onPress={() => { setActiveTab('steam'); setSteamSubTab('sharp'); }}
-                     style={{backgroundColor: THEME.accent + '18', borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: THEME.accent, flexDirection: 'row', alignItems: 'center', gap: 8}}>
-                     <Text style={{fontSize: 16}}>🔥</Text>
-                     <Text style={{color: THEME.text, fontSize: 12, fontWeight: '700', flex: 1}}>
-                       Sharp Card is hot — <Text style={{color: THEME.accent}}>{w}-{l} · {Math.round(pct * 100)}% · {un > 0 ? '+' : ''}{un.toFixed(1)}u</Text> this month
-                     </Text>
-                     <Text style={{color: THEME.accent, fontSize: 14, fontWeight: '800'}}>›</Text>
-                   </TouchableOpacity>
-                 );
-               }
-             }
-             // Ladder run
-             const ladMtd = surfaceRecords['MLB|ladder|mtd'];
-             if (ladMtd) {
-               const w = ladMtd.wins || 0, l = ladMtd.losses || 0;
-               if (w >= 3 && w >= l * 2 && (w + l) >= 4) {
-                 return (
-                   <TouchableOpacity onPress={() => { setActiveTab('steam'); setSteamSubTab('ladder'); }}
-                     style={{backgroundColor: THEME.accent + '18', borderRadius: 10, padding: 10, marginBottom: 10, borderLeftWidth: 3, borderLeftColor: THEME.accent, flexDirection: 'row', alignItems: 'center', gap: 8}}>
-                     <Text style={{fontSize: 16}}>🪜</Text>
-                     <Text style={{color: THEME.text, fontSize: 12, fontWeight: '700', flex: 1}}>
-                       Ladder is running — <Text style={{color: THEME.accent}}>{w}-{l} this month</Text>
-                     </Text>
-                     <Text style={{color: THEME.accent, fontSize: 14, fontWeight: '800'}}>›</Text>
-                   </TouchableOpacity>
-                 );
-               }
-             }
-             return null;
-           })()}
+           {/* 2026-09-17 v1.0.1 #4 Part B — Hot-streak banner extracted to a
+               proper component with rotation across banner classes:
+                 * Sharp Card 3d hot (60%+ hit + 5u+ over 3 days)
+                 * Per-sport 7d run (65%+ hit + 10+ picks + net positive)
+                 * Ledger green streak (3+ consecutive positive-pnl days)
+                 * Daily Degen consecutive wins (2+ in a row)
+               Rotates through eligible banners every 8s. Reads
+               surfaceRecords (already fetched, no extra fetch for the
+               d7/d30 aggregate lookups) + daily_surface_records (one
+               small query for last-5-day streak detection). Replaces the
+               prior inline block that only covered Sharp+Ladder MTD. */}
+           <HomeStreakBanner
+             supabase={supabase}
+             surfaceRecords={surfaceRecords}
+             onOpenSharp={() => { setActiveTab('steam'); setSteamSubTab('sharp'); }}
+             onOpenLadder={() => { setActiveTab('steam'); setSteamSubTab('ladder'); }}
+             onOpenLedger={() => { setActiveTab('steam'); setSteamSubTab('ledger'); }}
+           />
 
            {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Replaces the
                single-sport-hardcoded feel of the RecapStrip with a compact
