@@ -58,13 +58,26 @@ PROJECTION_KEY = {
 
 
 def _fetch_props(since_date: str, prop_filter: str | None, tier_filter: str | None) -> list:
-    q = f'{SB}/rest/v1/mlb_pipeline_props?game_date=gte.{since_date}&result=in.(Win,Loss,Push)&select=game_date,player_name,prop_type,prop_line,direction,tier,conviction,book_over_odds,book_under_odds,result,final_value,signals&order=game_date.desc&limit=5000'
-    if prop_filter:
-        q += f'&prop_type=eq.{prop_filter}'
-    if tier_filter:
-        q += f'&tier=eq.{tier_filter}'
-    r = requests.get(q, headers=H, timeout=30)
-    return r.json() if r.status_code == 200 else []
+    # 2026-09-16 PAGINATION (project_postgrest_truncation_audit_912).
+    # Prior version used ?limit=5000 which PostgREST silently caps at 1000.
+    # Graded MLB props over 30d+ easily exceed 1000 → projection accuracy
+    # numbers were computed from a truncated sample and reported as gospel.
+    # Range-header pagination fetches every matching row.
+    base = f'{SB}/rest/v1/mlb_pipeline_props?game_date=gte.{since_date}&result=in.(Win,Loss,Push)&select=game_date,player_name,prop_type,prop_line,direction,tier,conviction,book_over_odds,book_under_odds,result,final_value,signals&order=game_date.desc'
+    if prop_filter: base += f'&prop_type=eq.{prop_filter}'
+    if tier_filter: base += f'&tier=eq.{tier_filter}'
+    all_rows = []
+    offset = 0; page = 1000
+    while True:
+        r = requests.get(base, headers={**H, 'Range': f'{offset}-{offset+page-1}',
+                                        'Range-Unit': 'items'}, timeout=45)
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        if not chunk: break
+        all_rows += chunk
+        if len(chunk) < page: break
+        offset += page
+    return all_rows
 
 
 def _extract_projection(row: dict) -> float | None:

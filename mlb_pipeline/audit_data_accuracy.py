@@ -43,6 +43,37 @@ def get(url, **kwargs):
     r.raise_for_status()
     return r.json()
 
+
+# 2026-09-16 PAGINATED GETTER (project_postgrest_truncation_audit_912).
+# PostgREST silently caps SELECT responses at 1000 rows regardless of the
+# client-passed limit=. Every audit_data_accuracy check that requested
+# limit=2000 or 5000 was silently reading only 1000 rows — the aggregator
+# comparisons were meaningless because the raw counts were truncated
+# (audit says FAIL when the aggregator is actually right and the audit
+# itself is what's incomplete).
+#
+# get_paged uses Range-header pagination — same pattern as
+# ncaaf_game_context.load_team_games_played (commit 39a12c28) and
+# cleanup_stale_coverage_props._paged. Fetches all rows for a query.
+def get_paged(url_no_limit: str, page_size: int = 1000):
+    """Fetch every row matching the query, ignoring silent 1000-row cap.
+    Pass the URL WITHOUT any limit= / offset= — the pager adds Range headers.
+    """
+    all_rows = []
+    offset = 0
+    while True:
+        headers = {**H, 'Range': f'{offset}-{offset + page_size - 1}',
+                   'Range-Unit': 'items'}
+        r = requests.get(f'{SB}/rest/v1/{url_no_limit}',
+                         headers=headers, timeout=45)
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        if not chunk: break
+        all_rows += chunk
+        if len(chunk) < page_size: break
+        offset += page_size
+    return all_rows
+
 def emit(check_id, category, severity, status, detail):
     findings.append({'id': check_id, 'cat': category, 'sev': severity,
                      'status': status, 'detail': detail})
@@ -64,9 +95,10 @@ def _payout(american):
 # ═══ A. RECORD AGGREGATORS ══════════════════════════════════════════════════
 
 def check_A1_sharp():
-    raw = get('jerry_reads?sport=eq.MLB&game_date=gte.' + EPOCH
+    # 2026-09-16: paged — jerry_reads is far >1000 rows since MLB launch.
+    raw = get_paged('jerry_reads?sport=eq.MLB&game_date=gte.' + EPOCH
               + '&conviction=gte.60&result=not.is.null'
-              + '&select=result&limit=2000')
+              + '&select=result')
     w=l=p=0
     for r in raw:
         c = _cls(r.get('result'))
@@ -83,8 +115,9 @@ def check_A1_sharp():
          f'raw={w}-{l}-{p}  sr={row["wins"]}-{row["losses"]}-{row["pushes"]}')
 
 def check_A2_prop():
-    raw = get('mlb_pipeline_props?tier=in.(PRIME,STRONG)&game_date=gte.' + EPOCH
-              + '&result=not.is.null&select=result,tier,conviction&limit=5000')
+    # 2026-09-16: paged — MLB PRIME/STRONG props easily exceed 1000 rows.
+    raw = get_paged('mlb_pipeline_props?tier=in.(PRIME,STRONG)&game_date=gte.' + EPOCH
+              + '&result=not.is.null&select=result,tier,conviction')
     w=l=p=0
     for r in raw:
         if (r.get('conviction') or 0) == 0: continue
@@ -280,7 +313,8 @@ def check_C9_ext_grade_correctness():
 
 def check_C10_ext_rollup():
     # external_source_track_record vs external_picks raw
-    ep = get('external_picks?sport=eq.MLB&result=not.is.null&select=source,surface,result&limit=5000')
+    # 2026-09-16: paged — MLB external_picks lifetime is 1000+ rows.
+    ep = get_paged('external_picks?sport=eq.MLB&result=not.is.null&select=source,surface,result')
     raw = defaultdict(lambda: {'W':0,'L':0,'P':0})
     for p in ep:
         c = _cls(p['result'])
@@ -301,7 +335,8 @@ def check_C10_ext_rollup():
         emit('C10', 'EXTERNAL', 'OK', 'OK', f'{len(tr)} rollup rows match raw')
 
 def check_C11_ext_calibration():
-    ep = get('external_picks?sport=eq.MLB&result=not.is.null&select=source,surface,result&limit=5000')
+    # 2026-09-16: paged — same reasoning as C10.
+    ep = get_paged('external_picks?sport=eq.MLB&result=not.is.null&select=source,surface,result')
     raw = defaultdict(lambda: {'W':0,'L':0,'P':0})
     for p in ep:
         c = _cls(p['result'])

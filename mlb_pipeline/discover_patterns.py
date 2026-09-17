@@ -463,24 +463,39 @@ SPORT_PLUGINS = {
 def fetch_ctx(sport: str, days: int):
     plugin = SPORT_PLUGINS[sport]
     start = (date.today() - timedelta(days=days)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/{plugin["ctx_table"]}',
-                     headers=H_READ,
-                     params={'game_date': f'gte.{start}',
-                             'select': plugin['ctx_select'],
-                             'limit': '5000'}, timeout=30)
-    return r.json() if r.status_code == 200 else []
+    # 2026-09-16 PAGINATION (project_postgrest_truncation_audit_912).
+    # MLB ctx with days=365 = ~2500 rows, silently truncated to 1000.
+    # discover_patterns pattern-mines against a partial slate → false
+    # "signal not seen enough" verdicts on real edges.
+    return _paged_get(f'{plugin["ctx_table"]}',
+                       {'game_date': f'gte.{start}', 'select': plugin['ctx_select']})
 
 
 def fetch_results(sport: str, days: int):
     plugin = SPORT_PLUGINS[sport]
     start = (date.today() - timedelta(days=days)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/{plugin["results_table"]}',
-                     headers=H_READ,
-                     params={'game_date': f'gte.{start}',
-                             'select': 'game_id,home_score,away_score',
-                             'limit': '5000'}, timeout=30)
-    data = r.json() if r.status_code == 200 else []
+    data = _paged_get(f'{plugin["results_table"]}',
+                       {'game_date': f'gte.{start}',
+                        'select': 'game_id,home_score,away_score'})
     return {x['game_id']: x for x in data if x.get('home_score') is not None}
+
+
+def _paged_get(table: str, params: dict, page: int = 1000):
+    """Range-header pagination — fetches all rows for a query."""
+    out = []
+    offset = 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/{table}',
+                         headers={**H_READ, 'Range': f'{offset}-{offset+page-1}',
+                                  'Range-Unit': 'items'},
+                         params=params, timeout=45)
+        if r.status_code not in (200, 206): break
+        chunk = r.json() if isinstance(r.json(), list) else []
+        if not chunk: break
+        out += chunk
+        if len(chunk) < page: break
+        offset += page
+    return out
 
 
 def enumerate_combos(features: list, arity_range=(2, 3)):
