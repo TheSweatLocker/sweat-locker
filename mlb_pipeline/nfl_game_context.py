@@ -1582,8 +1582,12 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     try:
         from projection_anchor import anchor_projected_spread
         _raw = row.get('projected_spread')
+        # 2026-09-16: pass sport='NFL' explicitly. NFL close_spread already
+        # uses pos=home fav (matches projected_spread convention) so no
+        # normalization happens — same result as before. Explicit for
+        # future readers vs relying on the default.
         _anchored, _w, _reason = anchor_projected_spread(
-            row.get('close_spread'), _raw, stats_source,
+            row.get('close_spread'), _raw, stats_source, sport='NFL',
         )
         row['projected_spread_raw']    = _raw
         row['spread_anchor_weight']    = _w

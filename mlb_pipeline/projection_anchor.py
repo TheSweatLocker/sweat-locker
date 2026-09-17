@@ -72,6 +72,7 @@ def anchor_projected_spread(
     market_spread: Optional[float],
     projected_spread: Optional[float],
     stats_source: Optional[str],
+    sport: Optional[str] = None,
 ) -> tuple[Optional[float], Optional[float], str]:
     """Return (anchored_spread, weight, reason).
 
@@ -83,6 +84,20 @@ def anchor_projected_spread(
     The caller should overwrite `projected_spread` on the ctx row with the
     returned anchored value, and store the raw projection under
     `projected_spread_raw` for grading.
+
+    2026-09-16 SPORT-AWARE SIGN NORMALIZATION (Andy MIA@WF audit).
+    Root cause: close_spread and projected_spread use DIFFERENT sign
+    conventions for NCAAF (and MLB) but the anchor was blending them raw.
+      close_spread    NCAAF: positive = AWAY favored (per project_close_spread_sign_bug_914)
+      close_spread    NFL:   positive = HOME favored
+      projected_spread ALL:  positive = HOME favored (from sp_gap * K)
+    MIA@WF: close_spread=+21 (MIA fav), projected_spread=-3.575 (WF loses by 3.575
+    → same direction, home-relative). Anchor computed delta=|21-(-3.575)|=24.575
+    → HIGH tier w=0.75 → anchored = 0.75*21 + 0.25*-3.575 = +14.86.
+    +14.86 in home-relative convention = WF favored by 14.86 = literal SIGN FLIP.
+    Fix: for NCAAF (and any sport where close_spread flips vs projected_spread),
+    normalize market_spread to the projected_spread convention BEFORE blending,
+    so we're always blending like-with-like.
     """
     if projected_spread is None:
         return None, None, 'no_projection'
@@ -93,7 +108,16 @@ def anchor_projected_spread(
         # Model is on live current-season data — no anchor needed.
         return projected_spread, 0.0, f'stats_source={stats_source} · no_anchor'
 
-    delta = abs(market_spread - projected_spread)
+    # Normalize market_spread into the projected_spread convention
+    # (positive = home favored). NCAAF and MLB store close_spread with
+    # positive = away favored, so flip. NFL already matches.
+    sport_up = (sport or '').upper()
+    if sport_up in ('NCAAF', 'MLB'):
+        market_norm = -market_spread
+    else:
+        market_norm = market_spread
+
+    delta = abs(market_norm - projected_spread)
     if delta <= _TIER_LOW_MAX:
         w = _W_LOW
         tier = f'low_Δ={delta:.1f}'
@@ -107,5 +131,5 @@ def anchor_projected_spread(
     if w == 0.0:
         return projected_spread, 0.0, f'{tier} · no_anchor'
 
-    anchored = w * market_spread + (1 - w) * projected_spread
+    anchored = w * market_norm + (1 - w) * projected_spread
     return round(anchored, 2), w, f'{tier} · w={w:.2f}'

@@ -696,7 +696,14 @@ def sweat_tier(score):
 def compute_sweat_score(proj_spread, close_spread, conf_net, proj_total, close_total):
     score = 45
     if proj_spread is not None and close_spread is not None:
-        edge = abs(proj_spread - close_spread)
+        # 2026-09-16 SIGN CONVENTION FIX (Andy MIA@WF audit).
+        # NCAAF close_spread uses pos=away favored; projected_spread uses
+        # pos=home favored. Prior code subtracted raw values, inflating
+        # every edge by ~2x (MIA@WF: |-16.64 - 21| = 37.64 vs true edge
+        # of |-16.64 + 21| = 4.36). Every NCAAF game with a real spread
+        # got a sweat_score boost it didn't earn → tier inflation.
+        # Mirror the ncaab pattern: ADD to match opposite conventions.
+        edge = abs(proj_spread + close_spread)
         if edge >= 7:   score += 25
         elif edge >= 5: score += 18
         elif edge >= 3: score += 12
@@ -733,7 +740,14 @@ def compute_primary_play(ctx):
 
     spread_edge = None
     if proj_spread is not None and close_spread is not None:
-        spread_edge = round(float(proj_spread) - float(close_spread), 2)
+        # 2026-09-16 SIGN CONVENTION FIX (Andy MIA@WF audit).
+        # NCAAF close_spread uses pos=away favored; projected_spread uses
+        # pos=home favored. Prior subtract inflated edges ~2x → over-
+        # tiering. Correct is to add (matches ncaab / MLB pattern).
+        # Sign of the sum tells model direction relative to market:
+        # positive → model likes HOME more than market does; negative
+        # → model likes AWAY more.
+        spread_edge = round(float(proj_spread) + float(close_spread), 2)
     abs_edge = abs(spread_edge) if spread_edge is not None else 0.0
     fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
 
@@ -1079,8 +1093,13 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     try:
         from projection_anchor import anchor_projected_spread
         _raw = row.get('projected_spread')
+        # 2026-09-16 pass sport so anchor can normalize close_spread's
+        # sign convention (NCAAF pos=away fav) into projected_spread's
+        # convention (pos=home fav) before blending. Prior version fed
+        # both raw → MIA@WF anchored to +14.86 (WF favored) despite
+        # market MIA -21 and raw model MIA -3.6 both being MIA-favored.
         _anchored, _w, _reason = anchor_projected_spread(
-            row.get('close_spread'), _raw, stats_source,
+            row.get('close_spread'), _raw, stats_source, sport='NCAAF',
         )
         row['projected_spread_raw']    = _raw
         row['spread_anchor_weight']    = _w
