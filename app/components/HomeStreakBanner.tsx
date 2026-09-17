@@ -108,7 +108,7 @@ function _composeBanners(
       const pct = Math.round((w / total) * 100);
       out.push({
         icon: '🎯',
-        text: `${sp} PRIME props last 7d: ${w}-${l} (${pct}%), +${un.toFixed(1)}u`,
+        text: `${sp} Prime Props L7D: ${w}-${l} (${pct}%), +${un.toFixed(1)}u`,
         priority: 100,   // top billing — flagship product angle
         onPress: handlers.onOpenSharp,
       });
