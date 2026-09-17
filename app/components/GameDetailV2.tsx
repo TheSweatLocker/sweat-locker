@@ -1596,17 +1596,33 @@ function LensGrid({ctx, gamesSport}: any) {
     // silently rendered NCAAF v4 tile empty.
     {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
+    // 2026-09-17: SP+ lens added. NCAAF ctx has sp_plus_pred_spread +
+    // sp_plus_pred_total pre-computed from Bill Connelly's SP+ ratings
+    // (see ncaaf_game_context.compute_projections). Previously absent
+    // from the grid despite being one of the strongest college football
+    // signals — Andy 9/17: "shouldnt we have all nfl models listed?"
+    // (same class of gap on NCAAF).
+    {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: ctx?.sp_plus_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ] : gamesSport === 'NFL' ? [
     // 2026-09-14: NFL uses v4_spread/v4_total (model_pred_* is MLB-only).
     // 2026-09-15: MC lens DROPPED for NFL — we do not run a Monte Carlo
     // simulator for NFL (only MLB + NCAAF have one). Rendering an empty
-    // MC "—" tile every NFL card advertised a slot we never populate;
-    // NFL grid is now V3 / V4 / CONF (3 real lenses, no phantom column).
+    // MC "—" tile every NFL card advertised a slot we never populate.
+    // 2026-09-17: Panel lens added — NFL ctx has panel_pred_home_pts +
+    // panel_pred_away_pts + panel_pred_total from the injury/roster
+    // panel (nfl_generate_props.py + panel workflow). Andy 9/17: "seeing
+    // only v3, v4 and conf models... shouldnt we have all nfl models
+    // listed?" Panel was already in the DB, just not surfaced.
+    // NFL grid is now V3 / V4 / PANEL / CONF (4 lenses).
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
+    {name: 'Panel', m: (ctx?.panel_pred_home_pts != null && ctx?.panel_pred_away_pts != null)
+                        ? (Number(ctx.panel_pred_home_pts) - Number(ctx.panel_pred_away_pts))
+                        : null,
+                     t: ctx?.panel_pred_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ] : [
     // Fallback for NHL / NBA / NCAAB / UFC — keep MC slot since those
