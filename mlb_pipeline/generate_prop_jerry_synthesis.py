@@ -546,27 +546,41 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     print(f'  [{sport}] {len(props)} props enter template/LLM split '
           f'(edge gate deferred to LLM path only)')
 
-    # Tier calibration (2026-08-03 v2): FADE historical losers (flip direction),
-    # cap juice traps, promote goldmine SKIP tiers. Per user directive: don't
+    # Tier calibration (2026-08-03 v2): FADE historical losers, cap juice
+    # traps, promote goldmine SKIP tiers. Per user directive: don't
     # suppress — Jerry should say "fade the other side, market has priced it
     # in". A 29% W bucket is a 71% FADE signal.
+    #
+    # 2026-09-16 FIX (Andy: "these coverage gaps sick of it, permanent fix").
+    # Prior implementation MUTATED p['direction'] and p['prop_type'] on flip,
+    # rewriting the jerry_read key to the flipped side. But mlb_pipeline_props
+    # (source of truth for the raw prop_type/direction) never got updated,
+    # so downstream Sharp Card, Daily Degen, and the v_mlb_props_publishable
+    # LEFT JOIN all kept looking up the ORIGINAL direction. Result: the flip
+    # was invisible to every consumer EXCEPT the composer's own write —
+    # jerry_read landed at (flipped) key, app looked up (original) key,
+    # miss, no chart. That's the "direction-flip artifact" coverage gap
+    # (Blake Snell er_under PRIME 89 today has no jerry_read match).
+    #
+    # New behavior: keep prop_type/direction UNCHANGED on the row. Encode
+    # the flip in signals + call_verdict so the template renderer and app
+    # both see the fade guidance without a key mismatch. Downstream stays
+    # coherent — everything reads the same (game, player, prop_type,
+    # direction) tuple.
     try:
         from prop_tier_calibration import apply_calibration
         faded = capped = promoted = 0
         for p in props:
             r = apply_calibration(p, jerry_verdict='BACK')
             if r.get('flip_direction'):
-                # Flip direction, adjust prop_type suffix, use fade tier/conv
-                old_dir = p['direction']
-                new_dir = r['new_direction']
-                p['direction'] = new_dir
+                # Track the fade in signals; DO NOT mutate direction/prop_type.
                 p['tier'] = r['new_tier']
                 p['conviction'] = r['new_conviction']
-                # prop_type flip: outs_over → outs_under, etc.
-                if p.get('prop_type', '').endswith(f'_{old_dir}'):
-                    family = p['prop_type'].rsplit('_', 1)[0]
-                    p['prop_type'] = f'{family}_{new_dir}'
-                p.setdefault('signals', {})['_calibration_fade'] = r['reason']
+                sigs = p.setdefault('signals', {})
+                sigs['_calibration_fade'] = r['reason']
+                sigs['_calibration_fade_from'] = p.get('direction')
+                sigs['_calibration_fade_to']   = r['new_direction']
+                sigs['_jerry_verdict_override'] = 'FADE'  # render layer reads this
                 faded += 1
             elif 'promoted' in r.get('reason', ''):
                 p['tier'] = r['new_tier']

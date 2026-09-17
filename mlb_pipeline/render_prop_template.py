@@ -495,10 +495,34 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
     covered, missing = _coverage_from_ctx(checklist, ctx or {}, prop_signals, sources)
     coverage_pct = int(100 * covered / max(1, len(checklist)))
 
+    # 2026-09-16 FADE override from tier calibration (project_lr_shadow /
+    # coverage-gap fix). generate_prop_jerry_synthesis no longer mutates
+    # direction on historical-fade props — it stamps
+    #   signals._jerry_verdict_override = 'FADE'
+    #   signals._calibration_fade_from  = original direction
+    #   signals._calibration_fade_to    = direction to back instead
+    #   signals._calibration_fade       = human reason
+    # Row lands at the ORIGINAL (game, player, prop_type, direction) key so
+    # v_mlb_props_publishable joins cleanly and the app renders the L5/L10
+    # chart. This block surfaces the fade guidance up top and downgrades
+    # the verdict so users clearly see "back the OTHER side".
+    is_calibration_fade = (prop_signals.get('_jerry_verdict_override') or '').upper() == 'FADE'
+    fade_to = prop_signals.get('_calibration_fade_to') or ''
+    fade_reason = prop_signals.get('_calibration_fade') or ''
+    if is_calibration_fade:
+        verdict = 'FADE'
+        # Cap conviction display — user is being told NOT to take this side.
+        conviction = min(conviction, 25)
+
     # ─── COMPOSE THE CARD ───────────────────────────────────────────
     lines = []
     lines.append(f'{player} · {label} {direction.upper()} {line}  @  {side_odds if side_odds is not None else "—"}')
     lines.append(f'{"─" * 60}')
+    if is_calibration_fade:
+        lines.append(f'  🔄 JERRY FADE — back {label} {fade_to.upper()} instead')
+        if fade_reason:
+            lines.append(f'     {fade_reason[:110]}')
+        lines.append('')
     # Signal coverage chip — prominent, right below the header.
     if checklist:
         cov_flag = '✅' if not missing else ('⚠️' if len(missing) <= 2 else '🚨')
@@ -601,7 +625,14 @@ def render_prop_template(prop: dict, playbook_decision: Optional[dict] = None,
             'why_bullets': why_list,
             'risk_header': risk_header,
             'risk_bullets': risk_list,
-            'is_fade': False,  # 2026-08-23 v3: PURE TIER SYSTEM — verdict never FADE
+            # 2026-09-16: is_fade now true when tier calibration flagged this
+            # direction as a historical loser and Jerry wants users to back
+            # the opposite side. App renders a prominent orange/red header
+            # ("🔄 FADE — back OVER instead") so users see the guidance
+            # without hunting through the narrative.
+            'is_fade': is_calibration_fade,
+            'fade_to': fade_to if is_calibration_fade else None,
+            'fade_reason': fade_reason if is_calibration_fade else None,
             'shadow_playbook_fades': (pb_side or '').upper() == 'FADE',  # context flag for app
         },
         'verdict': verdict,
