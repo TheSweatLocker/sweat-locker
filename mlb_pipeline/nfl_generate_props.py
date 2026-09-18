@@ -316,7 +316,7 @@ def load_opponent_defense(season: int) -> dict:
     early-season" convention. Auto-flips back to current once ~Week 4
     of data lands.
     """
-    def _pull(season_val: int) -> dict:
+    def _pull(season_val: int) -> tuple[dict, float]:
         acc: dict = {}
         r1 = _retry_session.get(
             f'{SB}/rest/v1/nfl_team_stats?season=eq.{season_val}&season_type=eq.REG'
@@ -328,23 +328,36 @@ def load_opponent_defense(season: int) -> dict:
                 acc[row['team']] = dict(row)
         r2 = _retry_session.get(
             f'{SB}/rest/v1/nfl_team_defense_stats?season=eq.{season_val}&season_type=eq.REG'
-            f'&select=team,def_ppg,def_ypg,def_pass_ypg,def_rush_ypg,'
+            f'&select=team,games,def_ppg,def_ypg,def_pass_ypg,def_rush_ypg,'
             f'def_pass_epa_allowed,def_rush_epa_allowed',
             headers=H_READ, timeout=15,
         )
+        games_seen: list[int] = []
         if r2.status_code == 200:
             for row in r2.json():
                 slot = acc.setdefault(row['team'], {'team': row['team']})
                 for k, v in row.items():
                     if k != 'team' and v is not None:
                         slot[k] = v
-        return acc
+                if row.get('games') is not None:
+                    games_seen.append(int(row['games']))
+        avg_games = (sum(games_seen) / len(games_seen)) if games_seen else 0.0
+        return acc, avg_games
 
-    out = _pull(season)
-    if len(out) < 10:
-        prior = _pull(season - 1)
-        if len(prior) >= 10:
-            print(f'  [load_opponent_defense] season {season} sparse ({len(out)} teams) → falling back to {season - 1} ({len(prior)} teams)')
+    # 2026-09-17: gate season selection on AVG GAMES PER TEAM, not just
+    # row count. Prior "len(out) < 10 teams" check flipped to current
+    # season the moment any 10 teams had a row — which happens on the
+    # first Sunday of the season since all 32 teams play Week 1. But
+    # 1-game samples produce nonsense ranks (Andy 9/17 catch: BUF ranked
+    # #28 in rush D based on ONE game; in 2025 they were #15). Now we
+    # only trust current season once every team averages ≥3 games —
+    # aligns with feedback_sample_size_with_pct discipline.
+    out, avg_g = _pull(season)
+    if len(out) < 10 or avg_g < 3.0:
+        prior, prior_avg_g = _pull(season - 1)
+        if len(prior) >= 10 and prior_avg_g >= 3.0:
+            reason = f'sparse ({len(out)} teams)' if len(out) < 10 else f'thin ({avg_g:.1f} avg games/team)'
+            print(f'  [load_opponent_defense] season {season} {reason} → falling back to {season - 1} ({len(prior)} teams, {prior_avg_g:.1f} avg games)')
             return prior
     return out
 
