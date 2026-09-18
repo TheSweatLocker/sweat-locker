@@ -257,15 +257,28 @@ def fetch_forecast(lat: float, lng: float, target_utc: datetime) -> Optional[dic
 
 
 def fetch_upcoming_games() -> list:
-    """NCAAF games in next 7 days that lack weather."""
+    """NCAAF games in next 7 days that lack weather.
+
+    2026-09-17: fixed malformed comma-joined kickoff_utc filter (same bug
+    NFL weather had fixed 2026-09-11). PostgREST doesn't parse
+    'gte.X,lt.Y' as two filters — it treats the whole string as one
+    value, then Postgres tries to interpret 'lt.<iso>' as a timezone
+    ("time zone lt.2026... not recognized"). Correct syntax: pass each
+    filter as its own tuple in the params list. Verified 0/76 → non-zero
+    weather coverage for weekend NCAAF games after fix.
+    """
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=7)
     r = requests.get(
         f'{SB}/rest/v1/ncaaf_game_context',
         headers=H_READ,
-        params={'select': 'game_id,kickoff_utc,home_team,away_team,neutral_site,temp,wind,dome',
-                'kickoff_utc': f'gte.{now.isoformat()},lt.{horizon.isoformat()}',
-                'order': 'kickoff_utc.asc', 'limit': '200'},
+        params=[
+            ('select', 'game_id,kickoff_utc,home_team,away_team,neutral_site,temp,wind,dome'),
+            ('kickoff_utc', f'gte.{now.isoformat()}'),
+            ('kickoff_utc', f'lt.{horizon.isoformat()}'),
+            ('order', 'kickoff_utc.asc'),
+            ('limit', '200'),
+        ],
         timeout=20,
     )
     if r.status_code != 200:
@@ -314,10 +327,12 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
         if not stad:
             skipped_unknown += 1
             continue
-        # Signal reads ctx.wind_speed AND ctx.wind — write both
-        # to be defensive (finding #14 + #18 both listed inconsistent names).
+        # 2026-09-17: dropped wind_speed dual-write — column doesn't exist
+        # on ncaaf_game_context (only NFL has it). Every PATCH was 400ing
+        # PGRST204 "Could not find the 'wind_speed' column" → 0/76 weekend
+        # games got weather. Wind lives on `wind` alone for NCAAF.
         if stad['dome']:
-            patch = {'temp': 72, 'wind': 0, 'wind_speed': 0,
+            patch = {'temp': 72, 'wind': 0,
                      'dome': True, 'weather_source': 'dome_default'}
             if patch_game(g['game_id'], patch, dry_run):
                 updated += 1
@@ -334,7 +349,7 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
         w = round(wx['wind_mph']) if wx['wind_mph'] is not None else None
         patch = {
             'temp': round(wx['temp']) if wx['temp'] is not None else None,
-            'wind': w, 'wind_speed': w,  # dual-write
+            'wind': w,
             'dome': False,
             'weather_source': f'openweather_{wx.get("source","?")}',
         }
