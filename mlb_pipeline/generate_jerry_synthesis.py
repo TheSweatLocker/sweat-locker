@@ -656,8 +656,23 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
     MC 30.9% dissent → COVERAGE, but Jerry was narrating sharp-money BACK.
     """
     pp = _extract_primary_play(struct)
-    if pp is None or pp.get('_engine') != 'ensemble_v2':
-        return parsed  # no ensemble to defer to — keep LLM output
+    # 2026-09-18: Andy directive "one source of truth per pick but
+    # maintain process depth". Previously this gate exited early when
+    # _engine != 'ensemble_v2' (e.g. 'lr_v1' after LR override), so
+    # LR-overridden primary_plays let Jerry's independent LLM pick
+    # survive and badges diverged (Brewers 9/18: jerry conv 55 vs pp
+    # conv 87, opposite MIN+4.5 vs CHI ML on Vikings, etc.). Root fix:
+    # defer to primary_play REGARDLESS of which engine won the decision.
+    # Jerry LLM prose still writes narrative; pick fields ALWAYS come
+    # from primary_play. Independent conviction preserved as audit trail
+    # via _jerry_shadow_conviction so we can compare over time.
+    if pp is None:
+        return parsed  # no primary_play — keep LLM output as last resort
+    # NOTE: Jerry's own LLM conviction is intentionally NOT persisted as
+    # a separate field yet (jerry_reads has no _jerry_shadow_conviction
+    # column and adding fields would break upsert). Audit-trail column
+    # queued for a schema migration (project_jerry_shadow_conviction_918).
+    # For now: LLM prose stays, pick fields overwrite below.
     market = str(pp.get('type') or '').lower()
     side = pp.get('side')
     label = pp.get('label')

@@ -292,9 +292,19 @@ def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) ->
             from pathlib import Path as _P
             print(f'\n  → auto-aligning jerry_reads via backfill_jerry_pick_alignment')
             _script = str(_P(__file__).parent / 'backfill_jerry_pick_alignment.py')
+            # 2026-09-18 Andy directive "one source of truth per pick".
+            # Propagate NFL_UNLOCK_WEEK=1 to the alignment subprocess.
+            # Rule: if primary_play just changed (patched > 0), jerry MUST
+            # re-align regardless of week-lock. Prior behavior: post-Thu
+            # recompute changed pp but alignment sub-process hit the
+            # week-lock guard in backfill_jerry_pick_alignment and silently
+            # skipped, leaving jerry stale (badge divergence Andy caught on
+            # Vikings/Bengals/Ravens 9/18). If recompute is running at all,
+            # its output should propagate — no partial locks.
+            _sub_env = {**os.environ, 'NFL_UNLOCK_WEEK': '1'}
             r = subprocess.run(
                 [sys.executable, _script, '--sport', 'NFL'],
-                capture_output=True, text=True, timeout=180)
+                capture_output=True, text=True, timeout=180, env=_sub_env)
             for line in ((r.stdout or '') + (r.stderr or '')).splitlines()[-10:]:
                 print(f'    {line}')
             if r.returncode != 0:
