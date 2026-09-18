@@ -40,35 +40,20 @@ on:
   # mlb_grade_overnight.yml so morning records are ALWAYS current
   # even when the main pipeline is late.
   #
-  # Path filter: only files that actually affect MLB pick generation.
-  # 2026-09-17 TIGHTENED: 'mlb_pipeline/**' was matching NFL/NCAAF/NBA/
-  # NHL/NCAAB/UFC scripts that live in the same directory (nfl_*.py
-  # etc.), so a single-file NFL fix fired the full MLB pipeline (1-2h
-  # runtime each). 12 NFL-only commits one evening triggered 12 MLB
-  # runs = ~18 hours of wasted compute + queue delay behind scheduled
-  # crons. paths-ignore explicitly excludes other-sport scripts so
-  # only files that actually affect MLB scoring trigger the workflow.
+  # Path filter: files that affect MLB pick generation.
+  # 2026-09-17 tried tightening with paths + paths-ignore combined —
+  # GHA doesn't allow both fields on the same trigger, yaml failed
+  # validation, every push since silently failed (0 jobs run, run name
+  # falls back to yaml path instead of workflow name). Reverted to
+  # plain paths — accepts some over-triggering from other-sport scripts
+  # that live in mlb_pipeline/** (nfl_*.py etc). Proper narrowing via
+  # ! negation within a single paths list is queued as a follow-up
+  # once verified in a test PR.
   push:
     branches: [main]
     paths:
       - 'mlb_pipeline/**'
       - '.github/workflows/mlb_pipeline.yml'
-    paths-ignore:
-      - 'mlb_pipeline/nfl_*.py'
-      - 'mlb_pipeline/ncaaf_*.py'
-      - 'mlb_pipeline/ncaab_*.py'
-      - 'mlb_pipeline/nba_*.py'
-      - 'mlb_pipeline/nhl_*.py'
-      - 'mlb_pipeline/ufc_*.py'
-      - 'mlb_pipeline/models/nfl_*'
-      - 'mlb_pipeline/models/ncaaf_*'
-      - 'mlb_pipeline/models/ncaab_*'
-      - 'mlb_pipeline/models/nba_*'
-      - 'mlb_pipeline/models/nhl_*'
-      - 'mlb_pipeline/models/ufc_*'
-      - 'mlb_pipeline/_*.py'          # scratch files (gitignored anyway, defensive)
-      - 'mlb_pipeline/_*.log'
-      - 'mlb_pipeline/_analysis/**'
   workflow_dispatch:
 
 # 2026-09-08: serialize concurrent runs. Prior state: 4 crons + push
