@@ -337,11 +337,15 @@ def _cap_props_trap_directly(game_date: str, dry_run: bool = False) -> int:
         sig['_refit_override_cap'] = 'PROPS_TRAP_DIRECT'
         sig['_refit_override_at'] = _et_today()
         old_tier = prop.get('tier'); old_conv = prop.get('conviction')
+        # 2026-09-18 Andy Option A: PRIME floors at STRONG.
+        # Prior blanket LEAN demote was chewing PRIMEs mid-day (21→10 drop).
+        new_tier = 'STRONG' if old_tier == 'PRIME' else 'LEAN'
+        new_conv = 65 if new_tier == 'STRONG' else 55
         print(f'  props-trap: {prop["player_name"]:22} {prop["prop_type"]:10} '
               f'{prop["direction"]:5} {old_tier}/{old_conv} refit={prop.get("refit_conviction")}'
-              f' -> LEAN/55')
+              f' -> {new_tier}/{new_conv}')
         if dry_run: capped += 1; continue
-        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
         pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
                             headers=H_WRITE, json=patch, timeout=10)
         if pr.status_code in (200, 204): capped += 1
@@ -483,10 +487,14 @@ def _cap_ha_over_no_signal(game_date: str, dry_run: bool = False) -> int:
 
         sig['_ha_over_gate'] = 'NO_REFIT_UP_NO_SHARP_LIFT'
         sig['_refit_override_at'] = _et_today()
+        # 2026-09-18 Andy Option A: PRIME floors at STRONG.
+        old_tier = prop.get('tier')
+        new_tier = 'STRONG' if old_tier == 'PRIME' else 'LEAN'
+        new_conv = 65 if new_tier == 'STRONG' else 55
         print(f'  ha_over-gate: {prop["player_name"]:22} '
-              f'{prop["tier"]}/{base} refit={refit} -> LEAN/55')
+              f'{old_tier}/{base} refit={refit} -> {new_tier}/{new_conv}')
         if dry_run: gated += 1; continue
-        patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+        patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
         pr = requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
                             headers=H_WRITE, json=patch, timeout=10)
         if pr.status_code in (200, 204): gated += 1
@@ -697,8 +705,9 @@ def _playbook_gate_props(game_date: str, dry_run: bool = False) -> int:
         elif old_tier == 'PRIME' and no_proven:
             should_demote = True
             reason = 'NO_VALIDATED_SIGNALS'
-            new_tier = 'LEAN'
-            new_conv = 55
+            # 2026-09-18 Andy Option A: PRIME floors at STRONG (was LEAN/55).
+            new_tier = 'STRONG'
+            new_conv = 65
 
         if not should_demote: continue
 
@@ -792,7 +801,11 @@ def _sync_props_lean_cap(game_date: str, jr_row: dict, action: str,
     rows = pr.json()
     if not rows: return
     prop = rows[0]
-    if (prop.get('tier') or '').upper() == 'LEAN' and (prop.get('conviction') or 0) <= 55:
+    old_tier = (prop.get('tier') or '').upper()
+    # 2026-09-18 Andy Option A: PRIME floors at STRONG in props-mirror path.
+    new_tier = 'STRONG' if old_tier == 'PRIME' else 'LEAN'
+    new_conv = 65 if new_tier == 'STRONG' else 55
+    if old_tier == new_tier and (prop.get('conviction') or 0) <= new_conv:
         return  # already capped
     sig = prop.get('signals') or {}
     if isinstance(sig, str):
@@ -801,7 +814,7 @@ def _sync_props_lean_cap(game_date: str, jr_row: dict, action: str,
     if not isinstance(sig, dict): sig = {}
     sig['_refit_override_cap'] = action
     sig['_refit_override_at'] = _et_today()
-    patch = {'tier': 'LEAN', 'conviction': 55, 'signals': sig}
+    patch = {'tier': new_tier, 'conviction': new_conv, 'signals': sig}
     requests.patch(f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
                    headers=H_WRITE, json=patch, timeout=10)
 
