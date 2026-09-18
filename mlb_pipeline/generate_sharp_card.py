@@ -979,7 +979,12 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
     # cron, not today's locked publication.
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour  # EDT — TODO: DST switch
-    _HARD_LOCK_HOUR = int(os.environ.get('SHARP_CARD_HARD_LOCK_ET_HOUR', '11'))
+    # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Gives late-morning
+    # window for view fixes / migration reloads to land before the card
+    # freezes. Prior 11am lock trapped 5am cron output when a fix landed
+    # after the lock hour (case: PRIME-honors-raw view migration 20260918c
+    # applied ~13:00 ET, Sharp Card was already locked with stale PRIMEs).
+    _HARD_LOCK_HOUR = int(os.environ.get('SHARP_CARD_HARD_LOCK_ET_HOUR', '15'))
     _emergency = os.environ.get('SHARP_CARD_EMERGENCY_UNLOCK') == '1'
     _past_lock = _et_hour >= _HARD_LOCK_HOUR
 

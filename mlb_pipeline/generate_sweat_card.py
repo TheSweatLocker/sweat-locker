@@ -1958,7 +1958,10 @@ def build_card():
     import os as _os
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour  # EDT — TODO: DST switch
-    _HARD_LOCK_HOUR = int(_os.environ.get('SWEAT_CARD_HARD_LOCK_ET_HOUR', '11'))
+    # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Matches sharp card
+    # lock bump — gives late-morning window for view fixes / migration
+    # reloads to land before card freezes.
+    _HARD_LOCK_HOUR = int(_os.environ.get('SWEAT_CARD_HARD_LOCK_ET_HOUR', '15'))
     _emergency = _os.environ.get('SWEAT_CARD_EMERGENCY_UNLOCK') == '1'
     if _et_hour >= _HARD_LOCK_HOUR and not _emergency:
         try:
