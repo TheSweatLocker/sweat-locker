@@ -497,6 +497,25 @@ jobs:
           cd mlb_pipeline
           python nfl_generate_props.py || echo "props failed (non-fatal)"
 
+      # 2026-09-17 PHASE 1 SHADOW SCORER — usage_v2 variant.
+      # Writes playbook_snapshot_shadow_v2 on pass-catcher + rushing
+      # props based on WOPR / air_yards_share / raw targets / YAC signals
+      # the live scorer barely uses. ZERO impact on user-visible picks —
+      # shadow blob only, tagged variant="usage_v2" for the backtest
+      # harness (shadow_v2_backtest.py). Promotes to live only after
+      # n≥50 AND edge_pp ≥ 3.0 sustained ≥ 4 weeks.
+      # See memory/project_nfl_sota_rebuild_917 for full phase list.
+      # Non-fatal — shadow failures never block the live pipeline.
+      - name: NFL prop shadow_v2 (usage_v2 variant — Phase 1)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nfl_prop_usage_v2_shadow.py --days 14 || echo "usage_v2 shadow non-fatal"
+
       # 2026-09-08 NFL prop signal discipline. Post-generation cleanup:
       #   1. Drop cross-team leaks (player_team ≠ home/away)
       #   2. Dedupe alt-line conflicts (winner-take-all per player+family)
