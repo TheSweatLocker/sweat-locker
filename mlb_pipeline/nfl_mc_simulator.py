@@ -68,14 +68,41 @@ def _et_today() -> str:
 
 
 def load_team_stats(season: int) -> dict:
-    """Load current season NFL team stats keyed by team abbreviation."""
-    r = requests.get(f'{SB}/rest/v1/nfl_team_stats', headers=H_READ,
-        params={'season': f'eq.{season}', 'season_type': 'eq.REG',
-                'select': 'team,games,pass_epa,rush_epa,pass_attempts,rush_attempts,'
-                          'sacks_suffered,pass_ints'},
-        timeout=15)
-    if r.status_code != 200: return {}
-    return {row['team']: row for row in r.json()}
+    """Load NFL team stats keyed by team abbreviation.
+
+    2026-09-17: added prior-season fallback. Prior version pulled only
+    the requested season; when the season had <MIN_GAMES_FOR_STATS avg
+    games per team (e.g. Week 2 with 1 game each), team_offensive_strength
+    and team_defensive_strength returned 0.0 for every team → every game
+    simulated at league-avg identical → NFL MC output showed home 56-58%
+    margin +2.4-2.7 total 47.5 for every game regardless of teams.
+    Now falls back to prior season data until current season crosses the
+    games-threshold, so MC output actually differentiates teams.
+    """
+    def _pull(season_val: int) -> dict:
+        r = requests.get(f'{SB}/rest/v1/nfl_team_stats', headers=H_READ,
+            params={'season': f'eq.{season_val}', 'season_type': 'eq.REG',
+                    'select': 'team,games,pass_epa,rush_epa,pass_attempts,rush_attempts,'
+                              'sacks_suffered,pass_ints,def_sacks,def_ints'},
+            timeout=15)
+        if r.status_code != 200: return {}
+        return {row['team']: row for row in r.json()}
+
+    current = _pull(season)
+    if current:
+        games_list = [row.get('games') or 0 for row in current.values()]
+        avg_games = sum(games_list) / len(games_list) if games_list else 0
+        if avg_games >= MIN_GAMES_FOR_STATS:
+            return current
+        # Current season thin — try prior
+        prior = _pull(season - 1)
+        if prior:
+            prior_games = [row.get('games') or 0 for row in prior.values()]
+            prior_avg = sum(prior_games) / len(prior_games) if prior_games else 0
+            if prior_avg >= MIN_GAMES_FOR_STATS:
+                print(f'  [load_team_stats] season {season} thin ({avg_games:.1f} avg games/team) → falling back to {season - 1} ({prior_avg:.1f} avg games)')
+                return prior
+    return current
 
 
 def team_offensive_strength(team_row: dict) -> Optional[float]:
