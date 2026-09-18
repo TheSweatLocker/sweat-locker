@@ -31,6 +31,16 @@ on:
           - resolver_only
           - cohorts_only
 
+# 2026-09-18: serialize. Measured: 10 cron entries resolve to 8 fire
+# times with a MINIMUM GAP OF 10 MINUTES, while an observed run takes
+# 49 minutes (run #96). That allows up to 5 concurrent runs doing
+# wipe-and-refresh on the same NFL tables. Same failure class as the
+# MLB pipeline's split-group bug found the same day.
+# Queue, don't cancel — a cancelled run can die at its auto-commit step.
+concurrency:
+  group: nfl-pipeline
+  cancel-in-progress: false
+
 jobs:
   nfl-pipeline:
     runs-on: ubuntu-latest

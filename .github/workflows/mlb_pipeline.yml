@@ -32,46 +32,39 @@ on:
     # workflow (retry_starters.yml) that runs 5pm ET + fires only the
     # retry_missing_starters + patch_projected_ks steps. Not adding here
     # to avoid re-running the full 60-step pipeline for 2 API calls.
-  # 2026-09-01: PUSH TRIGGER. GH Actions cron is running 4-7 HOURS LATE
-  # for this repo (verified via workflow_heartbeat log). Users log in
-  # at 9am ET expecting picks; scheduled 6am run doesn't fire until
-  # 1pm ET most days now. Push-to-main also fires the pipeline so any
-  # commit refreshes the slate immediately. Paired with the nightly
-  # mlb_grade_overnight.yml so morning records are ALWAYS current
-  # even when the main pipeline is late.
+  # 2026-09-18: PUSH TRIGGER REMOVED. It was added 9/01 to work around
+  # late GH cron, and every trigger problem since has been a patch on
+  # the damage it caused:
+  #   9/08  concurrency group added — push + 4 crons + dispatch had
+  #         produced 23 concurrent runs in 4 hours racing Supabase upserts
+  #   9/11  group split by trigger source — the single group was letting
+  #         GH cancel QUEUED scheduled runs when a push queued behind them
+  #   9/17  paths + paths-ignore attempt to narrow over-triggering —
+  #         invalid YAML, 500+ runs failed validation, reverted
+  # The split then let a scheduled run and a push run execute AT THE SAME
+  # TIME (different concurrency groups). Both take 1h12m-1h40m and do
+  # wipe-and-refresh on the same tables. Verified 2026-09-18: runs #1094
+  # (scheduled) and #1095 (push) in progress simultaneously — the source
+  # of mid-day tier drift and badge inconsistency.
   #
-  # Path filter: files that affect MLB pick generation.
-  # 2026-09-17 tried tightening with paths + paths-ignore combined —
-  # GHA doesn't allow both fields on the same trigger, yaml failed
-  # validation, every push since silently failed (0 jobs run, run name
-  # falls back to yaml path instead of workflow name). Reverted to
-  # plain paths — accepts some over-triggering from other-sport scripts
-  # that live in mlb_pipeline/** (nfl_*.py etc). Proper narrowing via
-  # ! negation within a single paths list is queued as a follow-up
-  # once verified in a test PR.
-  push:
-    branches: [main]
-    paths:
-      - 'mlb_pipeline/**'
-      - '.github/workflows/mlb_pipeline.yml'
+  # Cron lateness — the original reason for the push trigger — is already
+  # covered by the FOUR scheduled triggers above (6:00/7:15/8:30am + 2pm
+  # ET). Manual "refresh now" is workflow_dispatch, which is what it is
+  # for. Committing code is not a reason to re-run a 90-minute data
+  # pipeline.
   workflow_dispatch:
 
-# 2026-09-08: serialize concurrent runs. Prior state: 4 crons + push
-# trigger on mlb_pipeline/** + manual dispatches produced 23 concurrent
-# runs in a 4-hour window, racing on Supabase upserts and occasionally
-# tripping resolve_potd with transient collisions. Queue mode (no cancel)
-# means late-arriving triggers wait rather than being killed — no risk of
+# 2026-09-08: serialize concurrent runs. Queue mode (no cancel) means
+# late-arriving triggers wait rather than being killed — no risk of
 # canceling a run at its final auto-commit step.
 #
-# 2026-09-11 REFINEMENT: split concurrency group by trigger source. Prior
-# single "mlb-pipeline" group had GitHub silently cancelling QUEUED
-# scheduled runs when a newer push/manual queued behind them ("Canceling
-# since a higher priority waiting request exists"). Scheduled data
-# refreshes were being killed in favor of commit-triggered rebuilds
-# doing the same work. Now push/dispatch dedup against each other, but
-# scheduled runs get their own queue slot and always execute.
+# 2026-09-18: back to a SINGLE group. The 9/11 trigger-source split
+# existed only because push runs competed with scheduled runs for the
+# queue slot. With the push trigger gone nothing competes, so the split
+# is unnecessary — and it was actively harmful, since separate groups
+# meant separate queues meant simultaneous execution.
 concurrency:
-  group: mlb-pipeline-${{ github.event_name == 'schedule' && 'sched' || 'user' }}
+  group: mlb-pipeline
   cancel-in-progress: false
 
 jobs:

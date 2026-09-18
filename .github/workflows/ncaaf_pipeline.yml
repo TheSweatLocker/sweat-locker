@@ -17,6 +17,15 @@ on:
         type: choice
         options: [full, odds_only, card_only, resolver_only, cohorts_only]
 
+# 2026-09-18: serialize. Measured min cron gap 45 min against an
+# observed 40m 25s run (#42) — a 5-minute margin. Not currently
+# overlapping, but one slow Saturday pull puts two runs on the same
+# NCAAF tables. Guard is cheap; the drift it prevents is not.
+# Queue, don't cancel — a cancelled run can die at its auto-commit step.
+concurrency:
+  group: ncaaf-pipeline
+  cancel-in-progress: false
+
 jobs:
   ncaaf-pipeline:
     runs-on: ubuntu-latest
