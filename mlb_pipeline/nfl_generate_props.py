@@ -681,17 +681,24 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
 
 @functools.lru_cache(maxsize=None)
 def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
-                                       weeks_back: int = 5) -> float | None:
+                                       weeks_back: int = 5) -> tuple[float, int] | None:
     """Aggregate per-week yards/TDs allowed by opp_team over last N weeks.
+
+    Returns (avg_per_game, actual_weeks_used) or None if no data.
 
     2026-08-23: nfl_team_defense_stats only has SEASON averages — can't
     see recent form. This aggregates from nfl_player_stats by summing
     the stat across all opposing players who played opp_team in the
-    last N weeks. Returns avg per-game allowed. None if no data.
+    last N weeks.
 
     2026-09-09: memoized. HIGHEST-VALUE cache — called per prop and unique
     args are only ~384 (32 teams × 12 stats). Was hitting DB thousands of
     times/run before. Now ≤384 DB calls per run.
+
+    2026-09-17: return signature changed from float to (float, int).
+    Early-season the "L5" label was misleading — Week 2 with only Week 1
+    data would report "L5" showing a 1-game total. Caller now knows
+    actual_weeks and can either suppress (n<3) or label honestly (L{n}).
     """
     if not opp_team or not stat_col: return None
     try:
@@ -720,7 +727,7 @@ def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
     recent_weeks = sorted(by_week.keys(), reverse=True)[:weeks_back]
     if not recent_weeks: return None
     total = sum(by_week[w] for w in recent_weeks)
-    return round(total / len(recent_weeks), 1)
+    return (round(total / len(recent_weeks), 1), len(recent_weeks))
 
 
 @functools.lru_cache(maxsize=None)
@@ -1144,36 +1151,42 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     # def_recent_soft / def_recent_stout signals when yielded avg
     # sits meaningfully above/below league baseline.
     def_bonus = 0
-    def_recent_avg = fetch_nfl_defense_recent_allowed(
+    def_recent_result = fetch_nfl_defense_recent_allowed(
         opp_team, cfg['col'], season, weeks_back=5)
-    if def_recent_avg is not None:
-        baseline = cfg['league_baseline']
-        # 2026-09-17 KNOWN-BUG PARTIAL FIX: pct_delta comparison mixes
-        # scales — fetch_nfl_defense_recent_allowed returns TEAM-total
-        # yielded per game (sum across all opposing players), while
-        # cfg['league_baseline'] is player-level for some families
-        # (receptions=3.2, reception_yds=42) and team-level for others
-        # (pass_yds=235). That produced "+712% vs baseline" nonsense on
-        # Gibbs O3.5 REC (26 team-total / 3.2 player-baseline). Signal
-        # DIRECTION still fires correctly (soft/stout tier), just don't
-        # render the bogus % in the user-visible text. Proper fix: add
-        # per-family team_league_baseline field and use it here.
-        # See project_nfl_def_baseline_mismatch_917 (queued v1.0.2).
-        pct_delta = (def_recent_avg - baseline) / baseline if baseline else 0
-        if pct_delta >= 0.15:
-            if side.upper() == 'OVER':
-                def_bonus += 5
-                l10_sigs['def_recent_soft'] = (
-                    f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
-                    f'— soft matchup'
-                )
-        elif pct_delta <= -0.15:
-            if side.upper() == 'UNDER':
-                def_bonus += 5
-                l10_sigs['def_recent_stout'] = (
-                    f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
-                    f'— stout matchup'
-                )
+    # 2026-09-17: return is (avg, weeks_used) tuple now — suppress signal
+    # entirely when we only have 1-2 weeks (early season noise). Label
+    # honestly as L{n} once we have 3+ weeks (never lie about sample size).
+    if def_recent_result is not None:
+        def_recent_avg, weeks_used = def_recent_result
+        if weeks_used < 3:
+            # Not enough data — skip this signal to avoid single-game noise
+            # masquerading as an L5 trend (Andy 9/17 catch: "L5" showing
+            # only Week 1's 26 receptions on BUF was misleading).
+            pass
+        else:
+            baseline = cfg['league_baseline']
+            # KNOWN-BUG PARTIAL FIX: pct_delta comparison mixes scales —
+            # fetch_nfl_defense_recent_allowed returns TEAM-total yielded
+            # per game, while cfg['league_baseline'] is player-level for
+            # some families (receptions=3.2, reception_yds=42) vs team-level
+            # for others (pass_yds=235). Direction still valid; render text
+            # drops the misleading %. See project_nfl_def_baseline_mismatch_917.
+            pct_delta = (def_recent_avg - baseline) / baseline if baseline else 0
+            wk_label = f'L{weeks_used}'
+            if pct_delta >= 0.15:
+                if side.upper() == 'OVER':
+                    def_bonus += 5
+                    l10_sigs['def_recent_soft'] = (
+                        f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game {wk_label} '
+                        f'— soft matchup'
+                    )
+            elif pct_delta <= -0.15:
+                if side.upper() == 'UNDER':
+                    def_bonus += 5
+                    l10_sigs['def_recent_stout'] = (
+                        f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game {wk_label} '
+                        f'— stout matchup'
+                    )
 
     # 2026-08-23 TARGET SHARE SIGNAL for pass-catcher props. Available
     # directly in nfl_player_stats. High target share = genuinely focal
