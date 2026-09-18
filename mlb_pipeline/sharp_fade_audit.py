@@ -42,6 +42,7 @@ if _env.exists():
 
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+H_READ = H  # 2026-09-17: alias — write_today_nfl / write_today_ncaaf reference H_READ (NameError before this alias)
 H_W = {**H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 sys.path.insert(0, str(Path(__file__).parent))
