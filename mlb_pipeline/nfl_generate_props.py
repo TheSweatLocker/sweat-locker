@@ -1148,22 +1148,31 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         opp_team, cfg['col'], season, weeks_back=5)
     if def_recent_avg is not None:
         baseline = cfg['league_baseline']
-        # Loose delta thresholds — "soft" if opp allows 15%+ over baseline
-        # (over-friendly) or "stout" if 15%- under baseline (under-friendly)
+        # 2026-09-17 KNOWN-BUG PARTIAL FIX: pct_delta comparison mixes
+        # scales — fetch_nfl_defense_recent_allowed returns TEAM-total
+        # yielded per game (sum across all opposing players), while
+        # cfg['league_baseline'] is player-level for some families
+        # (receptions=3.2, reception_yds=42) and team-level for others
+        # (pass_yds=235). That produced "+712% vs baseline" nonsense on
+        # Gibbs O3.5 REC (26 team-total / 3.2 player-baseline). Signal
+        # DIRECTION still fires correctly (soft/stout tier), just don't
+        # render the bogus % in the user-visible text. Proper fix: add
+        # per-family team_league_baseline field and use it here.
+        # See project_nfl_def_baseline_mismatch_917 (queued v1.0.2).
         pct_delta = (def_recent_avg - baseline) / baseline if baseline else 0
         if pct_delta >= 0.15:
             if side.upper() == 'OVER':
                 def_bonus += 5
                 l10_sigs['def_recent_soft'] = (
                     f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
-                    f'(+{int(pct_delta*100)}% vs baseline) — soft matchup'
+                    f'— soft matchup'
                 )
         elif pct_delta <= -0.15:
             if side.upper() == 'UNDER':
                 def_bonus += 5
                 l10_sigs['def_recent_stout'] = (
                     f'Opp {opp_team} allowed {def_recent_avg:.1f} {cfg["label"]}/game L5 '
-                    f'({int(pct_delta*100)}% vs baseline) — stout matchup'
+                    f'— stout matchup'
                 )
 
     # 2026-08-23 TARGET SHARE SIGNAL for pass-catcher props. Available
