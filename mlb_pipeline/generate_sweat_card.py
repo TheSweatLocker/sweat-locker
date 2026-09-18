@@ -485,7 +485,15 @@ def fetch_top_props():
             "game_date": f"eq.{today}",
             "select": "player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup",
             "order": "conviction.desc",
-            "limit": "50",  # bumped 20→50 so post-ban-filter set stays populated
+            # 2026-09-18: 50 → 300. On days when all top-50 by conviction
+            # are banned batter unders (hr/rbis/total_bases/runs all at
+            # -300+ juice with conv 88-91), the entire fetch pool got
+            # dropped by the ban filter and top_props ended up empty even
+            # though lower-conviction pitcher props (ks/outs/BB/ER/HA)
+            # existed and were publishable. Andy 9/18: "only see 4 plays
+            # no props" — root cause was this fetch cap. 300 buffers the
+            # top-conviction-ban-cluster and preserves the pitcher tail.
+            "limit": "300",
         },
     )
     # 2026-09-17 SHARED POLICY via prop_ban_policy.py — single source of
