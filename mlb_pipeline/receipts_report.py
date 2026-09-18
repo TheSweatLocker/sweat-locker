@@ -89,13 +89,18 @@ def fetch_current(sport: str) -> list[dict]:
 
 def fetch_receipts_rollup(sport: str, receipt_surface: str, tier_filter: str | None,
                           start_date: date, end_date: date) -> dict:
-    """Roll up public_receipts for the given window into wins/losses/units."""
+    """Roll up public_receipts for the given window into wins/losses/units.
+
+    Filters out tier='SKIP' — those are receipts whose underlying prop
+    was later demoted below publishable. Not real user-visible picks.
+    """
     url = (f'{SB}/rest/v1/public_receipts?sport=eq.{sport}'
            f'&surface=eq.{receipt_surface}'
            f'&game_date=gte.{start_date.isoformat()}'
            f'&game_date=lte.{end_date.isoformat()}'
            f'&result=not.is.null'
-           f'&select=result,pick_odds,tier')
+           f'&tier=not.eq.SKIP'
+           f'&select=result,pick_odds,tier&limit=10000')
     if tier_filter:
         url += f'&tier=eq.{tier_filter}'
     r = requests.get(url, headers=H_R, timeout=30).json()
