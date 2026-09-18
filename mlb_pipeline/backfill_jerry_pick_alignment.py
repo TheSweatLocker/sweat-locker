@@ -76,8 +76,18 @@ def load_reads(sport: str, date_from: str, date_to: str) -> list:
     return r.json() if isinstance(r.json(), list) else []
 
 
-def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str) -> dict | None:
-    """Return the PATCH payload or None if no change needed."""
+def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str,
+              line_only: bool = False) -> dict | None:
+    """Return the PATCH payload or None if no change needed.
+
+    line_only mode (2026-09-18 per Andy B choice on item #5):
+      Only patch call_line + call_text IF the underlying side/market
+      match. Rejects any full-pick change. Used post-odds-pull to keep
+      jerry in sync with market line drift when week-lock blocks full
+      alignment. Same side, same market, different line = fix line
+      only. Different side/market = leave alone (that requires full
+      alignment cycle, which respects week-lock).
+    """
     if not isinstance(pp, dict) or not pp: return None
     market = str(pp.get('type') or '').lower()
     side = pp.get('side')
@@ -86,6 +96,26 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     line = pp.get('line')
     tier = str(pp.get('tier') or '').upper()
     valid_markets = _VALID_MARKETS_BY_SPORT.get(sport.upper(), set())
+
+    if line_only:
+        # Bail if pp is soft-tier or invalid market (nothing to align)
+        if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
+            return None
+        # Require SAME side + SAME market — line-only is a line refresh,
+        # never a pick change (those go through full-alignment path).
+        cur_side = str(read_row.get('call_side') or '').upper()
+        cur_market = str(read_row.get('call_market') or '').lower()
+        target_side = str(side).upper()
+        if cur_market != market or cur_side != target_side:
+            return None  # side or market differs — needs full alignment, not line-only
+        # If line + label already match, nothing to do
+        patch = {}
+        if read_row.get('call_line') != line:
+            patch['call_line'] = line
+        if read_row.get('call_text') != label:
+            patch['call_text'] = label
+        return patch or None
+
     # Soft-tier / no-pick → force PASS badge, preserve prose
     if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
         target = {
@@ -109,7 +139,7 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     return patch or None
 
 
-def run(sport_filter: str | None, days_ahead: int, dry_run: bool) -> None:
+def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: bool = False) -> None:
     from datetime import date as _date
     today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
     date_from = today.isoformat()
@@ -125,12 +155,17 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool) -> None:
         # locked writeup (drift → writeup argues X, badge shows Y).
         # See generate_nfl_game_reads.nfl_week_write_locked() for shared
         # semantics; imported inline to keep this script standalone.
-        if sport == 'NFL':
+        # 2026-09-18 line_only mode bypasses the week-lock — line drift
+        # post-lock (market moved, pp.label updated) needs jerry to
+        # follow the line WITHOUT allowing side/market changes. The
+        # line_only alignment function itself refuses side/market
+        # changes, so this bypass is safe.
+        if sport == 'NFL' and not line_only:
             try:
                 from generate_nfl_game_reads import nfl_week_write_locked
                 if nfl_week_write_locked():
                     print(f'  🔒 NFL: week-locked (post Thu 8am) — skipping alignment '
-                          f'to preserve locked picks. NFL_UNLOCK_WEEK=1 to override.')
+                          f'to preserve locked picks. NFL_UNLOCK_WEEK=1 or --line-only to override.')
                     continue
             except Exception as _e:
                 print(f'  ⚠ NFL lock check failed ({_e}) — proceeding with alignment')
@@ -148,7 +183,7 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool) -> None:
                 except (TypeError, ValueError): pp = None
             if not isinstance(pp, dict):
                 skipped += 1; continue
-            patch = align_row(sport, r, pp, ctx.get('home_team',''), ctx.get('away_team',''))
+            patch = align_row(sport, r, pp, ctx.get('home_team',''), ctx.get('away_team',''), line_only=line_only)
             if not patch:
                 unchanged += 1; continue
             if dry_run:
@@ -178,8 +213,12 @@ def main():
     p.add_argument('--sport', choices=['MLB','NFL','NCAAF','NBA','NCAAB','NHL'])
     p.add_argument('--days', type=int, default=14)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--line-only', action='store_true',
+                   help='Line-only mode: patch jerry.call_line + call_text ONLY when '
+                        'pp.side/market match jerry (line drifted). Bypasses NFL week-lock '
+                        'since it never allows a pick change. Use post-odds-pull.')
     args = p.parse_args()
-    run(args.sport, args.days, args.dry_run)
+    run(args.sport, args.days, args.dry_run, line_only=args.line_only)
 
 
 if __name__ == '__main__':

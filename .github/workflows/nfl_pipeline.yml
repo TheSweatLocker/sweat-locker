@@ -105,6 +105,24 @@ jobs:
           cd mlb_pipeline
           python nfl_odds_pull.py || echo "nfl_odds_pull failed (non-fatal)"
 
+      # 2026-09-18 line-only jerry alignment post odds-pull.
+      # Rationale (Andy directive item #5.B): when close_spread updates
+      # mid-week, primary_play.label refreshes to new line but jerry_reads
+      # stays frozen (week-lock post Thu 8am ET blocks full alignment).
+      # Result: badge on games tab shows -8.5, jerry writeup chip shows
+      # -7.5 (line drift). This step bypasses week-lock ONLY for line-
+      # alignment: same side, same market, different line = fix line.
+      # Side/market changes still respect the lock (require full cycle).
+      - name: Line-only jerry alignment (post-odds line drift catch)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 14 || echo "line-only align non-fatal"
+
       - name: Pull Odds API preseason lines (Aug only)
         if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only')
         env:
