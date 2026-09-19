@@ -1031,6 +1031,27 @@ def _emit_nfl_ctx_signals(prop_family: str, side: str, ctx: dict, player_team: s
     return sig, bonus
 
 
+def _et_game_date(commence: str | None) -> str:
+    """UTC commence_time -> the ET calendar date the game is played on.
+
+    The Odds API returns UTC. Slicing [:10] off it files every night game a
+    day late, because TNF/SNF/MNF kick at 8:15-8:20pm ET = 00:15-00:20 UTC
+    the following day. Mirrors ncaaf_odds_pull.py:121.
+
+    Returns '' when commence is missing/unparseable so the caller's existing
+    empty-date handling is unchanged rather than silently inventing today.
+    """
+    if not commence:
+        return ''
+    try:
+        dt = datetime.fromisoformat(str(commence).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return str(commence)[:10]
+    # EDT through the NFL regular season. Matches the -4 convention used
+    # across the pipeline (see ncaaf_odds_pull, _today_et helpers).
+    return (dt - timedelta(hours=4)).date().isoformat()
+
+
 def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
                    aliases: dict, season: int, ctx: dict | None = None) -> Optional[dict]:
     """Build one nfl_props row from an Odds API prop outcome."""
@@ -1248,7 +1269,27 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
 
     return {
         'game_id': event.get('id'),
-        'game_date': (event.get('commence_time') or '')[:10],
+        # 2026-09-19 UTC-vs-ET DATE DRIFT FIX.
+        # This was `(commence_time or '')[:10]` — slicing the UTC date
+        # straight off the Odds API timestamp. NFL's marquee windows all
+        # cross UTC midnight: TNF and SNF kick at 8:15-8:20pm ET, which is
+        # 00:15-00:20 UTC the NEXT day, and MNF likewise. Those props were
+        # filed one day late, landing on dates with no NFL games at all.
+        #
+        # Measured before the fix: 164 of 1,233 props (13%) sat on dates
+        # ESPN shows zero games for — 9/11 (46), 9/15 (56), 9/18 (41),
+        # 9/22 (21) — each the day AFTER a real slate.
+        #
+        # Downstream damage: the grader looks for games on the stored date
+        # and finds none, so those props never resolve. It also nearly cost
+        # us four wrong Voids on 2026-09-19 — Dak Prescott and Jaxson Dart
+        # props filed under 9/14 while they actually played 9/13, so a
+        # did-not-play check read "absent from 9/14" as a DNP.
+        #
+        # Same root cause as the NCAAF game_id drift fixed in 20260919b.
+        # Anchor to ET like ncaaf_odds_pull.py:121 so the date matches the
+        # day the game is actually played.
+        'game_date': _et_game_date(event.get('commence_time')),
         'season': season,
         'week': None,   # nflverse week schedule join (Phase 3.1)
         'home_team': home_canon,

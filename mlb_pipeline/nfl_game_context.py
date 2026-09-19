@@ -1266,7 +1266,24 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     commence = event.get('commence_time', '')
     try:
         dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        game_date = dt.date().isoformat()
+        # 2026-09-19 UTC-vs-ET DATE DRIFT FIX. This was dt.date() on the raw
+        # UTC timestamp from the Odds API. NFL's marquee windows all cross
+        # UTC midnight — TNF/SNF kick 8:15-8:20pm ET = 00:15-00:20 UTC the
+        # NEXT day, and MNF likewise — so those games were filed one day
+        # late, onto dates with no NFL games at all.
+        #
+        # Measured before the fix: nfl_game_context put SF@LA on 09-11,
+        # DEN@KC on 09-15, DET@BUF on 09-18 — ESPN shows ZERO games on all
+        # three. nfl_pipeline_props inherited the same drift (169 rows).
+        #
+        # Consequence: graders look for games on the stored date, find none,
+        # and the picks never resolve. It also nearly produced four wrong
+        # Voids on 2026-09-19 when a did-not-play check read "absent from
+        # 09-14" as a DNP for players who had actually played 09-13.
+        #
+        # Same root cause as the NCAAF game_id drift (migration 20260919b).
+        # Anchor to ET, matching ncaaf_odds_pull.py:121.
+        game_date = (dt - timedelta(hours=4)).date().isoformat()
     except Exception:
         dt = _et_now()
         game_date = dt.date().isoformat()
