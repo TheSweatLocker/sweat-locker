@@ -1025,10 +1025,30 @@ def _resolve_single_pick(pick, slate_date):
         return 'Pending'
 
     if source == 'mlb_pipeline_props':
+        # 2026-09-18: prefer the stable row id. source_key embeds prop_line,
+        # which drifts after the card is built, so the exact-line lookup
+        # below silently matches nothing and returns 'Pending' forever.
+        sid = pick.get('source_id')
+        if sid:
+            resp = _get(f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props',
+                        params={'id': f'eq.{sid}', 'select': 'result'})
+            if resp is not None:
+                try: r = resp.json()
+                except (ValueError, AttributeError): r = []
+                if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
+                    return r[0]['result']
+                if r:
+                    return 'Pending'  # row exists, genuinely not graded yet
+            print(f'  ⚠️  prop source_id={sid} not found ({slate_date}) — '
+                  f'falling back to composite key')
+
+        # Legacy path for cards built before source_id existed.
         # Composite key: "PlayerName|prop_type|prop_line"
         try:
             player, ptype, pline = (key or '').split('|', 2)
         except ValueError:
+            print(f'  🚨 unparseable prop source_key {key!r} ({slate_date}) — '
+                  f'pick can never resolve')
             return 'Pending'
         # 2026-09-03: use retry wrapper — this was the exact call that
         # hit ReadTimeout in GHA cron on 9/3 during Sweat Card resolver.
@@ -1049,6 +1069,26 @@ def _resolve_single_pick(pick, slate_date):
             return 'Pending'
         if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
             return r[0]['result']
+        if r:
+            return 'Pending'  # row exists, genuinely not graded yet
+        # No row at this exact line. Distinguish DANGLING from unfinished —
+        # returning a bare 'Pending' here is what hid Lugo/Wrobleski for days.
+        loose = _get(f'{SUPABASE_URL}/rest/v1/mlb_pipeline_props',
+                     params={'game_date': f'eq.{slate_date}',
+                             'player_name': f'eq.{player}',
+                             'prop_type': f'eq.{ptype}',
+                             'select': 'prop_line,result'})
+        alts = []
+        if loose is not None:
+            try: alts = loose.json() or []
+            except (ValueError, AttributeError): alts = []
+        if alts:
+            print(f'  🚨 LINE DRIFT {slate_date} {player} {ptype}: card has '
+                  f'{pline}, props has {[a.get("prop_line") for a in alts]} — '
+                  f'NOT auto-resolved (needs source_id or manual grade)')
+        else:
+            print(f'  🚨 DANGLING {slate_date} {player} {ptype} @ {pline}: no '
+                  f'props row at any line — pick can never resolve')
         return 'Pending'
 
     if source == 'mlb_game_results':

@@ -483,7 +483,9 @@ def fetch_top_props():
         "mlb_pipeline_props",
         {
             "game_date": f"eq.{today}",
-            "select": "player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup",
+            # 2026-09-18: pull `id` so the pick can carry a STABLE source_id.
+            # See the source_key comment below — prop_line drifts, id doesn't.
+            "select": "id,player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup",
             "order": "conviction.desc",
             # 2026-09-18: 50 → 300. On days when all top-50 by conviction
             # are banned batter unders (hr/rbis/total_bases/runs all at
@@ -1828,6 +1830,16 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             # engine_clarity_refactor.md Phase 2 for the unification plan.
             "tier_source": "prop_pipeline_conviction",
             "source_table": "mlb_pipeline_props",
+            # 2026-09-18: source_id is the STABLE handle. source_key embeds
+            # prop_line, which drifts after the card is built (re-scrape moves
+            # the number, or a family ban removes the row). The resolver's
+            # exact prop_line= lookup then matches nothing and returns
+            # 'Pending' forever — indistinguishable from "game not finished".
+            # Four picks were stuck this way across 14 cards, incl. Seth Lugo
+            # Under 15.5 Outs on 9/17 (props had moved to 16.5; it WON, final
+            # 15 outs) and Justin Wrobleski Under 14.5 Outs (row gone; he
+            # recorded 9). Resolve by id first, keep source_key for old rows.
+            "source_id": prop.get("id"),
             "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
             "narrative_hint": narrative_hint,
         }
