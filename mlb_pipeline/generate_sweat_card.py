@@ -2496,7 +2496,20 @@ def build_card():
     # doesn't block the cache write.
     try:
         from prop_publish_lock import lock_publish as _lock
-        top_8_local = card.get("top_8") or []
+        # 2026-09-19: football_picks were NEVER locked. This loop only walked
+        # top_8, so the NCAAF/NFL picks rendered on the Sweat Card had zero
+        # first-publisher-wins protection — any workflow re-run before the
+        # 15:00 ET hard lock could silently swap them. On a Saturday that is
+        # the whole slate, and CFB kicks off at noon ET, hours before the
+        # clock lock engages. Andy: "want to make sure Sweat card is locked
+        # no matter what workflow happens, no changing the college football
+        # picks." A clock-based lock is the wrong instrument for football;
+        # lock-on-first-publish is.
+        top_8_local = list(card.get("top_8") or [])
+        _football = list(card.get("football_picks") or [])
+        for _fp in _football:
+            if isinstance(_fp, dict) and _fp.get("game_id"):
+                top_8_local.append(_fp)
         for _p in top_8_local:
             if not isinstance(_p, dict): continue
             _pt = (_p.get("prop_type") or "").strip()

@@ -5,6 +5,15 @@ import json
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, timezone
 
+# 2026-09-19: force UTF-8 stdout. This module prints emoji status markers
+# and gained 🚨 DANGLING lines in da8c8af0; on a Windows cp1252 console
+# that raised UnicodeEncodeError mid-run and killed the sweat-card walk
+# ("0 game results resolved" with a traceback). GH Actions is UTF-8 so it
+# only bit local runs — which is exactly when someone is debugging.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+
 load_dotenv()
 
 def _et_today():

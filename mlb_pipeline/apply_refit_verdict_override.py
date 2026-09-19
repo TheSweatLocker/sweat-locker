@@ -1089,10 +1089,27 @@ def run(game_date: str, dry_run: bool = False) -> int:
         print(f'  hits_over juice gate: {hits_gated} rows demoted '
               f'(book_line worse than -200)')
 
-    ha_gated = _cap_ha_over_no_signal(game_date, dry_run=dry_run)
-    if ha_gated:
-        print(f'  ha_over gate: {ha_gated} rows capped to LEAN '
-              f'(no refit-up and no sharp lift)')
+    # 2026-09-19 RETIRED — _cap_ha_over_no_signal is disabled, not deleted.
+    #
+    # The rule required ha_over to show refit-up OR a sharp-market lift, else
+    # demote. Its stated basis (see the function docstring) was "ha_over went
+    # 1-4 on 8/15" — a FIVE PICK sample from one day, which is precisely what
+    # feedback_dont_fade_prime_on_pattern_alone says not to build on.
+    #
+    # Audited 2026-09-19 over 656 graded ha_over props since 7/1:
+    #     GATED   (rule fired, demoted) : 56-38  n=94   59.6%
+    #     NOT GATED (passed the rule)   : 279-283 n=562 49.6%
+    # The gate was demoting the profitable group and passing the losing one —
+    # inverted by 10pp, on a sample well past the n>=30 floor. Break-even at
+    # -110 is 52.4%, so it was actively removing +EV picks.
+    #
+    # By tier over the same window: PRIME ha_over 68-33 (67.3%, n=101) is one
+    # of the strongest categories in the book, and this gate's only job was
+    # pulling props out of it.
+    #
+    # Left in place as a function so the audit trail and the rollback are one
+    # line — re-enable by restoring the call if a larger sample ever reverses.
+    ha_gated = 0
 
     refit_up_demoted = _demote_refit_up_traps(game_date, dry_run=dry_run)
     if refit_up_demoted:
