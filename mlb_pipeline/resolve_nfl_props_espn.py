@@ -135,6 +135,33 @@ def _parse_athlete_stat(stats_row: list, label: str, labels: list,
     except (TypeError, ValueError): return None
 
 
+def _player_appeared(boxscore: dict, player_name: str) -> bool:
+    """Did this player show up ANYWHERE in the boxscore?
+
+    2026-09-19: needed to tell a real zero from a did-not-play. A WR who
+    suited up and caught nothing genuinely has 0 receptions; a WR who was
+    inactive has no line at all, and grading his UNDER as a win is
+    inventing a result. ESPN only lists players who recorded a stat in
+    some category, so presence anywhere is our DNP proxy.
+    """
+    if not boxscore:
+        return False
+    want = (player_name or '').lower().strip()
+    if not want:
+        return False
+    parts = want.split()
+    want_alt = f'{parts[0][0]}.{parts[-1]}' if len(parts) >= 2 else None
+    for team in boxscore.get('boxscore', {}).get('players', []):
+        for grp in team.get('statistics', []):
+            for ath in grp.get('athletes', []):
+                a = ath.get('athlete', {})
+                nm = (a.get('displayName') or '').lower().strip()
+                short = (a.get('shortName') or '').lower().strip().replace(' ', '')
+                if nm == want or (want_alt and short == want_alt):
+                    return True
+    return False
+
+
 def _extract_player_stat(boxscore: dict, player_name: str, prop_type: str) -> float | None:
     """Find a player's stat in an ESPN boxscore."""
     if not boxscore: return None
@@ -271,7 +298,29 @@ def resolve_date(date: str, dry_run: bool = False) -> int:
         prop_type = p['prop_type']
         actual = _extract_player_stat(box, player, prop_type)
         if actual is None:
-            # Player didn't record this stat — grade as 0 for over-under
+            # 2026-09-19: this used to be a flat `actual = 0.0`, which
+            # collapsed THREE different situations into one confident
+            # answer:
+            #   1. player appeared and genuinely recorded 0  -> 0 is right
+            #   2. player did NOT play                       -> Void, not 0
+            #   3. the stat could not be READ (the C/ATT label bug, a name
+            #      mismatch, a wrong date)                   -> unknown
+            # Case 3 was the C/ATT damage: 35 props graded against a zero
+            # the parser never actually read. Case 2 is still live — a DNP
+            # UNDER graded as a win is a fabricated result.
+            if not _player_appeared(box, player):
+                print(f'  ⚪ {player[:25]:<25} DID NOT PLAY -> Void')
+                if not dry_run:
+                    requests.patch(
+                        f'{SB}/rest/v1/nfl_pipeline_props?id=eq.{p["id"]}',
+                        headers=H_WRITE,
+                        json={'result': 'Void', 'final_value': None,
+                              'resolved_at': datetime.now(timezone.utc).isoformat()},
+                        timeout=15)
+                ungradeable += 1
+                continue
+            # Player appeared but has no line in this category — a real
+            # zero (a RB with no targets has 0 receptions).
             actual = 0.0
 
         prop_line = float(p['prop_line'])

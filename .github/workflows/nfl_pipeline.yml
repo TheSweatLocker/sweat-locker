@@ -870,9 +870,30 @@ jobs:
           # minutes of game end. Fixes 5-day wait users saw on TNF props.
           # Falls back to nflverse grader below for anything still ungraded.
           python resolve_nfl_props_espn.py --lookback 3 || echo "ESPN prop grader failed (non-fatal)"
-          # 2026-08-23 season-ready: nflverse grader as backfill for props
-          # ESPN couldn't grade (bench players, missing stats). Runs Tue AM+.
-          python resolve_nfl_props.py || echo "prop resolver failed (non-fatal)"
+          # 2026-09-19 DISABLED — resolve_nfl_props.py grades off the WRONG
+          # GAME. Its _get_player_stat ignores game_date entirely:
+          #
+          #     row = m.iloc[-1]  # latest game — will refine to
+          #                       # date-specific in Sprint 2b
+          #
+          # It takes the player's most recent game in the season, so a Week 2
+          # prop gets graded against Week 3 stats. It only touches rows where
+          # result IS NULL, so it does not overwrite ESPN's correct grades —
+          # but it fills the gaps with fabricated ones, which is worse than
+          # an honest gap: a wrong grade enters the published record silently
+          # and nothing flags it.
+          #
+          # The ESPN grader above (resolve_nfl_props_espn.py) is date-correct
+          # and was fixed 2026-09-19 (2f51d31a) to parse ESPN's combined
+          # C/ATT column, which is what had been leaving so much for this
+          # one to "backfill" in the first place.
+          #
+          # Re-enable only after _get_player_stat filters nflverse weekly
+          # rows to the week containing game_date. Until then props ESPN
+          # cannot grade stay UNGRADEABLE, which reconcile_resolution
+          # surfaces honestly.
+          # python resolve_nfl_props.py || echo "prop resolver failed (non-fatal)"
+          echo "resolve_nfl_props.py disabled 2026-09-19 — grades off wrong game (iloc[-1]); see comment"
 
       # 2026-09-12 RECEIPTS-CLOSURE STEPS. Andy spec (docs/SPEC_NFL_NCAAF_
       # GRADING_AND_RECEIPTS.md): after resolve/grade, MUST roll up to
