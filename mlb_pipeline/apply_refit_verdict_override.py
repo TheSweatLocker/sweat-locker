@@ -692,7 +692,21 @@ def _playbook_gate_props(game_date: str, dry_run: bool = False) -> int:
 
         anti_share = anti_contrib / total_positive
         old_tier = prop['tier']
-        no_proven = all(t in ('ANTI_VALIDATED', 'UNVALIDATED') for t in matched_tiers) if matched_tiers else True
+        # 2026-09-19 BUGFIX — this gate was demoting 100% of pitcher PRIMEs.
+        # Old rule treated "no VALIDATED signal" as grounds to demote, and
+        # UNVALIDATED counted toward that. Every pitcher prop carries the
+        # same six-signal stack (l3_k, park, xera, l3_era, opp_wrc,
+        # opp_k_rate) and ALL SIX are UNVALIDATED under their prop: keys,
+        # so no_proven was ALWAYS True and every pitcher PRIME was demoted
+        # — deterministically, not selectively. On 2026-09-19 that meant 31
+        # LR-PRIME pitcher props and 0 publishable PRIMEs on the app.
+        #
+        # UNVALIDATED means "not measured yet", which is not evidence
+        # against a pick. Demote only on real ANTI evidence; absence of
+        # proof is grounds to abstain, not to act.
+        has_anti = any(t == 'ANTI_VALIDATED' for t in matched_tiers)
+        no_proven = has_anti and all(t in ('ANTI_VALIDATED', 'UNVALIDATED')
+                                     for t in matched_tiers)
 
         should_demote = False
         reason = None
