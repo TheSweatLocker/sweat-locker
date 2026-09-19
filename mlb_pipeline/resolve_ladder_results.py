@@ -81,12 +81,24 @@ def load_results(sport: str, since: str) -> dict:
 
 def grade_rung(rung: dict, res: dict) -> Optional[str]:
     """Return 'Win' / 'Loss' / 'Push' or None if unresolvable."""
+    market = rung.get('market')
+
+    # 2026-09-19: prop rungs are graded from mlb_pipeline_props and never
+    # need the game-result row. Dispatching AFTER the `if not res` guard
+    # meant a missing mlb_game_results row silently blocked a prop that was
+    # already graded. Live case: 9/18 ladder "Gerrit Cole Over 1.5 ER" sat
+    # unresolved while the prop itself read Win (final_value=2) — the
+    # Yankees@Diamondbacks result row was one of the 10 missing because the
+    # freeze_opening_lines trigger had been rejecting MLB writes since 9/17.
+    # Grade props first so a gap in one table cannot mask another's answer.
+    if market == 'prop':
+        return _grade_prop_rung(rung)
+
     if not res: return None
     hs = res.get('home_score'); aws = res.get('away_score')
     if hs is None or aws is None: return None
     home = (res.get('home_team') or '').lower()
     away = (res.get('away_team') or '').lower()
-    market = rung.get('market')
     pick = (rung.get('pick_side') or '').lower()
 
     if market == 'ml':
@@ -286,7 +298,10 @@ def run(since: str, dry_run: bool = False) -> int:
     graded = 0
     for rung in pending:
         res = results_by_sport.get(rung['sport'], {}).get(rung['game_id'])
-        if not res: continue
+        # Prop rungs resolve from mlb_pipeline_props, so a missing
+        # mlb_game_results row must not skip them (see grade_rung).
+        if not res and rung.get('market') != 'prop':
+            continue
         verdict = grade_rung(rung, res)
         if not verdict: continue
         if dry_run:

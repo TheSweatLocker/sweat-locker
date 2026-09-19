@@ -67,6 +67,25 @@ def _grade_side(pp: dict, game: dict) -> str | None:
         if picked_away: return 'W' if as_ > hs else 'L' if as_ < hs else 'P'
     elif m == 'rl':
         rl = (game.get('run_line_result') or '').lower()
+        # 2026-09-19: a MISSING run_line/spread result used to fall through
+        # to 'L' — `rl == 'home'` is False for an empty string, so an
+        # ungraded game silently counted as a loss. Oregon -56.5 on 9/18
+        # won 84-0 and was booked as a Loss because ncaaf_game_results
+        # .spread_result was NULL (the NCAAF resolver can't match FCS
+        # opponents in CFBD). Unknown is not a loss — return None so the
+        # pick stays pending and visibly unresolved.
+        if not rl:
+            # Fall back to deriving it from the score + line when we have
+            # both, rather than giving up on data we actually hold.
+            hs_, as_2 = game.get('home_score'), game.get('away_score')
+            cs = game.get('close_spread')
+            if hs_ is None or as_2 is None or cs is None:
+                return None
+            try: cs = float(cs)
+            except (TypeError, ValueError): return None
+            margin = (hs_ - as_2) + cs      # >0 means home covered
+            if abs(margin) < 0.01: return 'P'
+            rl = 'home' if margin > 0 else 'away'
         if picked_home and '+1.5' in label: return 'W' if rl != 'home' else 'L'
         if picked_home: return 'W' if rl == 'home' else 'L'
         if picked_away and '+1.5' in label: return 'W' if rl != 'away' else 'L'
@@ -114,8 +133,12 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
     r = requests.get(f'{SB}/rest/v1/{table}',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
+                # close_spread added 2026-09-19 so _grade_side can derive an
+                # rl verdict from score+line when the resolver left
+                # spread_result/run_line_result NULL, instead of defaulting
+                # a real cover to a Loss.
                 'select': f'game_id,home_team,away_team,home_score,away_score,'
-                          f'home_win,{cols}'},
+                          f'home_win,close_spread,{cols}'},
         timeout=15)
     if r.status_code != 200:
         print(f'  [agg_sharp_card] {sport} results fetch failed: {r.status_code} {str(r.text)[:120]}')
