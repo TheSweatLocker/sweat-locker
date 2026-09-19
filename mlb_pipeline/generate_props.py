@@ -403,7 +403,32 @@ def tier_for(conviction, prop_type=None):
     """Public tier_for(): raw tier from conviction, then live-calibration
     KILL-bucket filter demoting to SKIP. 2026-07-12 addition — see
     apply_calibration_filter() docstring for demote rules.
+
+    2026-09-19 SOURCE GATE. Banned prop families get SKIP here rather
+    than a real tier. Previously this module had no ban awareness at all
+    (it never imported prop_ban_policy), so generation happily stamped
+    PRIME on families that every downstream surface then filtered out:
+    over 7 days 1,524 rows were tagged PRIME and only 216 could reach a
+    user — 85.8% phantom, dominated by rbis_under / runs_under /
+    total_bases_under.
+
+    They were invisible to users, but they poisoned everything that
+    queried the raw table instead of the view, and made internal PRIME
+    counts meaningless. Gating at the scorer while leaving the source
+    ungated is the exact pattern feedback_source_gate_pattern warns
+    about.
+
+    Raw `conviction` is untouched, so the un-ban reactivation flow in
+    prop_ban_policy still works — flip the policy flag and tiers come
+    back on the next generation run.
     """
+    if prop_type:
+        try:
+            from prop_ban_policy import is_banned_mlb_prop
+            if is_banned_mlb_prop(prop_type):
+                return 'SKIP'
+        except ImportError:
+            pass   # policy module absent — fall through, view still guards
     return apply_calibration_filter(_tier_for_raw(conviction, prop_type), prop_type)
 
 

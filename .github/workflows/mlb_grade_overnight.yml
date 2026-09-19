@@ -246,6 +246,30 @@ jobs:
 
       # 8. Heartbeat end (2026-09-06). Pairs with start heartbeat above.
       # If start fires but end doesn't, we know grader died mid-run.
+      # 2026-09-19: resolution reconciliation. Read-only detector, runs
+      # AFTER grading so it sees the finished state. Every resolution bug
+      # found on 9/18 — NFL props graded off 0.0, MLB top_8 stuck Pending
+      # on line drift, POTD hardcoded to sport=MLB, NCAAF duplicate
+      # contexts, two NCAAF games final with nothing graded — was found
+      # because Andy noticed. This is the thing that notices instead.
+      #
+      # continue-on-error: findings are reported LOUDLY in the log but do
+      # not fail the run. The workflow-failure inbox is already noisy and
+      # a detector that adds to it gets muted, which defeats it. Flip to
+      # blocking once the CRITICAL count is reliably 0.
+      - name: Resolution reconciliation (read-only detector)
+        if: always()
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          echo "=============================================================="
+          echo "  RESOLUTION RECONCILIATION — writes nothing"
+          echo "=============================================================="
+          python reconcile_resolution.py --days 7 || echo "::warning::resolution reconciliation reported CRITICAL findings — see output above"
+
       # if: always() so a failed grade step doesn't skip the heartbeat.
       - name: Heartbeat — end
         if: always()
