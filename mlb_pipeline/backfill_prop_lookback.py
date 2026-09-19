@@ -631,6 +631,26 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                     'FADE':   'SKIP',
                 }
                 final_tier = _lr_to_user.get(lr_pred['tier'], 'SKIP')
+                # 2026-09-19 BAN GATE. This is where banned batter families
+                # were getting PRIME. MLB_STAT_MAP gained hr/rbis/runs/
+                # total_bases on 9/15 when those were briefly un-banned; the
+                # 9/17 EMERGENCY RESTORE reverted prop_ban_policy but never
+                # reverted this map, so the LR path kept computing L5/L10 for
+                # them and promoting them on p_hit alone. Result on 9/19:
+                # 227 PRIME rows, ALL of them banned families, 0 publishable.
+                # Reading the policy here instead of trusting the map means
+                # the two cannot drift apart again — which is the exact
+                # failure prop_ban_policy's own docstring warns about.
+                if final_tier in ('PRIME', 'STRONG', 'LEAN'):
+                    try:
+                        from prop_ban_policy import is_banned_mlb_prop
+                        if is_banned_mlb_prop(prop.get('prop_type')):
+                            existing_signals['_ban_gate'] = (
+                                f"LR said {lr_pred['tier']} p={lr_pred['p_hit']}, "
+                                f"family banned -> SKIP")
+                            final_tier = 'SKIP'
+                    except ImportError:
+                        pass   # policy module absent — view still guards
                 patch['tier'] = final_tier
                 # Rewrite conviction to LR probability × 100 so downstream
                 # sorting/ranking uses LR's confidence not the anti-predictive
