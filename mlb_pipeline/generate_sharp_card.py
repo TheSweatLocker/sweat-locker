@@ -1032,20 +1032,56 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                     # republish when new composition has MORE PRIME items
                     # than the existing card — that's a materially better
                     # deck, not churn. STRONG-count churn still locked.
+                    # 2026-09-19: judge the DECK, not just the PRIME count.
+                    #
+                    # The old rule was `_new_primes > _existing_primes`. That
+                    # blocks a materially better deck whenever the count is
+                    # flat — e.g. 9/19, when 24 wrongly-demoted props were
+                    # restored to PRIME but the card's 6 PRIMEs were all
+                    # SIDES, so the comparison read "6 vs 6, no improvement"
+                    # and held a deck of conviction-65 STRONG props in place.
+                    # It also can't tell "same picks" from "completely
+                    # different picks that happen to tier the same".
+                    #
+                    # Quality is compared as an ordered tuple:
+                    #   (PRIME count, STRONG count, total conviction)
+                    # Strictly better on that tuple => republish. Equal or
+                    # worse => hold, which preserves the anti-churn intent:
+                    # a merely DIFFERENT deck still does not get to flip
+                    # picks out from under users mid-day.
+                    def _deck_quality(_items):
+                        _p = _s = 0
+                        _conv = 0.0
+                        _ids = set()
+                        for _it in _items:
+                            if not isinstance(_it, dict): continue
+                            _t = str(_it.get('tier', '')).upper()
+                            if _t == 'PRIME': _p += 1
+                            elif _t == 'STRONG': _s += 1
+                            try: _conv += float(_it.get('conviction') or 0)
+                            except (TypeError, ValueError): pass
+                            _ids.add(str(_it.get('pick') or _it.get('label') or ''))
+                        return (_p, _s, round(_conv, 1)), _ids
+
                     _existing_items = (row.get('data') or {}).get('items') or []
-                    _existing_primes = sum(1 for it in _existing_items
-                                           if isinstance(it, dict) and str(it.get('tier','')).upper() == 'PRIME')
-                    _new_primes = sum(1 for it in items
-                                      if isinstance(it, dict) and str(it.get('tier','')).upper() == 'PRIME')
-                    if _new_primes > _existing_primes:
+                    _old_q, _old_ids = _deck_quality(_existing_items)
+                    _new_q, _new_ids = _deck_quality(items)
+                    _existing_primes, _new_primes = _old_q[0], _new_q[0]
+                    _changed = len(_new_ids ^ _old_ids)
+
+                    if _new_q > _old_q:
                         print(f'  🔓 sharp_card_{today} republish allowed: '
-                              f'{_existing_primes} → {_new_primes} PRIME items '
-                              f'(materially better deck)')
+                              f'PRIME {_old_q[0]}→{_new_q[0]}, STRONG {_old_q[1]}→{_new_q[1]}, '
+                              f'conviction {_old_q[2]}→{_new_q[2]} '
+                              f'({_changed} pick(s) differ) — materially better deck')
                     else:
                         print(f'  🔒 sharp_card_{today} already published '
                               f'({existing_count} items, {_existing_primes} PRIME '
-                              f'@ {row["fetched_at"][:19]}) — new composition would '
-                              f'have {_new_primes} PRIMEs, not more, skipping.')
+                              f'@ {row["fetched_at"][:19]}) — new deck '
+                              f'(PRIME {_new_q[0]}, STRONG {_new_q[1]}, conv {_new_q[2]}) '
+                              f'is not better than current '
+                              f'(PRIME {_old_q[0]}, STRONG {_old_q[1]}, conv {_old_q[2]}), '
+                              f'skipping.')
                         return
         except Exception as _e:
             print(f'  ⚠ publish-lock check failed: {_e} — proceeding with write')

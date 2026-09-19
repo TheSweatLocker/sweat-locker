@@ -2788,6 +2788,42 @@ jobs:
           cd mlb_pipeline
           python check_pipeline_health.py
 
+      # 2026-09-19: slate composition check. Runs HERE, at the end of the
+      # morning pipeline, because it has to see TODAY's finished slate —
+      # the same detector in mlb_grade_overnight fires at 2:30-5:30am ET,
+      # hours before this pipeline builds today's props, so it structurally
+      # cannot catch a composition failure.
+      #
+      # Why it exists: 2026-09-19 Andy opened the app to 1 PRIME prop.
+      # 31 pitcher props had been rated PRIME by the LR model and
+      # _playbook_gate_props demoted every one, stamping a flat conviction
+      # 65 over their real numbers. Nothing alerted — the other checks ask
+      # "is what we stored self-consistent", and a tier collapsing to zero
+      # is perfectly self-consistent. He found it by looking, again:
+      #   "I cant wake up every morning and have to manually do this."
+      #
+      # Fires on: a tier that normally fills going to zero, a tier under a
+      # third of its trailing median, or >=80% of a tier sharing one
+      # conviction value (a gate overwriting conviction with a constant
+      # instead of scoring — the exact 9/19 fingerprint).
+      #
+      # continue-on-error + ::warning:: so it is loud in the log without
+      # adding to the workflow-failure inbox. Flip to blocking once it has
+      # run clean for a stretch.
+      - name: Slate composition check (read-only detector)
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          echo "=============================================================="
+          echo "  SLATE COMPOSITION — today's publishable mix vs baseline"
+          echo "=============================================================="
+          python reconcile_resolution.py --days 7 --sport MLB \
+            || echo "::warning::slate composition check reported CRITICAL findings — see output above"
+
       # 2026-08-22: signal-wiring verifier (soft-warn) — walks every enabled
       # signal_sources row, regex-extracts ctx.X references, compares against
       # actual game_context columns per sport. Reports any signal reading a

@@ -2337,6 +2337,45 @@ def build_card():
     # attaches football picks as a separate list the app renders as an
     # additional card group when non-empty. Auto-hide on off-days.
     football_picks = fetch_football_picks(today)
+
+    # 2026-09-19 FOOTBALL LOCK ENFORCEMENT. publish_lock was write-only for
+    # composition — the GRADER reads it (compute_surface_records
+    # ._fetch_publish_locks) so the recorded tier is right, but nothing
+    # stopped a re-run from composing entirely DIFFERENT football games.
+    # On a Saturday that is the whole slate and CFB kicks at noon ET, hours
+    # before the 15:00 clock lock engages. Andy: "want to make sure Sweat
+    # card is locked no matter what workflow happens, no changing the
+    # college football picks."
+    #
+    # If today's card already published football picks, those ARE the picks.
+    # Users have seen them and games may be underway; swapping them mid-slate
+    # is the exact failure the lock exists to prevent. Reuse the published
+    # set and only fall through to a fresh compose when none exists yet.
+    try:
+        _prev = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_cache",
+            headers=HEADERS,
+            params={"cache_key": f"eq.sweat_card_{today}", "select": "data"},
+            timeout=10,
+        )
+        if _prev.status_code == 200 and _prev.json():
+            _pdata = _prev.json()[0].get('data') or {}
+            if isinstance(_pdata, str):
+                import json as _json
+                try: _pdata = _json.loads(_pdata)
+                except Exception: _pdata = {}
+            _locked_fb = [p for p in (_pdata.get('football_picks') or [])
+                          if isinstance(p, dict) and p.get('game_id')]
+            if _locked_fb:
+                _new_ids = {p.get('game_id') for p in football_picks if isinstance(p, dict)}
+                _old_ids = {p.get('game_id') for p in _locked_fb}
+                if _new_ids != _old_ids:
+                    print(f"  🔒 football LOCKED — reusing {len(_locked_fb)} published "
+                          f"pick(s); fresh compose wanted {len(_new_ids)} "
+                          f"({len(_new_ids ^ _old_ids)} would have changed)")
+                football_picks = _locked_fb
+    except Exception as _e:
+        print(f"  ⚠ football lock check failed ({_e}) — composing fresh")
     # Cap at 5 (multi-sport peak day maximum). Rank by conviction already
     # applied in fetch_football_picks.
     football_picks = football_picks[:5]

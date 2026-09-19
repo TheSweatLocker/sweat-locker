@@ -15,6 +15,9 @@ CHECKS
   3 DANGLING   sweat_card top_8 picks whose source row does not exist
   4 ORPHANDATE props on a game_date with no game context rows
   5 DUPCTX     one matchup with multiple context rows
+  6 COMPOSITION today's publishable slate vs its own trailing baseline —
+              catches a tier collapsing to zero, or a gate overwriting
+              conviction with a constant
 
 Exit 0 clean, 1 if any CRITICAL fired. Safe to gate a pipeline step on.
 
@@ -255,6 +258,84 @@ def check_orphandate(rep: Report, days: int, sport_filter: str | None):
                     [{'game_date': d, 'props': n} for d, n in sorted(orphans.items())])
 
 
+def check_composition(rep: Report, days: int, sport_filter: str | None):
+    """Did TODAY's publishable slate collapse versus its own recent baseline?
+
+    2026-09-19: Andy woke up to 1 PRIME prop in Prop Jerry. 31 pitcher
+    props had been rated PRIME by the LR model and _playbook_gate_props
+    demoted every one of them, stamping a flat conviction 65 over their
+    real numbers. Nothing alerted. He found it by opening the app, the
+    same way he found every other bug this week —
+
+        "I cant wake up every morning and have to manually do this."
+
+    The other checks here all ask "is what we stored self-consistent".
+    None of them know what a normal slate looks like, so a total tier
+    collapse reads as a quiet day. This one compares today's publishable
+    tier mix against the trailing median of the same sport and fires when
+    the top tier vanishes or craters.
+
+    Deliberately reads the PUBLISHABLE VIEW, not the raw table — the
+    question is what a user can actually see, which is the only number
+    that matters and the one that was wrong.
+    """
+    from statistics import median
+    cutoff = today_et()
+    for sport, (_ctx, props) in SPORTS.items():
+        if not props: continue
+        if sport_filter and sport != sport_filter: continue
+        view = PUBLISHABLE_VIEW.get(sport)
+        if not view: continue
+        start = (datetime.fromisoformat(cutoff) - timedelta(days=days)).date().isoformat()
+        rows = page(view, 'game_date,tier', f'&game_date=gte.{start}')
+        if not rows: continue
+
+        by_day = defaultdict(Counter)
+        for r in rows:
+            by_day[r['game_date']][(r.get('tier') or '?').upper()] += 1
+
+        today_mix = by_day.get(cutoff)
+        if today_mix is None:
+            continue   # no slate today (off-day / not generated) — not a defect
+
+        prior = [c for d, c in by_day.items() if d < cutoff]
+        if len(prior) < 3:
+            continue   # not enough history to call anything abnormal
+
+        for tier in ('PRIME', 'STRONG'):
+            hist = [c.get(tier, 0) for c in prior]
+            base = median(hist)
+            now = today_mix.get(tier, 0)
+            if base < 3:
+                continue          # tier is normally sparse here; nothing to compare
+            if now == 0:
+                rep.add('CRITICAL', 'COMPOSITION',
+                        f'{sport}: ZERO publishable {tier} props today — trailing median '
+                        f'is {base:.0f} (last {len(hist)} days: {hist}). A tier that '
+                        f'normally fills does not empty on its own.')
+            elif now <= base * 0.34:
+                rep.add('CRITICAL', 'COMPOSITION',
+                        f'{sport}: only {now} publishable {tier} props today vs trailing '
+                        f'median {base:.0f} ({len(hist)}d: {hist}) — down '
+                        f'{100*(1-now/base):.0f}%.')
+
+        # Flat-conviction fingerprint: a demotion gate that overwrites
+        # conviction with a constant (the 9/19 bug wrote 65 onto every
+        # demoted PRIME) shows up as one value dominating a whole tier.
+        cur = page(view, 'tier,conviction', f'&game_date=eq.{cutoff}')
+        for tier in ('PRIME', 'STRONG'):
+            vals = [r.get('conviction') for r in cur
+                    if (r.get('tier') or '').upper() == tier and r.get('conviction') is not None]
+            if len(vals) < 8:
+                continue
+            top_val, top_n = Counter(vals).most_common(1)[0]
+            if top_n / len(vals) >= 0.80:
+                rep.add('CRITICAL', 'COMPOSITION',
+                        f'{sport}: {top_n}/{len(vals)} {tier} props all share conviction '
+                        f'{top_val} — a gate is overwriting conviction with a constant, '
+                        f'not scoring.')
+
+
 def check_dupctx(rep: Report, days: int, sport_filter: str | None):
     """One matchup holding more than one context row."""
     cutoff = today_et()
@@ -303,7 +384,8 @@ def main() -> int:
     print('=' * 72)
 
     rep = Report()
-    for fn in (check_stale, check_zeroval, check_dangling, check_orphandate, check_dupctx):
+    for fn in (check_stale, check_zeroval, check_dangling, check_orphandate,
+               check_dupctx, check_composition):
         try:
             fn(rep, args.days, sport_filter)
         except Exception as e:

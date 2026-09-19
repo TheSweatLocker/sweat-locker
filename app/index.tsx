@@ -12865,9 +12865,18 @@ setJerryHistory(prev => {
             // Cross-sport fallback: build a minimal game-like object from
             // mlbGameContextMap or nflGameContextMap so openGameDetail can
             // hydrate. If neither matches, return null and disable tap.
+            // 2026-09-19: NCAAF was missing from this fallback chain, so
+            // findGame() returned null for every college-football pick, Row
+            // fell back to a plain View, and tap-to-Game-Detail silently did
+            // nothing. On a Saturday the Sweat Card football block is all
+            // NCAAF, so the whole feature looked broken. ncaafGameContextMap
+            // is already populated (see the NCAAF ctx fetch) — it just was
+            // never consulted here.
             const ctx: any = Object.values(mlbGameContext || {}).find((c: any) =>
               c?.away_team === away && c?.home_team === home)
               || Object.values(nflGameContextMap || {}).find((c: any) =>
+                c?.away_team === away && c?.home_team === home)
+              || Object.values(ncaafGameContextMap || {}).find((c: any) =>
                 c?.away_team === away && c?.home_team === home);
             if (ctx) return {
               id: ctx.game_id, away_team: away, home_team: home,
