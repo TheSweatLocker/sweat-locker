@@ -57,21 +57,37 @@ _ESPN_TEAM_ABBR = {
 # players[team_idx].statistics[category_idx].athletes[athlete_idx].stats[stat_col_idx]
 # Categories: 'passing','rushing','receiving','defensive','fumbles'
 # Stat columns per category from ESPN 'labels' array.
+# (category, ESPN label, side) — `side` picks a half out of a combined
+# "a/b" cell, None for plain numeric cells.
+#
+# 2026-09-18 BUG FIX. pass_attempts mapped to 'ATT' and pass_completions
+# to 'CMP', but ESPN's passing labels are:
+#     ['C/ATT','YDS','AVG','TD','INT','SACKS','QBR','RTG']
+# Neither 'ATT' nor 'CMP' exists there, so _parse_athlete_stat's
+# `if label not in labels: return None` bailed every time and the caller
+# stored 0.0. The split-on-'/' logic below it was unreachable.
+#
+# Effect: 19% of graded NFL props carried final_value=0.0 and were graded
+# against that zero. Verified wrong, all STRONG tier:
+#   Caleb Williams pass_completions O20.5 -> Loss, actually 21/29 = WIN
+#   Aaron Rodgers  pass_completions O20.5 -> Loss, actually 24/40 = WIN
+#   C.J. Stroud    pass_completions U19.5 -> Win,  actually 26/38 = LOSS
+# Both directions were corrupted, so the NFL prop record was wrong both ways.
 PROP_TO_ESPN = {
-    'pass_yds':       ('passing',   'YDS'),
-    'pass_tds':       ('passing',   'TD'),
-    'pass_attempts':  ('passing',   'ATT'),  # C/ATT is combined, need parse
-    'pass_completions': ('passing', 'CMP'),
-    'ints':           ('passing',   'INT'),
-    'pass_interceptions': ('passing', 'INT'),
-    'rush_yds':       ('rushing',   'YDS'),
-    'rush_attempts':  ('rushing',   'CAR'),
-    'rush_tds':       ('rushing',   'TD'),
-    'reception_yds':  ('receiving', 'YDS'),
-    'rec_yds':        ('receiving', 'YDS'),
-    'receptions':     ('receiving', 'REC'),
-    'reception_tds':  ('receiving', 'TD'),
-    'rec_tds':        ('receiving', 'TD'),
+    'pass_yds':       ('passing',   'YDS',   None),
+    'pass_tds':       ('passing',   'TD',    None),
+    'pass_attempts':  ('passing',   'C/ATT', 'right'),
+    'pass_completions': ('passing', 'C/ATT', 'left'),
+    'ints':           ('passing',   'INT',   None),
+    'pass_interceptions': ('passing', 'INT', None),
+    'rush_yds':       ('rushing',   'YDS',   None),
+    'rush_attempts':  ('rushing',   'CAR',   None),
+    'rush_tds':       ('rushing',   'TD',    None),
+    'reception_yds':  ('receiving', 'YDS',   None),
+    'rec_yds':        ('receiving', 'YDS',   None),
+    'receptions':     ('receiving', 'REC',   None),
+    'reception_tds':  ('receiving', 'TD',    None),
+    'rec_tds':        ('receiving', 'TD',    None),
     # anytime_td = sum of rushing_tds + receiving_tds (handled specially)
 }
 
@@ -93,17 +109,28 @@ def _espn_boxscore(event_id: str) -> dict | None:
     return r.json()
 
 
-def _parse_athlete_stat(stats_row: list, label: str, labels: list) -> float | None:
-    """Extract one stat from an athlete's stats list."""
+def _parse_athlete_stat(stats_row: list, label: str, labels: list,
+                        side: str | None = None) -> float | None:
+    """Extract one stat from an athlete's stats list.
+
+    `side` splits a combined cell: ESPN reports passing completions and
+    attempts together as a single 'C/ATT' column ('21/29'), so
+    pass_completions asks for 'left' and pass_attempts for 'right'.
+    """
     if label not in labels: return None
     idx = labels.index(label)
     if idx >= len(stats_row): return None
     val = stats_row[idx]
-    # Values sometimes like '10/15' for C/ATT — pick right side for ATT, left for CMP
     if isinstance(val, str) and '/' in val:
         left, right = val.split('/', 1)
-        # If label was ATT, take right side; if CMP, take left
-        val = right if label == 'ATT' else left
+        if side == 'right':
+            val = right
+        elif side == 'left':
+            val = left
+        else:
+            # Combined cell but nobody said which half — refuse to guess
+            # rather than silently return a wrong number.
+            return None
     try: return float(val)
     except (TypeError, ValueError): return None
 
@@ -123,7 +150,7 @@ def _extract_player_stat(boxscore: dict, player_name: str, prop_type: str) -> fl
     espn_cfg = PROP_TO_ESPN.get(base)
     if not espn_cfg:
         return None
-    category_name, stat_label = espn_cfg
+    category_name, stat_label, stat_side = espn_cfg
 
     players_section = boxscore.get('boxscore', {}).get('players', [])
     for team in players_section:
@@ -137,7 +164,7 @@ def _extract_player_stat(boxscore: dict, player_name: str, prop_type: str) -> fl
                     if player_name.split()[-1].lower() not in name.lower():
                         continue
                 stats_row = ath.get('stats', [])
-                val = _parse_athlete_stat(stats_row, stat_label, labels)
+                val = _parse_athlete_stat(stats_row, stat_label, labels, stat_side)
                 if val is not None: return val
     return None
 
