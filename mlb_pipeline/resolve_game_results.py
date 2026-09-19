@@ -1004,13 +1004,33 @@ def _resolve_single_pick(pick, slate_date):
     key = pick.get('source_key')
 
     if source == 'daily_best_bet_history':
-        # POTD lookup: bet_date + sport
+        # POTD lookup by bet_date.
+        # 2026-09-18: this used to hardcode sport=eq.MLB, so a POTD on any
+        # other sport matched nothing and sat 'Pending' forever. 9/13's POTD
+        # (Caleb Williams Over 32.5 Pass Attempts, NFL) was graded Loss in
+        # daily_best_bet_history from the day it settled, but the card still
+        # showed Pending 5 days later. POTD is a cross-surface pick per
+        # project_potd_universal_pool_720 — it is not MLB-only, and this
+        # breaks more as football ramps.
         r = requests.get(
             f'{SUPABASE_URL}/rest/v1/daily_best_bet_history',
-            params={'bet_date': f'eq.{slate_date}', 'sport': 'eq.MLB', 'select': 'result'},
+            params={'bet_date': f'eq.{slate_date}', 'select': 'result,sport'},
             headers=HEADERS, timeout=30,
         ).json()
-        if r and r[0].get('result') in ('Win', 'Loss', 'Push'):
+        if not isinstance(r, list) or not r:
+            print(f'  🚨 DANGLING POTD {slate_date}: no daily_best_bet_history row')
+            return 'Pending'
+        # Normally one POTD per date. If several, prefer the pick's own sport.
+        if len(r) > 1:
+            want = (pick.get('sport') or '').upper()
+            match = [x for x in r if (x.get('sport') or '').upper() == want]
+            if match:
+                r = match
+            else:
+                print(f'  ⚠️  {len(r)} POTD rows on {slate_date} '
+                      f'({[x.get("sport") for x in r]}), pick sport={want or "?"} '
+                      f'— using first')
+        if r[0].get('result') in ('Win', 'Loss', 'Push'):
             return r[0]['result']
         return 'Pending'
 
