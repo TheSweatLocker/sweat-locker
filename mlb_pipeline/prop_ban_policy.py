@@ -130,6 +130,64 @@ def filter_mlb_props(props: list[dict]) -> tuple[list, int]:
     return kept, len(props) - len(kept)
 
 
+# ── 2026-09-19 SPORT-AWARE DISPATCH ─────────────────────────────────────
+# This module was MLB-only in both name and API, so NBA and NFL props had
+# no ban hook at all — nothing could express "do not publish this family"
+# outside MLB. NBA opens 2026-10-21 and its props already generate and
+# score, so the hook has to exist before the season, not after a bad week.
+#
+# Deliberately, NBA ships with an EMPTY family ban list. There is no NBA
+# prop performance data yet — inventing a ban list from intuition is the
+# same mistake as the batter-family un-ban that had to be emergency-
+# restored on 09-17. The framework exists; the policy gets written from
+# retro hit rates once there is a real sample (see the note below).
+#
+# NFL likewise carries no family ban: today's Prop Jerry crash was a
+# VOLUME problem (389 rows in one view), fixed with a row cap in
+# 20260919a, not a family problem.
+_BANS_BY_SPORT: dict[str, frozenset] = {
+    'NBA': frozenset(),
+    'NFL': frozenset(),
+}
+
+
+def is_banned_prop(sport: str | None, prop_type: str | None,
+                   tier: str | None = None) -> bool:
+    """Sport-aware ban check. Use this in any cross-sport composer.
+
+    MLB keeps its full policy (permanent OVER bans, batter_ks, the
+    UNDER-family client gate). Other sports check their registry entry.
+
+    An UNKNOWN sport returns False rather than True: a default-deny here
+    would silently blank every surface for a sport someone just wired up,
+    which is the failure mode that hid for six days on 09-13. Adding a
+    sport to _BANS_BY_SPORT is the deliberate act.
+    """
+    s = (sport or '').strip().upper()
+    if s in ('MLB', ''):
+        return is_banned_mlb_prop(prop_type, tier)
+    banned = _BANS_BY_SPORT.get(s)
+    if not banned or not prop_type:
+        return False
+    return prop_type.strip().lower() in banned
+
+
+def filter_props(sport: str | None, props: list[dict]) -> tuple[list, int]:
+    """Sport-aware sibling of filter_mlb_props."""
+    kept = [p for p in props
+            if not is_banned_prop(sport, p.get('prop_type'), p.get('tier'))]
+    return kept, len(props) - len(kept)
+
+
+# NBA PRE-SEASON TODO (before 2026-10-21, or within 2 weeks of tip):
+#   Run the same retro that produced the MLB policy — per prop_type,
+#   30d hit rate at each tier, with n. Ban any family whose OVER or
+#   UNDER side cannot clear its own juice on n>=30. Until that audit
+#   exists, NBA props should stay on internal surfaces only; publishing
+#   an unmeasured family is exactly what the MLB ban list is an apology
+#   for.
+
+
 # Sanity self-test — smoke-check policy from CLI
 if __name__ == '__main__':
     tests = [

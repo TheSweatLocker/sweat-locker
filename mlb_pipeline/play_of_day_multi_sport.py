@@ -121,17 +121,28 @@ def _score_with_lr(candidate: dict) -> tuple[float | None, str]:
     Returns (None, '') if LR unavailable for this sport."""
     try:
         from defensive_gates import (_lr_predict_ml, _LR_MODEL_MLB_ML,
-                                     _LR_MODEL_NFL_ML, _LR_MODEL_NCAAF_ML)
+                                     _LR_MODEL_NFL_ML, _LR_MODEL_NCAAF_ML,
+                                     _LR_MODEL_NHL_ML, _LR_MODEL_NBA_ML)
     except Exception:
         return None, ''
+    # 2026-09-19: NBA + NHL added. Both models have existed since the
+    # 09-14 historical-odds backfill and defensive_gates already loads and
+    # consults them in two places — this map was the only caller still
+    # excluding them, so POTD candidates in those sports got NO LR
+    # confirmation while the comment below claimed the models were
+    # "not yet trained". models/nba_ml_logreg.json was retrained 09-17:
+    # 70.4% test accuracy vs 53.5% baseline, +16.8pp on n=1,324.
+    # NCAAB genuinely has no model yet and still falls through.
     model_map = {
         'MLB':   _LR_MODEL_MLB_ML,
         'NFL':   _LR_MODEL_NFL_ML,
         'NCAAF': _LR_MODEL_NCAAF_ML,
+        'NHL':   _LR_MODEL_NHL_ML,
+        'NBA':   _LR_MODEL_NBA_ML,
     }
     model = model_map.get(candidate['sport'])
     if model is None:
-        return None, ''  # NBA/NHL/NCAAB LR not yet trained (data-blocked)
+        return None, ''  # NCAAB LR not yet trained (no historical features)
     ctx = candidate['ctx_row']
     pred = _lr_predict_ml(ctx, model=model)
     if not pred:

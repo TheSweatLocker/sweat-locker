@@ -242,8 +242,19 @@ def _apply_ensemble(row: dict) -> None:
         }
         # 2026-09-08 wire defensive_gates for NBA parity with NFL/NCAAF/MLB.
         # OC-flip → MC-dissent → juice-trap (NBA cap -400) → publish gate.
-        # LR override no-ops (no NBA LR model trained — blocked on historical
-        # odds backfill, tracked in project_v1_0_1_client_priorities).
+        #
+        # 2026-09-19 CORRECTION: the line that used to sit here said "LR
+        # override no-ops (no NBA LR model trained — blocked on historical
+        # odds backfill)". That stopped being true on 09-14 when the
+        # historical-odds backfill landed. models/nba_ml_logreg.json was
+        # retrained 09-17: 70.4% test accuracy vs 53.5% baseline, +16.8pp
+        # on n=1,324. defensive_gates loads it as _LR_MODEL_NBA_ML and the
+        # LR override DOES fire for NBA.
+        #
+        # MC-dissent, however, still no-ops: there is no nba_mc_simulator,
+        # so nothing populates ctx['mc_probabilities'] and that gate reads
+        # an empty dict on every NBA game. A gate that never fires is not
+        # a safe gate — it is an untested one. Tracked for pre-season.
         try:
             from defensive_gates import apply_all_defensive_gates
             row['primary_play'] = apply_all_defensive_gates(
