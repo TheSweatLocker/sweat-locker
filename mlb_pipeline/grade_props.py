@@ -57,7 +57,27 @@ FORCE_REGRADE = False
 
 SPORT_PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
+    # 2026-09-19: NBA enabled ahead of the 10-21 opener. Props have
+    # generated and scored since 08-17 but nothing ever graded them, so
+    # there was no feedback loop — no hit rates, no tier calibration, and
+    # no basis for an NBA ban policy. Stats come from ESPN via
+    # nba_data_client.get_player_boxscores.
+    'NBA': 'nba_pipeline_props',
 }
+
+# NBA prop_type → boxscore stat key. Families from nba_generate_props
+# MARKET_MAP: pts / reb / ast / threes / blocks / steals / turnovers / pra.
+STAT_MAP_NBA = {
+    'pts_over':       'pts',       'pts_under':       'pts',
+    'reb_over':       'reb',       'reb_under':       'reb',
+    'ast_over':       'ast',       'ast_under':       'ast',
+    'threes_over':    'threes',    'threes_under':    'threes',
+    'blocks_over':    'blocks',    'blocks_under':    'blocks',
+    'steals_over':    'steals',    'steals_under':    'steals',
+    'turnovers_over': 'turnovers', 'turnovers_under': 'turnovers',
+    'pra_over':       'pra',       'pra_under':       'pra',
+}
+
 
 # prop_type → boxscore stat key.
 # 2026-09-12: added batter prop types (hits_under, total_bases, rbis, runs,
@@ -81,8 +101,35 @@ STAT_MAP_MLB = {
 }
 
 
+STAT_MAP_BY_SPORT = {
+    'MLB': STAT_MAP_MLB,
+    'NBA': STAT_MAP_NBA,
+}
+
+
 def yesterday_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=28)).strftime('%Y-%m-%d')
+
+
+def fetch_nba_player_stats_for_date(date_str: str):
+    """(stats_map, n_final_games) for NBA, shaped like the MLB fetcher.
+
+    n_final_games is counted from the scoreboard rather than inferred
+    from the stat rows: grade_date aborts when it is 0, and "no games"
+    and "games played but stats not published yet" must not look alike.
+    """
+    try:
+        from nba_data_client import get_player_boxscores, get_scoreboard
+    except ImportError:
+        print('  ⚠ nba_data_client unavailable — cannot grade NBA')
+        return {}, 0
+    try:
+        finals = [g for g in (get_scoreboard(date_str) or [])
+                  if g.get('home_score') is not None]
+    except Exception:
+        finals = []
+    stats = get_player_boxscores(date_str, finals_only=True)
+    return stats, len(finals)
 
 
 def fetch_player_stats_for_date(date_str: str) -> dict:
@@ -151,10 +198,21 @@ def grade_prop(prop: dict, stats_map: dict) -> tuple:
     (return None) leaves result=null so the next grader run picks it up
     once stats are real. Every outs misgrade last week traced to this.
     """
-    stat_key = STAT_MAP_MLB.get(prop.get('prop_type'))
+    sport = (prop.get('_sport') or 'MLB').upper()
+    stat_key = STAT_MAP_BY_SPORT.get(sport, STAT_MAP_MLB).get(prop.get('prop_type'))
     if not stat_key: return None, None
     stats = stats_map.get((prop.get('player_name') or '').lower())
     if not stats: return None, None
+
+    # 2026-09-19 DNP GUARD (NBA). A player who never appeared has 0 in
+    # every column, and 0 grades every UNDER as a Win. That exact shape
+    # produced the NFL C/ATT misgrades and the Zach Thornton
+    # outs_under 16.5 "Win" on final_value 0. The ESPN boxscore states
+    # participation directly (didNotPlay + minutes), so a DNP returns
+    # 'Void' rather than being silently scored.
+    if sport == 'NBA' and stats.get('played') is False:
+        return 'Void', None
+
     actual = stats.get(stat_key)
     if actual is None: return None, None
     # Zero-outs safety net — pitcher props only
@@ -181,9 +239,15 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         print(f'sport {sport} not supported yet'); return {}
     print(f'=== grade_props · {sport} · {date_str} ===')
 
-    # Fetch player stats first (single MLB API pass)
-    stats_map, n_games = fetch_player_stats_for_date(date_str)
-    print(f'  loaded {len(stats_map)} player stat rows from {n_games} final games')
+    # Fetch player stats first (single pass against that sport's source)
+    if sport.upper() == 'NBA':
+        stats_map, n_games = fetch_nba_player_stats_for_date(date_str)
+        _dnp = sum(1 for v in stats_map.values() if v.get('played') is False)
+        print(f'  loaded {len(stats_map)} player stat rows from {n_games} '
+              f'final games  ({_dnp} DNP → Void, never graded as a low line)')
+    else:
+        stats_map, n_games = fetch_player_stats_for_date(date_str)
+        print(f'  loaded {len(stats_map)} player stat rows from {n_games} final games')
     if n_games == 0:
         print(f'  no final games on {date_str} — skipping'); return {}
 
@@ -236,9 +300,12 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
             break
     print(f'  {len(r)} props to check ({"force-regrade all" if FORCE_REGRADE else "ungraded + buggy-zero sweep"})')
 
+    # 'V' = Void (NBA DNP). Without this key tally[result[0]] raises
+    # KeyError on the first DNP and takes the whole grading run down.
     tally = {'graded': 0, 'skipped_no_stat': 0, 'skipped_no_player': 0, 'errors': 0,
-             'W': 0, 'L': 0, 'P': 0}
+             'W': 0, 'L': 0, 'P': 0, 'V': 0}
     for prop in r:
+        prop['_sport'] = sport.upper()   # grade_prop picks the stat map from this
         result, actual = grade_prop(prop, stats_map)
         if result is None:
             if stats_map.get((prop.get('player_name') or '').lower()) is None:
@@ -260,7 +327,11 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         if r2.status_code not in (200, 204):
             tally['errors'] += 1
 
-    print(f'  graded {tally["graded"]}: {tally["W"]}W {tally["L"]}L {tally["P"]}P')
+    print(f'  graded {tally["graded"]}: {tally["W"]}W {tally["L"]}L {tally["P"]}P'
+          + (f' {tally["V"]}Void' if tally['V'] else ''))
+    # Void is excluded from the hit rate on purpose — a player who did not
+    # appear is a returned stake, not a win and not a loss. Counting DNPs
+    # either way is how an UNDER book looks artificially good.
     dec = tally['W'] + tally['L']
     if dec:
         print(f'  hit rate: {100*tally["W"]/dec:.1f}%')

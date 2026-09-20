@@ -130,6 +130,85 @@ def get_scoreboard(game_date: str) -> list[dict]:
     return out
 
 
+def get_player_boxscores(game_date: str, finals_only: bool = True) -> dict:
+    """Player stat lines for every NBA game on `game_date`.
+
+    Returns {player_name_lower: {pts, reb, ast, threes, blocks, steals,
+    turnovers, pra, minutes, played}} — the keys grade_props needs.
+
+    PLAYED IS THE POINT. Every grading bug found on 2026-09-19 was the
+    same shape: a player who never appeared scored 0, and 0 silently
+    graded an UNDER as a Win (NFL C/ATT off 0.0; Zach Thornton
+    outs_under 16.5 graded Win on final_value 0). A DNP is not a low
+    stat line, it is a void bet — so `played` is reported explicitly and
+    callers must check it instead of inferring from a zero.
+
+    ESPN marks this two ways and both are honoured: an explicit
+    `didNotPlay` flag, and a missing/zero `minutes` entry.
+
+    finals_only: skip games still in progress, so a player at 4 points in
+    the 2nd quarter is never graded under 20.5.
+    """
+    d = game_date.replace('-', '')
+    board = _get(f'{ESPN_NBA_BASE}/scoreboard', params={'dates': d})
+    if not board:
+        return {}
+    event_ids = []
+    for e in board.get('events', []):
+        comp = (e.get('competitions') or [{}])[0]
+        completed = (comp.get('status', {}).get('type', {}) or {}).get('completed')
+        if finals_only and not completed:
+            continue
+        event_ids.append(e.get('id'))
+
+    # ESPN label -> our stat key. Read by LABEL, not by index: the stats
+    # array is positional and a layout change would silently shift every
+    # value one column over, which is the kind of error that grades as a
+    # plausible number instead of an obvious crash.
+    _WANT = {'PTS': 'pts', 'REB': 'reb', 'AST': 'ast', 'BLK': 'blocks',
+             'STL': 'steals', 'TO': 'turnovers', '3PT': 'threes',
+             'MIN': 'minutes'}
+
+    out: dict = {}
+    for eid in event_ids:
+        summary = _get(f'{ESPN_NBA_BASE}/summary', params={'event': eid})
+        if not summary:
+            continue
+        for team in (summary.get('boxscore', {}).get('players') or []):
+            for grp in (team.get('statistics') or []):
+                labels = grp.get('labels') or []
+                for a in (grp.get('athletes') or []):
+                    name = (a.get('athlete') or {}).get('displayName')
+                    if not name:
+                        continue
+                    vals = a.get('stats') or []
+                    row: dict = {}
+                    for lbl, val in zip(labels, vals):
+                        key = _WANT.get(lbl)
+                        if key is None:
+                            continue
+                        if key == 'threes':
+                            # "3-7" -> made
+                            try: row[key] = int(str(val).split('-')[0])
+                            except (ValueError, IndexError): row[key] = None
+                        elif key == 'minutes':
+                            try: row[key] = int(str(val))
+                            except (ValueError, TypeError): row[key] = 0
+                        else:
+                            try: row[key] = int(str(val))
+                            except (ValueError, TypeError): row[key] = None
+                    dnp = bool(a.get('didNotPlay'))
+                    played = (not dnp) and bool(vals) and (row.get('minutes') or 0) > 0
+                    row['played'] = played
+                    if row.get('pts') is not None and row.get('reb') is not None \
+                       and row.get('ast') is not None:
+                        row['pra'] = row['pts'] + row['reb'] + row['ast']
+                    else:
+                        row['pra'] = None
+                    out[name.lower()] = row
+    return out
+
+
 def get_teams() -> list[dict]:
     """All 30 NBA teams. Returns list of {team_id, abbrev, name}."""
     data = _get(f'{ESPN_NBA_BASE}/teams')

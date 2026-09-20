@@ -35,7 +35,12 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minim
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
     'NFL': 'nfl_pipeline_props',      # enabled 2026-08-03 Sprint 2
-    # 'NBA': 'nba_pipeline_props',
+    # 2026-09-19: NBA enabled alongside grade_props.py NBA support, ahead
+    # of the 10-21 opener. This grader resolves a Jerry prop read by
+    # reading the graded result off the props row, so it only works once
+    # grade_props actually grades NBA — which it now does, via ESPN
+    # boxscores with an explicit DNP→Void guard.
+    'NBA': 'nba_pipeline_props',
 }
 
 # 2026-08-12: MLB API fallback for UNGRADEABLE picks.
