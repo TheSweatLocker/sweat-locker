@@ -76,6 +76,34 @@ jobs:
           cd mlb_pipeline
           python resolve_game_results.py || echo "resolver had non-fatal errors"
 
+      # 1b. Resolve the Ladder rung.
+      #
+      # 2026-09-20: added here. resolve_ladder_results.py previously ran
+      # ONLY in mlb_pipeline.yml, near the end of a very long workflow, so
+      # the rung sat unresolved until the morning pipeline reached it:
+      #   09-18 rung resolved 09-19 11:55am ET
+      #   09-19 rung resolved 09-20 10:31am ET
+      # against 1-5am ET for rungs earlier in the month. Andy, two days
+      # running: "the ladder still isn't resolved."
+      #
+      # It belongs in the overnight grader with every other grading task,
+      # and specifically AFTER resolve_game_results, which writes the
+      # scores the rung is graded against. Three crons (2:30 / 4:30 /
+      # 5:30am ET) also give it two retries if a late West-coast game has
+      # not posted at the first pass.
+      #
+      # Still runs in mlb_pipeline.yml too — idempotent, and that stays as
+      # the backstop for a night the overnight grader misses entirely.
+      - name: Resolve Ladder rung
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python resolve_ladder_results.py || echo "ladder resolver non-fatal"
+
       # 2. Grade ledger snapshots (chalk_parlays, teasers, hits_parlays)
       - name: Grade ledger snapshots
         continue-on-error: true
