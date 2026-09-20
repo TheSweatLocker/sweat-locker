@@ -437,6 +437,37 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     skip_no_stat = 0
     skip_player_id_null = 0
     skip_no_recent = 0
+    skip_banned_family = 0
+
+    # ── 2026-09-19 TWO-SPEED PIPELINE ───────────────────────────────────
+    # 90% of a day's MLB props are families we have banned from publishing
+    # (2026-09-19: 1,214 of 1,348). This loop makes TWO MLB Stats API calls
+    # per (player, stat) pair, so enriching them is the single most
+    # expensive thing the prop pipeline does on rows that can never reach
+    # a user.
+    #
+    # Banned families still get GENERATED and STORED — the row, its odds
+    # and eventually its result stay on file, which is what the periodic
+    # "should we un-ban this family?" retro actually reads. What they no
+    # longer get is the L5/L10 enrichment, because the only thing that
+    # consumes it is tier promotion, and the ban gate further down forces
+    # those same rows to SKIP regardless of what it computes.
+    #
+    # SHADOW ESCAPE HATCH: the LR-vs-legacy comparison does use shadow
+    # signals on banned families. Set PROP_LOOKBACK_SHADOW_BANNED=1 to
+    # enrich everything, for calibration runs. Default is the fast path.
+    #
+    # Tier is deliberately NOT passed to is_banned_mlb_prop here: tiers
+    # are not final at backfill time, and omitting it means hits_under
+    # (banned only at LEAN) stays on the full path so it can still earn
+    # PRIME/STRONG. Fast path only skips families banned at EVERY tier.
+    _shadow_banned = os.environ.get(
+        'PROP_LOOKBACK_SHADOW_BANNED', '').strip().lower() in ('1', 'true', 'yes')
+    try:
+        from prop_ban_policy import is_banned_mlb_prop as _is_banned
+    except ImportError:
+        _is_banned = None
+        print('  ⚠ prop_ban_policy unavailable — enriching every family')
 
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = 0
@@ -451,6 +482,10 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         pline = prop.get('prop_line')
         if not (pname and ptype and pdir is not None and pline is not None):
             skip_missing_fields += 1; continue
+        # Fast path: banned-at-every-tier families skip the two API calls.
+        if _is_banned is not None and not _shadow_banned and _is_banned(ptype):
+            skip_banned_family += 1
+            continue
         stat = _mlb_stat_key(ptype)
         if not stat: skip_no_stat += 1; continue
         try: pline = float(pline)
@@ -695,10 +730,20 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     # attack the biggest leaks. Player-id-null = name-match failure between
     # sportsbook feed and MLB Stats API (candidate for expanded alias table).
     total = len(props)
-    coverage_pct = 100.0 * updated / total if total else 0
-    print(f'  MLB backfill: {updated}/{total} props ({coverage_pct:.1f}%) — '
+    # Coverage is now measured against the ELIGIBLE set, not the raw row
+    # count. Banned families are skipped on purpose, so counting them as
+    # misses would make a healthy run look like a 10%-coverage failure and
+    # bury the leaks this summary exists to expose.
+    eligible = total - skip_banned_family
+    coverage_pct = 100.0 * updated / eligible if eligible else 0
+    print(f'  MLB backfill: {updated}/{eligible} eligible props ({coverage_pct:.1f}%) — '
           f'skips: missing_fields={skip_missing_fields}, no_stat_map={skip_no_stat}, '
           f'player_id_null={skip_player_id_null}, no_recent_games={skip_no_recent}')
+    if skip_banned_family:
+        print(f'  ⚡ fast path: skipped {skip_banned_family}/{total} '
+              f'({100.0*skip_banned_family/total:.0f}%) banned-family props — '
+              f'no L5/L10 API calls made for rows that cannot publish'
+              + ('' if not _shadow_banned else ' [SHADOW MODE — none skipped]'))
     return updated
 
 
