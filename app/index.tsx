@@ -5380,12 +5380,20 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     + 'model_pred_home_runs,model_pred_away_runs,model_pred_total,model_pred_spread,'
     + 'jerry_pred_home_runs,jerry_pred_away_runs,jerry_pred_total,jerry_pred_spread,'
     + 'panel_implied_margin,panel_implied_total,'
-    + 'primary_play,primary_play_computed_at,supplementary_play,splits_summary,'
+    // 2026-09-19: supplementary_play REMOVED — it does not exist on
+    // mlb_game_context (318 cols, only primary_play / primary_play_
+    // computed_at). PostgREST rejects the WHOLE select with 42703, so
+    // one phantom name nulled the entire MLB context map. See note below.
+    + 'primary_play,primary_play_computed_at,splits_summary,'
     + 'signal_confluence_net,signal_confluence_breakdown,'
     + 'signal_confluence_v2_net,signal_confluence_v2_breakdown,'
     + 'sweat_score,sweat_tier,sweat_tier_max,sweat_tier_locked_at,'
     + 'home_pitcher,away_pitcher,pitcher_context,'
-    + 'home_runs_per_game,away_runs_per_game,home_era,away_era,'
+    // 2026-09-19: home_era/away_era REMOVED — also non-existent. The real
+    // columns are home_pitcher_home_era / away_pitcher_away_era (and the
+    // bullpen/xERA variants); nothing actually read ctx.home_era, so this
+    // is a pure deletion with no consumer to repoint.
+    + 'home_runs_per_game,away_runs_per_game,'
     + 'venue,temperature,wind_speed,wind_direction,wind_blowing_in,precipitation,'
     + 'is_dome,park_run_factor,'
     + 'mc_probabilities,mc_high_conf_side,mc_high_conf_flag,mc_high_conf_pct,'
@@ -5428,6 +5436,20 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
       { label: 'fetchMLBGameContext', timeoutMs: 8000 },
     );
     let data = result?.data;
+    // 2026-09-19: SURFACE THE ERROR. This fetch 400'd on every call from
+    // 9/13 (ef697869) to 9/19 because MLB_CTX_COLUMNS named three columns
+    // that do not exist, and NOTHING said so: result.error was never
+    // inspected, the catch below is a bare comment, and dbFetchCached's
+    // last-known-good path cannot mask a schema error (it only writes
+    // cache on success, so there was never a cached copy to serve and the
+    // "showing last known" banner stayed silent too). Six days of every
+    // MLB game detail rendering blank, invisibly. A schema error is never
+    // a transient — log it loudly and distinctly from an empty slate.
+    if (result?.error) {
+      console.warn('[fetchMLBGameContext] FETCH FAILED — MLB context will be '
+        + 'empty for every game. This is NOT a pre-pipeline empty slate:',
+        result.error?.message || result.error);
+    }
     if (result?.stale && result?.cachedAt) {
       try {
         setMlbContextStale({ cachedAt: result.cachedAt });
@@ -9454,17 +9476,19 @@ setJerryHistory(prev => {
           await Promise.all(sportFetches.map(async ({sport, tbl}) => {
             const gids = Array.from(new Set(flagsBySport[sport] || []));
             if (!gids.length) return;
-            // supplementary_play only exists on mlb_game_context; drop
-            // it for the football tables to avoid a 42703 (column missing).
-            const cols = sport === 'MLB'
-              ? 'game_id,game_date,away_team,home_team,primary_play,supplementary_play'
-              : 'game_id,game_date,away_team,home_team,primary_play';
+            // 2026-09-19: the comment that used to live here said
+            // "supplementary_play only exists on mlb_game_context" and
+            // special-cased MLB to add it. That was backwards — the column
+            // exists on NO context table, so the MLB branch was the one
+            // 42703-ing, and MLB picks were silently absent from Strongest
+            // Signals. Same phantom column as MLB_CTX_COLUMNS above.
+            const cols = 'game_id,game_date,away_team,home_team,primary_play';
             const {data: rows} = await supabase
               .from(tbl).select(cols).in('game_id', gids);
             (rows || []).forEach((row: any) => {
               picksIdx[row.game_id] = {
                 primary: row.primary_play,
-                supplementary: row.supplementary_play,  // undefined for NFL/NCAAF, fine
+                supplementary: undefined,  // no such column on any ctx table
                 away_team: row.away_team, home_team: row.home_team,
                 commence_time: null,
                 game_date: row.game_date,
@@ -9577,12 +9601,22 @@ setJerryHistory(prev => {
         // 2026-09-11: dropped `market` from the select — no such column
         // on external_source_track_record (surface plays that role).
         // Was causing 42703 error every home-screen load.
+        // 2026-09-19: dropped `n_graded` too — it does not exist either, so
+        // this select has been 400ing ever since the 9/11 `market` fix, for
+        // the same reason. The table has n_picks/n_wins/n_losses/n_pushes.
+        // LineMovementTab reads rec.n_graded as the sample size beside each
+        // external source's hit rate (and n gates whether we show the % at
+        // all), so it is derived below rather than dropped.
         const {data: recs} = await supabase.from('external_source_track_record')
-          .select('source,sport,surface,window_days,hit_rate,n_graded,n_wins,n_losses,n_pushes')
+          .select('source,sport,surface,window_days,hit_rate,n_picks,n_wins,n_losses,n_pushes')
           .limit(500);
         // Component expects `market` — alias surface into it.
+        // n_graded = settled picks only. Deliberately NOT n_picks, which
+        // includes ungraded rows and would inflate the sample behind every
+        // hit rate.
         const normalized = (recs || []).map((r: any) => ({
           ...r, market: r.surface,
+          n_graded: (r.n_wins || 0) + (r.n_losses || 0) + (r.n_pushes || 0),
         }));
         setSteamSourceRecords(normalized);
       } catch { setSteamSourceRecords([]); }
