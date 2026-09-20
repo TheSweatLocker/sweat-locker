@@ -79,6 +79,28 @@ _ALLOW_STRONG_UNDER = os.environ.get(
 ).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+# ── 2026-09-19 HITS: sync the Python policy with the SQL view ───────────
+# v_mlb_props_publishable has banned these since 20260917b and restates
+# them in 20260918c:
+#   Rule 4 — hits_over  full ban (any tier)
+#   Rule 6 — hits_under banned at LEAN
+# This module never learned about either, so the Python policy and the
+# view disagreed about what is publishable.
+#
+# Cost of the drift, measured on 2026-09-19: prop_jerry_reads wrote 404
+# MLB reads, and 306 of them (76%) were hits_over/hits_under — props the
+# view excludes, so not one could ever reach a user. 306 wasted LLM calls
+# in a single day, roughly 9k/month, on rows that are filtered out one
+# step later.
+#
+# The verdict behind the ban is in project_hits_ban_verdict_917: the
+# headline 100%/73% PRIME records for hits are artifacts of bench-player
+# and trap-juice concentration, not durable edge. Keeping the generation
+# but paying for the narrative is the worst of both.
+_MLB_HITS_OVER_BAN = frozenset({'hits_over'})
+_MLB_HITS_UNDER_LEAN_BAN = frozenset({'hits_under'})
+
+
 def is_banned_mlb_prop(prop_type: str | None, tier: str | None = None) -> bool:
     """Return True if this MLB prop should NOT be published to a
     user-facing surface.
@@ -104,6 +126,16 @@ def is_banned_mlb_prop(prop_type: str | None, tier: str | None = None) -> bool:
     # runs_under permanent ban (retro doesn't clear market juice).
     if pt == 'runs_under':
         return True
+
+    # hits — mirrors v_mlb_props_publishable Rules 4 and 6 exactly.
+    # Keep these two checks in step with the view; they disagreed from
+    # 09-17 to 09-19 and 76% of a day's prop-LLM spend went to rows the
+    # view then dropped.
+    if pt in _MLB_HITS_OVER_BAN:
+        return True
+    if pt in _MLB_HITS_UNDER_LEAN_BAN:
+        if (tier or '').strip().upper() == 'LEAN':
+            return True
 
     # 3 UNDER families gated by client readiness + tier.
     if pt in _MLB_UNDER_FAMILY_GATE and pt != 'runs_under':
@@ -192,7 +224,13 @@ def filter_props(sport: str | None, props: list[dict]) -> tuple[list, int]:
 if __name__ == '__main__':
     tests = [
         # (prop_type, tier, expected_banned, description)
-        ('hits_over',       'PRIME',    False, 'hits_over — should NOT be banned'),
+        # 2026-09-19: flipped from False. This case asserted hits_over was
+        # publishable while v_mlb_props_publishable had banned it outright
+        # since 20260917b — the test was encoding the drift, so it passed
+        # green the whole time the two layers disagreed.
+        ('hits_over',       'PRIME',    True,  'hits_over — full ban (view Rule 4)'),
+        ('hits_under',      'LEAN',     True,  'hits_under — LEAN ban (view Rule 6)'),
+        ('hits_under',      'PRIME',    False, 'hits_under — allowed above LEAN'),
         ('rbis_over',       'PRIME',    True,  'rbis_over — permanent ban'),
         ('hr_over',         'STRONG',   True,  'hr_over — permanent ban'),
         ('runs_under',      'PRIME',    True,  'runs_under — permanent ban (juice math)'),
