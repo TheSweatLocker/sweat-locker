@@ -164,13 +164,13 @@ jobs:
           cd mlb_pipeline
           _YESTERDAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4,days=1)).date().isoformat())")
           echo "→ Yesterday catch-up for $_YESTERDAY"
-          python grade_props.py --date "$_YESTERDAY" || echo "grade_props catch-up non-fatal"
-          python grade_jerry_reads.py --sport MLB || echo "grade_jerry_reads MLB non-fatal"
-          python grade_jerry_reads.py --sport NFL || echo "grade_jerry_reads NFL non-fatal"
-          python grade_jerry_reads.py --sport NCAAF || echo "grade_jerry_reads NCAAF non-fatal"
+          python grade_props.py --date "$_YESTERDAY"
+          python grade_jerry_reads.py --sport MLB
+          python grade_jerry_reads.py --sport NFL
+          python grade_jerry_reads.py --sport NCAAF
           python resolve_potd.py || echo "resolve_potd catch-up non-fatal"
-          python aggregate_daily_records.py --backfill 2 || echo "aggregate catch-up non-fatal"
-          python compute_surface_records.py || echo "surface_records catch-up non-fatal"
+          python aggregate_daily_records.py --backfill 2
+          python compute_surface_records.py
 
       # 2026-08-27: EVERY step in this workflow now uses continue-on-error.
       # Prior policy — mandatory steps died on any error and killed everything
@@ -495,7 +495,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python jerry_pick_scrub.py --sport MLB || echo "jerry pick scrub failed (non-fatal)"
+          python jerry_pick_scrub.py --sport MLB
 
       # L5 pitcher actuals (2026-06-07). Hits MLB Stats API per starter on
       # today's slate, pulls last-5 starts (outs/Ks/BB/hits/ER), writes to
@@ -1258,7 +1258,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python grade_daily_card.py || echo "grade_daily_card non-fatal"
+          python grade_daily_card.py
 
       # 2026-09-04 LR dissent audit — logs every game where LR disagreed
       # with the ensemble (whether LR overrode OR was blocked by the
@@ -1302,8 +1302,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python grade_jerry_reads.py || echo "grade_jerry_reads non-fatal"
-          python grade_prop_jerry_reads.py || echo "grade_prop_jerry_reads non-fatal"
+          python grade_jerry_reads.py
+          python grade_prop_jerry_reads.py
 
       # 2026-08-16: nightly Playbook rescore. Reads resolved evidence from
       # the past 30 days and refreshes signal_registry hit rates + tiers +
@@ -1442,7 +1442,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_surface_records.py || echo "surface_records failed (non-fatal — app falls back to legacy calc)"
+          python compute_surface_records.py
 
       # Grade external picks now that game_results is filled — enables
       # per-source calibration + consensus-fade detector (transparency
@@ -2042,7 +2042,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python jerry_anchor_potd.py --threshold 70 || echo "jerry POTD anchor failed (non-fatal)"
+          python jerry_anchor_potd.py --threshold 70
 
       # 2026-09-09 POTD RECONCILER — end-of-selection sync that reads
       # jerry_cache.best_bet_{today} (authority) and force-writes
@@ -2216,8 +2216,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python recompute_primary_play.py --force || echo "final recompute non-fatal"
-          python jerry_pick_scrub.py --sport MLB || echo "jerry scrub non-fatal"
+          python recompute_primary_play.py --force
+          python jerry_pick_scrub.py --sport MLB
 
       # 2026-09-15: POTD LR-agreement RE-VALIDATION post final-recompute.
       # jerry_anchor_potd first runs at the earlier "Jerry-anchor
@@ -2242,7 +2242,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python jerry_anchor_potd.py --threshold 70 || echo "POTD LR revalidate non-fatal"
+          python jerry_anchor_potd.py --threshold 70
 
       # 2026-09-09 CONSISTENCY WATCHDOG — cross-table sanity check that
       # runs AFTER the final recompute+scrub barrier and BEFORE the Sweat
@@ -2496,7 +2496,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python resolve_ladder_results.py || echo "ladder resolver failed"
+          python resolve_ladder_results.py
 
       # The Ledger — auto-generate today's chalk parlays + teasers
       # (2026-08-17). Cross-sport: reads MLB + NFL + NCAAF + NCAAB
@@ -2547,7 +2547,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python grade_ledger_snapshots.py --days 7 || echo "ledger grader failed (non-fatal)"
+          python grade_ledger_snapshots.py --days 7
 
       # 2026-08-22: aggregate daily records for every surface (sharp_card,
       # ledger_*, ladder, potd, dawg_of_day, daily_degen) into
@@ -2565,7 +2565,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python aggregate_daily_records.py --backfill 1 || echo "daily records aggregator failed (non-fatal)"
+          python aggregate_daily_records.py --backfill 1
 
       # ─── Session A monitoring dashboard (2026-08-14) ─────────────
       # Populates hit_rate_snapshots + rule_fire_stats + dashboard_alerts.
@@ -2641,9 +2641,9 @@ jobs:
           if [ "$MC_COUNT" -lt 3 ]; then
             echo "🚨 RESCUE: re-running enrich_monte_carlo.py"
             python enrich_monte_carlo.py || echo "MC rescue failed"
-            python recompute_primary_play.py --date $TODAY || echo "recompute rescue failed"
+            python recompute_primary_play.py --date $TODAY
             # 2026-08-27: cascade to jerry_reads so badge + prose don't drift
-            python jerry_pick_scrub.py --sport MLB --date $TODAY || echo "jerry scrub rescue failed"
+            python jerry_pick_scrub.py --sport MLB --date $TODAY
           fi
 
           PROPS_COUNT=$(check_url "mlb_pipeline_props?game_date=eq.$TODAY&select=id")
@@ -2692,7 +2692,7 @@ jobs:
           # for Sharp Card + Receipts. Runs unconditionally at rescue-time
           # (cheap: reads-only + one upsert of <200 rows).
           echo "🔄 RESCUE: refreshing surface_records"
-          python compute_surface_records.py || echo "surface_records rescue failed"
+          python compute_surface_records.py
 
           echo "=== RESCUE DONE ==="
 

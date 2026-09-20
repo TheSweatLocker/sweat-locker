@@ -56,7 +56,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_resolve_results.py || echo "nba resolver failed (non-fatal, likely offseason)"
+          python nba_resolve_results.py
 
       # 2026-09-08 wired: grade NBA jerry_reads right after resolver so
       # NBA doesn't wait on the MLB nightly step. Parallels NHL wiring —
@@ -71,7 +71,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python grade_jerry_reads.py --sport NBA || echo "NBA grader non-fatal (offseason ok)"
+          python grade_jerry_reads.py --sport NBA
 
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NBA

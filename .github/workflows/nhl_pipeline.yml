@@ -60,7 +60,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nhl_resolve_results.py || echo "nhl resolver failed (non-fatal, likely offseason)"
+          python nhl_resolve_results.py
 
       # 2026-09-08 wired: grade NHL jerry_reads immediately after resolver.
       # Prior gap: NHL not in grade_jerry_reads RESULTS_TABLE map, so
@@ -75,7 +75,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python grade_jerry_reads.py --sport NHL || echo "NHL grader non-fatal (offseason ok)"
+          python grade_jerry_reads.py --sport NHL
 
       # ─── Today's game context (schedule + odds + rest) ───────────
       - name: Build NHL game context

@@ -389,7 +389,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python jerry_pick_scrub.py --sport NCAAF || echo "NCAAF jerry scrub non-fatal"
+          python jerry_pick_scrub.py --sport NCAAF
 
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full'

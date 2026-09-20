@@ -508,7 +508,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python grade_jerry_reads.py --sport NCAAB || echo "NCAAB grader non-fatal (offseason ok)"
+          python grade_jerry_reads.py --sport NCAAB
 
       # ────── RESOLVE EXTERNAL PICKS ──────
       - name: Resolve NCAAB external picks (post-game)
