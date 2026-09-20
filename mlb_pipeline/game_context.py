@@ -2412,6 +2412,34 @@ def _jerry_fallback_for_game(game_id: str, game_date: str,
     }
 
 
+# ── 2026-09-19 MORNING PICK LOCK ────────────────────────────────────────
+# Defined HERE, not in recompute_primary_play.py, because both this
+# builder and that script must agree on when picks are frozen. Two copies
+# of an hour comparison is two chances to drift, and a lock that is
+# active in one writer and not the other is worse than no lock — it just
+# moves which job wins the race.
+#
+# recompute_primary_play.py imports this.
+#
+# --force does NOT lift it: mlb_pipeline.yml passes --force to the "final
+# recompute" step on EVERY run including the 2:00pm cron, so honouring it
+# would leave the lock permanently open on the exact run it exists to
+# stop. Escape hatch is a distinct env var, matching the convention the
+# Sharp Card and POTD locks already use ("distinct env so a stray --force
+# can't sneak through").
+PICK_LOCK_HOUR = int(os.environ.get('MLB_PICK_LOCK_ET_HOUR', '12'))
+
+
+def pick_lock_active() -> bool:
+    """True once the morning publishing window has closed for the day."""
+    if os.environ.get('MLB_PICK_EMERGENCY_UNLOCK') == '1':
+        return False
+    if os.environ.get('MLB_PICK_LOCK', '').lower() in ('off', '0', 'false'):
+        return False
+    from datetime import datetime as _d, timedelta as _t, timezone as _z
+    return ((_d.now(_z.utc) - _t(hours=4)).hour) >= PICK_LOCK_HOUR
+
+
 def compute_primary_play(ctx):
     """Compute the headline primary-play recommendation for a game, server-side.
 
@@ -3503,6 +3531,48 @@ def upload_game_context(context, commence_time=None):
                 context['model_pred_total'] = None
         except (TypeError, ValueError):
             context['model_pred_total'] = None
+
+    # ── 2026-09-19 MORNING PICK LOCK ────────────────────────────────
+    # Andy: "whatever comes out in the morning stays."
+    #
+    # The lock in recompute_primary_play.py is not enough on its own:
+    # mlb_pipeline.yml runs the FULL pipeline again on the 2:00pm ET cron,
+    # and this builder writes primary_play directly, so the afternoon run
+    # would overwrite the morning's published pick before that lock ever
+    # executed. Gate it at the write itself — the only place every path
+    # has to pass through.
+    #
+    # Preserves the PUBLISHED pick and lets everything else in the row
+    # refresh (lineups, weather, odds, umpire). Picks freeze, data doesn't.
+    # A game with no published pick yet is still writable: a gap is not a
+    # change, so late additions and delayed pipelines still get one.
+    if pick_lock_active() and context.get('game_id'):
+        try:
+            _ex = requests.get(
+                f"{SUPABASE_URL}/rest/v1/mlb_game_context",
+                headers=headers,
+                params={'game_id': f"eq.{context['game_id']}",
+                        'select': 'primary_play,primary_play_computed_at'},
+                timeout=10,
+            )
+            _rows = _ex.json() if _ex.status_code == 200 else []
+            _pub = (_rows[0].get('primary_play') if _rows else None)
+            if _pub:
+                _old_lbl = _pub.get('label') if isinstance(_pub, dict) else None
+                _new = context.get('primary_play')
+                _new_lbl = _new.get('label') if isinstance(_new, dict) else None
+                if _old_lbl != _new_lbl:
+                    print(f"  🔒 PICK LOCKED — keeping published "
+                          f"'{_old_lbl}' (rebuild wanted '{_new_lbl}') "
+                          f"for {context.get('game_id','?')[:12]}")
+                context['primary_play'] = _pub
+                if _rows[0].get('primary_play_computed_at'):
+                    context['primary_play_computed_at'] = \
+                        _rows[0]['primary_play_computed_at']
+        except Exception as _e:
+            # Never let the lock check block a context write — a missing
+            # row is far worse than a changed pick.
+            print(f"  ⚠ pick-lock check failed ({_e}) — writing fresh pick")
 
     r = requests.post(
         f"{SUPABASE_URL}/rest/v1/mlb_game_context?on_conflict=game_id",

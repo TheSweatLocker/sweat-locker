@@ -71,31 +71,12 @@ def _today_et() -> str:
 # Morning runs are 6:00 / 7:15 / 8:30 am ET, so noon leaves a wide margin.
 # A game with NO published pick is always writable regardless of the hour,
 # so a late slate addition or a delayed pipeline still gets its pick.
-_PICK_LOCK_HOUR = int(os.environ.get('MLB_PICK_LOCK_ET_HOUR', '12'))
-
-
-def _pick_lock_active() -> bool:
-    """True once the morning window has closed for the day.
-
-    NOTE: --force does NOT lift this lock, by design. The workflow runs
-    `recompute_primary_play.py --force` as a "final recompute" step on
-    EVERY invocation, including the 2:00pm ET cron — so honouring --force
-    here would leave the lock permanently defeated on the exact run it
-    exists to stop. --force means "rewrite even if the tier/label looks
-    unchanged" (it exists for ensemble-internals changes); it has never
-    meant "overrule a user-trust lock".
-
-    The escape hatch is a DISTINCT env var, matching the convention the
-    Sharp Card and POTD locks already use for precisely this reason —
-    their comments read "distinct env so a stray --force can't sneak
-    through".
-    """
-    if os.environ.get('MLB_PICK_EMERGENCY_UNLOCK') == '1':
-        return False
-    if os.environ.get('MLB_PICK_LOCK', '').lower() in ('off', '0', 'false'):
-        return False
-    et_hour = (datetime.now(timezone.utc) - timedelta(hours=4)).hour
-    return et_hour >= _PICK_LOCK_HOUR
+# Imported from game_context so this script and the context BUILDER can
+# never disagree about when picks are frozen — see the note there. Both
+# are writers of primary_play; a lock honoured by only one of them just
+# decides which job wins the race.
+from game_context import pick_lock_active as _pick_lock_active   # noqa: E402
+from game_context import PICK_LOCK_HOUR as _PICK_LOCK_HOUR       # noqa: E402
 
 
 def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
