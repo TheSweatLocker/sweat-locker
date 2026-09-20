@@ -124,12 +124,26 @@ def _prose_recommends(prose: str, team: str, sport: str) -> bool:
     for alias in _team_aliases(team, sport):
         a = re.escape(alias)
         pats = [
-            rf'{a}\s*[+-]\s*\d',            # Chicago -4.5 / Cincinnati +2.5
-            rf'{a}\s+ml\b',                  # Houston ML
-            rf'take\s+(the\s+)?{a}\b',       # take Chicago
+            rf'{a}\s*[+-]\s*\d',             # Chicago -4.5 / Cincinnati +2.5
+            rf'{a}\s+ml\b',                   # Houston ML
+            rf'take\s+(the\s+)?{a}\b',        # take Chicago
+            rf'\bbacks?\s+(the\s+)?{a}\b',    # back / BACKS Cleveland
             rf'{a}\b[^.]{{0,40}}\bholds value\b',
             rf'{a}\b[^.]{{0,40}}\bcovers\b',
-            rf'\bback\s+(the\s+)?{a}\b',
+            # 2026-09-20: three more shapes, all found live on the 09-20
+            # slate after the first version still missed two games.
+            #   "backs Cleveland plus the points"   (no signed number)
+            #   "the model has Jacksonville ahead by 2.1 points"
+            #   "a 4.6-point gap favoring the road team"
+            # The common thread is that real prose states a PREFERENCE
+            # without ever writing the line next to the team name, which
+            # is what the number-adjacent patterns above assume.
+            rf'{a}\b[^.]{{0,30}}\bplus the points\b',
+            rf'{a}\b[^.]{{0,30}}\band the points\b',
+            rf'\bhas\s+{a}\s+ahead\b',
+            rf'{a}\b[^.]{{0,30}}\bahead by\b',
+            rf'\bfavor(s|ing)\s+(the\s+)?{a}\b',
+            rf'\blikes?\s+(the\s+)?{a}\b',
         ]
         for p in pats:
             if re.search(p, prose):
