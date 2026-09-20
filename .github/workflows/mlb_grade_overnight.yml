@@ -170,6 +170,57 @@ jobs:
           cd mlb_pipeline
           python compute_surface_records.py
 
+      # 3c. RECEIPTS — the evidence trail behind every published record.
+      #
+      # 2026-09-20: wired. public_receipts held 9,872 rows written only by
+      # MANUAL runs of this script, which is why its newest game_date was
+      # 09-18 while the date was 09-20. Two days of published picks had no
+      # receipt. Unwired, coverage decays the moment nobody remembers.
+      #
+      # Runs for every sport in one step (all six are cheap; sports with
+      # no slate return 0 rows). Placed AFTER grading so results are
+      # already attached — a receipt with its outcome is worth far more
+      # than one written before grading.
+      #
+      # Idempotent: on_conflict=(sport,surface,game_date,source_id) with
+      # ignore-duplicates, so re-runs never rewrite an existing receipt.
+      # Rows are stamped capture_mode='reconstructed' — see 20260920a.
+      - name: Backfill public receipts (all sports)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          for S in MLB NFL NCAAF NBA NHL NCAAB; do
+            echo "--- receipts: $S"
+            python backfill_public_receipts.py --sport "$S"
+          done
+
+      # 3d. CONTEXT SNAPSHOT — preserve what the engine thought.
+      #
+      # 2026-09-20: the live *_game_context tables are a working window,
+      # not an archive. mlb_game_context holds ~2 weeks; April-August 2026
+      # is already unrecoverable. Without this step there is no data to
+      # backtest or self-calibrate against, which is why neither exists.
+      #
+      # Write-once per (sport, game_id, snapshot_date): the first capture
+      # of a day wins and is never overwritten, so it records what was
+      # published rather than what was last computed.
+      #
+      # --days 2 re-attempts yesterday in case a night was missed; the
+      # write-once rule makes that harmless.
+      - name: Snapshot game context (all sports)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python snapshot_game_context.py --sport ALL --days 2
+
       # 4b. Team-alias gap audit (2026-09-03). Surfaces unresolved raw
       # names logged by team_resolver so we can add missing aliases before
       # they cause silent zero-external coverage. Only surfaces gaps with
