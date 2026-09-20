@@ -104,6 +104,21 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
         # holding the wrong kind of value quietly poisons every GROUP BY
         # built on it. Clamp to something market-shaped and park the
         # original in audit rather than dropping it.
+        # 2026-09-20 INTEGER COERCION. conviction and pick_odds are
+        # integer columns, but sources hand over floats — daily_degen
+        # passes avg_conviction as 79.0, which PostgREST rejects with
+        # 22P02 "invalid input syntax for type integer". The batch is
+        # all-or-nothing, so one float killed all 148 daily_degen rows on
+        # every sport. Coerced here rather than per-source for the same
+        # reason as capture_mode: a new source cannot forget it.
+        for _f in ('conviction', 'pick_odds'):
+            _v = _r.get(_f)
+            if _v is None or isinstance(_v, int):
+                continue
+            try:
+                _r[_f] = int(round(float(_v)))
+            except (TypeError, ValueError):
+                _r[_f] = None
         _m = _r.get('market')
         if isinstance(_m, str) and (len(_m) > 24 or '\n' in _m):
             _aud = _r.get('audit') or {}
