@@ -38,6 +38,9 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 MODEL = 'claude-haiku-4-5-20251001'
 PROMPT_VERSION = 'prop_synthesis_v1'
 
+# One-shot warn latch for a missing prop id on the publish-lock path.
+_LOCK_NO_ID_WARNED = False
+
 # Sport → table. Add sports as their prop pipelines ship.
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
@@ -381,8 +384,19 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
                       (prop.get('tier') or '').upper(),
                       prop.get('conviction'),
                       'prop_jerry')
-        except Exception:
-            pass
+            else:
+                # Never silently skip the lock again. A missing id means
+                # the props SELECT lost the column, and the only symptom
+                # would be surface_records quietly drifting back to live
+                # tier — invisible until someone audits the record.
+                global _LOCK_NO_ID_WARNED
+                if not _LOCK_NO_ID_WARNED:
+                    print('  ⚠ publish_lock SKIPPED — prop row has no `id`. '
+                          'Check the props SELECT includes id, or every '
+                          'record falls back to live tier.')
+                    _LOCK_NO_ID_WARNED = True
+        except Exception as _lock_err:
+            print(f'  ⚠ publish_lock failed: {_lock_err}')
         return True
     # If the 'source' column doesn't exist yet (pre-migration), retry without it
     if r.status_code == 400 and 'source' in (r.text or ''):
@@ -461,7 +475,19 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
                          headers={**H_READ, 'Range-Unit':'items',
                                   'Range': f'{_lo}-{_hi}'},
                          params={'game_date': f'eq.{game_date}',
-                                 'select': 'game_id,player_name,prop_type,direction,prop_line,'
+                                 # 2026-09-19: `id` ADDED. The publish-lock
+                                 # call below is guarded by `if _pid:` on
+                                 # prop.get('id') — and id was never in this
+                                 # select, so _pid was always None and the
+                                 # lock silently never wrote. Wrapped in a
+                                 # bare except, it failed without a trace.
+                                 # The 165 MLB prop locks on 09-17/09-18 all
+                                 # came from backfill_publish_locks.py run by
+                                 # hand; the runtime path had never once
+                                 # fired. That is why surface_records still
+                                 # falls back to live tier for ~99% of rows
+                                 # and reads inflated.
+                                 'select': 'id,game_id,player_name,prop_type,direction,prop_line,'
                                            'signals,conviction,refit_conviction,book_over_odds,book_under_odds,tier',
                                  'order': 'tier.asc,conviction.desc'},
                          timeout=30)
