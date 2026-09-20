@@ -181,11 +181,22 @@ def _derive_call_text(pp: dict, home_team: str, away_team: str) -> str | None:
 
 
 def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
-                dry_run: bool = False) -> tuple[int, int]:
-    """Return (checked, fixed)."""
+                dry_run: bool = False) -> tuple[int, int, list]:
+    """Return (checked, fixed, nulled_game_ids).
+
+    2026-09-20: the early-exit paths returned a 2-TUPLE while the normal
+    path returns 3, so main() raised
+    "ValueError: not enough values to unpack (expected 3, got 2)" on ANY
+    day a sport had no games with a primary_play. For NCAAF that is every
+    Sunday — and NCAAF was wired into its workflow on 09-19, so it would
+    have crashed on its very first scheduled run.
+
+    Both this and the call_text crash below are invisible in production
+    because every invocation is wrapped in `|| echo "... non-fatal"`.
+    """
     cfg = SPORT_CONFIG.get(sport)
     if not cfg:
-        return (0, 0)
+        return (0, 0, [])
     # Fetch ctx rows for today (or specified games)
     # 2026-09-13: params dict per URL-encoding fix above.
     _params = {'select': 'game_id,home_team,away_team,primary_play',
@@ -199,11 +210,11 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
                      params=_params, headers=H_READ, timeout=30)
     if r.status_code != 200:
         print(f'  {sport}: ctx fetch failed {r.status_code}')
-        return (0, 0)
+        return (0, 0, [])
     ctx_rows = r.json() or []
     if not ctx_rows:
         print(f'  {sport} {gd}: no ctx rows with primary_play')
-        return (0, 0)
+        return (0, 0, [])
     ctx_by_gid = {c['game_id']: c for c in ctx_rows}
 
     # Fetch jerry_reads for those games
@@ -225,7 +236,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     )
     if r.status_code != 200:
         print(f'  {sport}: jerry_reads fetch failed {r.status_code}')
-        return (0, 0)
+        return (0, 0, [])
     jerry_rows = r.json() or []
 
     fixed = 0
@@ -541,8 +552,19 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         matchup = f'{c["away_team"][:14]:14s} @ {c["home_team"][:14]:14s}'
         tag = 'DRIFT' if drift else 'STALE'
         prose_tag = '  [prose scrubbed]' if 'long_read' in payload else ''
+        # 2026-09-20: `or "?"` not `.get(..., "?")`. call_text is present
+        # but NULL on every `pass` read, so the default never applied and
+        # this line raised TypeError: 'NoneType' is not subscriptable —
+        # killing the whole scrub the moment it reached a pass game.
+        #
+        # The step is wrapped in `|| echo "jerry scrub non-fatal"`, so the
+        # pipeline carried on and nothing reported it. Every game AFTER
+        # the first pass went unchecked, every run. That is why the same
+        # read problems kept reappearing daily: the thing that fixes them
+        # was dying before it got to most of them.
+        _ct = (j.get('call_text') or '?')
         print(f'  {tag} {matchup}  '
-              f'{j_market}/{j_side} {j.get("call_text","?")[:20]} -> '
+              f'{j_market}/{j_side} {_ct[:20]} -> '
               f'{pp_type}/{pp_side} {new_text}{prose_tag}')
 
         if dry_run:
