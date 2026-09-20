@@ -86,7 +86,15 @@ def fetch_pitcher_stats(name):
 
 
 def audit_row(row, mlb_probables, pstats_cache):
-    """Return list of (severity, message) tuples. severity ∈ {'critical', 'warn'}."""
+    """Return list of (severity, message) tuples.
+
+    severity ∈ {'critical', 'warn', 'info'}.
+      critical — a real defect; block on it.
+      warn     — worth a look before the card publishes.
+      info     — expected-by-design state, reported so it stays visible
+                 without pretending it is a problem. Never affects the
+                 exit code (added 2026-09-19 with the vs-team floor fix).
+    """
     flags = []
     away = row.get("away_team")
     home = row.get("home_team")
@@ -101,17 +109,58 @@ def audit_row(row, mlb_probables, pstats_cache):
         if hp and api.get("home") and hp.strip().lower() != api["home"].strip().lower():
             flags.append(("critical", f"HOME pitcher mismatch: DB='{hp}' vs MLB API='{api['home']}'"))
 
-    # 2. vs-team mastery sample gate (the 5/27 Matz class)
+    # 2. vs-team sample floor (the 5/27 Matz class)
+    #
+    # 2026-09-19: this check was asserting a rule the pipeline RETIRED on
+    # 2026-08-21. It flagged CRITICAL whenever vs-team ip < 15, which by
+    # today is 15 of 16 games EVERY day — samples ran 4.3 to 14.3 IP and
+    # every one went red. A check that fails almost every game daily
+    # teaches everyone to ignore the whole audit, which costs more than
+    # having no audit at all.
+    #
+    # What actually changed: game_context.py deliberately dropped the hard
+    # null-gate at ip<15 (see its note ~line 1286) because it was
+    # suppressing real signal — Cameron's 11 IP / 12 K vs DET lost his
+    # ENTIRE vs-team read, including the K/9 rate that stabilises fast.
+    # Current design surfaces the raw numbers with a mastery_reliable
+    # flag, and the MASTERY LABEL gates downstream (jerry_model
+    # mastery_ip_gate=15, cohort_features mastery cohort ip>=15) stop
+    # "mastery" prose from firing on thin samples. The Matz risk is
+    # handled at the label, not by hiding the data.
+    #
+    # So the audit now asserts the floor the pipeline itself enforces:
+    # ip < 3 is unusable relief-appearance noise and should never have
+    # been written — that is a genuine bug and stays CRITICAL. Between 3
+    # and 15 IP is the intended state, reported once as INFO rather than
+    # as a per-game emergency.
+    #
+    # NOTE: mastery_reliable is computed in-memory and never persisted to
+    # mlb_game_context, so this audit cannot verify the label gate from
+    # the DB. Catching mastery prose on a thin sample needs a read-text
+    # check — out of scope here, logged rather than faked.
+    VS_TEAM_FLOOR_IP = 3
+    MASTERY_IP = 15
     for side, name in (("away", ap), ("home", hp)):
         if not name:
             continue
         era = row.get(f"{side}_pitcher_vs_team_era")
         avg = row.get(f"{side}_pitcher_vs_team_avg")
         ip = row.get(f"{side}_pitcher_vs_team_ip")
-        if era is not None and ip is not None and ip < 15:
+        if era is None or ip is None:
+            continue
+        if ip < VS_TEAM_FLOOR_IP:
             flags.append((
                 "critical",
-                f"{side.upper()} vs-team firing on {ip} IP ({name} vs opp) — below 15-IP gate, ERA={era}/AVG={avg}",
+                f"{side.upper()} vs-team on {ip} IP ({name} vs opp) — below the "
+                f"{VS_TEAM_FLOOR_IP}-IP floor game_context enforces; this row "
+                f"should not exist. ERA={era}/AVG={avg}",
+            ))
+        elif ip < MASTERY_IP:
+            flags.append((
+                "info",
+                f"{side.upper()} vs-team thin sample {ip} IP ({name} vs opp) — "
+                f"expected; numbers surface, mastery label does not fire below "
+                f"{MASTERY_IP} IP. ERA={era}/AVG={avg}",
             ))
 
     # 3. L3 ERA missing for confirmed starter — usually thin career sample
@@ -182,6 +231,7 @@ def main():
 
     total_critical = 0
     total_warn = 0
+    total_info = 0
     clean_games = 0
     pstats_cache = {}
 
@@ -189,23 +239,32 @@ def main():
         flags = audit_row(g, mlb_probables, pstats_cache)
         c = sum(1 for s, _ in flags if s == "critical")
         w = sum(1 for s, _ in flags if s == "warn")
+        i = sum(1 for s, _ in flags if s == "info")
         total_critical += c
         total_warn += w
-        if not flags:
+        total_info += i
+        # "Clean" means nothing actionable. Info notes are expected-by-
+        # design, so a game carrying only those is still clean — otherwise
+        # the headline reads 1/16 clean on a perfectly healthy slate.
+        if not c and not w:
             clean_games += 1
-            continue
+            if not i:
+                continue
 
-        emoji = "🚨" if c else "⚠️"
-        status = "CRITICAL" if c else "WARN"
-        print(f"  {emoji}  [{status}] {g.get('away_team')} @ {g.get('home_team')}  ({c} critical, {w} warn)")
+        emoji = "🚨" if c else ("⚠️" if w else "ℹ️")
+        status = "CRITICAL" if c else ("WARN" if w else "INFO")
+        print(f"  {emoji}  [{status}] {g.get('away_team')} @ {g.get('home_team')}  "
+              f"({c} critical, {w} warn, {i} info)")
         for sev, msg in flags:
-            tag = "    🚨" if sev == "critical" else "    ⚠️"
+            tag = ("    🚨" if sev == "critical"
+                   else "    ⚠️" if sev == "warn" else "    ℹ️")
             print(f"{tag} {msg}")
 
     print()
     print("=" * 78)
     print(f"SUMMARY:  {clean_games}/{len(games)} games clean  •  "
-          f"{total_critical} critical  •  {total_warn} warnings")
+          f"{total_critical} critical  •  {total_warn} warnings  •  "
+          f"{total_info} info")
     print("=" * 78)
 
     if total_critical:
