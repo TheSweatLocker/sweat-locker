@@ -662,6 +662,29 @@ def main():
 
     # Chain-regen for any nulled rows so users never see "analysis
     # pending" cards in production. Skips on --dry-run.
+    # 2026-09-20 READ LOCK applies here too. Andy: "we post a read that
+    # should stay with the pick until the game is over." Chain-regen is a
+    # second path that rewrites published prose, so it has to honour the
+    # same rule as generate_mlb_game_reads — otherwise closing one door
+    # just moves the churn to the other.
+    #
+    # Before the lock hour this still runs, which is the point: a
+    # contradiction found in the morning gets real prose regenerated
+    # BEFORE publication. After the lock, the pick is frozen, so a
+    # contradiction should not exist; if one does it is a bug to fix at
+    # source, not to paper over by rewriting what users already read.
+    _regen_locked = False
+    try:
+        from game_context import pick_lock_active
+        _regen_locked = pick_lock_active()
+    except Exception:
+        pass
+    if _regen_locked and nulled_by_sport:
+        print(f'  🔒 READ LOCK ACTIVE — skipping chain-regen for '
+              f'{sum(len(v) for v in nulled_by_sport.values())} game(s). '
+              f'Published reads stay with their pick.')
+        nulled_by_sport = {}
+
     if not args.dry_run and nulled_by_sport:
         import subprocess, sys
         for sp, gids in nulled_by_sport.items():

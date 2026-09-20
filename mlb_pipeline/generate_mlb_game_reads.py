@@ -1938,6 +1938,44 @@ def _matches(matchup_key, home, away):
 
 def run():
     force = "--force" in sys.argv
+
+    # ── 2026-09-20 READ LOCK ────────────────────────────────────────────
+    # Andy: "we post a read that should stay with the pick until the game
+    # is over."
+    #
+    # This is the root fix for a problem I have been patching from the
+    # wrong end all week. Reads and picks were both mutable all day, so
+    # they drifted apart, and every fix so far was a DETECTOR for one
+    # shape of the resulting contradiction (cross-market, side flip,
+    # pass-prose, stale sub). A new shape appeared daily because the
+    # mutation was never stopped.
+    #
+    # The workflow runs this script with --force on every pipeline pass,
+    # which rewrites every read even when the pick has not moved. Once
+    # the pick is locked, the read that was published against it must be
+    # locked too, or the pair can still desync.
+    #
+    # --force does NOT lift this, deliberately, for the same reason it
+    # does not lift the pick lock: the scheduled job passes --force on
+    # every run, so honouring it would leave the lock permanently open.
+    # Emergency override is a distinct env var.
+    _read_locked = False
+    try:
+        from game_context import pick_lock_active, PICK_LOCK_HOUR
+        _read_locked = pick_lock_active()
+        if _read_locked and os.environ.get('MLB_READ_EMERGENCY_UNLOCK') == '1':
+            _read_locked = False
+            print('  ⚠ MLB_READ_EMERGENCY_UNLOCK=1 — read lock bypassed')
+        elif _read_locked:
+            print(f'  🔒 READ LOCK ACTIVE (past {PICK_LOCK_HOUR:02d}:00 ET) — '
+                  f'published reads stay with their pick'
+                  + ('  [--force given; it does NOT lift this lock]'
+                     if force else ''))
+    except Exception as _e:
+        print(f'  ⚠ read-lock check failed ({_e}) — proceeding unlocked')
+    if _read_locked:
+        force = False   # existing reads are skipped; missing ones still write
+
     limit = None
     if "--limit" in sys.argv:
         try:
