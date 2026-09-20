@@ -148,8 +148,20 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             narrative = cr.json()[0].get('narrative')
 
         call_text = _derive_call_text(pp, home, away)
-        short_read = _short_from_narrative(narrative) if narrative else \
-                     'Analysis pending — Jerry is reviewing the tape.'
+        if narrative:
+            short_read = _short_from_narrative(narrative)
+        else:
+            # 2026-09-19: prefer the engine's own one-line rationale over a
+            # bare "pending". primary_play['sub'] reads like "Supervised
+            # total model backs Under · 80% confidence" — true, publishable
+            # and already computed. A user seeing WHY we like the pick beats
+            # a user seeing that we have not written it up yet.
+            # Falls back to the pending copy only when the engine gave no
+            # rationale, which is an honest empty state rather than a
+            # promise of a refresh we may not deliver (see the matching
+            # note in jerry_pick_scrub.py).
+            _sub = (pp.get('sub') or '').strip() if isinstance(pp, dict) else ''
+            short_read = _sub or 'Analysis pending — Jerry is reviewing the tape.'
 
         payload = {
             'sport': sport,

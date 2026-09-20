@@ -18203,9 +18203,20 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                 game={selectedGame}
                 ctx={
                   gamesSport === 'MLB'
-                    ? (mlbGameContext[selectedGame.away_team] ||
-                       mlbGameContext[selectedGame.home_team] ||
-                       mlbGameContext[selectedGame.id] || null)
+                    // 2026-09-19: game_id FIRST. It is unique; team names
+                    // are not. The map is keyed by home_team, away_team AND
+                    // game_id (see the contextMap build), so when one
+                    // matchup has two rows — a doubleheader, or the stale
+                    // duplicate Odds-API event id found on 09-19 — the team
+                    // keys silently resolve to whichever row was written
+                    // last. On 09-19 those two rows carried OPPOSITE picks
+                    // (PRIME Under 8.0 vs COVERAGE Over 8.0), so the name
+                    // lookup could hand the detail screen the wrong one.
+                    // selectedGame.id is the Odds-API event id, the same
+                    // value stored as mlb_game_context.game_id.
+                    ? (mlbGameContext[selectedGame.id] ||
+                       mlbGameContext[selectedGame.away_team] ||
+                       mlbGameContext[selectedGame.home_team] || null)
                     : gamesSport === 'NFL'
                       ? (nflGameContextMap?.[`${stripMascot(selectedGame.away_team||'')}@${stripMascot(selectedGame.home_team||'')}`] ||
                          nflGameContextMap?.[selectedGame.id] ||

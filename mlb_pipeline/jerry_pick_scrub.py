@@ -390,10 +390,32 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             # call so the card ALWAYS renders. chain-regen (main()) then
             # overwrites with real LLM prose in the same pipeline pass;
             # if that fails the template stays as the graceful floor.
+            # 2026-09-19 STOP SHIPPING INTERNAL STATUS TEXT.
+            # The template above read "Model recomputed to X. Fresh read
+            # regenerating." and went straight to users. On 09-19 four
+            # MLB reads sat on it for ~9 hours because chain-regen never
+            # replaced them — including KC @ PIT, which displayed
+            # "Pass · 55% confidence" while the model held Under 8.0 at
+            # conviction 83. "Regenerating" is a promise to the user that
+            # we have no way to keep if the regen fails.
+            #
+            # The engine already writes a publishable one-liner for every
+            # pick: primary_play['sub'] (e.g. "Supervised total model
+            # backs Under · 80% confidence"). That is a real reason, it
+            # is true at the moment of writing, and it needs no LLM call.
+            # Use it as the floor. chain-regen still upgrades it to full
+            # prose; if that fails, the user sees a genuine short read
+            # rather than a status message.
             _new_text = _side_readable or (pp.get('label') or '').strip()
             if not _new_text:
                 _new_text = f"{pp_type.upper()} {pp_side}".strip()
-            _tmpl = (f"Model recomputed to {_new_text}. Fresh read regenerating.")
+            _sub = (pp.get('sub') or '').strip()
+            if _sub:
+                _tmpl = f"{_new_text} — {_sub}" if _new_text.lower() not in _sub.lower() else _sub
+            else:
+                # No engine rationale available. Still avoid promising a
+                # regeneration we may not deliver — state the call plainly.
+                _tmpl = f"{_new_text}. Full write-up updates with the next model run."
             payload['short_read'] = _tmpl
             payload['long_read']  = _tmpl
             nulled_gids.append(j['game_id'])
