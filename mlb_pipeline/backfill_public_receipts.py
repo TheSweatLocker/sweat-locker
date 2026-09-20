@@ -87,6 +87,30 @@ def paged(url: str, page_size: int = 1000):
 def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     if not rows:
         return 0
+    # 2026-09-20 PROVENANCE. Everything this script produces is rebuilt
+    # after the fact from a mutable source table, so it is stamped
+    # 'reconstructed' — never 'live'. A publisher writing a receipt at
+    # publish time is the only thing entitled to claim 'live', and that
+    # has to be an affirmative claim, not a default.
+    #
+    # Stamped here rather than in each of the four source functions so a
+    # new source cannot forget it.
+    for _r in rows:
+        _r.setdefault('capture_mode', 'reconstructed')
+        # 2026-09-20 FIELD SANITY. Two live rows carry an entire markdown
+        # write-up in `market` ("** ml  \n**side:** home  \n**call_text:**
+        # cleveland guardians ml ..."), because a source row had prose
+        # where a market code belonged. A receipt is evidence; a field
+        # holding the wrong kind of value quietly poisons every GROUP BY
+        # built on it. Clamp to something market-shaped and park the
+        # original in audit rather than dropping it.
+        _m = _r.get('market')
+        if isinstance(_m, str) and (len(_m) > 24 or '\n' in _m):
+            _aud = _r.get('audit') or {}
+            if isinstance(_aud, dict):
+                _aud['market_raw'] = _m[:400]
+                _r['audit'] = _aud
+            _r['market'] = (_m.split()[0].strip('*: \n')[:24] or 'unknown')
     if dry_run:
         return len(rows)
     r = requests.post(
@@ -136,6 +160,7 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
             else: result = result.upper()
         batch.append({
             'sport': sport,
+            'game_id': row.get('game_id'),   # 2026-09-20: joinability
             'surface': 'prop_jerry',
             'market': 'prop',
             'game_date': row.get('game_date'),
@@ -202,6 +227,7 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
             continue
         batch.append({
             'sport': sport,
+            'game_id': row.get('game_id'),   # 2026-09-20: joinability
             'surface': 'game_read',       # POTD promotion handled separately
             'market': market or 'game',
             'game_date': row.get('game_date'),
@@ -235,8 +261,22 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
 
 def backfill_ledger(sport: str, dry_run: bool = False) -> int:
     print(f'\n=== backfill_ledger_snapshots · {sport} ===')
-    url = (f'{SB}/rest/v1/ledger_snapshots?sport=eq.{sport}'
-           f'&select=id,sport,game_date,combo_type,legs,result,created_at,resolved_at,total_odds'
+    # 2026-09-20: was `sport=eq.{sport}` selecting `sport,combo_type,
+    # total_odds` — none of those columns exist on ledger_snapshots. The
+    # real names are sport_scope / kind / combined_odds. Every call
+    # returned 42703 and the function reported "scanned=0 written=0",
+    # which reads exactly like "no ledger rows to backfill".
+    #
+    # Consequence: the Ledger has NEVER had a single receipt written, for
+    # any sport, since public_receipts shipped. The one surface Andy
+    # flagged as underperforming is the one with no evidence trail at all.
+    #
+    # sport_scope holds values like 'MLB' / 'MULTI', so an exact match on
+    # the sport is right for single-sport rows; MULTI rows are handled by
+    # the daily_degen path.
+    url = (f'{SB}/rest/v1/ledger_snapshots?sport_scope=eq.{sport}'
+           f'&select=id,sport_scope,game_date,kind,legs,legs_hit,result,'
+           f'snapshotted_at,graded_at,combined_odds,unit_pnl'
            f'&order=game_date.desc')
     batch = []
     written = 0
@@ -252,32 +292,39 @@ def backfill_ledger(sport: str, dry_run: bool = False) -> int:
             else: result = str(result).upper()
         legs = row.get('legs') or []
         leg_count = len(legs) if isinstance(legs, list) else None
-        odds = row.get('total_odds')
+        odds = row.get('combined_odds')
         try:
             odds_int = int(odds) if odds is not None else None
         except (TypeError, ValueError):
             odds_int = None
+        kind = row.get('kind') or 'parlay'
+        hit = row.get('legs_hit')
         batch.append({
             'sport': sport,
             'surface': 'ledger',
-            'market': row.get('combo_type') or 'parlay',
+            'market': kind,
             'game_date': row.get('game_date'),
-            'published_at': row.get('created_at'),
+            'published_at': row.get('snapshotted_at'),
             'player_name': None,
             'prop_type': None,
             'pick_side': None,
             'pick_line': None,
             'pick_odds': odds_int,
             'matchup': None,
-            'pick_label': f"{row.get('combo_type','parlay')} ({leg_count or '?'} legs)",
+            'pick_label': (f"{kind} ({leg_count or '?'} legs"
+                           + (f", {hit} hit)" if hit is not None else ')')),
             'tier': None,
             'conviction': None,
             'result': result,
             'actual_value': None,
-            'graded_at': row.get('resolved_at'),
+            'graded_at': row.get('graded_at'),
             'source_table': 'ledger_snapshots',
             'source_id': str(row.get('id')),
-            'audit': {'legs': legs} if legs else None,
+            # Keep the legs themselves — a parlay receipt without its legs
+            # cannot be audited, and unit_pnl is the only place the actual
+            # P&L of that ticket survives.
+            'audit': {'legs': legs, 'legs_hit': hit,
+                      'unit_pnl': row.get('unit_pnl')} if legs else None,
         })
         if len(batch) >= 500:
             written += upsert_batch(batch, dry_run)
