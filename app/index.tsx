@@ -5647,6 +5647,14 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'close_home_ml,close_away_ml,open_spread,open_total,'
           + 'projected_spread,projected_total,model_pred_home_points,model_pred_away_points,'
           + 'sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
+          // 2026-09-19: SAME BUG AS THE 09-07 COMMENT ABOVE, third occurrence.
+          // Model Consensus SP+ and MC tiles read sp_plus_pred_spread /
+          // sp_plus_pred_total / mc_probabilities (GameDetailV2 LensGrid).
+          // The pipeline writes all three correctly; they were just never
+          // SELECTed, so every NCAAF game rendered both tiles blank. The
+          // giveaway: NumbersPanel's SP+ row worked, because it reads
+          // sp_plus_pred_home_pts/away_pts, which WERE in this list.
+          + 'sp_plus_pred_spread,sp_plus_pred_total,mc_probabilities,'
           + 'signal_confluence_net,signal_confluence_breakdown,'
           + 'sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,'
           + 'home_team_stats_summary,away_team_stats_summary,'

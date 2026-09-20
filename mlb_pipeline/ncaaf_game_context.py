@@ -111,6 +111,119 @@ def _load_ncaaf_team_aliases() -> dict:
     return {}
 
 
+def _norm_team(name: str) -> str:
+    """Fold a team name to a comparison key.
+
+    Strips diacritics/punctuation, lowercases, and expands the St/St.
+    abbreviation to 'state' so 'Youngstown St' and 'Youngstown State'
+    collapse together. Comparison only -- never stored.
+    """
+    import re, unicodedata
+    s = unicodedata.normalize('NFKD', str(name or ''))
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^A-Za-z0-9&\s]", ' ', s).lower()
+    toks = ['state' if t in ('st', 'sts') else t for t in s.split()]
+    return ' '.join(toks)
+
+
+def _resolve_team_key(name: str, index: dict) -> str | None:
+    """Map an odds-pipe team name onto a CFBD canonical key.
+
+    `index` is {normalized_name: canonical_name}. Resolution order:
+      1. exact normalized match
+      2. progressive suffix strip -- drop trailing words one at a time,
+         because the odds feed appends mascots ('Virginia Tech Hokies',
+         'Youngstown St Penguins', 'Sacramento State Hornets').
+
+    THE AMBIGUITY GUARD IS THE WHOLE POINT. A strip is accepted only
+    when the shortened form is an exact key AND no OTHER CFBD team name
+    extends it. Without that check the strip silently eats meaningful
+    qualifiers rather than mascots:
+
+        'Houston Baptist Huskies' -> 'Houston'   (+11.6 SP+, Big 12)
+                                     but the school is FCS Houston Christian
+        'Louisiana Monroe'        -> 'Louisiana' (-6.6 SP+)
+                                     but ULM's real SP+ is -29.3
+
+    Both were caught in testing before shipping. 'Houston Christian'
+    extends 'houston' and 'Louisiana Tech' extends 'louisiana', so the
+    guard now refuses both and they fall to the alias table instead.
+
+    Returns None when nothing resolves -- deliberately. A blank tile is
+    recoverable; another team's rating presented as this team's is not.
+    Callers record the Nones (see _TeamStats.unresolved) so gaps get
+    reported rather than silently rendering a game with NULL stats.
+    """
+    key = _norm_team(name)
+    if key in index:
+        return index[key]
+    toks = key.split()
+    for cut in range(len(toks) - 1, 0, -1):
+        short = ' '.join(toks[:cut])
+        if short not in index:
+            continue
+        pre = short + ' '
+        if any(k != short and k.startswith(pre) for k in index):
+            return None         # ambiguous truncation -- refuse outright
+        return index[short]
+    return None
+
+
+class _TeamStats(dict):
+    """{team: stats_row} that also resolves odds-pipe name variants.
+
+    Exact keys behave like a plain dict. A miss falls through to
+    _resolve_team_key (mascot strip / St->State / diacritics) and, on a
+    hit, CACHES the row under the queried name so repeated lookups stay
+    O(1). Misses are recorded in `.unresolved` so the builder can report
+    which teams silently lost their stats instead of just emitting a
+    game with every away_* column NULL.
+
+    Resolution is lazy on purpose: the previous eager-alias approach
+    inserted extra keys up front, which is what inflated the dict and
+    dragged _populated_pct under the 60% floor (see the 2026-08-29 note
+    below).
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._index: dict = {}
+        self.unresolved: set = set()
+
+    def build_index(self) -> None:
+        self._index = {}
+        for k in list(self.keys()):
+            self._index.setdefault(_norm_team(k), k)
+
+    def _resolve(self, name):
+        if not self._index:
+            self.build_index()
+        canon = _resolve_team_key(name, self._index)
+        if canon is None:
+            self.unresolved.add(str(name))
+            return None
+        row = dict.get(self, canon)
+        if row is not None:
+            self[name] = row          # memoize
+        return row
+
+    def __missing__(self, name):
+        row = self._resolve(name)
+        if row is None:
+            raise KeyError(name)
+        return row
+
+    def get(self, name, default=None):
+        row = dict.get(self, name, None)
+        if row is not None:
+            return row
+        row = self._resolve(name)
+        return default if row is None else row
+
+    def __contains__(self, name):
+        return dict.__contains__(self, name) or self._resolve(name) is not None
+
+
 def load_team_stats(season: int) -> dict:
     """Return {team: stats_row} for the season, merged with defense stats.
 
@@ -136,12 +249,17 @@ def load_team_stats(season: int) -> dict:
             f'{SB}/rest/v1/ncaaf_team_stats?season=eq.{s}&season_type=eq.regular&select=*',
             headers=H_READ, timeout=15,
         )
-        out = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
-        # Add alias entries so ctx-side names resolve to the same row.
+        base = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+        out = _TeamStats(base)
+        # Genuine synonyms an algorithm cannot derive: FIU ->
+        # Florida International, UConn, UL Monroe, Southern Miss.
         _aliases = _load_ncaaf_team_aliases()
         for ctx_name, canon in _aliases.items():
-            if canon in out and ctx_name not in out:
-                out[ctx_name] = out[canon]
+            if canon in base and ctx_name not in base:
+                out[ctx_name] = base[canon]
+        # Mechanical variants (mascot suffix, St/State, diacritics) are
+        # resolved on demand by _TeamStats -- see _resolve_team_key.
+        out.build_index()
         # 2026-08-29: ONLY enrich existing D1 teams with defense fields.
         # ncaaf_team_defense_stats may include D2/D3 rows w/ 0.0000 EPA
         # (they play FBS teams occasionally). setdefault previously added
@@ -227,7 +345,11 @@ def load_team_stats(season: int) -> dict:
     # ncaaf_game_results — CFBD's stats.games is None early season.
     games_played = load_team_games_played(season)
 
-    merged = {}
+    # _TeamStats, not {} — a plain dict here would throw away the
+    # odds-pipe name resolution that load_team_stats just set up, which
+    # is how 'FIU' and 'Sacramento State Hornets' ended up with every
+    # stat NULL even though CFBD had the rows.
+    merged = _TeamStats()
     all_teams = set(current.keys()) | set(prior.keys())
     for team in all_teams:
         cur_row = current.get(team) or {}
@@ -248,6 +370,7 @@ def load_team_stats(season: int) -> dict:
             merged_row[f'_cur_{f}'] = _cur_snap.get(f)
             merged_row[f'_pri_{f}'] = pri_row.get(f)
         merged[team] = merged_row
+    merged.build_index()
     return merged
 
 
@@ -507,7 +630,7 @@ def _regress_to_mean(stats_dict: dict, shrink: float = SHRINK) -> dict:
     mean = _league_mean_stats(stats_dict)
     keys = ('sp_overall', 'off_epa_per_play', 'def_epa_per_play',
             'off_success_rate', 'off_explosiveness')
-    out = {}
+    out = _TeamStats()          # preserve odds-pipe name resolution
     for team, row in stats_dict.items():
         new = dict(row)
         for k in keys:
@@ -515,6 +638,7 @@ def _regress_to_mean(stats_dict: dict, shrink: float = SHRINK) -> dict:
             if v is not None:
                 new[k] = (1 - shrink) * float(v) + shrink * mean.get(k, 0.0)
         out[team] = new
+    out.build_index()
     return out
 
 
