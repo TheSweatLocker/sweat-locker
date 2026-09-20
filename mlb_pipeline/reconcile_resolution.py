@@ -337,7 +337,24 @@ def check_composition(rep: Report, days: int, sport_filter: str | None):
 
 
 def check_dupctx(rep: Report, days: int, sport_filter: str | None):
-    """One matchup holding more than one context row."""
+    """One matchup holding more than one context row.
+
+    2026-09-19: grouped on the UNORDERED team pair, not (home, away).
+
+    The ordered key could not see an orientation flip. On 09-19 NCAAF
+    held BOTH 'West Virginia @ Virginia' and 'Virginia @ West Virginia'
+    for the same date — two context rows, two published picks (STRONG
+    Virginia -8.5 vs LEAN West Virginia +10.5), and this check reported
+    clean because the two keys differed. It was found by a human reading
+    an end-of-day results list, which is exactly what this file exists to
+    prevent.
+
+    A flip is also a DIFFERENT defect from a same-orientation duplicate
+    and is called out separately: the odds disagreed on which team was
+    favoured (-325 Virginia at home vs -410 West Virginia at home), the
+    signature of odds being attached by POSITION rather than by team, so
+    the flipped row's prices are wrong, not merely redundant.
+    """
     cutoff = today_et()
     start = (datetime.fromisoformat(cutoff) - timedelta(days=days)).date().isoformat()
     for sport, (ctx, _props) in SPORTS.items():
@@ -346,28 +363,39 @@ def check_dupctx(rep: Report, days: int, sport_filter: str | None):
                     f'&game_date=gte.{start}')
         groups = defaultdict(list)
         for x in rows:
-            groups[(x['game_date'], (x.get('home_team') or '').strip(),
-                    (x.get('away_team') or '').strip())].append(x)
+            h = (x.get('home_team') or '').strip()
+            a = (x.get('away_team') or '').strip()
+            groups[(x['game_date'], frozenset((h, a)))].append(x)
         dups = {k: v for k, v in groups.items() if len(v) > 1}
         if not dups: continue
         conflicting = []
         for k, v in dups.items():
-            sides = set()
+            sides, orients = set(), set()
             for x in v:
+                orients.add(((x.get('away_team') or '').strip(),
+                             (x.get('home_team') or '').strip()))
                 pp = x.get('primary_play') or {}
                 if isinstance(pp, str):
                     try: pp = json.loads(pp)
                     except Exception: pp = {}
                 if isinstance(pp, dict):
                     sides.add((pp.get('type'), pp.get('side'), pp.get('tier')))
-            conflicting.append({'matchup': f'{k[2]} @ {k[1]}', 'date': k[0],
-                                'rows': len(v), 'distinct_picks': len(sides),
-                                'picks': sorted(str(s) for s in sides)})
+            flipped = len(orients) > 1
+            conflicting.append({
+                'matchup': ' / '.join(f'{a} @ {h}' for a, h in sorted(orients)),
+                'date': k[0], 'rows': len(v),
+                'orientation_flipped': flipped,
+                'distinct_picks': len(sides),
+                'picks': sorted(str(s) for s in sides)})
         worst = [c for c in conflicting if c['distinct_picks'] > 1]
-        sev = 'CRITICAL' if worst else 'WARN'
+        flips = [c for c in conflicting if c['orientation_flipped']]
+        # A flip is always critical: one of the two rows has the teams —
+        # and therefore the line, the ML and home-field — backwards.
+        sev = 'CRITICAL' if (worst or flips) else 'WARN'
         rep.add(sev, 'DUPCTX',
                 f'{sport}: {len(dups)} matchup(s) with duplicate context rows, '
-                f'{len(worst)} of them disagree on the pick', conflicting)
+                f'{len(worst)} disagree on the pick, {len(flips)} have home/away '
+                f'REVERSED between rows', conflicting)
 
 
 def main() -> int:
