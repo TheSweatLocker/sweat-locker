@@ -296,10 +296,18 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # of prose contradicting the card.
         _same_market_side_flip = False
         if pp_type == 'total':
-            _prose_says_over  = ('take over'  in _lower_short or 'take over'  in _lower_long
-                                 or 'take the over'  in _lower_short or 'take the over'  in _lower_long)
-            _prose_says_under = ('take under' in _lower_short or 'take under' in _lower_long
-                                 or 'take the under' in _lower_short or 'take the under' in _lower_long)
+            # 2026-09-20: widened beyond "take over/under". The engine's own
+            # one-liner says "supervised total model backs under · 63%", and
+            # on 09-20 two cards shipped with prose naming the opposite
+            # side — CHC @ CIN card Over 9.5 with prose backing UNDER, and
+            # PHI @ NYM card Over 7.5 with prose backing UNDER. Neither
+            # contained the word "take", so the flip check never saw them.
+            _OVER_CUES = ('take over', 'take the over', 'backs over',
+                          'leans over', 'model backs over', 'lean over')
+            _UNDER_CUES = ('take under', 'take the under', 'backs under',
+                           'leans under', 'model backs under', 'lean under')
+            _prose_says_over = any(cue in _prose_all for cue in _OVER_CUES)
+            _prose_says_under = any(cue in _prose_all for cue in _UNDER_CUES)
             if pp_side == 'OVER'  and _prose_says_under and not _prose_says_over:
                 _same_market_side_flip = True
             if pp_side == 'UNDER' and _prose_says_over  and not _prose_says_under:
@@ -369,7 +377,47 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
                        _stale_recompute_template or _same_market_side_flip
                        or _oc_dissent_flip)
 
-        if not drift and not stale_prose: continue
+        # 2026-09-20 PASS-PROSE MISMATCH — a third contradiction shape,
+        # computed HERE because the guard below would otherwise skip it.
+        #
+        # NYY @ ARI today: card showed COVERAGE / Under 8.5 while the
+        # write-up read "Skipping rather than force a pick against our own
+        # base." The read was written when the engine wanted to pass; the
+        # pick later became Under 8.5 and the prose never caught up.
+        #
+        # Neither existing check sees it — not cross-market, not a side
+        # flip. The prose argues for NO side, which is the worst version
+        # for a user: a card telling them to bet and a write-up telling
+        # them we are staying away.
+        #
+        # It also survives a partial fix: once the call fields are
+        # corrected, `drift` goes False and the old guard skipped the game
+        # while the contradicting prose stayed on screen. That is exactly
+        # what happened on the first pass today.
+        _PASS_PHRASES = (
+            'skipping rather than', 'the process says pass', 'says pass',
+            'take the discipline hit', 'no publishable edge',
+            'engine passed', 'passing on this', 'rather than force a pick',
+            'sitting this one out', 'no edge is defensible',
+        )
+        _prose_says_pass = any(p in _prose_all for p in _PASS_PHRASES)
+        _card_has_pick = pp_type in ('ml', 'rl', 'total')
+
+        # NARROWED 2026-09-20 after checking all six matches by hand.
+        # "Engine passed — no publishable edge on this game" is often
+        # TRUE and agrees with the card: COVERAGE tier means we had no
+        # real edge and the read says so. ATL @ HOU and DET @ CWS both
+        # read that way today and both name the SAME side as the card.
+        # Rewriting those would make the product less honest, not more.
+        #
+        # So a pass narrative alone is not a defect. It only becomes one
+        # when the prose also points at the other side — which the
+        # widened total cues above now detect directly. Kept as a
+        # tie-breaker rather than a trigger.
+        _pass_prose_mismatch = (_card_has_pick and _prose_says_pass
+                                and _same_market_side_flip)
+
+        if not drift and not stale_prose and not _pass_prose_mismatch: continue
 
         new_text = _derive_call_text(pp, c['home_team'], c['away_team'])
         payload = {}
@@ -477,7 +525,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # itself, which guarantees prose staleness regardless.
         _hard_bad_prose = (
             (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
-        ) or _oc_dissent_flip
+        ) or _oc_dissent_flip or _pass_prose_mismatch
         if _hard_bad_prose:
             # 2026-09-16 STOP-NULLING: previously wrote short_read = None
             # and let the client render "analysis pending". That path relied
