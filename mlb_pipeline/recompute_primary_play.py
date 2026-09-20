@@ -44,6 +44,60 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+# ── 2026-09-19 MORNING PICK LOCK ────────────────────────────────────────
+# Andy: "whatever comes out in the morning stays. No more refreshing the
+# sweat card, sharp, or jerry game analysis picks."
+#
+# This script is scheduled by mlb_imminent_refresh.yml EVERY 30 MINUTES
+# from noon to 10pm ET, and it rewrites primary_play — the tier, side and
+# label users bet off. That is the engine behind the churn:
+#   * KC @ PIT showed "Pass" all day while a 16:59 ET recompute held
+#     Under 8.0 at conviction 83.
+#   * Each late flip also triggers jerry_pick_scrub, which replaces the
+#     written read with "Model recomputed to X. Fresh read regenerating."
+#     Four reads sat on that placeholder for ~9 hours today.
+#
+# PICKS freeze. DATA does not. The other steps in that workflow — lineups,
+# umpires, line-move classification — still run every 30 minutes, because
+# refreshing what we KNOW is not the same as changing what we SAID.
+#
+# Deliberately NOT a first-write-wins row lock: this script also runs
+# inside the morning pipeline itself (after enrich_monte_carlo, which is
+# the whole reason it exists), so locking on first write would freeze the
+# pick before MC had been folded in. An hour gate matches the convention
+# already used by the Sweat Card, Sharp Card and POTD composers
+# (SWEAT_CARD_HARD_LOCK_ET_HOUR and friends).
+#
+# Morning runs are 6:00 / 7:15 / 8:30 am ET, so noon leaves a wide margin.
+# A game with NO published pick is always writable regardless of the hour,
+# so a late slate addition or a delayed pipeline still gets its pick.
+_PICK_LOCK_HOUR = int(os.environ.get('MLB_PICK_LOCK_ET_HOUR', '12'))
+
+
+def _pick_lock_active() -> bool:
+    """True once the morning window has closed for the day.
+
+    NOTE: --force does NOT lift this lock, by design. The workflow runs
+    `recompute_primary_play.py --force` as a "final recompute" step on
+    EVERY invocation, including the 2:00pm ET cron — so honouring --force
+    here would leave the lock permanently defeated on the exact run it
+    exists to stop. --force means "rewrite even if the tier/label looks
+    unchanged" (it exists for ensemble-internals changes); it has never
+    meant "overrule a user-trust lock".
+
+    The escape hatch is a DISTINCT env var, matching the convention the
+    Sharp Card and POTD locks already use for precisely this reason —
+    their comments read "distinct env so a stray --force can't sneak
+    through".
+    """
+    if os.environ.get('MLB_PICK_EMERGENCY_UNLOCK') == '1':
+        return False
+    if os.environ.get('MLB_PICK_LOCK', '').lower() in ('off', '0', 'false'):
+        return False
+    et_hour = (datetime.now(timezone.utc) - timedelta(hours=4)).hour
+    return et_hour >= _PICK_LOCK_HOUR
+
+
 def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
     print(f'=== recompute_primary_play · {date_str} ===')
     ctxs = requests.get(
@@ -64,6 +118,14 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
     patched = 0
     changed_pp = 0
     changed_ens = 0
+    locked_skips = 0
+    _locked = _pick_lock_active()
+    if _locked:
+        print(f'  🔒 MORNING PICK LOCK ACTIVE (past {_PICK_LOCK_HOUR:02d}:00 ET) '
+              f'— published picks will NOT be changed'
+              + ('  [--force given; it does NOT lift this lock]' if force else '')
+              + '\n     Games with no published pick can still be filled. '
+                'Override: MLB_PICK_EMERGENCY_UNLOCK=1')
     engine_counts = {'ensemble_v2': 0, 'legacy_fallback': 0}
     fallback_reasons: dict[str, int] = {}
     for c in ctxs:
@@ -275,6 +337,22 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
         new_str = f"{(new_pp or {}).get('tier','—')}·{(new_pp or {}).get('label','—')}"[:34]
         print(f'  {away:<20} @ {home:<20}  {old_str:<34} → {new_str:<34}{marker}')
 
+        # Morning lock: once past the lock hour, a game that ALREADY has a
+        # published pick keeps it. Filling a game that has none is still
+        # allowed — that is a gap, not a change. --force is the manual
+        # override for a genuine emergency.
+        #
+        # Evaluated BEFORE the dry-run bail so `--dry-run` reports exactly
+        # what the lock would hold. A safety gate you cannot rehearse is
+        # not one you can trust the first time it matters.
+        if pp_changed and _locked and old_pp:
+            locked_skips += 1
+            changed_pp -= 1          # counted above, before this gate
+            print(f'      🔒 LOCKED — keeping published pick '
+                  f'({old_pp.get("tier","—")}·{old_pp.get("label","—")}); '
+                  f'recompute wanted {new_str}')
+            pp_changed = False
+
         if dry_run:
             continue
 
@@ -382,7 +460,8 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
             print(f'    ⚠ auto-align failed: {e} (jerry_reads may be out of sync)')
 
     print(f'\n{"[DRY] " if dry_run else "✓ "}patched={patched}/{len(ctxs)}  '
-          f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}')
+          f'primary_play changed={changed_pp}  nrfi_ensemble changed={changed_ens}'
+          + (f'  🔒 locked-unchanged={locked_skips}' if locked_skips else ''))
     total = engine_counts['ensemble_v2'] + engine_counts['legacy_fallback']
     if total:
         pct = 100.0 * engine_counts['ensemble_v2'] / total

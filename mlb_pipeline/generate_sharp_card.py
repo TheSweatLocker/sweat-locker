@@ -984,7 +984,14 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
     # freezes. Prior 11am lock trapped 5am cron output when a fix landed
     # after the lock hour (case: PRIME-honors-raw view migration 20260918c
     # applied ~13:00 ET, Sharp Card was already locked with stale PRIMEs).
-    _HARD_LOCK_HOUR = int(os.environ.get('SHARP_CARD_HARD_LOCK_ET_HOUR', '15'))
+    # 2026-09-19 Andy: "whatever comes out in the morning stays. No more
+    # refreshing the sweat card, sharp, or jerry game analysis picks."
+    # 15 → 12. Today's Sharp Card published 10:52 ET and republished at
+    # 12:09 — legal under a 15:00 lock, and precisely the churn described
+    # above. Kept in step with SWEAT_CARD_HARD_LOCK_ET_HOUR and
+    # MLB_PICK_LOCK_ET_HOUR; if these three drift apart the card, the
+    # pick and the read stop agreeing with each other.
+    _HARD_LOCK_HOUR = int(os.environ.get('SHARP_CARD_HARD_LOCK_ET_HOUR', '12'))
     _emergency = os.environ.get('SHARP_CARD_EMERGENCY_UNLOCK') == '1'
     _past_lock = _et_hour >= _HARD_LOCK_HOUR
 

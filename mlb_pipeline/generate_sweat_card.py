@@ -1973,7 +1973,16 @@ def build_card():
     # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Matches sharp card
     # lock bump — gives late-morning window for view fixes / migration
     # reloads to land before card freezes.
-    _HARD_LOCK_HOUR = int(_os.environ.get('SWEAT_CARD_HARD_LOCK_ET_HOUR', '15'))
+    # 2026-09-19 Andy: "whatever comes out in the morning stays. No more
+    # refreshing the sweat card, sharp, or jerry game analysis picks."
+    # 15 → 12. The 15:00 door was wide enough to drive through: today's
+    # card first published 11:02 ET and was REPUBLISHED at 13:05, and the
+    # Sharp Card went 10:52 → 12:09. Both legal under a 15:00 lock, both
+    # exactly the churn the lock exists to stop. Morning pipeline runs
+    # 6:00 / 7:15 / 8:30 am ET, so noon still leaves a wide margin.
+    # Same hour as MLB_PICK_LOCK_ET_HOUR in recompute_primary_play.py —
+    # keep the two in step or the card and the pick it renders disagree.
+    _HARD_LOCK_HOUR = int(_os.environ.get('SWEAT_CARD_HARD_LOCK_ET_HOUR', '12'))
     _emergency = _os.environ.get('SWEAT_CARD_EMERGENCY_UNLOCK') == '1'
     if _et_hour >= _HARD_LOCK_HOUR and not _emergency:
         try:

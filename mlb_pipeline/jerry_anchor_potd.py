@@ -427,7 +427,11 @@ def run(game_date: str | None = None, threshold: int = 70,
     _et_hour = (_dt2.now(_tz2.utc) - _td2(hours=4)).hour
     # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Matches Sharp/Sweat
     # card lock bump — late-morning corrections land before freeze.
-    _HARD_LOCK_HOUR = int(os.environ.get('POTD_HARD_LOCK_ET_HOUR', '15'))
+    # 2026-09-19 Andy: morning output stays. 15 → 12, in step with the
+    # Sweat Card, Sharp Card and MLB_PICK_LOCK_ET_HOUR. POTD rides on the
+    # Sweat Card, so a later lock here would let the headline play move
+    # after the card holding it had already frozen.
+    _HARD_LOCK_HOUR = int(os.environ.get('POTD_HARD_LOCK_ET_HOUR', '12'))
     _emergency = os.environ.get('POTD_EMERGENCY_UNLOCK') == '1'
     if not dry_run and not _emergency and _et_hour >= _HARD_LOCK_HOUR:
         try:
