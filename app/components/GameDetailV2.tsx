@@ -4112,7 +4112,10 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
       const starterNames = Object.values(smap).map((s: any) => s.player_name).filter(Boolean);
       if (starterNames.length > 0) {
         const {data: proj} = await client.from('nfl_player_projections')
-          .select('player_name,team,proj_fantasy_pts,proj_pass_yards,proj_pass_tds')
+          // 2026-09-19: was proj_pass_yards — no such column; the real one
+          // is proj_pass_yds. One bad name 400s the whole select, so the QB
+          // Matchup card lost its projections entirely (not just pass yards).
+          .select('player_name,team,proj_fantasy_pts,proj_pass_yds,proj_pass_tds')
           .in('player_name', starterNames)
           .in('team', [homeTeam, awayTeam])
           .order('pulled_at', {ascending: false})
@@ -4135,9 +4138,9 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
           Proj FP: <Text style={styles.pitcherStatBold}>{Number(proj.proj_fantasy_pts).toFixed(1)}</Text>
         </Text>
       )}
-      {proj?.proj_pass_yards != null && (
+      {proj?.proj_pass_yds != null && (
         <Text style={styles.pitcherStats}>
-          Pass Y: <Text style={styles.pitcherStatBold}>{Math.round(Number(proj.proj_pass_yards))}</Text>
+          Pass Y: <Text style={styles.pitcherStatBold}>{Math.round(Number(proj.proj_pass_yds))}</Text>
           {proj?.proj_pass_tds != null && ` · TD ${Number(proj.proj_pass_tds).toFixed(1)}`}
         </Text>
       )}

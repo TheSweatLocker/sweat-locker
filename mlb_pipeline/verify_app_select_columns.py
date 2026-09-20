@@ -47,7 +47,24 @@ SB = os.environ['SUPABASE_URL']
 KEY = os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
-SOURCES = ['app/index.tsx', 'app/track-record.tsx']
+def _sources() -> list[Path]:
+    """Every app file that talks to PostgREST.
+
+    DISCOVERED, never hardcoded. The first version of this script listed
+    index.tsx + track-record.tsx by hand and therefore audited 99 of the
+    app's 143 .from() calls -- missing all 25 in GameDetailV2.tsx, which
+    is the file that renders the screens this check exists to protect.
+    A hardcoded allow-list in a safety net is just a smaller net.
+    """
+    out = []
+    for pat in ('*.tsx', '*.ts'):
+        for p in (_ROOT / 'app').rglob(pat):
+            try:
+                if '.from(' in p.read_text(encoding='utf-8'):
+                    out.append(p)
+            except (OSError, UnicodeDecodeError):
+                pass
+    return sorted(out)
 
 # Selects we cannot statically resolve (built at runtime from variables).
 # Listed so the report says "skipped" rather than silently ignoring them.
@@ -137,10 +154,9 @@ def main() -> int:
     args = ap.parse_args()
 
     problems, skipped, checked = [], [], 0
-    for rel in SOURCES:
-        p = _ROOT / rel
-        if not p.exists():
-            continue
+    sources = _sources()
+    for p in sources:
+        rel = p.relative_to(_ROOT).as_posix()
         for table, cols, line in extract(p):
             if cols == _UNRESOLVABLE:
                 skipped.append((rel, line, table, 'dynamic select'))
@@ -162,7 +178,7 @@ def main() -> int:
         print(json.dumps({'problems': problems, 'skipped': skipped}, indent=2))
     else:
         print(f'=== app SELECT column audit ===')
-        print(f'{checked} resolvable selects checked across {len(SOURCES)} files\n')
+        print(f'{checked} resolvable selects checked across {len(sources)} files\n')
         if problems:
             for p in problems:
                 print(f"  BROKEN  {p['file']}:{p['line']}  ({p['table']})")
