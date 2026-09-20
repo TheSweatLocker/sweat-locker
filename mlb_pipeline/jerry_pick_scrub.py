@@ -76,6 +76,67 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'return=minimal'}
 
+def _team_aliases(name: str, sport: str) -> set:
+    """Every string the prose might use for this team, lowercased.
+
+    NFL game_context stores abbreviations ('CHI'); the LLM writes city
+    names ('Chicago') and nicknames ('Bears'). Matching the raw ctx value
+    against prose therefore never hits, which is why the ml/rl flip check
+    below was dead for NFL. Expand through the ESPN abbreviation map and
+    keep every word of the full name that is distinctive enough to stand
+    alone.
+    """
+    raw = (name or '').strip()
+    if not raw:
+        return set()
+    out = {raw.lower()}
+    full = raw
+    if sport == 'NFL':
+        try:
+            from resolve_nfl_props_espn import _ESPN_TEAM_ABBR
+            full = _ESPN_TEAM_ABBR.get(raw.upper(), raw)
+        except Exception:
+            full = raw
+    out.add(full.lower())
+    toks = [t for t in full.split() if len(t) > 3]
+    # 'New York Jets' -> keep 'jets'; drop 'new'/'york' which collide with
+    # the other New York team. Last token is the nickname in every NFL and
+    # most NCAAF names.
+    if toks:
+        out.add(toks[-1].lower())
+    if len(toks) >= 2:
+        out.add(' '.join(toks[:-1]).lower())   # city portion, e.g. 'green bay'
+    return {a for a in out if len(a) >= 3}
+
+
+def _prose_recommends(prose: str, team: str, sport: str) -> bool:
+    """True if `prose` appears to RECOMMEND `team`, not merely mention it.
+
+    Looks for a team alias sitting next to a betting construction:
+    a signed number ('Chicago -4.5'), a moneyline call ('Cincinnati ML'),
+    or an endorsement verb ('holds value', 'covers', 'take').
+
+    Deliberately narrow on the verb list: 'Chicago is favored' is a fact
+    about the market, not a recommendation, and flagging it would fire on
+    almost every write-up.
+    """
+    import re
+    for alias in _team_aliases(team, sport):
+        a = re.escape(alias)
+        pats = [
+            rf'{a}\s*[+-]\s*\d',            # Chicago -4.5 / Cincinnati +2.5
+            rf'{a}\s+ml\b',                  # Houston ML
+            rf'take\s+(the\s+)?{a}\b',       # take Chicago
+            rf'{a}\b[^.]{{0,40}}\bholds value\b',
+            rf'{a}\b[^.]{{0,40}}\bcovers\b',
+            rf'\bback\s+(the\s+)?{a}\b',
+        ]
+        for p in pats:
+            if re.search(p, prose):
+                return True
+    return False
+
+
 SPORT_CONFIG = {
     'MLB':   {'ctx': 'mlb_game_context'},
     'NFL':   {'ctx': 'nfl_game_context'},
@@ -226,16 +287,30 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             if _home and _away and _home != _away:
                 _picked_team = _home if pp_side == 'HOME' else _away
                 _other_team  = _away if pp_side == 'HOME' else _home
-                # Only flip-detected if prose recommends OTHER team by name
-                # in a "take X" context AND does not also mention picked
-                # team in same context (avoid false positive on prose that
-                # discusses both teams).
+                # 2026-09-19: REWRITTEN. The old check looked for the
+                # literal phrase "take <team>" against the raw ctx team
+                # string, and failed on NFL twice over:
+                #
+                #  1. NFL ctx stores ABBREVIATIONS ('CHI', 'CIN') while
+                #     the prose writes city names ('Chicago',
+                #     'Cincinnati'), so it compared "take chi" against
+                #     text that never contains it. The detector could
+                #     not fire for NFL at all, wired in or not.
+                #  2. Real prose rarely says "take X". Andy caught two
+                #     2026-09-20 games where the card said MIN +4.5 and
+                #     HOU ML while the write-ups argued "Chicago -4.5
+                #     holds value" and "Cincinnati +2.5" — opposite
+                #     sides, no "take" anywhere.
+                #
+                # Now: expand each side to aliases, then look for any
+                # RECOMMENDATION pattern attached to one of them.
                 _prose_all = (_lower_short + ' ' + _lower_long)
-                _take_other = (f'take {_other_team}' in _prose_all or
-                               f'take the {_other_team}' in _prose_all)
-                _take_picked = (f'take {_picked_team}' in _prose_all or
-                                f'take the {_picked_team}' in _prose_all)
-                if _take_other and not _take_picked:
+                _other_rec  = _prose_recommends(_prose_all, _other_team, sport)
+                _picked_rec = _prose_recommends(_prose_all, _picked_team, sport)
+                # Still require the picked side to be ABSENT, so prose
+                # that weighs both teams before landing on ours is not
+                # flagged.
+                if _other_rec and not _picked_rec:
                     _same_market_side_flip = True
         # 2026-09-08 STALE-SCRUB-TEMPLATE detection. When a prior scrub
         # left "Model recomputed to X" but the current call has since
@@ -410,6 +485,22 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             if not _new_text:
                 _new_text = f"{pp_type.upper()} {pp_side}".strip()
             _sub = (pp.get('sub') or '').strip()
+            # 2026-09-19: the engine's `sub` can itself be stale. On
+            # PHI @ TEN the pick had drifted from TEN ML to PHI -7 while
+            # sub still read "TEN ML: DIM is on this side…", so pasting
+            # the new label in front produced "PHI -7 — TEN ML: …" —
+            # a contradiction rebuilt out of the fix for contradictions.
+            # Reuse the flip detector: if the rationale argues the team we
+            # did NOT pick, discard it rather than dress it up.
+            if _sub:
+                _other = ((c.get('away_team') or '') if pp_side == 'HOME'
+                          else (c.get('home_team') or ''))
+                _picked = ((c.get('home_team') or '') if pp_side == 'HOME'
+                           else (c.get('away_team') or ''))
+                _sub_l = _sub.lower()
+                if _other and _prose_recommends(_sub_l, _other, sport) \
+                        and not _prose_recommends(_sub_l, _picked, sport):
+                    _sub = ''
             if _sub:
                 _tmpl = f"{_new_text} — {_sub}" if _new_text.lower() not in _sub.lower() else _sub
             else:

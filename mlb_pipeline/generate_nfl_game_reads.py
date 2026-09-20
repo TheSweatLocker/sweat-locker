@@ -52,6 +52,30 @@ def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
+def ncaaf_week_write_locked():
+    """NCAAF equivalent of nfl_week_write_locked.
+
+    Andy 2026-09-19: "lock college as well before the weekend."
+
+    College plays Thu/Fri/Sat with the bulk on Saturday, so the week is
+    frozen from Thu 8am ET through Sunday night — the same shape as the
+    NFL rule, one day shorter on the back end because there is no Monday
+    college slate. Mon/Tue/Wed write freely, preparing the next week.
+
+    Override: NCAAF_UNLOCK_WEEK=1 (distinct env from the NFL one so an
+    emergency unlock on one sport never silently unlocks the other).
+    """
+    if os.environ.get('NCAAF_UNLOCK_WEEK') == '1':
+        return False
+    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    dow = now_et.weekday()          # Mon=0 … Sun=6
+    if dow in (0, 1, 2):            # Mon/Tue/Wed — next week's prep
+        return False
+    if dow == 3 and now_et.hour < 8:   # Thu pre-8am — final write window
+        return False
+    return True                     # Thu 8am → Sun 11:59pm — LOCKED
+
+
 def nfl_week_write_locked():
     """True during the game-play window (Thu 8am ET → Mon 11:59pm ET),
     False otherwise (Tue / Wed / Thu-before-8am).

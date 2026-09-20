@@ -378,6 +378,19 @@ jobs:
           cd mlb_pipeline
           python sync_jerry_reads_from_ctx.py --sport NCAAF --window 7 || echo "ncaaf jerry_reads sync failed (non-fatal)"
 
+      # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but
+      # was only ever called with --sport MLB, so college write-ups were
+      # never checked against the pick they sit under. Runs after the sync
+      # so call_* fields exist to compare.
+      - name: Scrub NCAAF jerry reads against primary_play
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python jerry_pick_scrub.py --sport NCAAF || echo "NCAAF jerry scrub non-fatal"
+
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full'
         continue-on-error: true

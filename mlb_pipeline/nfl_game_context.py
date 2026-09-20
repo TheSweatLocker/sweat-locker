@@ -1743,19 +1743,57 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
             _r = requests.get(
                 f'{SB}/rest/v1/nfl_game_context',
                 params={'game_id': f'in.({ids_csv})',
-                        'select': 'game_id,open_spread,open_total,open_home_ml,open_away_ml'},
+                        'select': 'game_id,open_spread,open_total,open_home_ml,'
+                                  'open_away_ml,primary_play'},
                 headers=H_READ, timeout=15)
             if _r.status_code == 200:
                 for existing in _r.json():
                     existing_opens[existing['game_id']] = existing
         except Exception as _e:
             print(f'  ⚠ open-preserve lookup failed ({_e}) — proceeding with fresh mirror')
+
+    # ── 2026-09-19 THURSDAY PICK LOCK ───────────────────────────────────
+    # Andy: "we lock it Thursday and no changes unless something
+    # significant happens."
+    #
+    # That lock already existed in two places — generate_nfl_game_reads
+    # (nfl_week_write_locked) freezes the WRITE-UP Thu 8am ET through Mon
+    # night, and recompute_nfl_primary_play honours the same gate. But
+    # THIS builder rebuilds primary_play from scratch on every Odds-API
+    # pull and upserts it unconditionally, so the pick kept moving under
+    # a frozen write-up.
+    #
+    # That is the mechanism behind the 2026-09-20 contradictions Andy
+    # spotted: reads generated Wed 09-17 argued "Chicago -4.5 holds
+    # value" and "Cincinnati +2.5" while the cards by Sunday read
+    # MIN +4.5 and HOU ML. The prose was not wrong when written — the
+    # pick changed afterwards.
+    #
+    # Same fix shape as the MLB noon lock: preserve the published pick,
+    # let everything else in the row refresh (lines, weather, injuries).
+    # A game with no pick yet is still writable — a gap is not a change.
+    _locked = False
+    try:
+        from generate_nfl_game_reads import nfl_week_write_locked
+        _locked = nfl_week_write_locked()
+    except Exception as _e:
+        print(f'  ⚠ NFL week-lock check failed ({_e}) — picks writable')
+    if _locked:
+        print('  🔒 NFL WEEK LOCKED (post Thu 8am ET) — published picks '
+              'preserved; NFL_UNLOCK_WEEK=1 to override')
+
+    _kept = 0
     for row in rows:
         prev = existing_opens.get(row.get('game_id'))
         if not prev: continue
         for open_key in ('open_spread', 'open_total', 'open_home_ml', 'open_away_ml'):
             if prev.get(open_key) is not None:
                 row[open_key] = prev[open_key]
+        if _locked and prev.get('primary_play'):
+            row['primary_play'] = prev['primary_play']
+            _kept += 1
+    if _kept:
+        print(f'     kept {_kept} locked pick(s) from the Thursday slate')
 
     # 2026-08-28: normalize batch keys — PostgREST returns
     # PGRST102 "All object keys must match" when different rows in
