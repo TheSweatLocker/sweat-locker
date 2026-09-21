@@ -95,37 +95,15 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     #
     # Stamped here rather than in each of the four source functions so a
     # new source cannot forget it.
+    # 2026-09-20: the integer-coercion + market-clamp logic moved to
+    # public_receipt.sanitize so live capture and this backfill share ONE
+    # implementation. Two copies of a normaliser drift, and a receipt
+    # normalised differently depending on who wrote it is worse than no
+    # normalisation at all.
+    from public_receipt import sanitize as _sanitize
     for _r in rows:
         _r.setdefault('capture_mode', 'reconstructed')
-        # 2026-09-20 FIELD SANITY. Two live rows carry an entire markdown
-        # write-up in `market` ("** ml  \n**side:** home  \n**call_text:**
-        # cleveland guardians ml ..."), because a source row had prose
-        # where a market code belonged. A receipt is evidence; a field
-        # holding the wrong kind of value quietly poisons every GROUP BY
-        # built on it. Clamp to something market-shaped and park the
-        # original in audit rather than dropping it.
-        # 2026-09-20 INTEGER COERCION. conviction and pick_odds are
-        # integer columns, but sources hand over floats — daily_degen
-        # passes avg_conviction as 79.0, which PostgREST rejects with
-        # 22P02 "invalid input syntax for type integer". The batch is
-        # all-or-nothing, so one float killed all 148 daily_degen rows on
-        # every sport. Coerced here rather than per-source for the same
-        # reason as capture_mode: a new source cannot forget it.
-        for _f in ('conviction', 'pick_odds'):
-            _v = _r.get(_f)
-            if _v is None or isinstance(_v, int):
-                continue
-            try:
-                _r[_f] = int(round(float(_v)))
-            except (TypeError, ValueError):
-                _r[_f] = None
-        _m = _r.get('market')
-        if isinstance(_m, str) and (len(_m) > 24 or '\n' in _m):
-            _aud = _r.get('audit') or {}
-            if isinstance(_aud, dict):
-                _aud['market_raw'] = _m[:400]
-                _r['audit'] = _aud
-            _r['market'] = (_m.split()[0].strip('*: \n')[:24] or 'unknown')
+        _sanitize(_r)
     if dry_run:
         return len(rows)
     r = requests.post(
@@ -400,6 +378,39 @@ def backfill_daily_degen(dry_run: bool = False) -> int:
     return written
 
 
+# ─── Source: jerry_cache sharp_card_* ──────────────────────────────
+
+def backfill_sharp_card(dry_run: bool = False) -> int:
+    """The Sharp (Steam Room slate) — 0 receipts before 2026-09-20.
+
+    This is the surface whose record gets quoted publicly, and it had no
+    evidence trail at all. jerry_cache keeps the published payload per
+    day, so the history IS recoverable: 18 days / 410 picks back to
+    2026-09-03.
+
+    Stamped 'reconstructed' like every other backfill — it is rebuilt
+    after the fact. generate_sharp_card now writes 'live' receipts at
+    publish, and first-write-wins means this can never overwrite one.
+    Shares the row adapter with the live path so the two produce
+    identical shapes.
+    """
+    from public_receipt import sharp_card_rows
+    rows = []
+    # paged() yields individual rows, not pages.
+    for c in paged(f'{SB}/rest/v1/jerry_cache?select=cache_key,data'
+                   f'&cache_key=like.sharp_card_%'):
+        key = str(c.get('cache_key') or '')
+        game_date = key.replace('sharp_card_', '').strip()
+        if len(game_date) != 10:
+            continue
+        items = ((c.get('data') or {}).get('items')) or []
+        rows.extend(sharp_card_rows(items, game_date))
+    # Multi-sport surface: rows already carry their own per-item sport.
+    n = upsert_batch(rows, dry_run)
+    print(f'  sharp_card: {n}/{len(rows)} receipts from jerry_cache')
+    return n
+
+
 # ─── Main ─────────────────────────────────────────────────────────
 
 SOURCES = {
@@ -407,6 +418,7 @@ SOURCES = {
     'jerry_reads':      lambda sport, dry: backfill_jerry_reads(sport, dry),
     'ledger_snapshots': lambda sport, dry: backfill_ledger(sport, dry),
     'daily_degen':      lambda sport, dry: backfill_daily_degen(dry),
+    'sharp_card':       lambda sport, dry: backfill_sharp_card(dry),
 }
 
 

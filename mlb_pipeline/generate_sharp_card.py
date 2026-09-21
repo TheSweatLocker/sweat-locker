@@ -1149,6 +1149,27 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                       headers=H_WRITE, json=row, timeout=30)
     if r.status_code in (200, 201, 204):
         print(f'  ✓ published {len(items)} items → jerry_cache.sharp_card_{today}')
+        # 2026-09-20 LIVE RECEIPTS. Only after the publish actually
+        # succeeded — a receipt for a card that failed to publish would be
+        # evidence of something users never saw, which is worse than no
+        # receipt.
+        #
+        # The Sharp had ZERO receipts of any kind before this, while its
+        # record is the one quoted publicly. Every one of the 12,774
+        # existing receipts is 'reconstructed' (rebuilt after the fact
+        # from mutable tables); this is the first surface to produce
+        # 'live' evidence, written in the same breath as the publish.
+        #
+        # First-write-wins on (sport, surface, game_date, source_id), so a
+        # later reconstruction can never overwrite it, and a republish is
+        # idempotent. Fail-soft — never lose the card over an audit row —
+        # but never silent.
+        try:
+            from public_receipt import capture as _capture
+            from public_receipt import sharp_card_rows as _rows
+            _capture(_rows(items, today), surface='sharp_card')
+        except Exception as _e:
+            print(f'  ⚠ live receipt capture (sharp_card) failed: {_e}')
     else:
         print(f'  ✗ publish failed {r.status_code}: {r.text[:200]}')
 
