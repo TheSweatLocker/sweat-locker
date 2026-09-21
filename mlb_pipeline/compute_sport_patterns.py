@@ -142,6 +142,118 @@ def _pp_result_outcome_faded(game: dict) -> str:
     return oc  # P stays P
 
 
+# ─── ATS form helpers (team_recent_games) ───────────────────────────
+#
+# Andy approved 2026-09-02: "X team covering spread playing against a
+# team who doesn't cover away kind of deal — can we surface as badge?"
+#
+# Source is the `team_recent_games` matview: one row per team per game
+# with a TEAM-RELATIVE spread_result ('won' / 'lost' / 'push'), is_home,
+# and game_date. 30,654 NCAAF rows / 3,434 NFL / 8,772 MLB back to 2020.
+# Team names join at 100% for NFL and MLB, 94% for NCAAF (the misses are
+# FCS programmes carrying mascot suffixes).
+#
+# ⚠ LOOKAHEAD IS THE WHOLE RISK HERE. "Covered 3 straight" is only a
+# signal if it is computed from games that finished BEFORE the game being
+# graded. Including the game itself — or any later game — leaks the
+# outcome into the predictor and every streak pattern backtests
+# beautifully and fails live. _prior_games filters strictly `<
+# before_date` and is the only entry point; nothing below reads the
+# matview directly.
+_TRG_CACHE: dict = {}
+
+
+def _load_trg(sport: str) -> dict:
+    """team -> [rows] sorted oldest→newest, graded spread rows only."""
+    sport = str(sport).upper()
+    if sport in _TRG_CACHE:
+        return _TRG_CACHE[sport]
+    by_team: dict = defaultdict(list)
+    off = 0
+    while off < 80000:
+        r = requests.get(
+            f'{SB}/rest/v1/team_recent_games?select=team,game_date,is_home,'
+            f'spread_result,total_result,won&sport=eq.{sport}'
+            f'&limit=1000&offset={off}', headers=H_READ, timeout=60)
+        chunk = r.json() if r.status_code == 200 else []
+        if not chunk:
+            break
+        for row in chunk:
+            sr = str(row.get('spread_result') or '').lower()
+            if sr in ('won', 'lost', 'push'):
+                by_team[row.get('team')].append(row)
+        if len(chunk) < 1000:
+            break
+        off += 1000
+    for t in by_team:
+        by_team[t].sort(key=lambda x: str(x.get('game_date') or ''))
+    _TRG_CACHE[sport] = by_team
+    return by_team
+
+
+def _prior_games(sport: str, team: str, before_date, location=None,
+                 limit: int = 10) -> list:
+    """Most-recent-first graded games STRICTLY BEFORE `before_date`.
+
+    location: 'home' | 'road' | None.
+    """
+    if not team or not before_date:
+        return []
+    rows = _load_trg(sport).get(team) or []
+    bd = str(before_date)[:10]
+    out = []
+    for row in reversed(rows):                 # newest first
+        if str(row.get('game_date') or '')[:10] >= bd:
+            continue                           # the guard: never same-day or later
+        if location == 'home' and not row.get('is_home'):
+            continue
+        if location == 'road' and row.get('is_home'):
+            continue
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _ats_streak(sport, team, before_date, location=None) -> int:
+    """Consecutive ATS covers immediately before `before_date`.
+    Negative = consecutive non-covers. Pushes end the streak."""
+    n = 0
+    for row in _prior_games(sport, team, before_date, location, limit=20):
+        sr = str(row.get('spread_result') or '').lower()
+        if sr == 'push':
+            break
+        if n == 0:
+            n = 1 if sr == 'won' else -1
+        elif (n > 0) == (sr == 'won'):
+            n += 1 if n > 0 else -1
+        else:
+            break
+    return n
+
+
+def _ats_cover_pct(sport, team, before_date, n_games, location=None):
+    """(covers, decided) over the last `n_games` before `before_date`."""
+    rows = _prior_games(sport, team, before_date, location, limit=n_games)
+    w = sum(1 for r in rows if str(r.get('spread_result') or '').lower() == 'won')
+    d = sum(1 for r in rows if str(r.get('spread_result') or '').lower() in ('won', 'lost'))
+    return w, d
+
+
+def _is_home_fav(g: dict, sport: str) -> Optional[bool]:
+    cs = g.get('close_spread')
+    if cs is None:
+        return None
+    try:
+        cs = float(cs)
+    except (ValueError, TypeError):
+        return None
+    if cs == 0:
+        return None
+    neg = _HOME_FAV_NEGATIVE.get(str(sport).upper(), False)
+    return (cs < 0) if neg else (cs > 0)
+
+
 # close_spread sign is NOT shared across sports. Verified empirically
 # 2026-09-20 on 263 NCAAF games: home teams win 92.1% when close_spread
 # is NEGATIVE, so NCAAF (like MLB) stores negative = home favored. NFL is
@@ -654,6 +766,43 @@ PATTERN_CATALOG = [
     # NBA opens 10/22; NCAAB 11/3; NHL 10/7. Add patterns once we have
     # enough graded games (30+) to compute meaningful hit rates.
 ]
+
+
+# ─── ATS form patterns — TESTED AND REJECTED 2026-09-21 ─────────────
+#
+# Andy approved this idea 2026-09-02 ("X team covering spread playing
+# against a team who doesn't cover away"). Built, then power-tested
+# against team_recent_games BEFORE shipping a badge. It does not work.
+#
+# The catalog backtest is limited to games present in *_game_context
+# (239 graded NCAAF), which is far too thin to judge a pattern. The
+# matview holds 12,544 NCAAF / 3,434 NFL / 4,090 MLB team-games back to
+# 2020. Tested there, with every streak computed strictly from prior
+# games:
+#
+#   NEXT-COVER RATE BY PRIOR ATS STREAK (base is exactly 50.00% — every
+#   game has one covering side, so across team-games it must be)
+#     NCAAF  cold 3+  50.29%  [47.6, 52.9]  n=1362
+#     NCAAF  hot  3+  49.28%  [46.6, 51.9]  n=1380
+#     NFL    cold 3+  50.40%  [45.4, 55.4]  n=379
+#     MLB    cold 3+  53.51%  [49.1, 57.9]  n=484
+#   Not one bucket's Wilson 95% lower bound clears the base rate.
+#
+#   ATS CLASH (home covering 60%+ at home vs road team covering <=40%)
+#     NCAAF  596-598 = 49.92%  [47.1, 52.7]  n=1194
+#     NFL    177-196 = 47.45%  [42.4, 52.5]  n=373
+#     MLB    257-256 = 50.10%  [45.8, 54.4]  n=513
+#
+# The catalog version briefly looked great — ncaaf_ats_cold3_home_back
+# scored 21-10-1 = 67.74% on n=31 — but its MIRROR (fade the hot home
+# team) also beat the base rate, which is the tell that the streak was
+# doing no work and the small sample was doing all of it.
+#
+# Patterns removed rather than left in to fail the guardrails on every
+# cron. The helpers above (_prior_games / _ats_streak / _ats_cover_pct)
+# are KEPT: they are correct, lookahead-safe, and the next pattern idea
+# that needs team form should use them instead of rebuilding them.
+
 
 
 # ─── Data fetch ──────────────────────────────────────────────────────
