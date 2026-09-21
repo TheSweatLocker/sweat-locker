@@ -311,6 +311,46 @@ _SHADOW_TIER_KEY = '_shadow_tier'
 _SHADOW_CONV_KEY = '_shadow_conviction'
 
 
+# ── In-week prop tier lock ───────────────────────────────────────────
+#
+# 2026-09-20. This module honoured NO write lock while running on
+# `0 */6 * * 4,5,6,0` — every six hours Thu/Fri/Sat/Sun, straight across
+# live slates. compute_confluence_tier recomputes from scratch each pass
+# off rolling L4/L5/L10 windows, so a prop published Thursday at LIGHT
+# could read STRONG by Sunday morning purely because the window rolled.
+#
+# That is the cherry-picking vector Andy has objected to all season: a
+# pick that looks better at kickoff than it did when it was published,
+# and a tier record cleaner than what users actually saw.
+#
+# Rule, matching the M1 precedent on game picks: under the lock the gate
+# is a CEILING, not a floor. Tier and conviction may go DOWN — every
+# safety gate in this file (LR-warn cap, anchor cap, alt-line dedupe,
+# cross-team leak) is a demotion and keeps working. They may never go UP.
+# Outside the lock (Tue/Wed/Thu-before-8am) the next week writes freely.
+#
+# Distinct env from NFL_UNLOCK_WEEK on purpose. On 2026-09-19 an
+# NFL_UNLOCK_WEEK=1 set to regenerate READS also unlocked the pick
+# writer and moved three published tiers. One sport's emergency unlock
+# must never silently unlock a different surface.
+_PROP_UNLOCK_ENV = 'NFL_PROP_UNLOCK_WEEK'
+
+
+def _prop_week_locked() -> bool:
+    if os.environ.get(_PROP_UNLOCK_ENV) == '1':
+        return False
+    try:
+        from generate_nfl_game_reads import nfl_week_write_locked
+    except ImportError as e:
+        # Fail CLOSED: if the shared helper can't be imported we assume
+        # locked rather than silently reverting to free rewrites.
+        print(f'  ⚠ lock helper import failed ({e}) — assuming LOCKED')
+        return True
+    # Call it directly rather than copying the weekday arithmetic, so the
+    # prop lock can never drift out of step with the game-pick lock.
+    return bool(nfl_week_write_locked())
+
+
 def _graded_prime_sample() -> tuple[int, int, int, bool]:
     """(wins, losses, n, ok) of graded PRIME — published AND shadow.
 
@@ -452,6 +492,10 @@ def main():
         print(f'  PRIME cap: graded PRIME (published+shadow) {_pw}-{_pl} '
               f'n={_pn}/{_PRIME_CAP_MIN_GRADED} ({_pct}) → '
               f'cap {"ON" if _cap_active else "LIFTED"}')
+    _locked = _prop_week_locked()
+    print(f'  in-week prop tier lock: {"ON — demotions only" if _locked else "OFF (open write window)"}'
+          + ('' if _locked else f' · {_PROP_UNLOCK_ENV}=1 overrides'))
+    blocked_promos = 0
     prime_capped = 0
     for p in props:
         orig = p.get('tier') or ''
@@ -472,12 +516,32 @@ def main():
                          'cap_reason': f'prime_gate_unvalidated_n={_pn}'
                                        f'_of_{_PRIME_CAP_MIN_GRADED}'}
             prime_capped += 1
+        # In-week ceiling: a published prop may be demoted, never promoted.
+        # Applied AFTER the PRIME cap so the cap still bites, and before the
+        # change test so a blocked promotion stages no write at all.
+        if _locked and orig:
+            rank_new = TIER_ORDER.get(new_tier, -99)
+            rank_old = TIER_ORDER.get(orig, -99)
+            if rank_new > rank_old:
+                blocked_promos += 1
+                new_tier, new_conv = orig, orig_conv
+                # The shadow stamp is a record of what the gate WANTED and
+                # carries no user-visible tier, so it is still worth keeping
+                # — but only on a row that was already going to be written.
+                p.pop('_shadow', None)
+            elif new_conv > orig_conv:
+                # Same or lower tier, higher conviction — still a pick that
+                # looks better at kickoff than at publish. Hold the number.
+                new_conv = orig_conv
         new_tiers[new_tier] += 1
         if new_tier != orig or new_conv != orig_conv or p.get('_shadow'):
             p['_new_tier'] = new_tier
             p['_new_conviction'] = new_conv
             p['_confluence_breakdown'] = breakdown
             reassigned += 1
+    if _locked and blocked_promos:
+        print(f'  in-week lock held {blocked_promos} promotion(s) at their '
+              f'published tier/conviction')
     if _cap_active and prime_capped:
         print(f'  PRIME→STRONG cap: {prime_capped} props downgraded '
               f'(uncapped tier recorded to signals.{_SHADOW_TIER_KEY})')
