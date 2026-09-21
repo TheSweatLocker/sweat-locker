@@ -515,6 +515,40 @@ def fetch_game_context():
     return sb_get("mlb_game_context", {"game_date": f"eq.{today}", "select": "*"})
 
 
+def _in_season_sports(exclude=('MLB',)) -> list:
+    """Sports whose sport_registry row says they are in season.
+
+    2026-09-21. fetch_football_picks hardcoded ('NFL','NCAAF'), so NHL,
+    NBA and NCAAB could never reach the Sweat Card no matter what their
+    pipelines produced. With MLB's regular season ending ~09-28, NHL not
+    starting until 10-08 and NBA 10-21, that hardcode would have left the
+    card nearly empty for ten days and then still ignored two new sports.
+
+    Driven by sport_registry so a season flip needs no code change and no
+    app release — same principle as sport_registry.state_message.
+    MLB is excluded by default because it has its own richer top_8 path.
+    """
+    try:
+        rows = sb_get('sport_registry', {'select': 'sport,state'}) or []
+    except Exception as e:
+        print(f'  ⚠ sport_registry fetch failed ({e}) — falling back to NFL/NCAAF')
+        return [s for s in ('NFL', 'NCAAF') if s not in exclude]
+    live = [str(r.get('sport')).upper() for r in rows
+            if str(r.get('state') or '').lower() == 'in_season']
+    out = [s for s in live if s and s not in exclude]
+    if not out:
+        print('  ° no non-MLB sports in season')
+    return out
+
+
+# Context table per sport. Anything absent here simply cannot contribute.
+_CTX_TABLE = {
+    'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
+    'NHL': 'nhl_game_context', 'NBA': 'nba_game_context',
+    'NCAAB': 'ncaab_game_context',
+}
+
+
 def fetch_football_picks(today: str) -> list:
     """Fetch NFL + NCAAF PRIME/STRONG primary_plays for today (2026-09-02).
 
@@ -548,7 +582,12 @@ def fetch_football_picks(today: str) -> list:
     _today_dt = _dt.strptime(today, '%Y-%m-%d').date()
     _tomorrow_str = (_today_dt + _td(days=1)).isoformat()
 
-    for sport, tbl in [('NFL', 'nfl_game_context'), ('NCAAF', 'ncaaf_game_context')]:
+    # 2026-09-21: was hardcoded [('NFL', ...), ('NCAAF', ...)]. Now every
+    # in-season sport with a context table, so NHL/NBA/NCAAB join the
+    # moment sport_registry flips them without a code change.
+    _sports = [(sp, _CTX_TABLE[sp]) for sp in _in_season_sports()
+               if sp in _CTX_TABLE]
+    for sport, tbl in _sports:
         try:
             rows = sb_get(tbl, {
                 'game_date': f'in.({today},{_tomorrow_str})',
@@ -2403,15 +2442,34 @@ def build_card():
     # Sport tag on each pick lets app render sport emoji + drive tap-to-detail.
     _weekday = datetime.now(timezone.utc).weekday()  # Mon=0..Sun=6
     _multi_sport_peak = _weekday in (5, 6) and bool(football_picks)  # Sat/Sun w/ football
+    # 2026-09-21: cap was 4-5 because the card was MLB's top_8 PLUS a
+    # small football appendix. As one merged list it is the whole card,
+    # and a 4-pick card on a night with three sports in season is too
+    # thin. Scale with how many sports actually contributed.
+    _sports_present = len({str(p.get('sport') or 'MLB').upper()
+                           for p in (top_8_curated or [])} |
+                          {str(p.get('sport') or '').upper()
+                           for p in football_picks})
     _unified_cap = 5 if _multi_sport_peak else 4
+    if _sports_present >= 3:
+        _unified_cap = 8
+    elif _sports_present == 2:
+        _unified_cap = max(_unified_cap, 6)
     _now_month = datetime.now(timezone.utc).month
     _football_priority = _now_month in (9, 10, 11, 12, 1)  # Sept-Jan = football priority
 
+    # 2026-09-21: was a month-based football-vs-MLB hardcode, which had
+    # no answer for NHL/NBA/NCAAB and would have ranked them below
+    # everything forever. Conviction is the real ordering; this only
+    # breaks ties, and a tie between a 78-conviction NHL pick and a
+    # 78-conviction NFL pick is genuinely arbitrary. Keep MLB's slight
+    # edge while it is in season (deepest calibration, most graded
+    # history) and treat every other in-season sport equally.
     def _priority_weight(sport: str) -> int:
-        # Higher = ranks first on ties
-        if _football_priority and sport in ('NFL', 'NCAAF'): return 10
-        if sport == 'MLB': return 5 if _football_priority else 10
-        return 1
+        sport = (sport or '').upper()
+        if sport == 'MLB':
+            return 6 if _football_priority else 10
+        return 5
 
     _unified_candidates = []
     # MLB from top_8_curated
