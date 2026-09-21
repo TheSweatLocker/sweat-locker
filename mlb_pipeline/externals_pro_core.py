@@ -202,20 +202,22 @@ class SportPuller:
         hi = (datetime.fromisoformat(game_date)
               + timedelta(days=self.horizon_days)).date().isoformat()
         for tbl in (self.ctx_table, self.results_table):
+            # A dict cannot carry two `game_date` keys — the second
+            # silently overwrites the first, leaving only the upper bound
+            # and returning the oldest 1000 rows in the table. Use a list
+            # of tuples so BOTH bounds reach PostgREST.
+            params = [('select', 'game_id,home_team,away_team,game_date'),
+                      ('game_date', f'gte.{game_date}'),
+                      ('game_date', f'lte.{hi}'),
+                      ('order', 'game_date.asc'),
+                      ('limit', '500')]
             try:
-                r = requests.get(
-                    f'{SB}/rest/v1/{tbl}',
-                    params={'select': 'game_id,home_team,away_team,game_date',
-                            'game_date': f'gte.{game_date}',
-                            'game_date': f'lte.{hi}'},
-                    headers=H_READ, timeout=20)
+                r = requests.get(f'{SB}/rest/v1/{tbl}', params=params,
+                                 headers=H_READ, timeout=20)
             except requests.RequestException:
                 continue
             if r.status_code == 200 and r.json():
-                rows = [g for g in r.json()
-                        if game_date <= str(g.get('game_date', ''))[:10] <= hi]
-                if rows:
-                    return rows
+                return r.json()
         return []
 
     def find_game_id(self, slate: list, home_hint: str, away_hint: str):
