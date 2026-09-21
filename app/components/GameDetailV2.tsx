@@ -1631,10 +1631,22 @@ function LensGrid({ctx, gamesSport}: any) {
     const _v4Total = (isFinite(_v4h) && isFinite(_v4a))
       ? (_v4h + _v4a)
       : (ctx?.v4_total ?? ctx?.model_pred_total);
+    // 2026-09-20 — the TOTALS column used to lie. v3/v4/SP+ all rendered
+    // the same number as three independent lenses: ncaaf_game_context
+    // assigns projected_total, sp_plus_pred_total and the v4 per-team
+    // points from ONE SP+ computation (v3 == SP+ on 72/72; v4 differs only
+    // by a rounding artifact, 54.06 vs 54.10). Three tiles agreeing looked
+    // like corroboration when it was one model shown three times.
+    //
+    // The MARGINS are genuinely independent (Vanderbilt @ Auburn: v3 6.15,
+    // v4 -2.10, SP+ -0.90) so every tile keeps its margin. Only the
+    // duplicated totals are dropped — v3 carries the shared SP+ total and
+    // MC carries the one real second opinion (0/68 identical, mean |diff|
+    // 1.13).
     return [
       {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-      {name: 'v4', m: _v4Margin, t: _v4Total},
-      {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: ctx?.sp_plus_pred_total},
+      {name: 'v4', m: _v4Margin, t: null},
+      {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: null},
       {name: 'MC',  m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
       ...(lrTile ? [lrTile] : []),
       {name: 'Conf', m: ctx?.signal_confluence_net, t: null},

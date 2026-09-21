@@ -757,6 +757,29 @@ def compute_projections(home_stats: dict, away_stats: dict,
             # per-team points. Same SP+ math, same values, just plumbed to
             # the SP+-labeled columns so the NumbersPanel can render the
             # full row (margin + total + AWAY pts + HOME pts).
+            #
+            # ⚠ 2026-09-20 — READ THIS BEFORE USING sp_plus_pred_total.
+            # These three are DISPLAY ALIASES, not a second model.
+            # `projected_total` above is already the SP+ matchup total, so
+            # sp_plus_pred_total is byte-identical to it by construction
+            # (verified 72/72, mean |diff| 0.00). It must NEVER be counted
+            # as an independent lens: doing so double-counts one model.
+            #
+            # It had already gone wrong twice —
+            #   * ncaaf_sharp_fade_rules.rule_models_oppose_sharp built a
+            #     2-model totals consensus from projected_total +
+            #     sp_plus_pred_total, so the "both models agree" guard was
+            #     one model counted twice. Now uses Monte Carlo.
+            #   * GameDetailV2's Model Consensus rendered v3/v4/SP+ totals
+            #     as three lenses showing one number.
+            # For a genuinely independent total use
+            # mc_probabilities.mc_expected_total (0/68 identical, mean
+            # |diff| 1.13).
+            #
+            # The SPREAD columns are NOT aliases — sp_plus_pred_spread is
+            # computed separately below and genuinely differs from
+            # projected_spread (mean |diff| ~7 pts). Only the TOTAL is a
+            # duplicate.
             out['sp_plus_pred_home_pts'] = round(h_pts, 1)
             out['sp_plus_pred_away_pts'] = round(a_pts, 1)
             out['sp_plus_pred_total']    = round(total, 2)

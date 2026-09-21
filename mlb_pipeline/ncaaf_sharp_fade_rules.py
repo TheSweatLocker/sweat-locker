@@ -104,9 +104,26 @@ def rule_models_oppose_sharp(ctx, pick_market, pick_side):
 
     if pick_market == 'total':
         line = ctx.get('close_total')
+        # 2026-09-20: `sp_plus_pred_total` used to be the second lens here.
+        # It is a BYTE-IDENTICAL copy of `projected_total` -- both are
+        # assigned the same `round(total, 2)` in
+        # ncaaf_game_context.compute_projections (verified 72/72 identical
+        # on 09-17..10-05, mean |diff| 0.00). So the two "models" could
+        # never disagree, the `len(filled) >= 2` corroboration guard below
+        # was satisfied by one model counted twice, and this rule emitted a
+        # STRONG fade whose reason text claimed "Both matchup, sp_plus
+        # oppose sharp."
+        #
+        # Monte Carlo is a genuinely independent total: 0/68 identical to
+        # projected_total, mean |diff| 1.13. Use it as the real second lens.
+        _mc = ctx.get('mc_probabilities')
+        _mc = _mc if isinstance(_mc, dict) else {}
+        _mc_total = _mc.get('mc_expected_total')
+        if _mc_total is None:
+            _mc_total = _mc.get('mc_mean_total')
         models = {
             'matchup': _t_side(ctx.get('projected_total'), line),
-            'sp_plus': _t_side(ctx.get('sp_plus_pred_total'), line),
+            'monte_carlo': _t_side(_mc_total, line),
         }
     elif pick_market in ('ml', 'spread'):
         models = {
