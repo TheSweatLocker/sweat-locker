@@ -27,6 +27,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    Retry = None
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -51,11 +56,23 @@ from line_movement_config import get_config, classify_split, combine_classificat
 
 SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
 
+# 2026-09-21: a --since-hours backfill issues thousands of sequential
+# reads (441 NCAAF flags x 3 sources x sibling ids) and the host reset
+# the connection partway through. Pool and retry instead of opening a
+# fresh socket per lookup.
+_SESSION = requests.Session()
+if Retry is not None:
+    _retry = Retry(total=3, backoff_factor=0.4,
+                   status_forcelist=(500, 502, 503, 504),
+                   allowed_methods=frozenset(['GET', 'PATCH']))
+    _SESSION.mount('https://', HTTPAdapter(max_retries=_retry,
+                                           pool_connections=8, pool_maxsize=8))
+
 
 def fetch_flags(sport: str, since_hours: int = 24) -> list:
     """Pull unclassified (or recently re-fired) line_movement_flags for sport."""
     since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat().replace('+', '%2B')
-    r = requests.get(
+    r = _SESSION.get(
         f'{SB}/rest/v1/line_movement_flags'
         f'?sport=eq.{sport}&first_seen_at=gte.{since}'
         f'&select=id,game_id,market,side,pattern,detail,first_seen_at,classification',
@@ -66,48 +83,167 @@ def fetch_flags(sport: str, since_hours: int = 24) -> list:
     return r.json() or []
 
 
-def _fetch_oddscrowd_split(game_id: str, market: str) -> dict | None:
-    """Return latest oddscrowd snapshot for (game, market)."""
-    r = requests.get(
-        f'{SB}/rest/v1/line_snapshot'
-        f'?game_id=eq.{game_id}&market=eq.{market}&source=eq.oddscrowd'
-        f'&order=snapshot_ts.desc&limit=1',
-        headers=H_READ, timeout=15)
-    if r.status_code != 200:
+# 2026-09-21: every splits read below took "the latest row for this game",
+# with no upper bound on its age. A split captured two days ago would vote on
+# today's line move as though it were current. That is not a small error in a
+# 3-source agreement test: a stale source that disagrees with two fresh ones
+# collapses the result to SOURCES_SPLIT or PATTERN_ONLY and silently
+# suppresses a classification the live sources agreed on.
+#
+# It became acute when OddsCrowd went client-side and stopped updating
+# (project_oddscrowd_client_render_921): line_snapshot still holds hundreds of
+# oddscrowd rows from 09-19/09-20, and they were still being counted as a
+# third opinion on 09-21 games. Observed on NFL flags where OC read 61% money
+# on UNDER while CZ read 78% handle on OVER — a contradiction that is really
+# just a day of line movement.
+#
+# Money flow is intraday by nature, so the window is deliberately tight.
+SPLIT_MAX_AGE_HOURS = 18
+
+
+def _fresh_enough(row: dict | None, ts_field: str, ref_iso: str | None = None) -> dict | None:
+    """Drop a splits row too far from the move it is being asked to explain.
+
+    Freshness is measured against the FLAG, not against wall-clock now. The
+    first version of this compared to now() and was wrong in a way that only
+    showed up on backfill: reclassifying a two-week-old flag found every
+    split "stale" and turned 47/47 NFL flags into PATTERN_ONLY with
+    money%=None. A split captured an hour before a Sept 14 line move is
+    perfectly fresh evidence about that move.
+
+    Rows from AFTER the flag are allowed — splits are usually captured on a
+    slower cadence than move detection, so the nearest snapshot often
+    postdates the move by minutes — but only within the same window.
+    """
+    if not row:
         return None
-    rows = r.json() or []
-    return rows[0] if rows else None
+    ts = row.get(ts_field)
+    if not ts:
+        return row          # no timestamp to judge by — keep, don't guess
+    try:
+        dt = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+    except ValueError:
+        return row
+    ref = datetime.now(timezone.utc)
+    if ref_iso:
+        try:
+            ref = datetime.fromisoformat(str(ref_iso).replace('Z', '+00:00'))
+            if ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    age_h = abs((ref - dt).total_seconds()) / 3600.0
+    return row if age_h <= SPLIT_MAX_AGE_HOURS else None
 
 
-def _fetch_fadereport_split(game_id: str, market: str) -> dict | None:
+def _fetch_oddscrowd_split(game_id: str, market: str, ref_iso: str | None = None) -> dict | None:
+    """Return latest oddscrowd snapshot for (game, market), if still fresh."""
+    for gid in _sibling_ids(game_id):
+        r = _SESSION.get(
+            f'{SB}/rest/v1/line_snapshot'
+            f'?game_id=eq.{gid}&market=eq.{market}&source=eq.oddscrowd'
+            f'&order=snapshot_ts.desc&limit=1',
+            headers=H_READ, timeout=15)
+        if r.status_code != 200:
+            continue
+        rows = r.json() or []
+        hit = _fresh_enough(rows[0] if rows else None, 'snapshot_ts', ref_iso)
+        if hit:
+            return hit
+    return None
+
+
+def _fetch_fadereport_split(game_id: str, market: str, ref_iso: str | None = None) -> dict | None:
     """Return latest fadereport snapshot for (game, market). Returns None if
     table doesn't exist yet (migration 20260814_fadereport_signals pending)."""
-    r = requests.get(
-        f'{SB}/rest/v1/fadereport_signals'
-        f'?game_id=eq.{game_id}&market=eq.{market}'
-        f'&order=fetched_at.desc&limit=1',
-        headers=H_READ, timeout=10)
-    if r.status_code == 404:
-        return None
-    if r.status_code != 200:
-        return None
-    rows = r.json() or []
-    return rows[0] if rows else None
+    for gid in _sibling_ids(game_id):
+        r = _SESSION.get(
+            f'{SB}/rest/v1/fadereport_signals'
+            f'?game_id=eq.{gid}&market=eq.{market}'
+            f'&order=fetched_at.desc&limit=1',
+            headers=H_READ, timeout=10)
+        if r.status_code != 200:
+            continue
+        rows = r.json() or []
+        hit = _fresh_enough(rows[0] if rows else None, 'fetched_at', ref_iso)
+        if hit:
+            return hit
+    return None
 
 
-def _fetch_cleatz_split(game_id: str, market: str) -> dict | None:
+def _fetch_cleatz_split(game_id: str, market: str, ref_iso: str | None = None) -> dict | None:
     """Return latest cleatz snapshot for (game, market). 3rd public-splits
     source added 2026-08-15. Table has sharp_side_norm + sharp/other
     bets% + handle% + divergence."""
-    r = requests.get(
-        f'{SB}/rest/v1/cleatz_signals'
-        f'?game_id=eq.{game_id}&market=eq.{market}'
-        f'&order=fetched_at.desc&limit=1',
-        headers=H_READ, timeout=10)
-    if r.status_code == 404 or r.status_code != 200:
-        return None
-    rows = r.json() or []
-    return rows[0] if rows else None
+    for gid in _sibling_ids(game_id):
+        r = _SESSION.get(
+            f'{SB}/rest/v1/cleatz_signals'
+            f'?game_id=eq.{gid}&market=eq.{market}'
+            f'&order=fetched_at.desc&limit=1',
+            headers=H_READ, timeout=10)
+        if r.status_code != 200:
+            continue
+        rows = r.json() or []
+        hit = _fresh_enough(rows[0] if rows else None, 'fetched_at', ref_iso)
+        if hit:
+            return hit
+    return None
+
+
+# ── football game_id aliasing ─────────────────────────────────────────────
+# 2026-09-21. Football splits were reaching only 6% of NCAAF flags, because
+# the flag and the splits row can be written under DIFFERENT id schemes for
+# the same fixture — NCAAF switched hash->slug around 09-19, and flags from
+# before that carry ids fadereport/cleatz never used. Matching on the flag's
+# own id alone therefore misses its own splits.
+#
+# football_game_id_alias (migration 20260921d) maps every id ever seen for a
+# fixture to one canonical results id, so any two ids for the same game can
+# be recognised as siblings. Lookups try the flag's id first and fall back to
+# its siblings, which is a no-op for MLB and for football games whose scheme
+# never changed.
+_alias_sibs: dict | None = None
+
+
+def _load_alias_siblings() -> dict:
+    """{game_id -> [game_id, ...equivalents]} from football_game_id_alias."""
+    global _alias_sibs
+    if _alias_sibs is not None:
+        return _alias_sibs
+    by_result: dict = {}
+    try:
+        for off in range(0, 40000, 1000):
+            r = _SESSION.get(f'{SB}/rest/v1/football_game_id_alias',
+                             headers=H_READ, timeout=30,
+                             params={'select': 'alias_game_id,results_game_id',
+                                     'limit': 1000, 'offset': off,
+                                     'order': 'alias_game_id.asc'})
+            if r.status_code != 200:
+                break
+            chunk = r.json()
+            if not isinstance(chunk, list):
+                break
+            for row in chunk:
+                by_result.setdefault(row['results_game_id'], []).append(row['alias_game_id'])
+            if len(chunk) < 1000:
+                break
+    except Exception as e:
+        print(f'  ⚠ alias table unavailable ({e}) — exact id matching only')
+    out: dict = {}
+    for rid, aliases in by_result.items():
+        group = list(dict.fromkeys(aliases + [rid]))
+        for a in aliases:
+            out[a] = group
+    _alias_sibs = out
+    return out
+
+
+def _sibling_ids(game_id: str) -> list:
+    """The flag's own id first, then any known equivalents."""
+    sibs = _load_alias_siblings().get(game_id)
+    if not sibs:
+        return [game_id]
+    return [game_id] + [s for s in sibs if s != game_id]
 
 
 def _cleatz_split_on_side(cleatz: dict | None, side: str) -> tuple:
@@ -187,9 +323,11 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
     gid = flag['game_id']; market = flag['market']; side = flag['side']
     pattern = (flag.get('pattern') or '').lower()
 
-    oc = _fetch_oddscrowd_split(gid, market)
-    fr = _fetch_fadereport_split(gid, market)
-    cz = _fetch_cleatz_split(gid, market)
+    # Freshness is judged against this flag's own time, so backfills work.
+    ref_iso = flag.get('first_seen_at')
+    oc = _fetch_oddscrowd_split(gid, market, ref_iso)
+    fr = _fetch_fadereport_split(gid, market, ref_iso)
+    cz = _fetch_cleatz_split(gid, market, ref_iso)
 
     oc_money, oc_bets = _split_on_side(oc, side, 'money_pct', 'bets_pct')
     # 2026-08-16 morning-audit fix: use FR-specific reader that respects
@@ -372,15 +510,15 @@ def _parse_matchup_market(detail: str) -> tuple:
 
 
 def patch_flag(flag_id: int, payload: dict) -> bool:
-    r = requests.patch(
+    r = _SESSION.patch(
         f'{SB}/rest/v1/line_movement_flags?id=eq.{flag_id}',
         headers=H_WRITE, json=payload, timeout=15)
     return r.status_code in (200, 204)
 
 
-def run_sport(sport: str, dry_run: bool = False) -> tuple:
-    flags = fetch_flags(sport)
-    print(f'  {sport}: {len(flags)} recent flags')
+def run_sport(sport: str, dry_run: bool = False, since_hours: int = 24) -> tuple:
+    flags = fetch_flags(sport, since_hours=since_hours)
+    print(f'  {sport}: {len(flags)} flags in last {since_hours}h')
     if not flags:
         return (0, 0)
 
@@ -410,6 +548,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', choices=SUPPORTED_SPORTS + ['ALL'], default='ALL')
     p.add_argument('--dry-run', action='store_true')
+    # 2026-09-21: the window was hardcoded to 24h with no way to widen it, so
+    # a classifier fix could never be applied to flags already on disk.
+    # Football only plays on a few days a week, so a 24h window also means a
+    # Tuesday run sees zero football at all.
+    p.add_argument('--since-hours', type=int, default=24,
+                   help='reclassify flags first seen within this window')
     args = p.parse_args()
 
     sports = SUPPORTED_SPORTS if args.sport == 'ALL' else [args.sport]
@@ -417,7 +561,7 @@ def main():
           f'{"[DRY]" if args.dry_run else ""} ===')
     total_written = total_flags = 0
     for s in sports:
-        w, n = run_sport(s, dry_run=args.dry_run)
+        w, n = run_sport(s, dry_run=args.dry_run, since_hours=args.since_hours)
         total_written += w; total_flags += n
     print(f'\n  ✓ {total_written}/{total_flags} flags classified')
 
