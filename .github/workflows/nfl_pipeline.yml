@@ -885,6 +885,14 @@ jobs:
           # 1254). Backfill window default (yesterday + 3d prior) catches
           # any late arrivals.
           python grade_jerry_reads.py --sport NFL || echo "NFL jerry grader failed (non-fatal)"
+          # 2026-09-21: NFL externals were PULLED every week and never
+          # GRADED — MLB, NCAAF and NCAAB all call resolve_externals, NFL
+          # never did. 451 of 460 NFL external picks sat ungraded since
+          # launch, so the External Picks tab could show NFL handicapper
+          # picks with no record behind any of them, and per-source
+          # calibration had nothing to calibrate on. Running it by hand
+          # graded 398 immediately (215-183).
+          python resolve_externals.py --sport NFL --days 14
           # 2026-09-10: ESPN box-score fast grader FIRST — grades within
           # minutes of game end. Fixes 5-day wait users saw on TNF props.
           # Falls back to nflverse grader below for anything still ungraded.
