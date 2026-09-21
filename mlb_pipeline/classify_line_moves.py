@@ -376,6 +376,37 @@ def classify_flag(sport: str, flag: dict) -> dict | None:
             return 3
         classification = min(candidates, key=_rank) if candidates else 'PATTERN_ONLY'
 
+    # 2026-09-21 TOTALS GATE — closes the quarantine investigation opened
+    # 2026-08-31 in ensemble_scorer, which guessed the root cause was "one of
+    # the split sources having money%/bets% inverted". It is not. Comparing
+    # OC against FR on the SAME (game, market, side) across 3,235 archived
+    # rows: median difference -3.0pp, so there is no inversion and no
+    # systematic bias. What there IS is noise — sd 20.3pp, and 23% of pairs
+    # disagree by 25pp or more.
+    #
+    # The damage is concentrated in one market. How often the two sources
+    # even agree on WHICH SIDE holds the majority of the money:
+    #
+    #     ml     910/1020   89%
+    #     rl    1427/1684   85%
+    #     total  314/531    59%     <- barely better than a coin flip
+    #
+    # That maps precisely onto realised performance
+    # (project_fade_gate_performance_921): CONSENSUS_CONFIRMED hits 68.4%
+    # [59-76] on moneyline and 43.8% on totals. Multi-source agreement only
+    # means something where the sources actually agree. On totals, two
+    # sources "confirming" each other is mostly coincidence, and stamping
+    # CONFIRMED on it manufactures confidence the data does not support.
+    #
+    # So a totals call needs all three sources, not two. TRIPLE_CONFIRMED
+    # survives untouched (three-way agreement on a 59%-agreement market is
+    # genuinely rare and therefore genuinely informative); 2-source totals
+    # drop to LEAN, where the existing sub-60 gate above can still demote
+    # them further.
+    if (market or '').lower() == 'total' and classification.endswith('_CONFIRMED') \
+            and '_TRIPLE_CONFIRMED' not in classification:
+        classification = classification.rsplit('_', 1)[0] + '_LEAN'
+
     # 2026-08-16 morning-audit gate: single-source SHARP_MOVE_LEAN went
     # 1-2 on 8/15, and every LEAN flag on the slate had money% < 60.
     # Sub-60 single-source "sharp" is noise — demote to PATTERN_ONLY so

@@ -1543,10 +1543,27 @@ def score_mlb_game(ctx, game_props=None, track=None):
             # Only trust _CONFIRMED classifications (both split sources
             # agreed). _LEAN / SOURCES_SPLIT / PATTERN_ONLY get ignored
             # so the engine doesn't vote on ambiguous sharp signal.
+            # 2026-09-21: POTD was voting on SHARP_MOVE_CONFIRMED while
+            # ensemble_scorer had QUARANTINED that exact tag since 08-31 —
+            # two composers taking opposite positions on the same signal.
+            # The 09-21 audit backs the ensemble: SHARP_MOVE_CONFIRMED hits
+            # 56.2% [46-66] over n=96, indistinguishable from chance, and
+            # SHARP_MOVE_LEAN is 41.3%. What does earn is CONSENSUS on
+            # moneyline: 68.4% [59-76] over n=117 — while the same tag on
+            # totals is 43.8%, because that is the market where the split
+            # sources only agree 59% of the time on which side holds the
+            # money (see classify_line_moves TOTALS GATE).
+            #
+            # So: drop SHARP_MOVE_CONFIRMED to match the ensemble, keep
+            # RLM_CONFIRMED (untouched by the audit, n too small to judge),
+            # and add the tiers that carry evidence. Market filtering is
+            # applied below rather than here so RLM keeps its existing
+            # behaviour.
             r = requests.get(
                 f"{SUPABASE_URL}/rest/v1/line_movement_flags"
                 f"?game_id=eq.{gid}"
-                f"&classification=in.(SHARP_MOVE_CONFIRMED,RLM_CONFIRMED)"
+                f"&classification=in.(RLM_CONFIRMED,CONSENSUS_CONFIRMED,"
+                f"CONSENSUS_TRIPLE_CONFIRMED,SHARP_MOVE_TRIPLE_CONFIRMED)"
                 f"&select=market,side,pattern,classification,money_pct,bets_pct"
                 f"&order=classified_at.desc&limit=6",
                 headers=HEADERS, timeout=8,
@@ -1567,7 +1584,16 @@ def score_mlb_game(ctx, game_props=None, track=None):
                                   'HOME' if side == 'AWAY' else \
                                   'UNDER' if side == 'OVER' else \
                                   'OVER' if side == 'UNDER' else side
-                short_label = 'Sharp' if 'SHARP' in cls else 'RLM'
+                short_label = ('Consensus' if 'CONSENSUS' in cls
+                               else 'Sharp' if 'SHARP' in cls else 'RLM')
+                # CONSENSUS earns its vote on MONEYLINE only. Measured
+                # 68.4% [59-76] n=117 on ml versus 43.8% n=32 on totals —
+                # totals is where the split sources agree on the money side
+                # just 59% of the time, so a "consensus" there is mostly
+                # coincidence. rl is 66.7% but only n=21, too thin to act on
+                # yet; revisit once the sample builds.
+                if 'CONSENSUS' in cls and mkt != 'ml':
+                    continue
                 if mkt in ('ml', 'spread', 'runline', 'puckline'):
                     if target_side in ('HOME', 'AWAY'):
                         _add(side_drivers, 3, '🎯',
