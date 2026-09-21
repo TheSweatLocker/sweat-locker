@@ -228,6 +228,115 @@ def sharp_card_rows(items: list, game_date: str) -> list[dict]:
     return out
 
 
+_RESULT_MAP = {
+    'win': 'WIN', 'w': 'WIN', 'hit': 'WIN',
+    'loss': 'LOSS', 'l': 'LOSS', 'lose': 'LOSS', 'miss': 'LOSS',
+    'push': 'PUSH', 'tie': 'PUSH',
+    'pending': 'PENDING', 'no-pick': None, 'none': None, '': None,
+}
+
+
+def norm_result(v) -> str | None:
+    """Source tables spell results however they like — daily_dawg says
+    'Win'/'Loss'/'Push', daily_best_bet_history adds 'Pending'/'no-pick'.
+    public_receipts is uppercase (WIN/LOSS/PUSH/PENDING). A record split
+    across two spellings of the same outcome is a record nobody can
+    total, so normalise at the boundary.
+    """
+    if v is None:
+        return None
+    return _RESULT_MAP.get(str(v).strip().lower(), str(v).strip().upper() or None)
+
+
+def _bet_market(label: str) -> str | None:
+    """Best-effort real market behind a display label ("Braves ML (Jerry
+    88/100)" -> ml). Recorded in audit, never in `market` — POTD/DotD
+    keep their own market codes so the 177 rows already using them stay
+    countable."""
+    t = str(label or '').lower()
+    if ' ml' in t or t.endswith('ml'):
+        return 'ml'
+    if 'over' in t or 'under' in t:
+        return 'total'
+    if any(s in t for s in ('-1.5', '+1.5', 'rl', 'run line')):
+        return 'rl'
+    return None
+
+
+def potd_rows(records: list, game_date: str | None = None) -> list[dict]:
+    """Pick of the Day, from daily_best_bet_history rows.
+
+    Shape (verified, 132 rows back to 2026-04-10): bet_date, sport, game,
+    lean, sweat_score, odds_american, result, narrative. One POTD per
+    day, so bet_date alone is a sufficient source_id.
+    """
+    out = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        gd = str(rec.get('bet_date') or game_date or '')[:10]
+        sport = str(rec.get('sport') or 'MLB').upper()
+        lean = rec.get('lean')
+        if not gd or not lean:
+            continue
+        out.append({
+            'sport': sport,
+            'surface': 'potd',
+            'game_date': gd,
+            'source_id': _sid('potd', gd),
+            'source_table': 'daily_best_bet_history',
+            'matchup': rec.get('game'),
+            'market': 'potd',
+            'pick_label': lean,
+            'pick_odds': rec.get('odds_american'),
+            'conviction': rec.get('sweat_score'),
+            'result': norm_result(rec.get('result')),
+            'audit': {
+                'bet_market': _bet_market(lean),
+                'narrative': (rec.get('narrative') or '')[:600],
+                'captured_by': 'jerry_anchor_potd',
+            },
+        })
+    return out
+
+
+def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
+    """Dawg of the Day, from daily_dawg rows.
+
+    Shape (verified, 123 rows back to 2026-04-22): game_date, team,
+    matchup, game_id, tier, conviction, close_spread, spread_delta,
+    result. One per day.
+    """
+    out = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        gd = str(rec.get('game_date') or game_date or '')[:10]
+        team = rec.get('team')
+        if not gd or not team:
+            continue
+        out.append({
+            'sport': str(rec.get('sport') or 'MLB').upper(),
+            'surface': 'dawg',
+            'game_date': gd,
+            'source_id': _sid('dotd', rec.get('game_id') or gd),
+            'source_table': 'daily_dawg',
+            'game_id': rec.get('game_id'),
+            'matchup': rec.get('matchup'),
+            'market': 'dotd',
+            'pick_label': team,
+            'pick_line': rec.get('close_spread'),
+            'tier': rec.get('tier'),
+            'conviction': rec.get('conviction'),
+            'result': norm_result(rec.get('result')),
+            'audit': {
+                'spread_delta': rec.get('spread_delta'),
+                'captured_by': 'generate_dawg_of_day',
+            },
+        })
+    return out
+
+
 # Sweat Card `type` is a DISPLAY label, not a market code. Verified over
 # 141 cached days / 854 top_8 items: Over/Under, ML, DotD, POTD and a
 # long tail of prop_* families.
@@ -301,6 +410,13 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
                 'pick_odds': it.get('odds'),
                 'tier': (it.get('tier') or None),
                 'conviction': it.get('conviction'),
+                # top_8 carries its own graded result (826 of 854 items
+                # across 141 days: 479 W / 331 L / 16 push). Dropping it
+                # would leave the deepest surface we have showing zero
+                # graded picks while the grade sat right there in the
+                # payload. football_picks carries none — those grade via
+                # the resolver like any other football pick.
+                'result': norm_result(it.get('result')),
                 'audit': {
                     'section': section,
                     'card_type': raw_type,

@@ -883,6 +883,15 @@ def upsert_dawg(gd, dawg, narrative):
     if r.status_code not in (200, 201, 204):
         print(f"  ⚠️ upsert failed {r.status_code}: {r.text[:300]}")
         return False
+    # 2026-09-20 LIVE RECEIPT — after the upsert landed, built from the
+    # same payload that was just persisted so the receipt cannot describe
+    # a Dawg that never published. Fail-soft, never silent.
+    try:
+        from public_receipt import capture as _capture
+        from public_receipt import dawg_rows as _dawg_rows
+        _capture(_dawg_rows([payload]), surface='dawg')
+    except Exception as _re:
+        print(f"  ⚠️ live receipt capture (dawg) failed: {_re}")
     return True
 
 

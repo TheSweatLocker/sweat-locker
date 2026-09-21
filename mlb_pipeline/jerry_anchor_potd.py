@@ -904,6 +904,22 @@ def run(game_date: str | None = None, threshold: int = 70,
             print(f"  ⚠ history mirror {hr.status_code}: {hr.text[:200]}")
         else:
             print(f"  ✅ daily_best_bet_history mirrored")
+            # 2026-09-20 LIVE RECEIPT — written only once the mirror
+            # succeeded, off the same values that were just persisted, so
+            # the receipt can never describe a POTD that failed to land.
+            try:
+                from public_receipt import capture as _capture
+                from public_receipt import potd_rows as _potd_rows
+                _capture(_potd_rows([{
+                    'bet_date': gd,
+                    'sport': winner_sport,
+                    'game': f"{ctx['away_team']} @ {ctx['home_team']}",
+                    'lean': f"{call} (Jerry {conv}/100)",
+                    'sweat_score': conv,
+                    'result': 'Pending',
+                }]), surface='potd')
+            except Exception as _re:
+                print(f"  ⚠ live receipt capture (potd) failed: {_re}")
     except Exception as e:
         print(f"  ⚠ history mirror failed: {e}")
 

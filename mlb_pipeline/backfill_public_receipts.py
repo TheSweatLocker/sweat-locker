@@ -437,6 +437,31 @@ def backfill_sweat_card(dry_run: bool = False) -> int:
     return n
 
 
+# ─── Source: daily_best_bet_history (POTD) ─────────────────────────
+
+def backfill_potd(dry_run: bool = False) -> int:
+    """Pick of the Day — 132 rows back to 2026-04-10, already graded
+    (70-52-4). The deepest graded record we hold anywhere."""
+    from public_receipt import potd_rows
+    recs = list(paged(f'{SB}/rest/v1/daily_best_bet_history?select=*'))
+    rows = potd_rows(recs)
+    n = upsert_batch(rows, dry_run)
+    print(f'  potd: {n}/{len(rows)} receipts from daily_best_bet_history')
+    return n
+
+
+# ─── Source: daily_dawg (Dawg of the Day) ──────────────────────────
+
+def backfill_dawg(dry_run: bool = False) -> int:
+    """Dawg of the Day — 123 rows back to 2026-04-22, already graded."""
+    from public_receipt import dawg_rows
+    recs = list(paged(f'{SB}/rest/v1/daily_dawg?select=*'))
+    rows = dawg_rows(recs)
+    n = upsert_batch(rows, dry_run)
+    print(f'  dawg: {n}/{len(rows)} receipts from daily_dawg')
+    return n
+
+
 # ─── Main ─────────────────────────────────────────────────────────
 
 SOURCES = {
@@ -446,6 +471,8 @@ SOURCES = {
     'daily_degen':      lambda sport, dry: backfill_daily_degen(dry),
     'sharp_card':       lambda sport, dry: backfill_sharp_card(dry),
     'sweat_card':       lambda sport, dry: backfill_sweat_card(dry),
+    'potd':             lambda sport, dry: backfill_potd(dry),
+    'dawg':             lambda sport, dry: backfill_dawg(dry),
 }
 
 
