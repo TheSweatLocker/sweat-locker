@@ -182,9 +182,26 @@ def _build_casual_summary(ctx):
         stronger = home if gap > 0 else away
         headlines.append((6, f'✓ SP+ favors {stronger} by {abs(gap):.1f}'))
 
-    # Model vs market gap
+    # Model vs market gap.
+    #
+    # 2026-09-20 SIGN FIX. This read `proj_sp - close_sp`, which
+    # DOUBLE-COUNTS: NCAAF stores projected_spread POSITIVE = home favored
+    # but close_spread NEGATIVE = home favored, so the two must be ADDED to
+    # difference them. Subtracting named the wrong team in 126 of 159 live
+    # games (79%) and inflated the magnitude absurdly — Miami (OH) @
+    # Cincinnati (proj +13.2, close -15.5) published "Model likes
+    # Cincinnati by 28.7 more than market" when the model actually leans
+    # Miami (OH) by 2.3. It also over-fired the headline, 130 games vs 92.
+    #
+    # Same bug, same line, already fixed elsewhere and missed here:
+    #   generate_ncaab_game_reads.py:117 carries the correct `+` with this
+    #   exact comment, and _seed_ncaaf_spread_rl_2026-08-28 documents the
+    #   NCAAF signal-source version ("26.26 - (-30.5) = 56.76").
+    #
+    # NFL is NOT the same: there close_spread is positive = home favored,
+    # so NFL would subtract. Do not copy this line across sports blind.
     if proj_sp is not None and close_sp is not None:
-        edge = proj_sp - close_sp
+        edge = proj_sp + close_sp
         if abs(edge) >= 3:
             fav = home if edge > 0 else away
             headlines.append((7, f'⚡ Model likes {fav} by {abs(edge):.1f} more than market'))
