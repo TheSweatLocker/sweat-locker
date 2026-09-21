@@ -369,9 +369,35 @@ def resolve_props(force_regrade: bool = False, dry_run: bool = False) -> dict:
     return tally
 
 
+def _current_nfl_season() -> int:
+    """NFL season label: a season starting Sep 2026 is season 2026 and
+    runs into Feb 2027, so Jan/Feb belong to the PREVIOUS label."""
+    from datetime import timedelta as _delta
+    now = datetime.now(timezone.utc) - _delta(hours=4)
+    return now.year if now.month >= 3 else now.year - 1
+
+
 def run(season: Optional[int] = None, force_regrade: bool = False,
         dry_run: bool = False) -> None:
     print(f'=== NFL results resolver ===')
+
+    # 2026-09-21: `season` defaulted to None, which means "every completed
+    # game in the nflverse feed" — 7,307 games back to 1999. refresh_results
+    # does a Supabase lookup + PATCH per game, so each run attempted ~15,000
+    # round trips, printed thousands of "no match" lines for 1999 fixtures,
+    # and either hung or died on a connection reset partway through. That is
+    # why Sunday's 4pm/SNF games sat unresolved on Monday morning while the
+    # 1pm window (resolved by an earlier, luckier run) looked fine.
+    #
+    # It was invisible because the workflow step carried
+    # `|| echo "resolver failed"`, so a hung/killed resolver reported
+    # success. That mask was removed 2026-09-20.
+    #
+    # Default to the current season; --season still overrides for backfills.
+    if season is None:
+        season = _current_nfl_season()
+        print(f'  season not specified — defaulting to {season} '
+              f'(use --season for a historical backfill)')
 
     # 1. Refresh scores from nflverse
     schedules = fetch_schedules_for_season(season)

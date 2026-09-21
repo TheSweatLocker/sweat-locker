@@ -210,13 +210,24 @@ def fetch_result_map(sport: str, game_ids: list) -> dict:
     for i in range(0, len(game_ids), 100):
         chunk = game_ids[i:i + 100]
         ids_str = ','.join(f'"{g}"' for g in chunk)
+        # 2026-09-21: the filter was interpolated straight into the URL
+        # string. NCAAF game_ids carry SPACES
+        # ('ncaaf_20260919_Southeastern Louisiana_Louisiana Monroe'), and a
+        # raw space truncates the query string — PostgREST answered 400
+        # PGRST100 "unexpected end of input expecting ',' or ')'" and the
+        # loop `continue`d past it, so NCAAF fetched 0 of 100 referenced
+        # game_ids and left 491 external picks permanently ungraded.
+        # Passing the filter through `params` lets requests percent-encode
+        # it, which handles spaces, ampersands and anything else a college
+        # team name contains.
         r = requests.get(
-            f'{SB}/rest/v1/{cfg["results_table"]}?game_id=in.({ids_str})'
-            f'&select={cfg["select_cols"]}',
-            headers=H_READ, timeout=15,
+            f'{SB}/rest/v1/{cfg["results_table"]}',
+            params={'game_id': f'in.({ids_str})',
+                    'select': cfg['select_cols']},
+            headers=H_READ, timeout=30,
         )
         if r.status_code != 200:
-            print(f'  ⚠ result fetch {r.status_code}: {r.text[:120]}')
+            print(f'  ⚠ result fetch {r.status_code}: {r.text[:200]}')
             continue
         for row in r.json():
             out[row['game_id']] = row
