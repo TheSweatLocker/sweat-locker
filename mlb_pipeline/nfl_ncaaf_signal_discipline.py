@@ -53,6 +53,58 @@ LR_WARN_HARD_THRESHOLD = 0.60   # LR probability on OPPOSITE side must exceed th
 ANCHOR_CAP_TIERS = {'PRIME', 'STRONG'}   # tiers to downgrade when anchor fires
 ANCHOR_CAP_NEW_TIER = 'LEAN'
 
+# 2026-09-20 — make the cap DATA, not just prose.
+#
+# On the 09-20 NFL slate, 5 of 14 picks carried PRIME/STRONG while their
+# own `sub` read "capped to LEAN":
+#     GB @ NYJ   PRIME/66   _pre_lr COVERAGE   (LR override promoted it)
+#     WAS @ DAL  STRONG/63  _pre_lr LEAN
+#     SEA @ ARI  STRONG/62  _pre_lr LEAN
+#     JAX @ DEN  STRONG/56  _pre_lr LEAN
+#
+# Cause: this module wrote the cap into `tier` and `sub`, but the LR
+# override in defensive_gates builds a FRESH primary_play and copies only
+# a handful of fields forward. The capped tier was discarded; the warning
+# sentence survived. The user saw PRIME on a pick whose own text said it
+# should be LEAN because anchored picks hit 30%.
+#
+# Fix: record the cap as a structured field the override can honour.
+# `tier`/`sub` still change for anything reading them directly.
+_TIER_RANK = {'PASS': 0, 'SKIP': 0, 'LIGHT': 1, 'COVERAGE': 2,
+              'LEAN': 3, 'STRONG': 4, 'PRIME': 5}
+
+
+def _record_cap(pp: dict, cap_tier: str, cap_conv: int, reason: str) -> None:
+    """Apply a cap AND leave a durable record of it on the pick.
+
+    Keeps the strictest cap when several gates fire, so a later, looser
+    gate cannot quietly undo a stricter one.
+    """
+    prev = pp.get('_discipline_cap') or {}
+    prev_tier = str(prev.get('tier') or '').upper()
+    if prev_tier and _TIER_RANK.get(prev_tier, 9) <= _TIER_RANK.get(cap_tier, 9):
+        cap_tier = prev_tier
+        cap_conv = min(int(prev.get('max_conviction') or cap_conv), cap_conv)
+    reasons = list(prev.get('reasons') or [])
+    if reason not in reasons:
+        reasons.append(reason)
+    pp['tier'] = cap_tier
+    pp['conviction'] = min(int(pp.get('conviction') or 0), cap_conv)
+    pp['_discipline_cap'] = {'tier': cap_tier, 'max_conviction': cap_conv,
+                             'reasons': reasons}
+
+
+def _append_flag(pp: dict, flag: str) -> None:
+    """Append a gate warning to `sub` at most once.
+
+    GB @ NYJ carried the identical anchor warning FOUR times on 09-20 —
+    the module re-ran and blindly appended each pass.
+    """
+    sub = str(pp.get('sub') or '').strip()
+    if flag in sub:
+        return
+    pp['sub'] = f'{sub} · {flag}' if sub else flag
+
 
 def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
@@ -105,10 +157,11 @@ def _apply_gates(pp: dict, spread_anchor_weight) -> tuple[dict, list[str]]:
                         tier = 'LEAN'  # for cascade with anchor check below
                         new_pp['conviction'] = min(conv, 55)
                         conv = new_pp['conviction']
-                    _pre_sub = str(new_pp.get('sub') or '').strip()
+                    _record_cap(new_pp, 'LEAN', 55,
+                                f'lr_warn:p_home={p_home:.2f}')
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
                              f'capped to LEAN. LR-warn hits 4.3% historically.')
-                    new_pp['sub'] = f'{_pre_sub} · {_flag}' if _pre_sub else _flag
+                    _append_flag(new_pp, _flag)
                     applied.append(f'lr_warn_cap:p={p_home:.2f}')
             except (TypeError, ValueError):
                 pass
@@ -117,12 +170,10 @@ def _apply_gates(pp: dict, spread_anchor_weight) -> tuple[dict, list[str]]:
     try:
         aw = float(spread_anchor_weight) if spread_anchor_weight is not None else 0.0
         if aw > 0 and tier in ANCHOR_CAP_TIERS:
-            new_pp['tier'] = ANCHOR_CAP_NEW_TIER
-            new_pp['conviction'] = min(conv, 60)
-            _pre_sub = str(new_pp.get('sub') or '').strip()
+            _record_cap(new_pp, ANCHOR_CAP_NEW_TIER, 60, f'anchor:w={aw:.2f}')
             _flag = (f'⚠ Market anchor active (w={aw:.2f}) — '
                      f'model uncertain, capped to LEAN. Anchored picks hit 30% historically.')
-            new_pp['sub'] = f'{_pre_sub} · {_flag}' if _pre_sub else _flag
+            _append_flag(new_pp, _flag)
             applied.append(f'anchor_cap:w={aw:.2f}')
     except (TypeError, ValueError):
         pass

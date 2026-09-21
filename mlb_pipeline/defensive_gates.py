@@ -791,6 +791,47 @@ def _ml_odds_too_juiced(ctx: dict, side: str, max_juice: int = -300) -> bool:
         return False
 
 
+_DG_TIER_RANK = {'PASS': 0, 'SKIP': 0, 'LIGHT': 1, 'COVERAGE': 2,
+                 'LEAN': 3, 'STRONG': 4, 'PRIME': 5}
+
+
+def respect_discipline_cap(new_pp, old_pp):
+    """Carry a discipline cap across an LR override and re-apply it.
+
+    2026-09-20. The LR override paths build a FRESH primary_play and copy
+    only a few fields forward, so a cap written by
+    nfl_ncaaf_signal_discipline was silently discarded — while its
+    warning sentence, living in `sub`, survived. Result on the 09-20 NFL
+    slate: 5 of 14 picks showed PRIME/STRONG above text reading "capped
+    to LEAN", including GB @ NYJ promoted COVERAGE -> PRIME on a pick
+    whose own note said anchored picks hit 30%.
+
+    A gate that can be undone by the next stage is not a gate. The cap is
+    now structured data (`_discipline_cap`) and is re-applied here, so
+    order of operations stops deciding whether it holds.
+    """
+    if not isinstance(new_pp, dict) or not isinstance(old_pp, dict):
+        return new_pp
+    cap = old_pp.get('_discipline_cap')
+    if not isinstance(cap, dict) or not cap.get('tier'):
+        return new_pp
+    cap_tier = str(cap['tier']).upper()
+    cur_tier = str(new_pp.get('tier') or '').upper()
+    new_pp['_discipline_cap'] = cap
+    if _DG_TIER_RANK.get(cur_tier, 9) > _DG_TIER_RANK.get(cap_tier, 9):
+        new_pp['_uncapped_tier'] = cur_tier      # keep what LR wanted
+        new_pp['tier'] = cap_tier
+        try:
+            new_pp['conviction'] = min(int(new_pp.get('conviction') or 0),
+                                       int(cap.get('max_conviction') or 0))
+        except (TypeError, ValueError):
+            pass
+        _why = ', '.join(cap.get('reasons') or []) or 'discipline gate'
+        new_pp['audit_note'] = (f"{new_pp.get('audit_note', '')} · held at "
+                                f"{cap_tier} by {_why}").strip(' ·')
+    return new_pp
+
+
 def _apply_ml_lr_override_impl(pp, ctx, model, sport):
     if model is None: return pp
     try:
@@ -995,7 +1036,8 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             new_pp['_lr_total_shadow'] = old_pp['_lr_total_shadow']
         if isinstance(old_pp, dict) and old_pp.get('_lr_p_over') is not None:
             new_pp['_lr_p_over'] = old_pp['_lr_p_over']  # legacy raw
-        return new_pp
+        # 2026-09-20: a discipline cap outranks an LR promotion.
+        return respect_discipline_cap(new_pp, old_pp)
     except Exception:
         return pp  # never break the pipeline
 
@@ -1324,7 +1366,8 @@ def apply_mlb_total_lr_override(pp, ctx):
             new_pp['_lr_ml_shadow'] = old_pp['_lr_ml_shadow']
         if isinstance(old_pp, dict) and old_pp.get('_lr_p_home_win') is not None:
             new_pp['_lr_p_home_win'] = old_pp['_lr_p_home_win']  # legacy raw
-        return new_pp
+        # 2026-09-20: a discipline cap outranks an LR promotion.
+        return respect_discipline_cap(new_pp, old_pp)
     except Exception:
         return pp
 
