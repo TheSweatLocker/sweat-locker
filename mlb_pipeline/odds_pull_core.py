@@ -41,6 +41,7 @@ this codebase already (project_close_spread_sign_bug_914).
 from __future__ import annotations
 
 import os
+import re
 import statistics
 import sys
 from datetime import datetime, timedelta, timezone
@@ -155,7 +156,7 @@ def _consensus(event: dict, home: str, away: str) -> dict:
 class OddsPuller:
     def __init__(self, sport_code, odds_sport, results_table, id_prefix,
                  spread_col, total_col, season, team_map=None,
-                 write_abbrev=False):
+                 write_abbrev=False, schedule_fn=None):
         self.sport_code = sport_code
         self.odds_sport = odds_sport
         self.results_table = results_table
@@ -165,6 +166,40 @@ class OddsPuller:
         self.season = season
         self.team_map = team_map
         self.write_abbrev = write_abbrev
+        # schedule_fn(date_iso) -> [{game_id, home_team, away_team}, ...]
+        # Lets the pull adopt the league's CANONICAL game id instead of
+        # minting its own. See _canonical_id.
+        self.schedule_fn = schedule_fn
+        self._sched_cache: dict = {}
+
+    def _canonical_id(self, game_date: str, away: str, home: str):
+        """The league's own game id for this fixture, or None.
+
+        Without this the odds pull invents composite ids
+        ('nhl_20260929_Florida_Panthers_Carolina_Hurricanes') while the
+        context builder stores the league id ('2026020004' for NHL,
+        ESPN's '401909090' for NBA) — measured overlap between the two
+        was 0 of 5 on both sports. That is the same context-vs-results id
+        split that left NFL Vault Match with zero graded games since
+        launch, and it silently breaks every downstream game_id join.
+
+        Falls back to the composite id when the schedule has no match, so
+        a fixture the league has not published yet still gets stored.
+        """
+        if not self.schedule_fn:
+            return None
+        if game_date not in self._sched_cache:
+            try:
+                self._sched_cache[game_date] = self.schedule_fn(game_date) or []
+            except Exception as e:
+                print(f'  ⚠ schedule lookup failed for {game_date}: {e}')
+                self._sched_cache[game_date] = []
+        def n(s):
+            return re.sub(r'[^a-z0-9]', '', str(s or '').lower())
+        for g in self._sched_cache[game_date]:
+            if n(g.get('home_team')) == n(home) and n(g.get('away_team')) == n(away):
+                return g.get('game_id')
+        return None
 
     def _resolve(self, api_name: str):
         """-> (stored_team_name, abbrev). None when unmappable."""
@@ -213,8 +248,9 @@ class OddsPuller:
             dt_et = dt_utc - timedelta(hours=4)
             gd = dt_et.date().isoformat()
             c = _consensus(ev, api_home, api_away)
-            gid = (f'{self.id_prefix}_{dt_et.strftime("%Y%m%d")}_'
-                   f'{away}_{home}').replace(' ', '_')
+            gid = self._canonical_id(gd, away, home) or (
+                f'{self.id_prefix}_{dt_et.strftime("%Y%m%d")}_'
+                f'{away}_{home}').replace(' ', '_')
             row = {
                 'game_id': gid,
                 'game_date': gd,

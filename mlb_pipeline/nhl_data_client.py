@@ -51,6 +51,30 @@ def _get(url: str, timeout: float = 15) -> Optional[dict]:
         return None
 
 
+def _full_team_name(t: dict) -> Optional[str]:
+    """Build "Carolina Hurricanes" from the NHL API's split name fields.
+
+    2026-09-21. This client used `placeName` alone, which is the CITY —
+    so nhl_game_context and nhl_game_results stored "Boston", "New York",
+    "Los Angeles". Two consequences, both live:
+
+      * Rangers and Islanders became the SAME STRING, as did anything
+        sharing a metro. Un-disambiguatable after the fact.
+      * Nothing joined to an odds feed. Measured 2026-09-21 against The
+        Odds API: 0 of 32 teams matched, which is why NHL had no
+        external picks and no market join.
+
+    placeName + commonName gives the full name and matches The Odds API
+    exactly ("Carolina" + "Hurricanes"). Falls back to placeName then
+    abbrev so a missing field degrades instead of returning None.
+    """
+    place = (t.get('placeName') or {}).get('default')
+    common = (t.get('commonName') or {}).get('default')
+    if place and common:
+        return f'{place} {common}'
+    return place or t.get('abbrev')
+
+
 def get_schedule(game_date: str) -> list[dict]:
     """Return list of games on `game_date` (YYYY-MM-DD).
 
@@ -74,8 +98,8 @@ def get_schedule(game_date: str) -> list[dict]:
                 'venue': g.get('venue', {}).get('default'),
                 'home_team_abbrev': home.get('abbrev'),
                 'away_team_abbrev': away.get('abbrev'),
-                'home_team': home.get('placeName', {}).get('default'),
-                'away_team': away.get('placeName', {}).get('default'),
+                'home_team': _full_team_name(home),
+                'away_team': _full_team_name(away),
                 # goalies exist on gamecenter, not schedule — enrich via
                 # get_gamecenter(game_id) at lineup-lock time.
             })
@@ -116,8 +140,8 @@ def get_scoreboard(game_date: str) -> list[dict]:
                 'away_score': away.get('score'),
                 'went_to_ot': period == 'OT',
                 'went_to_so': period == 'SO',
-                'home_team':  home.get('placeName', {}).get('default') or home.get('abbrev'),
-                'away_team':  away.get('placeName', {}).get('default') or away.get('abbrev'),
+                'home_team':  _full_team_name(home),
+                'away_team':  _full_team_name(away),
                 'home_abbrev': home.get('abbrev'),
                 'away_abbrev': away.get('abbrev'),
             })

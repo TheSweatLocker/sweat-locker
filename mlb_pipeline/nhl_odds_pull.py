@@ -17,6 +17,8 @@ USAGE
 """
 import argparse
 
+from nhl_data_client import get_schedule as _nhl_schedule
+
 from odds_pull_core import NHL_TEAMS, OddsPuller
 
 PULLER = OddsPuller(
@@ -29,6 +31,10 @@ PULLER = OddsPuller(
     season=None,            # nhl_game_results has no season column
     team_map=NHL_TEAMS,
     write_abbrev=False,     # nhl_game_results has no abbrev columns
+    # Adopt the NHL API's canonical game id so results and context share
+    # a key. Without it the two tables had 0 id overlap — the same split
+    # that left NFL Vault Match with zero graded games since launch.
+    schedule_fn=_nhl_schedule,
 )
 
 

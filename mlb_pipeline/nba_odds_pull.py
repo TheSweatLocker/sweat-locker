@@ -13,6 +13,8 @@ USAGE
 """
 import argparse
 
+from nba_data_client import get_schedule as _nba_schedule
+
 from odds_pull_core import OddsPuller
 
 PULLER = OddsPuller(
@@ -25,6 +27,9 @@ PULLER = OddsPuller(
     season='2026-27',
     team_map=None,
     write_abbrev=False,
+    # Adopt the league's canonical game id so results and context
+    # share a key; without it the two tables had 0 id overlap.
+    schedule_fn=_nba_schedule,
 )
 
 
