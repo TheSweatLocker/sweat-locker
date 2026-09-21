@@ -531,7 +531,18 @@ def fetch_bettingpros(slate: list, game_date: str, aliases: dict) -> tuple:
 
 
 def fetch_pickdawgz(slate: list, game_date: str, aliases: dict) -> tuple:
-    return [], 200
+    """PickDawgz free NCAAB picks.
+
+    2026-09-21: was a STUB (`return [], 200`) — silent success, zero
+    picks. Shared parser in externals_pickdawgz; NCAAB season opens
+    2026-11-03 so this collects nothing until then, which is correct
+    rather than broken.
+    """
+    from externals_pickdawgz import fetch_pickdawgz_generic
+    return fetch_pickdawgz_generic(
+        sport='NCAAB', game_date=game_date, slate=slate,
+        find_game_id_fn=find_game_id, make_pick_fn=ExternalPick,
+    )
 
 
 def fetch_oddscrowd(slate: list, game_date: str, aliases: dict) -> tuple:

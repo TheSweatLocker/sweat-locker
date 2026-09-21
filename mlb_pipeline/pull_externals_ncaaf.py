@@ -600,7 +600,19 @@ def fetch_bettingpros(slate: list, game_date: str, aliases: dict) -> tuple:
 
 
 def fetch_pickdawgz(slate: list, game_date: str, aliases: dict) -> tuple:
-    return [], 200
+    """PickDawgz free NCAAF picks.
+
+    2026-09-21: this was a STUB — `return [], 200` — a silent success with
+    zero picks, so pickdawgz looked wired for NCAAF while only MLB ever
+    collected anything (250 picks, 58.5%). Andy: "Pickdawgz is across all
+    sports so lets wire that up." Parser lives in externals_pickdawgz so
+    every sport shares one implementation instead of drifting copies.
+    """
+    from externals_pickdawgz import fetch_pickdawgz_generic
+    return fetch_pickdawgz_generic(
+        sport='NCAAF', game_date=game_date, slate=slate,
+        find_game_id_fn=find_game_id, make_pick_fn=ExternalPick,
+    )
 
 
 def fetch_oddscrowd(slate: list, game_date: str, aliases: dict) -> tuple:
