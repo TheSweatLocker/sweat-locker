@@ -275,11 +275,19 @@ const SPORT_EMOJI_FALLBACK: Record<string,string> = { NBA:'🏀', NFL:'🏈', NH
 // hasn't started yet. Sport start dates from project_ncaab_v4_deferred_814
 // + season schedules. Once a sport starts, its record populates from
 // surface_records and the sentinel is no longer shown.
-const SPORT_LAUNCH_LABEL: Record<string,string> = {
-  NHL:   'Season starts Oct 7',
-  NBA:   'Season starts Oct 21',
-  NCAAB: 'Season starts Nov 3',
-};
+// 2026-09-21 REMOVED — SPORT_LAUNCH_LABEL was a hardcoded list of
+// pre-launch sports that duplicated sport_registry.state, and it had
+// already drifted: it said NHL starts Oct 7 while sport_registry says
+// Oct 8. The label TEXT was never rendered (both call sites only tested
+// key presence to decide '0-0' vs '—'), so no user saw the wrong date —
+// but the membership itself was stale the moment a season started, and
+// the app would keep reporting '0-0' for a sport that had begun playing.
+//
+// The banner copy already migrated to sport_registry.state_message
+// (live-editable by SQL, no rebuild). This is the last hardcoded piece
+// of that, now derived from the same server row. See
+// feedback_backside_dictates_app_renders: the server decides, the app
+// renders.
 const BET_TYPES = ['Spread', 'Moneyline', 'Total (O/U)', 'Player Prop', 'Parlay'];
 const BOOKS = ['Hard Rock', 'DraftKings', 'FanDuel', 'ESPN Bet', 'BetMGM', 'Caesars', 'Bet365'];
 const RESULTS = ['Pending', 'Win', 'Loss', 'Push'];
@@ -1917,6 +1925,13 @@ const [sweatCardLoading, setSweatCardLoading] = useState(false);
   // Today/Tomorrow notes + off-season banners + adaptive tab labels without
   // hardcoding any of it in the component tree.
   const [sportMeta, setSportMeta] = useState<Record<string, any>>({});
+  // Pre-launch = whatever sport_registry says, not a hardcoded list.
+  // Replaces SPORT_LAUNCH_LABEL, which drifted (said NHL Oct 7 vs the
+  // registry's Oct 8) and would have kept reporting '0-0' for a sport
+  // that had already started playing.
+  const isPreLaunch = (sp: string) =>
+    ['preseason', 'off_season', 'returning'].includes(
+      String((sportMeta as any)?.[sp]?.state || ''));
   // ── User-facing in-app notes (Session D · 2026-08-14) ────────────
   // Read from user_notes; dismissed rows tracked in AsyncStorage per-device.
   // Rendered as dismissible card at top of Home tab. No email, no push —
@@ -16378,7 +16393,7 @@ setJerryHistory(prev => {
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
                               {d.hasData
                                  ? `${d.wins}-${d.losses}`
-                                 : (SPORT_LAUNCH_LABEL[receiptsSport]
+                                 : (isPreLaunch(receiptsSport)
                                     ? '0-0'
                                     : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data'))}
                             </Text>
@@ -16416,7 +16431,7 @@ setJerryHistory(prev => {
                                     <Text style={{color:THEME.textMuted,fontSize:11}}>{sp.icon} {sp.label}</Text>
                                     <Text style={{color: spHitColor, fontSize:11, fontWeight:'700', fontVariant:['tabular-nums']}}>
                                       {!spD.hasData
-                                         ? (SPORT_LAUNCH_LABEL[sp.id] ? '0-0' : '—')
+                                         ? (isPreLaunch(sp.id) ? '0-0' : '—')
                                          : `${spD.hitPct.toFixed(0)}%`}
                                     </Text>
                                   </View>
