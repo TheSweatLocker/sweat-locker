@@ -665,6 +665,176 @@ def fetch_football_picks(today: str) -> list:
     return picks
 
 
+# ── 2026-09-21 CROSS-SPORT CONVICTION CALIBRATION ──────────────────────
+# Merging every sport into ONE ranked list raises a question the old
+# two-section card never had to answer: is an NFL 75 the same bet as an
+# MLB 75? Measured on 14,407 graded public_receipts, it is not —
+#
+#   band     MLB                NFL                NCAAF
+#   60-70    61.5% (n=1092)     59.3% (n=167)      42.9% (n=49)
+#   70-80    68.1% (n=965)      58.3% (n=115)      50.0% (n=36)
+#   80-101   58.2% (n=861)      50.7% (n=67)       61.3% (n=31)
+#
+# Football conviction runs ~10pp hotter than MLB for the same realised hit
+# rate (NFL median conviction 60 vs MLB 50), so a raw-conviction sort
+# quietly promotes football over better MLB plays.
+#
+# MLB's top band also looks INVERTED above — 80+ at 58.2% under 70-80 at
+# 68.1%. That is Simpson's paradox, not a broken model. Split the same
+# 80+ picks by the surface that produced them:
+#
+#   MLB 80+ by source_table        W-L      n     hit
+#   mlb_game_results (ML/total)    66-27    93   71.0%  [61-79]
+#   mlb_pipeline_props            154-113  267   57.7%
+#   daily_best_bet_history (POTD)  56-54   110   50.9%
+#   daily_dawg (DotD)              67-73   140   47.9%
+#
+# Inside the game-results lineage conviction is cleanly monotone
+# (55.6 -> 57.9 -> 61.5 -> 71.0). The band only looked bad because DotD
+# and POTD supply 250 of its 610 picks and both lose at high conviction.
+# So the honest key is (sport, source_table, band) — a pick's lineage
+# matters as much as its number, and a conviction-100 DotD is simply not
+# the same bet as a conviction-100 total.
+#
+# Learned at run time from our own graded receipts rather than frozen
+# into a constant that goes stale the moment a surface is recalibrated.
+_CAL_BANDS = ((0, 50), (50, 60), (60, 70), (70, 80), (80, 101))
+_CAL_PRIOR_WEIGHT = 25      # pseudo-observations pulling thin cells to prior
+_CAL_MIN_TOTAL = 200        # below this the whole table is untrustworthy
+_cross_sport_cal_cache = None
+
+
+def _cal_band(cv) -> int:
+    try:
+        cv = float(cv or 0)
+    except (TypeError, ValueError):
+        cv = 0.0
+    for lo, hi in _CAL_BANDS:
+        if lo <= cv < hi:
+            return lo
+    return _CAL_BANDS[-1][0]
+
+
+def _cross_sport_calibration():
+    """Hit rates learned from graded public_receipts, at three grains.
+
+    Returns a dict holding, for each grain, the shrunk hit rate:
+        ('cell', sport, source_table, band)  most specific
+        ('sb',   sport, band)                sport + band
+        ('s',    sport)                      sport overall
+        '_base'                              global
+    plus raw (w, n) under ('n', ...) keys so callers can report support.
+
+    Each level is shrunk toward the level above it (hierarchical / partial
+    pooling) rather than toward a single global prior. That way a 25-pick
+    cell leans on its sport's own band rate instead of on a number drawn
+    mostly from MLB props, and a sport with no history at all (NHL/NBA
+    before their openers) lands on the global base instead of at zero.
+
+    Returns None when there isn't enough graded history, in which case the
+    caller falls back to raw conviction ordering.
+    """
+    global _cross_sport_cal_cache
+    if _cross_sport_cal_cache is not None:
+        return _cross_sport_cal_cache or None
+    try:
+        rows = []
+        for off in range(0, 40000, 1000):
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/public_receipts",
+                headers=HEADERS,
+                params={'select': 'sport,conviction,result,source_table',
+                        'limit': 1000, 'offset': off},
+                timeout=30)
+            if r.status_code != 200:
+                break
+            chunk = r.json()
+            if not isinstance(chunk, list):
+                break
+            rows += chunk
+            if len(chunk) < 1000:
+                break
+        cell = {}; sb = {}; sp = {}
+        g_w = g_n = 0
+        for x in rows:
+            sport = str(x.get('sport') or '').upper()
+            cv = x.get('conviction')
+            res = str(x.get('result') or '').lower()
+            st = x.get('source_table') or '?'
+            # Parlays ('MULTI') are a different animal — a 4-leg card at
+            # conviction 84 hits 17% because it needs four things to land.
+            # Leaving them in would poison the 80+ band for everyone.
+            if not sport or sport == 'MULTI' or cv is None:
+                continue
+            if not (res.startswith('w') or res.startswith('l')):
+                continue
+            win = 1 if res.startswith('w') else 0
+            b = _cal_band(cv)
+            g_w += win; g_n += 1
+            for tbl, key in ((cell, (sport, st, b)), (sb, (sport, b)), (sp, (sport,))):
+                slot = tbl.setdefault(key, [0, 0])
+                slot[0] += win; slot[1] += 1
+        if g_n < _CAL_MIN_TOTAL:
+            _cross_sport_cal_cache = {}
+            return None
+        base = g_w / g_n
+        K = _CAL_PRIOR_WEIGHT
+        out = {'_base': base}
+        # sport level shrinks to global
+        for (sport,), (w, n) in sp.items():
+            out[('s', sport)] = (w + K * base) / (n + K)
+            out[('n', 's', sport)] = (w, n)
+        # sport+band shrinks to sport
+        for (sport, b), (w, n) in sb.items():
+            prior = out.get(('s', sport), base)
+            out[('sb', sport, b)] = (w + K * prior) / (n + K)
+            out[('n', 'sb', sport, b)] = (w, n)
+        # cell shrinks to sport+band
+        for (sport, st, b), (w, n) in cell.items():
+            prior = out.get(('sb', sport, b), out.get(('s', sport), base))
+            out[('cell', sport, st, b)] = (w + K * prior) / (n + K)
+            out[('n', 'cell', sport, st, b)] = (w, n)
+        _cross_sport_cal_cache = out
+        return out
+    except Exception as e:
+        print(f'  ⚠️  cross-sport calibration unavailable ({e}) — '
+              f'falling back to raw conviction')
+        _cross_sport_cal_cache = {}
+        return None
+
+
+def _calibrated_score(sport: str, conviction, cal, source_table=None) -> float:
+    """Expected hit rate for this pick — the cross-sport sort key.
+
+    Backs off cell -> sport+band -> sport -> global, so a pick from a
+    lineage we have never graded still ranks somewhere sensible instead
+    of being excluded by a missing key.
+    """
+    if not cal:
+        return 0.0
+    sport = (sport or 'MLB').upper()
+    b = _cal_band(conviction)
+    st = source_table or '?'
+    hit = (cal.get(('cell', sport, st, b))
+           or cal.get(('sb', sport, b))
+           or cal.get(('s', sport))
+           or cal.get('_base', 0.5))
+    try:
+        cv = float(conviction or 0)
+    except (TypeError, ValueError):
+        cv = 0.0
+    # Conviction still breaks ties INSIDE a cell, scaled small enough
+    # (max 0.001) that it can never jump a cell boundary.
+    return float(hit) + (cv / 100.0) * 0.001
+
+
+# Sport emoji fallback so every unified pick renders an icon without the
+# client mapping anything. MLB picks carry a contextual icon already
+# (🏆 Jerry / 🐕 dawg / 🎯 prop / 📊 total); football picks carry none.
+_SPORT_ICON = {'MLB': '⚾', 'NFL': '🏈', 'NCAAF': '🏈',
+               'NBA': '🏀', 'NHL': '🏒', 'NCAAB': '🏀', 'UFC': '🥊'}
+
+
 def find_bucket_angle(games):
     """Identify the strongest bucket-bet angle across the slate.
     Looks for: starter with very bad innings 4-6 ERA + offense with strong
@@ -2469,43 +2639,80 @@ def build_card():
     elif _sports_present == 2:
         _unified_cap = max(_unified_cap, 6)
     _now_month = datetime.now(timezone.utc).month
-    _football_priority = _now_month in (9, 10, 11, 12, 1)  # Sept-Jan = football priority
+    _football_priority = _now_month in (9, 10, 11, 12, 1)  # Sept-Jan (reported only)
 
-    # 2026-09-21: was a month-based football-vs-MLB hardcode, which had
-    # no answer for NHL/NBA/NCAAB and would have ranked them below
-    # everything forever. Conviction is the real ordering; this only
-    # breaks ties, and a tie between a 78-conviction NHL pick and a
-    # 78-conviction NFL pick is genuinely arbitrary. Keep MLB's slight
-    # edge while it is in season (deepest calibration, most graded
-    # history) and treat every other in-season sport equally.
-    def _priority_weight(sport: str) -> int:
-        sport = (sport or '').upper()
-        if sport == 'MLB':
-            return 6 if _football_priority else 10
-        return 5
+    # 2026-09-21, second pass. The original ranking applied a month-based
+    # football-vs-MLB priority weight as the PRIMARY sort key, ahead of
+    # conviction. Because the weight segregated rather than tie-broke, one
+    # sport swept every slot: on Saturday 09-20 the card's unified list was
+    # 5 NFL picks and ZERO of the 8 MLB picks, including a conviction-100
+    # Tigers ML. Inverting the weights would only have mirrored the bug.
+    #
+    # A single merged list has to rank on merit, and raw conviction is not
+    # merit — see _cross_sport_calibration: the same number means different
+    # things in different sports, and in MLB the 80+ band converts WORSE
+    # than 70-80. Rank on measured hit rate per (sport, band) instead, so
+    # picks compete on what they actually do. No sport is privileged and
+    # none is excluded; a sport with no graded history yet (NHL/NBA before
+    # their openers) ranks at the global base rate rather than at zero.
+    _cal = _cross_sport_calibration()
 
-    _unified_candidates = []
-    # MLB from top_8_curated
-    for p in (top_8_curated or []):
-        _unified_candidates.append({
+    def _norm(p, default_sport='MLB'):
+        """One shape for every pick, whatever surface it came from.
+
+        The client should render a single list without knowing which
+        pipeline produced a row. MLB picks arrive with icon/rank/result
+        but no sport; football picks arrive with sport/game_id but no
+        icon. Fill both sides here rather than in the app — the app was
+        inferring sport by reverse-mapping the emoji, which breaks the
+        moment two sports share an icon (NFL and NCAAF are both 🏈).
+        """
+        sport = str(p.get('sport') or default_sport).upper()
+        conv = p.get('conviction')
+        if conv is None:
+            conv = p.get('sweat_score') or 0
+        # Football picks come straight off {sport}_game_context.primary_play
+        # and carry no source_table, so stamp their lineage here. It is the
+        # calibration key AND the audit trail for a receipt, so leaving it
+        # blank would silently pool them with everything else.
+        st = p.get('source_table') or f'{sport.lower()}_game_context'
+        out = {
             **p,
-            'sport': p.get('sport', 'MLB'),
-            '_conviction': p.get('conviction') or p.get('sweat_score') or 0,
-        })
-    # Football
-    for p in football_picks:
-        _unified_candidates.append({
-            **p,
-            '_conviction': p.get('conviction') or 0,
-        })
-    # Sort by (priority_weight DESC, conviction DESC)
+            'sport': sport,
+            'source_table': st,
+            'icon': p.get('icon') or _SPORT_ICON.get(sport, '•'),
+            'conviction': conv,
+            '_conviction': conv,
+            '_calibrated': round(_calibrated_score(sport, conv, _cal, st), 4),
+        }
+        return out
+
+    _unified_candidates = [_norm(p, 'MLB') for p in (top_8_curated or [])]
+    _unified_candidates += [_norm(p) for p in football_picks]
+
     _unified_candidates.sort(
-        key=lambda p: (-_priority_weight(p.get('sport') or 'MLB'), -p.get('_conviction', 0))
+        key=lambda p: (-p.get('_calibrated', 0.0), -p.get('_conviction', 0))
     )
     unified_top_picks = _unified_candidates[:_unified_cap]
+    # Re-rank 1..N. Both source lists carry their own `rank` (MLB's is its
+    # position in top_8; football has none at all), so without this the
+    # merged card showed duplicate and missing numbers.
+    for _i, _p in enumerate(unified_top_picks, 1):
+        _p['rank'] = _i
     if unified_top_picks:
+        _mix = {}
+        for _p in unified_top_picks:
+            _mix[_p['sport']] = _mix.get(_p['sport'], 0) + 1
         print(f'  🎯 unified top_picks: {len(unified_top_picks)} '
-              f'(cap={_unified_cap} · football_priority={_football_priority})')
+              f'(cap={_unified_cap} · '
+              f'{"calibrated" if _cal else "raw-conviction fallback"} · '
+              f'mix={_mix})')
+
+    # Emit sport on the legacy top_8 too. The app fell back to an emoji
+    # lookup when it was missing, which cannot distinguish NFL from NCAAF.
+    for _p in (top_8_curated or []):
+        if not _p.get('sport'):
+            _p['sport'] = 'MLB'
 
     card = {
         "slate_date": today,

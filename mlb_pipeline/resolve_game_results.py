@@ -889,10 +889,16 @@ def _resolve_sweat_card_top8(start_date, end_date):
         # rows stay wrong even after upstream data backfills. The single-pick
         # walker below verifies Pushes against current MLB API ground truth
         # and only flips them if the game actually played.
-        needs_walk = any(
-            (not p.get('result')) or p.get('result') in ('Pending', 'Push')
-            for p in top_8
-        )
+        # 2026-09-21: this gate used to consider top_8 only, so on a card
+        # whose top_8 was fully settled it `continue`d before the unified
+        # walker below ever ran — which is exactly the steady state (top_8
+        # grades same-night, unified never had). Check both lists.
+        def _outstanding(rows):
+            return any((not p.get('result'))
+                       or p.get('result') in ('Pending', 'Push')
+                       for p in rows)
+
+        needs_walk = _outstanding(top_8) or _outstanding(data.get('unified_top_picks') or [])
         if not needs_walk:
             continue
 
@@ -913,7 +919,44 @@ def _resolve_sweat_card_top8(start_date, end_date):
                 pick['result'] = result
                 changed = True
 
-        if changed:
+        # 2026-09-21: the card now renders `unified_top_picks` — ONE ranked
+        # cross-sport list — instead of top_8 plus a football appendix. This
+        # walker only ever graded top_8, so every unified list was 0/N graded
+        # on every card since 09-02 and the football picks inside it carried
+        # no result at all. The app would have shown a card with no ✓/✗ and a
+        # CARD RESULT line counting a different set of picks than it
+        # displayed. On a product whose whole claim is "we show the
+        # receipts", that is the worst possible bug.
+        #
+        # MLB-lineage picks re-grade through the same _resolve_single_pick.
+        # Football picks have no handler there, so they inherit from
+        # public_receipts, which IS the immutable graded ledger for them
+        # (see grade_public_receipts). Receipts are the source of truth; the
+        # card is a display of them, never a second opinion.
+        unified = data.get('unified_top_picks') or []
+        unified_changed = False
+        if unified:
+            _rgrades = _receipt_grades_for(slate_date)
+            for pick in unified:
+                if pick.get('result') in ('Win', 'Loss'):
+                    continue
+                res = None
+                if pick.get('source_table') in _SINGLE_PICK_SOURCES:
+                    res = _resolve_single_pick(pick, slate_date)
+                if res in (None, 'Pending'):
+                    inherited = _rgrades.get((
+                        str(pick.get('sport') or 'MLB').upper(),
+                        _receipt_key(pick.get('label')),
+                    ))
+                    if inherited:
+                        res = inherited
+                if res and res != pick.get('result'):
+                    if pick.get('result') == 'Push' and res not in ('Win', 'Loss'):
+                        continue
+                    pick['result'] = res
+                    unified_changed = True
+
+        if changed or unified_changed:
             # Compute summary
             wins = sum(1 for p in top_8 if p.get('result') == 'Win')
             losses = sum(1 for p in top_8 if p.get('result') == 'Loss')
@@ -927,6 +970,19 @@ def _resolve_sweat_card_top8(start_date, end_date):
                 'pending': pending,
                 'resolved': wins + losses + pushes,
             }
+            if unified:
+                data['unified_top_picks'] = unified
+                u_w = sum(1 for p in unified if p.get('result') == 'Win')
+                u_l = sum(1 for p in unified if p.get('result') == 'Loss')
+                u_p = sum(1 for p in unified if p.get('result') == 'Push')
+                data['unified_summary'] = {
+                    'wins': u_w, 'losses': u_l, 'pushes': u_p,
+                    # Anything not Win/Loss/Push is still outstanding —
+                    # counting only an explicit 'Pending' would silently hide
+                    # picks the walker never reached.
+                    'pending': len(unified) - (u_w + u_l + u_p),
+                    'resolved': u_w + u_l + u_p,
+                }
             data['top_8_resolved_at'] = datetime.now(timezone.utc).isoformat()
 
             requests.patch(
@@ -1004,6 +1060,61 @@ def _refresh_next_day_yesterday_recap(next_day, slate_date, top_8, summary):
     )
     s = y.get('top_8_summary') or {}
     print(f'  🔁 healed {next_day}.yesterday_recap ← {slate_date} ({s.get("wins","?")}-{s.get("losses","?")})')
+
+
+# source_table values _resolve_single_pick actually dispatches on. Anything
+# else (football picks arrive as '<sport>_game_context') has no branch there
+# and would fall through to a generic path that cannot grade it, so the
+# unified walker routes those to public_receipts instead.
+_SINGLE_PICK_SOURCES = {
+    'daily_best_bet_history', 'daily_dawg',
+    'mlb_pipeline_props', 'mlb_game_results',
+}
+
+_receipt_grade_cache: dict = {}
+
+
+def _receipt_key(label) -> str:
+    """Normalised pick label for joining a card pick to its receipt.
+
+    Labels are the only field both sides reliably share — card picks carry
+    no receipt id, and football picks carry no source_key. Lowercased and
+    stripped of spacing so 'BAL -8.5' matches 'bal -8.5'.
+    """
+    return ' '.join(str(label or '').split()).lower()
+
+
+def _receipt_grades_for(slate_date: str) -> dict:
+    """{(sport, normalised_label): result} from the graded receipts ledger.
+
+    Reads only settled rows. Cached per date because the walker can visit
+    the same slate once per card it repairs.
+    """
+    if slate_date in _receipt_grade_cache:
+        return _receipt_grade_cache[slate_date]
+    out = {}
+    try:
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/public_receipts',
+            params={'surface': 'eq.sweat_card',
+                    'game_date': f'eq.{slate_date}',
+                    'select': 'sport,pick_label,result'},
+            headers=HEADERS, timeout=30,
+        )
+        for row in (r.json() if r.status_code == 200 else []):
+            res = str(row.get('result') or '').strip()
+            if not res:
+                continue
+            # Receipts store WIN/LOSS/PUSH; the card uses title case.
+            norm = {'win': 'Win', 'loss': 'Loss', 'push': 'Push'}.get(res.lower())
+            if not norm:
+                continue
+            out[(str(row.get('sport') or '').upper(),
+                 _receipt_key(row.get('pick_label')))] = norm
+    except Exception as e:
+        print(f'  ⚠️  receipt grade lookup failed for {slate_date}: {e}')
+    _receipt_grade_cache[slate_date] = out
+    return out
 
 
 def _resolve_single_pick(pick, slate_date):

@@ -1907,6 +1907,32 @@ const [bestBetFetched, setBestBetFetched] = useState(false);
 const [sweatCard, setSweatCard] = useState<any>(null);
 const [sweatCardLoading, setSweatCardLoading] = useState(false);
 
+// 2026-09-21 ONE CARD, ONE LIST (Andy directive).
+// The card used to render two hardcoded sections: `top_8` (MLB only) and
+// a `football_picks` appendix pinned to NFL/NCAAF. NBA/NHL/NCAAB appeared
+// in neither, so when MLB's regular season ends the card would have gone
+// nearly empty, and the two sections implied a sport taxonomy users never
+// asked for — they want the best plays, ranked.
+//
+// The server now merges every in-season sport into `unified_top_picks`,
+// ranked by measured hit rate per (sport, source_table, conviction band)
+// rather than by raw conviction — see generate_sweat_card
+// _cross_sport_calibration. All ordering, capping, sport tagging and icon
+// selection happen there. This is deliberately the ONLY card logic left
+// on the client, and it is a fallback, not a second ranker: if a cached
+// payload predates the unified field we concatenate the legacy arrays so
+// the card still renders rather than going blank.
+const cardPicks: any[] = React.useMemo(() => {
+  if (!sweatCard || sweatCard.noCard) return [];
+  if (Array.isArray(sweatCard.unified_top_picks) && sweatCard.unified_top_picks.length > 0) {
+    return sweatCard.unified_top_picks;
+  }
+  return [
+    ...(Array.isArray(sweatCard.top_8) ? sweatCard.top_8 : []),
+    ...(Array.isArray(sweatCard.football_picks) ? sweatCard.football_picks : []),
+  ];
+}, [sweatCard]);
+
   // Feature flags (2026-07-31f · sport-universal control plane). Read once
   // on launch + on foreground refresh. Server flips a row → users see the
   // change next open. Keyed as `${sport}:${feature}` → boolean enabled.
@@ -12875,10 +12901,10 @@ setJerryHistory(prev => {
       </View>
     </View>
     <Text style={{color:THEME.textDim,fontSize:11,marginBottom:12}}>
-      {sweatCard.top_8?.length || 8} curated plays locked · same discipline gate as POTD
+      {cardPicks.length || 8} curated plays locked · same discipline gate as POTD
     </Text>
     <View style={{gap:6,marginBottom:12}}>
-      {Array.from({length: Math.min(4, sweatCard.top_8?.length || 4)}).map((_, i) => (
+      {Array.from({length: Math.min(4, cardPicks.length || 4)}).map((_, i) => (
         <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:THEME.surface,borderRadius:8,padding:10,borderWidth:1,borderColor:THEME.border}}>
           <Text style={{fontSize:14}}>🔒</Text>
           <View style={{flex:1,height:8,backgroundColor:THEME.surfaceAlt,borderRadius:4}}/>
@@ -12903,7 +12929,7 @@ setJerryHistory(prev => {
           experience — POTD is the featured card of today's slate, not a
           separate product. */}
       <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>📋 REST OF TODAY'S CARD</Text>
-      <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {sweatCard.top_8?.length || 8} picks</Text>
+      <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {cardPicks.length || 8} picks</Text>
     </View>
     <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:6,fontStyle:'italic'}}>The rest of the curated card — same discipline gate as POTD, ranked below</Text>
     {/* 2026-08-09 data-freshness stamp: shows relative time since last card
@@ -12926,7 +12952,7 @@ setJerryHistory(prev => {
         the pipeline itself has already trimmed to qualified picks — the
         card size IS the honest signal. */}
     {(() => {
-      const n = Array.isArray(sweatCard.top_8) ? sweatCard.top_8.length : 0;
+      const n = cardPicks.length;
       const isLight = n > 0 && (n < 3 || sweatCard.slate_density === 'light');
       if (!isLight) return null;
       return (
@@ -12939,14 +12965,15 @@ setJerryHistory(prev => {
       );
     })()}
 
-    {/* 🎯 THE CURATED 8 — lead picks, server-driven from sweatCard.top_8.
+    {/* 🎯 THE CARD — one ranked cross-sport list, server-driven from
+        sweatCard.unified_top_picks (see cardPicks memo above).
         2026-08-13: tap navigates to Game Detail. Helper finds the matching
-        game object by matchup string across current gamesData + mlbGameContext;
+        game object by matchup string across current gamesData + ctx maps;
         different-sport picks fall back to switching the Games tab sport
         and highlighting the game there. */}
-    {Array.isArray(sweatCard.top_8) && sweatCard.top_8.length > 0 && (
+    {cardPicks.length > 0 && (
       <View style={{marginBottom:14}}>
-        {sweatCard.top_8.map((pick: any, i: number) => {
+        {cardPicks.map((pick: any, i: number) => {
           const tierColor =
             pick.tier === 'PRIME' ? THEME.accent :
             pick.tier === 'STRONG' ? THEME.sharp :
@@ -12959,13 +12986,13 @@ setJerryHistory(prev => {
             pick.result === 'Win' ? THEME.win :
             pick.result === 'Loss' ? THEME.loss :
             pick.result === 'Push' ? THEME.textDim : null;
-          // Sport inference from icon — used for cross-sport chip. Falls back
-          // to gamesSport if icon isn't a known sport emoji. Server will emit
-          // pick.sport explicitly once multi-sport card curation lands.
-          const iconToSport: Record<string, string> = {
-            '⚾': 'MLB', '🏈': 'NFL', '🏀': 'NBA', '🏒': 'NHL', '🥊': 'UFC',
-          };
-          const pickSport = pick.sport || iconToSport[pick.icon] || 'MLB';
+          // 2026-09-21: the server now stamps `sport` on every pick, so the
+          // emoji reverse-lookup that used to live here is gone. It could
+          // never have worked anyway — NFL and NCAAF both render 🏈, so
+          // every college pick resolved to 'NFL' and tapped through to the
+          // wrong sport's Games tab. 'MLB' remains only as a last-ditch
+          // default for a cached pre-09-21 payload.
+          const pickSport = pick.sport || 'MLB';
           // Find the underlying game object so tap can open Game Detail.
           // Search current gamesData first (fast path when user's on the
           // right sport already), then mlbGameContextMap for MLB fallback.
@@ -12976,21 +13003,28 @@ setJerryHistory(prev => {
               g.away_team === away && g.home_team === home);
             if (inGames) return inGames;
             // Cross-sport fallback: build a minimal game-like object from
-            // mlbGameContextMap or nflGameContextMap so openGameDetail can
-            // hydrate. If neither matches, return null and disable tap.
-            // 2026-09-19: NCAAF was missing from this fallback chain, so
-            // findGame() returned null for every college-football pick, Row
-            // fell back to a plain View, and tap-to-Game-Detail silently did
-            // nothing. On a Saturday the Sweat Card football block is all
-            // NCAAF, so the whole feature looked broken. ncaafGameContextMap
-            // is already populated (see the NCAAF ctx fetch) — it just was
-            // never consulted here.
-            const ctx: any = Object.values(mlbGameContext || {}).find((c: any) =>
-              c?.away_team === away && c?.home_team === home)
-              || Object.values(nflGameContextMap || {}).find((c: any) =>
-                c?.away_team === away && c?.home_team === home)
-              || Object.values(ncaafGameContextMap || {}).find((c: any) =>
-                c?.away_team === away && c?.home_team === home);
+            // whichever context map covers this pick's sport, so
+            // openGameDetail can hydrate. No match → null and tap disabled.
+            //
+            // 2026-09-19: NCAAF was missing from this chain, so findGame()
+            // returned null for every college-football pick and tap silently
+            // did nothing on Saturdays.
+            // 2026-09-21: now that the card is one cross-sport list, an
+            // append-one-more-|| chain is how that regression happens again.
+            // Keyed by sport instead, searching the pick's own map first and
+            // the rest only as backup (matchup strings are unique enough in
+            // practice, but a sport-first lookup can't cross-match).
+            const ctxMaps: Record<string, any> = {
+              MLB: mlbGameContext, NFL: nflGameContextMap,
+              NCAAF: ncaafGameContextMap, NBA: nbaGameContextMap,
+            };
+            const matchIn = (m: any) => Object.values(m || {}).find((c: any) =>
+              c?.away_team === away && c?.home_team === home);
+            const ctx: any = matchIn(ctxMaps[pickSport])
+              || Object.keys(ctxMaps)
+                   .filter((k) => k !== pickSport)
+                   .map((k) => matchIn(ctxMaps[k]))
+                   .find(Boolean);
             if (ctx) return {
               id: ctx.game_id, away_team: away, home_team: home,
               commence_time: ctx.commence_time || ctx.game_date,
@@ -13053,16 +13087,28 @@ setJerryHistory(prev => {
           );
         })}
         {/* Summary line if resolved */}
-        {sweatCard.top_8_summary && sweatCard.top_8_summary.resolved > 0 && (
+        {/* 2026-09-21: read the summary that matches the list actually on
+            screen. top_8_summary counts MLB top_8 only, so once the card
+            renders the unified cross-sport list it would have reported a
+            W-L over a different set of picks than the user can see. The
+            server emits unified_summary alongside the unified list; fall
+            back to top_8_summary only for a pre-09-21 cached payload,
+            where top_8 IS what cardPicks resolved to. */}
+        {(() => {
+        const cardSummary = (Array.isArray(sweatCard.unified_top_picks) && sweatCard.unified_top_picks.length > 0)
+          ? sweatCard.unified_summary
+          : sweatCard.top_8_summary;
+        return cardSummary && cardSummary.resolved > 0 && (
           <View style={{marginTop:8,paddingTop:8,borderTopWidth:0.5,borderTopColor:THEME.surfaceAlt,flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
             <Text style={{color:THEME.textDim,fontSize:10,fontWeight:'700',letterSpacing:0.5}}>CARD RESULT</Text>
             <Text style={{color:THEME.text,fontSize:12,fontWeight:'800'}}>
-              {sweatCard.top_8_summary.wins}-{sweatCard.top_8_summary.losses}
-              {sweatCard.top_8_summary.pushes ? ` (${sweatCard.top_8_summary.pushes}P)` : ''}
-              {sweatCard.top_8_summary.pending ? ` • ${sweatCard.top_8_summary.pending} pending` : ''}
+              {cardSummary.wins}-{cardSummary.losses}
+              {cardSummary.pushes ? ` (${cardSummary.pushes}P)` : ''}
+              {cardSummary.pending ? ` • ${cardSummary.pending} pending` : ''}
             </Text>
           </View>
-        )}
+        );
+        })()}
       </View>
     )}
 
@@ -13112,86 +13158,13 @@ setJerryHistory(prev => {
       </View>
     )}
 
-    {/* 🏈 FOOTBALL BLEND (2026-09-02) — NFL + NCAAF PRIME/STRONG picks
-        alongside MLB on Sweat Card. Empty on off-days (server returns
-        empty array in football_picks). Early-season tier cap through
-        Sept 22 (server-side, no client logic). Sport-in-season priority
-        means these should be prominent Sat/Sun during football season.
-        2026-09-02 v2: every pick tappable → opens Game Detail for that
-        specific game (same pattern as top_8). Cross-sport tap switches
-        gamesSport tab first before opening. */}
-    {Array.isArray(sweatCard.football_picks) && sweatCard.football_picks.length > 0 && (
-      <View style={{marginBottom:14}}>
-        <View style={{flexDirection:'row',alignItems:'baseline',gap:6,marginBottom:6}}>
-          <Text style={{color:THEME.hrb,fontWeight:'800',fontSize:11,letterSpacing:0.8}}>🏈 FOOTBALL</Text>
-          <Text style={{color:THEME.textMuted,fontSize:10}}>{sweatCard.football_picks.length} pick{sweatCard.football_picks.length===1?'':'s'} · tier-capped Week 1-3 · tap to open</Text>
-        </View>
-        {sweatCard.football_picks.map((pick: any, i: number) => {
-          const tierColor = pick.tier === 'PRIME' ? THEME.accent
-                          : pick.tier === 'STRONG' ? THEME.sharp : THEME.textDim;
-          const sportIcon = pick.sport === 'NFL' ? '🏈' : pick.sport === 'NCAAF' ? '🎓' : '🏈';
-          const pickSport = pick.sport || 'NFL';
-          // Same findGame/onTap pattern as top_8 picks — checks gamesData
-          // for current sport, falls back to nfl/ncaaf ctx maps if
-          // user is on a different sport tab.
-          const findFbGame = (): any | null => {
-            if (!pick.game) return null;
-            const [away, home] = pick.game.split(' @ ').map((s: string) => s.trim());
-            const inGames = (gamesData || []).find((g: any) =>
-              g.away_team === away && g.home_team === home);
-            if (inGames) return inGames;
-            // 2026-09-05: check BOTH NFL + NCAAF context maps. Prior version
-            // only checked NFL → every NCAAF Sweat Card football pick fell
-            // through and rendered "game data loading" forever (NCAAF is
-            // active every Sat but its ctx map wasn't consulted).
-            const ctxSource = pickSport === 'NCAAF'
-              ? (ncaafGameContextMap || {})
-              : (nflGameContextMap || {});
-            const ctx: any = Object.values(ctxSource).find((c: any) =>
-              c?.away_team === away && c?.home_team === home);
-            if (ctx) return {
-              id: ctx.game_id, away_team: away, home_team: home,
-              commence_time: ctx.commence_time || ctx.game_date,
-              bookmakers: [], _fromCard: true,
-            };
-            return null;
-          };
-          const fbTarget = findFbGame();
-          const onFbTap = () => {
-            if (!fbTarget) return;
-            if (pickSport === gamesSport) {
-              openGameDetail(fbTarget);
-            } else {
-              setGamesSport(pickSport);
-              setActiveTab('games');
-              setTimeout(() => openGameDetail(fbTarget), 50);
-            }
-          };
-          return (
-            <TouchableOpacity
-              key={i}
-              activeOpacity={fbTarget ? 0.7 : 1}
-              onPress={fbTarget ? onFbTap : undefined}
-              style={{
-                flexDirection:'row',alignItems:'center',gap:8,
-                paddingVertical:8,paddingHorizontal:10,marginBottom:4,
-                backgroundColor:THEME.surface,borderRadius:8,
-                borderLeftWidth:3,borderLeftColor:tierColor,
-                opacity: fbTarget ? 1 : 0.75,
-              }}>
-              <Text style={{fontSize:16}}>{sportIcon}</Text>
-              <View style={{flex:1}}>
-                <Text style={{color:THEME.text,fontSize:13,fontWeight:'700'}} numberOfLines={1}>{pick.label || `${pick.side} ${pick.type?.toUpperCase()}`}</Text>
-                <Text style={{color:THEME.textDim,fontSize:11,marginTop:1}} numberOfLines={1}>{pick.game}{fbTarget ? '' : ' · game data loading'}</Text>
-              </View>
-              <View style={{backgroundColor:tierColor+'22',paddingHorizontal:8,paddingVertical:3,borderRadius:4}}>
-                <Text style={{color:tierColor,fontSize:10,fontWeight:'800'}}>{pick.tier}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    )}
+    {/* 2026-09-21: the separate 🏈 FOOTBALL section was removed. It was a
+        hardcoded ('NFL','NCAAF') appendix below an MLB-only top_8, so
+        NBA/NHL/NCAAB had nowhere to render at all and the card would have
+        emptied out when MLB's regular season ended. Football picks now
+        flow through the single ranked list above (cardPicks), merged and
+        ordered server-side by measured hit rate. One list, every sport,
+        best plays first — no per-sport section to add next time. */}
 
     {/* ⚡ TOP PROPS — unified surface from sweat_card.top_props (server-driven,
         any PRIME/STRONG prop type, ranked by conviction). No client-side
