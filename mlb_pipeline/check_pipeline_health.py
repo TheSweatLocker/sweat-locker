@@ -275,31 +275,65 @@ def main():
     # silent — attach-rate and grade counts would look fine, but the pool
     # composers pick from would shrink 10x. This check catches that.
     #
-    # Floor: 1500 total props. Below that on a full slate = truncation
-    # regression. Zero-slate days handled by `games` guard above (early
-    # return before we hit this block).
+    # 2026-09-21 FIX: the floor was ABSOLUTE (issue <500, warn <1500, message
+    # text "Expected 2000-4000"). Those numbers were read off a 15-game
+    # September slate and assumed every slate looks like that. They don't:
+    # late September has 3-game days, and the postseason runs 1-2 games. A
+    # correct 3-game slate produced 301 props and failed the pipeline.
+    #
+    # Props scale with GAMES, not with the calendar. Measured 2026-09-17..21:
+    #   09-21:  3 games ·  301 props · 100/game
+    #   09-20: 15 games · 1597 props · 106/game
+    #   09-19: 15 games · 1348 props ·  90/game
+    #   09-18: 15 games · 1699 props · 113/game
+    #   09-17:  9 games ·  905 props · 101/game
+    # Tight band of 90-113. So gate on the RATIO and let slate size float.
+    # Floors are deliberately slack against that band (40 = under half the
+    # worst day) so this fires on regressions, not on thin coverage.
+    _PPG_ISSUE = 40      # below half the observed floor = something is broken
+    _PPG_WARN  = 70      # below the band but survivable = look at it
     try:
         n_props = count_rows(f'mlb_pipeline_props?game_date=eq.{date}')
+        n_games = len(games)
+        ppg = (n_props / n_games) if n_games else 0
         if n_props < 0:
             warnings.append('⚠️  Prop volume count query failed (Content-Range missing)')
         elif n_props == 0:
             # Slate exists but zero props — treat as issue only in afternoon
             if is_afternoon:
                 issues.append(f'❌ 0 props on {date} — prop pipeline dead')
-        elif n_props < 500:
-            issues.append(
-                f'❌ Prop volume floor breach: only {n_props} props on {date}. '
-                f'Expected 2000-4000. Likely a pagination regression '
-                f'(Sept-11-class truncation). Check prop_synth / '
-                f'sharp_card_aggregator / grading_zero_fail fetch loops.'
-            )
-        elif n_props < 1500:
+        elif not n_games:
             warnings.append(
-                f'⚠️  Prop volume low: {n_props} props on {date} '
-                f'(floor 1500). Monitor — may be quiet slate or partial regression.'
+                f'⚠️  {n_props} props on {date} but 0 games in context — '
+                f'cannot rate-check prop volume.'
+            )
+        elif ppg < _PPG_ISSUE:
+            issues.append(
+                f'❌ Prop volume floor breach: {n_props} props across {n_games} games '
+                f'on {date} = {ppg:.0f}/game (floor {_PPG_ISSUE}). Expected 90-113/game. '
+                f'Likely a pagination regression (Sept-11-class truncation). '
+                f'Check prop_synth / sharp_card_aggregator / grading_zero_fail fetch loops.'
+            )
+        elif ppg < _PPG_WARN:
+            warnings.append(
+                f'⚠️  Prop volume low: {n_props} props across {n_games} games on {date} '
+                f'= {ppg:.0f}/game (expected 90-113). Monitor — partial coverage '
+                f'or partial regression.'
             )
         else:
-            print(f'  ✓ Prop volume: {n_props} props on {date}')
+            print(f'  ✓ Prop volume: {n_props} props / {n_games} games ({ppg:.0f} per game)')
+
+        # The 1000-row PostgREST cap has its own fingerprint, and the ratio
+        # check above CANNOT see it on a small slate: 9 games x 111 = 1000
+        # passes the ratio while being exactly truncated. Catch the cap
+        # directly — a count parked just under 1000 on a slate that should
+        # clear it is the Sept-11 signature.
+        if 980 <= n_props <= 1000 and n_games >= 10:
+            issues.append(
+                f'❌ Prop count {n_props} on a {n_games}-game slate sits on the '
+                f'PostgREST 1000-row cap. This is the Sept-11 truncation '
+                f'signature — a fetch loop lost its pagination.'
+            )
     except Exception as e:
         warnings.append(f'⚠️  Prop volume check failed: {e}')
 

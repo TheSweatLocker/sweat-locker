@@ -211,9 +211,42 @@ def check_primary_play_stale() -> Optional[dict]:
     if not stale:
         return None
     pct = 100.0 * len(stale) / len(ctx)
+
+    # 2026-09-21: THIRD false-alarm class on this check (after gates 8/23 and
+    # LR override 9/09), and the worst kind — it told you to run a remediation
+    # that cannot work.
+    #
+    # Past 12:00 ET the morning pick lock intentionally freezes published
+    # picks. Live re-score keeps moving (lines move all afternoon), so
+    # disagreement after the lock is the DESIGNED behaviour, not staleness.
+    # recompute_primary_play.py honours the lock and changes nothing, so the
+    # alert re-fires on the next run, forever, until midnight. An alert whose
+    # only advertised fix is a no-op trains you to ignore the channel —
+    # cf. the suppression-gate rule: an exit condition must be reachable.
+    try:
+        from game_context import pick_lock_active
+        _locked = pick_lock_active()
+    except Exception:
+        _locked = False
+    if _locked:
+        return {
+            'check_name': 'primary_play_stale',
+            'severity': 'INFO',
+            'message': f'{len(stale)}/{len(ctx)} games show live/published divergence, '
+                       f'but the morning pick lock is ACTIVE — published picks are '
+                       f'intentionally frozen. Expected, not stale. No action today.',
+            'detail': {'today': today, 'pick_lock': True,
+                       'diverged_count': len(stale), 'diverged_games': stale[:5]},
+        }
+
+    # Percentage alone escalates wrongly on a small slate: 1 stale of 3 games
+    # is 33% (CRITICAL) while the same single game on a 15-game slate is 6.7%
+    # (WARNING). Same unnormalised-denominator bug as the prop volume floor.
+    # Require BOTH a meaningful share and an absolute count before CRITICAL.
+    severity = 'CRITICAL' if (pct >= 30 and len(stale) >= 3) else 'WARNING'
     return {
         'check_name': 'primary_play_stale',
-        'severity': 'CRITICAL' if pct >= 30 else 'WARNING',
+        'severity': severity,
         'message': f'{len(stale)}/{len(ctx)} today\'s games have stale primary_play '
                    f'(live re-score disagrees). Run recompute_primary_play.py.',
         'detail': {'today': today, 'stale_count': len(stale), 'stale_games': stale[:5]},
@@ -269,27 +302,72 @@ def check_sharp_source_dropped() -> Optional[dict]:
     for p in picks:
         by_date_source[p.get('game_date')][p.get('source')] += 1
     today_counts = by_date_source.get(today, {})
-    # Baseline: avg count per source over last 7 days (excluding today)
+    # Baseline: avg count per source over last 7 days (excluding today).
+    # Only look BACK — external_picks holds forward-dated picks (there are
+    # rows out to 09-28), and those future dates carry 1-14 rows each. Letting
+    # them into the baseline would drag every average toward zero.
+    _win_start = _days_ago(7)
     baseline = defaultdict(list)
+    day_totals = []
     for d, sources in by_date_source.items():
-        if d == today: continue
+        if d == today or not (_win_start <= d < today): continue
+        day_totals.append(sum(sources.values()))
         for src, cnt in sources.items():
             baseline[src].append(cnt)
+    if not day_totals:
+        return None
+
+    # 2026-09-21: SECOND false-alarm fix on this check (after the 8/28 column
+    # + pagination bugs). Raw counts were compared against a 7d average with
+    # no adjustment for how big today's slate is. On a 3-game MLB slate every
+    # source posts far fewer picks than it does on a 15-game slate, so all of
+    # them "drop >50%" simultaneously and the alert names nine sources at once.
+    #
+    # That is not a scraper problem, and worse, it HID two real ones: on
+    # 2026-09-21 the check named 9 sources, of which 7 were tracking the slate
+    # perfectly (scoresandodds 11 vs 13.6 expected) while oddscrowd (13.3
+    # expected) and dimers (3.6 expected) were both flat ZERO. The true
+    # failures were indistinguishable from the noise.
+    #
+    # Scale the expectation by how much the whole board shrank. If every
+    # source falls together the factor absorbs it and nothing fires; if one
+    # scraper dies while the others track, it stands out — which is the
+    # "silent scraper death" this check exists to catch.
+    today_total = sum(today_counts.values())
+    baseline_total = sum(day_totals) / len(day_totals)
+    slate_factor = (today_total / baseline_total) if baseline_total else 1.0
+    # Clamp: a genuinely dead board shouldn't drive expectations to ~0 and
+    # silence the check entirely, and a busy day shouldn't inflate them.
+    slate_factor = max(0.10, min(slate_factor, 1.5))
+
     dropped = []
     for src, cnts in baseline.items():
         if not cnts: continue
         avg = sum(cnts) / len(cnts)
+        expected = avg * slate_factor
         today_cnt = today_counts.get(src, 0)
-        if avg >= 5 and today_cnt < avg * 0.5:  # 50% drop threshold on non-tiny sources
-            dropped.append({'source': src, 'today': today_cnt, 'baseline_avg': round(avg, 1)})
+        # avg >= 5 keeps tiny sources out; expected >= 3 keeps the normalised
+        # expectation above the noise floor on a small slate, where "50% of
+        # 1.1 expected" is not a signal about anything.
+        if avg >= 5 and expected >= 3 and today_cnt < expected * 0.5:
+            dropped.append({'source': src, 'today': today_cnt,
+                            'baseline_avg': round(avg, 1),
+                            'expected': round(expected, 1)})
     if not dropped:
         return None
+    # A source at exactly zero is qualitatively different from one running
+    # light — that's a dead scraper, not thin coverage.
+    n_zero = sum(1 for d in dropped if d['today'] == 0)
     return {
         'check_name': 'sharp_source_dropped',
-        'severity': 'WARNING',
-        'message': f'{len(dropped)} sharp source(s) with >50% count drop vs 7d avg: '
-                   f'{", ".join(d["source"] for d in dropped)}',
-        'detail': {'today': today, 'dropped': dropped},
+        'severity': 'CRITICAL' if n_zero else 'WARNING',
+        'message': f'{len(dropped)} sharp source(s) below slate-adjusted expectation'
+                   + (f' ({n_zero} at ZERO)' if n_zero else '') + ': '
+                   + ', '.join(f'{d["source"]} {d["today"]}/{d["expected"]}' for d in dropped),
+        'detail': {'today': today, 'dropped': dropped,
+                   'slate_factor': round(slate_factor, 2),
+                   'today_total': today_total,
+                   'baseline_total_avg': round(baseline_total, 1)},
     }
 
 
