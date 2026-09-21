@@ -1970,6 +1970,10 @@ const [ncaafTeamStatsMap, setNcaafTeamStatsMap] = useState({});   // team(lower)
 const [nflTeamStatsMap, setNflTeamStatsMap] = useState({});       // team(short) -> {pass_epa, rush_epa, pass_cpoe, def_sacks, def_ints, ...}
 const [nflGameContextMap, setNflGameContextMap] = useState({});   // game_id AND away@home -> {projected_spread, cohort_tags, primary_play, stats_source, ...}
 const [ncaafGameContextMap, setNcaafGameContextMap] = useState({});  // 2026-08-23: NCAAF ctx enrichment (mirrors NFL) — primary_play + splits_summary + SP+ projections
+// 2026-09-21: NBA game context. Note this is DIFFERENT from `nbaContext`,
+// which holds per-TEAM season stats. The absence of this map is why NBA
+// scoring was computed client-side — there was no server number to read.
+const [nbaGameContextMap, setNbaGameContextMap] = useState({});
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -4864,12 +4868,30 @@ const ncaabBreakdown = sport === 'NCAAB' ? {
         serverSweat = { score: Number(mctx.sweat_score), tier: mctx.sweat_tier || '' };
       }
     }
+    // 2026-09-21: NBA joins MLB on the server number. Keyed by
+    // "away@home" first (exact, built by the fetch above) and falling
+    // back to a team scan, same shape as MLB. Once this resolves, the
+    // ~110-line client NBA scorer below is bypassed entirely — which is
+    // the point: two implementations cannot disagree if only one runs.
+    if (sport === 'NBA' && nbaGameContextMap) {
+      const nctx: any = (nbaGameContextMap as any)[`${game.away_team}@${game.home_team}`]
+        || (Object.values(nbaGameContextMap) as any[]).find((c: any) =>
+             c?.home_team === game.home_team && c?.away_team === game.away_team
+           );
+      if (nctx && nctx.sweat_score != null) {
+        serverSweat = { score: Number(nctx.sweat_score), tier: nctx.sweat_tier || '' };
+      }
+    }
     // 2026-05-18 — for MLB, show "Pending" rather than the client-side
     // fallback when the server hasn't written the sweat score yet. The
     // client-side calc uses different bands + missing newer signals
     // (confluence, prop-stack), so it can land 20+ points off the server
     // value. Better to hold blank than show a misleading number.
-    const mlbPendingServer = sport === 'MLB' && !serverSweat;
+    // 2026-09-21: NBA joins MLB here. Showing the client fallback
+    // number when the server has not written one is how the two
+    // values diverge in front of a user — better to hold blank and
+    // say PENDING than publish a number the server disagrees with.
+    const mlbPendingServer = (sport === 'MLB' || sport === 'NBA') && !serverSweat;
     const finalTotal = serverSweat ? serverSweat.score : (mlbPendingServer ? null : total);
     const finalTier = serverSweat
       ? serverSweat.tier
@@ -5718,6 +5740,40 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           }
         });
         setNcaafGameContextMap(ncaafCtxMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // 2026-09-21: NBA game context — mirrors the NFL/NCAAF pattern.
+    // The app had NO nba_game_context fetch at all; `nbaContext` is
+    // TEAM stats, not game context. That is why NBA scoring lived
+    // client-side: there was no server number to read. Migration
+    // 20260921a added sweat_score/sweat_tier/confluence to
+    // nba_game_context and nba_game_context.py now writes them, so the
+    // app can finally render the server's number instead of computing
+    // a competing one.
+    try {
+      const nbaCtxResult = await supabase
+        .from('nba_game_context')
+        .select('game_id,game_date,home_team,away_team,'
+          + 'sweat_score,sweat_tier,sweat_tier_current,sweat_breakdown,'
+          + 'signal_confluence_net,signal_confluence_breakdown,'
+          + 'primary_play,projected_spread,projected_total,'
+          + 'close_spread,close_total,home_ml_close,away_ml_close,'
+          + 'home_net_rating,away_net_rating,home_off_rating,away_off_rating,'
+          + 'home_def_rating,away_def_rating,home_pace,away_pace,'
+          + 'home_rest_days,away_rest_days,home_is_b2b,away_is_b2b,'
+          + 'elo_home,elo_away,mc_probabilities,oddscrowd_snapshot,'
+          + 'splits_summary,align_status,season,season_type')
+        .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
+        .limit(500);
+      if(nbaCtxResult?.data && nbaCtxResult.data.length > 0) {
+        const nbaCtxMap: Record<string, any> = {};
+        (nbaCtxResult.data as any[]).forEach((g: any) => {
+          if(g.game_id) nbaCtxMap[g.game_id] = g;
+          if(g.home_team && g.away_team) {
+            nbaCtxMap[`${g.away_team}@${g.home_team}`] = g;
+          }
+        });
+        setNbaGameContextMap(nbaCtxMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
