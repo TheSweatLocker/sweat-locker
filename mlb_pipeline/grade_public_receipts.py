@@ -44,6 +44,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    Retry = None
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -82,6 +87,20 @@ HOME_FAV_IS_NEGATIVE = {'MLB': True, 'NCAAF': True, 'NCAAB': True,
 
 GAME_MARKETS = {'ml', 'rl', 'spread', 'total'}
 
+# 2026-09-21: grading the prop backlog issues ~1,000 sequential PATCHes and
+# the host reset the connection partway through — and because each patch was
+# its own new socket, the run died having written NOTHING while still exiting
+# 0. Pool the connections and retry transient failures. (Same failure hit
+# classify_line_moves on backfill; worth remembering that any loop doing
+# hundreds of per-row writes needs this.)
+_SESSION = requests.Session()
+if Retry is not None:
+    _retry = Retry(total=4, backoff_factor=0.5,
+                   status_forcelist=(500, 502, 503, 504, 429),
+                   allowed_methods=frozenset(['GET', 'PATCH']))
+    _SESSION.mount('https://', HTTPAdapter(max_retries=_retry,
+                                           pool_connections=8, pool_maxsize=8))
+
 
 def _f(v):
     try:
@@ -97,7 +116,7 @@ def _norm(s: str) -> str:
 def paged(url: str, page: int = 1000):
     off = 0
     while off < 60000:
-        r = requests.get(url + f'&limit={page}&offset={off}', headers=H_READ, timeout=60)
+        r = _SESSION.get(url + f'&limit={page}&offset={off}', headers=H_READ, timeout=60)
         if r.status_code != 200:
             print(f'  ⚠ fetch {r.status_code}: {r.text[:200]}')
             return
@@ -287,7 +306,7 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
     now = datetime.now(timezone.utc).isoformat()
     ok = fail = 0
     for rid, grade in patches:
-        r = requests.patch(f'{SB}/rest/v1/public_receipts?id=eq.{rid}',
+        r = _SESSION.patch(f'{SB}/rest/v1/public_receipts?id=eq.{rid}',
                            headers=H_WRITE,
                            json={'result': grade, 'graded_at': now}, timeout=20)
         if r.status_code in (200, 204):
@@ -430,7 +449,7 @@ def grade_props(days: int, dry_run: bool) -> None:
         ids = sorted(want)
         for i in range(0, len(ids), 80):
             batch = ids[i:i + 80]
-            r = requests.get(f'{SB}/rest/v1/{tbl}',
+            r = _SESSION.get(f'{SB}/rest/v1/{tbl}',
                              params={'select': f'{idcol},{rescol}',
                                      idcol: f'in.({",".join(batch)})',
                                      'limit': 1000},
@@ -474,7 +493,7 @@ def grade_props(days: int, dry_run: bool) -> None:
     now = datetime.now(timezone.utc).isoformat()
     ok = fail = 0
     for rid, grade in patches:
-        r = requests.patch(f'{SB}/rest/v1/public_receipts?id=eq.{rid}',
+        r = _SESSION.patch(f'{SB}/rest/v1/public_receipts?id=eq.{rid}',
                            headers=H_WRITE,
                            json={'result': grade, 'graded_at': now}, timeout=20)
         if r.status_code in (200, 204):
