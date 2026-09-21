@@ -402,6 +402,188 @@ def compute_lookback(recent_values: list[float], prop_line: float, direction: st
             'l5_extreme': l5_extreme, 'l10_extreme': l10_extreme}
 
 
+# ─── NFL backfill ──────────────────────────────────────────────────────
+#
+# 2026-09-20. NFL was the last `pass  # not built yet` branch in run().
+# It does NOT need an ESPN scraper like NBA/NHL: nfl_generate_props.py:836
+# already stores the full per-game history in signals._stat_last10
+# (recent-first, {value, opp, week, season}), so the whole job is to
+# compute the hit counts from data we already hold and write the columns.
+# Zero external calls, no name-matching step, nothing to rate-limit.
+#
+# Two honesty guards, because this data feeds published gates:
+#
+#   * _stat_last10 is TRUNCATED at 10 entries (492 of 587 props on 09-20
+#     sit at exactly 10). A hit rate over a capped 10-game window is not a
+#     season rate. player_season_hit_pct is therefore written only when the
+#     stored array is the player's COMPLETE history — either it is short of
+#     the cap, or _stat_games_played confirms there is nothing missing.
+#     Otherwise it stays null rather than shipping a 10-game number under a
+#     season label.
+#
+#   * 46 of 587 props carry a single game. compute_lookback's extreme flags
+#     (`l10 <= 2`) would fire "extreme" on n=1, which is noise wearing a
+#     signal's clothes. Flags require an adequate sample or stay null. The
+#     guard lives here rather than in compute_lookback so MLB/NBA/NHL
+#     semantics are untouched.
+_NFL_MIN_L5_SAMPLE = 5
+_NFL_MIN_L10_SAMPLE = 8
+_NFL_L10_CAP = 10
+
+# One pooled, retrying session for the write loop. A bare requests.patch
+# per row opens a fresh TLS connection every time; at ~590 props/day over
+# an 8-day window that is ~4,700 handshakes and the Supabase pooler starts
+# timing them out partway through (observed: ReadTimeout at default 10s).
+# Keep-alive plus backoff on the transient 5xx/429 class turns that into
+# one connection reused across the run.
+_NFL_SESSION = None
+
+
+def _nfl_session():
+    global _NFL_SESSION
+    if _NFL_SESSION is not None:
+        return _NFL_SESSION
+    from requests.adapters import HTTPAdapter
+    try:
+        from urllib3.util.retry import Retry
+    except ImportError:
+        from requests.packages.urllib3.util.retry import Retry
+    s = requests.Session()
+    retry = Retry(total=4, backoff_factor=0.6,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(['GET', 'PATCH']))
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4,
+                          pool_maxsize=8)
+    s.mount('https://', adapter)
+    _NFL_SESSION = s
+    return s
+
+
+def backfill_nfl(game_date: str, dry_run: bool = False) -> int:
+    table = PROPS_TABLE.get('NFL', 'nfl_pipeline_props')
+    props = []
+    for off in range(0, 10000, 500):
+        r = requests.get(f'{SB}/rest/v1/{table}',
+                         headers=H_READ,
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': 'id,player_name,prop_type,direction,'
+                                           'prop_line,signals',
+                                 'limit': '500', 'offset': off},
+                         timeout=30)
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list):
+            print(f'  NFL: fetch failed at offset {off}: HTTP {r.status_code}')
+            break
+        props.extend(chunk)
+        if len(chunk) < 500:
+            break
+    if not props:
+        print(f'  NFL: no props on {game_date}')
+        return 0
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated = 0
+    skip_missing_fields = 0
+    skip_no_history = 0
+    skip_patch_failed = 0
+    partial_flags = 0
+    season_withheld = 0
+
+    for prop in props:
+        pdir = prop.get('direction')
+        pline = prop.get('prop_line')
+        if pdir is None or pline is None:
+            skip_missing_fields += 1
+            continue
+        try:
+            pline = float(pline)
+        except (TypeError, ValueError):
+            skip_missing_fields += 1
+            continue
+
+        sig = prop.get('signals')
+        sig = sig if isinstance(sig, dict) else {}
+        rows = sig.get('_stat_last10') or []
+        values = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            v = row.get('value')
+            if v is None:
+                continue
+            try:
+                values.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        if not values:
+            skip_no_history += 1
+            continue
+
+        lb = compute_lookback(values, pline, str(pdir).lower())
+        if lb['l10'] is None:
+            skip_no_history += 1
+            continue
+        n = len(values)
+
+        patch = {
+            'player_l5_hit_count':  lb['l5'],
+            'player_l10_hit_count': lb['l10'],
+            'player_lookback_updated_at': now_iso,
+        }
+        # Flags only on an adequate sample; explicit null otherwise so a
+        # stale flag from a larger past sample can't survive underneath.
+        l5_ok = n >= _NFL_MIN_L5_SAMPLE
+        l10_ok = n >= _NFL_MIN_L10_SAMPLE
+        patch['player_l5_extreme_flag'] = lb['l5_extreme'] if l5_ok else None
+        patch['player_l10_extreme_flag'] = lb['l10_extreme'] if l10_ok else None
+        if not (l5_ok and l10_ok):
+            partial_flags += 1
+
+        # Season pct only when the stored array is the complete history.
+        #
+        # Do NOT try to confirm completeness with _stat_games_played: that
+        # field is just len(_stat_last10), so `gp <= n` is true by
+        # construction and the check passes for every truncated row. Bryce
+        # Young on 09-20 reports _stat_games_played=10 next to
+        # games_used=20, with 2025 week 14 missing and the list stopping at
+        # week 9 — unmistakably truncated, yet "complete" by that test.
+        # An array sitting at the cap is assumed truncated. Full stop.
+        complete = n < _NFL_L10_CAP
+        patch['player_season_hit_pct'] = lb['season_pct'] if complete else None
+        if not complete:
+            season_withheld += 1
+
+        if not dry_run:
+            try:
+                pr = _nfl_session().patch(
+                    f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                    headers=H_WRITE, json=patch, timeout=30)
+            except requests.RequestException as e:
+                skip_patch_failed += 1
+                if skip_patch_failed <= 3:
+                    print(f'    ⚠ patch id={prop["id"]}: {e}')
+                continue
+            if pr.status_code not in (200, 204):
+                skip_patch_failed += 1
+                if skip_patch_failed <= 3:
+                    print(f'    ⚠ patch id={prop["id"]}: HTTP {pr.status_code} '
+                          f'{pr.text[:120]}')
+                continue
+        updated += 1
+
+    total = len(props)
+    pct = 100.0 * updated / total if total else 0.0
+    print(f'  NFL backfill: {updated}/{total} props ({pct:.1f}%) — '
+          f'skips: missing_fields={skip_missing_fields}, '
+          f'no_history={skip_no_history}, patch_failed={skip_patch_failed}')
+    if partial_flags or season_withheld:
+        print(f'    sample guards: {partial_flags} props got null extreme '
+              f'flag(s) (<{_NFL_MIN_L10_SAMPLE} games), '
+              f'{season_withheld} withheld season_hit_pct '
+              f'(_stat_last10 truncated at {_NFL_L10_CAP})')
+    return updated
+
+
 def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     # 2026-09-02 PAGINATION FIX: was hardcoded limit=500. On big slates
     # (>500 props/day) tail rows never got L5/L10 backfilled → 30% coverage
@@ -775,7 +957,8 @@ def run(game_date: str | None = None, sport: str | None = None, dry_run: bool = 
                 n = backfill_mlb(gd, dry_run=dry_run)
                 print(f'  MLB {gd}: updated {n} props with lookback')
             elif s == 'NFL':
-                pass  # NFL backfill not built yet
+                n = backfill_nfl(gd, dry_run=dry_run)
+                print(f'  NFL {gd}: updated {n} props with lookback')
             elif s == 'NHL':
                 n = backfill_nba_nhl(gd, sport='NHL', dry_run=dry_run)
                 print(f'  NHL {gd}: updated {n} props with lookback')

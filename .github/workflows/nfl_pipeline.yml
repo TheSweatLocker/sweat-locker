@@ -629,7 +629,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_prop_lookback.py --sport NFL || echo "NFL prop lookback failed (non-fatal)"
+          python backfill_prop_lookback.py --sport NFL --days 3
 
       - name: NFL prop playbook scorer (shadow mode)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
