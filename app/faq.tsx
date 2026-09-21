@@ -108,7 +108,7 @@ const SECTIONS: Section[] = [
       },
       {
         q: 'How many picks do I get per day?',
-        a: 'Depends on slate size + signal quality. Sharp Card typically publishes 15-25 picks/day when multiple sports are in-season — MLB up to 25, NCAAF up to 12, NFL up to 10 (Sun-heavy), plus NBA/NHL/NCAAB during their seasons. On thin slates we publish fewer; we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so. Free tier always sees the Pick of the Day (POTD) at minimum.',
+        a: 'Depends on slate size + signal quality. The Sharp typically publishes 15-25 picks/day when multiple sports are in-season — MLB up to 25, NCAAF up to 12, NFL up to 10 (Sun-heavy), plus NBA/NHL/NCAAB during their seasons. On thin slates we publish fewer; we don\'t force volume just to fill space. If we don\'t have signals worth trusting, we say so. Free tier always sees the Pick of the Day (POTD) at minimum.',
       },
       {
         q: 'What about props?',

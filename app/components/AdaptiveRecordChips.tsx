@@ -136,7 +136,7 @@ export function AdaptiveRecordChips({fetcher, theme, minSample = 10, maxChips = 
       })}
       <View style={{width: '100%', alignItems: 'center', marginTop: 4}}>
         <Text style={{color: theme.textDim, fontSize: 9, fontWeight: '700', letterSpacing: 0.4}}>
-          L30D · SHARP CARD
+          L30D · THE SHARP
         </Text>
       </View>
     </View>

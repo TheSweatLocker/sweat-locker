@@ -16866,9 +16866,9 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           <PaywallPreview
             icon="💨"
             title="The Steam Room is Pro"
-            body="The disciplined sub-tabs: Sharp Card curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and The Split showing sharp vs public across every source."
+            body="The disciplined sub-tabs: The Sharp curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and The Split showing sharp vs public across every source."
             bullets={[
-              'Sharp Card — curated 4 sides + 3-5 props · juice-adjusted',
+              'The Sharp — curated 4 sides + 3-5 props · juice-adjusted',
               'The Ladder — 1 pick/day · compound the wins',
               'Ledger — daily P/L + teaser builder',
               'The Split — sharp $ vs public bets across every source',
@@ -19140,7 +19140,7 @@ const nrfiColor = nrfiScore >= 90 && nrfiScore <= 94 ? THEME.accent : nrfiScore 
                   </>
                 ) : (
                   <>
-                    <Text style={{color:THEME.textDim,fontSize:12,marginBottom:12,lineHeight:18}}>Unlock Jerry AI reads, Sharp Card, The Steam Room, and per-game analysis. 7-day free trial.</Text>
+                    <Text style={{color:THEME.textDim,fontSize:12,marginBottom:12,lineHeight:18}}>Unlock Jerry AI reads, The Sharp, The Steam Room, and per-game analysis. 7-day free trial.</Text>
                     <TouchableOpacity
                       onPress={()=>{ setSettingsModal(false); setTimeout(()=>openPaywall('settings_see_plans'), 200); }}
                       style={{backgroundColor:THEME.accent,borderRadius:10,paddingVertical:12,alignItems:'center',marginBottom:8}}

@@ -818,7 +818,7 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
       {sub ? <Text style={[styles.verdictWhy, isLowConviction && {color: C.textMuted}]}>{scrubSourceNames(sub)}</Text> : null}
       {isLowConviction && (
         <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
-          Not a recommended play — thin signal support or unplayable price. Shown here for context; Sharp Card + Sweat Card only surface actionable picks.
+          Not a recommended play — thin signal support or unplayable price. Shown here for context; The Sharp + Sweat Card only surface actionable picks.
         </Text>
       )}
     </View>
