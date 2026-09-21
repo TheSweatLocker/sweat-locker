@@ -2605,6 +2605,20 @@ def build_card():
               f"yrfi={yrfi_lock['game'] if yrfi_lock else '—'}, "
               f"bucket={'yes' if bucket else 'none'}, "
               f"total_edges={len(total_edges)}, stacks={len(stack_alerts)}, skips={len(skip_alerts)}")
+        # 2026-09-20 LIVE RECEIPTS — only after the cache write actually
+        # succeeded, so we never record evidence of a card users never saw.
+        # Captures BOTH top_8 and football_picks: publish_lock counted only
+        # top_8 until 2026-09-19, which meant the football picks on this
+        # card had no protection at all. A receipt layer that repeated that
+        # omission would under-count the record by an entire sport.
+        # Fail-soft (never lose the card over an audit row) but never
+        # silent.
+        try:
+            from public_receipt import capture as _capture
+            from public_receipt import sweat_card_rows as _sc_rows
+            _capture(_sc_rows(card, today), surface='sweat_card')
+        except Exception as _e:
+            print(f"  ⚠ live receipt capture (sweat_card) failed: {_e}")
     else:
         print(f"❌ Sweat Card upsert failed {r.status_code}: {r.text[:200]}")
 

@@ -228,35 +228,86 @@ def sharp_card_rows(items: list, game_date: str) -> list[dict]:
     return out
 
 
-def sweat_card_rows(items: list, game_date: str, sport: str = 'MULTI') -> list[dict]:
-    """Shape published Sweat Card (dashboard top-8) items into receipts."""
+# Sweat Card `type` is a DISPLAY label, not a market code. Verified over
+# 141 cached days / 854 top_8 items: Over/Under, ML, DotD, POTD and a
+# long tail of prop_* families.
+_SWEAT_MARKET = {
+    'ml': 'ml',
+    'rl': 'rl',
+    'total': 'total',
+    'over/under': 'total',
+    'potd': 'potd',
+    'dotd': 'dotd',
+}
+
+
+def _sweat_market(raw: str) -> str:
+    t = str(raw or '').strip().lower()
+    if t.startswith('prop_') or t == 'prop':
+        return 'prop'
+    return _SWEAT_MARKET.get(t, t or 'unknown')
+
+
+def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
+    """Shape a published Sweat Card into receipt rows.
+
+    Takes the whole card, not one list, because the picks users see live
+    in TWO sections and only counting one silently halves the record —
+    the same mistake publish_lock made until 2026-09-19, when football
+    picks turned out to have never been locked at all.
+
+      top_8          dashboard top-8. Carries NO `sport` field; every
+                     source_table observed across 141 days is MLB
+                     (mlb_pipeline_props, mlb_game_results, daily_dawg,
+                     daily_best_bet_history), and football lives in its
+                     own section, so MLB is the correct default rather
+                     than a guess.
+      football_picks NCAAF/NFL, carries an explicit `sport` + `game_id`.
+    """
+    if not isinstance(card, dict):
+        return []
     out = []
-    for it in items or []:
-        if not isinstance(it, dict):
-            continue
-        market = str(it.get('type') or it.get('market') or '').lower()
-        sp = str(it.get('sport') or sport or '').upper()
-        if not sp or not market:
-            continue
-        anchor = (it.get('id') if market == 'prop' else it.get('game_id')) \
-            or it.get('game_id') or it.get('id') or it.get('pick') or it.get('label')
-        out.append({
-            'sport': sp,
-            'surface': 'sweat_card',
-            'game_date': game_date,
-            'source_id': _sid(market, anchor),
-            'source_table': 'jerry_cache.sweat_card',
-            'game_id': it.get('game_id'),
-            'matchup': it.get('matchup'),
-            'market': market,
-            'pick_label': it.get('pick') or it.get('label'),
-            'pick_line': it.get('line'),
-            'pick_odds': it.get('odds'),
-            'tier': (it.get('tier') or None),
-            'conviction': it.get('conviction'),
-            'audit': {
-                'units': it.get('units'),
-                'captured_by': 'generate_sweat_card',
-            },
-        })
+    sections = (('top_8', 'MLB'), ('football_picks', None))
+    for section, default_sport in sections:
+        for it in (card.get(section) or []):
+            if not isinstance(it, dict):
+                continue
+            raw_type = it.get('type')
+            market = _sweat_market(raw_type)
+            sp = str(it.get('sport') or default_sport or '').upper()
+            label = it.get('label') or it.get('pick')
+            if not sp or not label:
+                continue
+            # source_key is the anchor the card itself uses: a game_id for
+            # ML/total, a prop id (sometimes "table:id") for props, and the
+            # DATE for POTD/DotD — which is why market has to be part of
+            # the key, or the day's POTD and DotD collapse into one row.
+            anchor = it.get('source_key') or it.get('game_id') or it.get('id')
+            if isinstance(anchor, str) and ':' in anchor:
+                anchor = anchor.split(':', 1)[1]
+            if not anchor:
+                anchor = f'{it.get("game") or ""}|{label}'
+            out.append({
+                'sport': sp,
+                'surface': 'sweat_card',
+                'game_date': game_date,
+                'source_id': _sid(market, anchor),
+                'source_table': it.get('source_table') or 'jerry_cache.sweat_card',
+                'game_id': it.get('game_id'),
+                'matchup': it.get('game') or it.get('matchup'),
+                'market': market,
+                'pick_label': label,
+                'pick_line': it.get('line'),
+                'pick_odds': it.get('odds'),
+                'tier': (it.get('tier') or None),
+                'conviction': it.get('conviction'),
+                'audit': {
+                    'section': section,
+                    'card_type': raw_type,
+                    'rank': it.get('rank'),
+                    'tier_source': it.get('tier_source'),
+                    'side': it.get('side'),
+                    'captured_by': 'generate_sweat_card',
+                },
+            })
     return out

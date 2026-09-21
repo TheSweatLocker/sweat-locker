@@ -411,6 +411,32 @@ def backfill_sharp_card(dry_run: bool = False) -> int:
     return n
 
 
+# ─── Source: jerry_cache sweat_card_* ──────────────────────────────
+
+def backfill_sweat_card(dry_run: bool = False) -> int:
+    """The Sweat Card (dashboard top-8 + football) — 0 receipts before now.
+
+    141 cached days / 876 picks reaching back to 2026-05-22, which is
+    further than most live tables survive: mlb_game_context retains only
+    195 rows. The published card payload is the best record of what users
+    actually saw in June/July/August.
+
+    Stamped 'reconstructed'. generate_sweat_card writes 'live' at publish
+    from here on, and first-write-wins means this never overwrites one.
+    """
+    from public_receipt import sweat_card_rows
+    rows = []
+    for c in paged(f'{SB}/rest/v1/jerry_cache?select=cache_key,data'
+                   f'&cache_key=like.sweat_card_%'):
+        game_date = str(c.get('cache_key') or '').replace('sweat_card_', '').strip()
+        if len(game_date) != 10:
+            continue
+        rows.extend(sweat_card_rows(c.get('data') or {}, game_date))
+    n = upsert_batch(rows, dry_run)
+    print(f'  sweat_card: {n}/{len(rows)} receipts from jerry_cache')
+    return n
+
+
 # ─── Main ─────────────────────────────────────────────────────────
 
 SOURCES = {
@@ -419,6 +445,7 @@ SOURCES = {
     'ledger_snapshots': lambda sport, dry: backfill_ledger(sport, dry),
     'daily_degen':      lambda sport, dry: backfill_daily_degen(dry),
     'sharp_card':       lambda sport, dry: backfill_sharp_card(dry),
+    'sweat_card':       lambda sport, dry: backfill_sweat_card(dry),
 }
 
 
