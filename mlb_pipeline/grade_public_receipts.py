@@ -299,13 +299,204 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
     print(f'  patched {ok}, failed {fail}')
 
 
+# Source tables a prop receipt can inherit its grade from, as
+# source_table -> (rest table, id column, result column).
+# 2026-09-21: props were excluded from this grader entirely — run() filters
+# to GAME_MARKETS — so 1,326 prop receipts sat at result=NULL even though
+# their source table had already graded them (prop_jerry_reads was 690/728
+# for 09-20). Nothing was broken upstream; the receipts just never asked.
+PROP_INHERIT = {
+    'prop_jerry_reads': ('prop_jerry_reads', 'id', 'result'),
+}
+
+# public_receipts.result already carries NO_ACTION as a real outcome (622
+# rows), so a prop that never actioned — scratched starter, voided line —
+# gets recorded rather than left NULL forever. Mapping these to PUSH would
+# be worse than leaving them: a push is a tie that returns the stake, a void
+# is a bet that never existed, and folding one into the other overstates the
+# denominator on every surface record that counts pushes.
+_RESULT_MAP = {
+    'win': 'WIN', 'loss': 'LOSS', 'push': 'PUSH',
+    'no_action': 'NO_ACTION', 'void': 'NO_ACTION', 'voided': 'NO_ACTION',
+}
+
+# "Shane Baz Under 17.5 OUTS" -> player / direction / line / stat
+_SHARP_PROP_LABEL = re.compile(r'^(.+?)\s+(Over|Under)\s+([\d.]+)\s+(.+)$', re.I)
+# Label suffix -> prop_type stem in <sport>_pipeline_props. All 266 sharp_card
+# prop receipts parse against this; these are pitcher props, so KS maps to
+# 'ks' and never 'batter_ks'.
+_SHARP_PROP_STAT = {
+    'OUTS': 'outs', 'HA': 'ha', 'KS': 'ks',
+    'BB': 'bb', 'ER': 'er', 'HITS': 'hits',
+}
+PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props'}
+
+
+def _grade_sharp_card_props(recs: list, patches: list, skipped: Counter) -> None:
+    """Grade Sharp card prop receipts by matching back to the props table.
+
+    These 266 receipts were captured without player_name / prop_type /
+    pick_side — a capture defect in the card adapter — so they cannot
+    inherit by id like prop_jerry_reads does. But pick_label survived intact
+    ("Shane Baz Under 17.5 OUTS") and carries everything needed, so the
+    identity is recoverable from the label plus (sport, game_date).
+
+    Matches on the exact tuple the resolver itself keys on
+    (player_name, prop_type, prop_line) and requires a UNIQUE hit — a
+    player can hold two lines for the same stat, and grading the wrong one
+    would put a fabricated result on a published receipt.
+    """
+    by_sport_date: dict = {}
+    parsed = []
+    for rec in recs:
+        m = _SHARP_PROP_LABEL.match(str(rec.get('pick_label') or '').strip())
+        if not m:
+            skipped['label_unparseable'] += 1
+            continue
+        player, direction, line, stat = (m.group(1).strip(), m.group(2).lower(),
+                                         m.group(3), m.group(4).strip().upper())
+        stem = _SHARP_PROP_STAT.get(stat)
+        if not stem:
+            skipped[f'stat_unmapped:{stat[:10]}'] += 1
+            continue
+        sport = str(rec.get('sport') or 'MLB').upper()
+        tbl = PROPS_TABLE.get(sport)
+        if not tbl:
+            skipped[f'no_props_table:{sport}'] += 1
+            continue
+        parsed.append((rec, sport, tbl, player, f'{stem}_{direction}', _f(line)))
+        by_sport_date.setdefault((sport, tbl), set()).add(rec.get('game_date'))
+
+    # Pull each sport/date slice once rather than per receipt.
+    index: dict = {}
+    for (sport, tbl), dates in by_sport_date.items():
+        for d in sorted(x for x in dates if x):
+            for row in paged(f'{SB}/rest/v1/{tbl}'
+                             f'?select=player_name,prop_type,prop_line,result'
+                             f'&game_date=eq.{d}'):
+                key = (sport, d, str(row.get('player_name') or '').strip().lower(),
+                       str(row.get('prop_type') or '').lower(), _f(row.get('prop_line')))
+                index.setdefault(key, []).append(row.get('result'))
+
+    for rec, sport, tbl, player, prop_type, line in parsed:
+        key = (sport, rec.get('game_date'), player.lower(), prop_type, line)
+        hits = [h for h in (index.get(key) or []) if h]
+        if not hits:
+            skipped['no_prop_row_or_ungraded'] += 1
+            continue
+        if len(set(hits)) > 1:
+            skipped['ambiguous_prop_match'] += 1
+            continue
+        norm = _RESULT_MAP.get(str(hits[0]).strip().lower())
+        if not norm:
+            skipped[f'unmapped:{str(hits[0])[:12]}'] += 1
+            continue
+        patches.append((rec['id'], norm))
+
+
+def grade_props(days: int, dry_run: bool) -> None:
+    """Inherit prop receipt grades from the table they were captured from.
+
+    Props cannot be graded the way game markets are — there is no
+    (home_score, away_score) to compare against, the outcome lives in the
+    prop row itself. But that row IS graded, so this is a join, not a
+    regrade. Deliberately never recomputes an outcome: the source table is
+    the authority, and a second opinion here would be a way to disagree
+    with our own published record.
+    """
+    hi = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    lo = hi - timedelta(days=days)
+    recs = [r for r in paged(f'{SB}/rest/v1/public_receipts?select=*&result=is.null'
+                             f'&market=eq.prop'
+                             f'&game_date=gte.{lo}&game_date=lte.{hi}')]
+    print(f'\n=== grade_props · {lo}..{hi} {"(DRY)" if dry_run else "(APPLY)"} ===')
+    print(f'  ungraded prop receipts: {len(recs)}')
+    if not recs:
+        return
+
+    by_src = Counter(str(r.get('source_table') or '?') for r in recs)
+    print(f'  by source_table: {dict(by_src)}')
+
+    patches = []
+    skipped = Counter()
+    for src, (tbl, idcol, rescol) in PROP_INHERIT.items():
+        mine = [r for r in recs if str(r.get('source_table') or '') == src
+                and r.get('source_id')]
+        if not mine:
+            continue
+        want = {str(r['source_id']) for r in mine}
+        # Pull the source rows by id in batches rather than one at a time.
+        grades: dict = {}
+        ids = sorted(want)
+        for i in range(0, len(ids), 80):
+            batch = ids[i:i + 80]
+            r = requests.get(f'{SB}/rest/v1/{tbl}',
+                             params={'select': f'{idcol},{rescol}',
+                                     idcol: f'in.({",".join(batch)})',
+                                     'limit': 1000},
+                             headers=H_READ, timeout=30)
+            if r.status_code != 200:
+                print(f'  ⚠ {tbl} read {r.status_code}: {r.text[:120]}')
+                continue
+            for row in (r.json() or []):
+                val = row.get(rescol)
+                if val:
+                    grades[str(row[idcol])] = str(val)
+        for rec in mine:
+            g = grades.get(str(rec['source_id']))
+            if not g:
+                skipped['source_row_ungraded'] += 1
+                continue
+            norm = _RESULT_MAP.get(g.strip().lower())
+            if not norm:
+                skipped[f'unmapped:{g[:12]}'] += 1
+                continue
+            patches.append((rec['id'], norm))
+
+    # Sharp card props have no id to inherit from — recovered from pick_label.
+    sharp = [r for r in recs
+             if str(r.get('source_table') or '') == 'jerry_cache.sharp_card']
+    if sharp:
+        _grade_sharp_card_props(sharp, patches, skipped)
+
+    other = [r for r in recs if str(r.get('source_table') or '') not in PROP_INHERIT
+             and str(r.get('source_table') or '') != 'jerry_cache.sharp_card']
+    if other:
+        skipped['no_inherit_path'] = len(other)
+
+    print(f'  gradeable: {len(patches)}')
+    if skipped:
+        print(f'  skipped: {dict(skipped)}')
+    if dry_run or not patches:
+        if dry_run:
+            print(f'  [DRY] would patch {len(patches)} prop receipts')
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    ok = fail = 0
+    for rid, grade in patches:
+        r = requests.patch(f'{SB}/rest/v1/public_receipts?id=eq.{rid}',
+                           headers=H_WRITE,
+                           json={'result': grade, 'graded_at': now}, timeout=20)
+        if r.status_code in (200, 204):
+            ok += 1
+        else:
+            fail += 1
+            if fail <= 3:
+                print(f'  ⚠ patch {rid}: {r.status_code} {r.text[:120]}')
+    print(f'  patched {ok}, failed {fail}')
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--surface')
     p.add_argument('--days', type=int, default=45)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--skip-props', action='store_true',
+                   help='game markets only (props inherit by default)')
     a = p.parse_args()
     run(a.surface, a.days, a.dry_run)
+    if not a.skip_props:
+        grade_props(a.days, a.dry_run)
 
 
 if __name__ == '__main__':
