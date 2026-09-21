@@ -372,8 +372,14 @@ def write_signals(rows: list, dry_run: bool = False) -> int:
     for i in range(0, len(rows), 200):
         chunk = rows[i:i + 200]
         r = requests.post(
+            # game_id is deliberately NOT in the conflict key — it is derived
+            # from the fixture and nullable when attribution refuses. The
+            # fixture itself is the identity, so a later run that resolves a
+            # previously-unmatched game updates the row instead of duplicating
+            # it. (20260921c; the original expression index was invisible to
+            # PostgREST's on_conflict and every write 42P10'd.)
             f'{SB}/rest/v1/fadethepublic_signals'
-            '?on_conflict=snapshot_date,sport,game_id,market,away_team,home_team',
+            '?on_conflict=snapshot_date,sport,market,away_team,home_team',
             headers=H_WRITE, json=chunk, timeout=30)
         if r.status_code in (200, 201, 204):
             ok += len(chunk)
