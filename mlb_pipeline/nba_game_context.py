@@ -204,6 +204,61 @@ def enrich_rest(rows: list[dict]) -> None:
         row['away_is_b2b'] = row['away_rest_days'] == 1 if row['away_rest_days'] is not None else None
 
 
+def enrich_team_stats(rows: list) -> None:
+    """Join nba_team_stats onto each context row.
+
+    2026-09-21: nothing did this. nba_four_factors_pull writes
+    nba_team_stats and nba_game_context never read it, so
+    home_net_rating / off / def / pace were NULL on every row — which is
+    why the first scored slate produced an EMPTY confluence breakdown on
+    every game and leaned entirely on the elo-vs-market spread edge.
+    """
+    r = requests.get(f'{SB}/rest/v1/nba_team_stats',
+                     headers=H_READ,
+                     params={'select': 'team_name,team_abbrev,net_rating,'
+                                       'off_rating,def_rating,pace,efg_pct'},
+                     timeout=20)
+    if r.status_code != 200:
+        print(f'  ⚠ nba_team_stats fetch {r.status_code} — ratings stay NULL')
+        return
+    # nba_team_stats holds MORE THAN ONE generation of rows per team:
+    # nba_four_factors_pull writes efg/tov/orb/pace with NULL ratings,
+    # while an older pull left net/off/def ratings on a prior season row.
+    # Taking whichever row sorts last silently won with the ratings-less
+    # one — the join reported "28 sides matched" and every rating came
+    # back None. Merge per team instead, field by field, keeping the
+    # first non-null seen. Rows are walked newest-season-first so current
+    # numbers win and older ones only fill gaps.
+    merged: dict = {}
+    rows_sorted = sorted(r.json(),
+                         key=lambda t: str(t.get('season') or ''), reverse=True)
+    FIELDS = ('net_rating', 'off_rating', 'def_rating', 'pace', 'efg_pct')
+    for t in rows_sorted:
+        for k in (t.get('team_name'), t.get('team_abbrev')):
+            if not k:
+                continue
+            key = str(k).strip().lower()
+            slot = merged.setdefault(key, {})
+            for f in FIELDS:
+                if slot.get(f) is None and t.get(f) is not None:
+                    slot[f] = t.get(f)
+    by_name = merged
+    hit = miss = 0
+    for row in rows:
+        for side in ('home', 'away'):
+            team = str(row.get(f'{side}_team') or '').strip().lower()
+            t = by_name.get(team)
+            if not t:
+                miss += 1
+                continue
+            hit += 1
+            row[f'{side}_net_rating'] = t.get('net_rating')
+            row[f'{side}_off_rating'] = t.get('off_rating')
+            row[f'{side}_def_rating'] = t.get('def_rating')
+            row[f'{side}_pace'] = t.get('pace')
+    print(f'  team stats joined: {hit} sides matched, {miss} unmatched')
+
+
 def compute_confluence(row: dict) -> tuple:
     """Count home-leaning vs away-leaning signals. -> (net, breakdown).
 
@@ -323,6 +378,7 @@ def enrich_sweat(rows: list) -> None:
     MLB moved server-side years-equivalent ago; once this populates, the
     client block can be deleted and the two can stop disagreeing.
     """
+    capped = 0
     for row in rows:
         net, bd = compute_confluence(row)
         row['signal_confluence_net'] = net
@@ -331,9 +387,30 @@ def enrich_sweat(rows: list) -> None:
                                     row.get('close_spread'), net,
                                     row.get('projected_total'),
                                     row.get('close_total'))
+        # NO-CORROBORATION CAP.
+        #
+        # The first scored NBA slate came out 9-of-14 STRONG with an
+        # EMPTY confluence breakdown on every game: ratings were NULL, so
+        # the entire score was one preseason elo-vs-market spread edge —
+        # and preseason elo carries last season's roster. A score built
+        # on a single dimension is not confluence, and shipping it would
+        # reproduce the tier inflation we spent the weekend removing.
+        #
+        # If nothing corroborates, the game cannot exceed LIGHT_LEAN. The
+        # raw score is preserved for audit so the cap is visible rather
+        # than silently rewriting the number.
+        if not bd:
+            if score >= 65:
+                capped += 1
+            row['sweat_breakdown'] = {'sweat_score_raw': score,
+                                      'capped': 'no_corroborating_signals'}
+            score = min(score, 64)
         row['sweat_score'] = score
         row['sweat_tier'] = sweat_tier(score)
         row['sweat_tier_current'] = row['sweat_tier']
+    if capped:
+        print(f'  ⚠ {capped} game(s) capped to LIGHT_LEAN — no corroborating '
+              f'signals (ratings missing?)')
 
 
 def _apply_ensemble(row: dict) -> None:
@@ -473,6 +550,7 @@ def run(target_date: Optional[str] = None, days: int = 1, dry_run: bool = False)
     enrich_market(all_rows)
     enrich_rest(all_rows)
     enrich_elo(all_rows)
+    enrich_team_stats(all_rows)
     # Must run AFTER market (close_spread/close_total) and elo
     # (projected_spread/projected_total) — the score is the disagreement
     # between those two, so running it earlier scores against nulls and
@@ -487,6 +565,14 @@ def main():
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
     p.add_argument('--days', type=int, default=1, help='Days from --date to include')
     p.add_argument('--dry-run', action='store_true')
+    # season_gate reads this straight off sys.argv, but strict argparse
+    # rejects the unknown arg before the gate ever sees it — so the
+    # documented bypass was impossible to pass to this script. Declared
+    # here purely so argparse lets it through; season_gate still owns the
+    # behaviour. Needed to build context for a season that has not
+    # started, which is exactly the preseason readiness case.
+    p.add_argument('--force-offseason', action='store_true',
+                   help='build context even when the sport is out of season')
     args = p.parse_args()
     run(target_date=args.date, days=args.days, dry_run=args.dry_run)
 
