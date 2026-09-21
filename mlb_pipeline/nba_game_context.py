@@ -204,6 +204,138 @@ def enrich_rest(rows: list[dict]) -> None:
         row['away_is_b2b'] = row['away_rest_days'] == 1 if row['away_rest_days'] is not None else None
 
 
+def compute_confluence(row: dict) -> tuple:
+    """Count home-leaning vs away-leaning signals. -> (net, breakdown).
+
+    2026-09-21. NBA had no confluence at all, which is why it had no
+    sweat_score: the score is a blend of model edge and confluence, and
+    one of the two inputs did not exist.
+
+    Signals are the ones NBA context already carries — no new data pull.
+    Each contributes at most one vote, so a single dimension cannot
+    manufacture a high score on its own.
+    """
+    b = {}
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    hn, an = _f(row.get('home_net_rating')), _f(row.get('away_net_rating'))
+    if hn is not None and an is not None and abs(hn - an) >= 3.0:
+        b['net_rating'] = 'home' if hn > an else 'away'
+
+    ho, ao = _f(row.get('home_off_rating')), _f(row.get('away_off_rating'))
+    if ho is not None and ao is not None and abs(ho - ao) >= 3.0:
+        b['off_rating'] = 'home' if ho > ao else 'away'
+
+    # Defensive rating is inverted — LOWER is better.
+    hd, ad = _f(row.get('home_def_rating')), _f(row.get('away_def_rating'))
+    if hd is not None and ad is not None and abs(hd - ad) >= 3.0:
+        b['def_rating'] = 'home' if hd < ad else 'away'
+
+    # Rest edge. A two-day advantage is the point where it starts to show.
+    hr, ar = _f(row.get('home_rest_days')), _f(row.get('away_rest_days'))
+    if hr is not None and ar is not None and abs(hr - ar) >= 2:
+        b['rest'] = 'home' if hr > ar else 'away'
+
+    # Back-to-back is a penalty for the team ON it, and only counts when
+    # the opponent is NOT also on one.
+    hb, ab = bool(row.get('home_is_b2b')), bool(row.get('away_is_b2b'))
+    if hb != ab:
+        b['back_to_back'] = 'away' if hb else 'home'
+
+    hi, ai = _f(row.get('home_injury_impact')), _f(row.get('away_injury_impact'))
+    if hi is not None and ai is not None and abs(hi - ai) >= 2.0:
+        # Higher impact = more hurt, so it favours the OTHER side.
+        b['injuries'] = 'away' if hi > ai else 'home'
+
+    he, ae = _f(row.get('elo_home')), _f(row.get('elo_away'))
+    if he is not None and ae is not None and abs(he - ae) >= 60:
+        b['elo'] = 'home' if he > ae else 'away'
+
+    h = sum(1 for v in b.values() if v == 'home')
+    a = sum(1 for v in b.values() if v == 'away')
+    return h - a, b
+
+
+def compute_sweat_score(projected_spread, close_spread, confluence_net,
+                        projected_total, close_total) -> int:
+    """0-100 composite. Ported from ncaab_game_context so basketball
+    scores the same way in both leagues; NFL/NCAAF carry the same shape.
+
+    close_spread is home-perspective NEGATIVE = home favored, and
+    projected_spread is positive = home favored, so the edge is their
+    SUM. This is the convention that has been inverted three separate
+    times in this codebase — do not "simplify" it to a subtraction.
+    """
+    score = 45
+    if projected_spread is not None and close_spread is not None:
+        edge = abs(float(projected_spread) + float(close_spread))
+        if edge >= 4.0:
+            score += 25
+        elif edge >= 3.0:
+            score += 18
+        elif edge >= 2.0:
+            score += 12
+        elif edge >= 1.0:
+            score += 6
+    ac = abs(int(confluence_net or 0))
+    if ac >= 5:
+        score += 18
+    elif ac >= 4:
+        score += 12
+    elif ac >= 3:
+        score += 8
+    elif ac >= 2:
+        score += 4
+    if projected_total is not None and close_total is not None:
+        te = abs(float(projected_total) - float(close_total))
+        if te >= 8.0:
+            score += 8
+        elif te >= 5.0:
+            score += 5
+        elif te >= 3.0:
+            score += 3
+    return min(100, max(0, score))
+
+
+def sweat_tier(score) -> str:
+    """Cutoffs identical to play_of_day._sweat_tier and every other
+    sport, so a PRIME means the same thing across the app."""
+    s = int(score or 0)
+    if s >= 80:
+        return 'PRIME'
+    if s >= 65:
+        return 'STRONG'
+    if s >= 50:
+        return 'LIGHT_LEAN'
+    return 'PASS'
+
+
+def enrich_sweat(rows: list) -> None:
+    """Write the server-owned score onto every row.
+
+    This is the column the app must read. NBA scoring has lived in
+    app/index.tsx since launch (~106 lines, `modelMismatch` x66) while
+    MLB moved server-side years-equivalent ago; once this populates, the
+    client block can be deleted and the two can stop disagreeing.
+    """
+    for row in rows:
+        net, bd = compute_confluence(row)
+        row['signal_confluence_net'] = net
+        row['signal_confluence_breakdown'] = bd
+        score = compute_sweat_score(row.get('projected_spread'),
+                                    row.get('close_spread'), net,
+                                    row.get('projected_total'),
+                                    row.get('close_total'))
+        row['sweat_score'] = score
+        row['sweat_tier'] = sweat_tier(score)
+        row['sweat_tier_current'] = row['sweat_tier']
+
+
 def _apply_ensemble(row: dict) -> None:
     """2026-08-20: Ensemble scoring for NBA (parity with NHL/NFL/NCAAF/MLB).
     Runs ensemble_scorer.score_game('NBA', row) and writes result to
@@ -341,6 +473,11 @@ def run(target_date: Optional[str] = None, days: int = 1, dry_run: bool = False)
     enrich_market(all_rows)
     enrich_rest(all_rows)
     enrich_elo(all_rows)
+    # Must run AFTER market (close_spread/close_total) and elo
+    # (projected_spread/projected_total) — the score is the disagreement
+    # between those two, so running it earlier scores against nulls and
+    # every game comes out at the 45 base.
+    enrich_sweat(all_rows)
     written = upsert(all_rows, dry_run=dry_run)
     print(f'\n  {"[DRY] " if dry_run else ""}wrote {written}/{len(all_rows)} rows')
 
