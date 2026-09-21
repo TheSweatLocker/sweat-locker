@@ -54,9 +54,10 @@ def fetch_oddscrowd_generic(
     game_date: str,             # YYYY-MM-DD
     slate: list,                # list of {game_id, home_team, away_team, ...}
     find_game_id_fn: Callable,  # takes (slate, home_hint, away_hint) -> game_id | None
-    probe_forward: int = 20,    # how many IDs past the list-page range to probe
-    probe_back: int = 3,
+    probe_forward: int = 20,    # how many IDs past the HIGHEST list-page ID to probe
+    probe_back: int = 3,        # how many IDs before the LOWEST list-page ID to probe
     pace_secs: float = 0.3,
+    budget_secs: float = 150.0, # hard wall-clock cap for the whole detail sweep
 ) -> tuple[list, int]:
     """Return (list_of_pick_dicts, http_status).
 
@@ -112,14 +113,31 @@ def fetch_oddscrowd_generic(
         except ValueError:
             pass
 
-    # Add probe range around known IDs — detail pages accept any slug once ID is known.
-    # Skip IDs already covered by canonical URLs from the list page (otherwise the
-    # same game gets scraped twice → duplicate rows in the batch upsert).
+    # Probe a small band on EITHER SIDE of the known IDs — detail pages accept
+    # any slug once the ID is known, so this catches games added after the list
+    # page was rendered. Skip IDs already covered by canonical URLs (otherwise
+    # the same game is scraped twice → duplicate rows in the batch upsert).
+    #
+    # 2026-09-21 HANG FIX. This used to walk `range(min-probe_back,
+    # max+probe_forward)`, i.e. every integer BETWEEN the lowest and highest ID
+    # on the page. probe_back=3/probe_forward=20 reads like "a few either
+    # side", but the interior span is unbounded: measured on 09-21 the baseball
+    # page carried 10 IDs spread over 5506843..5507216, so the loop issued 387
+    # probe requests at 20s timeout + 0.3s pace. The pull ran 13.7 MINUTES and
+    # returned 0 picks — on an NFL Sunday, from our largest external source,
+    # which feeds the sharp-money FADE signal.
+    #
+    # The interior gaps are not missing games. Sports share a page (football =
+    # NFL + NCAAF) and IDs are global across every sport and date, so the space
+    # between two listed baseball games is other leagues' fixtures. 387 probes
+    # yielded nothing, which is the expected result, not bad luck. Probe only
+    # the two edge bands the parameters actually describe: 23 requests, not 387.
     probe_paths = []
     if known_ids:
-        lo = min(known_ids) - probe_back
-        hi = max(known_ids) + probe_forward
-        for gid_int in range(lo, hi + 1):
+        lo_id, hi_id = min(known_ids), max(known_ids)
+        band = ([g for g in range(lo_id - probe_back, lo_id)]
+                + [g for g in range(hi_id + 1, hi_id + probe_forward + 1)])
+        for gid_int in band:
             if gid_int in known_ids:
                 continue
             probe_paths.append(f'/games/probe-vs-probe-{league_slug}-{month_full}-{day}-{year}/{gid_int}/best-odds')
@@ -134,10 +152,29 @@ def fetch_oddscrowd_generic(
     # (source, game_id, surface, pick_side, game_date) unique constraint.
     picks_by_key = {}
     picks = []
+    # 2026-09-21: hard wall-clock budget. Even with the probe range bounded,
+    # a slow or hanging site must not be able to hold a pipeline step for
+    # minutes — the 13.7-minute run is the reason this source went missing
+    # for a whole day without anything reporting an error.
+    _deadline = time.time() + budget_secs
+    _want_gids = {g.get('game_id') for g in (slate or []) if g.get('game_id')}
+    _errors = 0
+    _fetched = 0
+    _stopped_early = None
     for path in all_paths:
+        if time.time() > _deadline:
+            _stopped_early = 'budget'
+            break
+        # Every slate game already has a pick — nothing further to find.
+        # Canonical list-page URLs are ordered first, so this normally
+        # short-circuits the probe band entirely on a healthy day.
+        if _want_gids and {k[0] for k in picks_by_key} >= _want_gids:
+            _stopped_early = 'complete'
+            break
         url = urljoin('https://oddscrowd.com', path)
         try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
+            r = requests.get(url, headers=HEADERS, timeout=10)
+            _fetched += 1
             if r.status_code != 200:
                 continue
 
@@ -244,6 +281,24 @@ def fetch_oddscrowd_generic(
                 }
             time.sleep(pace_secs)
         except Exception:
+            # 2026-09-21: was a bare silent `continue`. If the site started
+            # refusing every request this loop reported a clean empty result,
+            # indistinguishable from a day with no picks — the exact silent
+            # failure that let oddscrowd disappear unnoticed. Still resilient
+            # per-URL, but now counted so the caller can tell the difference.
+            _errors += 1
             continue
 
-    return list(picks_by_key.values()), 200
+    out = list(picks_by_key.values())
+    note = (f'oddscrowd {league_slug}: {len(out)} picks from {_fetched} fetches '
+            f'({len(all_paths)} candidates'
+            + (f', stopped early: {_stopped_early}' if _stopped_early else '')
+            + (f', {_errors} request errors' if _errors else '') + ')')
+    print(f'    {note}')
+
+    # Distinguish "nothing published" from "we could not reach the site".
+    # If every attempt errored, this is a FAILURE and must not be reported as
+    # a successful empty pull.
+    if _fetched == 0 and _errors > 0:
+        return [], 599
+    return out, 200

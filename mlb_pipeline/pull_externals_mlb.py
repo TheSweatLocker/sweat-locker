@@ -1465,8 +1465,20 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
                     picks_pulled=count, games_covered=games_covered,
                     http_status=http_status, duration_ms=duration_ms,
                 )
-                print(f'  ✓ {cfg["label"]}: {count} picks / {games_covered} games / {duration_ms}ms'
+                # 2026-09-21: a source that returns nothing used to print the
+                # same ✓ as a healthy one, because "success" here only means
+                # "raised no exception". oddscrowd ran 13.7 minutes, wrote 0
+                # picks and logged `✓ OddsCrowd: 0 picks` — so a dead scraper
+                # was indistinguishable from a quiet day in the GHA log. Mark
+                # it. Not an exception: some sources genuinely publish nothing
+                # on a given slate, and failing the step would be worse. The
+                # slate-adjusted watchdog decides what is actually alarming.
+                _mark = '⚠' if (count == 0 and slate) else '✓'
+                print(f'  {_mark} {cfg["label"]}: {count} picks / {games_covered} games / {duration_ms}ms'
+                      + (' — NOTHING WRITTEN on a non-empty slate' if _mark == '⚠' else '')
                       + (f' (blocked {blocked})' if blocked else ''))
+                if _mark == '⚠':
+                    summary.setdefault('sources_empty', []).append(source)
                 summary['picks_written'] += count
                 summary.setdefault('picks_blocked_crossattr', 0)
                 summary['picks_blocked_crossattr'] += blocked
@@ -1489,6 +1501,8 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
 
     print(f'\n=== Summary ===')
     print(f'  Sources OK/FAIL: {summary["sources_pulled"]}/{summary["sources_failed"]}')
+    if summary.get('sources_empty'):
+        print(f'  ⚠ Wrote nothing:  {", ".join(summary["sources_empty"])}')
     print(f'  Picks written:   {summary["picks_written"]}')
     print(f'  Games covered:   up to {summary["games"]}')
 
