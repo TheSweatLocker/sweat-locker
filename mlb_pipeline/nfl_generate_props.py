@@ -754,15 +754,45 @@ def fetch_nfl_player_usage(player_id: int, season: int) -> dict:
     2026-09-09: memoized. One row per unique (player_id, season) — same
     player hits this once per (pass-catcher) market so 6+ hits collapse
     to 1 DB call. Caller MUST NOT mutate returned dict.
+
+    2026-09-21: widened from 4 receiving columns to rushing and passing.
+
+    Attribution over 1,247 graded props (weeks 1-3) found the box-score
+    signal stack carries essentially no information: 21 signals tested,
+    none clears its Wilson bound against a 50.92% base. The one family
+    showing a coherent dose-response is usage —
+
+        _l4_wopr     0-0.3 46.1% | 0.3-0.5 50.5% | 0.5-0.7 52.0%
+                     0.7-1.0 63.3%                      (monotonic)
+        _l4_targets  9+  70.0%  [52.1, 83.3]        (clears base)
+
+    and a control shows it is the VALUE not the presence that matters:
+    props with usage data went 50.0%, without 51.3%.
+
+    But these are RECEIVING metrics, so they only ever attached to
+    receiving props — 98% coverage there, 0% on rushing, 0% on passing.
+    The two worst families in the same window are exactly the two with no
+    usage features at all: rush_yds over 41.2% (n=68), pass_yds 41.5%
+    (n=65).
+
+    So fetch the position-appropriate set for every family. All of it is
+    stored as raw `_l4_*` signals and NONE of it adjusts conviction yet —
+    instrument first, measure, weight only on evidence. Weighting an
+    untested feature is how 21 non-predictive signals got into the stack.
     """
     if not player_id: return {}
+    cols = ('week,target_share,air_yards_share,wopr,targets,racr,'
+            'receiving_epa,receiving_yards_after_catch,'
+            'carries,rushing_epa,rushing_first_downs,'
+            'attempts,completions,passing_epa,passing_air_yards,'
+            'dakota,pacr,sacks')
     try:
         r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
                          headers=H_READ,
                          params={'player_id': f'eq.{player_id}',
                                  'season': f'eq.{season}',
                                  'season_type': 'eq.REG',
-                                 'select': 'week,target_share,air_yards_share,wopr,targets',
+                                 'select': cols,
                                  'order': 'week.desc', 'limit': '4'},
                          timeout=10)
         rows = r.json() if r.status_code == 200 else []
@@ -772,12 +802,26 @@ def fetch_nfl_player_usage(player_id: int, season: int) -> dict:
     def _avg(field):
         vals = [float(row[field]) for row in rows if row.get(field) is not None]
         return round(sum(vals)/len(vals), 3) if vals else None
-    return {
+    out = {
         'l4_target_share': _avg('target_share'),
         'l4_air_yards_share': _avg('air_yards_share'),
         'l4_wopr': _avg('wopr'),
         'l4_targets': _avg('targets'),
+        'l4_racr': _avg('racr'),
+        'l4_rec_epa': _avg('receiving_epa'),
+        'l4_yac': _avg('receiving_yards_after_catch'),
+        'l4_carries': _avg('carries'),
+        'l4_rush_epa': _avg('rushing_epa'),
+        'l4_rush_first_downs': _avg('rushing_first_downs'),
+        'l4_attempts': _avg('attempts'),
+        'l4_completions': _avg('completions'),
+        'l4_pass_epa': _avg('passing_epa'),
+        'l4_pass_air_yards': _avg('passing_air_yards'),
+        'l4_dakota': _avg('dakota'),
+        'l4_pacr': _avg('pacr'),
+        'l4_sacks': _avg('sacks'),
     }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def compute_nfl_l10_signals(recent_rows: list, line: float, side: str) -> tuple[dict, int]:
@@ -1226,8 +1270,14 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     # directly in nfl_player_stats. High target share = genuinely focal
     # WR/TE — meaningful edge for receptions + rec_yds overs.
     usage_bonus = 0
+    # 2026-09-21: usage is now fetched for EVERY family. Rushing and
+    # passing props previously had 0% usage coverage and are the two
+    # worst-performing families in weeks 1-3. The target-share CONVICTION
+    # bonuses below still apply only to receiving props, where they were
+    # derived; the rushing/passing metrics are recorded as raw signals and
+    # deliberately carry no weight until measured.
+    usage = fetch_nfl_player_usage(player_id, season)
     if prop_family in ('reception_yds', 'receptions', 'anytime_td'):
-        usage = fetch_nfl_player_usage(player_id, season)
         ts = usage.get('l4_target_share')
         if ts is not None:
             if ts >= 0.25 and side.upper() == 'OVER':
@@ -1245,10 +1295,13 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
                 l10_sigs['target_share_low'] = (
                     f'L4 target share {ts:.1%} — peripheral, low volume'
                 )
-        # Also store raw usage metrics for downstream display
-        for k, v in usage.items():
-            if v is not None:
-                l10_sigs[f'_{k}'] = v
+    # Raw usage metrics for EVERY family, so attribution can test them.
+    # Deliberately de-indented out of the pass-catcher branch above —
+    # sitting inside it is exactly why rushing and passing props carried
+    # no usage features at all.
+    for _uk, _uv in usage.items():
+        if _uv is not None:
+            l10_sigs[f'_{_uk}'] = _uv
 
     total_bonus = ctx_bonus + l10_bonus + def_bonus + usage_bonus
     if total_bonus:
