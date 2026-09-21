@@ -60,10 +60,26 @@ def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
 
-def fetch_events() -> list:
+def fetch_events(game_date: Optional[str] = None) -> list:
+    """Odds API events in a window around `game_date` (default: now).
+
+    2026-09-21 FIX: this ignored the caller's date entirely and always
+    used now-8h..now+36h, so `--date` was accepted by argparse and
+    silently did nothing. Any run for a future or past slate fetched
+    today's window and reported "0 events fetched" — indistinguishable
+    from a genuinely empty slate. Same accepted-but-ignored shape as the
+    other flag bugs found today.
+    """
     if not ODDS_KEY: return []
-    from_iso = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    to_iso = (datetime.now(timezone.utc) + timedelta(hours=36)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    if game_date:
+        # ET day -> UTC window covering it, with slack for late starts
+        base = datetime.fromisoformat(game_date).replace(tzinfo=timezone.utc)
+        start = base + timedelta(hours=4)      # 00:00 ET
+        from_iso = (start - timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        to_iso = (start + timedelta(hours=32)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    else:
+        from_iso = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        to_iso = (datetime.now(timezone.utc) + timedelta(hours=36)).strftime('%Y-%m-%dT%H:%M:%SZ')
     r = requests.get(f'{ODDS_BASE}/events',
                      params={'apiKey': ODDS_KEY,
                              'commenceTimeFrom': from_iso,
@@ -123,7 +139,7 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
     if not ODDS_KEY:
         print('  ⚠ ODDS_API_KEY missing — skipping'); return
 
-    events = fetch_events()
+    events = fetch_events(gd)
     print(f'  {len(events)} NBA events fetched')
 
     total_props = 0
@@ -165,6 +181,11 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date'); p.add_argument('--dry-run', action='store_true')
+    # season_gate reads this off sys.argv, but strict argparse rejects
+    # the unknown arg first — so the documented bypass could not be
+    # passed. Declared only so argparse lets it through.
+    p.add_argument('--force-offseason', action='store_true',
+                   help='run even when the sport is out of season')
     args = p.parse_args()
     run(game_date=args.date, dry_run=args.dry_run)
 
