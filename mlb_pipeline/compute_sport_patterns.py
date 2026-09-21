@@ -27,6 +27,7 @@ USAGE:
 """
 import argparse
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -82,45 +83,53 @@ def _pp_result_outcome(game: dict) -> str:
     pp = _primary_play(game)
     ptype = str(pp.get('type') or '').lower()
     side  = str(pp.get('side') or '').upper()
+    # 2026-09-20: was `return 'P'`. A game with NO primary_play is not a
+    # push — it is not evidence at all and must be EXCLUDED. Counting it
+    # as a push inflated n_total (which the badge gate reads) while
+    # leaving hit_pct computed off a tiny real sample: NFL
+    # nfl_road_fav_7plus_fade scored 1-0-12 = "100% (n=13)" off ONE
+    # decided game, because 12 of 13 matched ctx rows had no play.
     if not ptype or not side:
-        return 'P'
+        return None
     if ptype == 'ml':
         hw = game.get('home_win')
-        if hw is None: return 'P'
+        if hw is None: return None
         if side == 'HOME': return 'W' if hw else 'L'
         if side == 'AWAY': return 'L' if hw else 'W'
-        return 'P'
+        return None
     if ptype in ('rl', 'spread', 'puckline', 'runline'):
         sr = str(game.get('spread_result') or '').lower()
-        if sr == 'push': return 'P'
+        if sr == 'push': return 'P'          # a REAL push
         if sr == 'home_covered': return 'W' if side == 'HOME' else 'L'
         if sr == 'away_covered': return 'W' if side == 'AWAY' else 'L'
-        return 'P'
+        return None                          # ungraded, not a push
     if ptype == 'total':
         tr = str(game.get('total_result') or '').lower()
-        if tr == 'push': return 'P'
+        if tr == 'push': return 'P'          # a REAL push
         if tr == 'over':  return 'W' if side == 'OVER' else 'L'
         if tr == 'under': return 'W' if side == 'UNDER' else 'L'
-        return 'P'
-    return 'P'
+        return None                          # ungraded, not a push
+    return None
 
 
 def _spread_outcome_home_covered(game: dict) -> str:
     """Standalone spread outcome for patterns that back HOME regardless
     of primary_play. Used by e.g. nfl_home_div_dog. Reads spread_result."""
     sr = str(game.get('spread_result') or '').lower()
+    if not sr or sr == 'none': return None   # ungraded, not a push
     if sr == 'push': return 'P'
     if sr == 'home_covered': return 'W'
     if sr == 'away_covered': return 'L'
-    return 'P'
+    return None
 
 
 def _spread_outcome_away_covered(game: dict) -> str:
     sr = str(game.get('spread_result') or '').lower()
+    if not sr or sr == 'none': return None   # ungraded, not a push
     if sr == 'push': return 'P'
     if sr == 'away_covered': return 'W'
     if sr == 'home_covered': return 'L'
-    return 'P'
+    return None
 
 
 def _pp_result_outcome_faded(game: dict) -> str:
@@ -133,17 +142,43 @@ def _pp_result_outcome_faded(game: dict) -> str:
     return oc  # P stays P
 
 
-def _road_favorite_spread_fn(threshold: float):
-    """Factory: matches_fn that fires when road team is favored by
-    `threshold` or more. NFL/NCAAF convention: close_spread > 0 = home
-    favored, so road fav = close_spread < -threshold."""
+# close_spread sign is NOT shared across sports. Verified empirically
+# 2026-09-20 on 263 NCAAF games: home teams win 92.1% when close_spread
+# is NEGATIVE, so NCAAF (like MLB) stores negative = home favored. NFL is
+# the outlier and stores positive = home favored.
+_HOME_FAV_NEGATIVE = {'MLB': True, 'NCAAF': True, 'NCAAB': True,
+                      'NBA': True, 'NHL': True, 'NFL': False}
+
+
+def _road_favorite_spread_fn(threshold: float, sport: str = 'NFL'):
+    """Factory: fires when the ROAD team is favored by `threshold`+.
+
+    2026-09-20 SIGN FIX. This used one hardcoded convention for every
+    sport ("close_spread > 0 = home favored, so road fav = cs <= -thr"),
+    which is right for NFL and backwards for NCAAF. On NCAAF it therefore
+    selected HOME favourites and, paired with _spread_outcome_home_covered,
+    measured "do home favourites of 10+ cover" — 99-64, 60.74%, n=163 —
+    while labelling it "CFB Road Fav 10+ · FADE".
+
+    That combination cleared every guardrail and attached to 4 upcoming
+    games including Oklahoma @ Georgia and South Carolina @ Alabama. The
+    badge would have told users to fade a road favourite that does not
+    exist, on games where the HOME team is favoured — pointing at the
+    wrong side entirely. Third instance of the close_spread sign family
+    today; see project_close_spread_sign_bug_914.
+    """
+    home_fav_neg = _HOME_FAV_NEGATIVE.get(str(sport).upper(), False)
+
     def _fn(g: dict) -> bool:
         cs = g.get('close_spread')
-        if cs is None: return False
+        if cs is None:
+            return False
         try:
-            return float(cs) <= -threshold
+            cs = float(cs)
         except (ValueError, TypeError):
             return False
+        # Road favourite means the AWAY side is laying the points.
+        return (cs >= threshold) if home_fav_neg else (cs <= -threshold)
     return _fn
 
 
@@ -175,11 +210,11 @@ def _rest_edge_underdog_outcome(g: dict) -> str:
     """W when the underdog with rest edge covered. Determines which side
     from close_spread sign, then reads spread_result."""
     cs = g.get('close_spread')
-    if cs is None: return 'P'
+    if cs is None: return None               # ungraded, not a push
     try:
         cs = float(cs)
     except (ValueError, TypeError):
-        return 'P'
+        return None
     if cs > 0:  # dog is away
         return _spread_outcome_away_covered(g)
     if cs < 0:  # dog is home
@@ -437,7 +472,7 @@ PATTERN_CATALOG = [
         'direction': 'FADE',
         'description': 'NFL road favorites of 7+ points. Classic angle — travel + inflated public perception. Fade the road favorite.',
         'lookback_days': 730,
-        'matches': _road_favorite_spread_fn(7.0),
+        'matches': _road_favorite_spread_fn(7.0, 'NFL'),
         # FADE the road fav means backing the home dog to cover
         'outcome': _spread_outcome_home_covered,
     },
@@ -601,7 +636,7 @@ PATTERN_CATALOG = [
         'direction': 'FADE',
         'description': 'NCAAF road favorites of 10+ points. Road environments are punishing (crowd, travel, altitude). Fade the road favorite.',
         'lookback_days': 730,
-        'matches': _road_favorite_spread_fn(10.0),
+        'matches': _road_favorite_spread_fn(10.0, 'NCAAF'),
         'outcome': _spread_outcome_home_covered,
     },
     {
@@ -692,6 +727,53 @@ def fetch_games(sport: str, lookback_days: int) -> list:
             for row in r.json():
                 res_by_gid[str(row.get('game_id'))] = row
 
+    # 2026-09-20 NFL JOIN FIX — the game_id join is BROKEN for NFL and has
+    # been since this shipped. nfl_game_context stores MD5 hashes
+    # ('171aba127aaad3dcbe32a02fc194eb32') while nfl_game_results stores
+    # readable keys ('20261227_LAC_MIA'). Measured overlap: 0 of 316 ctx
+    # ids. So fetch_games returned "0 graded games" for NFL on every run,
+    # all three NFL patterns never got a registry row, and NFL Vault Match
+    # rendered nothing from day one. MLB (185/187) and NCAAF (266/302)
+    # join fine, which is why this stayed invisible.
+    #
+    # Third site of project_nfl_game_id_mismatch_911. Same remedy as the
+    # receipts grader: fall back to the (date, away, home) tuple, which
+    # identifies a game regardless of which id scheme a table chose.
+    unmatched = [g for g in ctx_rows if str(g.get('game_id')) not in res_by_gid]
+    if unmatched:
+        def _k(d, away, home):
+            def n(s):
+                return re.sub(r'[^a-z0-9]', '', str(s or '').lower())
+            return (str(d or '')[:10], n(away), n(home))
+
+        res_by_tuple = {}
+        off2 = 0
+        while off2 < 40000:
+            rr = requests.get(
+                f'{SB}/rest/v1/{res_table}?select=*'
+                f'&game_date=gte.{cutoff}&limit=1000&offset={off2}',
+                headers=H_READ, timeout=60,
+            )
+            chunk = rr.json() if rr.status_code == 200 else []
+            if not chunk:
+                break
+            for row in chunk:
+                res_by_tuple[_k(row.get('game_date'), row.get('away_team'),
+                                row.get('home_team'))] = row
+            if len(chunk) < 1000:
+                break
+            off2 += 1000
+        recovered = 0
+        for g in unmatched:
+            row = res_by_tuple.get(_k(g.get('game_date'), g.get('away_team'),
+                                      g.get('home_team')))
+            if row:
+                res_by_gid[str(g.get('game_id'))] = row
+                recovered += 1
+        if recovered:
+            print(f'    → recovered {recovered}/{len(unmatched)} results via '
+                  f'(date,away,home) tuple — game_id join missed them')
+
     # 2026-09-02: also fetch dissent snapshots for these games
     dissent_by_gid = _fetch_dissent_snapshots(sport, game_ids)
 
@@ -741,7 +823,7 @@ def compute_pattern(games: list, pattern: dict) -> Optional[dict]:
         'n_wins': w,
         'n_losses': l,
         'n_pushes': p,
-        'n_total': n + p,
+        'n_total': n,
         'hit_pct': hit_pct,
         'last_computed_at': _et_now().isoformat(),
     }
