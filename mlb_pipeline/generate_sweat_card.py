@@ -515,7 +515,20 @@ def fetch_game_context():
     return sb_get("mlb_game_context", {"game_date": f"eq.{today}", "select": "*"})
 
 
-def _in_season_sports(exclude=('MLB',)) -> list:
+# Sports deliberately kept OFF the Sweat Card, regardless of what
+# sport_registry says about their season.
+#   MLB   — has its own richer top_8 path, not this one
+#   UFC   — Andy 2026-09-21: "leave UFC off since we are still working
+#           that as a whole." Its own sport_registry note already says
+#           coverage is newly launched and in active calibration, so it
+#           should not be competing for a Sweat Card slot yet.
+# UFC was already absent by accident (no entry in _CTX_TABLE). Naming it
+# here makes that a decision rather than a side effect — otherwise the
+# day someone adds a ufc context table, UFC silently appears on the card.
+_SWEAT_CARD_EXCLUDED = ('MLB', 'UFC')
+
+
+def _in_season_sports(exclude=_SWEAT_CARD_EXCLUDED) -> list:
     """Sports whose sport_registry row says they are in season.
 
     2026-09-21. fetch_football_picks hardcoded ('NFL','NCAAF'), so NHL,
@@ -526,7 +539,7 @@ def _in_season_sports(exclude=('MLB',)) -> list:
 
     Driven by sport_registry so a season flip needs no code change and no
     app release — same principle as sport_registry.state_message.
-    MLB is excluded by default because it has its own richer top_8 path.
+    MLB and UFC are excluded by default — see _SWEAT_CARD_EXCLUDED.
     """
     try:
         rows = sb_get('sport_registry', {'select': 'sport,state'}) or []
