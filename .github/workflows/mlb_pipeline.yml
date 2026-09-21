@@ -2378,6 +2378,28 @@ jobs:
           cd mlb_pipeline
           python fadereport_scraper.py
 
+      # Fade The Public Analytics (2026-09-21) — money-flow source added after
+      # OddsCrowd moved its splits table to client-side rendering and stopped
+      # being scrapable at all (project_oddscrowd_client_render_921). Public
+      # JSON API carrying BOTH bet% and money% for ml/spread/total, so it is
+      # one request per sport rather than a page sweep.
+      #
+      # Genuinely independent of fadereport rather than a mirror: on NYG@LAR
+      # moneyline it read bets 16%/money 23% where FR read 15%/26%. That
+      # difference is the point — the sharp-money rule wants 2+ contrarian
+      # sources before it will FADE, and identical feeds cannot corroborate.
+      # Coverage is also better on football (16 NFL games vs FR's 1 today).
+      #
+      # No NHL endpoint at this source; fadereport carries hockey.
+      - name: Fade The Public — scrape money-flow splits (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python fadethepublic_scraper.py
+
       # Cleatz.com public splits scraper (2026-08-15 pm) — 3rd public-splits
       # source alongside OddsCrowd + Fadereport. Full-slate coverage with
       # both handle% and bets% per side across ML/RL/Total. Cross-source

@@ -105,17 +105,105 @@ def latest_fr(sport: str, since_hrs: int = 6) -> dict:
     return idx
 
 
-def build_rows(sport: str, oc_idx: dict, fr_idx: dict) -> list:
-    """Zip both sources on (game, market, side) → archive rows. A key with
+def latest_ftp(sport: str, since_hrs: int = 6) -> dict:
+    """Fade The Public Analytics — third money-flow source (2026-09-21).
+
+    Added because OddsCrowd moved its splits table to client-side rendering
+    and stopped being scrapable, leaving only fadereport. The sharp-money
+    rule wants 2+ contrarian sources before it will FADE, which one feed can
+    never satisfy. See project_oddscrowd_client_render_921.
+
+    Same shape as latest_fr, keyed on (game_id, market, sharp_side) with
+    'spread' aliased to 'rl' for the join. Filters on snapshot_date, which
+    for this source is the GAME's date rather than the pull date — the feed
+    serves whole recent slates, so a Monday pull carries Sunday's games.
+    """
+    since_date = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).date().isoformat()
+    idx = {}
+    for off in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/fadethepublic_signals'
+            f'?sport=eq.{sport}&snapshot_date=gte.{since_date}'
+            f'&select=game_id,market,sharp_side_norm,money_side_pct,bets_side_pct,'
+            f'current_line,fetched_at'
+            f'&order=fetched_at.desc&limit=1000&offset={off}',
+            headers=H_READ, timeout=15)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not isinstance(chunk, list): break
+        for row in chunk:
+            mkt = (row.get('market') or '').lower()
+            if mkt == 'spread': mkt = 'rl'
+            side = (row.get('sharp_side_norm') or '').upper()
+            key = (row.get('game_id'), mkt, side)
+            if key not in idx:
+                money = row.get('money_side_pct')
+                bets = row.get('bets_side_pct')
+                div = None
+                if money is not None and bets is not None:
+                    div = float(money) - float(bets)
+                idx[key] = {'money_pct': money, 'bets_pct': bets,
+                            'divergence': div, 'line': row.get('current_line')}
+        if len(chunk) < 1000: break
+    return idx
+
+
+def latest_cz(sport: str, since_hrs: int = 6) -> dict:
+    """cleatz — money-flow source that has been running since 2026-08-15.
+
+    2026-09-21: this reader did not exist. cleatz_signals was being written
+    daily and healthily (47 NFL / 119 NCAAF / 9 MLB that day) but
+    build_rows only ever merged OC + FR, so not one cleatz row reached
+    public_splits_archive. The scraper worked; the plumbing didn't — the
+    same silent-gap class as the resolvers nothing ever called.
+
+    That mattered more than it looked: with OddsCrowd dead, the archive was
+    down to a single live source (FR) while a second sat right there unused,
+    and the sharp-money rule needs 2+ sources before it will FADE.
+    """
+    since_date = (datetime.now(timezone.utc) - timedelta(hours=since_hrs)).date().isoformat()
+    idx = {}
+    for off in range(0, 20000, 1000):
+        r = requests.get(
+            f'{SB}/rest/v1/cleatz_signals'
+            f'?sport=eq.{sport}&snapshot_date=gte.{since_date}'
+            f'&select=game_id,market,sharp_side_norm,sharp_handle_pct,sharp_bets_pct,'
+            f'divergence,fetched_at'
+            f'&order=fetched_at.desc&limit=1000&offset={off}',
+            headers=H_READ, timeout=15)
+        if r.status_code != 200: break
+        chunk = r.json() or []
+        if not isinstance(chunk, list): break
+        for row in chunk:
+            mkt = (row.get('market') or '').lower()
+            if mkt == 'spread': mkt = 'rl'
+            side = (row.get('sharp_side_norm') or '').upper()
+            key = (row.get('game_id'), mkt, side)
+            if key not in idx:
+                idx[key] = {'money_pct': row.get('sharp_handle_pct'),
+                            'bets_pct': row.get('sharp_bets_pct'),
+                            'divergence': row.get('divergence')}
+        if len(chunk) < 1000: break
+    return idx
+
+
+def build_rows(sport: str, oc_idx: dict, fr_idx: dict, ftp_idx: dict | None = None,
+               cz_idx: dict | None = None) -> list:
+    """Zip every source on (game, market, side) → archive rows. A key with
     only one source still gets archived so we can measure source coverage."""
+    ftp_idx = ftp_idx or {}
+    cz_idx = cz_idx or {}
     now_iso = datetime.now(timezone.utc).isoformat()
-    all_keys = set(oc_idx.keys()) | set(fr_idx.keys())
+    all_keys = (set(oc_idx.keys()) | set(fr_idx.keys())
+                | set(ftp_idx.keys()) | set(cz_idx.keys()))
     rows = []
     for key in all_keys:
         gid, market, side = key
         if not gid or not market or not side: continue
         oc = oc_idx.get(key) or {}
         fr = fr_idx.get(key) or {}
+        ftp = ftp_idx.get(key) or {}
+        cz = cz_idx.get(key) or {}
         rows.append({
             'sport':          sport,
             'game_id':        gid,
@@ -126,7 +214,14 @@ def build_rows(sport: str, oc_idx: dict, fr_idx: dict) -> list:
             'oc_divergence':  oc.get('divergence'),
             'fr_handle_pct':  fr.get('handle_pct'),
             'fr_bettors_pct': fr.get('bettors_pct'),
-            'current_line':   oc.get('line'),
+            'ftp_money_pct':  ftp.get('money_pct'),
+            'ftp_bets_pct':   ftp.get('bets_pct'),
+            'ftp_divergence': ftp.get('divergence'),
+            'cz_money_pct':   cz.get('money_pct'),
+            'cz_bets_pct':    cz.get('bets_pct'),
+            'cz_divergence':  cz.get('divergence'),
+            # OC is gone for now, so it can no longer be the only line source.
+            'current_line':   oc.get('line') or ftp.get('line'),
             'captured_at':    now_iso,
         })
     return rows
@@ -135,8 +230,12 @@ def build_rows(sport: str, oc_idx: dict, fr_idx: dict) -> list:
 def run_sport(sport: str, dry_run: bool = False) -> int:
     oc = latest_oc(sport)
     fr = latest_fr(sport)
-    rows = build_rows(sport, oc, fr)
-    print(f'  {sport}: OC keys={len(oc)}  FR keys={len(fr)}  archive rows={len(rows)}')
+    ftp = latest_ftp(sport)
+    cz = latest_cz(sport)
+    rows = build_rows(sport, oc, fr, ftp, cz)
+    live = sum(1 for n in (len(oc), len(fr), len(ftp), len(cz)) if n)
+    print(f'  {sport}: OC={len(oc)}  FR={len(fr)}  FTP={len(ftp)}  CZ={len(cz)}  '
+          f'→ {len(rows)} archive rows · {live} live source(s)')
     if not rows or dry_run:
         if dry_run and rows:
             print(f'    [DRY] sample: {rows[0]}')
