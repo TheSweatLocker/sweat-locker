@@ -497,8 +497,46 @@ def compute_confluence(row: dict) -> tuple:
     return h - a, b
 
 
+def _implied_wp(ml) -> Optional[float]:
+    """American moneyline -> implied win probability (with vig)."""
+    try:
+        m = float(ml)
+    except (TypeError, ValueError):
+        return None
+    if m == 0:
+        return None
+    return (-m / (-m + 100.0)) if m < 0 else (100.0 / (m + 100.0))
+
+
+def compute_ml_edge(row: dict) -> Optional[float]:
+    """Model win probability vs the market's implied probability.
+
+    2026-09-21. This is hockey's real edge and the reason the NHL score
+    could not work off a spread: enrich_nhl_elo never writes
+    projected_spread, and the puckline is ±1.5 on essentially every game,
+    so a "model vs market spread" term has nothing to measure. Elo gives
+    projected_home_wp; the market gives a moneyline. The gap between them
+    is the disagreement that matters.
+
+    Vig is NOT removed. It inflates the market side by roughly 2-3 points
+    on both teams, so a small edge reads slightly smaller than it is —
+    which errs toward under-confidence, the safe direction.
+    """
+    try:
+        wp = float(row.get('projected_home_wp'))
+    except (TypeError, ValueError):
+        return None
+    mkt = _implied_wp(row.get('home_ml_close'))
+    if mkt is None:
+        mkt = _implied_wp(row.get('close_home_ml'))
+    if mkt is None:
+        return None
+    return abs(wp - mkt)
+
+
 def compute_sweat_score(projected_spread, close_line, confluence_net,
-                        projected_total, close_total) -> int:
+                        projected_total, close_total,
+                        ml_edge: Optional[float] = None) -> int:
     """0-100 composite, same shape as every other sport.
 
     Hockey tightens the spread bands: the puckline is almost always 1.5,
@@ -508,7 +546,19 @@ def compute_sweat_score(projected_spread, close_line, confluence_net,
     would be the NBA equivalent.
     """
     score = 45
-    if projected_spread is not None and close_line is not None:
+    # Moneyline edge carries the spread slot for hockey. Bands are in
+    # win-probability points: an 8pp disagreement with the market is a
+    # large NHL edge, the way 4 points is in basketball.
+    if ml_edge is not None:
+        if ml_edge >= 0.08:
+            score += 25
+        elif ml_edge >= 0.055:
+            score += 18
+        elif ml_edge >= 0.035:
+            score += 12
+        elif ml_edge >= 0.02:
+            score += 6
+    elif projected_spread is not None and close_line is not None:
         edge = abs(float(projected_spread) + float(close_line))
         if edge >= 1.5:
             score += 25
@@ -562,7 +612,8 @@ def enrich_sweat(rows: list) -> None:
             close_line = row.get('close_spread')
         score = compute_sweat_score(row.get('projected_spread'), close_line,
                                     net, row.get('projected_total'),
-                                    row.get('close_total'))
+                                    row.get('close_total'),
+                                    ml_edge=compute_ml_edge(row))
         # Same no-corroboration cap as NBA: a score resting on one
         # dimension is not confluence. NBA's first scored slate came out
         # 9-of-14 STRONG on empty breakdowns; this stops the same thing

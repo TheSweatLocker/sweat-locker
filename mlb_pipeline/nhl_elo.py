@@ -109,9 +109,46 @@ def train() -> dict:
     return out
 
 
+def _lookup(team: str, ratings: dict) -> dict:
+    """Find a team's rating across BOTH naming generations.
+
+    2026-09-21. nhl_data_client used to store the NHL API's `placeName`
+    (the CITY), so the 1,342 historical rows in nhl_game_results — which
+    is what elo trains on — hold "Boston", "New York", "Los Angeles".
+    That was fixed today to write full names, but history cannot be
+    rewritten, and nhl_game_results has no abbrev column to key on
+    instead.
+
+    Without this fallback the lookup missed on every game, both teams
+    fell back to DEFAULT_ELO, and projected_home_wp came out to exactly
+    0.585 — pure home advantage — on all five games of the opening
+    slate. An elo model that returns the same number for every fixture
+    is worse than none, because it looks like an opinion.
+
+    Tries the full name, then the place prefix. As new full-name results
+    accumulate the exact match takes over on its own.
+
+    KNOWN LIMIT: the two New York teams share a single historical rating,
+    because both were stored as "New York" and no information survives to
+    separate them. That resolves itself once enough full-name games land.
+    """
+    if not team:
+        return {}
+    hit = ratings.get(team)
+    if hit:
+        return hit
+    parts = str(team).split()
+    for cut in (len(parts) - 1, len(parts) - 2):
+        if cut > 0:
+            hit = ratings.get(' '.join(parts[:cut]))
+            if hit:
+                return hit
+    return {}
+
+
 def predict(home_team: str, away_team: str, ratings: dict) -> dict:
-    h = ratings.get(home_team, {}).get('elo', DEFAULT_ELO)
-    a = ratings.get(away_team, {}).get('elo', DEFAULT_ELO)
+    h = _lookup(home_team, ratings).get('elo', DEFAULT_ELO)
+    a = _lookup(away_team, ratings).get('elo', DEFAULT_ELO)
     home_wp = expected_win_prob(h, a, HOME_ADVANTAGE)
     # Convert win prob → American ML.
     #   Favorite (wp >= 0.5): ml = -100 * wp / (1-wp)  → negative
@@ -122,7 +159,7 @@ def predict(home_team: str, away_team: str, ratings: dict) -> dict:
         home_ml = int(round(100 * (1 - home_wp) / max(home_wp, 0.001)))
     # Total projection: avg goal totals
     def _avg_scoring(team):
-        rec = ratings.get(team, {})
+        rec = _lookup(team, ratings)
         return rec.get('avg_gf', 3.0) + rec.get('avg_ga', 3.0)
     projected_total = round((_avg_scoring(home_team) + _avg_scoring(away_team)) / 2, 1)
     return {
