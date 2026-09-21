@@ -333,6 +333,25 @@ jobs:
           cd mlb_pipeline
           python nfl_ncaaf_signal_discipline.py --sport NCAAF
 
+      # 2026-09-20: freeze what the spread MODEL would have picked, next to
+      # what we published. 3-week walk-forward had the published pick at
+      # 46.8% out of sample while its own projected_spread ran 60.0%, and
+      # they disagreed on 62% of shared games — but only 42 disagreements
+      # have graded, so this accumulates evidence rather than flipping the
+      # engine on a thin sample. Runs AFTER the discipline gates so it
+      # captures the final, capped pick. Write-once; refuses games already
+      # kicked off or still outside their decision window.
+      - name: Shadow NCAAF model edge (evidence for the override question)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python ncaaf_model_edge_shadow.py --days 3
+          python ncaaf_model_edge_shadow.py --report --days 40
+
       # Also snapshot + grade NCAAF signal attribution (parity with NFL cron)
       - name: Snapshot NCAAF signal attribution
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
