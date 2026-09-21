@@ -70,7 +70,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python write_line_snapshot.py --sport MLB || echo "line_snapshot write failed"
+          python write_line_snapshot.py --sport MLB
 
       # 2026-08-11: reverse-line-move detector runs AFTER snapshot writer.
       # Compares first + latest snapshot per (game, market). Public 70%+
@@ -84,7 +84,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python detect_reverse_line_move.py --sport MLB || echo "RLM detector failed"
+          python detect_reverse_line_move.py --sport MLB
 
       # 2026-08-15: dense archive of OC + FR splits side-by-side per pull.
       # Runs every refresh so the pattern-discovery engine has permanent
@@ -97,4 +97,4 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python archive_public_splits.py --sport ALL || echo "splits archive failed"
+          python archive_public_splits.py --sport ALL

@@ -71,8 +71,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"start\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"start\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping start
         continue-on-error: true
@@ -131,7 +130,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 14 || echo "line-only align non-fatal"
+          python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 14
 
       - name: Pull Odds API preseason lines (Aug only)
         if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only')
@@ -225,7 +224,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NFL || echo "NFL splits v2 aggregator failed (non-fatal)"
+          python splits_v2_pipeline.py --sport NFL
 
       # 2026-08-24: Madden NFL 27 talent prior seed + enrich.
       # Seed is idempotent (upsert on team,season,week_snapshot) — safe
@@ -242,7 +241,7 @@ jobs:
         run: |
           cd mlb_pipeline
           SEASON=$(date +%Y)
-          python seed_nfl_madden_launch.py --season $SEASON || echo "Madden seed failed (non-fatal)"
+          python seed_nfl_madden_launch.py --season $SEASON
 
       # 2026-09-06: live Madden refresh from madden27.wiki. Overwrites
       # the seed with real weekly OVR/OFF/DEF for 32 teams + top-100
@@ -258,7 +257,7 @@ jobs:
           cd mlb_pipeline
           pip install --quiet beautifulsoup4 || true
           SEASON=$(date +%Y)
-          python pull_madden27_ratings.py --season $SEASON --week 0 || echo "Madden live pull failed (non-fatal — seed is fallback)"
+          python pull_madden27_ratings.py --season $SEASON --week 0
 
       - name: Enrich NFL ctx with Madden ratings + Top 100
         continue-on-error: true
@@ -267,7 +266,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_ctx_nfl_madden.py --days-ahead 14 || echo "Madden ctx enrich failed (non-fatal)"
+          python enrich_ctx_nfl_madden.py --days-ahead 14
 
       # 2026-09-06: NFL ML logistic-regression predictor. Model trained
       # 9/3 on 2022-2025 season data (nfl_ml_logreg.json, 11 features).
@@ -282,7 +281,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_ml_logreg_predict.py || echo "NFL LR predict failed (non-fatal)"
+          python nfl_ml_logreg_predict.py
 
       # 2026-08-22: LIVE ORPHAN WIRES — these scripts existed but had no
       # cron caller despite SQL migrations and app code (GameDetailV2.tsx)
@@ -297,7 +296,7 @@ jobs:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_weather_pull.py || echo "NFL weather pull failed (non-fatal)"
+          python nfl_weather_pull.py
 
       - name: Pull NFL injuries (nfl_data_py)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -307,7 +306,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_injuries_pull.py || echo "NFL injuries pull failed (non-fatal)"
+          python nfl_injuries_pull.py
 
       # 2026-08-31: ESPN injury scraper as preseason / Week 1 fallback.
       # nflverse parquet isn't published until games start (Week 1+) so
@@ -323,7 +322,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_injuries_espn_pull.py || echo "ESPN injuries pull failed (non-fatal)"
+          python nfl_injuries_espn_pull.py
 
       - name: Pull NFL starters (ESPN scoreboard)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -333,7 +332,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_weekly_starters.py || echo "NFL starters pull failed (non-fatal)"
+          python nfl_weekly_starters.py
 
       # 2026-09-13: nflverse rosters refresh — authoritative player→team
       # mapping independent of games-played data. Solves the Kirk Cousins
@@ -352,7 +351,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_rosters_pull.py || echo "NFL rosters pull failed (non-fatal)"
+          python nfl_rosters_pull.py
 
       # 2026-09-14: LIVE DEPTH CHART SCRAPE. nflverse rosters.csv reflects
       # last-season team assignments early in the season (verified with
@@ -373,7 +372,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_live_depth_scrape.py || echo "NFL live depth scrape failed (non-fatal)"
+          python nfl_live_depth_scrape.py
 
       # Backfill L4 team ATS / O/U / ML tendencies on today's rows
       # (2026-08-17). Activates the 10 NFL team_form signals in
@@ -390,7 +389,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_nfl_team_tendencies.py || echo "nfl tendencies backfill failed (non-fatal)"
+          python backfill_nfl_team_tendencies.py
 
       # 2026-09-14: this-season ATS/OU records populated directly from
       # nfl_game_results — feeds NFLSituationalCard's THIS SEASON display
@@ -406,7 +405,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_nfl_season_records_from_results.py || echo "nfl season records backfill failed (non-fatal)"
+          python backfill_nfl_season_records_from_results.py
 
       # 2026-08-17: teamrankings season aggregates + enrichment for
       # season_trend signals. Runs AFTER rolling tendencies so both
@@ -419,7 +418,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_teamrankings_trends.py --sport NFL || echo "teamrankings NFL pull failed (non-fatal)"
+          python pull_teamrankings_trends.py --sport NFL
 
       - name: Enrich NFL game context with season trends
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -429,7 +428,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_trends.py --sport NFL || echo "NFL trend enrichment failed (non-fatal)"
+          python enrich_team_trends.py --sport NFL
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
       - name: Enrich team form — venue split + H2H
@@ -439,7 +438,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport NFL --days-ahead 14 || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport NFL --days-ahead 14
 
       # 2026-08-28: derive per-team defense stats (PPG, pass_ypg,
       # rush_ypg, pass_epa_allowed, rush_epa_allowed) from opponent
@@ -458,7 +457,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_team_defense_backfill.py || echo "NFL defense backfill non-fatal"
+          python nfl_team_defense_backfill.py
 
       # 2026-08-13 · 5-model coverage rollout: NFL MC simulator.
       # Runs AFTER game_context so it can read team stats + close_total,
@@ -474,7 +473,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_mc_simulator.py || echo "NFL MC failed (non-fatal)"
+          python nfl_mc_simulator.py
 
       # 2026-08-13 · 5-lens rollout: V3 situational-regression.
       # Reads projected_spread/projected_total (Matchup-EPA base) + weather +
@@ -489,7 +488,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_v3_regression.py || echo "NFL V3 failed (non-fatal)"
+          python nfl_v3_regression.py
 
       # 2026-08-13 · 5-lens rollout: V4 XGBoost inference.
       # Loads models/nfl_v4_{spread,total}.pkl (trained via nfl_v4_train.py
@@ -504,7 +503,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_v4_inference.py || echo "NFL V4 inference failed (non-fatal)"
+          python nfl_v4_inference.py
 
       - name: Generate NFL picks (play-of-day + lock_of_week)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -542,7 +541,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_prop_usage_v2_shadow.py --days 14 || echo "usage_v2 shadow non-fatal"
+          python nfl_prop_usage_v2_shadow.py --days 14
 
       # 2026-09-08 NFL prop signal discipline. Post-generation cleanup:
       #   1. Drop cross-team leaks (player_team ≠ home/away)
@@ -579,7 +578,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_prop_refit_seed.py --days 8 || echo "prop refit seed non-fatal"
+          python nfl_prop_refit_seed.py --days 8
 
       # 2026-09-14: Fade-Jerry-PASS materializer. Backtest agent showed
       # Jerry PASS verdicts on NFL props hit 33.6% (n=110) — inverse
@@ -598,7 +597,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_prop_fade_jerry_pass.py --days 8 || echo "fade jerry pass non-fatal"
+          python nfl_prop_fade_jerry_pass.py --days 8
 
       # 2026-09-10: NFL prop injury filter. Post-generation demotion pass —
       # reads nfl_injuries + demotes tier/conviction for Out/Doubtful/
@@ -614,7 +613,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_prop_injury_filter.py --window 8 || echo "injury filter non-fatal"
+          python nfl_prop_injury_filter.py --window 8
 
       # 2026-08-17: NFL prop playbook shadow-mode pipeline.
       # Same pattern as MLB: backfill L10 lookback → run prop_ensemble_scorer.
@@ -639,7 +638,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport NFL --refresh-existing || echo "NFL prop playbook failed (non-fatal)"
+          python prop_ensemble_scorer.py --sport NFL --refresh-existing
 
       # 2026-09-07: Prop Jerry synthesis for NFL — writes prop_jerry_reads
       # rows with input_snapshot.render_sections so the app renders the
@@ -661,7 +660,7 @@ jobs:
           # 2026-09-12: --days 3 covers today + Sun/Mon slates. Prior single-day
           # default caused Sun 9/13 PRIME props to never synth on Sat cron
           # (game_date=today = 9/12 for NFL = empty). Andy audit finding.
-          python generate_prop_jerry_synthesis.py --sport NFL --days 3 --force --tier-gate NONE || echo "NFL prop Jerry synthesis failed (non-fatal)"
+          python generate_prop_jerry_synthesis.py --sport NFL --days 3 --force --tier-gate NONE
 
       # 2026-09-13 Jerry-read orphan sweep for NFL. Same class as MLB
       # cleanup after final dedup — NFL 9/13 audit found 55 orphan
@@ -677,8 +676,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python cleanup_stale_coverage_props.py --sport NFL --jerry-orphan-scan \
-            || echo "NFL jerry-orphan cleanup failed (non-fatal)"
+          python cleanup_stale_coverage_props.py --sport NFL --jerry-orphan-scan
 
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -688,7 +686,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_externals_nfl.py || echo "external pull failed (non-fatal)"
+          python pull_externals_nfl.py
 
       # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
       # nfl_game_context. Required prerequisite for the sharp-split
@@ -709,7 +707,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_goat_composite.py --days 8 || echo "GOAT composite non-fatal"
+          python nfl_goat_composite.py --days 8
 
       # external pull so OC data is fresh in external_picks.
       - name: Compute alignment + oddscrowd snapshot
@@ -720,7 +718,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_align_status_nfl.py || echo "align status failed (non-fatal)"
+          python compute_align_status_nfl.py
 
       # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
       # cross-sport classify_line_moves.py --sport ALL step (in
@@ -733,7 +731,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python write_line_snapshot.py --sport NFL || echo "write_line_snapshot NFL failed (non-fatal)"
+          python write_line_snapshot.py --sport NFL
 
       # 2026-08-28: recompute primary_play AFTER all enrichment (defense
       # backfill, team_form, MC sim, V3/V4 model outputs, align_status,
@@ -751,7 +749,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python recompute_nfl_primary_play.py --days 14 || echo "nfl recompute non-fatal"
+          python recompute_nfl_primary_play.py --days 14
 
       # 2026-09-13: LR-warn hard-cap + anchor-cap discipline. Data from
       # first signal_attribution grading run (NCAAF 9/12 slate, n=228)
@@ -771,7 +769,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_ncaaf_signal_discipline.py --sport NFL || echo "NFL discipline gates failed (non-fatal)"
+          python nfl_ncaaf_signal_discipline.py --sport NFL
 
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -797,7 +795,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_snapshot.py --sport NFL || echo "signal snapshot failed (non-fatal)"
+          python signal_attribution_snapshot.py --sport NFL
 
       # 2026-09-13: signal_attribution grader — resolves pending snapshots
       # from the last 7 days against final scores. Runs every cron; only
@@ -810,7 +808,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_grade.py --sport NFL --days 7 || echo "signal grade failed (non-fatal)"
+          python signal_attribution_grade.py --sport NFL --days 7
 
       # 2026-09-02: Thu-lock injury regen check. Runs on every cron
       # (cheap query — silent no-op unless a QB1 has status change
@@ -825,7 +823,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_injury_regen_check.py || echo "injury regen check failed (non-fatal)"
+          python nfl_injury_regen_check.py
 
       # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
       # NFL prompt writes prose only; without sync, jerry_reads never fills.
@@ -838,7 +836,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NFL --window 8 || echo "NFL jerry_reads sync failed"
+          python sync_jerry_reads_from_ctx.py --sport NFL --window 8
 
       # 2026-09-19: jerry_pick_scrub has supported NFL since it shipped
       # (SPORT_CONFIG carries MLB/NFL/NCAAF) but was only ever invoked
@@ -961,7 +959,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_home_road_tendencies" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"p_sport": "NFL"}' || echo "tendencies refresh failed"
+            -d '{"p_sport": "NFL"}'
 
       # 2026-09-01: refresh cross-sport rollup matviews after NFL resolver
       # updates nfl_game_results. All three matviews are universal (union
@@ -977,7 +975,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_recent_games refresh failed"
+            -d '{}'
       - name: Refresh team_situational_records matview
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
@@ -988,7 +986,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_situational_records refresh failed"
+            -d '{}'
       - name: Refresh team_stats_rolling matview
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
@@ -999,7 +997,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_stats_rolling refresh failed"
+            -d '{}'
 
       # 2026-08-23 season-ready: refresh signal_registry from freshly graded
       # NFL props. Feeds the sign-constrained refit training (once Weeks 1-3
@@ -1013,7 +1011,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport NFL --days 30 || echo "NFL signal calibration failed (non-fatal)"
+          python refresh_prop_signal_calibration.py --sport NFL --days 30
 
       # 2026-09-02: Split — per-source calibration for NFL. Powers The
       # Split's per-source W-L record card + fade/trust tag on external
@@ -1026,7 +1024,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_external_source_calibration.py --sport NFL || echo "NFL external calibration failed"
+          python audit_external_source_calibration.py --sport NFL
 
       - name: Refresh sharp-source calibration (NFL)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -1036,7 +1034,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_sharp_source_calibration.py --sport NFL || echo "NFL sharp source calibration failed"
+          python audit_sharp_source_calibration.py --sport NFL
 
       # 2026-09-02: Split — signal-pattern rolling hit rates (NFL). Powers
       # the "does this pattern hit?" inline chip context on Split cards.
@@ -1048,7 +1046,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_signal_patterns.py --sport NFL || echo "NFL signal patterns failed"
+          python compute_signal_patterns.py --sport NFL
 
       # 2026-09-01: Vault Match pattern recompute (NFL). Fires whichever
       # patterns land in PATTERN_CATALOG for sport='NFL'. See
@@ -1061,7 +1059,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_sport_patterns.py --sport NFL || echo "NFL vault patterns failed (non-fatal)"
+          python compute_sport_patterns.py --sport NFL
 
       # 2026-09-01: attach matched Vault patterns to today's/upcoming
       # ctx rows. Runs on full + context_only modes (needs upcoming
@@ -1074,7 +1072,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python attach_vault_matches.py --sport NFL || echo "NFL vault attach failed (non-fatal)"
+          python attach_vault_matches.py --sport NFL
 
       - name: Recompute cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
@@ -1096,7 +1094,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --write-today --sport NFL || echo "NFL audit write failed"
+          python sharp_fade_audit.py --write-today --sport NFL
 
       - name: NFL — backfill sharp-fade audit outcomes
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -1106,7 +1104,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --backfill-results || echo "NFL audit backfill failed"
+          python sharp_fade_audit.py --backfill-results
 
       # 2026-09-08 heartbeat END. Absent end row = workflow died mid-run.
       - name: Heartbeat — end
@@ -1121,8 +1119,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"end\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"nfl_pipeline\",\"event\":\"end\",\"sport\":\"NFL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping end
         if: always()

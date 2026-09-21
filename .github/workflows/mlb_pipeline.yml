@@ -127,8 +127,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
-               || echo "heartbeat start write failed (non-fatal — likely migration not applied yet)"
+               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}"
 
       - name: Install dependencies
         run: |
@@ -188,7 +187,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pitcher_stats.py || echo "pitcher_stats failed (non-fatal 8/27)"
+          python pitcher_stats.py
 
       - name: Run bullpen stats update
         continue-on-error: true
@@ -197,7 +196,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python bullpen_stats.py || echo "bullpen_stats failed (non-fatal 8/27)"
+          python bullpen_stats.py
 
       - name: Run team offense stats
         continue-on-error: true
@@ -206,7 +205,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python team_stats.py || echo "team_stats failed (non-fatal 8/27)"
+          python team_stats.py
 
       # 2026-09-01: MLB team-wide pitching pull. Persists team ERA/WHIP/
       # K per 9 / BB per 9 / HR per 9 to mlb_team_pitching (was live-
@@ -220,7 +219,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python mlb_team_pitching_pull.py || echo "mlb_team_pitching_pull failed (non-fatal)"
+          python mlb_team_pitching_pull.py
 
       - name: Run Savant enrichment (OAA, xwOBA, barrel%, catcher framing)
         continue-on-error: true
@@ -229,7 +228,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python savant_enrichment.py || echo "savant enrichment failed (non-fatal 8/27)"
+          python savant_enrichment.py
 
       - name: Run game context pipeline
         continue-on-error: true
@@ -241,7 +240,7 @@ jobs:
           BDL_API_KEY: ${{ secrets.BDL_API_KEY }}
         run: |
           cd mlb_pipeline
-          python game_context.py || echo "game_context failed (non-fatal 8/27 — rescue step will retry MC + props)"
+          python game_context.py
 
       # Backfill L10 team ATS / O/U / ML tendencies onto today's rows
       # (2026-08-17). Populates home/away_ats_last10, ou_last10_overs/unders,
@@ -259,7 +258,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_team_tendencies.py || echo "tendencies backfill failed (non-fatal — signals will pass on None)"
+          python backfill_team_tendencies.py
 
       # 2026-08-18: universal team-form enricher — computes venue-split
       # L10 records (home team's L10 AT HOME, away team's L10 ON ROAD)
@@ -273,7 +272,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport MLB || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport MLB
 
       # 2026-08-17: teamrankings season aggregates for MLB. Stacks with
       # per-game rolling tendencies — season signals catch persistent
@@ -285,7 +284,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_teamrankings_trends.py --sport MLB || echo "MLB teamrankings pull failed (non-fatal)"
+          python pull_teamrankings_trends.py --sport MLB
 
       - name: Enrich MLB game context with season trends
         continue-on-error: true
@@ -294,7 +293,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_trends.py --sport MLB || echo "MLB trend enrichment failed (non-fatal)"
+          python enrich_team_trends.py --sport MLB
 
       # ── ADVANCED METRICS (2026-08-15) — 5-part refinement pack ──
       # Runs AFTER game_context.py so base fields (catcher_framing,
@@ -319,7 +318,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python savant_pitcher_arsenal.py || echo "savant arsenal pull failed (non-fatal)"
+          python savant_pitcher_arsenal.py
 
       - name: Compute advanced sabermetrics (TTTO, framing, BABIP, bullpen, SIERA)
         continue-on-error: true
@@ -328,7 +327,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python mlb_advanced_metrics.py || echo "advanced metrics failed (non-fatal)"
+          python mlb_advanced_metrics.py
 
       # Verify starters against MLB Stats API probablePitcher feed (2026-05-27).
       # Catches late lineup changes / surprise debuts / scratched starters that
@@ -344,7 +343,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python verify_starters.py || echo "verify_starters failed (non-fatal 8/27 — props may use stale probable pitcher)"
+          python verify_starters.py
 
       # 2026-08-22: PARALLEL warmup of inning bucket splits for tonight's
       # starters. Before this step, game_context.py would discover late-
@@ -360,7 +359,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python warmup_pitcher_buckets.py --workers 6 || echo "bucket warmup non-fatal"
+          python warmup_pitcher_buckets.py --workers 6
 
       # Data-quality self-audit (2026-05-27). Built after the Matz vs-BAL
       # incident — we publicly cited 0.93 ERA / .200 BAA on 9.7 IP as
@@ -389,7 +388,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python team_hr_threats.py || echo "team_hr_threats failed (non-fatal 8/27)"
+          python team_hr_threats.py
 
       - name: Compute pitcher offense-class projections (before props — props read this)
         continue-on-error: true
@@ -398,7 +397,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_pitcher_class_projections.py || echo "pitcher_class_projections failed (non-fatal 8/27 — props will fall back to game_context values)"
+          python compute_pitcher_class_projections.py
 
       # Patch projected_ks columns on today's mlb_game_context rows from the
       # JSON cache that compute_pitcher_class_projections.py just wrote. This
@@ -414,7 +413,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python patch_projected_ks.py || echo "patch_projected_ks failed (non-fatal 8/27)"
+          python patch_projected_ks.py
 
       # Monte Carlo simulation — writes mc_probabilities + mc_high_conf_flag
       # + NRFI ensemble back to mlb_game_context. Must run BEFORE Jerry reads
@@ -430,7 +429,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_monte_carlo.py || echo "enrich_monte_carlo failed (non-fatal 8/27 — rescue step will retry)"
+          python enrich_monte_carlo.py
 
       # Sequencing-bug companion (same pattern as 7/25 panel fix):
       # game_context.py builds primary_play BEFORE enrich_monte_carlo writes
@@ -450,7 +449,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python promote_open_to_close.py --sport MLB || echo "promote failed (non-fatal)"
+          python promote_open_to_close.py --sport MLB
 
       - name: Recompute primary_play + NRFI ensemble post-MC
         env:
@@ -476,7 +475,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python apply_mc_gate_only.py --sport MLB || echo "MC gate safety net non-fatal"
+          python apply_mc_gate_only.py --sport MLB
 
       # 2026-08-27: cascade primary_play changes to jerry_reads.
       # Jerry's LLM runs early morning and stamps call_side/call_market/call_text
@@ -558,7 +557,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python sweep_prop_coverage.py || echo "prop coverage sweep failed (non-fatal)"
+          python sweep_prop_coverage.py
 
       # 2026-09-04 Pitcher-scratch sweeper (safety net). generate_props.run()
       # has an inline scratch check but only runs when that cron fires; if
@@ -573,7 +572,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sweep_pitcher_scratches.py || echo "pitcher scratch sweep failed (non-fatal)"
+          python sweep_pitcher_scratches.py
 
       # 2026-08-19: Juice-trap gate — hits_over 0.5 STRONG/PRIME at ≤-200
       # juice get demoted to LEAN. Runs AFTER sweep (needs book_over_odds
@@ -587,7 +586,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python apply_juice_trap_gate.py || echo "juice-trap gate failed (non-fatal)"
+          python apply_juice_trap_gate.py
 
       # Recompute prop + game bucket ROI (2026-08-01 R-6). Nightly
       # rebuild of prop_bucket_roi + game_bucket_roi from graded rows so
@@ -603,7 +602,7 @@ jobs:
         run: |
           cd mlb_pipeline
           python compute_prop_bucket_roi.py || echo "prop bucket recompute failed (non-fatal)"
-          python compute_game_bucket_roi.py || echo "game bucket recompute failed (non-fatal)"
+          python compute_game_bucket_roi.py
 
       # Prop refit conviction (2026-07-31 · Option C step 1). Post-hoc
       # rescore of every prop's conviction using logistic-fit weights
@@ -668,7 +667,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_external_source_records.py || echo "external records failed (non-fatal)"
+          python compute_external_source_records.py
 
       # 2026-08-10: Nightly scenario audit recompute. Reads all past
       # game_context+results, projects into ~30 canonical MLB scenarios
@@ -702,7 +701,7 @@ jobs:
           fi
           # 2026-08-12: sharp scenario matrix — 30+ patterns per sport
           # tracked with per-game match cache. Sport-universal, MLB first.
-          python compute_sharp_scenario_matrix.py --sport MLB --window 90 || echo "sharp matrix MLB failed"
+          python compute_sharp_scenario_matrix.py --sport MLB --window 90
 
       - name: Apply prop refit conviction
         continue-on-error: true
@@ -711,7 +710,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python apply_prop_refit.py || echo "prop refit failed (non-fatal)"
+          python apply_prop_refit.py
 
       # 2026-09-09: MLB PROP LR shadow write. Script exists since 9/03 but
       # was never wired into the cron — orphan. Result: every prop row had
@@ -727,7 +726,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python mlb_prop_logreg_predict.py || echo "prop LR shadow failed (non-fatal)"
+          python mlb_prop_logreg_predict.py
 
       # Backfill L5/L10 player-vs-line lookback on today's props
       # (2026-08-17). Populates player_l5_hit_count / player_l10_hit_count
@@ -745,7 +744,7 @@ jobs:
           # 2026-08-27: --days 3 catches late-generated props that missed today's
           # first backfill run (yesterday showed 17/17 L10=null which broke the
           # hits_over L10 gate). Cheap because most rows are already backfilled.
-          python backfill_prop_lookback.py --sport MLB --days 3 || echo "prop lookback backfill failed (non-fatal)"
+          python backfill_prop_lookback.py --sport MLB --days 3
 
       # 2026-08-23 Dedup pass. sweep_prop_coverage.py inserts the
       # OPPOSITE direction as COVERAGE stub so shadow playbook has
@@ -842,7 +841,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport MLB --refresh-existing || echo "prop playbook scorer failed (non-fatal, shadow-mode)"
+          python prop_ensemble_scorer.py --sport MLB --refresh-existing
 
       # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
       # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
@@ -875,7 +874,7 @@ jobs:
           #
           # Zero Claude cost on props. Zero contradiction. Zero hallucination.
           # If someone wants LLM prose back, change gate to PRIME,STRONG.
-          python generate_prop_jerry_synthesis.py --force --tier-gate NONE || echo "prop jerry synthesis failed (non-fatal)"
+          python generate_prop_jerry_synthesis.py --force --tier-gate NONE
 
       # Collapse Prop Jerry contradictions (2026-08-01 C). Runs AFTER
       # generate_prop_jerry_synthesis. Kills Skenes-style BACK+BACK /
@@ -890,7 +889,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python collapse_prop_jerry_contradictions.py || echo "prop jerry collapse failed (non-fatal)"
+          python collapse_prop_jerry_contradictions.py
 
       # 2026-08-09: pitcher-thesis contradiction resolver. Complements the
       # collapse above (which handles OVER+UNDER paradoxes on same line).
@@ -906,7 +905,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python collapse_pitcher_thesis_contradictions.py || echo "pitcher-thesis collapse failed (non-fatal)"
+          python collapse_pitcher_thesis_contradictions.py
 
       # 2026-08-10: refit verdict override — force BACK/FADE/PASS on
       # prop_jerry_reads when raw and refit disagree materially. Runs
@@ -925,7 +924,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python apply_refit_verdict_override.py || echo "refit override failed (non-fatal)"
+          python apply_refit_verdict_override.py
 
       # 2026-08-23 SECOND DEDUP PASS. Wave 1a follow-up: the first
       # dedup_prop_dupes (line ~496) runs before apply_refit_verdict_override
@@ -957,8 +956,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python cleanup_stale_coverage_props.py --sport MLB --jerry-orphan-scan \
-            || echo "jerry-orphan cleanup failed (non-fatal)"
+          python cleanup_stale_coverage_props.py --sport MLB --jerry-orphan-scan
 
       # 2026-08-14 · FADE→PASS discipline for bomb-list prop_types.
       # 30d audit showed outs_over / er_under / bb_over / bb_under / ks_under
@@ -972,7 +970,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python apply_fade_type_discipline.py || echo "fade type discipline failed (non-fatal)"
+          python apply_fade_type_discipline.py
 
       # Jerry-anchor Daily Degen (2026-07-31 · Tabletop C step 3). Runs
       # AFTER generate_prop_jerry_synthesis so it can pull from both
@@ -988,7 +986,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python jerry_anchor_daily_degen.py || echo "degen jerry anchor failed (non-fatal)"
+          python jerry_anchor_daily_degen.py
 
       # Prop-signal override (added 2026-05-19): when v4 says OVER big
       # (>=+1.5 vs market) but PRIME/STRONG props concentrate UNDER, props
@@ -1213,7 +1211,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_prop_playbook_shadow.py --days 14 || echo "shadow audit failed (non-fatal)"
+          python audit_prop_playbook_shadow.py --days 14
 
       # Resolve yesterday's Daily Degen parlay. Runs after resolve_props +
       # resolve_game_results so leg outcomes (props via mlb_pipeline_props.result;
@@ -1273,7 +1271,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python mlb_lr_dissent_audit.py --backfill 3 || echo "lr dissent audit non-fatal"
+          python mlb_lr_dissent_audit.py --backfill 3
 
       # CLV computation (NEW 2026-08-15). Runs AFTER grading so every pick
       # has a resolved close_total / close_spread / close_home_ml + our
@@ -1287,7 +1285,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_clv.py --sport ALL || echo "compute_clv non-fatal"
+          python compute_clv.py --sport ALL
 
       # Jerry synthesis graders (2026-07-31 · Tier 3). Runs alongside
       # legacy grade_daily_card. Populates jerry_reads.result +
@@ -1318,7 +1316,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python rescore_signal_registry.py || echo "rescore_signal_registry non-fatal"
+          python rescore_signal_registry.py
 
       # 2026-08-16: backfill signal_sources → signal_registry tiers from
       # the past 60 days of resolved games. Every signal_sources row
@@ -1334,7 +1332,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_signal_tiers.py --days 60 --sport ALL || echo "backfill_signal_tiers non-fatal"
+          python backfill_signal_tiers.py --days 60 --sport ALL
 
       # 2026-08-16: prop signal audit — mines signals JSON on resolved props
       # to auto-tier which prop signals actually predict. Companion to
@@ -1348,7 +1346,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_prop_signals.py --days 90 --sport ALL || echo "audit_prop_signals non-fatal"
+          python audit_prop_signals.py --days 90 --sport ALL
 
       # 2026-08-18: prop signal_sources rule backfill — grades the plug-in
       # rules the playbook ensemble consumes (e.g. `batter_l14_heat` with
@@ -1366,7 +1364,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_prop_signal_tiers.py --days 60 --sport ALL || echo "backfill_prop_signal_tiers non-fatal"
+          python backfill_prop_signal_tiers.py --days 60 --sport ALL
 
       # 2026-08-16: nightly ensemble health check. Replays the last 30d,
       # computes rolling hit rate + ROI, sets status_flag on ensemble_health.
@@ -1379,7 +1377,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python monitor_ensemble_health.py --sport MLB --window 30 || echo "monitor_ensemble_health non-fatal"
+          python monitor_ensemble_health.py --sport MLB --window 30
 
       # 2026-08-16: ensemble wiring verifier. Catches silent bugs like
       # zeroed track records, unloaded registries, weight-lookup mismatches.
@@ -1392,7 +1390,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python verify_ensemble_wiring.py --sport MLB || echo "verify_ensemble_wiring found issues — inspect logs"
+          python verify_ensemble_wiring.py --sport MLB
 
       # POTD auto-resolver — reads jerry_cache best_bet_* entries, looks
       # up game outcomes via mlb_game_results, writes Win/Loss/Push back
@@ -1419,7 +1417,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_snapshot.py --sport MLB || echo "MLB signal snapshot failed (non-fatal)"
+          python signal_attribution_snapshot.py --sport MLB
 
       - name: Grade MLB signal attribution
         continue-on-error: true
@@ -1428,7 +1426,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_grade.py --sport MLB --days 7 || echo "MLB signal grade failed (non-fatal)"
+          python signal_attribution_grade.py --sport MLB --days 7
 
       # 2026-08-27: Single source of truth for per-surface, per-sport,
       # per-window W/L/P + units_net. Both the Receipts tab and the Sharp
@@ -1455,7 +1453,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_externals.py --sport MLB --days 7 || echo "external resolver failed (non-fatal)"
+          python resolve_externals.py --sport MLB --days 7
 
       # Refresh per-source rolling calibration (7d/30d/lifetime hit rates
       # per source × surface × fade_flag). Feeds dynamic fade tag refresh
@@ -1467,7 +1465,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_external_source_calibration.py --sport MLB || echo "external calibration audit failed (non-fatal)"
+          python audit_external_source_calibration.py --sport MLB
 
       # 2026-09-02: split dissent rollup — powers Vault Match
       # dissent patterns (MAJ_when_CZ_dissents, 3_of_3_agree fade).
@@ -1479,7 +1477,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_split_dissent_rollup.py --sport MLB || echo "MLB split dissent rollup failed"
+          python compute_split_dissent_rollup.py --sport MLB
 
       # 2026-09-02: Split — signal-pattern rolling hit rates (MLB). Powers
       # the "does this pattern hit?" inline chip context on Split cards.
@@ -1490,7 +1488,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_signal_patterns.py --sport MLB || echo "MLB signal patterns failed"
+          python compute_signal_patterns.py --sport MLB
 
       # 2026-09-01: Vault Match pattern recompute — proprietary
       # system-detected patterns (see project_vault_match_901). Runs
@@ -1503,7 +1501,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_sport_patterns.py --sport MLB || echo "MLB vault patterns failed (non-fatal)"
+          python compute_sport_patterns.py --sport MLB
 
       # 2026-09-01: attach matched Vault patterns to today's ctx rows.
       # Must run AFTER compute_sport_patterns (needs current hit_pct in
@@ -1515,7 +1513,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python attach_vault_matches.py --sport MLB || echo "MLB vault attach failed (non-fatal)"
+          python attach_vault_matches.py --sport MLB
 
       # 2026-08-20: Sharp-source rolling calibration (FR / CZ / OC hit rates +
       # 3/3-agree vs dissent buckets). The moat table pair per
@@ -1529,7 +1527,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_sharp_source_calibration.py --sport MLB || echo "sharp-source calibration failed (non-fatal)"
+          python audit_sharp_source_calibration.py --sport MLB
 
       # Consensus-bucket audit (substantiates consensus_fade detector).
       # Without this the detector has no bucket calibration and every
@@ -1541,7 +1539,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_consensus_bucket_calibration.py --sport MLB || echo "consensus bucket audit failed (non-fatal)"
+          python audit_consensus_bucket_calibration.py --sport MLB
 
       # Re-walk the sweat card after POTD is graded (2026-05-26 fix).
       # The card walk inside resolve_game_results.py reads
@@ -1675,7 +1673,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python snapshot_pick_lock.py --sport MLB --source card_lock || echo "snapshot non-fatal"
+          python snapshot_pick_lock.py --sport MLB --source card_lock
 
       # 2026-09-03 SERVER-SIDE SHARP CARD (launch blocker):
       # generate_sharp_card.py replaces client-side item composition
@@ -1767,7 +1765,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python detect_consensus_fade.py --sport MLB || echo "fade detector failed (non-fatal)"
+          python detect_consensus_fade.py --sport MLB
 
       # Jerry synthesis (added 2026-07-31) — new analytical layer that
       # reads every internal model + external pick (with 30d track
@@ -1801,7 +1799,7 @@ jobs:
           # even after parse_synthesis. If parse fails silently (has happened
           # twice this month), sync catches. If parse worked, sync no-ops
           # with matching values. See docs/JERRY_UNIFICATION.md.
-          python sync_jerry_reads_from_ctx.py --sport MLB || echo "MLB jerry_reads sync failed"
+          python sync_jerry_reads_from_ctx.py --sport MLB
 
       # 2026-08-10: Sharp-fade discipline enforcement. Runs AFTER Jerry synth.
       # Wires the documented sharp-fade + model-consensus rules into the
@@ -1822,7 +1820,7 @@ jobs:
           # 2026-09-08: pinned to --sport MLB. Script defaults to `ALL` and was
           # iterating every registered sport from the MLB cron — the sport's
           # own pipeline (nfl/ncaaf/ncaab/nhl/nba/ufc) runs its own copy.
-          python collapse_sharp_fade_violations.py --sport MLB || echo "sharp-fade collapse failed (non-fatal)"
+          python collapse_sharp_fade_violations.py --sport MLB
 
       # 2026-08-18: reconcile Jerry call_side to primary_play.side when the
       # ensemble is the authority. Fixes the UI mismatch where the tier
@@ -1844,7 +1842,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python reconcile_jerry_to_primary.py --sport MLB || echo "jerry reconcile failed (non-fatal)"
+          python reconcile_jerry_to_primary.py --sport MLB
 
       # 2026-08-10: Pre-publish sanity audit. Runs AFTER all collapse scripts
       # + BEFORE generate_sweat_card. Scans today's reads for known bug
@@ -1867,7 +1865,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python conviction_calibration_pass.py --sport MLB || echo "calibration pass failed (non-fatal)"
+          python conviction_calibration_pass.py --sport MLB
 
       - name: Jerry pre-publish sanity audit (soft-warn — never blocks card)
         continue-on-error: true
@@ -1889,7 +1887,7 @@ jobs:
           # But sanity audit CANNOT kill the pipeline anymore. If Jerry
           # reads are broken, publish the ones that pass and log the failures.
           # Better a partial card than no card after 50 min of compute.
-          python jerry_pre_publish_audit.py --sport MLB --repair --warn-only || echo "jerry pre-publish audit reported issues (non-fatal — see log + jerry_pre_publish_health table)"
+          python jerry_pre_publish_audit.py --sport MLB --repair --warn-only
 
       # Snapshot game_context (2026-08-02 · adaptive ensemble Phase 1B).
       # Runs AFTER generate_jerry_synthesis so we capture the state Jerry
@@ -1905,7 +1903,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python snapshot_mlb_game_context.py || echo "context snapshot failed (non-fatal)"
+          python snapshot_mlb_game_context.py
 
       # Recompute model_track_records (2026-08-02 · Phase 1B nightly).
       # Reads jerry_cache historical + fresh snapshots; recomputes rolling
@@ -1918,7 +1916,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_model_track_records.py || echo "model track records failed (non-fatal)"
+          python compute_model_track_records.py
 
       # ─── SHARP MONEY MONITORING STACK (2026-08-08 → 2026-08-09) ───
       # Full pipeline: bucket cap → rule cap → per-game audit → self-calibrate.
@@ -1936,7 +1934,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_divergence_tracker.py || echo "bucket stats failed (non-fatal)"
+          python sharp_divergence_tracker.py
 
       - name: Sharp — recompute per-rule stats
         continue-on-error: true
@@ -1945,7 +1943,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_rules_stats.py || echo "per-rule stats failed (non-fatal)"
+          python sharp_fade_rules_stats.py
 
       - name: Sharp — write today's audit rows
         continue-on-error: true
@@ -1954,7 +1952,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --write-today || echo "audit write failed (non-fatal)"
+          python sharp_fade_audit.py --write-today
 
       - name: Sharp — backfill audit outcomes
         continue-on-error: true
@@ -1963,7 +1961,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --backfill-results || echo "audit backfill failed (non-fatal)"
+          python sharp_fade_audit.py --backfill-results
 
       - name: Sharp — self-calibrate rule thresholds
         continue-on-error: true
@@ -1972,7 +1970,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --calibrate || echo "calibrate failed (non-fatal)"
+          python sharp_fade_audit.py --calibrate
 
       # Weekly sharp-money digest (Sundays only).
       # Emits week-over-week trend + recency kill switch check +
@@ -1987,7 +1985,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_money_weekly_digest.py || echo "weekly sharp digest failed (non-fatal)"
+          python sharp_money_weekly_digest.py
 
       # Weekly CLV rollup (Sundays only, 2026-08-15).
       # Aggregates clv_snapshots by sport × window (7d/30d/90d) with
@@ -2002,7 +2000,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python clv_weekly_rollup.py --sport ALL || echo "clv rollup failed (non-fatal)"
+          python clv_weekly_rollup.py --sport ALL
 
       # Weekly refresh of Jerry's prompt MODEL PERFORMANCE CONTEXT block.
       # Interim adaptive weighting (2026-08-02) — pulls current lifetime hit
@@ -2058,7 +2056,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python reconcile_potd_surfaces.py || echo "POTD reconcile non-fatal"
+          python reconcile_potd_surfaces.py
 
       # Auto-generate tonight's content card after the 2pm ET pipeline run
       # (skip on 8am run since lineups/lines aren't locked yet — content
@@ -2263,7 +2261,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python consistency_watchdog.py || echo "consistency check tripped (see watchdog_alerts)"
+          python consistency_watchdog.py
 
       # 2026-09-09 PIPELINE SMOKE TEST — read-only sanity that every
       # user-visible surface has data. Runs AFTER consistency_watchdog
@@ -2278,7 +2276,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pipeline_smoke_test.py || echo "smoke test surfaced issues (see log above)"
+          python pipeline_smoke_test.py
 
       # Build Tonight's Sweat Card — server-generated structured card for
       # the app's MLB tab. Reads everything upstream wrote (POTD, Dawg,
@@ -2310,7 +2308,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python apply_prop_refit.py || echo "post-card refit re-apply failed (non-fatal)"
+          python apply_prop_refit.py
 
       # 2026-08-18: prop_pick_snapshots — IMMUTABLE snapshot of every
       # shipping pick's odds/tier at card-lock time. Fixes the accountability
@@ -2338,7 +2336,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python write_line_history.py --sport ALL || echo "line_history write failed"
+          python write_line_history.py --sport ALL
 
       - name: Steam Room — detect line movement patterns
         env:
@@ -2347,7 +2345,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python detect_line_movement.py --sport ALL --lookback-hours 6 || echo "line detector failed"
+          python detect_line_movement.py --sport ALL --lookback-hours 6
 
       # ─── Line movement intelligence (NEW 2026-08-15) ──────────────
       # Cross-references the raw steam/RLM/limit flags detected above with
@@ -2363,7 +2361,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python classify_line_moves.py --sport ALL || echo "line classifier failed"
+          python classify_line_moves.py --sport ALL
 
       # Fadereport sharp-signal scrape (Playwright). Second source of
       # public splits (handle%/bettors%) alongside OddsCrowd. Cross-source
@@ -2378,7 +2376,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python fadereport_scraper.py || echo "fadereport scraper failed (non-fatal)"
+          python fadereport_scraper.py
 
       # Cleatz.com public splits scraper (2026-08-15 pm) — 3rd public-splits
       # source alongside OddsCrowd + Fadereport. Full-slate coverage with
@@ -2392,7 +2390,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python cleatz_scraper.py || echo "cleatz scraper failed (non-fatal)"
+          python cleatz_scraper.py
 
       # ScoresAndOdds scraper (2026-08-23) — 4th public-splits source.
       # Writes directly to public_splits_v2 (source-agnostic schema
@@ -2406,7 +2404,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python pull_scoresandodds.py --sport MLB || echo "SO scraper failed (non-fatal)"
+          python pull_scoresandodds.py --sport MLB
 
       # Splits v2 aggregator (2026-08-23) — normalizes rows from
       # oddscrowd (public_splits_archive) + fadereport_signals +
@@ -2421,7 +2419,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python splits_v2_pipeline.py --sport MLB || echo "splits v2 aggregator failed (non-fatal)"
+          python splits_v2_pipeline.py --sport MLB
 
       # Archive both public split sources side-by-side per snapshot
       # (2026-08-15). Feeds the living pattern-discovery engine below —
@@ -2434,7 +2432,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python archive_public_splits.py --sport ALL || echo "splits archive failed"
+          python archive_public_splits.py --sport ALL
 
       # Living pattern engine — refresh registered hypotheses nightly
       # + aggressive background discovery scan. Sport-universal. Only
@@ -2450,7 +2448,7 @@ jobs:
         run: |
           cd mlb_pipeline
           python mine_line_patterns.py --refresh --sport ALL || echo "pattern refresh failed"
-          python mine_line_patterns.py --discover --sport ALL || echo "pattern discover failed"
+          python mine_line_patterns.py --discover --sport ALL
 
       # Freeze TRUE closing lines at T-Xmin (per line_movement_config).
       # Distinguishes "close_total was set by most recent pull" from
@@ -2464,7 +2462,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python freeze_closing_lines.py --sport ALL || echo "close freezer failed"
+          python freeze_closing_lines.py --sport ALL
 
       # 2026-08-27: prop closing-line freeze — snapshots close_over_odds /
       # close_under_odds / close_prop_line on PRIME/STRONG props at T-5min.
@@ -2478,7 +2476,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python freeze_prop_closing_lines.py --sport ALL || echo "prop close freezer failed"
+          python freeze_prop_closing_lines.py --sport ALL
 
       - name: Steam Room — ladder qualifier check
         env:
@@ -2487,7 +2485,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python steam_room_ladder.py || echo "ladder engine failed"
+          python steam_room_ladder.py
 
       - name: Steam Room — resolve ladder rung results
         env:
@@ -2516,7 +2514,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python pull_alt_lines.py || echo "alt lines fetch failed (Ledger falls back to estimator)"
+          python pull_alt_lines.py
 
       - name: Steam Room — generate Ledger suggestions
         env:
@@ -2525,7 +2523,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python generate_ledger.py || echo "ledger generator failed"
+          python generate_ledger.py
 
       # 2026-08-18: snapshot every shipped Ledger suggestion IMMUTABLY —
       # transparency parity with Sharp Card / prop_pick_snapshots.
@@ -2537,7 +2535,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python snapshot_ledger.py || echo "ledger snapshot failed (non-fatal)"
+          python snapshot_ledger.py
 
       # Ledger grader — runs after grade_props to catch newly-resolved games
       - name: Grade Ledger snapshots (last 7 days)
@@ -2703,7 +2701,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python compute_hit_rate_dashboard.py --sport ALL || echo "hit-rate compute failed"
+          python compute_hit_rate_dashboard.py --sport ALL
 
       - name: Monitoring — rule-fire stats
         env:
@@ -2712,7 +2710,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python compute_rule_fire_stats.py --sport ALL || echo "rule-fire compute failed"
+          python compute_rule_fire_stats.py --sport ALL
 
       - name: Monitoring — anomaly alerts
         env:
@@ -2721,7 +2719,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python alert_dashboard_anomalies.py || echo "alert engine failed"
+          python alert_dashboard_anomalies.py
 
       # 2026-08-14 Session B: data quality event aggregator + sanity checks
       # Promotes recurring silent-failure trips to dashboard_alerts and runs
@@ -2733,7 +2731,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python check_data_quality_daily.py || echo "DQ daily failed"
+          python check_data_quality_daily.py
 
       # 2026-08-27: 18-check accuracy sweep across every displayed number.
       # Non-fatal — logs FAIL rows so they surface in the run summary.
@@ -2745,7 +2743,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python audit_data_accuracy.py || echo "data accuracy audit failed (non-fatal)"
+          python audit_data_accuracy.py
 
       # 2026-08-14 Session C: rule backtest + auto-promotion
       # Backfills actual outcomes on rule_shadow_log rows for graded picks,
@@ -2759,7 +2757,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python backtest_rules.py || echo "rule backtest failed"
+          python backtest_rules.py
 
       # 2026-08-14 Session D: in-app user notes dispatcher
       # Reads monitoring signals + generates notes surfaced as dismissible
@@ -2773,7 +2771,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python dispatch_user_notes.py || echo "user note dispatch failed"
+          python dispatch_user_notes.py
 
       # Pipeline health check — catches silent skips like the 5/19 case
       # where play_of_day.py's late-slate defer was returning before the
@@ -2821,8 +2819,7 @@ jobs:
           echo "=============================================================="
           echo "  SLATE COMPOSITION — today's publishable mix vs baseline"
           echo "=============================================================="
-          python reconcile_resolution.py --days 7 --sport MLB \
-            || echo "::warning::slate composition check reported CRITICAL findings — see output above"
+          python reconcile_resolution.py --days 7 --sport MLB
 
       # 2026-08-22: signal-wiring verifier (soft-warn) — walks every enabled
       # signal_sources row, regex-extracts ctx.X references, compares against
@@ -2841,7 +2838,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python verify_signal_wiring.py || echo "verify_signal_wiring reported issues (non-fatal, see log)"
+          python verify_signal_wiring.py
 
       # 2026-08-29: full watchdog pass at the very end so CRITICAL/WARNING
       # health issues (primary_play_stale, grader_coverage, sharp_source_
@@ -2856,7 +2853,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python watchdogs.py || echo "watchdog reported alerts (non-fatal, see log)"
+          python watchdogs.py
 
       # Commit the generated content card so Andy can pull it locally.
       # 5/29 incident: two parallel runs both generated the same dated
@@ -2887,8 +2884,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"mlb_pipeline\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}"
 
       # 2026-08-31: external monitor success ping. See start-ping step
       # for setup instructions. Fires ONLY on successful completion so

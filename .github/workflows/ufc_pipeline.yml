@@ -53,8 +53,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ufc_pipeline\",\"event\":\"start\",\"sport\":\"UFC\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"ufc_pipeline\",\"event\":\"start\",\"sport\":\"UFC\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping start
         continue-on-error: true
@@ -98,7 +97,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_card_scraper_v3.py || echo "card scraper failed (non-fatal)"
+          python ufc_card_scraper_v3.py
 
       - name: Refit isotonic calibrator from latest graded fights
         if: steps.mode.outputs.mode == 'full'
@@ -159,7 +158,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_externals_ufc.py || echo "externals pull failed (non-fatal)"
+          python pull_externals_ufc.py
 
       - name: Resolve completed fights (grade Saturday card)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -183,7 +182,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_espn_enrich.py --today || echo "UFC ESPN enrich failed (non-fatal — synth falls back to prior stats)"
+          python ufc_espn_enrich.py --today
 
       # Per-fight Jerry synthesis (2026-08-01). Runs AFTER card is scored +
       # odds pulled + EV computed so Jerry sees the full model output. Writes
@@ -200,7 +199,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_ufc_fight_synthesis.py || echo "UFC Jerry synth failed (non-fatal)"
+          python generate_ufc_fight_synthesis.py
 
       # 2026-08-22: UFC game reads MOVED HERE from mlb_pipeline.yml where it
       # was firing --force every MLB cron with no UFC-workflow context. Now
@@ -215,7 +214,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_ufc_game_reads.py --force || echo "UFC game reads failed (non-fatal)"
+          python generate_ufc_game_reads.py --force
 
       # UFC picks grader (2026-08-09). Runs after ESPN results are available.
       # Backfills winner_actual / method_actual / pick_result onto ufc_picks
@@ -228,7 +227,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_grader.py --backfill-all || echo "UFC grader failed (non-fatal)"
+          python ufc_grader.py --backfill-all
 
       # 2026-08-09: UFC jerry_reads grader (separate table from ufc_picks).
       # jerry_reads holds the per-fight synthesis output with call_side A/B
@@ -242,7 +241,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python grade_ufc_jerry_reads.py --backfill-days 60 || echo "UFC jerry grader failed (non-fatal)"
+          python grade_ufc_jerry_reads.py --backfill-days 60
 
       # 2026-09-08 heartbeat END.
       - name: Heartbeat — end
@@ -257,8 +256,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ufc_pipeline\",\"event\":\"end\",\"sport\":\"UFC\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"ufc_pipeline\",\"event\":\"end\",\"sport\":\"UFC\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping end
         if: always()

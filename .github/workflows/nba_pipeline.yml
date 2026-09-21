@@ -36,8 +36,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"start\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"start\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping start
         continue-on-error: true
@@ -86,7 +85,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_home_road_tendencies" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"p_sport": "NBA"}' || echo "tendencies refresh failed"
+            -d '{"p_sport": "NBA"}'
 
       # 2026-09-01: NBA four-factors + pace puller (basketball-reference).
       # Populates efg_pct / tov_pct / orb_pct / ft_rate + opp variants +
@@ -101,7 +100,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_four_factors_pull.py || echo "nba_four_factors_pull failed (non-fatal)"
+          python nba_four_factors_pull.py
 
       # 2026-09-01: refresh team_stats_rolling after four-factors write
       - name: Refresh team_stats_rolling (NBA follow-up)
@@ -113,7 +112,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_stats_rolling refresh failed"
+            -d '{}'
 
       # 2026-09-01: refresh cross-sport rollup matviews (team_recent_games,
       # team_situational_records, team_stats_rolling). Universal matviews —
@@ -130,7 +129,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_recent_games refresh failed"
+            -d '{}'
       - name: Refresh team_situational_records matview
         continue-on-error: true
         env:
@@ -140,7 +139,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_situational_records refresh failed"
+            -d '{}'
 
       # 2026-08-23 season-ready: refresh signal_registry from graded NBA props
       # once season data lands. Sport-universal script. Silent no-op during
@@ -153,7 +152,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport NBA --days 30 || echo "NBA signal calibration failed (non-fatal, likely offseason)"
+          python refresh_prop_signal_calibration.py --sport NBA --days 30
 
       # 2026-08-25: NBA injury scrape (ESPN /nba/injuries). Populates
       # nba_injuries so the NBAInjuriesCard in GameDetailV2 has data to
@@ -167,7 +166,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_injuries_pull.py || echo "NBA injuries pull failed (non-fatal)"
+          python nba_injuries_pull.py
 
       # ─── Today's context (schedule + odds + rest) ──────────────
       - name: Build NBA game context (today + next 3 days)
@@ -178,7 +177,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_game_context.py --days 4 || echo "nba game_context failed (non-fatal, likely offseason)"
+          python nba_game_context.py --days 4
 
       # ─── L10 team tendencies backfill ──────────────────────────
       - name: Backfill NBA team tendencies (L10)
@@ -188,7 +187,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_nba_team_tendencies.py || echo "nba tendencies backfill failed (non-fatal)"
+          python backfill_nba_team_tendencies.py
 
       # ─── Season-trend pull + enrichment (teamrankings) ─────────
       - name: Pull NBA season trends from teamrankings
@@ -198,7 +197,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_teamrankings_trends.py --sport NBA || echo "NBA teamrankings pull failed (non-fatal)"
+          python pull_teamrankings_trends.py --sport NBA
 
       - name: Enrich NBA game context with season trends
         continue-on-error: true
@@ -207,7 +206,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_trends.py --sport NBA || echo "NBA trend enrichment failed (non-fatal)"
+          python enrich_team_trends.py --sport NBA
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
       - name: Enrich team form — venue split + H2H
@@ -217,7 +216,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport NBA || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport NBA
 
       # ─── NBA prop pipeline (2026-08-17) ────────────────────────────
       - name: Generate NBA player props
@@ -228,7 +227,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_generate_props.py || echo "nba props failed (non-fatal, likely offseason)"
+          python nba_generate_props.py
 
       # ─── Sleeper NBA projections (2026-08-17) ─────────────────────
       # Weekly refresh good enough — projections update slowly. Runs
@@ -240,7 +239,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_sleeper_projections_pull.py || echo "nba sleeper failed (non-fatal)"
+          python nba_sleeper_projections_pull.py
 
       - name: Enrich NBA props with Sleeper projections
         continue-on-error: true
@@ -249,7 +248,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_nba_prop_projections.py || echo "nba proj enrich failed (non-fatal)"
+          python enrich_nba_prop_projections.py
 
       # 2026-08-22 (silent-bug audit finding #7): NBA prop L10 backfill.
       # Fetches ESPN game logs per player, computes L5/L10/season hit rates
@@ -263,7 +262,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_prop_lookback.py --sport NBA || echo "NBA prop lookback failed (non-fatal)"
+          python backfill_prop_lookback.py --sport NBA
 
       - name: NBA prop playbook scorer (shadow mode)
         continue-on-error: true
@@ -272,7 +271,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport NBA --refresh-existing || echo "NBA prop playbook failed (non-fatal)"
+          python prop_ensemble_scorer.py --sport NBA --refresh-existing
 
       # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator (mirrors
       # NCAAF/NCAAB pattern). Silent no-op during offseason.
@@ -283,7 +282,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_scoresandodds.py --sport NBA || echo "SO NBA failed (non-fatal, likely offseason)"
+          python pull_scoresandodds.py --sport NBA
 
       - name: Splits v2 aggregator (NBA)
         continue-on-error: true
@@ -292,7 +291,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NBA || echo "NBA splits aggregator failed (non-fatal)"
+          python splits_v2_pipeline.py --sport NBA
 
       # 2026-09-08: removed duplicate refresh_prop_signal_calibration call
       # — same script + args was already run at line ~156 ("graded props"
@@ -307,7 +306,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_external_source_calibration.py --sport NBA || echo "NBA external calibration failed (non-fatal, likely offseason)"
+          python audit_external_source_calibration.py --sport NBA
 
       - name: Refresh sharp-source calibration (NBA)
         continue-on-error: true
@@ -316,7 +315,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_sharp_source_calibration.py --sport NBA || echo "NBA sharp source calibration failed (non-fatal, likely offseason)"
+          python audit_sharp_source_calibration.py --sport NBA
 
       # 2026-09-02: Split — signal-pattern rolling hit rates (NBA).
       - name: Refresh signal pattern registry (NBA)
@@ -326,7 +325,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_signal_patterns.py --sport NBA || echo "NBA signal patterns failed (non-fatal)"
+          python compute_signal_patterns.py --sport NBA
 
       # 2026-09-08: bridge primary_play → jerry_reads for NBA. Ensemble +
       # defensive_gates now write primary_play in nba_game_context; without
@@ -339,7 +338,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NBA --window 4 || echo "NBA jerry_reads sync failed (non-fatal, offseason)"
+          python sync_jerry_reads_from_ctx.py --sport NBA --window 4
 
       # 2026-09-08 heartbeat END.
       - name: Heartbeat — end
@@ -354,8 +353,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"end\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"nba_pipeline\",\"event\":\"end\",\"sport\":\"NBA\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping end
         if: always()

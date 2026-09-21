@@ -61,8 +61,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"start\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}"
 
       # 1. Grade yesterday's MLB games (mlb_game_results scores +
       #    outcomes → jerry_reads.result + prop.result + ledger_snapshots)
@@ -156,7 +155,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
-          python docs/scripts/morning_brief.py --fix || echo "morning brief flagged gaps AFTER auto-repair (see output)"
+          python docs/scripts/morning_brief.py --fix
 
       # 4. Recompute surface_records (mtd / d7 / d30 / epoch / lifetime rollups)
       #    so the record chips + hero P/L update overnight.
@@ -234,7 +233,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python audit_team_alias_gaps.py --min-hits 2 || echo "gap audit non-fatal"
+          python audit_team_alias_gaps.py --min-hits 2
 
       # 5. NCAAF grader (during football season) — same overnight window
       - name: Resolve NCAAF game results
@@ -263,7 +262,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_recent_games refresh failed"
+            -d '{}'
 
       # 5c. Refresh team_situational_records matview — long-format W-L-P
       #     per (team × market × filter) feeding the Situational Results
@@ -279,7 +278,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_situational_records refresh failed"
+            -d '{}'
 
       # 5d. Refresh team_stats_rolling matview — universal per-team stat
       #     + rank rollup. NCAAF-only content today; other sports queued.
@@ -293,7 +292,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_stats_rolling refresh failed"
+            -d '{}'
 
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
@@ -308,7 +307,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python audit_data_quality.py --days 2 || echo "data quality flagged issues — see log above"
+          python audit_data_quality.py --days 2
 
       # 7. External monitor ping (healthchecks.io) — separate check from
       #    the main pipeline. Once user configures HC_GRADE_OVERNIGHT_URL
@@ -369,5 +368,4 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}"

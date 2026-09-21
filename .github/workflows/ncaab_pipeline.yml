@@ -50,8 +50,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ncaab_pipeline\",\"event\":\"start\",\"sport\":\"NCAAB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"ncaab_pipeline\",\"event\":\"start\",\"sport\":\"NCAAB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping start
         continue-on-error: true
@@ -114,7 +113,7 @@ jobs:
         run: |
           cd mlb_pipeline
           SEASON=$(date +%Y)
-          python pull_college_rosters.py --sport NCAAB --season $SEASON || echo "NCAAB roster pull failed (non-fatal)"
+          python pull_college_rosters.py --sport NCAAB --season $SEASON
 
       # ────── MULTI-SOURCE RATING SNAPSHOTS (2026-08-14 Session 1 · Panel foundation)
       # Runs 3 rating scrapers in sequence. Each writes to ncaab_rating_snapshots
@@ -131,7 +130,7 @@ jobs:
           KENPOM_KEY:   ${{ secrets.KENPOM_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_kenpom_snapshot.py || echo "kenpom snapshot failed"
+          python ncaab_kenpom_snapshot.py
 
       - name: NCAAB — Torvik snapshot write
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
@@ -141,7 +140,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_torvik_pull.py || echo "torvik pull failed"
+          python ncaab_torvik_pull.py
 
       - name: NCAAB — Haslam snapshot write
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only'
@@ -153,7 +152,7 @@ jobs:
           cd mlb_pipeline
           # Haslam XML uses brotli compression — needed by requests lib
           pip install --quiet brotli || echo "brotli install non-fatal"
-          python ncaab_haslam_pull.py || echo "haslam pull failed"
+          python ncaab_haslam_pull.py
 
       # ────── ALIAS ENRICHMENT (weekly on Monday, cheap idempotent) ──────
       # Also fires on manual workflow_dispatch so testing kenpom_only
@@ -203,7 +202,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_teamrankings_trends.py --sport NCAAB || echo "NCAAB teamrankings pull failed (non-fatal)"
+          python pull_teamrankings_trends.py --sport NCAAB
 
       - name: Enrich NCAAB game context with season trends
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -213,7 +212,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_trends.py --sport NCAAB || echo "NCAAB trend enrichment failed (non-fatal)"
+          python enrich_team_trends.py --sport NCAAB
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
       - name: Enrich team form — venue split + H2H
@@ -223,7 +222,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport NCAAB || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport NCAAB
 
       # 2026-08-23: Roster physicality enricher — populates
       # home/away_frontcourt_avg_ht + class_year_edge_home etc. on
@@ -237,7 +236,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_ctx_roster_physicality.py --sport NCAAB --days-ahead 7 || echo "NCAAB physicality enrich failed (non-fatal)"
+          python enrich_ctx_roster_physicality.py --sport NCAAB --days-ahead 7
 
       # ────── PANEL MODEL (2026-08-14 Session 3 · lens #2 of 5 - MC is #1) ──────
       # Reads latest ncaab_rating_snapshots (KenPom + Torvik + Haslam) and
@@ -257,7 +256,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_scoresandodds.py --sport NCAAB || echo "SO NCAAB failed (non-fatal, likely offseason)"
+          python pull_scoresandodds.py --sport NCAAB
 
       # 2026-09-07: no mode gate — parity with NCAAF fix. Aggregator is
       # a lightweight no-op if no source rows landed since last run.
@@ -268,7 +267,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NCAAB || echo "NCAAB splits aggregator failed (non-fatal)"
+          python splits_v2_pipeline.py --sport NCAAB
 
       # 2026-08-23 season-ready: signal_registry calibration. Sport-universal
       # script — reads graded games from ncaab_game_results and refreshes
@@ -281,7 +280,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport NCAAB --days 30 || echo "NCAAB signal calibration failed (non-fatal, likely offseason)"
+          python refresh_prop_signal_calibration.py --sport NCAAB --days 30
 
       # 2026-09-02: Split — per-source calibration for NCAAB. Silent
       # no-op until Nov 3 season start.
@@ -293,7 +292,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_external_source_calibration.py --sport NCAAB || echo "NCAAB external calibration failed (non-fatal)"
+          python audit_external_source_calibration.py --sport NCAAB
 
       - name: Refresh sharp-source calibration (NCAAB)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -303,7 +302,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_sharp_source_calibration.py --sport NCAAB || echo "NCAAB sharp source calibration failed (non-fatal)"
+          python audit_sharp_source_calibration.py --sport NCAAB
 
       # 2026-09-02: Split — signal-pattern rolling hit rates (NCAAB).
       - name: Refresh signal pattern registry (NCAAB)
@@ -314,7 +313,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_signal_patterns.py --sport NCAAB || echo "NCAAB signal patterns failed (non-fatal)"
+          python compute_signal_patterns.py --sport NCAAB
 
       - name: NCAAB — Panel model (KenPom + Torvik + Haslam average)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -324,7 +323,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_panel_predictor.py || echo "ncaab_panel_predictor failed (non-fatal)"
+          python ncaab_panel_predictor.py
 
       # 2026-08-25: materialize the panel into ncaab_team_efficiency so
       # downstream consumers (lens framework, PPP/tempo comparisons) can
@@ -362,7 +361,7 @@ jobs:
           PRIOR_END=$(printf '%02d' $(( (PRIOR_START + 1) % 100 )))
           PRIOR_SEASON="${PRIOR_START}-${PRIOR_END}"
           python ncaab_efficiency_model.py --season "$SEASON"       || echo "ncaab_efficiency_model current failed (non-fatal)"
-          python ncaab_efficiency_model.py --season "$PRIOR_SEASON" || echo "ncaab_efficiency_model prior failed (non-fatal)"
+          python ncaab_efficiency_model.py --season "$PRIOR_SEASON"
 
       # 2026-09-01: refresh cross-sport rollup matviews after NCAAB
       # resolver/efficiency updates land. Universal matviews — each call
@@ -378,7 +377,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_recent_games refresh failed"
+            -d '{}'
       - name: Refresh team_situational_records matview
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
@@ -389,7 +388,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_situational_records refresh failed"
+            -d '{}'
       - name: Refresh team_stats_rolling matview
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
@@ -400,7 +399,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_stats_rolling refresh failed"
+            -d '{}'
 
       # ────── MC SIMULATOR (2026-08-14 Session 2 · lens #1 of 5) ──────
       # Reads latest KenPom snapshot from ncaab_team_stats + today's games,
@@ -417,7 +416,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_mc_simulator.py || echo "ncaab_mc_simulator failed (non-fatal)"
+          python ncaab_mc_simulator.py
 
       # ────── JERRY GAME READS ──────
       - name: Generate NCAAB game reads (Jerry)
@@ -440,7 +439,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5 || echo "NCAAB jerry_reads sync failed"
+          python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5
 
       # ────── 4-LENS RESOLVER (2026-08-14 Session 4) ──────
       # Runs LAST in card-build sequence (after MC + Panel + Jerry).
@@ -457,7 +456,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_resolve_primary_play.py || echo "resolver failed (non-fatal)"
+          python ncaab_resolve_primary_play.py
 
       # ────── EXTERNAL PICKS AGGREGATION ──────
       - name: External source aggregation pull
@@ -484,7 +483,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python detect_consensus_fade.py --sport NCAAB || echo "fade detector failed"
+          python detect_consensus_fade.py --sport NCAAB
 
       # ────── RESOLVE COMPLETED GAMES (ESPN) ──────
       - name: Resolve completed games + refresh outcomes
@@ -519,7 +518,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_externals.py --sport NCAAB --days 14 || echo "external resolver failed"
+          python resolve_externals.py --sport NCAAB --days 14
 
       # ────── ON-DEMAND: BACKFILL ──────
       - name: Backfill historical NCAAB season
@@ -544,8 +543,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ncaab_pipeline\",\"event\":\"end\",\"sport\":\"NCAAB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"ncaab_pipeline\",\"event\":\"end\",\"sport\":\"NCAAB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping end
         if: always()

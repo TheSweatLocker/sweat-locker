@@ -59,8 +59,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"start\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$CRON_SLOT\"}" \
-               || echo "heartbeat start write failed (non-fatal)"
+               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"start\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$CRON_SLOT\"}"
 
       # Optional external cron monitor (healthchecks.io). If HC_NCAAF_URL
       # secret is set, pings it on start. Missed cron alerts within minutes.
@@ -114,7 +113,7 @@ jobs:
         run: |
           cd mlb_pipeline
           SEASON=$(date +%Y)
-          python ncaaf_returning_production_pull.py --season $SEASON || echo "returning production pull failed"
+          python ncaaf_returning_production_pull.py --season $SEASON
 
       # 2026-08-23: Roster physicality — ESPN scraper for OL/DL weights +
       # class year. Weekly (Tue) is plenty; rosters don't churn intra-week.
@@ -130,7 +129,7 @@ jobs:
         run: |
           cd mlb_pipeline
           SEASON=$(date +%Y)
-          python pull_college_rosters.py --sport NCAAF --season $SEASON || echo "NCAAF roster pull failed (non-fatal)"
+          python pull_college_rosters.py --sport NCAAF --season $SEASON
 
       - name: Enrich NCAAF ctx with roster physicality
         continue-on-error: true
@@ -139,7 +138,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_ctx_roster_physicality.py --sport NCAAF --days-ahead 14 || echo "NCAAF physicality enrich failed (non-fatal)"
+          python enrich_ctx_roster_physicality.py --sport NCAAF --days-ahead 14
 
       # 2026-09-01 FRESHNESS FIX: was Tue-only which meant Sat game stats
       # didn't hit team_stats_rolling until Tue morning (3-day stale ranks
@@ -184,7 +183,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_mc_simulator.py --days 8 || echo "NCAAF MC failed (non-fatal)"
+          python ncaaf_mc_simulator.py --days 8
 
       # 2026-08-22 (silent-bug audit finding #14): NCAAF weather pull.
       # Populates temp / wind / wind_speed / dome / weather_source columns
@@ -201,7 +200,7 @@ jobs:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_weather_pull.py || echo "NCAAF weather pull failed (non-fatal)"
+          python ncaaf_weather_pull.py
 
       # Backfill L5 team ATS / O/U / ML tendencies onto today's rows
       # (2026-08-17). Populates home/away_ats_last5, ou_last5_overs/unders,
@@ -224,7 +223,7 @@ jobs:
           # Prior single-day default meant Wed/Thu cron runs found "no
           # games" for the Sat slate and never wrote tendencies, so
           # Sat's picks scored without team_form data.
-          python backfill_ncaaf_team_tendencies.py --days 10 || echo "ncaaf tendencies backfill failed (non-fatal)"
+          python backfill_ncaaf_team_tendencies.py --days 10
 
       # 2026-08-17: pull season aggregates from teamrankings then enrich
       # today's ctx rows with home/away season cover_pct + over_pct.
@@ -238,7 +237,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_teamrankings_trends.py --sport NCAAF || echo "teamrankings pull failed (non-fatal)"
+          python pull_teamrankings_trends.py --sport NCAAF
 
       - name: Enrich NCAAF game context with season trends
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -248,7 +247,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_trends.py --sport NCAAF || echo "trend enrichment failed (non-fatal)"
+          python enrich_team_trends.py --sport NCAAF
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
       - name: Enrich team form — venue split + H2H
@@ -258,7 +257,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python enrich_team_form_universal.py --sport NCAAF --days-ahead 14 || echo "team_form_universal non-fatal"
+          python enrich_team_form_universal.py --sport NCAAF --days-ahead 14
 
       # 2026-08-28: derive per-team defense stats (PPG, pass_epa_allowed,
       # rush_epa_allowed, success_rate_allowed, explosiveness_allowed)
@@ -273,7 +272,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_team_defense_backfill.py || echo "NCAAF defense backfill non-fatal"
+          python ncaaf_team_defense_backfill.py
 
       # 2026-08-23 season-ready: ScoresAndOdds NCAAF splits scraper.
       # Fadereport + Cleatz already scrape NCAAF via MLB workflow's shared
@@ -287,7 +286,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python pull_scoresandodds.py --sport NCAAF || echo "SO NCAAF failed (non-fatal)"
+          python pull_scoresandodds.py --sport NCAAF
 
       # Splits v2 aggregator — normalizes OC/FR/CZ/SO into
       # public_splits_v2, writes game_context.splits_summary JSONB.
@@ -302,7 +301,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NCAAF || echo "NCAAF splits aggregator failed (non-fatal)"
+          python splits_v2_pipeline.py --sport NCAAF
 
       # 2026-08-28: recompute primary_play AFTER tendencies + team_form
       # + season trends + splits land. Initial score in ncaaf_game_context
@@ -319,7 +318,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python recompute_ncaaf_primary_play.py --days 10 || echo "ncaaf recompute non-fatal"
+          python recompute_ncaaf_primary_play.py --days 10
 
       # 2026-09-13: same LR-warn cap + anchor-cap discipline as NFL.
       # NCAAF 9/12 slate first-look data (n=228): LR-warn hits 4.3%,
@@ -332,7 +331,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_ncaaf_signal_discipline.py --sport NCAAF || echo "NCAAF discipline gates failed (non-fatal)"
+          python nfl_ncaaf_signal_discipline.py --sport NCAAF
 
       # Also snapshot + grade NCAAF signal attribution (parity with NFL cron)
       - name: Snapshot NCAAF signal attribution
@@ -343,7 +342,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_snapshot.py --sport NCAAF || echo "NCAAF signal snapshot failed (non-fatal)"
+          python signal_attribution_snapshot.py --sport NCAAF
 
       - name: Grade NCAAF signal attribution
         continue-on-error: true
@@ -352,7 +351,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_attribution_grade.py --sport NCAAF --days 7 || echo "NCAAF signal grade failed (non-fatal)"
+          python signal_attribution_grade.py --sport NCAAF --days 7
 
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -376,7 +375,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NCAAF --window 7 || echo "ncaaf jerry_reads sync failed (non-fatal)"
+          python sync_jerry_reads_from_ctx.py --sport NCAAF --window 7
 
       # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but
       # was only ever called with --sport MLB, so college write-ups were
@@ -414,7 +413,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python detect_consensus_fade.py --sport NCAAF || echo "fade detector failed"
+          python detect_consensus_fade.py --sport NCAAF
 
       # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
       # ncaaf_game_context. Prerequisite for sharp-split signals to fire
@@ -429,7 +428,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_align_status_ncaaf.py || echo "align status failed (non-fatal)"
+          python compute_align_status_ncaaf.py
 
       # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
       # cross-sport classify_line_moves.py --sport ALL step can generate
@@ -442,7 +441,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python write_line_snapshot.py --sport NCAAF || echo "write_line_snapshot NCAAF failed (non-fatal)"
+          python write_line_snapshot.py --sport NCAAF
 
       - name: Resolve NCAAF external picks (post-game)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -452,7 +451,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_externals.py --sport NCAAF --days 14 || echo "resolver failed"
+          python resolve_externals.py --sport NCAAF --days 14
 
       - name: Resolve completed games + refresh outcomes
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -506,7 +505,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_home_road_tendencies" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"p_sport": "NCAAF"}' || echo "tendencies refresh failed"
+            -d '{"p_sport": "NCAAF"}'
 
       # 2026-09-01: refresh team_recent_games matview (universal, cross-sport).
       # Feeds the Recent Schedule card on game detail. Uses the
@@ -525,7 +524,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_recent_games" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_recent_games refresh failed"
+            -d '{}'
 
       # 2026-09-01: refresh team_situational_records matview. Long-format
       # per-team W-L-P by (market × filter). Powers the Situational Results
@@ -541,7 +540,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_situational_records refresh failed"
+            -d '{}'
 
       # 2026-09-01: refresh team_stats_rolling matview. Universal
       # long-format per-team stat with raw value + league rank. Kills
@@ -558,7 +557,7 @@ jobs:
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{}' || echo "team_stats_rolling refresh failed"
+            -d '{}'
 
       # 2026-08-09: NCAAF sharp-money audit trail. Same infra as MLB/NFL.
       # Rules start in LOG mode until n≥12 accumulates per rule.
@@ -570,7 +569,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --write-today --sport NCAAF || echo "NCAAF audit write failed"
+          python sharp_fade_audit.py --write-today --sport NCAAF
 
       - name: NCAAF — backfill sharp-fade audit outcomes
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -580,7 +579,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_fade_audit.py --backfill-results || echo "NCAAF audit backfill failed"
+          python sharp_fade_audit.py --backfill-results
 
       # 2026-09-02: Split — per-source calibration for NCAAF. Cross-sport
       # parity with MLB (was MLB-only until 9/2). Powers The Split's
@@ -593,7 +592,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_external_source_calibration.py --sport NCAAF || echo "NCAAF external calibration failed"
+          python audit_external_source_calibration.py --sport NCAAF
 
       - name: Refresh sharp-source calibration (NCAAF)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -603,7 +602,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python audit_sharp_source_calibration.py --sport NCAAF || echo "NCAAF sharp source calibration failed"
+          python audit_sharp_source_calibration.py --sport NCAAF
 
       # 2026-09-02: NCAAF recruiting composite pull. CFBD /talent.
       # Rolling 4-year composite; used for "recruiting mismatch" signals.
@@ -616,7 +615,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_recruiting_pull.py || echo "NCAAF recruiting pull failed (non-fatal)"
+          python ncaaf_recruiting_pull.py
 
       # 2026-09-02: NCAAF RZ + kicking efficiency pull. Populates
       # rz_td_rate + opp_rz_td_rate columns for Vault Match RZ signals.
@@ -629,7 +628,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_rz_kicking_pull.py || echo "NCAAF RZ pull failed (non-fatal)"
+          python ncaaf_rz_kicking_pull.py
 
       # 2026-09-02: NCAAF turnover margin computation. Rolls up
       # season TO margin per team from ncaaf_team_stats, patches
@@ -643,7 +642,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_to_margin_pull.py || echo "NCAAF TO margin failed (non-fatal)"
+          python ncaaf_to_margin_pull.py
 
       # 2026-09-02: NCAAF FCS chalk scorer. Fills projected_spread on
       # FBS-vs-FCS games where the FCS side has no SP+ data. Cheap
@@ -657,7 +656,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_fcs_chalk_scorer.py || echo "NCAAF FCS chalk scorer failed (non-fatal)"
+          python ncaaf_fcs_chalk_scorer.py
 
       # 2026-09-02: NCAAF Strength of Record pull from CFBD. Populates
       # home_sor + away_sor on ncaaf_game_context. Powers post-launch
@@ -671,7 +670,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_sor_pull.py || echo "NCAAF SoR pull failed (non-fatal — may be too early in season)"
+          python ncaaf_sor_pull.py
 
       # 2026-09-02: AP top-25 rankings pull. Populates home_ap_rank +
       # away_ap_rank on ncaaf_game_context. Powers ⭐ Ranked matchup badge.
@@ -684,7 +683,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_rankings_pull.py || echo "NCAAF rankings pull failed (non-fatal)"
+          python ncaaf_rankings_pull.py
 
       # 2026-09-02: NCAAF injuries pull from ESPN. Foundation for
       # ncaaf_mc_simulator Tier F QB-out penalty (post-launch consumer).
@@ -697,7 +696,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_injuries_espn_pull.py || echo "NCAAF injuries pull failed (non-fatal — table + puller ship as scaffold)"
+          python ncaaf_injuries_espn_pull.py
 
       # 2026-09-02: split dissent rollup — powers Vault Match dissent
       # patterns for NCAAF once catalog extended.
@@ -709,7 +708,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_split_dissent_rollup.py --sport NCAAF || echo "NCAAF split dissent rollup failed"
+          python compute_split_dissent_rollup.py --sport NCAAF
 
       # 2026-09-02: Split — signal-pattern rolling hit rates (NCAAF).
       - name: Refresh signal pattern registry (NCAAF)
@@ -720,7 +719,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_signal_patterns.py --sport NCAAF || echo "NCAAF signal patterns failed"
+          python compute_signal_patterns.py --sport NCAAF
 
       # 2026-09-06: Vault Match parity with MLB + NFL pipelines. Computes
       # hit rates on PATTERN_CATALOG entries (17 NCAAF patterns) from
@@ -738,7 +737,7 @@ jobs:
         run: |
           cd mlb_pipeline
           python compute_sport_patterns.py --sport NCAAF || echo "NCAAF vault patterns failed (non-fatal)"
-          python attach_vault_matches.py --sport NCAAF || echo "NCAAF vault attach failed (non-fatal)"
+          python attach_vault_matches.py --sport NCAAF
 
       # 2026-09-08 heartbeat END. Success = start row AND end row for same
       # run_id. Absent end row = workflow died mid-run. Absent start row
@@ -756,8 +755,7 @@ jobs:
                -H "Authorization: Bearer $SUPABASE_KEY" \
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
-               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"end\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
-               || echo "heartbeat end write failed (non-fatal)"
+               -d "{\"workflow\":\"ncaaf_pipeline\",\"event\":\"end\",\"sport\":\"NCAAF\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}"
 
       - name: External monitor — ping end
         if: always()
