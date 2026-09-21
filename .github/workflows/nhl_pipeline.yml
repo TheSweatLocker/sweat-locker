@@ -52,6 +52,23 @@ jobs:
           fi
 
       # ─── Yesterday's results (resolve completed games) ───────────
+      # 2026-09-21: ODDS PULL — creates the FORWARD SCHEDULE. Must run
+      # BEFORE nhl_game_context, which has nothing to build from without
+      # it. Before this existed nhl_game_results carried 0 forward games
+      # (NFL had 241, NCAAF 104), so every downstream step — context,
+      # game card, props, externals — had an empty slate and reported
+      # "no games" rather than an error. Adopts the league's canonical
+      # game id so results and context join.
+      - name: Pull NHL forward schedule + lines (Odds API)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nhl_odds_pull.py
+
       - name: Resolve yesterday's NHL results
         continue-on-error: true
         env:
@@ -86,6 +103,24 @@ jobs:
         run: |
           cd mlb_pipeline
           python nhl_game_context.py --days 7
+
+      # 2026-09-21: NHL externals. There was no nhl external puller at
+      # all until today, even though the shared oddscrowd /
+      # scoresandodds / pickdawgz modules were already parameterised for
+      # it. oddscrowd is the MONEY FLOW source (money% / bets% /
+      # divergence). Resolve runs straight after the pull so NHL never
+      # repeats the NFL situation, where externals were collected every
+      # week and never graded — 451 of 460 picks sat ungraded since
+      # launch because no workflow called resolve_externals.
+      - name: Pull + resolve NHL external picks
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_externals_nhl.py --triggered-by cron
+          python resolve_externals.py --sport NHL --days 14
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
       - name: Enrich team form — venue split + H2H

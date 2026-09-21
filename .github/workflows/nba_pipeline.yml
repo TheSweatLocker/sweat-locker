@@ -48,6 +48,23 @@ jobs:
           fi
 
       # ─── Yesterday's results ───────────────────────────────────
+      # 2026-09-21: ODDS PULL — creates the FORWARD SCHEDULE. Must run
+      # BEFORE nba_game_context, which has nothing to build from without
+      # it. Before this existed nba_game_results carried 0 forward games
+      # (NFL had 241, NCAAF 104), so every downstream step — context,
+      # game card, props, externals — had an empty slate and reported
+      # "no games" rather than an error. Adopts the league's canonical
+      # game id so results and context join.
+      - name: Pull NBA forward schedule + lines (Odds API)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_odds_pull.py
+
       - name: Resolve yesterday's NBA results
         continue-on-error: true
         env:
@@ -178,6 +195,24 @@ jobs:
         run: |
           cd mlb_pipeline
           python nba_game_context.py --days 4
+
+      # 2026-09-21: NBA externals. There was no nba external puller at
+      # all until today, even though the shared oddscrowd /
+      # scoresandodds / pickdawgz modules were already parameterised for
+      # it. oddscrowd is the MONEY FLOW source (money% / bets% /
+      # divergence). Resolve runs straight after the pull so NBA never
+      # repeats the NFL situation, where externals were collected every
+      # week and never graded — 451 of 460 picks sat ungraded since
+      # launch because no workflow called resolve_externals.
+      - name: Pull + resolve NBA external picks
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_externals_nba.py --triggered-by cron
+          python resolve_externals.py --sport NBA --days 14
 
       # ─── L10 team tendencies backfill ──────────────────────────
       - name: Backfill NBA team tendencies (L10)
