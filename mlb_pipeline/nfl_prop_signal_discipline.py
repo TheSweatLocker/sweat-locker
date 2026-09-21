@@ -223,12 +223,27 @@ def compute_confluence_tier(prop: dict) -> tuple[str, int, dict]:
 
 
 def _fetch_props(date_from: str, date_to: str) -> list:
-    url = (f'{SB}/rest/v1/nfl_pipeline_props'
-           f'?game_date=gte.{date_from}&game_date=lte.{date_to}'
-           f'&select=id,game_id,player_name,prop_type,direction,tier,'
-           f'conviction,book_line,player_team,opp_team,signals')
-    r = requests.get(url, headers=H_R, timeout=30)
-    return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
+    # Paginated: PostgREST caps an unbounded select at 1000 rows and returns
+    # the truncation silently. A single NFL Sunday is already ~600 props, so
+    # any multi-day window was losing rows off the end without complaint.
+    sel = ('id,game_id,player_name,prop_type,direction,tier,'
+           'conviction,book_line,player_team,opp_team,signals')
+    out: list = []
+    off = 0
+    while off < 40000:
+        url = (f'{SB}/rest/v1/nfl_pipeline_props'
+               f'?game_date=gte.{date_from}&game_date=lte.{date_to}'
+               f'&select={sel}&limit=1000&offset={off}')
+        r = requests.get(url, headers=H_R, timeout=30)
+        if r.status_code != 200 or not isinstance(r.json(), list):
+            print(f'  ⚠ prop fetch failed at offset {off}: HTTP {r.status_code}')
+            break
+        batch = r.json()
+        out.extend(batch)
+        if len(batch) < 1000:
+            break
+        off += 1000
+    return out
 
 
 def _fetch_game_teams(game_ids: set) -> dict:
@@ -271,6 +286,72 @@ def _patch(row_id: int, updates: dict) -> bool:
         json=updates, timeout=15,
     )
     return r.status_code < 300
+
+
+# ── PRIME cap: exit on evidence, not on a calendar date ──────────────
+#
+# 2026-09-20. The original cap (below) was written to expire on
+# 2026-09-23 with the stated exit condition "n>=100 graded PRIME to
+# statistically validate the gate". That condition was unreachable by
+# construction: the cap rewrites PRIME to STRONG BEFORE the row is
+# written, so no PRIME row is ever stored, so none ever grades. Graded
+# PRIME sat at n=57 (32-25, all from 09-09..09-13, i.e. entirely
+# pre-cap) and would have stayed there forever while the date quietly
+# expired and released 75 PRIME onto one slate.
+#
+# Fix, two halves:
+#   1. When the cap fires we now stash the UNCAPPED tier in
+#      signals._shadow_tier. It is never rendered — but it grades, so
+#      PRIME accumulates a real record with no user exposure.
+#   2. The cap lifts when that combined record (published pre-cap PRIME
+#      + shadow PRIME) reaches _PRIME_CAP_MIN_GRADED. Evidence, not a
+#      date.
+_PRIME_CAP_MIN_GRADED = 100
+_SHADOW_TIER_KEY = '_shadow_tier'
+_SHADOW_CONV_KEY = '_shadow_conviction'
+
+
+def _graded_prime_sample() -> tuple[int, int, int, bool]:
+    """(wins, losses, n, ok) of graded PRIME — published AND shadow.
+
+    `ok` is False if either query failed. Callers MUST treat not-ok as
+    "keep the cap on". A dropped connection or a 400 returns an empty
+    list from PostgREST, and reading that empty list as "n=0, therefore
+    nothing to see" is how a failed query turns into a published slate.
+    Fail closed.
+    """
+    seen: dict = {}
+    ok = True
+    for params in (
+        {'tier': 'eq.PRIME', 'result': 'not.is.null',
+         'select': 'id,result'},
+        {f'signals->>{_SHADOW_TIER_KEY}': 'eq.PRIME', 'result': 'not.is.null',
+         'select': 'id,result'},
+    ):
+        off = 0
+        while off < 20000:
+            q = {**params, 'limit': '1000', 'offset': str(off)}
+            try:
+                r = requests.get(f'{SB}/rest/v1/nfl_pipeline_props',
+                                 headers=H_R, params=q, timeout=30)
+            except requests.RequestException as e:
+                print(f'  ⚠ graded-PRIME query raised: {e}')
+                ok = False
+                break
+            if r.status_code != 200 or not isinstance(r.json(), list):
+                print(f'  ⚠ graded-PRIME query failed: HTTP {r.status_code} '
+                      f'{r.text[:160]}')
+                ok = False
+                break
+            batch = r.json()
+            for row in batch:
+                seen[row['id']] = (row.get('result') or '').upper()
+            if len(batch) < 1000:
+                break
+            off += 1000
+    wins = sum(1 for v in seen.values() if v in ('WIN', 'HIT'))
+    losses = sum(1 for v in seen.values() if v in ('LOSS', 'MISS'))
+    return wins, losses, wins + losses, ok
 
 
 def dedupe_alt_lines(props: list) -> list:
@@ -361,35 +442,45 @@ def main():
     # graded PRIME to statistically validate the gate, or (b) an LR
     # predictor ships and gates PRIME behind p_lr ≥ 0.60. Signals
     # breakdown records the cap so users see honest reasoning.
-    _now = datetime.now(timezone.utc)
-    # Enforce cap until 2026-09-23 (post-Week 3 Sunday grades land). Adjust
-    # the cutoff date after backtest re-audit or LR ship.
-    _PRIME_CAP_UNTIL = datetime(2026, 9, 23, tzinfo=timezone.utc)
-    _cap_active = _now < _PRIME_CAP_UNTIL
+    _pw, _pl, _pn, _pok = _graded_prime_sample()
+    # Fail closed: a failed query must never read as "no evidence needed".
+    _cap_active = (not _pok) or (_pn < _PRIME_CAP_MIN_GRADED)
+    if not _pok:
+        print('  PRIME cap: evidence query FAILED — holding cap on (fail-closed)')
+    else:
+        _pct = f'{_pw / _pn * 100:.1f}%' if _pn else '--'
+        print(f'  PRIME cap: graded PRIME (published+shadow) {_pw}-{_pl} '
+              f'n={_pn}/{_PRIME_CAP_MIN_GRADED} ({_pct}) → '
+              f'cap {"ON" if _cap_active else "LIFTED"}')
     prime_capped = 0
     for p in props:
         orig = p.get('tier') or ''
         orig_conv = p.get('conviction') or 0
         orig_tiers[orig] += 1
         new_tier, new_conv, breakdown = compute_confluence_tier(p)
-        # Cap PRIME → STRONG during the interim window.
+        # Cap PRIME → STRONG until the gate earns its way out.
         if _cap_active and new_tier == 'PRIME':
+            # Stash the uncapped call so it can grade in shadow. This is
+            # what makes the exit condition reachable at all.
+            p['_shadow'] = {_SHADOW_TIER_KEY: 'PRIME',
+                            _SHADOW_CONV_KEY: int(new_conv)}
             new_tier = 'STRONG'
             # Keep conviction but cap at STRONG ceiling (84).
             new_conv = min(new_conv, 84)
             breakdown = {**breakdown,
                          'prime_capped_to_strong': True,
-                         'cap_reason': 'week_1_backtest_50pct_prime_hit_rate_no_lr_gate'}
+                         'cap_reason': f'prime_gate_unvalidated_n={_pn}'
+                                       f'_of_{_PRIME_CAP_MIN_GRADED}'}
             prime_capped += 1
         new_tiers[new_tier] += 1
-        if new_tier != orig or new_conv != orig_conv:
+        if new_tier != orig or new_conv != orig_conv or p.get('_shadow'):
             p['_new_tier'] = new_tier
             p['_new_conviction'] = new_conv
             p['_confluence_breakdown'] = breakdown
             reassigned += 1
     if _cap_active and prime_capped:
-        print(f'  PRIME→STRONG cap active (until {_PRIME_CAP_UNTIL.date()}): '
-              f'{prime_capped} props downgraded')
+        print(f'  PRIME→STRONG cap: {prime_capped} props downgraded '
+              f'(uncapped tier recorded to signals.{_SHADOW_TIER_KEY})')
 
     # ── Fix 2: dedupe alt-line conflicts ────────────────
     demotions = dedupe_alt_lines(props)
@@ -420,13 +511,29 @@ def main():
             continue  # already SKIP, no-op
         if _patch(p['id'], {'tier': 'SKIP', 'conviction': 0}): written += 1
         else: fails += 1
-    # Apply confluence-gate reassignments (tier + conviction)
+    # Apply confluence-gate reassignments (tier + conviction), carrying the
+    # shadow tier when the PRIME cap fired.
     for p in props:
-        if p.get('_new_tier'):
-            if _patch(p['id'], {'tier': p['_new_tier'],
-                                'conviction': p['_new_conviction']}):
-                written += 1
-            else: fails += 1
+        if not p.get('_new_tier'):
+            continue
+        upd = {'tier': p['_new_tier'], 'conviction': p['_new_conviction']}
+        shadow = p.get('_shadow')
+        if shadow:
+            sigs = p.get('signals')
+            sigs = dict(sigs) if isinstance(sigs, dict) else {}
+            already = (sigs.get(_SHADOW_TIER_KEY) == shadow[_SHADOW_TIER_KEY]
+                       and sigs.get(_SHADOW_CONV_KEY) == shadow[_SHADOW_CONV_KEY])
+            # Nothing to say: tier/conviction already correct and the shadow
+            # is already stamped. Skip the write (steady-state traffic).
+            if (already and p.get('tier') == p['_new_tier']
+                    and (p.get('conviction') or 0) == p['_new_conviction']):
+                continue
+            sigs.update(shadow)
+            upd['signals'] = sigs
+        if _patch(p['id'], upd):
+            written += 1
+        else:
+            fails += 1
     # Apply alt-line demotions (only if not already SKIP)
     for loser, keeper in demotions:
         if loser.get('tier') == 'SKIP' and (loser.get('conviction') or 0) == 0:
