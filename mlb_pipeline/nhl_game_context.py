@@ -418,6 +418,166 @@ def upsert_context(rows: list[dict], dry_run: bool = False) -> int:
 # Top-level run
 # ═══════════════════════════════════════════════════════════════════════
 
+def compute_confluence(row: dict) -> tuple:
+    """Count home-leaning vs away-leaning hockey signals. -> (net, breakdown).
+
+    2026-09-21. nhl_game_context has carried sweat_score / sweat_tier /
+    signal_confluence_net columns since it was built and NOTHING EVER
+    WROTE THEM — the columns existed, the values were always NULL. Same
+    state NBA was in, except NBA did not even have the columns.
+
+    Signals are the hockey-specific fields NHL context already enriches,
+    so this needs no new pull. Goalie first, because in hockey it is the
+    single largest swing and we carry confirmed-starter data most sports
+    would envy.
+
+    Each dimension votes at most once so one input cannot manufacture a
+    score, and thresholds are real gaps rather than noise.
+    """
+    b = {}
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # Goalie — only when BOTH starters are confirmed. An unconfirmed
+    # starter is a guess, and a guess should not cast a vote.
+    if row.get('home_goalie_confirmed') and row.get('away_goalie_confirmed'):
+        hg, ag = _f(row.get('home_goalie_sv_pct')), _f(row.get('away_goalie_sv_pct'))
+        if hg is not None and ag is not None and abs(hg - ag) >= 0.015:
+            b['goalie_sv'] = 'home' if hg > ag else 'away'
+        hgs, ags = _f(row.get('home_goalie_gsaa')), _f(row.get('away_goalie_gsaa'))
+        if hgs is not None and ags is not None and abs(hgs - ags) >= 3.0:
+            b['goalie_gsaa'] = 'home' if hgs > ags else 'away'
+
+    # Expected goals differential per 60.
+    hx = _f(row.get('home_xgf_per60'))
+    hxa = _f(row.get('home_xga_per60'))
+    ax = _f(row.get('away_xgf_per60'))
+    axa = _f(row.get('away_xga_per60'))
+    if None not in (hx, hxa, ax, axa):
+        hd, ad = hx - hxa, ax - axa
+        if abs(hd - ad) >= 0.35:
+            b['xg_diff'] = 'home' if hd > ad else 'away'
+
+    # High-danger chance differential.
+    hhf, hha = _f(row.get('home_high_danger_for')), _f(row.get('home_high_danger_against'))
+    ahf, aha = _f(row.get('away_high_danger_for')), _f(row.get('away_high_danger_against'))
+    if None not in (hhf, hha, ahf, aha):
+        hd2, ad2 = hhf - hha, ahf - aha
+        if abs(hd2 - ad2) >= 2.0:
+            b['high_danger'] = 'home' if hd2 > ad2 else 'away'
+
+    # 5v5 Corsi — possession.
+    hc, ac = _f(row.get('home_5v5_cf')), _f(row.get('away_5v5_cf'))
+    if hc is not None and ac is not None and abs(hc - ac) >= 2.0:
+        b['corsi_5v5'] = 'home' if hc > ac else 'away'
+
+    # Recent scoring form, L10.
+    hgf, hga = _f(row.get('home_l10_goals_per_game')), _f(row.get('home_l10_goals_against_per_game'))
+    agf, aga = _f(row.get('away_l10_goals_per_game')), _f(row.get('away_l10_goals_against_per_game'))
+    if None not in (hgf, hga, agf, aga):
+        if abs((hgf - hga) - (agf - aga)) >= 0.5:
+            b['l10_goal_diff'] = 'home' if (hgf - hga) > (agf - aga) else 'away'
+
+    # Back-to-back penalises the team on it, and only when the opponent
+    # is not also on one.
+    hb, ab = bool(row.get('home_back_to_back')), bool(row.get('away_back_to_back'))
+    if hb != ab:
+        b['back_to_back'] = 'away' if hb else 'home'
+
+    he, ae = _f(row.get('elo_home')), _f(row.get('elo_away'))
+    if he is not None and ae is not None and abs(he - ae) >= 40:
+        b['elo'] = 'home' if he > ae else 'away'
+
+    h = sum(1 for v in b.values() if v == 'home')
+    a = sum(1 for v in b.values() if v == 'away')
+    return h - a, b
+
+
+def compute_sweat_score(projected_spread, close_line, confluence_net,
+                        projected_total, close_total) -> int:
+    """0-100 composite, same shape as every other sport.
+
+    Hockey tightens the spread bands: the puckline is almost always 1.5,
+    so a 4-goal model-vs-market gap is not a thing. Bands are scaled to
+    what actually varies in NHL. Totals also tighten — a 1.5-goal total
+    disagreement is large in a 6-goal sport, where 8 points of total edge
+    would be the NBA equivalent.
+    """
+    score = 45
+    if projected_spread is not None and close_line is not None:
+        edge = abs(float(projected_spread) + float(close_line))
+        if edge >= 1.5:
+            score += 25
+        elif edge >= 1.0:
+            score += 18
+        elif edge >= 0.6:
+            score += 12
+        elif edge >= 0.3:
+            score += 6
+    ac = abs(int(confluence_net or 0))
+    if ac >= 5:
+        score += 18
+    elif ac >= 4:
+        score += 12
+    elif ac >= 3:
+        score += 8
+    elif ac >= 2:
+        score += 4
+    if projected_total is not None and close_total is not None:
+        te = abs(float(projected_total) - float(close_total))
+        if te >= 1.5:
+            score += 8
+        elif te >= 1.0:
+            score += 5
+        elif te >= 0.6:
+            score += 3
+    return min(100, max(0, score))
+
+
+def sweat_tier(score) -> str:
+    s = int(score or 0)
+    if s >= 80:
+        return 'PRIME'
+    if s >= 65:
+        return 'STRONG'
+    if s >= 50:
+        return 'LIGHT_LEAN'
+    return 'PASS'
+
+
+def enrich_sweat(rows: list) -> None:
+    """Write the server-owned score. Must run after market + elo + team
+    stats + goalies, or it scores against nulls."""
+    capped = 0
+    for row in rows:
+        net, bd = compute_confluence(row)
+        row['signal_confluence_net'] = net
+        row['signal_confluence_breakdown'] = bd
+        close_line = row.get('close_puckline')
+        if close_line is None:
+            close_line = row.get('close_spread')
+        score = compute_sweat_score(row.get('projected_spread'), close_line,
+                                    net, row.get('projected_total'),
+                                    row.get('close_total'))
+        # Same no-corroboration cap as NBA: a score resting on one
+        # dimension is not confluence. NBA's first scored slate came out
+        # 9-of-14 STRONG on empty breakdowns; this stops the same thing
+        # happening here before anyone sees it.
+        if not bd:
+            if score >= 65:
+                capped += 1
+            score = min(score, 64)
+        row['sweat_score'] = score
+        row['sweat_tier'] = sweat_tier(score)
+        row['sweat_tier_current'] = row['sweat_tier']
+    if capped:
+        print(f'    ⚠ {capped} game(s) capped to LIGHT_LEAN — no corroborating signals')
+
+
 def run_for_date(game_date: date, dry_run: bool = False) -> int:
     print(f'  {game_date}')
     games = get_schedule(game_date.isoformat())
@@ -436,6 +596,9 @@ def run_for_date(game_date: date, dry_run: bool = False) -> int:
     enrich_team_stats(games, season)
     enrich_goalies(games, season)
     enrich_rest_and_travel(games)
+    # Last — it scores the disagreement between market and model, so it
+    # needs both sides already attached.
+    enrich_sweat(games)
 
     written = upsert_context(games, dry_run=dry_run)
     print(f'    {"[DRY] " if dry_run else ""}wrote {written} contexts')
@@ -448,6 +611,11 @@ def main():
     p.add_argument('--days', type=int, default=1,
                    help='number of days including start date (default: 1)')
     p.add_argument('--dry-run', action='store_true')
+    # season_gate reads this off sys.argv, but strict argparse rejects
+    # the unknown arg first — so the documented bypass could not be
+    # passed. Declared here only so argparse allows it through.
+    p.add_argument('--force-offseason', action='store_true',
+                   help='build context even when the sport is out of season')
     args = p.parse_args()
 
     start = date.fromisoformat(args.date) if args.date else _et_now().date()
