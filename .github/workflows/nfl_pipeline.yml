@@ -561,7 +561,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_prop_signal_discipline.py --days 8 || echo "prop discipline non-fatal"
+          python nfl_prop_signal_discipline.py --days 8
 
       # 2026-09-14: NFL refit_conviction seed. Unblocks Jerry BACK/FADE
       # emission by mapping tier + within-tier conviction to a numeric
