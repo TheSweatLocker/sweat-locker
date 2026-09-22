@@ -191,6 +191,78 @@ waiting on a build — the shipped 1.0.1 select omits
 `sp_plus_pred_spread`, `sp_plus_pred_total`, `mc_probabilities` while
 the data exists).
 
+### B23 · Situational rollups frozen since 09-16 (ALL sports)
+Andy spotted it as "SEA and NE just have 1-0" on the NFL games tab. It
+is not SEA and NE and it is not NFL — **all 32 teams** showed exactly
+one game, and the same freeze hit every sport.
+
+`nfl_game_results` is correct: 32 scored games, 2 per team. The badge
+reads `team_situational_records`, which migration `20260916a` turned
+from a matview into a filtering VIEW over a renamed
+`team_situational_records_full`. The refresh functions still named the
+old object, so they have returned `42809: not a table or materialized
+view` on every call since 09-16. The 12 workflow steps that call them
+used `curl -s` with no status check under `continue-on-error`, so a 400
+and a 204 were the same event. Six days, six pipelines, silent.
+
+Fixed: `76489d10`.. — refresh fns repointed at `_full`
+(`supabase/migrations/20260922a_*.sql`), and all 12 steps now capture
+the HTTP code and emit `::error::` with the body.
+
+**OPEN — needs Andy: the migration must be applied.** No migration
+runner exists in the repo; until `20260922a` is run in Supabase the
+refresh RPCs keep failing and the badge keeps showing one game.
+VERIFY (after applying):
+`select public.refresh_team_situational_records();` then
+`select team,wins,losses,pushes from team_situational_records
+ where sport='NFL' and market='spread' and filter='overall';`
+— expect 2 games for all 32 teams.
+
+### B24 · NFL tab note exists but does not render
+Andy, 09-22: "we should have NFL note." The data is there —
+`sport_registry.NFL.today_note` is 143 chars ("Full analysis populates
+by Thursday morning ahead of each week's slate..."). NCAAF, MLB and UFC
+have one too; NBA/NCAAB/NHL are empty, which is correct (preseason).
+
+So this is the render path, not the data — same family as the earlier
+"the note isn't there every time" report. Notes were moved below the
+filters in `055ef4a1`, which is **build-gated**: Andy's shipped 1.0.1
+does not have that change. Re-check on the next build before doing any
+further work here.
+VERIFY: `select sport, today_note from sport_registry order by sport`
+(confirmed populated for NFL 09-22) — then look at the NFL tab on a
+build that includes `055ef4a1`.
+
+### B25 · UFC end-to-end before the Apple push — BUILD GATE
+Andy, 09-22: "make it pure UFC, do a full look at the entire process and
+data and model performance." Three parts, all open:
+- **Pure UFC.** Backend filter shipped (`fd1a6d3d`, `29aa26d9`); the
+  client still renders every promotion because `mma_mixed_martial_arts`
+  is one Odds API key with `sport_title: "MMA"` for all of them. B9.
+- **Process + data.** `sherdog` and `mmajunkie` externals are `return []`
+  stubs; `bfo` matches 0 picks. B19.
+- **Model performance.** Never audited end to end. Needs a graded record
+  by tier before anything ships.
+VERIFY: see B9/B19; model record needs a direct query against graded UFC
+reads.
+
+### B26 · Markdown leaking into short_read
+`Ari@Col` and `Tam@New` short_reads begin `**PITCHERS:**` and one
+contains a literal newline. The card renders short_read as plain text,
+so users see the asterisks. Cosmetic half of the non-uniformity Andy
+reported; the pick/prose half is fixed in `76489d10`.
+VERIFY: query MLB `jerry_reads.short_read` for today and grep for `**`.
+
+### B27 · 41 files write to `jerry_reads`
+Found while fixing `76489d10`. Several of them re-decide the pick rather
+than only writing prose, which is why the same contradiction (CLE@BOS)
+recurred three days apart after being fixed — a later writer overwrote
+the aligned row. Collapsing the rule into one function fixed the rule;
+it did not reduce the number of hands on the table.
+VERIFY: `rg -l "rest/v1/jerry_reads" mlb_pipeline/*.py | wc -l`
+FIX: classify the 41 into prose-writers vs pick-writers; pick-writers
+must go through `enforce_primary_play_alignment` or lose write access.
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list

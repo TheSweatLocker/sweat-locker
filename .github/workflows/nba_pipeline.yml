@@ -126,10 +126,18 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
-          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
+          # 2026-09-22: was `curl -s ... -d '{}'` with the response
+          # discarded. This RPC has returned 42809 since the 09-16
+          # matview rename and no one heard for six days, because a
+          # 400 and a 204 looked identical from here.
+          code=$(curl -s -o /tmp/rpc_out.json -w '%{http_code}' -X POST \
+            "$SUPABASE_URL/rest/v1/rpc/refresh_team_stats_rolling" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{}'
+            -H "Content-Type: application/json" -d '{}')
+          if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+            echo "::error::refresh_team_stats_rolling failed ($code): $(cat /tmp/rpc_out.json)"
+            exit 1
+          fi
 
       # 2026-09-01: refresh cross-sport rollup matviews (team_recent_games,
       # team_situational_records, team_stats_rolling). Universal matviews —
@@ -153,10 +161,18 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
-          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
+          # 2026-09-22: was `curl -s ... -d '{}'` with the response
+          # discarded. This RPC has returned 42809 since the 09-16
+          # matview rename and no one heard for six days, because a
+          # 400 and a 204 looked identical from here.
+          code=$(curl -s -o /tmp/rpc_out.json -w '%{http_code}' -X POST \
+            "$SUPABASE_URL/rest/v1/rpc/refresh_team_situational_records" \
             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{}'
+            -H "Content-Type: application/json" -d '{}')
+          if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+            echo "::error::refresh_team_situational_records failed ($code): $(cat /tmp/rpc_out.json)"
+            exit 1
+          fi
 
       # 2026-08-23 season-ready: refresh signal_registry from graded NBA props
       # once season data lands. Sport-universal script. Silent no-op during
