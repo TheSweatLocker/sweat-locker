@@ -38,6 +38,11 @@ from typing import Optional
 
 import os
 from dotenv import load_dotenv
+# 2026-09-22: shared live-cohort resolver. Pick `sub` strings used to
+# carry frozen backtest rates (two of them citing n=7 and n=10, far
+# under the n>=30 floor). cohort_evidence looks the figure up or
+# returns '' so the sentence ends after the observation.
+from cohort_evidence import phrase as _cohort_phrase
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -2653,13 +2658,23 @@ def compute_primary_play(ctx):
                 # which had readers unsure which side was the pick vs the
                 # fade. New copy leads with the PICK team explicitly.
                 mc_team = home_team if mc_side_val == 'H' else away_team
-                hit_rate_note = '90%' if is_panel else '68%'
-                sample_note = 'n=10' if is_panel else 'n=25'
+                # 2026-09-22: was hit_rate_note='90%'/'68%' with
+                # sample_note='n=10'/'n=25' baked in. Both frozen, and
+                # n=10 is a third of the n>=30 floor this project claims
+                # to hold every published percentage to — we were printing
+                # "wins 90% (n=10)" straight onto the card. cohort_evidence
+                # returns '' below the floor, so the sentence now ends
+                # after the observation.
+                _fade_ev = _cohort_phrase(
+                    'mc_panel_anticonsensus_fade' if is_panel
+                    else 'mc_anticonsensus_fade')
                 return {
                     'type': 'ml',
                     'tier': tier,
                     'label': f'{fade_team} ML',
-                    'sub': f'Take {fade_team}: 3 of 4 stat lens agree, MC+{partner} alone on {mc_team}. Fading the MC minority wins {hit_rate_note} ({sample_note}).',
+                    'sub': (f'Take {fade_team}: 3 of 4 stat lens agree, '
+                            f'MC+{partner} alone on {mc_team}.'
+                            + (f' Fading the MC minority wins {_fade_ev}.' if _fade_ev else '')),
                     'signal_floor': floor,
                     'audit_note': f'anti-consensus fade tier · aggregate 9-26 (26% inverse=74%) 30d',
                 }
@@ -2684,7 +2699,13 @@ def compute_primary_play(ctx):
         juice_note = ""
         try:
             if winning_ml is not None and float(winning_ml) <= -150:
-                juice_note = " · ML play (juice fav — RL -1.5 covers only 29-40% historically)"
+                # 2026-09-22: was "covers only 29-40% historically" — two
+                # frozen figures, no n. The OBSERVATION (heavy fav, so we
+                # surface ML not RL) stands on its own; the rate is looked
+                # up or omitted.
+                _jf = _cohort_phrase('juice_fav_ml_fade_rl')
+                juice_note = (" · ML play (juice fav"
+                              + (f" — RL -1.5 {_jf}" if _jf else "") + ")")
         except (TypeError, ValueError):
             pass
 
@@ -2741,7 +2762,8 @@ def compute_primary_play(ctx):
                 "label": f"{winning_team} ML",
                 "sub": (f"MC HIGH-CONF: {mc_hc_pct*100:.0f}% win prob{juice_note} · "
                         f"DOWNGRADED — market at {winning_ml:+d} is thin juice on a MC-loud fav "
-                        f"(60d MC×thin-juice hits 43% n=7)"),
+                        + (f" ({_cohort_phrase('mc_thin_juice_fav')})"
+                           if _cohort_phrase('mc_thin_juice_fav') else "")),
                 "signal_floor": 72,
                 "audit_note": "MC-HC juice-band gate 8/6 — thin juice on MC-loud fav is priced-in trap",
             }
@@ -2847,8 +2869,10 @@ def compute_primary_play(ctx):
                     "type": "ml",
                     "tier": "LEAN",
                     "label": f"{fav} ML lean",
-                    "sub": (f"LEAN (would be STRONG but |net|=3 trap bucket — "
-                            f"30.8% hit rate historically, downgraded)"),
+                    "sub": ("LEAN (would be STRONG but |net|=3 trap bucket"
+                            + (f" — {_cohort_phrase('confluence_net3_trap')}"
+                               if _cohort_phrase('confluence_net3_trap') else "")
+                            + ", downgraded)"),
                     "signal_floor": 62,
                     "audit_note": "|net|=3 trap downgrade 7/29 · project_confluence_net3_trap_729",
                 }

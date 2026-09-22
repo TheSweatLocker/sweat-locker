@@ -21,77 +21,13 @@ HEADERS = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LIVE COHORT EVIDENCE  (2026-09-22)
-#
-# Driver labels used to carry their backtest result frozen into the f-string:
-#
-#     f'both OPS L14 ≤ .650 (...) — 64.7% UNDER n=34'
-#
-# Those numbers were copied out of signal_registry when the line was
-# written and then never moved again. Proven by matching the literals back
-# against the live table: 8 of them still sit on a real row with the exact
-# same rate and n — ops_l14_dual_ice really is 64.7% n=34 — which means the
-# code stopped reading a source that was updating the whole time.
-#
-# A frozen rate is worse than no rate. It reads as a live audited claim,
-# the user has no way to tell it is stale, and it silently drifts further
-# from the truth every day the cohort keeps playing.
-#
-# So labels no longer state evidence; they ASK for it. One lookup, one
-# n-gate, one format. The number can never go stale again because nothing
-# stores it, and a cohort with no row (or under 30 games) returns an empty
-# string so the label degrades to the plain observation instead of
-# publishing an unsourced percentage — which is what
-# feedback_sample_size_with_pct requires anyway.
-# ═══════════════════════════════════════════════════════════════════════════
-_SIGNAL_EVIDENCE: dict | None = None
-
-
-def _load_signal_evidence(sport: str = 'MLB') -> dict:
-    """{signal_name: (hit_rate, sample_n)} from signal_registry. Cached."""
-    global _SIGNAL_EVIDENCE
-    if _SIGNAL_EVIDENCE is not None:
-        return _SIGNAL_EVIDENCE
-    out: dict = {}
-    try:
-        for off in range(0, 4000, 1000):
-            r = requests.get(
-                f'{SUPABASE_URL}/rest/v1/signal_registry',
-                headers=HEADERS, timeout=20,
-                params={'select': 'signal_name,hit_rate,sample_n',
-                        'sport': f'eq.{sport}', 'limit': 1000, 'offset': off})
-            if r.status_code != 200:
-                break
-            chunk = r.json()
-            if not isinstance(chunk, list) or not chunk:
-                break
-            for row in chunk:
-                nm = row.get('signal_name')
-                if nm and row.get('hit_rate') is not None:
-                    out[nm] = (float(row['hit_rate']), int(row.get('sample_n') or 0))
-            if len(chunk) < 1000:
-                break
-    except requests.exceptions.RequestException as e:
-        # Evidence is decoration on top of a driver that already fired on
-        # its own condition. If the lookup fails the driver still counts —
-        # it just stops making a claim it cannot currently support.
-        print(f'  ⚠ signal_registry fetch failed ({e}) — labels will omit rates')
-    _SIGNAL_EVIDENCE = out
-    return out
-
-
-def _cohort(signal_name: str, direction: str = '', min_n: int = 30) -> str:
-    """Live evidence suffix, e.g. ' — 64.7% UNDER (n=34)'.
-
-    Empty string when the cohort has no row or is under-sampled, so the
-    caller's label simply ends after the observation.
-    """
-    rate, n = _load_signal_evidence().get(signal_name, (None, 0))
-    if rate is None or n < min_n:
-        return ''
-    dir_txt = f' {direction}' if direction else ''
-    return f' — {rate:.1f}%{dir_txt} (n={n})'
+# ── Live cohort evidence ────────────────────────────────────────────
+# Moved to cohort_evidence.py on 2026-09-22 so game_context.py can use
+# the identical rule. Keeping a second copy here is the mistake that
+# cost a day elsewhere: backfill_jerry_pick_alignment carried its own
+# implementation of enforce_primary_play_alignment, so fixing the shared
+# one left the copy wrong. One rule, one file.
+from cohort_evidence import cohort as _cohort   # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════════════════
