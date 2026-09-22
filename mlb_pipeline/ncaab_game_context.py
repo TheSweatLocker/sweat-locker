@@ -545,6 +545,28 @@ def upsert_context(rows):
         _snap = write_primary_play_snapshot
     except Exception:
         _snap = None
+    # ── 2026-09-21 PUBLISH LOCK ──────────────────────────────────────
+    # NCAAB had no write lock. MLB and NFL each got one on Andy's
+    # directive ("whatever comes out in the morning stays" / "make sure
+    # aren't overwritten"); the other four sports were never covered, so
+    # any later cron run silently rewrote an already-published pick while
+    # the receipt kept the original. Card and receipt then disagree with
+    # no record of the change.
+    #
+    # Placed before the payload is assembled — a lock applied after it
+    # mutates `rows` and writes the pre-lock copy anyway.
+    #
+    # Preserves the published primary_play only; every other column still
+    # refreshes. A game with no published pick is untouched.
+    try:
+        from pick_lock import preserve_published
+        _locked = sum(1 for _r in rows
+                      if preserve_published('NCAAB', 'ncaab_game_context', _r, SUPABASE_URL, WRITE_HEADERS))
+        if _locked:
+            print(f'  🔒 NCAAB publish lock: preserved {{_locked}} published pick(s)')
+    except Exception as _e:
+        print(f'  ⚠ NCAAB publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
+
     from pgrst_strip_retry import post_with_strip_retry
     _warned_once = False
     for row in rows:

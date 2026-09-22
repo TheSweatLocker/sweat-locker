@@ -180,13 +180,116 @@ def run(start: str, end: str, dry_run: bool = False) -> int:
     return ok
 
 
+def repair_names(start: str, end: str, dry_run: bool = False) -> int:
+    """Rewrite legacy place-only team names to full names, from the API.
+
+    2026-09-21. nhl_game_results holds two naming generations, because
+    nhl_data_client used to store the NHL API's `placeName` (the CITY):
+
+        Carolina          84 rows      Carolina Hurricanes    (new)
+        Chicago           85 rows      Chicago Blackhawks     (new)
+        New York         166 rows      <- Rangers AND Islanders, collapsed
+        ...31 place-only strings in total
+
+    nhl_elo trains off this table and treats each spelling as a separate
+    club, so it reported "trained 75 teams" for a 32-team league and gave
+    Carolina gp=108 when two seasons is ~164. Every rating was computed on
+    a fraction of that team's history.
+
+    A place -> full-name mapping would fix 30 of the 31 and cannot fix
+    "New York", where two clubs share the string and no information
+    survives locally to separate them. So don't map: re-read the date from
+    the NHL API, which now returns placeName + commonName, and take the
+    real names. Matching is by game_id, so there is no guessing.
+
+    Leaves international sides alone (CAN, USA, FIN, 'Slovakia Slovakia'
+    and friends — 4 Nations / Olympic fixtures that landed in this table).
+    Those are not club games; nhl_elo filters them separately.
+    """
+    d0 = datetime.fromisoformat(start).date()
+    d1 = datetime.fromisoformat(end).date()
+    # Current full names, so we only touch rows that need it.
+    try:
+        from odds_pull_core import NHL_TEAMS
+        good = set(NHL_TEAMS.keys())
+    except Exception:
+        good = set()
+
+    patches, stats = [], Counter()
+    day = d0
+    while day <= d1:
+        ds = day.isoformat()
+        existing = {}
+        r = _S.get(f'{SB}/rest/v1/nhl_game_results', headers=H_READ, timeout=30,
+                   params={'select': 'game_id,home_team,away_team',
+                           'game_date': f'eq.{ds}'})
+        for row in (r.json() if r.status_code == 200 else []):
+            existing[str(row['game_id'])] = row
+        if not existing:
+            day += timedelta(days=1); continue
+        stale = {gid: row for gid, row in existing.items()
+                 if row.get('home_team') not in good
+                 or row.get('away_team') not in good}
+        if stale:
+            try:
+                api = {str(g.get('game_id')): g for g in get_scoreboard(ds)}
+            except Exception as e:
+                print(f'  ⚠ {ds}: {type(e).__name__}')
+                api = {}
+            for gid, row in stale.items():
+                g = api.get(gid)
+                if not g:
+                    stats['no_api_row'] += 1
+                    continue
+                h, a = g.get('home_team'), g.get('away_team')
+                if not h or not a:
+                    stats['api_names_missing'] += 1
+                    continue
+                if h == row.get('home_team') and a == row.get('away_team'):
+                    stats['already_correct'] += 1
+                    continue
+                # Only accept a rename into a known club name — otherwise an
+                # international fixture would be "repaired" into whatever the
+                # API calls it, which is not what elo needs either.
+                if good and (h not in good or a not in good):
+                    stats['not_a_club_game'] += 1
+                    continue
+                patches.append((gid, {'home_team': h, 'away_team': a}))
+                stats['renamed'] += 1
+        day += timedelta(days=1)
+
+    print(f'  rename candidates: {stats["renamed"]}  already correct: '
+          f'{stats["already_correct"]}  non-club: {stats["not_a_club_game"]}  '
+          f'no api row: {stats["no_api_row"]}')
+    if dry_run:
+        for gid, upd in patches[:6]:
+            print(f'    [DRY] {gid} -> {upd["away_team"]} @ {upd["home_team"]}')
+        print(f'  [DRY] would patch {len(patches)}')
+        return len(patches)
+    ok = 0
+    for gid, upd in patches:
+        r = _S.patch(f'{SB}/rest/v1/nhl_game_results',
+                     params={'game_id': f'eq.{gid}'},
+                     headers={**H_WRITE, 'Prefer': 'return=minimal'},
+                     json=upd, timeout=25)
+        if r.status_code in (200, 204):
+            ok += 1
+    print(f'  renamed {ok}')
+    return ok
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--start', default=DEFAULT_START)
     p.add_argument('--end', default=DEFAULT_END)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--repair-names', action='store_true',
+                   help='rewrite legacy place-only team names from the API')
     a = p.parse_args()
-    run(a.start, a.end, dry_run=a.dry_run)
+    if a.repair_names:
+        repair_names(a.start, a.end, dry_run=a.dry_run)
+    else:
+        run(a.start, a.end, dry_run=a.dry_run)
 
 
 if __name__ == '__main__':

@@ -405,6 +405,30 @@ def upsert_context(rows: list[dict], dry_run: bool = False) -> int:
                   f'rest={r.get("home_rest_days")}/{r.get("away_rest_days")}')
         return len(rows)
 
+    # ── 2026-09-21 PUBLISH LOCK ──────────────────────────────────────
+    # NHL had no write lock. MLB and NFL each got one on Andy's directive
+    # ("whatever comes out in the morning stays" / "make sure aren't
+    # overwritten"), and the other four sports were never covered — so any
+    # later cron run silently rewrote a pick that had already been
+    # published, while the receipt kept the original. Card and receipt then
+    # disagree, with no record of the change.
+    #
+    # MUST run before `normalized` is built: that list is the payload, so a
+    # lock applied after it would mutate `rows` and write the pre-lock copy
+    # anyway — which is exactly what my first pass at this did.
+    #
+    # Preserves the published primary_play only; every other column still
+    # refreshes. A game with no published pick is untouched — a gap is not
+    # a change.
+    try:
+        from pick_lock import preserve_published
+        _locked = sum(1 for _r in rows
+                      if preserve_published('NHL', 'nhl_game_context', _r, SB, H_WRITE))
+        if _locked:
+            print(f'  🔒 NHL publish lock: preserved {_locked} published pick(s)')
+    except Exception as _e:
+        print(f'  ⚠ NHL publish lock unavailable ({type(_e).__name__}) — writing unlocked')
+
     # Union keys for batch upsert (PostgREST)
     all_keys = set()
     for row in rows: all_keys.update(row.keys())

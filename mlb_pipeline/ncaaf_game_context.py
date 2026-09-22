@@ -1428,6 +1428,29 @@ def upsert(rows: list, dry_run: bool = False) -> int:
     for _row in rows:
         for _k in _all_keys:
             if _k not in _row: _row[_k] = None
+    # ── 2026-09-21 PUBLISH LOCK ──────────────────────────────────────
+    # NCAAF had NO write lock. MLB and NFL each got one on Andy's
+    # directive ("whatever comes out in the morning stays" / "make sure
+    # aren't overwritten"), and the other four sports were never covered —
+    # so every later cron run silently rewrote picks that had already been
+    # published, while the receipt kept the original. The card and the
+    # receipt would then disagree with no record of the change.
+    #
+    # Gated at the WRITE because that is the one path every caller shares.
+    # Preserves the published primary_play only; every other column still
+    # refreshes. A game with no published pick is untouched — a gap is not
+    # a change.
+    try:
+        from pick_lock import preserve_published
+        _locked = 0
+        for _row in rows:
+            if preserve_published('NCAAF', 'ncaaf_game_context', _row, SB, H_WRITE):
+                _locked += 1
+        if _locked:
+            print(f'  🔒 NCAAF publish lock: preserved {{_locked}} published pick(s)')
+    except Exception as _e:
+        print(f'  ⚠ NCAAF publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
+
     r = requests.post(
         f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,
