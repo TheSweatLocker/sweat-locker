@@ -201,6 +201,24 @@ def run(dry_run: bool = False) -> None:
         return
     print(f'  forward UFC events: {len(events)}')
 
+    # 2026-09-22 WRITE ORDER IS A CONTRACT. Four consumers
+    # (pull_externals_ufc, ufc_predict, ufc_score_card, and the app)
+    # all resolve "the upcoming card" with
+    #     order=updated_at.desc & limit=1
+    # That was correct while this script wrote exactly ONE event.
+    # Storing the forward slate broke it silently: writing soonest
+    # first meant the FURTHEST-OUT card was written last and became
+    # "latest". pull_externals_ufc immediately started pulling for
+    # Oct 17 instead of the Sept 26 card.
+    #
+    # event_date is stored as TEXT ("October 17, 2026") so consumers
+    # cannot simply order by it — "September" sorts after "October"
+    # alphabetically. Until they select on a parsed date (BACKLOG),
+    # writing furthest-first keeps the soonest card newest and every
+    # existing consumer correct without changing four call sites
+    # that cannot all be tested from here.
+    events = list(reversed(events))
+
     wrote = skipped = 0
     for ev in events:
         event_name = ev.get('name', 'Unknown event')

@@ -413,42 +413,76 @@ def write_picks(picks: list, pull_id: str) -> int:
 
 
 def write_pull_log(sources_attempted: list, pull_id: str, pick_counts: dict = None) -> None:
-    """Log the pull for provenance/debugging.
-    Schema mirrors MLB's pull_log — includes source_url, http_status,
-    duration_ms, triggered_by, agent_version (all inferred where possible)."""
+    """Log the pull for provenance/debugging — ONE row per pull.
+
+    2026-09-22, two bugs fixed together. This wrote one row PER SOURCE,
+    all carrying the same pull_id, with status='stub' for unimplemented
+    fetchers. Both were rejected by the table:
+
+      23514  status='stub' is not in the CHECK constraint
+             (success / failed / running)
+      23505  external_pull_log_pull_id_key — pull_id is UNIQUE, so the
+             per-source rows collided with each other
+
+Either one kills the whole batch, so NO row was written at all — not
+    even for sources that actually ran. That is why UFC externals
+    producing nothing since the 07-27 scaffold left no trace: the only
+    record of the run was the record that failed to write.
+
+    MLB already had the right shape (start_pull_log / complete_pull_log:
+    one row per pull, PATCHed to a final status). Matching it rather than
+    inventing a third pattern — per-source detail goes in `notes`.
+    """
     now = datetime.now(timezone.utc).isoformat()
     counts = pick_counts or {}
-    payload = [{
+    total = sum(counts.get(s, 0) for s in sources_attempted)
+    stubs = [s for s in sources_attempted
+             if SOURCE_REGISTRY[s].get('fetcher_todo')]
+    live = [s for s in sources_attempted if s not in stubs]
+
+    detail = '; '.join(f'{s}={counts.get(s, 0)}' for s in sources_attempted)
+    if stubs:
+        detail += f' | not implemented: {",".join(stubs)}'
+
+    # A pull where every source is an unimplemented stub has not
+    # succeeded at anything. Saying so is what makes it findable.
+    if not live:
+        status, err = 'failed', 'all fetchers are unimplemented stubs (scaffold 2026-07-27)'
+    elif total == 0:
+        status, err = 'failed', f'live sources returned 0 picks ({",".join(live)})'
+    else:
+        status, err = 'success', None
+
+    payload = {
         'pull_id': pull_id,
         'sport': 'UFC',
-        'source': s,
+        'source': ','.join(sources_attempted)[:100],
         'scheduled_at': now,
         'started_at': now,
         'completed_at': now,
-        'status': 'stub' if SOURCE_REGISTRY[s].get('fetcher_todo') else 'success',
-        'picks_pulled': counts.get(s, 0),
-        'games_covered': counts.get(s, 0),
-        'error_message': None,
-        'source_url': SOURCE_REGISTRY[s].get('base_url', ''),
+        'status': status,
+        'picks_pulled': total,
+        'games_covered': total,
+        'error_message': err,
+        'notes': detail[:500],
+        'source_url': '',
         'http_status': 200,
         'duration_ms': 0,
         'triggered_by': 'cron:ufc',
         'agent_version': 'ufc-v1',
-    } for s in sources_attempted]
+    }
     try:
         r = requests.post(
             f'{SB}/rest/v1/external_pull_log', headers=H_WRITE,
-            json=payload, timeout=15,
+            json=[payload], timeout=15,
         )
         if r.status_code not in (200, 201, 204):
             print(f'  ⚠ pull_log write failed {r.status_code}: {r.text[:200]}')
+        else:
+            print(f'  pull_log: {status} · {detail}')
     except Exception as e:
-        print(f'  ⚠ pull_log write exception: {e}')
+        print(f'  ⚠ pull_log write error: {e}')
 
-
-# ─────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────
 def run(sources: Optional[list] = None, refresh: bool = False, dry_run: bool = False) -> None:
     print(f'=== UFC externals pull · {datetime.now(timezone.utc).date()} ===')
     event_name, event_date, fights = load_upcoming_ufc_card()
