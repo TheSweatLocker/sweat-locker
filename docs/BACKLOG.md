@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-22 (late)**
+**Last verified: 2026-09-22 (night)**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -170,6 +170,18 @@ GameDetailV2:
 
 BUILD-GATED (client change).
 
+### B22 · Models blank when a starter is unannounced
+SD @ LAD 09-22 showed PANEL / V4 / MC as "—" while ARI @ COL showed all
+five. Not a pipeline fault: `home_pitcher` is NULL because MLB had not
+announced the Dodgers starter, and those three models need both arms.
+Jerry and V3 run without.
+
+Open question is presentation, not computation: a dash reads as "our
+model is broken" when the truth is "the starter is not announced yet".
+Worth saying which, since it resolves itself hours later.
+VERIFY: compare a game with a NULL starter against one with both, on
+panel_implied_*, model_pred_*, mc_probabilities.
+
 ### B21 · Screenshot QA pass
 Andy is finding these by looking at his own app; nothing else is. Needs
 a standing pass over the rendered surfaces per sport — not a code audit,
@@ -239,3 +251,8 @@ verifiable.
 | `game_context.py` user-facing hardcoded % + shared resolver | `0e199a36` |
 | DH sibling pairing scoped to same ET date | `5a079e2c` |
 | daily log 09-22 + first BACKLOG.md | `8fb41619` |
+| UFC forward slate + my write-order regression + pull_log | `fd1a6d3d` `29aa26d9` |
+| balldontlie removed from client (key was live) | `5fd99e56` |
+| MLB tab note moved to sport_registry, derived from real state | `ed469ff6` |
+| notes relocated below filters | `055ef4a1` |
+| conviction-0 chips render NO PLAY | pending build |

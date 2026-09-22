@@ -14717,7 +14717,22 @@ setJerryHistory(prev => {
   // If generated before 2pm ET, tag as AM read (12pm ET = 16:00 UTC in EDT)
   const isAmRead = gen ? (gen.getUTCHours() < 17) : false;
   const conv = jr.conviction || 0;
-  const isPass = String(jr.call_market || '').toLowerCase() === 'pass';
+  // 2026-09-22: conviction 0 counts as a pass for display.
+  //
+  // These were independent, so a directional call carrying conviction 0
+  // rendered a chip reading "Over 8.5 · 0" — Andy: "why would there be
+  // a zero". A zero-confidence pick is not a pick, and showing one next
+  // to a real line invites a bet on something the engine declined.
+  //
+  // The backend normally prevents it (enforce_primary_play_alignment
+  // nulls the side and sets call_market='pass' on a soft tier), but the
+  // two fields can still disagree in the window between a Jerry write
+  // and the next alignment pass — which is exactly the gap that produced
+  // the 5 badge/prose contradictions fixed in d7f803fa. Treating 0 as a
+  // pass here closes the display half of that class permanently, rather
+  // than relying on the writer always winning the race.
+  const isPass = String(jr.call_market || '').toLowerCase() === 'pass'
+                 || conv <= 0;
   // 2026-09-01 ROOT-CAUSE FIX (Padres/Reds "Okay + Play" badge conflict):
   // Jerry chip color used to derive from jr.conviction thresholds
   // INDEPENDENT of the strip's tier chip (which uses TIER_COLOR[pp.tier]).
