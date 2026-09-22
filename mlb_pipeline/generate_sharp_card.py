@@ -1114,7 +1114,31 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                     _existing_primes, _new_primes = _old_q[0], _new_q[0]
                     _changed = len(_new_ids ^ _old_ids)
 
-                    if _new_q > _old_q:
+                    # 2026-09-22 UNBETTABLE PURGE — overrides the quality
+                    # comparison. Removing a pick that cannot be bet is a
+                    # CORRECTION, not churn, and the quality tuple reads it
+                    # backwards: dropping the three NHL preseason plays took
+                    # STRONG 6→3, so (12,3,1144) scored "not better" than
+                    # (12,6,1138) and the unbettable deck stayed published.
+                    #
+                    # An ML with no moneyline is the signature: no price
+                    # means no stake, no grade and no real sizing (units
+                    # fell back to a tier default, so it rendered as a
+                    # confident 2u play). Whenever the live deck contains
+                    # one, replacing it is mandatory.
+                    _unbettable = [
+                        _it for _it in _existing_items
+                        if isinstance(_it, dict)
+                        and str(_it.get('type') or '').lower() == 'ml'
+                        and _it.get('odds') is None
+                    ]
+                    if _unbettable:
+                        print(f'  ⚠ sharp_card_{today} holds {len(_unbettable)} '
+                              f'UNBETTABLE pick(s) (ML with no market price): '
+                              + ', '.join(str(_it.get('pick')) for _it in _unbettable[:4]))
+                        print(f'  🔓 republish FORCED — removing unbettable picks '
+                              f'overrides the deck-quality hold')
+                    elif _new_q > _old_q:
                         print(f'  🔓 sharp_card_{today} republish allowed: '
                               f'PRIME {_old_q[0]}→{_new_q[0]}, STRONG {_old_q[1]}→{_new_q[1]}, '
                               f'conviction {_old_q[2]}→{_new_q[2]} '
