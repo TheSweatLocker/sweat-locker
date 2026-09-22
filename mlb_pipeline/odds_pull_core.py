@@ -230,6 +230,8 @@ class OddsPuller:
 
     def build_rows(self, events: list) -> tuple:
         rows, unmapped = [], []
+        # Keep (event, game_id, game_date) so run() can also emit line_history.
+        self._event_ids = []
         for ev in events:
             api_home, api_away = ev.get('home_team'), ev.get('away_team')
             home, h_ab = self._resolve(api_home)
@@ -267,7 +269,52 @@ class OddsPuller:
                 row['home_abbrev'] = h_ab
                 row['away_abbrev'] = a_ab
             rows.append(row)
+            self._event_ids.append((ev, gid, gd))
         return rows, unmapped
+
+
+    def _write_line_history(self) -> int:
+        """Emit line_history rows from the slate we just pulled.
+
+        2026-09-21. line_history is what detect_line_movement reads, which
+        feeds line_movement_flags, which feeds classify_line_moves and the
+        Steam Room Split view. It had ZERO rows for NHL, NBA and NCAAB, and
+        NFL/NCAAF stopped dead on 2026-09-09 — so football has had no line
+        movement detection for twelve days OF THE SEASON, and hockey has
+        never had any.
+
+        Cause: write_line_history.py reads odds_cache, which is populated
+        only when someone opens the Games tab in the app. The newest
+        odds_games_* row for any sport is 2026-09-09. MLB is unaffected
+        because line_poller calls write_line_history_from_event directly —
+        that writer exists precisely to bypass odds_cache and has been
+        MLB-only since 09-11.
+
+        Every sport already pulls the same slate response here, so this is
+        the same fix applied where it belongs: once, in the shared core.
+        Never fatal — a line_history failure must not cost us the odds pull
+        itself, which is the row that actually prices the game.
+        """
+        pairs = getattr(self, '_event_ids', None)
+        if not pairs:
+            return 0
+        try:
+            from book_lines_writer import write_line_history_from_event
+        except Exception as e:
+            print(f'  ⚠ line_history writer unavailable ({e})')
+            return 0
+        total = 0
+        failed = 0
+        for ev, gid, gd in pairs:
+            try:
+                total += write_line_history_from_event(ev, self.sport_code, gid, gd) or 0
+            except Exception:
+                failed += 1
+        note = f'  line_history: {total} rows from {len(pairs)} events'
+        if failed:
+            note += f' ({failed} event(s) failed)'
+        print(note)
+        return total
 
     def run(self, dry_run: bool = False) -> int:
         print(f'=== {self.sport_code} odds pull · {_et_now():%Y-%m-%d %H:%M} ET ===')
@@ -292,6 +339,7 @@ class OddsPuller:
                       f'tot={r.get(self.total_col)} ml={r.get("close_home_ml")}/'
                       f'{r.get("close_away_ml")}')
             return len(rows)
+        self._write_line_history()
         w = 0
         for i in range(0, len(rows), 200):
             batch = rows[i:i + 200]

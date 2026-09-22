@@ -280,6 +280,43 @@ def upsert_games(rows: list, dry_run: bool = False) -> int:
     return len(rows)
 
 
+def _emit_line_history(pairs: list, sport: str) -> int:
+    """Write line_history rows from the slate this puller already fetched.
+
+    2026-09-21. line_history feeds detect_line_movement -> line_movement_flags
+    -> classify_line_moves and the Steam Room Split view. NFL and NCAAF rows
+    STOPPED on 2026-09-09 — twelve days of the season with no line-movement
+    detection at all, which is why football carried only 51 NFL flags while
+    MLB had 1,378.
+
+    Cause: write_line_history.py reads odds_cache, which only fills when a
+    user opens the Games tab. The newest odds_games_* row for ANY sport is
+    2026-09-09. MLB escaped because line_poller calls
+    write_line_history_from_event directly — a writer added 09-11 precisely
+    to bypass odds_cache, but wired for MLB only.
+
+    Never fatal: losing line_history must not cost us the odds pull itself.
+    """
+    if not pairs:
+        return 0
+    try:
+        from book_lines_writer import write_line_history_from_event
+    except Exception as e:
+        print(f'    ⚠ line_history writer unavailable ({e})')
+        return 0
+    total = failed = 0
+    for ev, gid, gd in pairs:
+        try:
+            total += write_line_history_from_event(ev, sport, gid, gd) or 0
+        except Exception:
+            failed += 1
+    msg = f'    line_history: {total} rows from {len(pairs)} events'
+    if failed:
+        msg += f' ({failed} failed)'
+    print(msg)
+    return total
+
+
 def run(dry_run: bool = False) -> None:
     print(f'=== NCAAF odds pull · {_et_now().date()} ===')
     if not ODDS_KEY:
@@ -298,16 +335,19 @@ def run(dry_run: bool = False) -> None:
     if not events:
         return
 
-    rows = []; skipped = 0
+    rows = []; skipped = 0; lh_pairs = []
     for event in events:
         row = event_to_row(event, aliases)
         if row is None:
             skipped += 1
             continue
         rows.append(row)
+        lh_pairs.append((event, row['game_id'], row['game_date']))
     if skipped:
         print(f'  ⚠ skipped {skipped} events with unmapped teams (seed_aliases may need more)')
 
+    if not dry_run:
+        _emit_line_history(lh_pairs, 'NCAAF')
     written = upsert_games(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
     print(f'\n{prefix}wrote {written} rows to ncaaf_game_results')
