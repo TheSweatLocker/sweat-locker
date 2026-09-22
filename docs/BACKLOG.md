@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-22**
+**Last verified: 2026-09-22 (evening)**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -69,24 +69,38 @@ VERIFY: `grep -n "expo-updates" package.json` (returns nothing)
 
 ## P1 — correctness
 
-### B6 · Doubleheader starters
-Both Rays/Yankees legs carry the same two pitchers. Ordinal-pairing fix
-is in `game_context.match_probable_pitcher` and verified correct against
-live odds, but an in-flight pre-fix pipeline run overwrote the data.
-Also unknown: whether the Games list collapses a DH to one card, which
-would make leg 2 invisible.
-VERIFY: query `mlb_game_context` for a DH date, compare
-`away_pitcher`/`home_pitcher` across the two rows.
+### B6 · Doubleheader — code fixed, one stale row remains
+Ordinal pairing in `game_context.match_probable_pitcher` took TWO passes.
+First pass paired by ordinal but built the sibling list with no date
+constraint, so on 09-22 evening — with game 1 finished and dropped from
+the feed, and TOMORROW's same-matchup game still listed — it counted two
+events against two MLB candidates, fired, and handed game 2's row game
+1's starters. Siblings are now scoped to the same ET date (`5a079e2c`).
 
-### B7 · `game_context.py` — 12 hardcoded percentages
-Same class as the `play_of_day.py` set (fixed 034adc4b). These are
-`audit_note` strings attached to picks. **Two are live decision
-thresholds, not labels** — the panel/non-panel `hit_rate_note` and the
-`-130/-149` juice band — so they need checking against live data before
-being touched.
+STILL OPEN: context row `394e1e2b` (Rays/Yankees game 1, Final) holds
+game 2's starters. Its odds event no longer exists, so nothing will
+correct it. Rewriting a completed game's row is the B12 mutation
+pattern — needs a decision, not a silent patch.
+ALSO UNKNOWN: whether the Games list collapses a DH into one card, which
+would make leg 2 invisible to users.
+VERIFY: `mlb_game_context` on a DH date — compare `away_pitcher`/
+`home_pitcher` across the two rows; they must differ.
+
+### B7 · Hardcoded percentages — CLOSED for user-facing strings
+`play_of_day.py` 20/23 (`034adc4b`), `game_context.py` all 4 user-facing
+`sub` claims (`0e199a36`). Resolver extracted to `cohort_evidence.py` so
+`play_of_day` and `game_context` share one implementation rather than a
+copy — that duplication is what made the `align_row` bug survive a fix.
+
+Two of the four were below the project's own floor: "wins 90% (n=10)"
+and "hits 43% n=7", printed on the card with the sample size visible.
+
+REMAINING (low priority, not user-facing): 6 `audit_note` strings in
+`game_context.py`, 2 `print()` debug lines, 3 non-claims in
+`play_of_day.py` (a threshold description and the v3_tot constants).
+`generate_mlb_game_reads.py` shows 4 hits but all are comments about an
+already-fixed bug — nothing to do.
 VERIFY: `grep -nE "['\"][^'\"]*[0-9]{1,3}(\.[0-9]+)?\s?%" mlb_pipeline/game_context.py | grep -v "^\s*#"`
-NOTE: `generate_mlb_game_reads.py` shows 4 hits but all are comments
-describing an already-fixed bug. Nothing to do there.
 
 ### B8 · Admin note — placement and intermittency
 Two overlapping systems: `sport_registry` (`state_message`,
@@ -174,3 +188,6 @@ verifiable.
 | NFL pick ledger PGRST102 silent outage + backfill | `47617079` |
 | Sharp: NHL preseason, unpriced ML, void pick (Jackson Kent) | `971943a1` `8bde8a2e` `f2faee04` |
 | Ledger admin notice expired | data-only |
+| `game_context.py` user-facing hardcoded % + shared resolver | `0e199a36` |
+| DH sibling pairing scoped to same ET date | `5a079e2c` |
+| daily log 09-22 + first BACKLOG.md | `8fb41619` |
