@@ -5729,7 +5729,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'consensus_fade_flag,consensus_fade_n,consensus_fade_note,consensus_fade_pct,'
           + 'consensus_fade_side,home_def_pass_ypg,home_def_ppg,home_def_rush_ypg,'
           + 'home_ml_close,home_ml_open,home_off_rating,home_pass_yds_pg,'
-          + 'home_rush_yds_pg,matched_patterns,oddscrowd_snapshot,spread_anchor_weight,')
+          + 'home_rush_yds_pg,matched_patterns,oddscrowd_snapshot,spread_anchor_weight')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
@@ -5792,7 +5792,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'away_def_ppg,away_def_rush_ypg,away_pass_yds_pg,away_rush_yds_pg,'
           + 'consensus_fade_flag,consensus_fade_n,consensus_fade_note,consensus_fade_pct,'
           + 'consensus_fade_side,home_def_pass_ypg,home_def_ppg,home_def_rush_ypg,'
-          + 'home_pass_yds_pg,home_rush_yds_pg,matched_patterns,spread_anchor_weight,')
+          + 'home_pass_yds_pg,home_rush_yds_pg,matched_patterns,spread_anchor_weight')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(ncaafCtxResult?.data && ncaafCtxResult.data.length > 0) {
