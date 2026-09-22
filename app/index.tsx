@@ -8447,9 +8447,24 @@ if(mkt.key === 'pitcher_props') {
               }
             }
             const isSkipBack = p?.tier === 'SKIP' && (jerry?.call_verdict || '').toUpperCase() === 'BACK';
+            // 2026-09-22: do NOT overwrite display_conviction with refit.
+            // refit_conviction is a FAMILY BUCKET constant, not a per-play
+            // score — on the 9/22 slate 56 props carried one and there were
+            // only 11 distinct values across the whole board: every
+            // er_under read 57.4, and 15 ks_under all read 30.3 (Gore 77,
+            // Manaea 76, Ritchie 75, Fried 55 — identical refit). Letting
+            // it define display made the headline number, the sort order
+            // and the prose all reflect a bucket rather than the play.
+            //
+            // Visible symptom Andy caught: Payton Tolle ks_over showed
+            // "PRIME" beside a 46, because the pill read conviction (91)
+            // while the number read refit (46.1).
+            //
+            // The view already computes display_conviction correctly
+            // (91 for that row) — server decides, app renders.
             return {...p,
                     refit_conviction: refit ?? null,
-                    display_conviction: refit ?? p.conviction,
+                    display_conviction: p.display_conviction ?? p.conviction,
                     prop_jerry: jerry,
                     jerry_direction_fallback: jerryFallback,
                     is_skip_back: isSkipBack};
@@ -8467,8 +8482,13 @@ if(mkt.key === 'pitcher_props') {
             if (kill) return false;  // stub — not for user surface
             return p?.tier !== 'SKIP' || (p.prop_jerry?.call_verdict || '').toUpperCase() === 'BACK';
           });
-          // Re-sort by display_conviction DESC so refit-boosted picks bubble up
-          filtered.sort((a: any, b: any) => (b.display_conviction || 0) - (a.display_conviction || 0));
+          // Re-sort by display_conviction DESC (server-computed). Until
+          // 2026-09-22 this sorted by refit, so the whole prop list was
+          // ordered by a family bucket constant — every er_under tied at
+          // 57.4 and every ks_under at 30.3, which is no ordering at all.
+          filtered.sort((a: any, b: any) =>
+            ((b.display_conviction ?? b.conviction) || 0) -
+            ((a.display_conviction ?? a.conviction) || 0));
           setPipelineMLBProps(filtered);
         } catch (e) {
           // Refit merge non-fatal — fall back to legacy filter behavior
@@ -15729,7 +15749,13 @@ setJerryHistory(prev => {
                       const tierUp = String(prop.tier || '').toUpperCase();
                       const refit = prop.refit_conviction;
                       const conv = prop.conviction;
-                      const confidence = refit != null ? refit : conv;
+                      // 2026-09-22: was `refit != null ? refit : conv`, which
+                      // put a family bucket constant next to a tier pill
+                      // derived from the real conviction — Tolle rendered
+                      // "PRIME" beside 46 while his conviction was 91. The
+                      // confidence rail must describe THIS play, so it reads
+                      // the server's display_conviction.
+                      const confidence = (prop as any).display_conviction ?? conv;
                       // Tier badge — bold, tier-colored, THE decision label
                       const tierBg = tierColor + '22';
                       const tierBorder = tierColor + '55';
@@ -15784,7 +15810,11 @@ setJerryHistory(prev => {
                   // available prop metadata (refit, tier, matchup context).
                   const fallbackBullets: {prose: string}[] = [];
                   if (humanized.length === 0) {
-                    const rc = prop.refit_conviction ?? prop.conviction;
+                    // 2026-09-22: refit-first here too. The fallback prose
+                    // said "Model conviction 46 — thinner backing" on a
+                    // conviction-91 PRIME play, because 46 was the ks_over
+                    // bucket value rather than anything about this pitcher.
+                    const rc = (prop as any).display_conviction ?? prop.conviction;
                     const propType = String(prop.prop_type || '').split('_')[0];
                     if (rc != null) {
                       fallbackBullets.push({prose:
