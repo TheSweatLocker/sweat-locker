@@ -4145,9 +4145,38 @@ def run(target_date=None):
             # index gives a stable ordinal that survives a drifted
             # timestamp, and lets the matcher pair 1-to-1 instead of
             # letting both legs claim the same MLB game.
+            # 2026-09-22 (second pass) DATE-SCOPE THE SIBLINGS.
+            # The first version grouped every odds event for the matchup
+            # regardless of date. That looks fine on a normal day and
+            # breaks on exactly the day it matters:
+            #
+            #   09-22 17:06Z  game 1  (finished, dropped out of the feed)
+            #   09-22 23:06Z  game 2  (still listed)
+            #   09-23 23:06Z  TOMORROW's game (also listed)
+            #
+            # Two events for the matchup, two MLB candidates for 09-22,
+            # so dh_count == len(candidates) and the ordinal happily
+            # fired — pairing TOMORROW's event into TODAY's doubleheader
+            # and handing game 2's row game 1's starters.
+            #
+            # A doubleheader is two games on ONE date. Siblings must be
+            # scoped to the same ET game date or the ordinal is comparing
+            # different slates.
+            def _et_date_of(_g):
+                _ct = str(_g.get('commence_time') or '')
+                if not _ct:
+                    return None
+                try:
+                    return (datetime.fromisoformat(_ct.replace('Z', '+00:00'))
+                            - timedelta(hours=4)).strftime('%Y-%m-%d')
+                except (TypeError, ValueError):
+                    return None
+
             _dh_sibs = sorted(
                 [g2 for g2 in games
-                 if g2.get('home_team') == home_team and g2.get('away_team') == away_team],
+                 if g2.get('home_team') == home_team
+                 and g2.get('away_team') == away_team
+                 and _et_date_of(g2) == game_date_et],
                 key=lambda g2: str(g2.get('commence_time') or '')
             )
             _dh_count = len(_dh_sibs)
