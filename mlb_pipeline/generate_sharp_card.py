@@ -992,7 +992,7 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
-             cold_state: dict | None = None):
+             cold_state: dict | None = None, live_props: set | None = None):
     # 2026-09-09 PUBLISH LOCK.
     # Sharp Card was being overwritten on every cron cycle (~9 hours of
     # rewrites/day). Users bet based on 8am board, then 2pm cron shipped
@@ -1132,11 +1132,50 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                         and str(_it.get('type') or '').lower() == 'ml'
                         and _it.get('odds') is None
                     ]
-                    if _unbettable:
-                        print(f'  ⚠ sharp_card_{today} holds {len(_unbettable)} '
-                              f'UNBETTABLE pick(s) (ML with no market price): '
-                              + ', '.join(str(_it.get('pick')) for _it in _unbettable[:4]))
-                        print(f'  🔓 republish FORCED — removing unbettable picks '
+                    # 2026-09-22 VOID-PICK PURGE. A published prop whose
+                    # underlying row has vanished is equally unbettable,
+                    # and the scratch sweep cannot catch it: that sweep
+                    # reconciles the PROPS TABLE against the Stats API,
+                    # and by the time a starter changes those prop rows
+                    # are already deleted. Nothing reconciled the
+                    # PUBLISHED DECK against reality, so the card kept
+                    # serving the pick from its own snapshot.
+                    #
+                    # Live case: Jackson Kent was the listed Nationals
+                    # starter when the deck was built; probables moved to
+                    # Cornelio/Anderson, his prop rows were removed, and
+                    # the Sharp went on showing "Jackson Kent Under 4.5
+                    # HA" as a 2-unit PRIME play on a pitcher who was not
+                    # going to throw.
+                    #
+                    # A pick is void when the fresh composition no longer
+                    # contains it AND no PRIME/STRONG row backs it. The
+                    # second half matters: a pick merely crowded out of
+                    # today's deck is still a real play, not a void one.
+                    _fresh_picks = {str(_it.get('pick') or '') for _it in items
+                                    if isinstance(_it, dict)}
+                    _live_props = live_props
+                    _void = []
+                    if _live_props:
+                        for _it in _existing_items:
+                            if not isinstance(_it, dict): continue
+                            if str(_it.get('type') or '').lower() != 'prop': continue
+                            _pk = str(_it.get('pick') or '')
+                            if _pk in _fresh_picks: continue
+                            if not any(_nm and _nm in _pk for _nm, _ in _live_props):
+                                _void.append(_it)
+
+                    if _unbettable or _void:
+                        if _unbettable:
+                            print(f'  ⚠ sharp_card_{today} holds {len(_unbettable)} '
+                                  f'UNBETTABLE pick(s) (ML with no market price): '
+                                  + ', '.join(str(_it.get('pick')) for _it in _unbettable[:4]))
+                        if _void:
+                            print(f'  ⚠ sharp_card_{today} holds {len(_void)} '
+                                  f'VOID pick(s) (no live PRIME/STRONG row — '
+                                  f'scratched or pulled): '
+                                  + ', '.join(str(_it.get('pick')) for _it in _void[:4]))
+                        print(f'  🔓 republish FORCED — removing unbettable/void picks '
                               f'overrides the deck-quality hold')
                     elif _new_q > _old_q:
                         print(f'  🔓 sharp_card_{today} republish allowed: '
@@ -1370,7 +1409,14 @@ def run(dry_run: bool = False, force: bool = False):
         all_items = capped
         print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {_effective_cap})')
 
-    _publish(today, all_items, dry_run, force=force, cold_state=cold_state)
+    # Live PRIME/STRONG prop identities, for the void-pick purge in
+    # _publish — a published prop with no backing row is unbettable.
+    _live_props = set()
+    for _p in (sources.get('props') or []):
+        if str(_p.get('tier') or '').upper() in ('PRIME', 'STRONG'):
+            _live_props.add((_p.get('player_name'), _p.get('prop_type')))
+    _publish(today, all_items, dry_run, force=force, cold_state=cold_state,
+             live_props=_live_props)
     return 0
 
 
