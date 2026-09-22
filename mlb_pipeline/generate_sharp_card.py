@@ -1412,7 +1412,7 @@ def run(dry_run: bool = False, force: bool = False):
     # Live PRIME/STRONG prop identities, for the void-pick purge in
     # _publish — a published prop with no backing row is unbettable.
     _live_props = set()
-    for _p in (sources.get('props') or []):
+    for _p in (sources.get('mlb_props') or []):
         if str(_p.get('tier') or '').upper() in ('PRIME', 'STRONG'):
             _live_props.add((_p.get('player_name'), _p.get('prop_type')))
     _publish(today, all_items, dry_run, force=force, cold_state=cold_state,
