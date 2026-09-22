@@ -164,6 +164,42 @@ _VALID_MARKETS_BY_SPORT = {
 }
 
 
+def derive_short_read(short: str | None, long: str | None,
+                      narrative: str | None = None) -> str | None:
+    """A short_read worth showing, derived from long_read when needed.
+
+    2026-09-22 EXTRACTED so the alignment backfill can use it too.
+
+    This logic already lived inline in upsert_jerry_read, which meant it
+    only ran on the LLM write path. backfill_jerry_pick_alignment PATCHes
+    jerry_reads directly, so anything it wrote skipped the guard entirely
+    — and after today's pass->play prose resync that produced reads like
+
+        "Under 8.0 - Supervised total model backs Under - 76% confidence"
+
+    52-64 characters of engine output sitting next to games whose read is
+    280 characters of actual analysis. Andy: "pre analysis mlb reads not
+    uniform". Both surfaces now derive the same way, and the FULL prose
+    was there the whole time — 5 of those 8 games had a real long_read.
+
+    Rule unchanged from the original: a short_read of real length is kept
+    as written; anything thinner is rebuilt from the first two sentences
+    of long_read. The sentence split guards "vs." / "St." / "e.g." by
+    requiring the period to be followed by space + capital.
+    """
+    import re as _re
+    short = (short or '').strip()
+    long = (long or '').strip()
+    if short and len(short) >= 100:
+        return short
+    if long:
+        sents = _re.split(r'(?<=[.!?])\s+(?=[A-Z])', long)
+        return ' '.join(sents[:2])[:400] or long[:400]
+    if short:
+        return short
+    return ((narrative or '')[:500] or None)
+
+
 def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> dict:
     """Force parsed jerry_read call_* fields to match ensemble primary_play.
 
@@ -208,17 +244,36 @@ def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> di
         parsed['call_line'] = None
         parsed['call_text'] = 'Pass'
         parsed['conviction'] = 0
-        # Prose stays — the LLM's analytical read is still valuable to the
-        # user even when we're not publishing a pick. This is different
-        # from the audit path that used to overwrite prose (fixed
-        # 2026-09-10 in jerry_pre_publish_audit.py). Belt-and-suspenders:
-        # only rewrite short_read if it's suspiciously short.
-        orig_short = (parsed.get('short_read') or '').strip()
-        if len(orig_short) < 60:
+        # ── 2026-09-22: short_read is now ALWAYS rewritten on a pass ──
+        #
+        # The prior rule preserved the LLM's prose unless it was under 60
+        # characters, reasoning that the analysis is still useful even
+        # when we decline the bet. That reasoning is wrong for THIS field.
+        # The LLM wrote its read to argue for the pick the engine then
+        # killed, so preserving it renders as:
+        #
+        #     [ NO PLAY ]  Michael King has been sharp lately ... The data
+        #                  leans under. Back the UNDER 8.
+        #
+        # which is SD@LAD on the 09-22 card — a refusal and a
+        # recommendation stacked on one game. The analysis is not lost: it
+        # stays in long_read, which is what the detail view renders. This
+        # field is the one-line card summary, and on a pass the only
+        # honest summary is why we passed.
+        #
+        # The MC-dissent branch below came from defer_call_to_ensemble,
+        # which was a near-copy of this function carrying better prose.
+        # That copy is now a delegate — see generate_jerry_synthesis.
+        dissent = pp.get('_mc_dissent') or {}
+        pct, orig = dissent.get('mc_pick_win_pct'), dissent.get('orig_tier')
+        if pct is not None and orig:
+            new_short = (f'Engine passed — the {orig} setup collapses under '
+                         f'MC sim ({pct}% win prob for our side). No play.')
+        else:
             engine_sub = str(pp.get('sub') or '').strip()
-            new_short = (f'Engine passed — no publishable edge on this game.'
+            new_short = ('Engine passed — no publishable edge on this game.'
                          + (f' {engine_sub}' if engine_sub else ''))
-            parsed['short_read'] = new_short[:2000]
+        parsed['short_read'] = new_short[:2000]
         return parsed
     # Real pick — align badge fields to ensemble
     parsed['call_market'] = market

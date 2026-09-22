@@ -673,39 +673,25 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
     # column and adding fields would break upsert). Audit-trail column
     # queued for a schema migration (project_jerry_shadow_conviction_918).
     # For now: LLM prose stays, pick fields overwrite below.
-    market = str(pp.get('type') or '').lower()
-    side = pp.get('side')
-    label = pp.get('label')
-    conviction = pp.get('conviction')
-    line = pp.get('line')
-    tier = str(pp.get('tier') or '').upper()
-
-    # Engine passed — Jerry becomes the "why we passed" narrator.
-    if tier in ('COVERAGE', 'PASS', 'SKIP') or (market not in _VALID_MARKETS or not side or not label):
-        dissent = pp.get('_mc_dissent') or {}
-        pct = dissent.get('mc_pick_win_pct')
-        orig = dissent.get('orig_tier')
-        if pct is not None and orig:
-            new_short = (f'Engine passed — the {orig} setup collapses under MC sim '
-                         f'({pct}% win prob for our side). No play.')
-        else:
-            engine_sub = str(pp.get('sub') or '').strip()
-            new_short = (f'Engine passed — no publishable edge on this game. '
-                         f'{engine_sub}' if engine_sub else 'Engine passed — no publishable edge on this game.')
-        parsed['call_market'] = 'pass'
-        parsed['call_side'] = None
-        parsed['call_line'] = None
-        parsed['call_text'] = 'Pass'
-        parsed['conviction'] = 0
-        parsed['short_read'] = new_short[:2000]
-        return parsed
-
-    parsed['call_market'] = market
-    parsed['call_side'] = str(side).upper()
-    parsed['call_line'] = line
-    parsed['call_text'] = label  # human-readable e.g. "Brewers ML"
-    if isinstance(conviction, (int, float)):
-        parsed['conviction'] = max(0, min(100, int(conviction)))
+    # ── 2026-09-22 DELEGATE ──────────────────────────────────────────
+    # Everything below this line used to be a second implementation of
+    # enforce_primary_play_alignment(). The two drifted: this copy always
+    # rewrote short_read on a pass and carried the MC-dissent sentence;
+    # the shared one preserved prose over 60 chars and had neither. Which
+    # rule a game got depended on which writer touched it last, so
+    # CLE@BOS shipped call_text="Boston Red Sox ML" from one path beside
+    # short_read="Engine passed — the PRIME setup collapses under MC sim"
+    # from the other, on the same row, twice in three days.
+    #
+    # That is the third copy of this rule found in this file family
+    # (align_row was the second, collapsed the same way). The better half
+    # of THIS copy — the dissent prose and the unconditional pass rewrite
+    # — moved into the shared function rather than being dropped.
+    from jerry_reads_dual_write import enforce_primary_play_alignment
+    parsed = enforce_primary_play_alignment('MLB', parsed, struct)
+    market = str((parsed.get('call_market') or '')).lower()
+    side = parsed.get('call_side')
+    label = parsed.get('call_text')
 
     # 2026-09-03 MLB ML CONVICTION GATE: 30d audit shows Jerry MLB ML
     # picks hit only 48.9% (n=174). Break-even at -110 is 52.4%. The
@@ -719,10 +705,16 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
             conv_val = int(parsed.get('conviction') or 0)
             if conv_val < 70:
                 print(f"  ⚠ MLB ML conv={conv_val} < 70 (30d hit% only 48.9% below HI band) — downgrade to PASS")
-                parsed['_mlb_ml_hi_gate'] = {
-                    'orig_market': market, 'orig_side': str(side).upper(),
-                    'orig_conviction': conv_val, 'orig_label': label,
-                }
+                # 2026-09-22: this used to set parsed['_mlb_ml_hi_gate'].
+                # upsert_jerry_read posts **parsed as the row, and
+                # jerry_reads has no such column — PostgREST 400s on an
+                # unknown key, so every gated pick lost its ENTIRE read
+                # rather than just its badge. Audit trail belongs in
+                # audit_notes, which is a real column.
+                _prior = (parsed.get('audit_notes') or '').strip()
+                _note = (f'mlb_ml_hi_gate: {label} ({side}) conv={conv_val} '
+                         f'< 70 — downgraded to PASS')
+                parsed['audit_notes'] = f'{_prior} | {_note}'.strip(' |')[:2000]
                 parsed['call_market'] = 'pass'
                 parsed['call_side'] = None
                 parsed['call_line'] = None

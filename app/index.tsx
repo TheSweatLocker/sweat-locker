@@ -14881,6 +14881,15 @@ setJerryHistory(prev => {
   // COVERAGE / PASS / SKIP tier chips too, which surfaced "picks" the
   // engine explicitly killed (Rays MC-dissent case, etc).
   const _PUBLISHABLE = new Set(['PRIME','STRONG','LEAN']);
+  // 2026-09-22: the SAME pass rule the Jerry snippet uses (see isPass,
+  // ~line 14734). 95399c44 taught the badge that conviction 0 means "no
+  // play" and stopped there, so a COVERAGE game rendered "NO PLAY" in
+  // the badge and "Over 8.5" in the chip four pixels below it — the
+  // engine declining the bet and offering it on the same card. The chip
+  // reached that state through its own fallback branch, which only
+  // checked `conviction != null`, and 0 is not null.
+  const _jrIsPass = String(jr?.call_market || '').toLowerCase() === 'pass'
+                    || Number(jr?.conviction ?? 0) <= 0;
   // 2026-09-06 PAYWALL GATE — tier chips carry the actual pick label
   // ("Boston Red Sox ML", "Over 7.5"), so surfacing them for free
   // users leaks the pick. Instead render a generic "🔒 Pro" chip when
@@ -14888,7 +14897,7 @@ setJerryHistory(prev => {
   // signal here" hint without revealing the call. Alignment chip
   // (ml verdict) also hidden — it correlates to the pick direction.
   const hasPickSignal = (pp?.tier && pp?.label && _PUBLISHABLE.has(String(pp.tier).toUpperCase()))
-    || (jr?.call_text && jr?.conviction != null && String(jr.call_market || '').toLowerCase() !== 'pass');
+    || (jr?.call_text && !_jrIsPass);
   if (isPro === false) {
     if (hasPickSignal) {
       chips.push(
@@ -14916,8 +14925,7 @@ setJerryHistory(prev => {
     if (!_jerryHasSamePick) {
       chips.push(<StatusChip key="pp" variant="tier" tier={pp.tier} label={pp.label} />);
     }
-  } else if (jr?.call_text && jr?.conviction != null &&
-             String(jr.call_market || '').toLowerCase() !== 'pass') {
+  } else if (jr?.call_text && !_jrIsPass) {
     // Use Jerry's take verbatim when there's no primary_play. Still
     // color-tint by derived tier for visual differentiation.
     const conv = jr.conviction;

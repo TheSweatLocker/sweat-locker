@@ -130,13 +130,30 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     # Now there is one implementation. Anything added there — prose
     # resync, future tier rules — applies here automatically, and the two
     # cannot drift again because the second copy no longer exists.
-    from jerry_reads_dual_write import enforce_primary_play_alignment
+    from jerry_reads_dual_write import (enforce_primary_play_alignment,
+                                        derive_short_read)
 
     _FIELDS = ('call_market', 'call_side', 'call_line', 'call_text',
                'conviction', 'short_read', 'long_read')
     parsed_in = {k: read_row.get(k) for k in _FIELDS}
     aligned = enforce_primary_play_alignment(
         sport, dict(parsed_in), {'primary_play': pp})
+
+    # 2026-09-22: this path PATCHes jerry_reads directly, so it never hit
+    # the short_read guard that upsert_jerry_read applies on the LLM
+    # write path. Result was a card showing 52-64 characters of engine
+    # output next to games carrying 280 characters of real analysis —
+    # Andy: "pre analysis mlb reads not uniform". The full prose was
+    # already in long_read on 5 of the 8 affected games; nothing needed
+    # regenerating, it just needed reading.
+    # NOT on a pass. enforce_primary_play_alignment now writes the
+    # "engine passed" line itself, and long_read still argues FOR the
+    # pick that was just killed — deriving from it would reinstate the
+    # exact contradiction (NO PLAY above "Back the UNDER 8.") this is
+    # meant to remove. Thin prose is only a problem on a live pick.
+    if str(aligned.get('call_market') or '').lower() != 'pass':
+        aligned['short_read'] = derive_short_read(
+            aligned.get('short_read'), aligned.get('long_read'))
 
     patch = {}
     for k in _FIELDS:
