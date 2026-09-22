@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from nhl_data_client import (
     get_schedule, get_gamecenter, get_team_stats,
     get_goalie_stats, get_team_analytics_mp,
-    get_goalie_stats_fb, get_team_analytics_fb,
+    get_goalie_stats_fb, get_team_analytics_fb, get_team_stats_fb,
 )
 
 ODDS_BASE = 'https://api.the-odds-api.com/v4/sports'
@@ -123,7 +123,11 @@ def enrich_team_stats(rows: list[dict], season: int) -> None:
             if not abbrev: continue
             # NHL API season stats
             if abbrev not in team_stats_cache:
-                team_stats_cache[abbrev] = get_team_stats(abbrev, season) or {}
+                # 2026-09-21: fallback variant, and get_team_stats itself was
+                # rewritten — it had been hitting api-web/club-stats, which
+                # returns player rows and no team totals, so pp_pct/pk_pct
+                # were None for every team since this table was built.
+                team_stats_cache[abbrev] = get_team_stats_fb(abbrev, season) or {}
             ts = team_stats_cache[abbrev]
             row[f'{prefix}_pp_pct'] = ts.get('pp_pct')
             row[f'{prefix}_pk_pct'] = ts.get('pk_pct')

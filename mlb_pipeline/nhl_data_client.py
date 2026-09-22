@@ -35,6 +35,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 NHL_API_BASE = 'https://api-web.nhle.com/v1'
 MP_BASE = 'https://moneypuck.com/moneypuck/playerData/seasonSummary'
+# Team-level season stats live on the STATS host, not api-web.
+NHL_STATS_BASE = 'https://api.nhle.com/stats/rest/en'
+_TEAM_SUMMARY_CACHE: dict = {}
 USER_AGENT = 'SweatLocker/1.0 (data-collection)'
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -149,28 +152,90 @@ def get_scoreboard(game_date: str) -> list[dict]:
 
 
 def get_team_stats(team_abbrev: str, season: int) -> Optional[dict]:
-    """Season stats for a team. season = 20262027 format (start_year *
-    10000 + end_year). Returns dict with pp_pct, pk_pct, and record."""
-    # NHL API season format: '20262027'
+    """Team season stats — record, goals per game, PP% and PK%.
+
+    2026-09-21 REWRITE. This used api-web.nhle.com/v1/club-stats, which is
+    the wrong API: that endpoint returns only {season, gameType, skaters,
+    goalies} — player rows, no team totals. The code then read
+    data.get('gamesPlayed'), data.get('powerPlayPct') and friends off the
+    top level, where none of those keys exist, so EVERY field came back
+    None for every team and every season. Not an error, just Nones — so
+    nhl_game_context's pp_pct / pk_pct / goals-per-game columns had been
+    NULL since the table was built and nothing complained.
+
+    The team-level data lives on a different host entirely:
+    api.nhle.com/stats/rest/en/team/summary. One call returns all 32 teams
+    with gamesPlayed, wins/losses/otLosses, goalsForPerGame,
+    goalsAgainstPerGame, powerPlayPct, penaltyKillPct, faceoffWinPct and
+    shots for/against per game — verified against 2025-26 (WSH 3.18 GF/g,
+    17.8% PP, 80.1% PK).
+
+    Joins on teamFullName, so callers may pass an abbrev or a full name.
+    Cached per season because one payload covers the league.
+    """
     season_str = f'{season}{season+1}' if season < 3000 else str(season)
-    data = _get(f'{NHL_API_BASE}/club-stats/{team_abbrev}/{season_str}/2')  # 2 = regular season
-    if not data:
+    cache = _TEAM_SUMMARY_CACHE.get(season_str)
+    if cache is None:
+        url = (f'{NHL_STATS_BASE}/team/summary'
+               f'?cayenneExp=seasonId={season_str}%20and%20gameTypeId=2')
+        payload = _get(url)
+        rows = (payload or {}).get('data') or []
+        cache = {}
+        for row in rows:
+            full = row.get('teamFullName') or ''
+            if not full:
+                continue
+            rec = {
+                'games_played': row.get('gamesPlayed'),
+                'wins': row.get('wins'),
+                'losses': row.get('losses'),
+                'ot_losses': row.get('otLosses'),
+                'goals_for_per_game': row.get('goalsForPerGame'),
+                'goals_against_per_game': row.get('goalsAgainstPerGame'),
+                # NHL returns these as fractions (0.178423). Store as a
+                # percentage so the column reads the way hockey people say
+                # it — "17.8% power play", not 0.178.
+                'pp_pct': (round(row['powerPlayPct'] * 100, 1)
+                           if row.get('powerPlayPct') is not None else None),
+                'pk_pct': (round(row['penaltyKillPct'] * 100, 1)
+                           if row.get('penaltyKillPct') is not None else None),
+                'faceoff_win_pct': (round(row['faceoffWinPct'] * 100, 1)
+                                    if row.get('faceoffWinPct') is not None else None),
+                'shots_for_per_game': row.get('shotsForPerGame'),
+                'shots_against_per_game': row.get('shotsAgainstPerGame'),
+            }
+            cache[full.lower()] = rec
+            cache[full.split()[-1].lower()] = rec
+        _TEAM_SUMMARY_CACHE[season_str] = cache
+    if not cache:
         return None
-    skater_totals = {}
-    for s in data.get('skaters', []):
-        # Sum team-level counts
-        for k in ('goals', 'assists', 'plusMinus', 'penaltyMinutes'):
-            skater_totals[k] = skater_totals.get(k, 0) + (s.get(k) or 0)
-    return {
-        'games_played': data.get('gamesPlayed'),
-        'wins': data.get('wins'),
-        'losses': data.get('losses'),
-        'ot_losses': data.get('otLosses'),
-        'goals_for_per_game': data.get('goalsForPerGame'),
-        'goals_against_per_game': data.get('goalsAgainstPerGame'),
-        'pp_pct': data.get('powerPlayPct'),
-        'pk_pct': data.get('penaltyKillPct'),
-    }
+    key = ' '.join(str(team_abbrev or '').split()).lower()
+    hit = cache.get(key)
+    if hit:
+        return dict(hit)
+    # Abbrev lookup goes through the CURATED 32-team map, not a heuristic.
+    # The first cut here guessed from initials or a first-word prefix and
+    # got CAR and TBL right while returning None for FLA ('Florida
+    # Panthers' -> initials 'fp', prefix 'flo') and WSH ('Washington
+    # Capitals' -> 'wc', 'was'). Real NHL abbreviations follow no rule you
+    # can derive, so derive nothing: odds_pull_core.NHL_TEAMS already
+    # enumerates all 32 and is the same map the odds puller joins on, which
+    # keeps both sides of the pipeline agreeing on who a team is.
+    if len(key) <= 4:
+        try:
+            from odds_pull_core import NHL_TEAMS
+        except Exception:
+            return None
+        for full_name, (abbrev, _place) in NHL_TEAMS.items():
+            if str(abbrev).lower() == key:
+                return dict(cache.get(full_name.lower())
+                            or cache.get(full_name.split()[-1].lower()) or {}) or None
+    return None
+
+
+def get_team_stats_fb(team_abbrev: str, season: int) -> Optional[dict]:
+    """get_team_stats with prior-season fallback. Prefer this."""
+    return _with_season_fallback(get_team_stats, team_abbrev, season)
 
 
 def _match_goalie_row(goalie_name: str, rows: list) -> list:
