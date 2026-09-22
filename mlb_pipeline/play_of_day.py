@@ -22,6 +22,79 @@ HEADERS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# LIVE COHORT EVIDENCE  (2026-09-22)
+#
+# Driver labels used to carry their backtest result frozen into the f-string:
+#
+#     f'both OPS L14 ≤ .650 (...) — 64.7% UNDER n=34'
+#
+# Those numbers were copied out of signal_registry when the line was
+# written and then never moved again. Proven by matching the literals back
+# against the live table: 8 of them still sit on a real row with the exact
+# same rate and n — ops_l14_dual_ice really is 64.7% n=34 — which means the
+# code stopped reading a source that was updating the whole time.
+#
+# A frozen rate is worse than no rate. It reads as a live audited claim,
+# the user has no way to tell it is stale, and it silently drifts further
+# from the truth every day the cohort keeps playing.
+#
+# So labels no longer state evidence; they ASK for it. One lookup, one
+# n-gate, one format. The number can never go stale again because nothing
+# stores it, and a cohort with no row (or under 30 games) returns an empty
+# string so the label degrades to the plain observation instead of
+# publishing an unsourced percentage — which is what
+# feedback_sample_size_with_pct requires anyway.
+# ═══════════════════════════════════════════════════════════════════════════
+_SIGNAL_EVIDENCE: dict | None = None
+
+
+def _load_signal_evidence(sport: str = 'MLB') -> dict:
+    """{signal_name: (hit_rate, sample_n)} from signal_registry. Cached."""
+    global _SIGNAL_EVIDENCE
+    if _SIGNAL_EVIDENCE is not None:
+        return _SIGNAL_EVIDENCE
+    out: dict = {}
+    try:
+        for off in range(0, 4000, 1000):
+            r = requests.get(
+                f'{SUPABASE_URL}/rest/v1/signal_registry',
+                headers=HEADERS, timeout=20,
+                params={'select': 'signal_name,hit_rate,sample_n',
+                        'sport': f'eq.{sport}', 'limit': 1000, 'offset': off})
+            if r.status_code != 200:
+                break
+            chunk = r.json()
+            if not isinstance(chunk, list) or not chunk:
+                break
+            for row in chunk:
+                nm = row.get('signal_name')
+                if nm and row.get('hit_rate') is not None:
+                    out[nm] = (float(row['hit_rate']), int(row.get('sample_n') or 0))
+            if len(chunk) < 1000:
+                break
+    except requests.exceptions.RequestException as e:
+        # Evidence is decoration on top of a driver that already fired on
+        # its own condition. If the lookup fails the driver still counts —
+        # it just stops making a claim it cannot currently support.
+        print(f'  ⚠ signal_registry fetch failed ({e}) — labels will omit rates')
+    _SIGNAL_EVIDENCE = out
+    return out
+
+
+def _cohort(signal_name: str, direction: str = '', min_n: int = 30) -> str:
+    """Live evidence suffix, e.g. ' — 64.7% UNDER (n=34)'.
+
+    Empty string when the cohort has no row or is under-sampled, so the
+    caller's label simply ends after the observation.
+    """
+    rate, n = _load_signal_evidence().get(signal_name, (None, 0))
+    if rate is None or n < min_n:
+        return ''
+    dir_txt = f' {direction}' if direction else ''
+    return f' — {rate:.1f}%{dir_txt} (n={n})'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Casual-bettor label translation table (added 2026-06-09).
 # Per project_casual_bettor_ux_docket: translate jargon to plain English while
 # keeping all the depth. Each driver contribution gets a `casual_label` field
@@ -890,7 +963,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
     # This is the ONLY validated use of the SIERA/xERA metric as a
     # directional signal. Both starters ≤ 3.00 → UNDER.
     if home_xera <= 3.0 and away_xera <= 3.0:
-        _add(total_drivers, 10, '🎯', 'Ace duel', f'Both starters ≤3.00 ({src_note}) — UNDER 64.7% n=17', direction='UNDER')
+        _add(total_drivers, 10, '🎯', 'Ace duel', f'Both starters ≤3.00 ({src_note})' + _cohort('siera_ace_duel_under', 'UNDER'), direction='UNDER')
     elif home_xera <= 3.5 and away_xera <= 3.5:
         _add(total_drivers, 3, '🎯', 'Quality matchup', 'Both starters ≤3.50 (untested weaker version)', direction='UNDER')
 
@@ -1091,9 +1164,11 @@ def score_mlb_game(ctx, game_props=None, track=None):
                                     penalty = 8 if cn >= 4 else 5
                                     label = ('ALL-3 unanimous fade (STRONG)'
                                              if cn >= 4 else 'ALL-3 unanimous fade')
-                                    hist = '37%' if cn >= 4 else '46%'
+                                    _sig = ('all3_unanimous_fade_strong' if cn >= 4
+                                            else 'all3_unanimous_fade')
                                     _add(side_drivers, -penalty, '⚠️', label,
-                                         f'v3+v4+jerry all agree — {hist} hist cohort (consensus over-priced)',
+                                         'v3+v4+jerry all agree — consensus over-priced'
+                                         + _cohort(_sig),
                                          direction=consensus_dir)
                         except (TypeError, ValueError):
                             pass
@@ -1119,11 +1194,11 @@ def score_mlb_game(ctx, game_props=None, track=None):
                                     #   LEAN   (|p-.5|>=.05): 42% hit rate → -7
                                     if v5_confidence >= 0.10:
                                         _add(side_drivers, -12, '🤖', 'v5 STRONG fade on consensus',
-                                             f'v5 dissents at STRONG conf — 22% hist cohort (n=27)',
+                                             'v5 dissents at STRONG conf' + _cohort('v5_dissent_strong'),
                                              direction=consensus_dir)
                                     elif v5_confidence >= 0.05:
                                         _add(side_drivers, -7, '🤖', 'v5 fade on consensus',
-                                             f'v5 dissents at LEAN conf — 42% hist cohort (n=129)',
+                                             'v5 dissents at LEAN conf' + _cohort('v5_dissent_lean'),
                                              direction=consensus_dir)
                         except Exception:
                             pass
@@ -1244,10 +1319,10 @@ def score_mlb_game(ctx, game_props=None, track=None):
                 gd = _dt.fromisoformat(str(game_date_val))
                 if gd.weekday() == 3:  # Thursday
                     _add(side_drivers, 4, '📅', 'Thursday AWAY skew',
-                         'Thursday HOME ML hits 46% hist (n=96, -7.4pt) — getaway/travel day',
+                         'Thursday getaway/travel day' + _cohort('thursday_home_ml_fade', 'HOME ML'),
                          direction='AWAY')
                     _add(total_drivers, 3, '📅', 'Thursday UNDER skew',
-                         'Thursday OVER hits 47% hist (n=58, -5.2pt) — lower-scoring weekday',
+                         'Thursday — lower-scoring weekday' + _cohort('thursday_over_fade', 'OVER'),
                          direction='UNDER')
             except (ValueError, TypeError):
                 pass
@@ -1264,7 +1339,8 @@ def score_mlb_game(ctx, game_props=None, track=None):
         h_sp_xera = float(ctx.get('home_sp_xera') or 0)
         if a_l7_ops >= 0.78 and h_sp_xera >= 4.5:
             _add(side_drivers, 8, '🌶', 'Hot AWAY vs bad HOME SP',
-                 f'AWAY L7 OPS {a_l7_ops:.3f} + HOME SP xERA {h_sp_xera:.2f} — 63% AWAY ML hist (n=27)',
+                 f'AWAY L7 OPS {a_l7_ops:.3f} + HOME SP xERA {h_sp_xera:.2f}'
+                     + _cohort('away_bats_hot_vs_weak_home_sp', 'AWAY ML'),
                  direction='AWAY')
         # Mirror for home
         h_l7_ops = float(ctx.get('home_ops_last7') or 0)
@@ -1285,7 +1361,8 @@ def score_mlb_game(ctx, game_props=None, track=None):
         h_inj = float(ctx.get('home_injury_count') or 0)
         if a_inj - h_inj >= 7:
             _add(side_drivers, 4, '🏥', 'Away injury depth gap',
-                 f'AWAY {int(a_inj)} injuries vs HOME {int(h_inj)} — 57% HOME ML hist (n=74)',
+                 f'AWAY {int(a_inj)} injuries vs HOME {int(h_inj)}'
+                     + _cohort('injury_gap_home_ml', 'HOME ML'),
                  direction='HOME')
         elif h_inj - a_inj >= 7:
             _add(side_drivers, 4, '🏥', 'Home injury depth gap',
@@ -1314,15 +1391,16 @@ def score_mlb_game(ctx, game_props=None, track=None):
         park = float(ctx.get('park_run_factor') or 100)
         if 80 <= nrfi_s < 85:
             _add(total_drivers, 6, '🧐', 'NRFI 80-84 trap band',
-                 f'NRFI {nrfi_s:.0f} — 66% UNDER hist (n=53, market under-prices)',
+                 f'NRFI {nrfi_s:.0f} — market under-prices' + _cohort('nrfi_high_under', 'UNDER'),
                  direction='UNDER')
         elif nrfi_s >= 85 and axera <= 3.8 and hxera <= 3.8:
             _add(total_drivers, 5, '🔄', 'NRFI loud + elite SP → OVER (flip)',
-                 f'NRFI {nrfi_s:.0f} + xERA {axera:.1f}/{hxera:.1f} — 58% OVER hist (n=102, counter to NRFI)',
+                 f'NRFI {nrfi_s:.0f} + xERA {axera:.1f}/{hxera:.1f} — counter to NRFI'
+                     + _cohort('nrfi_high_xera_counter', 'OVER'),
                  direction='OVER')
         elif nrfi_s >= 85 and park < 95:
             _add(total_drivers, 4, '🏟️', 'NRFI loud + pitcher park',
-                 f'NRFI {nrfi_s:.0f} + park {park:.0f} — 61% UNDER hist (n=31)',
+                 f'NRFI {nrfi_s:.0f} + park {park:.0f}' + _cohort('nrfi_park_under', 'UNDER'),
                  direction='UNDER')
     except (TypeError, ValueError):
         pass
@@ -1336,7 +1414,8 @@ def score_mlb_game(ctx, game_props=None, track=None):
         hbp_era = float(ctx.get('home_bullpen_era') or 0)
         if abp_era >= 4.5 and hbp_era >= 4.5:
             _add(total_drivers, 7, '🔥', 'Both BPs shaky',
-                 f'AWAY BP {abp_era:.2f} + HOME BP {hbp_era:.2f} — 65% OVER hist (n=37)',
+                 f'AWAY BP {abp_era:.2f} + HOME BP {hbp_era:.2f}'
+                     + _cohort('dual_bullpen_weak_over', 'OVER'),
                  direction='OVER')
     except (TypeError, ValueError):
         pass
@@ -1360,7 +1439,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
             close_total_local = float(close_total_local)
             if prf >= 105 and close_total_local <= 7.5:
                 _add(total_drivers, 6, '🪤', 'Hitter park + low line trap',
-                     f'park {prf:.0f} + line {close_total_local:.1f} — 64% UNDER hist (n=25)',
+                     f'park {prf:.0f} + line {close_total_local:.1f}' + _cohort('park_line_under', 'UNDER'),
                      direction='UNDER')
     except (TypeError, ValueError):
         pass
@@ -1375,7 +1454,8 @@ def score_mlb_game(ctx, game_props=None, track=None):
         ho_h = float(ctx.get('home_ops_vs_opp_hand') or 0)
         if ao_h > 0 and ho_h > 0 and (ao_h + ho_h) / 2 >= 0.75:
             _add(total_drivers, 4, '🪑', 'OPS vs opp hand loud',
-                 f'avg OPS vs opp hand {(ao_h+ho_h)/2:.2f} — 55% OVER hist (n=84)',
+                 f'avg OPS vs opp hand {(ao_h+ho_h)/2:.2f}'
+                 + _cohort('ops_vs_opp_hand_loud', 'OVER'),
                  direction='OVER')
     except (TypeError, ValueError):
         pass
@@ -1488,11 +1568,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
             delta = h_wrc - a_wrc
             if delta >= 15 and h_wrc >= 110:
                 _add(side_drivers, 3, '⚖️', 'Home lineup elite vs opp hand',
-                     f'HOME wRC+ vs opp hand {h_wrc:.0f} vs AWAY {a_wrc:.0f} — 63.6% n=22 hist',
+                     f'HOME wRC+ vs opp hand {h_wrc:.0f} vs AWAY {a_wrc:.0f}'
+                     + _cohort('handedness_tight_edge'),
                      direction='HOME')
             elif delta <= -15 and a_wrc >= 110:
                 _add(side_drivers, 3, '⚖️', 'Away lineup elite vs opp hand',
-                     f'AWAY wRC+ vs opp hand {a_wrc:.0f} vs HOME {h_wrc:.0f} — 63.6% n=22 hist',
+                     f'AWAY wRC+ vs opp hand {a_wrc:.0f} vs HOME {h_wrc:.0f}'
+                     + _cohort('handedness_tight_edge'),
                      direction='AWAY')
     except (TypeError, ValueError):
         pass
@@ -1507,11 +1589,13 @@ def score_mlb_game(ctx, game_props=None, track=None):
         if h_ops14 is not None and a_ops14 is not None and h_ops14 > 0 and a_ops14 > 0:
             if max(h_ops14, a_ops14) <= 0.65:
                 _add(total_drivers, 5, '🥶', 'Both bats ice-cold (L14)',
-                     f'both OPS L14 ≤ .650 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 64.7% UNDER n=34',
+                     f'both OPS L14 ≤ .650 (H {h_ops14:.3f} / A {a_ops14:.3f})'
+                     + _cohort('ops_l14_dual_ice', 'UNDER'),
                      direction='UNDER')
             elif max(h_ops14, a_ops14) <= 0.70:
                 _add(total_drivers, 4, '🥶', 'Both bats cold (L14)',
-                     f'both OPS L14 ≤ .700 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 56.4% UNDER n=165',
+                     f'both OPS L14 ≤ .700 (H {h_ops14:.3f} / A {a_ops14:.3f})'
+                     + _cohort('ops_l14_dual_cold', 'UNDER'),
                      direction='UNDER')
     except (TypeError, ValueError):
         pass
@@ -1526,7 +1610,8 @@ def score_mlb_game(ctx, game_props=None, track=None):
         if h_ops14 is not None and a_ops14 is not None:
             if min(h_ops14, a_ops14) >= 0.78:
                 _add(total_drivers, 4, '📉', 'Dual bats hot — regression fade',
-                     f'both OPS L14 ≥ .780 (H {h_ops14:.3f} / A {a_ops14:.3f}) — 60.3% UNDER n=68',
+                     f'both OPS L14 ≥ .780 (H {h_ops14:.3f} / A {a_ops14:.3f})'
+                     + _cohort('ops_l14_dual_hot_regress', 'UNDER'),
                      direction='UNDER')
     except (TypeError, ValueError):
         pass
@@ -1868,7 +1953,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     jerry_t_dir = 'OVER' if jerry_t_delta > 0 else 'UNDER' if jerry_t_delta < 0 else None
                     if (abs(jerry_t_delta) >= 0.3 and jerry_t_dir == v3v4_consensus_dir):
                         _add(total_drivers, 6, '🎯', 'ALL-3 model unanimous',
-                             f'v3+v4+jerry all point {v3v4_consensus_dir} — 71% hist cohort (n=45)',
+                             f'v3+v4+jerry all point {v3v4_consensus_dir}' + _cohort('v3_v4_jerry_consensus'),
                              direction=v3v4_consensus_dir)
                         # 2026-06-21 — 4-WAY unanimous TOTAL bonus.
                         # _audit_deep_patterns.py (90d, n=891) confirmed:
@@ -1884,7 +1969,7 @@ def score_mlb_game(ctx, game_props=None, track=None):
                                 v5_dir = 'OVER' if v5_p >= 0.5 else 'UNDER'
                                 if v5_dir == v3v4_consensus_dir:
                                     _add(total_drivers, 4, '🚀', '4-way unanimous (v5 confirms)',
-                                         f'v3+v4+jerry+v5 all point {v3v4_consensus_dir} — 69% hist',
+                                         f'v3+v4+jerry+v5 all point {v3v4_consensus_dir}' + _cohort('v3_v4_jerry_v5_consensus'),
                                          direction=v3v4_consensus_dir)
                         except Exception:
                             pass
