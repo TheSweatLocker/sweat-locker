@@ -64,12 +64,15 @@ if Retry is not None:
         pool_connections=8, pool_maxsize=8))
 
 SPORTS = {
+    # `scored_col` differs by sport — NCAAB counts points, NHL counts goals.
+    # Hardcoding total_points 400'd the NHL read on column-does-not-exist,
+    # which at least failed loudly rather than silently grading nothing.
     'NCAAB': {'results': 'ncaab_game_results', 'spread_col': 'close_spread',
-              'total_col': 'close_total', 'spread_sane': 60.0,
-              'total_range': (100.0, 200.0)},
+              'total_col': 'close_total', 'scored_col': 'total_points',
+              'spread_sane': 60.0, 'total_range': (100.0, 200.0)},
     'NHL':   {'results': 'nhl_game_results', 'spread_col': 'close_puckline',
-              'total_col': 'close_total', 'spread_sane': 3.0,
-              'total_range': (3.0, 10.0)},
+              'total_col': 'close_total', 'scored_col': 'total_goals',
+              'spread_sane': 3.0, 'total_range': (3.0, 10.0)},
 }
 
 
@@ -110,7 +113,7 @@ def run(sport: str, dry_run: bool) -> int:
         r = _S.get(f'{SB}/rest/v1/{cfg["results"]}', headers=H_READ, timeout=40,
                    params={'select': f'game_id,home_score,away_score,'
                                      f'{cfg["spread_col"]},{cfg["total_col"]},'
-                                     f'spread_result,total_result,total_points',
+                                     f'spread_result,total_result,{cfg["scored_col"]}',
                            'order': 'game_date.asc', 'limit': 1000, 'offset': off})
         if r.status_code != 200:
             print(f'  ⚠ read {r.status_code}: {r.text[:140]}'); break
@@ -160,8 +163,8 @@ def run(sport: str, dry_run: bool) -> int:
                     upd['total_result'] = g
                     mix[g] += 1
 
-        if r.get('total_points') is None:
-            upd['total_points'] = hs + as_
+        if r.get(cfg['scored_col']) is None:
+            upd[cfg['scored_col']] = hs + as_
 
         if upd:
             patches.append((r['game_id'], upd))
