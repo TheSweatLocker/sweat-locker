@@ -14577,11 +14577,22 @@ setJerryHistory(prev => {
                               chips.push(<Text key="sp" style={{fontSize:10,color:spColor,fontWeight:'700'}}>SP+ {sp >= 0 ? '+' : ''}{sp.toFixed(1)}</Text>);
                             }
                             // Season ATS (empty first weeks — falls through to L10)
-                            const seasonTot = (w != null && l != null) ? Number(w) + Number(l) : 0;
+                            // 2026-09-22: a push is a game that was played.
+                            // Counting only w+l made NE @ SEA (closed -3, won
+                            // by 3 — the season's only push) disappear from
+                            // both teams' chips: they read "1-0" on a slate
+                            // where every other team read two games. Pushes
+                            // now count toward the games played and show in
+                            // the label, but stay OUT of the cover% the color
+                            // is derived from — same rule as RecordPill.
+                            const p = _fCtx[`${side}_season_ats_pushes`];
+                            const decided = (w != null && l != null) ? Number(w) + Number(l) : 0;
+                            const seasonTot = decided + Number(p || 0);
                             if (seasonTot > 0 && chips.length < 2) {
-                              const pct = Number(w) / seasonTot;
+                              const pct = decided > 0 ? Number(w) / decided : 0.5;
                               const atsColor = pct >= 0.58 ? THEME.win : pct <= 0.42 ? THEME.loss : THEME.textMuted;
-                              chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{w}-{l} ATS</Text>);
+                              const atsLabel = Number(p || 0) > 0 ? `${w}-${l}-${p}` : `${w}-${l}`;
+                              chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{atsLabel} ATS</Text>);
                             } else if (l10W != null && l10L != null && (Number(l10W) + Number(l10L)) > 0 && chips.length < 2) {
                               const tot = Number(l10W) + Number(l10L);
                               const pct = Number(l10W) / tot;

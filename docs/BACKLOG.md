@@ -191,32 +191,56 @@ waiting on a build — the shipped 1.0.1 select omits
 `sp_plus_pred_spread`, `sp_plus_pred_total`, `mc_probabilities` while
 the data exists).
 
-### B23 · Situational rollups frozen since 09-16 (ALL sports)
-Andy spotted it as "SEA and NE just have 1-0" on the NFL games tab. It
-is not SEA and NE and it is not NFL — **all 32 teams** showed exactly
-one game, and the same freeze hit every sport.
+### B23 · SEA/NE "1-0" — the only ATS push of the season
+**CORRECTION to my first read.** I said all 32 teams showed one game and
+blamed the rollup refresh. Andy: "some say 2-0 and are updated." He is
+right. The games-tab chip reads `nfl_game_context.*_season_ats_wins/
+losses`, NOT `team_situational_records`. There, 30 of 32 Week-3 slots
+show two games. Exactly two show one: SEA and NE.
 
-`nfl_game_results` is correct: 32 scored games, 2 per team. The badge
-reads `team_situational_records`, which migration `20260916a` turned
-from a matview into a filtering VIEW over a renamed
-`team_situational_records_full`. The refresh functions still named the
-old object, so they have returned `42809: not a table or materialized
-view` on every call since 09-16. The 12 workflow steps that call them
-used `curl -s` with no status check under `continue-on-error`, so a 400
-and a 204 were the same event. Six days, six pipelines, silent.
+What those two share: **NE @ SEA on 09-09 is the season's only ATS
+push** — SEA closed -3 and won by exactly 3. The context table has wins
+and losses and no pushes column, and the chip renders `{w}-{l}`, so the
+game is not shown as a tie, it is not shown at all. Both teams read
+"1-0" when they are 1-0-1.
 
-Fixed: `76489d10`.. — refresh fns repointed at `_full`
-(`supabase/migrations/20260922a_*.sql`), and all 12 steps now capture
-the HTTP code and emit `::error::` with the body.
+`team_season_trends` already carries `ats_pushes`, and
+`backfill_nfl_season_records_from_results.agg()` has been counting them
+correctly all along — the payload just never wrote the number. The
+arithmetic was never wrong; there was nowhere to put the answer.
 
-**OPEN — needs Andy: the migration must be applied.** No migration
-runner exists in the repo; until `20260922a` is run in Supabase the
-refresh RPCs keep failing and the badge keeps showing one game.
-VERIFY (after applying):
-`select public.refresh_team_situational_records();` then
-`select team,wins,losses,pushes from team_situational_records
- where sport='NFL' and market='spread' and filter='overall';`
-— expect 2 games for all 32 teams.
+**ORDER MATTERS — do not reorder these:**
+1. Apply `supabase/migrations/20260922b_season_ats_pushes.sql` (adds
+   `{home,away}_season_ats_{pushes,ou_pushes}` to nfl + ncaaf context).
+2. THEN the writers may persist pushes, and the client SELECTs may
+   request them.
+
+Both writer edits and both client SELECT edits were written, tested
+against the live schema, and **reverted** — a `PATCH` or `SELECT` naming
+a column that does not exist returns `42703` and takes the WHOLE query
+with it, which would blank NFL and NCAAF outright. That is the same
+failure mode as the `0e3819e2` trailing comma. Verified before reverting:
+both selects return 400 with the column, 200 without.
+
+The chip render IS shipped — it reads `{w}-{l}-{p}` when pushes > 0 and
+is a no-op while the field is absent, so it needs no second edit later.
+VERIFY: `select away_team, away_season_ats_wins, away_season_ats_losses,
+away_season_ats_pushes from nfl_game_context where game_date >=
+'2026-09-24'` — expect NE and SEA at 1-0-1 once step 1 is applied.
+
+### B28 · Rollup refresh functions broken since 09-16 (separate bug)
+Real, but NOT what Andy saw — split out of B23 after the correction
+above. `20260916a` renamed the situational matview and left the refresh
+functions naming the old object, so they return `42809` on every call.
+The 12 workflow steps calling them used `curl -s` with no status check
+under `continue-on-error`, so a 400 and a 204 were the same event: six
+days of frozen rollups across six pipelines, silently. Confirmed
+independently — `team_situational_records` still shows SEA at 0-0-1
+(one game) when SEA has two.
+Fixed in `edb2f380` (migration `20260922a` + all 12 steps now emit
+`::error::`). **OPEN — the migration still has to be applied.**
+VERIFY: `select public.refresh_team_situational_records();` then count
+spread/overall rows per NFL team — expect 2, not 1.
 
 ### B24 · NFL tab note exists but does not render
 Andy, 09-22: "we should have NFL note." The data is there —
