@@ -13813,27 +13813,6 @@ setJerryHistory(prev => {
                 use accent gold text with subtle warm-tint background + left
                 accent stripe, so ops notes actually get seen. Consistent
                 visual language: gold = something meaningful is happening. */}
-            {sportMeta[gamesSport]?.state_message && (
-              <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
-                <Text style={{color:THEME.accent,fontSize:11.5,lineHeight:16,fontWeight:'700',letterSpacing:0.2}}>
-                  {sportMeta[gamesSport].state === 'preseason' ? '🏁' : sportMeta[gamesSport].state === 'off_season' ? '⏸' : sportMeta[gamesSport].state === 'returning' ? '⏳' : 'ℹ️'}  {sportMeta[gamesSport].state_message}
-                </Text>
-              </View>
-            )}
-            {/* Per-sport Today/Tomorrow notes from config (null = no note rendered) */}
-            {(() => {
-              const note = gamesDay === 'today'
-                ? sportMeta[gamesSport]?.today_note
-                : sportMeta[gamesSport]?.tomorrow_note;
-              if (!note) return null;
-              return (
-                <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
-                  <Text style={{color: THEME.accent, fontSize:11.5, lineHeight:16, fontWeight:'700', letterSpacing:0.2}}>
-                    ℹ️  {note}
-                  </Text>
-                </View>
-              );
-            })()}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:14}}>
               <View style={{flexDirection:'row',gap:6}}>
                 {SPORTS.filter(s=>isFeatureOn(s,'sport_tab')).map(s=>(<TouchableOpacity key={s} style={[styles.chipBtn,gamesSport===s&&styles.chipBtnActive]} onPress={()=>setGamesSport(s)}><Text style={[styles.chipTxt,gamesSport===s&&styles.chipTxtActive]}>{SPORT_EMOJI[s]} {s}</Text></TouchableOpacity>))}
@@ -13889,6 +13868,41 @@ setJerryHistory(prev => {
     <Text style={[styles.chipTxt,gamesStrongOnly&&styles.chipTxtActive,{textAlign:'center'}]}>🎯 Strong+ Only {gamesStrongOnly?'✓':''}</Text>
   </TouchableOpacity>
 </View>
+
+           {/* 2026-09-22 NOTE PLACEMENT. These two banners used to render
+                ABOVE the sport chips, so an ops note sat between the
+                Today/Tomorrow tabs and the sport selector — read as
+                app chrome rather than as something about the slate you
+                are looking at, and pushed the games further down.
+                Andy: the note belongs "below that title above the games
+                them selves but below the time conviction best edge prime
+                only strong only filter". Moved here, directly above the
+                game list and alongside the MLB pipeline banner which was
+                already in the right place.
+
+                Both are still backend-driven via sport_registry — no app
+                release needed to change copy. Empty column = no banner. */}
+            {sportMeta[gamesSport]?.state_message && (
+              <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
+                <Text style={{color:THEME.accent,fontSize:11.5,lineHeight:16,fontWeight:'700',letterSpacing:0.2}}>
+                  {sportMeta[gamesSport].state === 'preseason' ? '🏁' : sportMeta[gamesSport].state === 'off_season' ? '⏸' : sportMeta[gamesSport].state === 'returning' ? '⏳' : 'ℹ️'}  {sportMeta[gamesSport].state_message}
+                </Text>
+              </View>
+            )}
+            {/* Per-sport Today/Tomorrow notes from config (null = no note rendered) */}
+            {(() => {
+              const note = gamesDay === 'today'
+                ? sportMeta[gamesSport]?.today_note
+                : sportMeta[gamesSport]?.tomorrow_note;
+              if (!note) return null;
+              return (
+                <View style={{backgroundColor: THEME.accent + '14', borderRadius:10, padding:10, marginBottom:12, borderLeftWidth:3, borderLeftColor: THEME.accent}}>
+                  <Text style={{color: THEME.accent, fontSize:11.5, lineHeight:16, fontWeight:'700', letterSpacing:0.2}}>
+                    ℹ️  {note}
+                  </Text>
+                </View>
+              );
+            })()}
 
            {/* 2026-09-15: consolidated MLB pipeline state banner. Prior
                 behavior stacked TWO banners ("MORNING PIPELINE RUNNING" +
