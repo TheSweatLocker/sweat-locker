@@ -24,6 +24,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    Retry = None
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -58,6 +63,22 @@ def _count_older_than(cutoff_iso: str) -> int | None:
     return None
 
 
+# 2026-09-21: this walked ~354 sequential fetch+DELETE batches, each on a
+# fresh socket, and the host reset the connection partway through — it
+# deleted 267,194 of 1,771,412 target rows and then EXITED 0, so it looked
+# like a clean run. Fourth script today with the same defect
+# (grade_public_receipts, the classify_line_moves backfill, and
+# backfill_nhl_grades were the others). Pool the connections, retry
+# transient failures, and report an incomplete run as incomplete.
+_S = requests.Session()
+if Retry is not None:
+    _S.mount('https://', HTTPAdapter(
+        max_retries=Retry(total=5, backoff_factor=0.5,
+                          status_forcelist=(500, 502, 503, 504, 429),
+                          allowed_methods=frozenset(['GET', 'DELETE'])),
+        pool_connections=8, pool_maxsize=8))
+
+
 def prune(days: int, apply: bool, batch_size: int = 5000) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     total_older = _count_older_than(cutoff)
@@ -79,7 +100,7 @@ def prune(days: int, apply: bool, batch_size: int = 5000) -> int:
     while True:
         # PostgREST DELETE with `?captured_at=lt.X&limit=` isn't supported;
         # workaround: fetch a batch of ids, then DELETE by id IN (...)
-        r = requests.get(
+        r = _S.get(
             f'{SB}/rest/v1/line_history',
             headers=H_READ,
             params={'captured_at': f'lt.{cutoff}',
@@ -95,7 +116,7 @@ def prune(days: int, apply: bool, batch_size: int = 5000) -> int:
             break
         # Build IN(...) filter — PostgREST syntax: id=in.(1,2,3)
         id_list = ','.join(str(i) for i in ids)
-        dr = requests.delete(
+        dr = _S.delete(
             f'{SB}/rest/v1/line_history',
             headers=H_WRITE,
             params={'id': f'in.({id_list})'},
@@ -108,6 +129,14 @@ def prune(days: int, apply: bool, batch_size: int = 5000) -> int:
             print(f'  ✗ delete failed {dr.status_code}: {dr.text[:200]}')
             return 1
 
+    # 2026-09-21: say so when the run did not finish. The previous version
+    # printed a ✓ and returned 0 after a connection reset left 1.5M of
+    # 1.77M target rows in place — indistinguishable from success, and the
+    # only reason it was caught was checking the row count afterwards.
+    if deleted < total_older:
+        print(f'\n⚠ pruned {deleted:,} of {total_older:,} rows older than {days}d '
+              f'— INCOMPLETE, {total_older - deleted:,} remain. Re-run to finish.')
+        return 2
     print(f'\n✓ pruned {deleted:,} rows older than {days}d')
     return 0
 
