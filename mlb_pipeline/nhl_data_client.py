@@ -173,6 +173,50 @@ def get_team_stats(team_abbrev: str, season: int) -> Optional[dict]:
     }
 
 
+def _match_goalie_row(goalie_name: str, rows: list) -> list:
+    """Pick the one MoneyPuck row for this goalie, or none at all.
+
+    2026-09-21. Matching used to be `surname in row_name`, a bare substring
+    test: 'Andersen' also matches 'Anderson'. Attributing one goalie's save
+    numbers to another is precisely the kind of error that must never reach
+    a published read, so this refuses instead of guessing.
+
+    nhl_game_context stores abbreviated starters ('J. Markstrom',
+    'B. Bussi') while MoneyPuck spells them out ('Jacob Markstrom'), so an
+    exact-only match would find nothing. Order is therefore:
+      1. exact full name
+      2. unique whole-word surname          <- covers the abbreviated form
+      3. unique surname + matching first initial, for shared surnames
+    Anything still ambiguous returns nothing.
+    """
+    import re as _re
+
+    def _clean(s):
+        return ' '.join(str(s or '').split()).lower()
+
+    parts = _clean(goalie_name).replace('.', ' ').split()
+    if not parts:
+        return []
+    want_full = _clean(goalie_name)
+    want_last = parts[-1]
+    want_initial = parts[0][0] if len(parts) > 1 and parts[0] else ''
+
+    exact = [x for x in rows if _clean(x.get('name')) == want_full]
+    if exact:
+        return exact[:1]
+
+    pat = _re.compile(rf'\b{_re.escape(want_last)}\b')
+    surname = [x for x in rows if pat.search(_clean(x.get('name')))]
+    if len(surname) == 1:
+        return surname
+    if len(surname) > 1 and want_initial:
+        narrowed = [x for x in surname
+                    if _clean(x.get('name')).startswith(want_initial)]
+        if len(narrowed) == 1:
+            return narrowed
+    return []
+
+
 def get_goalie_stats(goalie_name: str, season: int) -> Optional[dict]:
     """Look up goalie season stats + L5 form. Returns dict with sv_pct,
     gsaa, last5_sv_pct. Best-effort — NHL API endpoint changes seasonally.
@@ -188,17 +232,44 @@ def get_goalie_stats(goalie_name: str, season: int) -> Optional[dict]:
         r = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=15)
         if r.status_code == 200:
             reader = csv.DictReader(io.StringIO(r.text))
-            goalie_last = goalie_name.split()[-1].lower()
-            for row in reader:
-                row_name = (row.get('name') or '').lower()
-                if goalie_last in row_name:
-                    if row.get('situation') and row['situation'] != 'all': continue
+            # 2026-09-21: matching was `surname in row_name`, a substring
+            # test. 'Andersen' matches 'Anderson'; 'Miller' matches
+            # 'Millers'. Attributing one goalie's save numbers to another
+            # is exactly the class of error that must never reach a
+            # published read, so: exact full name first, then a UNIQUE
+            # whole-word surname, and refuse on ambiguity rather than take
+            # the first hit.
+            all_rows = [x for x in reader
+                        if not x.get('situation') or x['situation'] == 'all']
+            cands = _match_goalie_row(goalie_name, all_rows)
+            for row in cands:
+                if True:
+                    # 2026-09-21: this read three columns that DO NOT EXIST in
+                    # MoneyPuck's goalies.csv — savePercentage,
+                    # goalsSavedAboveExpected, gamesPlayed (the real one is
+                    # games_played, with an underscore). Every `.get(name, 0)`
+                    # fell through to its default, so the function returned
+                    # {'sv_pct': 0.0, 'gsaa': 0.0, 'games': 0} for goalies who
+                    # played full seasons. Zeros, not an error — so nothing
+                    # upstream noticed, and the goalie confluence signal (the
+                    # single largest swing in hockey, and the one dimension
+                    # where we carry confirmed-starter data) never cast a vote.
+                    #
+                    # The CSV does carry what we need, just raw: derive
+                    # sv% from shots-on-goal against and goals allowed, and
+                    # GSAA as expected-minus-actual goals. Spot-checked on
+                    # 2025: Shesterkin .9116 / +21.2, Saros .8935 / -9.3 —
+                    # correct shape and range for NHL.
                     try:
-                        result.update({
-                            'sv_pct': float(row.get('savePercentage', 0) or 0),
-                            'gsaa': float(row.get('goalsSavedAboveExpected', 0) or 0),
-                            'games': int(row.get('gamesPlayed', 0) or 0),
-                        })
+                        ongoal = float(row.get('ongoal') or 0)
+                        goals = float(row.get('goals') or 0)
+                        xgoals = float(row.get('xGoals') or 0)
+                        gp = int(float(row.get('games_played') or 0))
+                        if ongoal > 0:
+                            result['sv_pct'] = round(1.0 - (goals / ongoal), 4)
+                        if xgoals or goals:
+                            result['gsaa'] = round(xgoals - goals, 2)
+                        result['games'] = gp
                     except (TypeError, ValueError):
                         pass
                     break
@@ -267,6 +338,39 @@ def get_team_analytics_mp(team_abbrev: str, season: int) -> Optional[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 # CLI smoke tests
 # ═══════════════════════════════════════════════════════════════════════
+
+
+# 2026-09-21 SEASON FALLBACK.
+# MoneyPuck publishes a season's summary only once games have been played,
+# so on 2026-09-21 the 2026 files do not exist and every advanced-stat call
+# returns None. That is not a preseason-only problem: it persists through
+# opening night and the first weeks of the season, which is exactly when the
+# model has nothing else to go on. A team's prior season is a far better
+# prior than a NULL — the alternative is shipping Oct 8 with three of the
+# confluence dimensions silent.
+#
+# Callers get `stats_season` back so downstream can tell a current-season
+# read from a carried-over prior and discount it if it wants to.
+def _with_season_fallback(fn, key: str, season: int, back: int = 2):
+    for offset in range(0, back + 1):
+        got = fn(key, season - offset)
+        if got and any(v for k, v in got.items()
+                       if k not in ('games', 'stats_season') and v):
+            got['stats_season'] = season - offset
+            got['is_prior_season'] = offset > 0
+            return got
+    return None
+
+
+def get_goalie_stats_fb(goalie_name: str, season: int) -> Optional[dict]:
+    """get_goalie_stats with prior-season fallback. Prefer this."""
+    return _with_season_fallback(get_goalie_stats, goalie_name, season)
+
+
+def get_team_analytics_fb(team_abbrev: str, season: int) -> Optional[dict]:
+    """get_team_analytics_mp with prior-season fallback. Prefer this."""
+    return _with_season_fallback(get_team_analytics_mp, team_abbrev, season)
+
 
 def main():
     p = argparse.ArgumentParser()

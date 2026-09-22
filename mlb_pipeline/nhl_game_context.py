@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from nhl_data_client import (
     get_schedule, get_gamecenter, get_team_stats,
     get_goalie_stats, get_team_analytics_mp,
+    get_goalie_stats_fb, get_team_analytics_fb,
 )
 
 ODDS_BASE = 'https://api.the-odds-api.com/v4/sports'
@@ -128,7 +129,12 @@ def enrich_team_stats(rows: list[dict], season: int) -> None:
             row[f'{prefix}_pk_pct'] = ts.get('pk_pct')
             # MoneyPuck advanced analytics
             if abbrev not in team_analytics_cache:
-                team_analytics_cache[abbrev] = get_team_analytics_mp(abbrev, season) or {}
+                # 2026-09-21: use the season-fallback variant. MoneyPuck only
+                # publishes a season once games are played, so on opening
+                # night the current season returns None and every advanced
+                # stat lands NULL — exactly when the model has least else
+                # to go on. Prior season is a far better prior than nothing.
+                team_analytics_cache[abbrev] = get_team_analytics_fb(abbrev, season) or {}
             ta = team_analytics_cache[abbrev]
             row[f'{prefix}_xgf_per60'] = ta.get('xgf_per60')
             row[f'{prefix}_xga_per60'] = ta.get('xga_per60')
@@ -186,7 +192,7 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
             row['home_goalie'] = home_g
             row['home_goalie_confirmed'] = True
             if home_g not in goalie_cache:
-                goalie_cache[home_g] = get_goalie_stats(home_g, season) or {}
+                goalie_cache[home_g] = get_goalie_stats_fb(home_g, season) or {}
             gs = goalie_cache[home_g]
             row['home_goalie_sv_pct'] = gs.get('sv_pct')
             row['home_goalie_gsaa'] = gs.get('gsaa')
@@ -196,7 +202,7 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
             row['away_goalie'] = away_g
             row['away_goalie_confirmed'] = True
             if away_g not in goalie_cache:
-                goalie_cache[away_g] = get_goalie_stats(away_g, season) or {}
+                goalie_cache[away_g] = get_goalie_stats_fb(away_g, season) or {}
             gs = goalie_cache[away_g]
             row['away_goalie_sv_pct'] = gs.get('sv_pct')
             row['away_goalie_gsaa'] = gs.get('gsaa')
