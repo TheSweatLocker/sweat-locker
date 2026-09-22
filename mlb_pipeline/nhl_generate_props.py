@@ -24,6 +24,7 @@ CLI:
 """
 from __future__ import annotations
 import argparse, json, os, sys
+from collections import Counter
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -91,6 +92,18 @@ def fetch_events(game_date: Optional[str] = None) -> list:
     return r.json() if r.status_code == 200 else []
 
 
+# 2026-09-21: distinguish the reasons a run yields zero props. Verified
+# against the live API: an invalid market key returns HTTP 422
+# INVALID_MARKET, it does NOT fail silently — and our five keys return 200,
+# so they are all valid including player_goals. Today 0 props is correct:
+# no book posts NHL player markets 8 days out (checked three events, only
+# game markets offered). But "0 props" currently reads the same whether the
+# markets are absent, the key set was rejected, or parsing produced
+# nothing — and on Oct 8 those need to be tellable apart, because two of
+# them are bugs and one is a Tuesday.
+_FETCH_DIAG = Counter()
+
+
 def fetch_props_for_event(event_id: str) -> dict:
     """Return {(player, prop_type, direction, line): {book_line, over_odds, under_odds, book}}."""
     r = requests.get(
@@ -99,8 +112,17 @@ def fetch_props_for_event(event_id: str) -> dict:
                 'markets': ','.join(MARKET_MAP.keys()),
                 'oddsFormat': 'american'},
         timeout=20)
-    if r.status_code != 200: return {}
+    if r.status_code == 422:
+        _FETCH_DIAG['invalid_market_key'] += 1
+        print(f'  🚨 Odds API rejected our market keys: {r.text[:160]}')
+        return {}
+    if r.status_code != 200:
+        _FETCH_DIAG[f'http_{r.status_code}'] += 1
+        return {}
     data = r.json()
+    if not (data.get('bookmakers') or []):
+        # 200 with no bookmakers = nobody is pricing these markets yet.
+        _FETCH_DIAG['no_books_offering'] += 1
 
     by_key = {}
     for bk in data.get('bookmakers', []):
@@ -185,6 +207,18 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
                 total_props += 1
 
     print(f'\n  {"[DRY] " if dry_run else ""}upserted {total_props} NHL props')
+    if total_props == 0 and events:
+        # Say WHY, so an empty run is diagnosable rather than ambiguous.
+        d = dict(_FETCH_DIAG)
+        print(f'  ℹ 0 props from {len(events)} event(s) · reasons={d or "none recorded"}')
+        if d.get('invalid_market_key'):
+            print('     → market keys rejected by the API. This is a BUG, fix the keys.')
+        elif d.get('no_books_offering'):
+            print('     → no book is pricing NHL player markets yet. Expected this far '
+                  'from puck drop; player props post ~1-2 days out.')
+        elif not d:
+            print('     → no event reached the prop fetch (date filter excluded them all), '
+                  'or markets parsed to nothing. Check the date window first.')
 
 
 def main():

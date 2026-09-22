@@ -70,6 +70,54 @@ def load_games() -> list[dict]:
         chunk = r.json() if r.status_code == 200 else []
         all_rows += chunk
         if len(chunk) < 1000: break
+
+    # 2026-09-21: CLUB GAMES ONLY. nhl_game_results also holds
+    # international fixtures — the 4 Nations Face-Off and Olympic games
+    # (CAN, USA, FIN, SWE, Slovakia, Czechia, GER, ITA, FRA, Latvia,
+    # Denmark, Switzerland). Training on them made this report "trained 75
+    # teams" for a 32-team league, and those sides would surface in
+    # rankings() as if they were clubs.
+    #
+    # They sit in their own isolated cluster (country plays country), so
+    # they were not corrupting club ratings — but a national team's Elo is
+    # meaningless next to a club's, and the count being wrong is how you
+    # stop trusting the log line that would have caught the REAL problem
+    # here: the place-name/full-name split that was silently training
+    # Carolina twice (gp=108 where two seasons is ~164).
+    try:
+        from odds_pull_core import NHL_TEAMS
+        clubs = set(NHL_TEAMS.keys())
+    except Exception:
+        clubs = set()
+    if clubs:
+        before = len(all_rows)
+        all_rows = [g for g in all_rows
+                    if g.get('home_team') in clubs and g.get('away_team') in clubs]
+        dropped = before - len(all_rows)
+        if dropped:
+            print(f'  filtered {dropped} non-club game(s) — international fixtures')
+
+        # FRANCHISE RENAMES. Utah played 2024-25 as "Utah Hockey Club" and
+        # 2025-26 as "Utah Mammoth" — one franchise, two strings, so Elo
+        # trained it as two teams and split its history (this is what left
+        # the count at 33 for a 32-team league). NHL_TEAMS already maps
+        # both to UTA, so collapse by abbrev and pick one canonical name
+        # per franchise. Any future rename is handled by adding it to that
+        # map, with no change here.
+        canon_by_abbrev: dict = {}
+        for full, (abbrev, _place) in NHL_TEAMS.items():
+            canon_by_abbrev.setdefault(abbrev, full)
+        name_to_canon = {full: canon_by_abbrev[abbrev]
+                         for full, (abbrev, _p) in NHL_TEAMS.items()}
+        renamed = 0
+        for g in all_rows:
+            for side in ('home_team', 'away_team'):
+                c = name_to_canon.get(g.get(side))
+                if c and c != g.get(side):
+                    g[side] = c
+                    renamed += 1
+        if renamed:
+            print(f'  canonicalised {renamed} franchise-rename reference(s)')
     return all_rows
 
 

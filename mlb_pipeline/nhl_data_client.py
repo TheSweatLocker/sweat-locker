@@ -70,10 +70,29 @@ def _full_team_name(t: dict) -> Optional[str]:
     placeName + commonName gives the full name and matches The Odds API
     exactly ("Carolina" + "Hurricanes"). Falls back to placeName then
     abbrev so a missing field degrades instead of returning None.
+
+    2026-09-21b — DO NOT blindly concatenate. For some entries commonName
+    ALREADY contains the place:
+
+        Utah:     placeName 'Utah'     + commonName 'Utah Hockey Club'
+                  -> "Utah Utah Hockey Club"
+        Slovakia: placeName 'Slovakia' + commonName 'Slovakia'
+                  -> "Slovakia Slovakia"
+
+    "Utah Utah Hockey Club" matches nothing, so all 83 Utah games failed
+    the club-name check in the name repair — and because the check rejects
+    a fixture when EITHER side is unknown, it also stranded the opponent's
+    name on every one of those games. That is the whole residual: Chicago,
+    Dallas, Minnesota et al. left as place-only strings purely because
+    their opponent was Utah.
     """
     place = (t.get('placeName') or {}).get('default')
     common = (t.get('commonName') or {}).get('default')
     if place and common:
+        # commonName already carries the place ("Utah Hockey Club",
+        # "Slovakia") — use it as-is rather than stuttering.
+        if common == place or common.startswith(f'{place} '):
+            return common
         return f'{place} {common}'
     return place or t.get('abbrev')
 
