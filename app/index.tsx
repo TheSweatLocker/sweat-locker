@@ -28,7 +28,10 @@ import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 import StatusChip from './components/StatusChip';
 const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
 const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;  // DEPRECATED — see claudeFetch below
-const BDL_API_KEY = process.env.EXPO_PUBLIC_BDL_API_KEY;
+// 2026-09-22: EXPO_PUBLIC_BDL_API_KEY removed. balldontlie is no longer
+// paid for or used. EXPO_PUBLIC_* values are compiled into the IPA and
+// extractable, so a retired key must not keep shipping in the binary.
+// Remove EXPO_PUBLIC_BDL_API_KEY from .env and EAS secrets too.
 const KENPOM_KEY = process.env.EXPO_PUBLIC_KENPOM_KEY;
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabase = createClient(
@@ -3089,15 +3092,16 @@ setEvData(evOpps.slice(0,20));
   };
 
   const fetchPlayerStats = async () => {
-    setStatsLoading(true);
-    try{
-      const r=await axios.get('https://api.balldontlie.io/v1/season_averages',{
-        headers:{'Authorization':BDL_API_KEY},
-        params:{season:2025,player_ids:[115,140,192,434,666,369,428,132]}
-      });
-      setPlayerStats(r.data&&r.data.data?r.data.data:[]);
-    }catch(e){setPlayerStats([]);}
-    setStatsLoading(false);
+    // 2026-09-22 BDL REMOVED — Andy: "I dont pay for it anymore lets
+    // just delete it". balldontlie is no longer a data source. The NBA
+    // pipeline never needed it (nba_data_client.py runs on ESPN; the only
+    // server-side reference is _legacy/resolve_props.py, kept for
+    // reference and not invoked by any workflow).
+    // Returning the empty shape so existing empty states render instead
+    // of the app making a paid call on every user's device.
+    // Also unreachable regardless: this only fires from activeTab==='stats'
+    // and there is no Stats tab in the nav bar.
+    setPlayerStats([]); setStatsLoading(false); return;
   };
 
   const fetchBartData = async () => {
@@ -3281,37 +3285,14 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
 };
 
   const fetchNBATeamData = async () => {
-    try {
-      const cacheKey = 'sweatlocker_nba_team_stats';
-      const cached = await AsyncStorage.getItem(cacheKey);
-      if(cached) {
-        const parsed = JSON.parse(cached);
-        const ageHrs = (Date.now() - parsed.timestamp) / 3600000;
-        if(ageHrs < 24) { setNbaTeamData(parsed.data); return; }
-      }
-      const r = await axios.get('https://api.balldontlie.io/v1/teams', {
-  headers: {'Authorization': BDL_API_KEY},
-  params: {per_page: 30}
-});
-if(r.data && r.data.data) {
-  const teams = r.data.data.map(t => ({
-    team: t.full_name || '',
-    abbrev: t.abbreviation || '',
-    adjOE: 110,
-    adjDE: 110,
-    tempo: 100,
-    winPct: '50.0',
-    ppg: 110,
-    oppPpg: 110,
-    games: 82,
-  }));
-
-        setNbaTeamData(teams);
-        await AsyncStorage.setItem(cacheKey, JSON.stringify({data:teams, timestamp:Date.now()}));
-      }
-    } catch(e) {
-      //console.log('NBA team data error:', e?.message);
-    }
+    // 2026-09-22 BDL REMOVED — Andy: "I dont pay for it anymore lets
+    // just delete it". balldontlie is no longer a data source. The NBA
+    // pipeline never needed it (nba_data_client.py runs on ESPN; the only
+    // server-side reference is _legacy/resolve_props.py, kept for
+    // reference and not invoked by any workflow).
+    // Returning the empty shape so existing empty states render instead
+    // of the app making a paid call on every user's device.
+    return;
   };
 
   // ─── Sport-universal server-side resolver sweep (2026-07-31, tabletop C) ──
@@ -6532,60 +6513,14 @@ Rules:
 };
   // fetchDailyBriefing removed 2026-06-01 — see comment at state declaration
   const fetchBDLPlayerStats = async (playerName) => {
-    try {
-      const cacheKey = `sweatlocker_bdl_${playerName.replace(/\s/g,'_')}`;
-      const cached = await AsyncStorage.getItem(cacheKey);
-      if(cached) {
-        const parsed = JSON.parse(cached);
-        const ageHrs = (Date.now() - parsed.timestamp) / 3600000;
-        if(ageHrs < 12) return parsed.data;
-      }
-      const searchResp = await axios.get('https://api.balldontlie.io/v1/players', {
-        headers: {'Authorization': BDL_API_KEY},
-        params: {search: playerName, per_page: 1}
-      });
-      const player = searchResp.data?.data?.[0];
-      if(!player) return null;
-      const statsResp = await axios.get('https://api.balldontlie.io/v1/stats', {
-        headers: {'Authorization': BDL_API_KEY},
-        params: {player_ids: [player.id], per_page: 5, seasons: [2024]}
-      });
-      const games = statsResp.data?.data || [];
-      if(!games.length) return null;
-      const avg = (key) => (games.reduce((s,g) => s + (g[key]||0), 0) / games.length).toFixed(1);
-      // Recency-weighted average — most recent game weighted highest
-      const RECENCY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40];
-      const weightedAvg = (key: string) => {
-        const sorted = [...games].sort((a: any,b: any) => new Date(b.game?.date||0).getTime() - new Date(a.game?.date||0).getTime());
-        let totalWeight = 0, weightedSum = 0;
-        sorted.forEach((g, i) => {
-          const w = RECENCY_WEIGHTS[i] || 0.30;
-          weightedSum += (g[key]||0) * w;
-          totalWeight += w;
-        });
-        return totalWeight > 0 ? parseFloat((weightedSum / totalWeight).toFixed(1)) : 0;
-      };
-      const data = {
-        name: `${player.first_name} ${player.last_name}`,
-        team: player.team?.abbreviation || '',
-        last5: {
-          pts: avg('pts'),
-          reb: avg('reb'),
-          ast: avg('ast'),
-          min: avg('min')
-        },
-        weighted: {
-          pts: weightedAvg('pts'),
-          reb: weightedAvg('reb'),
-          ast: weightedAvg('ast'),
-        },
-        rawGames: games.map(g => ({pts: g.pts, reb: g.reb, ast: g.ast, opp: g.game?.home_team_id === player.team?.id ? g.game?.visitor_team_id : g.game?.home_team_id})),
-      };
-      await AsyncStorage.setItem(cacheKey, JSON.stringify({data, timestamp: Date.now()}));
-      return data;
-    } catch(e) {
-      return null;
-    }
+    // 2026-09-22 BDL REMOVED — Andy: "I dont pay for it anymore lets
+    // just delete it". balldontlie is no longer a data source. The NBA
+    // pipeline never needed it (nba_data_client.py runs on ESPN; the only
+    // server-side reference is _legacy/resolve_props.py, kept for
+    // reference and not invoked by any workflow).
+    // Returning the empty shape so existing empty states render instead
+    // of the app making a paid call on every user's device.
+    return null;
   };
   const fetchMLBBatterStats = async (playerName: string) => {
     if(!playerName) return null;
@@ -7843,48 +7778,14 @@ if(mkt.key === 'pitcher_props') {
     }
   };
   const fetchPropHistory = async (player, stat='pts') => {
-    if(!player) return;
-    setPropHistoryLoading(true);
-    setPropHistoryData([]);
-    try {
-      const searchResp = await axios.get('https://api.balldontlie.io/v1/players', {
-        headers: {'Authorization': BDL_API_KEY},
-        params: {search: player.name.split(' ')[1]||player.name, per_page: 5}
-      });
-      //console.log('BDL search resp:', searchResp?.status);
-      const players = searchResp.data?.data || [];
-      //console.log('Players found:', players.length);
-      if(players.length === 0) { setPropHistoryLoading(false); return; }
-      const bdlPlayer = players[0];
-      //console.log('BDL player:', bdlPlayer.id, bdlPlayer.first_name, bdlPlayer.last_name);
-      
-      const statsResp = await axios.get('https://api.balldontlie.io/v1/stats', {
-        headers: {'Authorization': BDL_API_KEY},
-        timeout: 10000,
-        params: {'player_ids[]': bdlPlayer.id, per_page: 15}
-      });
-      //console.log('Stats status:', statsResp?.status);
-      //console.log('Stats count:', statsResp?.data?.data?.length);
-      const games = statsResp.data?.data || [];
-      const sorted = games
-        .filter(g => g.min && g.min !== '0' && g.min !== '00')
-        .sort((a,b) => new Date(b.game.date) - new Date(a.game.date))
-        .slice(0,10)
-        .map(g => ({
-          date: new Date(g.game.date).toLocaleDateString('en-US',{month:'numeric',day:'numeric'}),
-          pts: g.pts || 0,
-          reb: g.reb || 0,
-          ast: g.ast || 0,
-          stl: g.stl || 0,
-          blk: g.blk || 0,
-          min: g.min || '0',
-        }));
-      //console.log('Sorted games:', sorted.length);
-      setPropHistoryData(sorted);
-    } catch(e) {
-      //console.log('Prop history error:', e?.message, e?.response?.status);
-    }
-    setPropHistoryLoading(false);
+    // 2026-09-22 BDL REMOVED — Andy: "I dont pay for it anymore lets
+    // just delete it". balldontlie is no longer a data source. The NBA
+    // pipeline never needed it (nba_data_client.py runs on ESPN; the only
+    // server-side reference is _legacy/resolve_props.py, kept for
+    // reference and not invoked by any workflow).
+    // Returning the empty shape so existing empty states render instead
+    // of the app making a paid call on every user's device.
+    setPropHistoryData([]); setPropHistoryLoading(false); return;
   };
 
   const calcROIData = (betList, timeRange, unit, unitSize) => {
@@ -10230,56 +10131,13 @@ setJerryHistory(prev => {
     const teamName = scheduleTeam==='away' ? selectedGame.away_team : selectedGame.home_team;
 
     // NBA — use BDL for real game logs
-    if(gamesSport==='NBA') {
-      (async()=>{
-        try {
-          // Find BDL team by matching last word of team name
-          const teamLast = teamName.split(' ').pop()?.toLowerCase();
-          const teamsResp = await axios.get('https://api.balldontlie.io/v1/teams', {
-            headers:{'Authorization':BDL_API_KEY}, params:{per_page:30}
-          });
-          const bdlTeam = (teamsResp.data?.data||[]).find(t =>
-            t.full_name?.toLowerCase().includes(teamLast) || t.name?.toLowerCase()===teamLast
-          );
-          if(!bdlTeam) { setScheduleGamesLoading(false); return; }
+    // 2026-09-22 BDL REMOVED (see note on fetchPlayerStats). NBA game
+    // logs came from balldontlie; there is no server-side replacement
+    // yet — nba_player_game_logs is 0 rows — so this surface stays
+    // empty until that table is populated. Tracked as BACKLOG B10/B19.
+    // NBA game logs removed with balldontlie (2026-09-22). No
+    // server-side replacement yet — nba_player_game_logs is 0 rows.
 
-          const gamesResp = await axios.get('https://api.balldontlie.io/v1/games', {
-            headers:{'Authorization':BDL_API_KEY},
-            params:{'team_ids[]':bdlTeam.id, 'seasons[]':2024, per_page:50}
-          });
-          const bdlGames = (gamesResp.data?.data||[])
-            .filter(g => g.status === 'Final')
-            .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-            .slice(0,10);
-
-          const mapped = bdlGames.map(g => {
-            const isHome = g.home_team?.id === bdlTeam.id;
-            const tScore = isHome ? g.home_team_score : g.visitor_team_score;
-            const oScore = isHome ? g.visitor_team_score : g.home_team_score;
-            const opp = isHome ? g.visitor_team : g.home_team;
-            const win = tScore > oScore;
-            const d = new Date(g.date);
-            return {
-              date: (d.getMonth()+1)+'/'+(d.getDate()),
-              opp: opp?.name || opp?.full_name?.split(' ').pop() || '?',
-              home: isHome,
-              score: tScore+'-'+oScore,
-              win,
-              atsWin: win, // no spread data from BDL
-              ouOver: (tScore+oScore) > 220,
-              isReal: true,
-            };
-          });
-          setScheduleGames(mapped);
-        } catch(e) {
-          // Fall back to odds API scores
-          const scores = await fetchScores(gamesSport);
-          setScheduleGames(getTeamGamesFromScores(scores, teamName, gamesSport));
-        }
-        setScheduleGamesLoading(false);
-      })();
-      return;
-    }
 
     // MLB — use MLB Stats API for real game logs
     if(gamesSport==='MLB') {
