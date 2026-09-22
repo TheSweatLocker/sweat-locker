@@ -73,6 +73,14 @@ SPORTS = {
     'NHL':   {'results': 'nhl_game_results', 'spread_col': 'close_puckline',
               'total_col': 'close_total', 'scored_col': 'total_goals',
               'spread_sane': 3.0, 'total_range': (3.0, 10.0)},
+    # NBA added 2026-09-22. Found while auditing NBA props: close_spread was
+    # already populated on 1,239 of 1,365 rows and spread_result/total_result
+    # were 0 — same shape as NHL, except NBA needed no odds backfill at all.
+    # Verified the stored lines are real: spread -21.5..17.5, total
+    # 196.5..253.5.
+    'NBA':   {'results': 'nba_game_results', 'spread_col': 'close_spread',
+              'total_col': 'close_total', 'scored_col': 'total_points',
+              'spread_sane': 40.0, 'total_range': (150.0, 300.0)},
 }
 
 
