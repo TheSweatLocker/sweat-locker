@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-22 (evening)**
+**Last verified: 2026-09-22 (late)**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -111,12 +111,18 @@ unreliable, cause unknown. Wanted placement is below the
 Time/Conviction/Best-Edge/Prime/Strong filters, above the game list.
 MLB currently has a `tomorrow_note` but **no `today_note`**.
 
-### B9 · UFC tab shows non-UFC promotions
-Odds API has exactly one MMA key and returns `sport_title: "MMA"` for
-every promotion — no field to filter on. Only authoritative source is
-`ufc_upcoming_event.fight_card` (clean `fighter1`/`fighter2`), but it
-holds **one event and is stale** (newest UFC 331, 09-19). Scraper must
-keep future cards loaded before a name-match filter can work.
+### B9 · UFC tab shows non-UFC promotions — backend done
+Odds API has one MMA key and stamps every promotion `sport_title: "MMA"`
+(verified: 42 events, Yoel Romero vs Darren Till in the same feed as UFC
+fights). No field to filter on.
+
+DONE (`fd1a6d3d`): `ufc_card_scraper_v3` now stores the forward slate
+instead of `events[0]` — 1 stale event -> 8 forward events, 456 named
+fighters. ESPN's /mma/ufc/ endpoint is the only authoritative roster.
+
+REMAINING: the client-side filter itself — match odds events against
+fighters from `ufc_upcoming_event` where `event_date >= today`.
+BUILD-GATED (client change).
 
 ### B10 · NFL props have no projection
 `projection` populated on **2 of 1423** rows; `consensus` and
@@ -130,6 +136,48 @@ but thin (n=18, n=13) — shadow rather than ban.
 NOTE: a proper deep dive has NOT been done. Family ROI only.
 
 ---
+
+### B19 · External picks + track records missing for 4 sports
+Verified 09-22 (last 7 days):
+
+    MLB    1065 picks · 12 sources · 139 record rows
+    NFL     483 picks ·  7 sources ·  80 record rows
+    NCAAF   544 picks ·  6 sources ·  72 record rows
+    UFC       0       ·  0         ·   0   <-- IN SEASON
+    NBA       0 / NHL 0 / NCAAB 0          <-- preseason, expected
+
+**UFC is the live gap** — it is in season, `pull_externals_ufc.py` is in
+`ufc_pipeline.yml`, and it has produced nothing. Needs root-causing, not
+just a re-run.
+NBA (10-21), NHL (10-08), NCAAB (11-03) need theirs working BEFORE their
+openers, not after — MLB's externals took weeks to reach 12 sources.
+VERIFY: count `external_picks` and `external_source_track_record` by
+sport over a 7-day window.
+
+### B20 · Recent-schedule table is unreadable on two axes
+From Andy's 09-22 screenshots, `team_recent_games` rendering in
+GameDetailV2:
+
+1. **No year.** H2H is cross-season by design, so rows read
+   `5/30, 5/29, 5/28, 9/2, 9/1` and look mis-sorted. They are NOT — the
+   May rows are 2026 and the September rows are 2025, correctly ordered
+   newest-first. The display just omits the year.
+2. **No perspective.** `W 9-4` and `-1.5` do not say whose win or whose
+   spread. The data is there — the matview has `score_us`, `score_them`,
+   `won`, `is_home`, `spread_line`, `spread_result` — it simply is not
+   surfaced. Andy: "who does a user tell from that which side the spread
+   was on and who won?"
+
+BUILD-GATED (client change).
+
+### B21 · Screenshot QA pass
+Andy is finding these by looking at his own app; nothing else is. Needs
+a standing pass over the rendered surfaces per sport — not a code audit,
+an actual look at what a user sees. Known open from 09-22 screenshots:
+B20 above, and NCAAF SP+/MC showing "—" (already fixed in `d866ba1a`,
+waiting on a build — the shipped 1.0.1 select omits
+`sp_plus_pred_spread`, `sp_plus_pred_total`, `mc_probabilities` while
+the data exists).
 
 ## P2 — structural (the ones that keep causing the others)
 
