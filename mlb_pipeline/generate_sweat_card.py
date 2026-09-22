@@ -1738,13 +1738,63 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         #   value       -> STRONG (PASSTHROUGH side — typically STRONG resolver)
         # This kills the simplistic "elite → PRIME, anything else → VALUE"
         # split that was misleading users about confidence-level mapping.
+        # 2026-09-22 — THIS MAP WAS DEAD. Audited the last 90 POTDs:
+        #
+        #   None      40   -> default STRONG
+        #   prime     30   -> default STRONG   <-- 30 PRIME plays shown STRONG
+        #   strong     7   -> default STRONG
+        #   solid      6   -> default STRONG
+        #   value      4   -> STRONG  (the ONLY value that hit the map)
+        #   high       3   -> default STRONG
+        #
+        # 'elite' / 'secondary' / 'tertiary' appear ZERO times. The POTD
+        # writer's vocabulary moved to the unified taxonomy and this
+        # consumer was never updated, so for 90+ days EVERY POTD rendered
+        # STRONG — which is what Andy spotted: a PRIME conv-90 prop
+        # (JR Ritchie U14.5 Outs, mlb_pipeline_props id 895910) sitting on
+        # the card labelled STRONG while 25 PRIME props were listed.
+        #
+        # Conviction cannot stand in for tier — today PRIME spans conv
+        # 50-91 and STRONG spans 60-67, so they overlap and any threshold
+        # would mislabel. So: resolve the POTD back to its own row and
+        # quote that tier verbatim; fall back to the map only when the
+        # row cannot be identified uniquely.
         _potd_tier_map = {
-            'elite': 'PRIME',
-            'secondary': 'STRONG',
-            'tertiary': 'LEAN',
-            'value': 'STRONG',
+            'prime': 'PRIME', 'elite': 'PRIME',
+            'strong': 'STRONG', 'solid': 'STRONG',
+            'secondary': 'STRONG', 'value': 'STRONG', 'high': 'STRONG',
+            'lean': 'LEAN', 'tertiary': 'LEAN', 'light': 'LEAN',
         }
-        potd_tier = _potd_tier_map.get(confidence or '', 'STRONG')
+        _conf_key = str(confidence or '').strip().lower()
+        potd_tier = _potd_tier_map.get(_conf_key, 'STRONG')
+        _tier_source = 'potd_confidence_map' if _conf_key in _potd_tier_map \
+            else 'potd_confidence_default'
+        if _conf_key and _conf_key not in _potd_tier_map:
+            # Loud, because a silent default is exactly how this rotted.
+            print(f'  ⚠ POTD confidence {_conf_key!r} not in tier map — '
+                  f'defaulting to STRONG. Vocabulary may have changed again.')
+
+        # Prefer the engine's own tier for the underlying play.
+        _potd_conv = (pd.get('score') or {}).get('total')
+        _g = pd.get('game') or {}
+        _potd_match = pd.get('matchup') or _g.get('matchup') or (
+            f"{_g.get('away_team')} @ {_g.get('home_team')}"
+            if _g.get('away_team') and _g.get('home_team') else None)
+        if _potd_conv is not None and _potd_match:
+            _cands = [p for p in (props or [])
+                      if p.get('matchup') == _potd_match
+                      and p.get('conviction') == _potd_conv
+                      and p.get('tier')]
+            _lean = (pd.get('leanDisplay') or '')
+            if len(_cands) > 1:
+                _named = [p for p in _cands
+                          if p.get('player_name') and p['player_name'] in _lean]
+                if _named:
+                    _cands = _named
+            if len(_cands) == 1:
+                # Refuse to guess when ambiguous; only a unique hit wins.
+                potd_tier = _cands[0]['tier']
+                _tier_source = 'mlb_pipeline_props'
         # 2026-08-22: POTD's data.game shape is {away_team, home_team,
         # commence_time} with NO matchup key. Prior fallback chain both
         # returned None so POTD's game field was null in top_8 → dedup
@@ -1765,7 +1815,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "game": _game_str,
             "conviction": pd.get("score", {}).get("total"),
             "tier": potd_tier,
-            "tier_source": "potd_confidence_map",  # explicit attribution
+            "tier_source": _tier_source,  # explicit attribution
             "source_table": "daily_best_bet_history",
             "source_key": today_et(),  # bet_date is the lookup key
             "narrative_hint": (potd.get("narrative") or "")[:200],
