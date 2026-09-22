@@ -5435,37 +5435,63 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   // click) benefit from the same 85% egress cut. Any downstream consumer
   // that reads a field not listed here should either add it or move to
   // a targeted follow-up fetch — never re-introduce `SELECT *`.
+  // 2026-09-22 RESTORED 67 COLUMNS. The 09-13 egress refactor swapped
+  // SELECT * for this list and dropped every field it did not
+  // enumerate. The rows were fine; the QUERY stopped asking for them,
+  // so the client read undefined and rendered blanks — silently, for
+  // nine days. Casualties included all ten pitcher projection columns
+  // (Game Detail showed an empty projection card), sweat_breakdown
+  // (the evidence list behind pre-game analysis), align_status,
+  // spread_delta/spread_lean, consensus_fade_note, oddscrowd_snapshot
+  // and the entire team-form block — wRC+, xwOBA, OAA, bullpen ERA,
+  // records, streaks, L10, days rest, platoon, catcher framing,
+  // first-inning splits. That is why some games looked complete and
+  // others looked broken: a card rendered only the fields that
+  // happened to survive the list.
+  //
+  // This list is now GENERATED from what the client actually reads
+  // (every ctx.<field> / mlbCtx.<field> access in index.tsx and
+  // GameDetailV2.tsx) intersected with the live schema. If you add a
+  // consumer, add its column here or it will silently render blank.
+  // A missing column does NOT error — that is the whole trap.
   const MLB_CTX_COLUMNS =
-    'game_id,game_date,home_team,away_team,fetched_at,'
-    + 'close_spread,close_total,open_spread,open_total,'
-    + 'home_ml_close,away_ml_close,home_ml_odds,away_ml_odds,home_ml_open,away_ml_open,'
-    + 'projected_total,projected_spread,over_lean,confidence,'
-    + 'model_pred_home_runs,model_pred_away_runs,model_pred_total,model_pred_spread,'
-    + 'jerry_pred_home_runs,jerry_pred_away_runs,jerry_pred_total,jerry_pred_spread,'
-    + 'panel_implied_margin,panel_implied_total,'
-    // 2026-09-19: supplementary_play REMOVED — it does not exist on
-    // mlb_game_context (318 cols, only primary_play / primary_play_
-    // computed_at). PostgREST rejects the WHOLE select with 42703, so
-    // one phantom name nulled the entire MLB context map. See note below.
-    + 'primary_play,primary_play_computed_at,splits_summary,'
-    + 'signal_confluence_net,signal_confluence_breakdown,'
-    + 'signal_confluence_v2_net,signal_confluence_v2_breakdown,'
+    
+    'game_id,game_date,home_team,away_team,'
+    + 'fetched_at,close_spread,close_total,open_spread,'
+    + 'open_total,home_ml_close,away_ml_close,home_ml_odds,'
+    + 'away_ml_odds,home_ml_open,away_ml_open,projected_total,'
+    + 'projected_spread,over_lean,confidence,model_pred_home_runs,'
+    + 'model_pred_away_runs,model_pred_total,model_pred_spread,jerry_pred_home_runs,'
+    + 'jerry_pred_away_runs,jerry_pred_total,jerry_pred_spread,panel_implied_margin,'
+    + 'panel_implied_total,primary_play,primary_play_computed_at,splits_summary,'
+    + 'signal_confluence_net,signal_confluence_breakdown,signal_confluence_v2_net,signal_confluence_v2_breakdown,'
     + 'sweat_score,sweat_tier,sweat_tier_max,sweat_tier_locked_at,'
-    + 'home_pitcher,away_pitcher,pitcher_context,'
-    // 2026-09-19: home_era/away_era REMOVED — also non-existent. The real
-    // columns are home_pitcher_home_era / away_pitcher_away_era (and the
-    // bullpen/xERA variants); nothing actually read ctx.home_era, so this
-    // is a pure deletion with no consumer to repoint.
-    + 'home_runs_per_game,away_runs_per_game,'
-    + 'venue,temperature,wind_speed,wind_direction,wind_blowing_in,precipitation,'
-    + 'is_dome,park_run_factor,'
-    + 'mc_probabilities,mc_high_conf_side,mc_high_conf_flag,mc_high_conf_pct,'
-    + 'nrfi_score,nrfi_ensemble_pick,nrfi_ensemble_tier,nrfi_ensemble_conf,'
-    + 'home_lineup,away_lineup,lineup_confirmed,'
+    + 'home_pitcher,away_pitcher,pitcher_context,home_runs_per_game,'
+    + 'away_runs_per_game,venue,temperature,wind_speed,'
+    + 'wind_direction,wind_blowing_in,precipitation,is_dome,'
+    + 'park_run_factor,mc_probabilities,mc_high_conf_side,mc_high_conf_flag,'
+    + 'mc_high_conf_pct,nrfi_score,nrfi_ensemble_pick,nrfi_ensemble_tier,'
+    + 'nrfi_ensemble_conf,home_lineup,away_lineup,lineup_confirmed,'
     + 'matched_patterns,consensus_fade_flag,consensus_fade_side,consensus_fade_pct,'
-    + 'babip_regression_flag,'
-    + 'umpire,umpire_note,umpire_over_rate,umpire_run_factor,'
-    + 'data_completeness,model_confidence';
+    + 'babip_regression_flag,umpire,umpire_note,umpire_over_rate,'
+    + 'umpire_run_factor,data_completeness,model_confidence,align_status,'
+    + 'away_bp_relievers_3d,away_bullpen_era,away_catcher_framing,away_consecutive_road_games,'
+    + 'away_days_rest,away_first_inning_era,away_first_inning_whip,away_k_gap,'
+    + 'away_last10,away_last10_runs_per_game,away_pitcher_last_3_era,away_pitcher_projected_bb,'
+    + 'away_pitcher_projected_er,away_pitcher_projected_hits,away_pitcher_projected_ks,away_pitcher_projected_outs,'
+    + 'away_pitcher_vs_team_era,away_pitcher_vs_team_ip,away_platoon_advantage,away_record,'
+    + 'away_save_pct,away_sp_xera,away_streak,away_team_oaa,'
+    + 'away_team_xwoba,away_woba,away_wrc_plus,away_wrc_vs_opp_hand,'
+    + 'consensus_fade_n,consensus_fade_note,home_bp_relievers_3d,home_bullpen_era,'
+    + 'home_catcher_framing,home_days_rest,home_era,home_first_inning_era,'
+    + 'home_first_inning_whip,home_k_gap,home_last10,home_last10_runs_per_game,'
+    + 'home_pitcher_last_3_era,home_pitcher_projected_bb,home_pitcher_projected_er,home_pitcher_projected_hits,'
+    + 'home_pitcher_projected_ks,home_pitcher_projected_outs,home_pitcher_vs_team_era,home_pitcher_vs_team_ip,'
+    + 'home_platoon_advantage,home_record,home_save_pct,home_sp_xera,'
+    + 'home_streak,home_team_oaa,home_team_xwoba,home_travel_distance_last_game,'
+    + 'home_woba,home_wrc_plus,home_wrc_vs_opp_hand,oddscrowd_snapshot,'
+    + 'signal_confluence_signals_total,signal_confluence_signals_voted,spread_delta,spread_lean,'
+    + 'sweat_breakdown,timezone_change';
 
   const fetchMLBGameContext = async () => {
   try {
