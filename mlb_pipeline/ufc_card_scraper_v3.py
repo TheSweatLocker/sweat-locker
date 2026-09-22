@@ -87,7 +87,43 @@ def fetch_forward_espn_events(days: int = 28) -> list:
     if not events:
         print('  no upcoming events on ESPN')
         return []
+    events = [e for e in events if is_ufc_proper(e.get('name') or e.get('shortName') or '')]
+    if not events:
+        print('  no UFC-proper events in range (all filtered as non-UFC)')
+        return []
     return sorted(events, key=lambda e: str(e.get('date') or ''))
+
+
+# Events ESPN files under /mma/ufc/ that are not UFC fight cards. The
+# endpoint is authoritative for UFC-org CONTENT, which is not the same
+# thing as a UFC card — an assumption the 09-22 version of this file got
+# wrong in its own docstring.
+#
+# Dana White's Contender Series is the live case: 11 of the 29 rows in
+# ufc_upcoming_event were DWCS. It is a tryout show. The fighters have no
+# UFC record, so ufc_fighter_stats / ufc_fighter_history hold nothing for
+# them, and this table is what answers "is this a UFC fight" for the tab
+# filter — leaving DWCS in it means the filter admits the exact events
+# Andy asked to keep out ("make it pure UFC", 09-22).
+_NOT_UFC_PROPER = (
+    "contender series",     # Dana White's Contender Series
+    "road to ufc",          # regional qualifier series
+    "the ultimate fighter", # reality-show episodes (the FINALE is a real
+)                           # card and is named "UFC Fight Night: ...")
+
+
+def is_ufc_proper(name: str) -> bool:
+    """True for real UFC cards only.
+
+    Requires the UFC token so a stray non-UFC promotion in the feed is
+    dropped rather than assumed, and rejects the org's non-card series by
+    name. "Noche UFC: Silva vs. Delgado" passes — it is a genuine UFC
+    event that simply does not start with "UFC".
+    """
+    n = (name or '').strip().lower()
+    if not n or 'ufc' not in n:
+        return False
+    return not any(bad in n for bad in _NOT_UFC_PROPER)
 
 
 def find_fighter_url(name: str) -> str | None:

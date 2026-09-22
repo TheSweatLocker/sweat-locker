@@ -236,9 +236,22 @@ build that includes `055ef4a1`.
 ### B25 · UFC end-to-end before the Apple push — BUILD GATE
 Andy, 09-22: "make it pure UFC, do a full look at the entire process and
 data and model performance." Three parts, all open:
-- **Pure UFC.** Backend filter shipped (`fd1a6d3d`, `29aa26d9`); the
-  client still renders every promotion because `mma_mixed_martial_arts`
-  is one Odds API key with `sport_title: "MMA"` for all of them. B9.
+- **Pure UFC — half done.** `ufc_upcoming_event` was itself impure: 10
+  of 29 rows were Dana White's Contender Series, a tryout show whose
+  fighters have no UFC record, so `ufc_fighter_stats` holds nothing for
+  them. That table is what answers "is this a UFC fight" for the client
+  filter, so the filter would have admitted exactly what Andy asked to
+  exclude. `is_ufc_proper()` now gates the scraper and the 10 rows are
+  purged — 19 events, 0 non-UFC, verified after a live run. The client
+  filter itself (B9) is still open and BUILD-GATED.
+- **Model performance — DO NOT SHIP PICKS.** 63 graded picks (08-01 →
+  09-19): **25-38, 39.7%, -10.76 units, -17.1% ROI.** Every tier is
+  negative. PRIME is 10-5 (66.7%) and still **-12.2%** because all 15
+  PRIME picks were favorites. The EV layer is inverted — `ev_tier=PRIME`
+  is 5-6 (-34.5%) while `ev_tier=SKIP` is 15-29 (-12.7%), so its best
+  bucket loses more than the bucket it says to skip. The only positive
+  slice is underdogs (9-19 but **+8.3%** on price), which PRIME never
+  picks. Needs a decision from Andy before the build.
 - **Process + data.** `sherdog` and `mmajunkie` externals are `return []`
   stubs; `bfo` matches 0 picks. B19.
 - **Model performance.** Never audited end to end. Needs a graded record
