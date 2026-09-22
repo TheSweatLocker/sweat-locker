@@ -13762,33 +13762,19 @@ setJerryHistory(prev => {
               );
             })()}
 
-           {/* 2026-09-15: consolidated MLB pipeline state banner. Prior
-                behavior stacked TWO banners ("MORNING PIPELINE RUNNING" +
-                "MLB MODEL ACTIVE") — redundant per Andy screenshot audit.
-                Now one banner that changes state based on the pipeline
-                phase: pre-11am/empty-ctx → "PIPELINE RUNNING", else
-                "MODEL ACTIVE". Same visual footprint, no stacking. */}
-           {gamesSport==='MLB' && gamesDay==='today' && (() => {
-             const etHour = parseInt(new Date().toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',hour12:false}));
-             const preWindow = etHour < 11;
-             const noContext = Object.keys(mlbGameContext || {}).length === 0;
-             const isRunning = preWindow || noContext;
-             const barColor = isRunning ? THEME.hrb : THEME.sharp;
-             const label = isRunning ? '🔄 MORNING PIPELINE RUNNING' : '⚾ MLB MODEL ACTIVE';
-             const meta = isRunning ? null : '🔄 by 11am + 4pm ET';
-             const body = isRunning
-               ? "Pitcher matchups, NRFI scores, and Sweat Scores landing by 11 AM ET. Market lines below are live; model-derived fields refresh once today's pipeline completes."
-               : 'Pipeline updates twice daily. Lineups confirm 2-3hrs before first pitch. Umpires post overnight. Check back after 4pm for full confirmed slate.';
-             return (
-               <View style={{backgroundColor:barColor + '15',borderRadius:12,padding:12,marginBottom:14,borderWidth:1,borderColor:barColor + '40'}}>
-                 <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                   <Text style={{color:barColor,fontWeight:'800',fontSize:12}}>{label}</Text>
-                   {meta && <Text style={{color:THEME.textMuted,fontSize:10}}>{meta}</Text>}
-                 </View>
-                 <Text style={{color:THEME.textDim,fontSize:11,lineHeight:16}}>{body}</Text>
-               </View>
-             );
-           })()}
+           {/* 2026-09-22: MLB pipeline banner REMOVED — it now comes
+                from sport_registry.today_note like every other sport,
+                written by set_pipeline_note.py.
+
+                This was the one note hardcoded in the client, so MLB was
+                the one sport whose copy could not change without an App
+                Store build. Worse, it decided which of two baked-in
+                strings to show from `etHour < 11` — a guess about the
+                pipeline rather than a reading of it. At 11:01 it claimed
+                MODEL ACTIVE whether or not the pipeline had finished.
+                The backend now asks whether today's context rows are
+                actually scored, which is the thing the banner was trying
+                to describe. */}
 {gamesSport==='UFC' && ufcEvent && (() => {
   // Hide the header once the event date has passed (between events,
   // before the Thursday scraper writes the next card).

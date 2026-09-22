@@ -2295,6 +2295,14 @@ jobs:
           # locked at sweat_card gen time (12:32 UTC) but calibration
           # recomputes throughout the day. See refresh_audit_rollup.py.
           python refresh_audit_rollup.py || echo "audit rollup refresh failed (non-fatal)"
+          # 2026-09-22: write the Games-tab note from REAL pipeline state.
+          # Runs here because by this point context is built and scored, so
+          # "is the slate ready" is answerable from the DB instead of being
+          # guessed from the clock. Replaces a banner that was hardcoded in
+          # the client and flipped on etHour < 11 — MLB was the only sport
+          # whose note could not be changed without an App Store build.
+          # Idempotent: only PATCHes when the copy actually changes.
+          python set_pipeline_note.py --sport MLB
 
       # Post-build refit re-hydration (2026-08-15 pm fix). Refit_conviction
       # gets partially wiped during downstream card-build steps (some prop
