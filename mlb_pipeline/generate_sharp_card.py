@@ -451,6 +451,26 @@ def _fetch_all(today: str) -> dict:
                     'home_ml_close,away_ml_close,close_spread,close_total')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
+        # 2026-09-22 PRESEASON GATE (Andy directive: never bet preseason
+        # hockey). NHL game_id encodes the game type in positions 4-5:
+        #   01 = preseason   02 = regular season   03 = playoffs
+        # Structural, so it needs no schedule lookup and no date maths
+        # around a shifting opener.
+        #
+        # 9/22 shipped three 2-unit NHL PRESEASON moneylines on the Sharp
+        # (Bruins / Sabres / Penguins), every one with odds=null because
+        # no book prices these. Preseason hockey is close to unmodelable
+        # — split squads, goalies rotating by period, starters playing a
+        # single shift — and our own ratings are built from regular
+        # season play, so the model has no business projecting it.
+        if sport == 'nhl':
+            _pre = [g for g in out['nhl_ctx']
+                    if str(g.get('game_id') or '')[4:6] == '01']
+            if _pre:
+                out['nhl_ctx'] = [g for g in out['nhl_ctx']
+                                  if str(g.get('game_id') or '')[4:6] != '01']
+                print(f'  🚫 NHL preseason gate: dropped {len(_pre)} game(s) '
+                      f'(game_id type 01) — not bettable')
         # Future-only filter only applies to football (only sports that ship
         # a kickoff_utc column — the NE@SEA stale-card bug was a football
         # cross-day-UTC issue that doesn't reproduce for NBA/NHL/NCAAB).
@@ -807,6 +827,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_lean = dropped_chalk = dropped_pass = 0
     dropped_lr_conflict = 0
     dropped_anchor = 0
+    dropped_no_price = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -866,6 +887,20 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         pick_line  = pp.get('line')
         pick_odds  = side_ml if pick_type == 'ml' else None
 
+        # 2026-09-22 NO-PRICE GATE. An ML pick with no market moneyline
+        # was published anyway, carrying odds=null — the shape the three
+        # NHL preseason plays shipped in. A moneyline with no moneyline
+        # is not a bet: it cannot be staked, cannot be graded for ROI,
+        # and cannot be sized (units fall back to a tier default, so it
+        # looked like a confident 2u play).
+        #
+        # Note projected_home_ml is OUR projection, not a market price —
+        # never substitute it here. If no book prices the game, we have
+        # no edge to measure against and nothing to publish.
+        if pick_type == 'ml' and side_ml is None:
+            dropped_no_price += 1
+            continue
+
         # (5) 2026-09-06 sole-pick juice cap. If the primary_play is an ML
         # juicier than SOLE_PICK_ML_JUICE_MAX, auto-swap to the spread
         # side of the same team so users don't stake 2u to win 0.5u.
@@ -919,6 +954,9 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         print(f'  {sport} no-play drops: {dropped_pass}')
     if dropped_lr_conflict:
         print(f'  {sport} LR-shadow-conflict drops: {dropped_lr_conflict}')
+    if dropped_no_price:
+        print(f'  {sport} no-market-price drops: {dropped_no_price} '
+              f'(ML pick with no book moneyline — unbettable)')
     return picks
 
 

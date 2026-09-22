@@ -195,11 +195,37 @@ def get_probable_pitchers(game_date):
         return []
 
 
-def match_probable_pitcher(games_list, home_team, away_team, commence_time_hint=None):
+def match_probable_pitcher(games_list, home_team, away_team, commence_time_hint=None,
+                           dh_index=None, dh_count=None):
     """Find the matching probable-pitcher entry for a given Odds API game.
 
-    Uses team-pair match. If multiple matches (doubleheader), disambiguates
-    by closest commence_time. Returns dict (or empty dict if no match).
+    Uses team-pair match. On a doubleheader, pairs by ORDINAL POSITION
+    (earliest odds event <-> earliest MLB game) rather than by nearest
+    absolute start time.
+
+    2026-09-22 — WHY ORDINAL, NOT NEAREST. Rays @ Yankees 9/22 was a
+    split DH: MLB game 1 at 17:05Z (Martinez vs Rodon), game 2 at 23:05Z
+    (Rasmussen vs Fried). BOTH of our context rows came out carrying
+    Rasmussen vs Fried, so game 1's starters were absent entirely and its
+    totals/spread were modelled off the wrong two pitchers.
+
+    Nearest-time matching cannot catch that, for two compounding reasons:
+
+      1. It is a per-game lookup with no memory, so nothing stops two
+         different odds events from both claiming the SAME MLB game. When
+         that happens one of them is certainly wrong, and the old code
+         had no way to notice.
+      2. It trusts the absolute timestamp. Ours had drifted — the stored
+         commence_time for the 17:06Z leg read 23:06Z, so it genuinely
+         WAS nearest to game 2. The matcher worked perfectly on bad input.
+
+    Ordinal pairing survives both: a DH's legs are ordered, and that
+    order is stable even when an absolute timestamp is stale, because it
+    only requires the two events to sort the same way. It also makes
+    double-assignment structurally impossible — index 0 and index 1
+    cannot both resolve to game 2.
+
+    Falls back to nearest-time when the caller supplies no ordinal.
     """
     candidates = [
         g for g in games_list
@@ -210,14 +236,35 @@ def match_probable_pitcher(games_list, home_team, away_team, commence_time_hint=
         return {}
     if len(candidates) == 1:
         return candidates[0]
-    # Doubleheader: disambiguate by closest start time
+
+    def _ts(g):
+        try:
+            return datetime.fromisoformat((g.get('commence_time') or '').replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            return datetime.max.replace(tzinfo=timezone.utc)
+
+    # Preferred path: ordinal pairing within the doubleheader.
+    if dh_index is not None and dh_count and dh_count > 1:
+        ordered = sorted(candidates, key=_ts)
+        if dh_count == len(ordered) and 0 <= dh_index < len(ordered):
+            best = ordered[dh_index]
+            print(f"  🎯 DH probable pitcher matched by ORDINAL "
+                  f"(leg {dh_index + 1}/{dh_count}): game #{best.get('game_number')} "
+                  f"({best.get('away_pitcher')} vs {best.get('home_pitcher')})")
+            return best
+        # Counts disagree — the schedule and the book do not see the same
+        # number of games. Guessing here is how game 1 got game 2's arm.
+        print(f"  ⚠️ DH ordinal mismatch: {dh_count} odds event(s) vs "
+              f"{len(ordered)} MLB game(s) for {away_team} @ {home_team} "
+              f"— refusing to assign a starter rather than risk the wrong one")
+        return {}
+
     if commence_time_hint:
         try:
             hint_dt = datetime.fromisoformat(commence_time_hint.replace('Z', '+00:00'))
             best = min(
                 candidates,
-                key=lambda g: abs((datetime.fromisoformat((g.get('commence_time') or '').replace('Z', '+00:00')) - hint_dt).total_seconds())
-                              if g.get('commence_time') else 999999
+                key=lambda g: abs((_ts(g) - hint_dt).total_seconds())
             )
             print(f"  🎯 DH probable pitcher matched: game #{best.get('game_number')} ({best.get('home_pitcher')} vs {best.get('away_pitcher')})")
             return best
@@ -4068,8 +4115,28 @@ def run(target_date=None):
             else:
                 game_date_et = today
             
+            # 2026-09-22: compute this game's leg number within its own
+            # doubleheader, from the odds slate itself. Sorting the
+            # same-matchup events by start time and taking this one's
+            # index gives a stable ordinal that survives a drifted
+            # timestamp, and lets the matcher pair 1-to-1 instead of
+            # letting both legs claim the same MLB game.
+            _dh_sibs = sorted(
+                [g2 for g2 in games
+                 if g2.get('home_team') == home_team and g2.get('away_team') == away_team],
+                key=lambda g2: str(g2.get('commence_time') or '')
+            )
+            _dh_count = len(_dh_sibs)
+            _dh_index = next((i for i, g2 in enumerate(_dh_sibs)
+                              if g2.get('id') == game_id), None)
+            if _dh_count > 1 and _dh_index is not None:
+                print(f"  ⚾ DH leg {_dh_index + 1}/{_dh_count}: {away_team} @ {home_team} "
+                      f"(commence {commence_time})")
+
             # Get probable pitchers — DH-aware lookup using commence_time hint
-            pitcher_info = match_probable_pitcher(probable_pitchers, home_team, away_team, commence_time_hint=commence_time)
+            pitcher_info = match_probable_pitcher(probable_pitchers, home_team, away_team,
+                                                  commence_time_hint=commence_time,
+                                                  dh_index=_dh_index, dh_count=_dh_count)
             home_pitcher = pitcher_info.get("home_pitcher")
             away_pitcher = pitcher_info.get("away_pitcher")
             home_pitcher_id = pitcher_info.get("home_pitcher_id")

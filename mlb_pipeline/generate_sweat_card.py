@@ -612,6 +612,7 @@ def fetch_football_picks(today: str) -> list:
             continue
         _skipped_past = 0
         _skipped_wrong_et_date = 0
+        _skipped_preseason = 0
         for row in rows or []:
             ks = row.get('kickoff_utc')
             if ks:
@@ -634,6 +635,19 @@ def fetch_football_picks(today: str) -> list:
             elif row.get('game_date') != today:
                 # No kickoff_utc + game_date isn't today = not tonight's game
                 _skipped_wrong_et_date += 1
+                continue
+            # 2026-09-22 NHL PRESEASON GATE (Andy directive: never bet
+            # preseason hockey). NHL game_id encodes type in positions
+            # 4-5: 01 = preseason, 02 = regular, 03 = playoffs.
+            #
+            # This surface reaches NHL through _in_season_sports(), so
+            # the gate has to live here too — the moment sport_registry
+            # flips NHL the card would otherwise pull whatever context
+            # rows exist, preseason included. Split squads and rotating
+            # goalies make those unmodelable, and our ratings are built
+            # from regular-season play.
+            if sport == 'NHL' and str(row.get('game_id') or '')[4:6] == '01':
+                _skipped_preseason += 1
                 continue
             pp = row.get('primary_play') or {}
             if isinstance(pp, str):
@@ -660,6 +674,8 @@ def fetch_football_picks(today: str) -> list:
             print(f'  ⏭  {sport} sweat: skipped {_skipped_past} already-played games')
         if _skipped_wrong_et_date:
             print(f'  ⏭  {sport} sweat: skipped {_skipped_wrong_et_date} not-tonight games (ET play date mismatch)')
+        if _skipped_preseason:
+            print(f'  🚫 {sport} sweat: dropped {_skipped_preseason} PRESEASON game(s) — not bettable')
     # Rank by conviction DESC — cap-at-5 applied at composition step
     picks.sort(key=lambda p: -p.get('conviction', 0))
     return picks
