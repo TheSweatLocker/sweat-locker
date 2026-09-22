@@ -23,7 +23,7 @@ import argparse
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -55,17 +55,39 @@ def _normalize_name(name: str) -> str:
     return re.sub(r'\s+', ' ', n).strip().lower()
 
 
-def fetch_next_espn_event() -> dict | None:
-    """ESPN scoreboard defaults to the closest upcoming event."""
-    r = requests.get(ESPN_SCOREBOARD, timeout=15)
+def fetch_forward_espn_events(days: int = 28) -> list:
+    """Every UFC event in the next `days`, soonest first.
+
+    2026-09-22: was fetch_next_espn_event(), which called the scoreboard
+    with no date range and took events[0] — one event, the closest one.
+
+    Enough for scoring the next card, but it leaves the table unable to
+    answer "is this fight a UFC fight", which is what the Games tab needs.
+    The Odds API exposes a single `mma_mixed_martial_arts` key and stamps
+    every promotion sport_title="MMA" — Bare Knuckle, PFL and UFC arrive
+    in one undifferentiated feed with no field to filter on. This endpoint
+    is UFC-specific (/mma/ufc/) and is the only authoritative roster we
+    have; one event covers ~4 days of a feed that runs two weeks out.
+
+    Holding the forward slate makes that filter possible and costs one
+    request. on_conflict=event_name keeps re-runs idempotent, and past
+    events simply fall outside the caller's date filter.
+    """
+    rng = (f"{date.today().strftime('%Y%m%d')}-"
+           f"{(date.today() + timedelta(days=days)).strftime('%Y%m%d')}")
+    try:
+        r = requests.get(ESPN_SCOREBOARD, params={'dates': rng}, timeout=20)
+    except requests.exceptions.RequestException as e:
+        print(f'  ⚠ ESPN scoreboard unreachable: {e}')
+        return []
     if r.status_code != 200:
         print(f'  ⚠ ESPN scoreboard: {r.status_code}')
-        return None
+        return []
     events = (r.json().get('events') or [])
     if not events:
         print('  no upcoming events on ESPN')
-        return None
-    return events[0]
+        return []
+    return sorted(events, key=lambda e: str(e.get('date') or ''))
 
 
 def find_fighter_url(name: str) -> str | None:
@@ -174,25 +196,30 @@ def upsert_upcoming_event(event_name: str, event_date_iso: str, fights: list, dr
 
 def run(dry_run: bool = False) -> None:
     print(f'=== UFC card scraper v3 (ESPN) · {datetime.now(timezone.utc).date()} ===')
-    ev = fetch_next_espn_event()
-    if not ev:
+    events = fetch_forward_espn_events()
+    if not events:
         return
-    event_name = ev.get('name', 'Unknown event')
-    event_date = ev.get('date', '')
-    print(f'  next: {event_name}  ({event_date})')
+    print(f'  forward UFC events: {len(events)}')
 
-    fights = build_fights_array(ev)
-    if not fights:
-        print('  ⚠ no fights parsed from ESPN event')
-        return
+    wrote = skipped = 0
+    for ev in events:
+        event_name = ev.get('name', 'Unknown event')
+        event_date = ev.get('date', '')
+        fights = build_fights_array(ev)
+        if not fights:
+            # Cards are announced before the bouts are listed. Not an
+            # error — just nothing to store for this one yet.
+            print(f'  · {event_name} ({event_date[:10]}) — no fights listed yet')
+            skipped += 1
+            continue
+        print(f'  → {event_name} ({event_date[:10]}) · {len(fights)} fights')
+        for f in fights[:3]:
+            print(f'      [{f["fight_order"]}] {f["fighter1"]} vs {f["fighter2"]}')
+        if upsert_upcoming_event(event_name, event_date, fights, dry_run=dry_run):
+            wrote += 1
 
-    print(f'  fights: {len(fights)}')
-    for f in fights[:5]:
-        print(f'    [{f["fight_order"]}] {f["fighter1"]} vs {f["fighter2"]}  ({f["rounds_sched"]}rd)')
-
-    upsert_upcoming_event(event_name, event_date, fights, dry_run=dry_run)
-    print(f'\n{"[DRY] " if dry_run else "✓ "}wrote upcoming_event with {len(fights)} fights')
-
+    print(f'\n{"[DRY] " if dry_run else "✓ "}{wrote} event(s) written'
+          + (f', {skipped} awaiting fight listings' if skipped else ''))
 
 def main():
     ap = argparse.ArgumentParser()
