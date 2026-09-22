@@ -5456,6 +5456,7 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
   // A missing column does NOT error — that is the whole trap.
   const MLB_CTX_COLUMNS =
     
+    
     'game_id,game_date,home_team,away_team,'
     + 'fetched_at,close_spread,close_total,open_spread,'
     + 'open_total,home_ml_close,away_ml_close,home_ml_odds,'
@@ -5491,7 +5492,12 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     + 'home_streak,home_team_oaa,home_team_xwoba,home_travel_distance_last_game,'
     + 'home_woba,home_wrc_plus,home_wrc_vs_opp_hand,oddscrowd_snapshot,'
     + 'signal_confluence_signals_total,signal_confluence_signals_voted,spread_delta,spread_lean,'
-    + 'sweat_breakdown,timezone_change';
+    + 'sweat_breakdown,timezone_change,away_lineup_ops,away_lineup_weight,'
+    + 'away_offense_drift,away_ops,away_pitcher_away_era,away_pitcher_home_era,'
+    + 'away_pitcher_last_3_k_pct,away_platoon_note,away_team_barrel_pct,home_lineup_ops,'
+    + 'home_lineup_weight,home_offense_drift,home_ops,home_pitcher_away_era,'
+    + 'home_pitcher_home_era,home_pitcher_last_3_k_pct,home_platoon_note,home_team_barrel_pct,'
+    + 'id';
 
   const fetchMLBGameContext = async () => {
   try {
