@@ -1,0 +1,136 @@
+name: Multi-Sport Line Poller
+
+# Continuous line poll for every sport EXCEPT MLB, which has its own
+# poller (mlb_line_poller.yml, every 15 min).
+#
+# WHY THIS EXISTS. 2026-09-21 audit found line_history — the table that
+# feeds detect_line_movement -> line_movement_flags -> classify_line_moves
+# and the Steam Room Split view — in this state:
+#
+#     MLB      369,908 rows   newest 2026-09-21   ok
+#     NFL      397,022 rows   newest 2026-09-09   12 DAYS STALE
+#     NCAAF  1,475,950 rows   newest 2026-09-09   12 DAYS STALE
+#     NHL              0      never
+#     NBA              0      never
+#     NCAAB            0      never
+#
+# So football had NO line-movement detection for twelve days of the NFL
+# season and hockey never had any. Cause: write_line_history.py reads
+# odds_cache, which only fills when a user opens the Games tab in the app.
+# MLB escaped because line_poller.py calls write_line_history_from_event
+# directly — a writer added 09-11 precisely to stop depending on that, but
+# wired MLB-only. Commit dd124256 pushed the same call into every sport's
+# odds puller.
+#
+# That fixed the FEED. This workflow fixes the CADENCE, which is the other
+# half: movement detection needs two snapshots inside its comparison
+# window, and the per-sport pipelines poll once a day (NHL/NBA) or a few
+# times a week (NFL Tue/Wed/Thu, NCAAF Tue/Wed/Fri/Sat). Measured: NHL
+# produced 0 flags at both 6h and 48h lookback because only one snapshot
+# existed. Steam / RLM / limit patterns are intraday by nature and simply
+# cannot be seen at one sample per day.
+#
+# COST. One Odds API call per sport per run. 5 sports x 48 runs = ~240
+# calls/day, against 4.88M remaining on the quota — not a constraint.
+# Offseason sports return 0 events and cost 1 cheap call each.
+#
+# SAFETY. Raising cadence is only safe because the pullers now drop
+# in-progress games (is_pregame, same commit). The Odds API /odds endpoint
+# returns live in-game prices, and none of these pullers filtered on
+# commence_time — at one pull a day that rarely bit, but at every 30
+# minutes a live line would have been written straight into close_spread /
+# close_total, the number grading compares against. Same hazard
+# mlb_line_poller guards by locking close_total near first pitch
+# (project_pm_cron_live_game_prop_overwrite).
+
+on:
+  schedule:
+    # Every 30 min across the full betting day. Half MLB's rate because
+    # these sports have far smaller slates and the marginal snapshot buys
+    # less than it does on a 15-game baseball card.
+    - cron: '*/30 11-23 * * *'  # 7am ET  -> 7pm ET
+    - cron: '*/30 0-4 * * *'    # 8pm ET  -> 12am ET
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: 'Single sport to poll (blank = all)'
+        required: false
+        default: ''
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      # Each sport is its own step and continue-on-error, so one sport's
+      # outage cannot cost the others their snapshot. Deliberately NOT a
+      # loop in one step: a mid-loop failure there would silently skip
+      # every sport after it, which is how the odds_cache gap went
+      # unnoticed for four weeks.
+      - name: Poll NHL lines
+        if: ${{ github.event.inputs.sport == '' || github.event.inputs.sport == 'NHL' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python nhl_odds_pull.py
+
+      - name: Poll NBA lines
+        if: ${{ github.event.inputs.sport == '' || github.event.inputs.sport == 'NBA' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python nba_odds_pull.py
+
+      - name: Poll NFL lines
+        if: ${{ github.event.inputs.sport == '' || github.event.inputs.sport == 'NFL' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python nfl_odds_pull.py
+
+      - name: Poll NCAAF lines
+        if: ${{ github.event.inputs.sport == '' || github.event.inputs.sport == 'NCAAF' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python ncaaf_odds_pull.py
+
+      - name: Poll NCAAB lines
+        if: ${{ github.event.inputs.sport == '' || github.event.inputs.sport == 'NCAAB' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python ncaab_odds_pull.py
+
+      # Detect movement immediately after the snapshot, so the flag exists
+      # while the line is still live rather than waiting for the next
+      # per-sport pipeline run. 6h lookback matches mlb_pipeline and now
+      # actually contains multiple snapshots for these sports.
+      # MLB excluded — its own poller and pipeline already cover it.
+      - name: Detect line movement (non-MLB)
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          for S in NHL NBA NFL NCAAF NCAAB; do
+            python detect_line_movement.py --sport "$S" --lookback-hours 6
+          done

@@ -280,6 +280,35 @@ def upsert_games(rows: list, dry_run: bool = False) -> int:
     return len(rows)
 
 
+def is_pregame(event: dict, grace_min: int = 0) -> bool:
+    """True only if this event has NOT started yet.
+
+    2026-09-21, added before raising poll cadence. The Odds API /odds
+    endpoint returns IN-PROGRESS games with live in-game prices, and none
+    of these pullers filtered on commence_time. At one pull a day that
+    rarely mattered. Polling every 30 minutes it matters a great deal:
+    a live line would be written straight into close_spread / close_total,
+    which is the number grading compares against — so we would silently
+    corrupt the closing line and therefore every spread and total result
+    derived from it. Live prices would also manufacture fake "steam" in
+    line_history, since an in-game total has no relationship to the
+    pre-game one.
+
+    This is the same hazard mlb_line_poller guards by locking close_total
+    within 10 min of first pitch (project_pm_cron_live_game_prop_overwrite).
+    Here we simply drop started games entirely: the last pre-game poll is
+    the close, which is what the column is supposed to mean.
+    """
+    ct = event.get('commence_time')
+    if not ct:
+        return True          # no timestamp to judge by — keep, don't guess
+    try:
+        dt = datetime.fromisoformat(str(ct).replace('Z', '+00:00'))
+    except ValueError:
+        return True
+    return dt > datetime.now(timezone.utc) + timedelta(minutes=grace_min)
+
+
 def _emit_line_history(pairs: list, sport: str) -> int:
     """Write line_history rows from the slate this puller already fetched.
 
@@ -337,6 +366,8 @@ def run(dry_run: bool = False) -> None:
 
     rows = []; skipped = 0; lh_pairs = []
     for event in events:
+        if not is_pregame(event):
+            continue
         row = event_to_row(event, aliases)
         if row is None:
             skipped += 1
