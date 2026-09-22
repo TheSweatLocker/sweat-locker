@@ -268,20 +268,71 @@ data and model performance." Three parts, all open:
   exclude. `is_ufc_proper()` now gates the scraper and the 10 rows are
   purged — 19 events, 0 non-UFC, verified after a live run. The client
   filter itself (B9) is still open and BUILD-GATED.
-- **Model performance — DO NOT SHIP PICKS.** 63 graded picks (08-01 →
-  09-19): **25-38, 39.7%, -10.76 units, -17.1% ROI.** Every tier is
-  negative. PRIME is 10-5 (66.7%) and still **-12.2%** because all 15
-  PRIME picks were favorites. The EV layer is inverted — `ev_tier=PRIME`
-  is 5-6 (-34.5%) while `ev_tier=SKIP` is 15-29 (-12.7%), so its best
-  bucket loses more than the bucket it says to skip. The only positive
-  slice is underdogs (9-19 but **+8.3%** on price), which PRIME never
-  picks. Needs a decision from Andy before the build.
-- **Process + data.** `sherdog` and `mmajunkie` externals are `return []`
-  stubs; `bfo` matches 0 picks. B19.
-- **Model performance.** Never audited end to end. Needs a graded record
-  by tier before anything ships.
-VERIFY: see B9/B19; model record needs a direct query against graded UFC
-reads.
+- **Model performance — picks to shadow, and my first numbers were
+  wrong.** I reported 25-38 / **-17.1% ROI**. The W-L is right; the ROI
+  was computed from mismatched columns — `pick_result` grades
+  `ev_recommended_side`, and I priced it with `recommended_side`. Those
+  are two different picks that disagree on 22 of 63 fights (on every
+  one, the model takes the favourite and EV takes the dog). I also
+  wrongly suspected the grader; it is 63/63 correct.
+
+  Recomputed consistently, from `ufc_fight_results` as the authority
+  (`winner_actual` verified 90/90 against it):
+
+      model side (recommended_side)   36-30  54.5%   +1.20u   +1.8%
+      published EV side               25-38  39.7%   +7.34u  +11.7%
+        of which PUBLISHABLE P/S/L    10-9   52.6%   -0.54u   -2.9%  n=19
+        of which SKIP (not shown)     15-29  34.1%   +7.89u  +17.9%  n=44
+
+  Every unit of profit is in the bucket the engine says to skip, and
+  all of it is 29 longshots (3.00+) returning +14.11u inside a ±19.4u
+  noise band. What users see is 19 picks at -2.9%.
+
+  The model itself loses to the closing line outright — 54.5% accuracy
+  vs the devigged line's 69.7%, worse log loss (0.661 vs 0.607) and
+  Brier (0.238 vs 0.208), and worse at EVERY confidence band; at 0.80+
+  it merely ties the line. **Ship the tab, the fight data and the card;
+  hold the picks.** Not because they lose, but because n=19 on a leaking
+  model is not evidence.
+
+### B29 · UFC feature leak — career stats are not as-of-date
+`ufc_features.build_features` calls `fetch_fighter_career_stats`, which
+reads one CURRENT row from `ufc_fighter_stats` with no date filter. Every
+striking/grappling feature (`slpm`, `sapm`, `str_acc`, `td_avg`,
+`td_acc`, `td_def`, `sub_avg`) is the fighter's career-to-today figure
+used to predict fights from years earlier. Only `compute_pre_fight_record`
+is correctly date-scoped.
+
+**5 of the 8 highest-gain features in ufc_v2_winner are on the leaked
+side.** The model's own metadata shows the cost: train 83.5% / val 77.6%
+/ test 64.3% accuracy, log loss 0.441 → 0.527 → 0.624 — and the test
+number is itself inflated, since test fights use current stats too.
+
+Same defect class as the MLB prop lookback leak (`20b443cc`). Second
+sport, same shape: a convenience fetch that returns current state.
+VERIFY: `rg -n "fetch_fighter_career_stats" mlb_pipeline/ufc_features.py`
+— no `fight_date` argument anywhere in it.
+FIX: snapshot fighter stats per fight date, or rebuild the career rates
+from `ufc_fighter_history` rows strictly before the fight. Retrain after.
+
+### B30 · Nothing compares a pick to the price it was bet into
+The finding behind B25/B29 and the MLB/NFL prop audits. The pipeline
+stores the closing price next to every pick and never compares the two,
+so a tier can publish for months while hitting below its own implied
+rate. Measured 09-22:
+
+      MLB PRIME props, pre-leak   57.6% vs 58.4% implied   -0.9pp  n=580
+      MLB PRIME props, in leak    83.4% vs 64.1% implied  +19.3pp  n=1621
+      NFL props, all tiers        50.6% vs 54.2% implied   -3.7pp  n=1287
+      UFC publishable             52.6%, -2.9% ROI                  n=19
+
+MLB PRIME was at or BELOW the market-implied rate every month from June
+to August (-2.3pp, -6.4pp, -13.3pp) and only clears it inside the leak
+window. It was never beating the line. NFL tiers are not monotonic —
+LEAN (+0.8pp) beats STRONG (-4.1pp) — and a projection exists on 2 of
+1317 rows (0.2%), so no edge is being computed at all (see B10).
+FIX: make edge-vs-implied the publishing gate, with a sample floor.
+Report: https://claude.ai/artifact/CZ9Fqvrw74MjgkbiTaNZRj
 
 ### B26 · Markdown leaking into short_read
 `Ari@Col` and `Tam@New` short_reads begin `**PITCHERS:**` and one
