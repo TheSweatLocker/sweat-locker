@@ -227,6 +227,43 @@ def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> di
     parsed['call_text'] = label   # human-readable e.g. "PHI +5.5"
     if isinstance(conviction, (int, float)):
         parsed['conviction'] = max(0, min(100, int(conviction)))
+
+    # ── 2026-09-22 PASS→PLAY PROSE STALENESS ────────────────────────
+    # Preserving prose is right for play→play and play→pass: the
+    # analysis still describes the game. It is WRONG for pass→play,
+    # because pass-prose does not analyse the game, it narrates the
+    # DECISION NOT TO BET — and that decision has just been reversed.
+    #
+    # This is a sequencing bug, not a logic one. Both this function and
+    # generate_jerry_synthesis handle PASS correctly at the moment they
+    # run. What breaks is the gap between runs:
+    #
+    #   11:54-11:57  primary_play was soft → Jerry writes
+    #                "Engine passed — no publishable edge on this game."
+    #   15:30        recompute upgrades the pick to PRIME
+    #                this function re-points the badge at the new pick
+    #                prose is preserved → stale
+    #
+    # 5 MLB games shipped that way on 09-22, four of them PRIME. The
+    # card read "Boston Red Sox ML · 0" directly above "the PRIME setup
+    # collapses under MC sim. No play." — the engine contradicting
+    # itself on one screen.
+    #
+    # Rewriting from the ensemble's own `sub` invents nothing: that
+    # string is the engine's stated reason for the pick it just made.
+    # Long_read is dropped rather than patched — it is a multi-paragraph
+    # argument for passing and cannot be salvaged by find/replace. A
+    # short true read beats a long false one.
+    _short = (parsed.get('short_read') or '')
+    if 'engine passed' in _short.lower() or _short.strip().lower().startswith('pass'):
+        engine_sub = str(pp.get('sub') or '').strip()
+        parsed['short_read'] = (
+            f'{label} — {engine_sub}'[:2000] if engine_sub else str(label)
+        )
+        _long = (parsed.get('long_read') or '')
+        if 'engine passed' in _long.lower() or 'no play' in _long.lower():
+            parsed['long_read'] = None
+        parsed['_prose_resynced'] = True
     return parsed
 
 

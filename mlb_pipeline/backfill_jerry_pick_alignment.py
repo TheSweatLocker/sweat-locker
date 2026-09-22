@@ -71,7 +71,7 @@ def load_reads(sport: str, date_from: str, date_to: str) -> list:
         params={'sport': f'eq.{sport}',
                 'game_date': f'gte.{date_from}',
                 'and': f'(game_date.lte.{date_to})',
-                'select': 'id,game_id,game_date,call_market,call_side,call_line,call_text,conviction,short_read',
+                'select': 'id,game_id,game_date,call_market,call_side,call_line,call_text,conviction,short_read,long_read',
                 'limit': '600'}, timeout=25)
     return r.json() if isinstance(r.json(), list) else []
 
@@ -116,26 +116,34 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
             patch['call_text'] = label
         return patch or None
 
-    # Soft-tier / no-pick → force PASS badge, preserve prose
-    if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
-        target = {
-            'call_market': 'pass', 'call_side': None, 'call_line': None,
-            'call_text': 'Pass', 'conviction': 0,
-        }
-    else:
-        target = {
-            'call_market': market,
-            'call_side': str(side).upper(),
-            'call_line': line,
-            'call_text': label,
-            'conviction': max(0, min(100, int(conviction))) if isinstance(conviction, (int, float)) else read_row.get('conviction') or 0,
-        }
-    # Compare to existing — build diff-only patch
+    # ── 2026-09-22: DELEGATE, don't duplicate ───────────────────────
+    # This block used to reimplement enforce_primary_play_alignment()
+    # inline — the docstring at the top of this file even says "runs the
+    # same rule as". It was the same rule written twice, so a fix to one
+    # copy left the other wrong.
+    #
+    # That is exactly what happened: the pass→play prose resync was added
+    # to the shared function, this copy did not have it, and four MLB
+    # games kept shipping a live PRIME badge above "Engine passed — no
+    # publishable edge on this game."
+    #
+    # Now there is one implementation. Anything added there — prose
+    # resync, future tier rules — applies here automatically, and the two
+    # cannot drift again because the second copy no longer exists.
+    from jerry_reads_dual_write import enforce_primary_play_alignment
+
+    _FIELDS = ('call_market', 'call_side', 'call_line', 'call_text',
+               'conviction', 'short_read', 'long_read')
+    parsed_in = {k: read_row.get(k) for k in _FIELDS}
+    aligned = enforce_primary_play_alignment(
+        sport, dict(parsed_in), {'primary_play': pp})
+
     patch = {}
-    for k, v in target.items():
-        cur = read_row.get(k)
-        if cur != v:
-            patch[k] = v
+    for k in _FIELDS:
+        if k not in aligned:
+            continue
+        if read_row.get(k) != aligned[k]:
+            patch[k] = aligned[k]
     return patch or None
 
 
