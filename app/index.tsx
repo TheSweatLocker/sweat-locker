@@ -5694,32 +5694,36 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // MLB names (panel_implied_margin, jerry_pred_*, model_pred_spread)
         // that don't exist on NFL — any one wrong name 400s the whole query
         // and nflGameContextMap stays empty.
-        .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
-          + 'close_home_ml,close_away_ml,open_spread,open_total,'
-          + 'projected_spread,projected_total,'
-          + 'model_pred_home_points,model_pred_away_points,'
-          + 'panel_pred_home_pts,panel_pred_away_pts,panel_pred_total,'
-          + 'v3_spread,v3_total,v4_spread,v4_total,v4_confidence,mc_probabilities,'
-          + 'signal_confluence_net,signal_confluence_breakdown,cohort_tags,'
-          + 'sweat_score,sweat_tier,primary_play,'
-          + 'stats_source,season,season_type,week,splits_summary,'
-          + 'home_team_stats_summary,away_team_stats_summary,'
-          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
-          + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
-          // 2026-09-14: this-season ATS + OU records for the Situational
-          // card display. Backend populates via backfill_nfl_season_records_
-          // from_results.py (early-season) + enrich_team_trends.py (once
-          // teamrankings has data). NFLSituationalCard renders "1-0 ATS ·
-          // 0-1 O/U" so users see honest this-season sample, with rolling
-          // l10 kept behind the scenes for weighting.
-          + 'home_season_ats_wins,home_season_ats_losses,home_season_cover_pct,'
-          + 'home_season_ou_overs,home_season_ou_unders,home_season_over_pct,'
-          + 'away_season_ats_wins,away_season_ats_losses,away_season_cover_pct,'
-          + 'away_season_ou_overs,away_season_ou_unders,away_season_over_pct,'
+        .select(
+
+          // 2026-09-22: +23 columns the client reads but this
+          // SELECT never asked for — same hole as MLB_CTX_COLUMNS. A
+          // column absent from the list does NOT error; it returns
+          // undefined and the card renders blank. Restored the team
+          // off/def per-game splits, consensus_fade_*, matched_patterns
+          // and align_status so game detail stops half-rendering.
+          'game_id,game_date,home_team,away_team,'
+          + 'close_spread,close_total,close_home_ml,close_away_ml,'
+          + 'open_spread,open_total,projected_spread,projected_total,'
+          + 'model_pred_home_points,model_pred_away_points,panel_pred_home_pts,panel_pred_away_pts,'
+          + 'panel_pred_total,v3_spread,v3_total,v4_spread,'
+          + 'v4_total,v4_confidence,mc_probabilities,signal_confluence_net,'
+          + 'signal_confluence_breakdown,cohort_tags,sweat_score,sweat_tier,'
+          + 'primary_play,stats_source,season,season_type,'
+          + 'week,splits_summary,home_team_stats_summary,away_team_stats_summary,'
+          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,away_ats_l10_on_road,away_ats_l10_on_road_losses,'
+          + 'home_season_ats_wins,home_season_ats_losses,home_season_cover_pct,home_season_ou_overs,'
+          + 'home_season_ou_unders,home_season_over_pct,away_season_ats_wins,away_season_ats_losses,'
+          + 'away_season_cover_pct,away_season_ou_overs,away_season_ou_unders,away_season_over_pct,'
           + 'home_madden_ovr,away_madden_ovr,home_qb_madden_ovr,away_qb_madden_ovr,'
-          + 'home_top100_count,away_top100_count,'
-          + 'temp,wind,roof,'
-          + 'home_rest,away_rest,div_game,kickoff_utc')
+          + 'home_top100_count,away_top100_count,temp,wind,'
+          + 'roof,home_rest,away_rest,div_game,'
+          + 'kickoff_utc,align_status,away_def_pass_ypg,away_def_ppg,'
+          + 'away_def_rush_ypg,away_off_rating,away_pass_yds_pg,away_rush_yds_pg,'
+          + 'consensus_fade_flag,consensus_fade_n,consensus_fade_note,consensus_fade_pct,'
+          + 'consensus_fade_side,home_def_pass_ypg,home_def_ppg,home_def_rush_ypg,'
+          + 'home_ml_close,home_ml_open,home_off_rating,home_pass_yds_pg,'
+          + 'home_rush_yds_pg,matched_patterns,oddscrowd_snapshot,spread_anchor_weight,')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nflCtxResult?.data && nflCtxResult.data.length > 0) {
@@ -5754,33 +5758,35 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // fetch them. User: "NCAAF badges not rendering as well." Same
         // root cause as the NFL badge bug (columns exist in DB, just not
         // in the SELECT).
-        .select('game_id,game_date,home_team,away_team,close_spread,close_total,'
-          + 'close_home_ml,close_away_ml,open_spread,open_total,'
-          + 'projected_spread,projected_total,model_pred_home_points,model_pred_away_points,'
-          + 'sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
-          // 2026-09-19: SAME BUG AS THE 09-07 COMMENT ABOVE, third occurrence.
-          // Model Consensus SP+ and MC tiles read sp_plus_pred_spread /
-          // sp_plus_pred_total / mc_probabilities (GameDetailV2 LensGrid).
-          // The pipeline writes all three correctly; they were just never
-          // SELECTed, so every NCAAF game rendered both tiles blank. The
-          // giveaway: NumbersPanel's SP+ row worked, because it reads
-          // sp_plus_pred_home_pts/away_pts, which WERE in this list.
-          + 'sp_plus_pred_spread,sp_plus_pred_total,mc_probabilities,'
-          + 'signal_confluence_net,signal_confluence_breakdown,'
-          + 'sweat_score,sweat_tier,primary_play,splits_summary,season,season_type,'
-          + 'home_team_stats_summary,away_team_stats_summary,'
-          + 'home_sp_overall,away_sp_overall,sp_gap,'
+        .select(
+
+          // 2026-09-22: +17 columns the client reads but this
+          // SELECT never asked for — same hole as MLB_CTX_COLUMNS. A
+          // column absent from the list does NOT error; it returns
+          // undefined and the card renders blank. Restored the team
+          // off/def per-game splits, consensus_fade_*, matched_patterns
+          // and align_status so game detail stops half-rendering.
+          'game_id,game_date,home_team,away_team,'
+          + 'close_spread,close_total,close_home_ml,close_away_ml,'
+          + 'open_spread,open_total,projected_spread,projected_total,'
+          + 'model_pred_home_points,model_pred_away_points,sp_plus_pred_home_pts,sp_plus_pred_away_pts,'
+          + 'sp_plus_pred_spread,sp_plus_pred_total,mc_probabilities,signal_confluence_net,'
+          + 'signal_confluence_breakdown,sweat_score,sweat_tier,primary_play,'
+          + 'splits_summary,season,season_type,home_team_stats_summary,'
+          + 'away_team_stats_summary,home_sp_overall,away_sp_overall,sp_gap,'
           + 'home_sp_plus,away_sp_plus,home_ap_rank,away_ap_rank,'
-          + 'home_season_ats_wins,home_season_ats_losses,'
-          + 'away_season_ats_wins,away_season_ats_losses,'
-          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,'
-          + 'away_ats_l10_on_road,away_ats_l10_on_road_losses,'
+          + 'home_season_ats_wins,home_season_ats_losses,away_season_ats_wins,away_season_ats_losses,'
+          + 'home_ats_l10_at_home,home_ats_l10_at_home_losses,away_ats_l10_on_road,away_ats_l10_on_road_losses,'
           + 'home_off_epa_pp,away_off_epa_pp,home_def_epa_pp,away_def_epa_pp,'
-          + 'home_returning_production,away_returning_production,'
-          + 'home_ol_avg_wt,away_ol_avg_wt,ol_dl_weight_gap_home,ol_dl_weight_gap_away,'
-          + 'home_avg_class_year,away_avg_class_year,class_year_edge_home,'
-          + 'temp,wind,dome,weather_source,neutral_site,conference_game,kickoff_utc,'
-          + 'oddscrowd_snapshot,align_status,cohort_tags')
+          + 'home_returning_production,away_returning_production,home_ol_avg_wt,away_ol_avg_wt,'
+          + 'ol_dl_weight_gap_home,ol_dl_weight_gap_away,home_avg_class_year,away_avg_class_year,'
+          + 'class_year_edge_home,temp,wind,dome,'
+          + 'weather_source,neutral_site,conference_game,kickoff_utc,'
+          + 'oddscrowd_snapshot,align_status,cohort_tags,away_def_pass_ypg,'
+          + 'away_def_ppg,away_def_rush_ypg,away_pass_yds_pg,away_rush_yds_pg,'
+          + 'consensus_fade_flag,consensus_fade_n,consensus_fade_note,consensus_fade_pct,'
+          + 'consensus_fade_side,home_def_pass_ypg,home_def_ppg,home_def_rush_ypg,'
+          + 'home_pass_yds_pg,home_rush_yds_pg,matched_patterns,spread_anchor_weight,')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(ncaafCtxResult?.data && ncaafCtxResult.data.length > 0) {
