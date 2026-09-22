@@ -132,6 +132,31 @@ jobs:
           cd mlb_pipeline
           python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 14
 
+      # 2026-09-22: side/label normalizer, lock-bypassing by design.
+      # Same rationale as the line-only jerry alignment above — the week
+      # lock protects side/tier/market, and this pass changes none of
+      # them. It only rewrites label+line to agree with the side the
+      # lock already froze.
+      #
+      # Why it needs its own step: the normalizer lives inside
+      # recompute_nfl_primary_play, which returns early under the week
+      # lock. That put it behind a gate that is closed for every Sunday
+      # and Monday game — i.e. it could never run on the games it was
+      # written to protect. NYG @ LA (9/21) reached kickoff labelled
+      # 'LA -7' with side=AWAY and graded as the wrong team.
+      #
+      # Numbers are frozen once a game starts; only the team is repaired
+      # on played games, so a settled price is never restated.
+      - name: Normalize NFL primary_play labels (side/label agreement)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 10
+
       - name: Pull Odds API preseason lines (Aug only)
         if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only')
         env:
@@ -510,9 +535,15 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        # 2026-09-22: mask REMOVED. This step wrote nothing from 9/09 to
+        # 9/22 — every batch upsert 400'd on PGRST102 while the script
+        # exited 0, so `|| echo` never fired and the run stayed green.
+        # Week 1 and Week 2 ended with no graded pick ledger. The pick
+        # ledger is the record; if it cannot be written the run has
+        # failed and must say so.
         run: |
           cd mlb_pipeline
-          python nfl_play_of_day.py || echo "play_of_day failed"
+          python nfl_play_of_day.py
 
       - name: Generate NFL player props
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'

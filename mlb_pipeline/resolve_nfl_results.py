@@ -176,10 +176,20 @@ def refresh_results(schedules: list, dry_run: bool = False) -> int:
 
 
 def fetch_ungraded_picks(force_regrade: bool = False) -> list:
-    """Pull nfl_game_picks rows needing resolution."""
+    """Pull nfl_game_picks rows needing resolution.
+
+    2026-09-22: excludes season_type='PRE'. The results source is
+    nflverse games.csv, which carries REGULAR SEASON ONLY, so 23
+    preseason picks from August could never match a result row and sat
+    permanently in the pending bucket. That made 'pending: 23' the normal
+    output of every run, which is precisely how a real grading outage
+    (zero regular-season picks written since 9/09) stayed invisible —
+    the number never changed, so nobody looked at it.
+    """
     filt = '' if force_regrade else '&result=is.null'
     r = requests.get(
         f'{SB}/rest/v1/nfl_game_picks?pick_type=neq.skip{filt}'
+        f'&season_type=neq.PRE'
         f'&select=pick_id,game_id,game_date,pick_type,pick_side,pick_line,tier,'
         f'close_spread,close_total,home_team,away_team',
         headers=H_READ, timeout=15,
@@ -253,9 +263,28 @@ def grade_pick(pick: dict, result: dict) -> Optional[str]:
         if side == 'home': return 'W' if home_win else 'L'
         if side == 'away': return 'L' if home_win else 'W'
 
-    elif ptype == 'spread':
-        # nfl_game_results already computed spread_result relative to
-        # close_spread using nflverse convention (positive = home fav).
+    elif ptype in ('spread', 'rl'):
+        # 2026-09-22: 'rl' was missing from this branch entirely and fell
+        # through to `return None`, so every sharp/ensemble spread pick
+        # (the majority — 9 of 18 on the 9/22 slate) sat pending forever
+        # while looking like a game that simply had not finished.
+        #
+        # Settle against the line WE TOOK, not the close. spread_result
+        # is computed off close_spread, which keeps moving after we lock
+        # a pick; grading 'BAL -8.5' against a -6.5 close silently
+        # regrades the bet. Prefer exact settlement from the final score
+        # and pick_line, and fall back to spread_result only when we have
+        # no line of our own.
+        line = _f(pick.get('pick_line'))
+        hs, as_ = _i(result.get('home_score')), _i(result.get('away_score'))
+        if line is not None and hs is not None and as_ is not None:
+            if side == 'home':   margin = hs - as_
+            elif side == 'away': margin = as_ - hs
+            else:                return None
+            v = margin + line
+            if abs(v) < 1e-9: return 'P'
+            return 'W' if v > 0 else 'L'
+
         sr = result.get('spread_result')
         if not sr: return None
         if sr == 'push': return 'P'

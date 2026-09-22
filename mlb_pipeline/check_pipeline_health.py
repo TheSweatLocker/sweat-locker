@@ -337,6 +337,70 @@ def main():
     except Exception as e:
         warnings.append(f'⚠️  Prop volume check failed: {e}')
 
+    # --- Football pick-ledger coverage ---------------------------------
+    # 2026-09-22: nfl_game_picks held ONE regular-season row between 9/09
+    # and 9/22. Every batch upsert was 400ing on PGRST102 while the
+    # script exited 0, so two full weeks finished with no graded ledger
+    # and no alarm anywhere. Nothing in this file looked at whether picks
+    # existed for games that had already been played.
+    #
+    # Coverage is the right thing to assert, not volume: a played game
+    # with a result and no pick row means the selection ledger silently
+    # stopped. Compared against RESULTS rather than a fixed floor so bye
+    # weeks and short slates do not produce noise.
+    # NOTE ON THE JOIN KEY: do NOT join these two tables on game_id.
+    # nfl_game_results keys on the schedule id (20260910_NE_SEA) while
+    # nfl_game_picks keys on the Odds API hash (8c94552d0...) — the same
+    # mismatch that left every pick ungraded until 2026-09-11 (see
+    # resolve_nfl_results.fetch_result_map). Match on
+    # (away, home, week-bucket) exactly as the resolver does; the bucket
+    # absorbs the ET/UTC date offset on evening kickoffs.
+    def _week_bucket(dstr):
+        d = datetime.fromisoformat(dstr).date()
+        return (d - timedelta(days=(d.weekday() - 3 + 7) % 7)).isoformat()
+
+    for sport, ptbl, rtbl in (('NFL', 'nfl_game_picks', 'nfl_game_results'),):
+        try:
+            lo = (datetime.now(timezone.utc) - timedelta(days=10)).date().isoformat()
+            hi = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+            res = get(f'{URL}/rest/v1/{rtbl}?game_date=gte.{lo}&game_date=lte.{hi}'
+                      f'&home_score=not.is.null&select=game_date,away_team,home_team')
+            if not res:
+                continue
+            pks = get(f'{URL}/rest/v1/{ptbl}?game_date=gte.{lo}&game_date=lte.{hi}'
+                      f'&pick_type=neq.skip&select=game_date,away_team,home_team,result')
+            have = {}
+            for p in pks:
+                have.setdefault(
+                    (p['away_team'], p['home_team'], _week_bucket(p['game_date'])), []
+                ).append(p)
+            missing, ungraded = [], 0
+            for r in res:
+                key = (r['away_team'], r['home_team'], _week_bucket(r['game_date']))
+                rows = have.get(key)
+                if not rows:
+                    missing.append(f"{r['away_team']}@{r['home_team']}")
+                else:
+                    ungraded += sum(1 for p in rows if p.get('result') is None)
+            if missing:
+                pctm = 100.0 * len(missing) / len(res)
+                msg = (f'{sport}: {len(missing)}/{len(res)} played games '
+                       f'({pctm:.0f}%) have NO row in {ptbl} '
+                       f'({", ".join(missing[:4])}{"..." if len(missing) > 4 else ""}). '
+                       f'The pick ledger is not being written — check for a '
+                       f'PGRST102 batch upsert failure (all object keys must match).')
+                (issues if pctm >= 50 else warnings).append(
+                    ('❌ ' if pctm >= 50 else '⚠️  ') + msg)
+            elif ungraded:
+                warnings.append(
+                    f'⚠️  {sport}: {ungraded} played games have a pick row but '
+                    f'no result — resolver is behind.')
+            else:
+                print(f'  ✓ {sport} pick ledger: {len(res)} played games, all '
+                      f'present and graded.')
+        except Exception as e:
+            warnings.append(f'⚠️  {sport} pick-ledger check failed: {e}')
+
     # --- Afternoon-run-specific checks ---
     if is_afternoon:
         # POTD should be locked by 2pm cron unless no PRIME tier surfaced

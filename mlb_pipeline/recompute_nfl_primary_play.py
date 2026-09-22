@@ -77,6 +77,34 @@ def fetch_ctx_window(start_date: str, days: int, lookback: int = 0) -> list[dict
     return out
 
 
+def _already_started(ctx: dict) -> bool:
+    """True once a game's number must be treated as frozen.
+
+    Prefers an explicit kickoff timestamp; falls back to game_date vs
+    today ET. Errs toward True — treating a pregame row as started only
+    costs a line refresh, while treating a played game as pregame
+    restates a settled price.
+    """
+    for key in ('commence_time', 'kickoff_utc', 'game_time_utc', 'start_time'):
+        raw = ctx.get(key)
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts <= datetime.now(timezone.utc)
+        except (TypeError, ValueError):
+            pass
+    gd = ctx.get('game_date')
+    if not gd:
+        return True
+    try:
+        return datetime.fromisoformat(str(gd)).date() < datetime.fromisoformat(_et_today()).date()
+    except (TypeError, ValueError):
+        return True
+
+
 def _normalize_pp_side_label(pp: dict, ctx: dict) -> dict:
     """Guard: for rl/total picks, recompute label from side + line so a
     downstream mutator that flips side but not label can't leave the
@@ -88,13 +116,41 @@ def _normalize_pp_side_label(pp: dict, ctx: dict) -> dict:
     normalizer re-derives label from side using NFL sign convention
     (pos close_spread = home favorite).
 
+    2026-09-22: that same row survived to kickoff and graded wrong — the
+    normalizer was correct but never ran. Two holes, both closed here;
+    the third (it lived behind the week-lock early-return) is closed in
+    run().
+
+      1. 'spread' was not in the ptype allowlist. nfl_game_context emits
+         BOTH 'rl' (sharp/ensemble path) and 'spread' (model-edge path,
+         line ~1125) for the same market, so half of all spread picks
+         were never checked.
+      2. When close_spread was NULL the function returned the stale
+         label untouched. The number needs a line, but the TEAM never
+         did — it is knowable from side alone. A label naming the wrong
+         team is the error that flips a graded result; a stale number
+         only misprices it. Fix the team even when the line is unknown.
+
     Idempotent — running on an already-consistent pp is a no-op.
     """
     if not isinstance(pp, dict): return pp
     ptype = str(pp.get('type') or '').lower()
     side  = str(pp.get('side') or '').upper()
-    if ptype not in ('rl', 'total') or side not in ('HOME', 'AWAY', 'OVER', 'UNDER'):
+    if ptype not in ('rl', 'spread', 'total') or side not in ('HOME', 'AWAY', 'OVER', 'UNDER'):
         return pp
+
+    # 2026-09-22 FROZEN-NUMBER GUARD. close_spread/close_total keep moving
+    # after kickoff (and after settlement). Re-deriving the number from
+    # them on a game already played would silently restate the price we
+    # claim to have taken — turning 'LV +6.5' into 'LV +2.5' on a game
+    # that finished days ago. That is the same class of error as
+    # nhl_game_results.close_puckline holding moneylines: a plausible
+    # number in the right column, wrong by provenance.
+    #
+    # So: the TEAM is always repairable (it is knowable from `side`, which
+    # the week lock already froze, and a wrong team flips the grade). The
+    # NUMBER is only re-derived while the game is still in the future.
+    line_frozen = bool(_already_started(ctx))
 
     home = ctx.get('home_team') or 'HOME'
     away = ctx.get('away_team') or 'AWAY'
@@ -114,23 +170,51 @@ def _normalize_pp_side_label(pp: dict, ctx: dict) -> dict:
 
     new_label = pp.get('label')
     new_line  = pp.get('line')
-    if ptype == 'rl':
-        if side == 'HOME' and home_line is not None:
-            expected = f'{home} {home_line:+g}'
-            new_line = home_line
-            new_label = expected
-        elif side == 'AWAY' and home_line is not None:
-            away_line = -home_line
-            expected = f'{away} {away_line:+g}'
-            new_line = away_line
-            new_label = expected
+    if ptype in ('rl', 'spread'):
+        picked = home if side == 'HOME' else away
+        if home_line is not None and not line_frozen:
+            signed = home_line if side == 'HOME' else -home_line
+            new_line  = signed
+            new_label = f'{picked} {signed:+g}'
+        else:
+            # Either no line to re-derive from, or the game has started
+            # and the number is frozen. Still correct the team when the
+            # label names the other side.
+            #
+            # The number travels with the team: a spread is quoted from
+            # the perspective of whoever is named, so 'LA -7' re-pointed
+            # at NYG is 'NYG +7', not 'NYG -7'. Negate on swap — keeping
+            # the magnitude (which is the frozen market price) while
+            # fixing the side it is quoted from.
+            other = away if side == 'HOME' else home
+            cur = str(new_label or '').strip()
+            if cur and other and cur.split()[0] == other:
+                rest = cur.split(' ', 1)
+                if len(rest) > 1:
+                    try:
+                        flipped = -float(rest[1].replace(' ', ''))
+                        new_label = f'{picked} {flipped:+g}'
+                        if new_line is not None:
+                            new_line = -float(new_line)
+                    except ValueError:
+                        new_label = f'{picked} {rest[1]}'
+                else:
+                    new_label = picked
     elif ptype == 'total':
-        if side == 'OVER' and raw_total is not None:
-            new_label = f'Over {raw_total:g}'
+        want = 'Over' if side == 'OVER' else 'Under'
+        if raw_total is not None and not line_frozen:
+            new_label = f'{want} {raw_total:g}'
             new_line = raw_total
-        elif side == 'UNDER' and raw_total is not None:
-            new_label = f'Under {raw_total:g}'
-            new_line = raw_total
+        else:
+            # Frozen (or no close_total): the NUMBER stays, but an
+            # Over/Under word contradicting `side` is the same defect as
+            # a spread naming the wrong team — it flips the grade — so
+            # repair the direction and leave the price alone.
+            cur = str(new_label or '').strip()
+            head = cur.split(' ', 1)[0].lower() if cur else ''
+            if head in ('over', 'under') and head != want.lower():
+                rest = cur.split(' ', 1)
+                new_label = f'{want} {rest[1]}' if len(rest) > 1 else want
 
     if new_label != pp.get('label') or new_line != pp.get('line'):
         pp = dict(pp)
@@ -155,6 +239,55 @@ def patch_pp(game_id: str, pp: dict) -> bool:
             if attempt == 2: return False
             time.sleep(2 ** attempt)
     return False
+
+
+def run_labels_only(start_date: str, days: int, dry_run: bool = False,
+                    lookback: int = 0) -> int:
+    """Run ONLY the side/label normalizer. Deliberately ignores the week
+    lock; returns the number of rows repaired.
+
+    WHY THIS BYPASSES THE LOCK. The lock exists to stop mid-week ensemble
+    drift from flipping a pick out from under a frozen jerry writeup — it
+    protects side/tier/market. This pass changes NONE of those: it only
+    rewrites `label` and `line` to agree with the side the lock already
+    froze. A label contradicting its own side is not a pick that needs
+    protecting, it is a display bug, and leaving it frozen is what let
+    NYG @ LA reach kickoff labelled 'LA -7' while side said AWAY.
+
+    Same precedent as nfl_pipeline.yml's line-only jerry alignment step,
+    which bypasses the lock for line drift on exactly this reasoning.
+
+    Full recompute stays locked. Only the normalizer runs here.
+    """
+    _lb_str = f' (-{lookback}d back)' if lookback else ''
+    print(f'=== recompute_nfl_primary_play · LABELS-ONLY · '
+          f'{start_date} +{days-1}d{_lb_str} ===')
+    rows = fetch_ctx_window(start_date, days, lookback=lookback)
+    print(f'  ctx rows in window: {len(rows)}')
+    fixed = failed = 0
+    for g in rows:
+        pp = g.get('primary_play') or {}
+        if not isinstance(pp, dict) or not pp:
+            continue
+        new_pp = _normalize_pp_side_label(pp, g)
+        if new_pp is pp or new_pp.get('label') == pp.get('label') and \
+                new_pp.get('line') == pp.get('line'):
+            continue
+        tag = f"{g.get('away_team')}@{g.get('home_team')}"
+        print(f"  {'[DRY] ' if dry_run else ''}{tag:<12} "
+              f"side={pp.get('side'):<5} "
+              f"'{pp.get('label')}' -> '{new_pp.get('label')}'  "
+              f"line {pp.get('line')} -> {new_pp.get('line')}")
+        if dry_run:
+            fixed += 1
+        elif patch_pp(g['game_id'], new_pp):
+            fixed += 1
+        else:
+            failed += 1
+            print(f'    PATCH FAILED {g["game_id"]}')
+    print(f'  {"would repair" if dry_run else "repaired"} {fixed}'
+          + (f'  FAILED {failed}' if failed else ''))
+    return failed
 
 
 def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) -> None:
@@ -326,7 +459,16 @@ def main():
                          'once at seed-time and never re-touched by a later '
                          'recompute pass — root cause of the NFL W1 LR-shadow gap.')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--labels-only', action='store_true',
+                    help='Run ONLY the side/label normalizer, ignoring the '
+                         'week lock. Never changes side/tier/market — only '
+                         'makes label+line agree with the frozen side. Safe '
+                         'to run at any point in the week, including kickoff.')
     args = ap.parse_args()
+    if args.labels_only:
+        failed = run_labels_only(args.date or _et_today(), args.days,
+                                 args.dry_run, lookback=args.lookback)
+        sys.exit(1 if failed else 0)
     run(args.date or _et_today(), args.days, args.dry_run, lookback=args.lookback)
 
 

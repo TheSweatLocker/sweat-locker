@@ -83,10 +83,19 @@ def _i(v):
     except (TypeError, ValueError): return None
 
 
-def load_upcoming(days_ahead: int = 10) -> list:
-    """Pull nfl_game_context rows whose kickoff is today or within N days."""
+def load_upcoming(days_ahead: int = 10, since: Optional[str] = None) -> list:
+    """Pull nfl_game_context rows whose kickoff is today or within N days.
+
+    `since` overrides the start date to backfill games already played.
+    Used to repair the 9/09-9/22 ledger gap. It runs through the same
+    build_pick_row path as the live cron on purpose — a separate
+    backfill script would be free to drift from the real selection
+    logic, which is how a 'record' stops meaning anything.
+    """
     today = _et_now().date()
-    horizon = today + timedelta(days=days_ahead)
+    if since:
+        today = datetime.fromisoformat(since).date()
+    horizon = _et_now().date() + timedelta(days=days_ahead)
     r = requests.get(
         f'{SB}/rest/v1/nfl_game_context'
         f'?game_date=gte.{today.isoformat()}'
@@ -105,6 +114,19 @@ def _side_from_play(play: dict, ctx: dict) -> Optional[str]:
     'home' | 'away' | 'over' | 'under'.
     """
     if not play: return None
+
+    # 2026-09-22: TRUST `side` OVER `label`. These two can disagree — a
+    # mutator that flips side without rewriting the label leaves a stale
+    # team name behind (NYG @ LA, 2026-09-21: side=AWAY, label='LA -7').
+    # Deriving pick_side from the label copied that bug straight into the
+    # graded ledger, recording a pick on LA that the ensemble never made.
+    # `side` is what the scorer actually chose and what the week lock
+    # freezes; the label is a rendering of it. Parse the label only when
+    # side is absent or unrecognised.
+    explicit = str(play.get('side') or '').strip().lower()
+    if explicit in ('home', 'away', 'over', 'under'):
+        return explicit
+
     label = (play.get('label') or '').lower()
     if 'over' in label: return 'over'
     if 'under' in label: return 'under'
@@ -121,17 +143,41 @@ def _side_from_play(play: dict, ctx: dict) -> Optional[str]:
 
 
 def _pick_line(play: dict, ctx: dict) -> Optional[float]:
-    """Extract numeric line from primary_play. For spreads, use close_spread
-    magnitude; for totals, use close_total."""
+    """Extract the numeric line from primary_play, quoted from the picked
+    side. Falls back to close_spread / close_total.
+
+    2026-09-22: prefer primary_play.line, which the scorer already stores
+    from the PICKED SIDE's perspective ('BAL -8.5' -> -8.5, 'LV +6.5' ->
+    +6.5). Two bugs fixed by doing so:
+
+      * 'rl' fell through to None. nfl_game_context emits 'rl' for every
+        sharp/ensemble spread pick — 9 of 18 on the 9/22 slate — so those
+        rows reached the grader with no line at all and stayed pending
+        forever.
+      * 'spread' returned abs(close_spread), discarding both the sign and
+        the side it was quoted from. A grader cannot settle 'away +3' and
+        'home -3' apart from each other given only 3.
+
+    Falling back to close_* keeps older rows working.
+    """
     if not play: return None
     ptype = (play.get('type') or '').lower()
+
+    explicit = _f(play.get('line'))
+    if explicit is not None:
+        return explicit
+
     if ptype == 'total':
         return _f(ctx.get('close_total'))
-    if ptype == 'spread':
+    if ptype in ('spread', 'rl'):
+        # NFL convention: positive close_spread = home favoured. Re-quote
+        # from the picked side so the sign means what the label shows.
         cs = _f(ctx.get('close_spread'))
-        return abs(cs) if cs is not None else None
-    if ptype == 'ml':
-        return None
+        if cs is None: return None
+        side = str(play.get('side') or '').lower()
+        if side == 'home': return -cs
+        if side == 'away': return cs
+        return abs(cs)
     return None
 
 
@@ -249,6 +295,18 @@ def select_lock_of_week(picks: list) -> Optional[str]:
     return candidates[0]['game_id']
 
 
+class PickWriteError(RuntimeError):
+    """Raised when the pick ledger write fails.
+
+    2026-09-22: this used to print a warning and return 0, so the script
+    exited 0 and the workflow's `|| echo "play_of_day failed"` never
+    fired. nfl_game_picks went from 9/09 to 9/22 with a single
+    regular-season row and nothing anywhere said so — Week 1 and Week 2
+    have no graded pick ledger as a result. A write that does not happen
+    must fail loudly; the whole point of the table is the receipt.
+    """
+
+
 def upsert_picks(rows: list, dry_run: bool = False) -> int:
     if not rows: return 0
     if dry_run:
@@ -260,19 +318,38 @@ def upsert_picks(rows: list, dry_run: bool = False) -> int:
                   f"conv={r.get('conviction') or '-':<3}  "
                   f"{r.get('pick_label') or ''}{lock}")
         return len(rows)
-    r = requests.post(
-        f'{SB}/rest/v1/nfl_game_picks?on_conflict=game_id,pick_type,pick_side',
-        headers=H_WRITE, json=rows, timeout=30,
-    )
+    # 2026-09-22 ROOT CAUSE of the 9/09-9/22 ledger gap. PostgREST
+    # requires every object in a batch upsert to carry an IDENTICAL key
+    # set, else the whole batch 400s with PGRST102 'All object keys must
+    # match'. build_pick_row and build_skip_rows emit different shapes,
+    # and is_lock_of_week is added to only one row — so every mixed
+    # batch was rejected outright. Combined with upsert_picks swallowing
+    # the error and returning 0, the pipeline reported success while
+    # writing nothing for two weeks.
+    #
+    # Union the keys and fill the gaps with None so every row matches.
+    # (Same fix as feedback_postgrest_batch_normalize_keys.)
+    all_keys = set()
+    for row in rows:
+        all_keys |= set(row.keys())
+    rows = [{k: row.get(k) for k in all_keys} for row in rows]
+
+    try:
+        r = requests.post(
+            f'{SB}/rest/v1/nfl_game_picks?on_conflict=game_id,pick_type,pick_side',
+            headers=H_WRITE, json=rows, timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        raise PickWriteError(f'upsert raised {type(e).__name__}: {e}') from e
     if r.status_code not in (200, 201, 204):
-        print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
-        return 0
+        raise PickWriteError(f'upsert failed {r.status_code}: {r.text[:300]}')
     return len(rows)
 
 
-def run(dry_run: bool = False) -> None:
-    print(f'=== NFL play-of-day · {_et_now().date()} ===')
-    contexts = load_upcoming()
+def run(dry_run: bool = False, since: Optional[str] = None) -> None:
+    print(f'=== NFL play-of-day · {_et_now().date()}'
+          + (f' · BACKFILL since {since}' if since else '') + ' ===')
+    contexts = load_upcoming(since=since)
     print(f'  upcoming game_context rows: {len(contexts)}')
     if not contexts:
         print('  no upcoming games — offseason or lines not yet loaded')
@@ -287,15 +364,27 @@ def run(dry_run: bool = False) -> None:
             picks_only.append(pick)
         all_rows.extend(build_skip_rows(ctx))
 
-    # Flag lock_of_week
-    lock_gid = select_lock_of_week(picks_only)
+    # Flag lock_of_week — per (season, week), not per run.
+    # 2026-09-22: was one lock for the whole window. Harmless for the
+    # daily cron, which only ever sees one week, but a --since backfill
+    # spans several and would stamp a single game while leaving the
+    # other weeks with no lock at all.
+    lock_gids = set()
+    by_week = {}
+    for p in picks_only:
+        by_week.setdefault((p.get('season'), p.get('week')), []).append(p)
+    for _wk, wk_picks in by_week.items():
+        gid = select_lock_of_week(wk_picks)
+        if gid:
+            lock_gids.add(gid)
     for p in all_rows:
-        if p['game_id'] == lock_gid and p['pick_type'] != 'skip':
+        if p['game_id'] in lock_gids and p['pick_type'] != 'skip':
             p['is_lock_of_week'] = True
 
     print(f'  picks generated: {len(picks_only)} '
           f'(+ {len(all_rows) - len(picks_only)} skip-alerts)  '
-          f'lock_of_week: {lock_gid[:12] + "..." if lock_gid else "—"}')
+          f'lock_of_week: '
+          + (', '.join(sorted(g[:12] + "..." for g in lock_gids)) if lock_gids else '—'))
 
     written = upsert_picks(all_rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
@@ -312,8 +401,12 @@ def run(dry_run: bool = False) -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--since', metavar='YYYY-MM-DD',
+                    help='Backfill: start the context window at this date '
+                         'instead of today, to write pick rows for games '
+                         'already played.')
     args = ap.parse_args()
-    run(dry_run=args.dry_run)
+    run(dry_run=args.dry_run, since=args.since)
 
 
 if __name__ == '__main__':
