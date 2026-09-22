@@ -285,8 +285,47 @@ _MLB_API_STAT = {
 
 
 def fetch_mlb_player_recent(player_name: str, stat_field: str, n: int = 30,
-                             season: int = 2026) -> list[float]:
+                             season: int = 2026, before_date: str | None = None
+                             ) -> list[float]:
     """Pull last N games of a stat for an MLB player via MLB Stats API gameLog.
+
+    `before_date` (YYYY-MM-DD) keeps ONLY games played strictly before it.
+
+    ══ 2026-09-22 — THIS FUNCTION WAS LEAKING THE ANSWER ══
+
+    It fetched the player's whole season gameLog, sorted newest-first and
+    returned vals[:n] with NO upper date bound. The caller enriches a prop
+    for a specific game_date — and once that game is played it becomes the
+    NEWEST entry in the log, so the game being predicted was itself inside
+    its own L5/L10 window.
+
+    That matters because L5/L10 feed the LR model that OVERRIDES tier. So
+    tier was being decided partly by the outcome it was predicting.
+
+    Measured on 9/01-9/21 props (n=16,507 graded, outcomes independently
+    verified against MLB box scores — the results were never the problem):
+
+        player_l5_hit_count = 3  ->    6-19    24.0%
+        player_l5_hit_count = 4  ->  966-239   80.2%
+        player_l5_hit_count = 5  ->  308-4     98.7%   <-- tautology
+
+    "5 of the last 5 hit the line" came back 98.7% because the current
+    game was one of the five: if all five hit, the one we were predicting
+    hit, so the prop had already won. The model was reading the answer.
+
+    Downstream that produced a PRIME tier beating the market by +19.3
+    points overall, and by +31.6 in the >= -110 bucket where the market is
+    least certain — the edge GREW as the market got less sure, which is
+    backwards for genuine skill and is the fingerprint of leakage.
+
+    The control group settles it: rows that were never enriched sit at
+    -1.4 vs market-implied (efficient, i.e. honest), while enriched rows
+    sit at +19.3. Same generator, same grading; the only difference is
+    whether this function got to see the future.
+
+    Timing made it near-universal rather than occasional: of 12,498
+    enriched graded rows, 12,474 had their lookback written AFTER first
+    pitch and only 24 before.
 
     Uses same pattern as generate_props.fetch_batter_l7 — live fetch per player,
     cached in _PLAYER_ID_CACHE. Falls back to prior season if current season
@@ -312,6 +351,14 @@ def fetch_mlb_player_recent(player_name: str, stat_field: str, n: int = 30,
         games.sort(key=lambda g: g.get('date', ''), reverse=True)
         vals = []
         for g in games:
+            # LEAK GUARD: drop the game being predicted and anything after
+            # it. A gameLog row with no date cannot be proven to be in the
+            # past, so drop it too — a missing date is exactly how the
+            # current game would slip back in.
+            if before_date:
+                gd = str(g.get('date') or '')
+                if not gd or gd >= before_date:
+                    continue
             stat_obj = g.get('stat', {})
             v = stat_obj.get(api_field)
             if v is None: continue
@@ -327,7 +374,8 @@ def fetch_mlb_player_recent(player_name: str, stat_field: str, n: int = 30,
 
 
 def fetch_mlb_player_recent_rows(player_name: str, stat_field: str, n: int = 10,
-                                  season: int = 2026) -> list[dict]:
+                                  season: int = 2026,
+                                  before_date: str | None = None) -> list[dict]:
     """2026-08-22: NEW — return per-game rows for ESPN-style stat table.
     Each row: {date, value, opponent, home_away, decision, ip (if pitcher)}.
     Used by render_prop_template.py to render the "last 10 games" table
@@ -353,6 +401,14 @@ def fetch_mlb_player_recent_rows(player_name: str, stat_field: str, n: int = 10,
         games.sort(key=lambda g: g.get('date', ''), reverse=True)
         rows = []
         for g in games:
+            # Same leak guard as fetch_mlb_player_recent. This one feeds
+            # the user-facing "last 10 games" table, so without it the
+            # table silently showed the result of the very game the prop
+            # was still open on.
+            if before_date:
+                _gd = str(g.get('date') or '')
+                if not _gd or _gd[:10] >= before_date:
+                    continue
             stat_obj = g.get('stat', {}) or {}
             v = stat_obj.get(api_field)
             if v is None: continue
@@ -678,8 +734,13 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             # 2026-08-22: wrap fetches too — MLB Stats API also 502/reset
             # occasionally. Same fail-loud-continue pattern as the patch.
             try:
-                recent_cache[cache_key] = fetch_mlb_player_recent(pname, stat, n=30)
-                rows_cache[cache_key] = fetch_mlb_player_recent_rows(pname, stat, n=10)
+                # before_date=game_date — see the leak note on
+                # fetch_mlb_player_recent. Without it the game we are
+                # enriching sits inside its own L5/L10 window.
+                recent_cache[cache_key] = fetch_mlb_player_recent(
+                    pname, stat, n=30, before_date=game_date)
+                rows_cache[cache_key] = fetch_mlb_player_recent_rows(
+                    pname, stat, n=10, before_date=game_date)
             except requests.exceptions.RequestException as _e:
                 print(f'    ⚠ fetch failed for {pname}/{stat}: {_e}')
                 recent_cache[cache_key] = []
@@ -810,7 +871,34 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         # thresholds within margin.
         _LR_OVERRIDE_BANNED_FAMILIES = {'hits_over', 'hits_under'}
         _pt = (prop.get('prop_type') or '').lower()
-        if _pt in _LR_OVERRIDE_BANNED_FAMILIES:
+
+        # ── 2026-09-22 LR TIER AUTHORITY REVOKED (default off) ──────────
+        # mlb_prop_logreg.json was TRAINED ON LEAKED FEATURES. Three of
+        # its inputs — player_l5_hit_count, player_l10_hit_count,
+        # player_season_hit_pct — came from fetch_mlb_player_recent, which
+        # had no upper date bound and so included the game being predicted
+        # inside its own lookback window (see the leak note there).
+        #
+        # The model's own header advertises "PRIME tier hits 85.6% on
+        # holdout vs legacy 52.1%". That holdout was scored on the same
+        # leaked features, so the headline number measured the leak, not
+        # the model. Graded production data agrees: props whose lookback
+        # was never written sit at -1.4 vs market (efficient), while
+        # enriched ones sit at +19.3, and l5_hit_count=5 returned 308-4
+        # (98.7%) because "5 of the last 5 hit" includes the one we were
+        # predicting.
+        #
+        # Bounding the fetch stops NEW leakage, but the coefficients were
+        # still fit against a feature that used to contain the answer, so
+        # they over-trust it on honest inputs. Until the model is
+        # retrained on leak-free history it does not get to set tier.
+        # Shadow signals are still stamped so lr_vs_legacy_grader can
+        # measure the retrain when it lands.
+        #
+        # Re-enable deliberately with MLB_PROP_LR_TIER=on.
+        _lr_authority = os.environ.get(
+            'MLB_PROP_LR_TIER', '').strip().lower() in ('1', 'on', 'true', 'yes')
+        if _pt in _LR_OVERRIDE_BANNED_FAMILIES or not _lr_authority:
             # Leave scorer tier authoritative for this family; still
             # stamp shadow signals so lr_vs_legacy_grader can compare.
             if _LR_MODEL_MLB_PROP is not None:
