@@ -334,6 +334,44 @@ class OddsPuller:
         pairs = getattr(self, '_event_ids', None)
         if not pairs:
             return 0
+
+        # 2026-09-21b PROXIMITY GATE. Writing history for every forward
+        # game is almost pure waste: measured today, all four sports had
+        # ZERO games inside 36h, yet a single poll wrote 5,960 rows — NHL
+        # 782, NBA 810, NFL 964, NCAAF 3,404 — all for fixtures days out
+        # whose lines barely move. At a 30-minute cadence that is 214,560
+        # rows/day, 6.4M/month, against a line_history table that is
+        # already 2.44M rows and 55.8% of the database.
+        #
+        # Line movement is worth sampling densely near puck drop and
+        # sparsely before it. So the POLLER gates to games starting soon
+        # (env, set by the workflow), while the per-sport daily pipeline
+        # runs with no env and still writes the full slate — giving roughly
+        # one sample a day for distant games and high resolution once a
+        # game is close. Same signal, a fraction of the rows.
+        max_out = os.environ.get('LINE_HISTORY_MAX_HOURS_OUT')
+        if max_out:
+            try:
+                cutoff = datetime.now(timezone.utc) + timedelta(hours=float(max_out))
+                kept = []
+                for ev, gid, gd in pairs:
+                    ct = ev.get('commence_time')
+                    if not ct:
+                        kept.append((ev, gid, gd)); continue
+                    try:
+                        if datetime.fromisoformat(str(ct).replace('Z', '+00:00')) <= cutoff:
+                            kept.append((ev, gid, gd))
+                    except ValueError:
+                        kept.append((ev, gid, gd))
+                skipped = len(pairs) - len(kept)
+                pairs = kept
+                if skipped:
+                    print(f'  line_history: skipped {skipped} game(s) beyond '
+                          f'{max_out}h out (proximity gate)')
+                if not pairs:
+                    return 0
+            except ValueError:
+                pass
         try:
             from book_lines_writer import write_line_history_from_event
         except Exception as e:

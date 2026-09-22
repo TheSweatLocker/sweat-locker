@@ -30,9 +30,10 @@ name: Multi-Sport Line Poller
 # existed. Steam / RLM / limit patterns are intraday by nature and simply
 # cannot be seen at one sample per day.
 #
-# COST. One Odds API call per sport per run. 5 sports x 48 runs = ~240
-# calls/day, against 4.88M remaining on the quota — not a constraint.
-# Offseason sports return 0 events and cost 1 cheap call each.
+# COST. One Odds API call per sport per run — trivial against 4.88M quota
+# remaining. The cost that DOES bind is line_history storage, which is why
+# the schedule below is tiered and the writes are proximity-gated; see
+# those comments. Offseason sports return 0 events and cost one cheap call.
 #
 # SAFETY. Raising cadence is only safe because the pullers now drop
 # in-progress games (is_pregame, same commit). The Odds API /odds endpoint
@@ -45,11 +46,22 @@ name: Multi-Sport Line Poller
 
 on:
   schedule:
-    # Every 30 min across the full betting day. Half MLB's rate because
-    # these sports have far smaller slates and the marginal snapshot buys
-    # less than it does on a 15-game baseball card.
-    - cron: '*/30 11-23 * * *'  # 7am ET  -> 7pm ET
-    - cron: '*/30 0-4 * * *'    # 8pm ET  -> 12am ET
+    # 2026-09-21b — CADENCE REVISED DOWN after doing the arithmetic I should
+    # have done first. A flat */30 across the whole day writes 214,560
+    # line_history rows/day (5,960 per run x 36 runs) = 6.4M/month, against
+    # a table already at 2.44M rows and 55.8% of the database. API quota was
+    # never the constraint; storage is.
+    #
+    # Two rates, because the value is not spread evenly. Dense sampling in
+    # the hours around puck drop is where steam and RLM actually happen;
+    # overnight a line barely moves. Combined with the proximity gate below
+    # (LINE_HISTORY_MAX_HOURS_OUT), rows are written only for games starting
+    # soon — measured today that was ZERO of 147 forward games across four
+    # sports, so a poll costs one API call and no storage until a slate is
+    # genuinely close.
+    - cron: '*/30 16-23 * * *'  # noon ET -> 8pm ET, every 30 min
+    - cron: '*/30 0-4 * * *'    # 8pm ET  -> midnight ET, every 30 min
+    - cron: '0 5-15 * * *'      # 1am ET  -> 11am ET, hourly (quiet hours)
   workflow_dispatch:
     inputs:
       sport:
@@ -67,6 +79,11 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      # Only write line_history for games starting within this window. The
+      # per-sport daily pipelines run WITHOUT this var and still capture the
+      # full forward slate, so distant games get ~one sample a day and near
+      # games get 30-minute resolution. See odds_pull_core._write_line_history.
+      LINE_HISTORY_MAX_HOURS_OUT: '48'
 
     steps:
       - name: Checkout repo
@@ -134,3 +151,17 @@ jobs:
           for S in NHL NBA NFL NCAAF NCAAB; do
             python detect_line_movement.py --sport "$S" --lookback-hours 6
           done
+
+      # prune_line_history.py has existed since the 2026-09-08 audit that
+      # found this table at 62.5% of the whole database — with a 14-day
+      # retention policy — and was NEVER SCHEDULED. That is why it reached
+      # 2.44M rows. Consumers look back hours (detect_line_movement uses 6h,
+      # the app's Split view 24-48h), so 14 days is already generous.
+      # Runs on every poll — the script is batched and idempotent, and a
+      # no-op once the tail is already trimmed.
+      - name: Prune line_history (14d retention)
+        if: ${{ github.event.inputs.sport == '' }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python prune_line_history.py --days 14 --apply

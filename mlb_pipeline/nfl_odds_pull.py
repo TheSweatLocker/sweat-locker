@@ -271,6 +271,31 @@ def _emit_line_history(pairs: list, sport: str) -> int:
     """
     if not pairs:
         return 0
+    # Proximity gate — see odds_pull_core._write_line_history for why.
+    # Set by the poller workflow; unset in the daily pipeline so that run
+    # still captures the full forward slate once a day.
+    _max_out = os.environ.get('LINE_HISTORY_MAX_HOURS_OUT')
+    if _max_out:
+        try:
+            _cut = datetime.now(timezone.utc) + timedelta(hours=float(_max_out))
+            _kept = []
+            for _ev, _gid, _gd in pairs:
+                _ct = _ev.get('commence_time')
+                if not _ct:
+                    _kept.append((_ev, _gid, _gd)); continue
+                try:
+                    if datetime.fromisoformat(str(_ct).replace('Z', '+00:00')) <= _cut:
+                        _kept.append((_ev, _gid, _gd))
+                except ValueError:
+                    _kept.append((_ev, _gid, _gd))
+            _skip = len(pairs) - len(_kept)
+            pairs = _kept
+            if _skip:
+                print(f'    line_history: skipped {_skip} game(s) beyond {_max_out}h out')
+            if not pairs:
+                return 0
+        except ValueError:
+            pass
     try:
         from book_lines_writer import write_line_history_from_event
     except Exception as e:
