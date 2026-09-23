@@ -138,9 +138,18 @@ def patch_ctx(agg: dict, upcoming: list, dry_run: bool = False) -> int:
         gid  = g.get('game_id')
         if not (home and away and gid): continue
         h = agg.get(home, {}); a = agg.get(away, {})
+        # 2026-09-22: ats_pushes / ou_pushes were computed in agg() above
+        # and then dropped here. NE @ SEA on 09-09 closed -3 and landed
+        # on the number, so both teams rendered "1-0" on a slate where
+        # every other team rendered two games. The count was never
+        # wrong; there was nowhere to put it until migration 20260922b.
         payload = {
             'home_season_ats_wins':    h.get('ats_wins', 0),
             'home_season_ats_losses':  h.get('ats_losses', 0),
+            'home_season_ats_pushes':  h.get('ats_pushes', 0),
+            'home_season_ou_pushes':   h.get('ou_pushes', 0),
+            'away_season_ats_pushes':  a.get('ats_pushes', 0),
+            'away_season_ou_pushes':   a.get('ou_pushes', 0),
             'home_season_cover_pct':   _pct(h.get('ats_wins'), h.get('ats_losses')),
             'home_season_ou_overs':    h.get('ou_overs', 0),
             'home_season_ou_unders':   h.get('ou_unders', 0),

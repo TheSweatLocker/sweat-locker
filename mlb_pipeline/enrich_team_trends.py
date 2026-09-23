@@ -141,12 +141,19 @@ def run_for_sport(sport: str, game_date: str, season: str, dry_run: bool = False
             'home_season_cover_pct':   h_tr.get('cover_pct') if h_tr else None,
             'home_season_ats_wins':    h_tr.get('ats_wins') if h_tr else None,
             'home_season_ats_losses':  h_tr.get('ats_losses') if h_tr else None,
+            # 2026-09-22: a push is neither a win nor a loss, so without
+            # these the game vanishes from the chip instead of showing
+            # as a tie. team_season_trends has carried both all along.
+            'home_season_ats_pushes':  h_tr.get('ats_pushes') if h_tr else None,
+            'home_season_ou_pushes':   h_tr.get('ou_pushes') if h_tr else None,
             'home_season_over_pct':    h_tr.get('over_pct') if h_tr else None,
             'home_season_ou_overs':    h_tr.get('ou_overs') if h_tr else None,
             'home_season_ou_unders':   h_tr.get('ou_unders') if h_tr else None,
             'away_season_cover_pct':   a_tr.get('cover_pct') if a_tr else None,
             'away_season_ats_wins':    a_tr.get('ats_wins') if a_tr else None,
             'away_season_ats_losses':  a_tr.get('ats_losses') if a_tr else None,
+            'away_season_ats_pushes':  a_tr.get('ats_pushes') if a_tr else None,
+            'away_season_ou_pushes':   a_tr.get('ou_pushes') if a_tr else None,
             'away_season_over_pct':    a_tr.get('over_pct') if a_tr else None,
             'away_season_ou_overs':    a_tr.get('ou_overs') if a_tr else None,
             'away_season_ou_unders':   a_tr.get('ou_unders') if a_tr else None,
