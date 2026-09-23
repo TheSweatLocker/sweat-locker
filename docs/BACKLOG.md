@@ -351,6 +351,69 @@ VERIFY: `rg -l "rest/v1/jerry_reads" mlb_pipeline/*.py | wc -l`
 FIX: classify the 41 into prose-writers vs pick-writers; pick-writers
 must go through `enforce_primary_play_alignment` or lose write access.
 
+### B31 - Prop projections: assessed 09-22, plan below
+Andy: "do we need to assess and engineer projections for props then."
+Assessed. Yes for MLB. For NFL the substrate already exists, but
+plugging it in as-is does NOT produce an edge. Evidence first.
+
+**NFL - the projections exist and nothing reads them.**
+`nfl_player_projections` holds **7,688 rows** (sleeper + espn_fantasy,
+2025 and 2026 wks 1-5, pulled 09-22). `nfl_pipeline_props.projection`
+is populated on **2 of 1,317** graded rows.
+
+They predict the STAT well, measured against `nfl_player_stats`:
+
+      proj_rush_attempts  corr 0.870  MAE 1.72   n=1839
+      proj_rush_yds       corr 0.770  MAE 10.3   n=1850
+      proj_targets        corr 0.491  MAE 1.87   n=2463
+      proj_rec_yds        corr 0.468  MAE 18.3   n=2463
+      proj_receptions     corr 0.441  MAE 1.44   n=2461
+      proj_pass_yds       corr 0.237  MAE 61.9   n=298
+      proj_pass_tds       corr 0.131  MAE 0.93   n=295   <- noise
+
+Skill at the stat is not edge at the line. Fitting bias plus a
+heteroskedastic residual model on **2025 only**, testing on 2026:
+
+      edge >= 0.10    94-82   53.4%   ROI  -1.0%   n=176
+      edge >= 0.15    51-41   55.4%   ROI  +3.1%   n=92
+      edge >= 0.20    28-21   57.1%   ROI  +6.6%   n=49
+
+Monotone, but only positive where n is too small to bank. **An
+in-sample version of this read +7.1% and was wrong** - the residual
+spread had been fit on data including the test weeks. The honest
+out-of-sample answer at a usable sample size is break-even.
+
+Why: books price off the same public fantasy projections. Consuming
+Sleeper gets us TO the market, not past it. Calibration says the same -
+the 0.75+ band predicts 84% and delivers 59%.
+
+**NFL, shippable now (a filter, not a model):** published P/S/L is
+434-380, **-1.6% ROI, n=814**. Dropping the `rush_yds` and `pass_yds`
+families lifts it to **-0.3%, n=716**. See B10 - `rush_yds_over` alone
+is 40.8% / -23.1% on n=71.
+
+**MLB - there is no substrate to project from.**
+`player_game_log` is **EMPTY (0 rows)**. No batter-level table exists
+anywhere; the mlb_* set is team, pitcher, park, umpire and context only.
+Every batter signal is a LIVE MLB Stats API call at generation time,
+never persisted - the same root that let the L5/L10 lookback leak
+(`20b443cc`), and the reason that leak cannot be re-tested on history.
+
+**Order of work:**
+1. Persist a date-stamped `player_game_log` for MLB batters. Nothing on
+   the MLB side is buildable or backtestable without it, and it is the
+   permanent fix for the leak class.
+2. Build our OWN NFL projection instead of consuming a fantasy one -
+   usage based: target share x projected team pass volume x pace x
+   opponent. A public projection by definition carries no information
+   the market lacks.
+3. Replace the Normal with the right distribution per family (NegBin for
+   counts, Gamma for yards) and add an empirical calibration layer, so
+   the edge number can be trusted before anything is gated on it.
+4. Gate publishing on calibrated edge (B30), not on tier.
+VERIFY: `select count(*) from player_game_log` (expect 0 today);
+`select count(*) from nfl_player_projections` (expect ~7.7k).
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
