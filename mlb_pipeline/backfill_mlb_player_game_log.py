@@ -123,7 +123,25 @@ def games_between(start: str, end: str) -> list[dict]:
                 'away': (g['teams']['away']['team'] or {}).get('name'),
                 'home': (g['teams']['home']['team'] or {}).get('name'),
             })
-    return out
+    # 2026-09-22: 28 game_pks in the 2026 season appear under TWO dates —
+    # suspended games that started one day and finished the next. The
+    # schedule lists them on both, so the same game was pulled twice and
+    # a single batch carried duplicate (player_id, game_pk) pairs:
+    #
+    #   21000: ON CONFLICT DO UPDATE command cannot affect row a second time
+    #
+    # Keep the LATER date, not the earlier one. That is the date the
+    # result actually became known, and a lookback asking for "games
+    # before X" must not be able to see a game that had not finished by
+    # X. Deduping on the start date would make a suspended game visible
+    # a day before anyone knew how it ended — the leak this whole table
+    # exists to prevent, reintroduced through the back door.
+    latest: dict[int, dict] = {}
+    for g in out:
+        prev = latest.get(g['game_pk'])
+        if prev is None or str(g['game_date']) > str(prev['game_date']):
+            latest[g['game_pk']] = g
+    return sorted(latest.values(), key=lambda x: (str(x['game_date']), x['game_pk']))
 
 
 def _i(v):
