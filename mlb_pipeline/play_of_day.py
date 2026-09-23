@@ -944,12 +944,17 @@ def score_mlb_game(ctx, game_props=None, track=None):
         # recompute, see cohort_stats.py). Falls back to generic label if
         # the stats file is missing or stale — never ships a stale number.
         from cohort_lookup import format_label as _cohort_label
-        _cohort = _cohort_label('conf4_dog_rl', fallback='lifetime cohort')
+        # 2026-09-23: was `_cohort = ...`, which shadowed the module-level
+        # `from cohort_evidence import cohort as _cohort` added in 0e199a36.
+        # Any assignment makes the name local for the WHOLE function, so
+        # every _cohort(...) call in score_mlb_game raised UnboundLocalError
+        # and took the pipeline down twice on 09-23.
+        _dog_rl_cohort = _cohort_label('conf4_dog_rl', fallback='lifetime cohort')
         # PEAK confluence on DOG points opposite the favorite — the cohort
         # is DOG-RL specific. Direction-wise it still aligns with conf_net
         # sign (whichever side has the signals).
         _add(side_drivers, 12, '🎯', 'PEAK confluence',
-             f'{conf_mag} signals — strongest cohort ({_cohort} DOG RL)', direction=conf_direction)
+             f'{conf_mag} signals — strongest cohort ({_dog_rl_cohort} DOG RL)', direction=conf_direction)
     elif conf_mag == 3:
         _add(side_drivers, 6, '🎯', 'Confluence edge', f'{conf_mag} signals on one side', direction=conf_direction)
     elif conf_mag == 2:
@@ -975,9 +980,9 @@ def score_mlb_game(ctx, game_props=None, track=None):
                     except (TypeError, ValueError): fm = None
                     if fm is not None and not (-150 <= fm <= -130):
                         from cohort_lookup import format_label as _cohort_label
-                        _cohort = _cohort_label('conf4_fav_ml', fallback='lifetime cohort')
+                        _fav_ml_cohort = _cohort_label('conf4_fav_ml', fallback='lifetime cohort')
                         _add(side_drivers, 8, '⚙️', 'PEAK confluence on FAV ML',
-                             f'net=4 favorite at {fm} ({_cohort} cohort)')
+                             f'net=4 favorite at {fm} ({_fav_ml_cohort} cohort)')
         except (TypeError, ValueError):
             pass
 
