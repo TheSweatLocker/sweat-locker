@@ -27,7 +27,7 @@ Usage:
     python grade_props.py --dry-run          # print, no writes
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, re, sys, unicodedata
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -132,16 +132,56 @@ def fetch_nba_player_stats_for_date(date_str: str):
     return stats, len(finals)
 
 
+def _norm_name(name) -> str:
+    """Fold a player name to an accent-free, punctuation-free key.
+
+    2026-09-23. The boxscore is the MLB Stats API's spelling and carries
+    diacritics; mlb_pipeline_props carries the odds feed's spelling and
+    does not. `name.lower()` leaves 'josé ramírez' != 'jose ramirez', so
+    those props matched nothing and were counted as "player not found in
+    boxscore (postponed / late scratch?)" — a message that reads like a
+    data gap and hid the bug.
+
+    Measured on 2026-09-22: 20 of 47 unmatched players were nothing but
+    accents — Ramírez, Suárez, Peña, Báez, Rodríguez, Díaz, Herrera,
+    Caballero. Their props never graded on any day they appeared.
+
+    Same defect and same fix as grade_ufc_jerry_reads on the same day.
+    """
+    n = unicodedata.normalize('NFKD', str(name or ''))
+    n = ''.join(c for c in n if not unicodedata.combining(c))
+    # The odds feed disambiguates same-named players with a birth year -
+    # 'Max Muncy (2002)'. The boxscore carries no such suffix, so the
+    # parenthetical has to come off or that player never grades.
+    n = re.sub(r'\s*\([^)]*\)', '', n)
+    return ' '.join(n.replace('.', '').replace("'", '').lower().split())
+
+
 def fetch_player_stats_for_date(date_str: str) -> dict:
-    """Return {player_name_lower: {ks, bb, er, h_pit, outs, h_bat}} for
+    """Return {normalized_name: {ks, bb, er, h_pit, outs, h_bat}} for
     every player who appeared in an MLB game on date_str."""
     sched = json.load(urllib.request.urlopen(
         f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}', timeout=15))
     game_pks = []
+    postponed_matchups = set()
     for d in sched.get('dates', []):
         for g in d.get('games', []):
-            # Only grade if game is Final (skip in-progress)
             state = g.get('status', {}).get('detailedState', '')
+            # 2026-09-23: a postponed game's props can never grade — the
+            # game did not happen on this date. Left alone they sit at
+            # result=NULL forever and are reported every morning as
+            # "player not found in boxscore (postponed / late scratch?)",
+            # a message that describes the symptom and hides the cause.
+            # Collect them so the caller can Void instead of ignore.
+            if state in ('Postponed', 'Cancelled', 'Canceled'):
+                try:
+                    postponed_matchups.add(
+                        f"{g['teams']['away']['team']['name']} @ "
+                        f"{g['teams']['home']['team']['name']}")
+                except (KeyError, TypeError):
+                    pass
+                continue
+            # Only grade if game is Final (skip in-progress)
             if 'Final' in state or 'Game Over' in state or state == 'Completed Early':
                 game_pks.append(g['gamePk'])
     stats = {}
@@ -166,7 +206,7 @@ def fetch_player_stats_for_date(date_str: str) -> dict:
                     outs = int(ip_int) * 3 + int(ip_frac)
                 except (ValueError, AttributeError):
                     pass
-                stats[name.lower()] = {
+                stats[_norm_name(name)] = {
                     # Pitcher
                     'ks':    pit.get('strikeOuts', 0) if pit else 0,
                     'bb':    pit.get('baseOnBalls', 0) if pit else 0,
@@ -182,7 +222,7 @@ def fetch_player_stats_for_date(date_str: str) -> dict:
                     'hr':    bat.get('homeRuns', 0) if bat else 0,
                     'ks_bat':bat.get('strikeOuts', 0) if bat else 0,
                 }
-    return stats, len(game_pks)
+    return stats, len(game_pks), postponed_matchups
 
 
 def grade_prop(prop: dict, stats_map: dict) -> tuple:
@@ -201,7 +241,7 @@ def grade_prop(prop: dict, stats_map: dict) -> tuple:
     sport = (prop.get('_sport') or 'MLB').upper()
     stat_key = STAT_MAP_BY_SPORT.get(sport, STAT_MAP_MLB).get(prop.get('prop_type'))
     if not stat_key: return None, None
-    stats = stats_map.get((prop.get('player_name') or '').lower())
+    stats = stats_map.get(_norm_name(prop.get('player_name')))
     if not stats: return None, None
 
     # 2026-09-19 DNP GUARD (NBA). A player who never appeared has 0 in
@@ -242,12 +282,16 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
     # Fetch player stats first (single pass against that sport's source)
     if sport.upper() == 'NBA':
         stats_map, n_games = fetch_nba_player_stats_for_date(date_str)
+        postponed: set = set()
         _dnp = sum(1 for v in stats_map.values() if v.get('played') is False)
         print(f'  loaded {len(stats_map)} player stat rows from {n_games} '
               f'final games  ({_dnp} DNP → Void, never graded as a low line)')
     else:
-        stats_map, n_games = fetch_player_stats_for_date(date_str)
+        stats_map, n_games, postponed = fetch_player_stats_for_date(date_str)
         print(f'  loaded {len(stats_map)} player stat rows from {n_games} final games')
+        if postponed:
+            print(f'  postponed: {", ".join(sorted(postponed))[:110]}'
+                  f'  → their props Void, not left ungraded')
     if n_games == 0:
         print(f'  no final games on {date_str} — skipping'); return {}
 
@@ -272,7 +316,7 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
     params = {
         'game_date': f'eq.{date_str}',
         'tier': 'in.(PRIME,STRONG,LEAN,SKIP,COVERAGE)',
-        'select': 'id,player_name,prop_type,prop_line,direction,tier,conviction,result,final_value',
+        'select': 'id,player_name,prop_type,prop_line,direction,tier,conviction,result,final_value,matchup',
         'order': 'id.asc',
     }
     if not FORCE_REGRADE:
@@ -308,7 +352,22 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         prop['_sport'] = sport.upper()   # grade_prop picks the stat map from this
         result, actual = grade_prop(prop, stats_map)
         if result is None:
-            if stats_map.get((prop.get('player_name') or '').lower()) is None:
+            # 2026-09-23: a postponed game's props are Void, not
+            # ungraded. Left NULL they are re-fetched and re-skipped
+            # every run forever, and they inflate the "ungraded" count
+            # the morning audit reports. Toronto @ Baltimore was rained
+            # out on 09-22 and left 115 props in that state.
+            if str(prop.get('matchup') or '') in postponed:
+                if not dry_run:
+                    requests.patch(
+                        f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                        headers=H_WRITE, timeout=10,
+                        data=json.dumps({
+                            'result': 'Void',
+                            'resolved_at': datetime.now(timezone.utc).isoformat()}))
+                tally['V'] += 1
+                continue
+            if stats_map.get(_norm_name(prop.get('player_name'))) is None:
                 tally['skipped_no_player'] += 1
             else:
                 tally['skipped_no_stat'] += 1

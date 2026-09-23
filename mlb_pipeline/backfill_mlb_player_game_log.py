@@ -112,8 +112,16 @@ def games_between(start: str, end: str) -> list[dict]:
     out = []
     for day in d.get('dates', []):
         for g in day.get('games', []):
-            state = ((g.get('status') or {}).get('abstractGameState') or '')
-            if state != 'Final':
+            st = (g.get('status') or {})
+            # 2026-09-23: abstractGameState says 'Final' for a POSTPONED
+            # game — Toronto @ Baltimore on 09-22 was rained out and
+            # still reported abstract='Final' with detailedState=
+            # 'Postponed' and no score. Trusting the abstract field pulls
+            # an empty boxscore and records the date as played.
+            detailed = str(st.get('detailedState') or '')
+            if detailed in ('Postponed', 'Cancelled', 'Canceled', 'Suspended'):
+                continue
+            if str(st.get('abstractGameState') or '') != 'Final':
                 continue
             if (g.get('gameType') or 'R') not in ('R', 'F', 'D', 'L', 'W'):
                 continue        # skip spring / exhibition
