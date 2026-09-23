@@ -690,6 +690,72 @@ set and evaporates out of sample.
 VERIFY: split mlb_pipeline_props on game_date excluding 09-03..09-22,
 pick signals by lift z>=2 on the first half, score the second.
 
+### B40 - mlb_pipeline.yml: 172 serial steps, 8 of them repair work
+Andy, 09-23: "the pipeline doesn't reliably run because you have added
+so much shit to the mlb pipeline that it takes almost 2 hours and refuse
+to take a deep look to simplify."
+
+Measured rather than argued:
+
+      file                2,959 lines / 150 KB
+      jobs                1        <- fully serial, nothing parallel
+      steps               172
+      python invocations  202 across 164 distinct scripts
+      continue-on-error   135 of 172 (78%)
+      bare `|| echo`      39
+      timeout-minutes     NONE SET  <- a hung step burns to GitHub's 6h default
+      cron triggers       4/day
+
+WHAT IS NOT THE PROBLEM. I first counted 27 scripts invoked more than
+once and implied waste. Wrong - almost all are different sports, windows
+or flags. Only **5** invocations are provably redundant (same script,
+same args). The bloat is not duplicate calls.
+
+WHAT IS THE PROBLEM.
+
+1. ONE SERIAL JOB. 172 steps nose-to-tail is the ~2 hours. The 13
+   enrichment steps (savant, team form, trends, arsenal, monte carlo,
+   externals, recency, H2H) are largely independent of each other and
+   currently queue behind one another for no reason.
+
+2. A FATAL STEP KILLS EVERYTHING AFTER IT. 35 steps have no
+   continue-on-error; 20 of those sit after step 60. play_of_day is
+   **step 98 of 172**. When it crashed on 09-23 it took 74 unrelated
+   downstream steps with it - jerry reads, prop scoring, Sharp Card,
+   Sweat Card - none of which depend on it. A POTD failure should cost
+   a POTD.
+
+3. EIGHT STEPS EXIST ONLY TO REPAIR EARLIER STEPS:
+
+       step  28  Jerry pick scrub (sync CALL fields to primary_play)
+       step  49  Collapse Prop Jerry contradictions
+       step  50  Collapse pitcher-thesis contradictions
+       step  52  Dedup prop dupes (final pass)
+       step  53  Cleanup orphaned jerry_reads (post-dedup)
+       step 132  FINAL recompute primary_play (post-all-mutations barrier)
+       step 157  Rescue - force MC + props + ladder + ledger if missing
+       step   5  Yesterday catch-up - grade + aggregate + surface_records
+
+   Step 132 is NAMED "post-all-mutations barrier". That is the design
+   admitting dozens of steps mutate the same rows and something late has
+   to reconcile them. This is exactly the manufacturing-line objection
+   Andy raised on 09-22: do not add a step whose job is to fix step 4.
+
+4. 78% OF FAILURES ARE INVISIBLE. 135 continue-on-error steps, 31 of
+   them on critical-sounding work (game_context patches, jerry
+   synthesis, grading, prop refit). B11's silent-failure class at the
+   workflow layer.
+
+PLAN, ordered by payoff per unit of risk:
+  1. Split into parallel jobs with real `needs:` edges - ingest/enrich,
+     score, publish, grade. Biggest wall-clock win, no logic changes.
+  2. Contain fatal steps so a crash stops its branch, not the run.
+  3. Delete the 8 repair steps by fixing the mutation ordering they
+     paper over. This is the actual simplification and where the
+     runtime lives.
+  4. Add timeout-minutes to the job.
+VERIFY: `python -c "import yaml;d=yaml.safe_load(open('.github/workflows/mlb_pipeline.yml'));s=d['jobs']['run-mlb-pipeline']['steps'];print(len(s),sum(1 for x in s if x.get('continue-on-error') is True))"`
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
