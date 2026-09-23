@@ -647,6 +647,49 @@ VERIFY:
   `python -c "import defensive_gates as G; print(len(G._LR_MODEL_MLB_ML['features']))"`
   then diff that list against `select * from mlb_game_context limit 1`.
 
+### B39 - The prop SELECTION works. The prop PIPELINE does not run.
+Andy, 09-23: "WE NEED TO FIX THE PROP PIPELINE." Chased it properly and
+the answer is not where I kept looking.
+
+Held-out test. Clean history (leak window excluded) split
+chronologically; signals chosen on the FIRST half only, then applied to
+the second, which had no hand in selecting anything:
+
+      HELD OUT 2026-08-13 -> 09-02              n=2843
+      everything                 50.5% vs 54.4%   -3.9pp  ROI  -6.9%  z=-4.12
+      what we publish (P/S)      69.8% vs 57.9%  +11.9pp  ROI +21.5%  z=+3.13   n=169
+      my mined signal rule       57.5% vs 54.3%   +3.2pp  ROI  +6.3%  z=+0.57   n=80
+
+**The existing PRIME/STRONG gate holds out at +21.5% ROI, z=+3.13.**
+That is a second independent slice agreeing with B36's +9.4pp - different
+window, different method, same answer. Andy said the 08-20 adjustments
+worked and backtested well. They did.
+
+**My signal-mining does NOT hold out.** In-sample it read +9.6pp
+(z=2.84) on a rule stacking 2+ of 5 "high-lift" signals; held out it
+decays to +3.2pp (z=0.57). Testing 100 signals guarantees ~5 clear z>2
+by chance. Not shipping it. Same trap as the NFL projection (B33) which
+read +7.1% in-sample and -1.0% out.
+
+SO WHAT IS ACTUALLY BROKEN: the pipeline does not reliably RUN.
+  * 09-23: crashed at play_of_day (my UnboundLocalError, 0a4153e0).
+    Everything downstream - recompute_primary_play, jerry synthesis,
+    prop scoring - never executed. Board sat at 3 PRIME/STRONG instead
+    of the usual ~47, and 10 of 16 games held a stale LR shadow.
+  * 09-16..09-22: rollup refresh RPCs returned 42809 every call, unheard
+    (B28/B32).
+  * 319 sites turn an HTTP failure into an empty list (B11).
+  * close_over_odds lands on 68 of 26,040 props, so CLV - the one metric
+    that works on a small sample - is unmeasurable (B32).
+
+The model picks fine when it gets to run. Reliability is the work.
+
+DO NOT re-mine signals for edge without a holdout. The lift table is
+seductive: short_last showed +16.0pp lift at z=+4.30 on the full clean
+set and evaporates out of sample.
+VERIFY: split mlb_pipeline_props on game_date excluding 09-03..09-22,
+pick signals by lift z>=2 on the first half, score the second.
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
