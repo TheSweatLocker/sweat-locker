@@ -22,6 +22,9 @@ import argparse, os, re, sys
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
+import json
+import unicodedata
+
 import requests
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -47,6 +50,31 @@ def parse_gid(gid: str) -> tuple[str, int] | None:
     return (m.group(1), int(m.group(2)))
 
 
+def _norm_fighter(name: str) -> str:
+    """Casefold and strip accents/punctuation. 'Uroš Medić' -> 'uros medic'."""
+    n = unicodedata.normalize('NFKD', str(name or ''))
+    n = ''.join(c for c in n if not unicodedata.combining(c))
+    n = re.sub(r'[^a-zA-Z ]', '', n).lower()
+    return re.sub(r'\s+', ' ', n).strip()
+
+
+def _same_fighter(a: str, b: str) -> bool:
+    """True when two spellings name the same fighter.
+
+    Surname match is allowed because the card and the results table
+    disagree on given names often enough to matter (Uros vs Uroš,
+    'Donte Johnson' vs 'Donte Johnson Jr.'), but only when the surname
+    is distinctive enough to be worth trusting.
+    """
+    na, nb = _norm_fighter(a), _norm_fighter(b)
+    if not na or not nb:
+        return False
+    if na == nb or na in nb or nb in na:
+        return True
+    sa, sb = na.split(), nb.split()
+    return bool(sa and sb and len(sa[-1]) >= 4 and sa[-1] == sb[-1])
+
+
 def grade_one(read: dict, results_by_key: dict) -> str | None:
     market = (read.get('call_market') or '').lower()
     if market == 'pass':
@@ -63,14 +91,49 @@ def grade_one(read: dict, results_by_key: dict) -> str | None:
     if not winner: return None  # not yet resolved
     if winner in ('DRAW', 'NC', 'NO_CONTEST'):
         return 'Void'
+
+    # ── 2026-09-22 ROOT-CAUSE FIX — grade by NAME, never by letter ──
+    #
+    # This used to be:
+    #
+    #     return 'Win' if winner == side else 'Loss'
+    #
+    # comparing jerry_reads.call_side ('A'/'B') to
+    # ufc_fight_results.winner ('a'/'b'). Those letters index DIFFERENT
+    # orderings. ufc_fight_results is stored winner-first — 1,118 rows
+    # say 'a' against 70 that say 'b' — while call_side follows the
+    # card's ordering. Any fight where the card's B is the results
+    # table's A graded backwards.
+    #
+    # Measured: 7 of 15 graded UFC calls were wrong, almost all of them
+    # a win recorded as a loss. Stored record 5-10; corrected 10-5. The
+    # published UFC record was inverted by a letter comparison.
+    #
+    # Names do not have an ordering, so they cannot disagree about one.
+    snap = read.get('input_snapshot') or {}
+    if isinstance(snap, str):
+        try:
+            snap = json.loads(snap)
+        except (ValueError, TypeError):
+            snap = {}
     side = (read.get('call_side') or '').strip().upper()
-    if side not in ('A', 'B'):
-        return None
-    return 'Win' if winner == side else 'Loss'
+    picked = (snap.get('model_pick_fighter')
+              or (snap.get('fighter_a') if side == 'A' else
+                  snap.get('fighter_b') if side == 'B' else None))
+    won_name = fight.get('fighter_a') if winner == 'A' else                fight.get('fighter_b') if winner == 'B' else None
+    if picked and won_name:
+        return 'Win' if _same_fighter(picked, won_name) else 'Loss'
+
+    # No names on either side — refuse rather than guess. A letter
+    # comparison is what produced the inverted record; returning None
+    # leaves the row ungraded and visible instead of confidently wrong.
+    print(f'  ⚠ ungradeable (no fighter names): game_id={read.get("game_id")} '
+          f'side={side or "?"}')
+    return None
 
 
 def run(game_date: str | None = None, backfill_days: int = 60,
-        dry_run: bool = False) -> int:
+        dry_run: bool = False, regrade: bool = False) -> int:
     if game_date:
         dates = [game_date]
     else:
@@ -81,8 +144,13 @@ def run(game_date: str | None = None, backfill_days: int = 60,
     for gd in dates:
         r = requests.get(f'{SB}/rest/v1/jerry_reads', headers=H_READ,
             params={'sport': 'eq.UFC', 'game_date': f'eq.{gd}',
-                    'result': 'is.null',
-                    'select': 'id,game_id,call_market,call_side'}, timeout=15)
+                    # --regrade re-settles rows that already carry a
+                    # result. Needed once: the letter-comparison bug
+                    # fixed 2026-09-22 left 7 of 15 graded calls
+                    # inverted, and they will never be revisited by
+                    # the normal `result IS NULL` sweep.
+                    **({} if regrade else {'result': 'is.null'}),
+                    'select': 'id,game_id,call_market,call_side,input_snapshot,result'}, timeout=15)
         reads = r.json() if r.status_code == 200 else []
         if not reads: continue
 
@@ -105,6 +173,11 @@ def run(game_date: str | None = None, backfill_days: int = 60,
                 'fighter_a': (fight or {}).get('fighter_a'),
                 'fighter_b': (fight or {}).get('fighter_b'),
             } if fight else None
+            prior = str(read.get('result') or '')
+            if regrade and prior and prior == result:
+                continue                      # already correct, leave it
+            if regrade and prior and prior != result:
+                print(f'  ↻ {gd} id={read["id"]} {prior} -> {result}')
             if dry_run:
                 print(f'  [DRY] {gd} id={read["id"]} side={read.get("call_side")} winner={actual and actual.get("winner")} → {result}')
                 graded += 1
@@ -131,8 +204,11 @@ def main():
     p.add_argument('--date')
     p.add_argument('--backfill-days', type=int, default=60)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--regrade', action='store_true',
+                   help='re-settle rows that already have a result')
     args = p.parse_args()
-    run(game_date=args.date, backfill_days=args.backfill_days, dry_run=args.dry_run)
+    run(game_date=args.date, backfill_days=args.backfill_days,
+        dry_run=args.dry_run, regrade=args.regrade)
 
 
 if __name__ == '__main__':
