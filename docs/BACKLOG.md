@@ -414,6 +414,90 @@ never persisted - the same root that let the L5/L10 lookback leak
 VERIFY: `select count(*) from player_game_log` (expect 0 today);
 `select count(*) from nfl_player_projections` (expect ~7.7k).
 
+### B32 - CLV is unmeasurable: we never store the closing price
+The most consequential gap found on 09-22, and it explains why a season
+of props could run without anyone knowing whether the model was sharp.
+
+      mlb_pipeline_props  close_over_odds:    68 of 26,040 graded
+      nfl_pipeline_props  close_over_odds:     0 of  1,317 graded
+
+Closing line value is the one metric that works on a SMALL sample. Hit
+rate and ROI need hundreds of settled bets before they say anything;
+CLV says it in dozens, because the market is the benchmark and its move
+after you bet is the verdict. Without it there is no way to answer "is
+this model good" until a whole season has already been bet.
+
+It also means every "vs market implied" figure in the 09-22 audit was
+computed against `book_over_odds` - **the price we took**, not the
+closing line. The ROI numbers are unaffected (ROI is settled at the
+price you would have bet). The framing needs correcting: MLB PRIME was
+not beating **the price it was offered**. Whether it beat the CLOSE is
+still unknown and unknowable on current data.
+
+WHY SO FEW. `freeze_prop_closing_lines.py` runs every 10 min on
+`mlb_prop_close_freeze.yml` (22-23 and 00-04 UTC) and by design
+"filters on today's PRIME/STRONG only" as a cost measure. That caps the
+universe at ~4,100 graded rows - and it is landing 68 of them, ~1.7%.
+So there are two separate failures stacked:
+  1. Scope - LEAN / COVERAGE / SKIP can never be measured at all, which
+     is exactly the population needed to prove a tier ladder orders
+     anything.
+  2. Yield - even inside PRIME/STRONG it captures ~1.7%. Unproven
+     causes: the cron window misses afternoon starts, the freeze window
+     is too narrow, or book name-matching drops rows. The workflow step
+     ends in `|| echo "prop close freezer non-fatal"`, so any of those
+     fails silently - the bare-mask class again.
+
+NFL has NO freezer at all: 0 rows, and `close_locked_at` never set.
+
+FIX, in order:
+  1. Make the freezer's failures audible (drop the bare mask, emit
+     ::error:: with counts attempted vs frozen).
+  2. Diagnose the 1.7% yield before widening scope - widening a broken
+     capture just fails on more rows.
+  3. Widen to every published tier, then add NFL.
+  4. Report CLV per tier in the morning audit. It is the earliest honest
+     signal we can get, and it arrives weeks before ROI does.
+VERIFY: `select count(*) from mlb_pipeline_props where close_over_odds
+is not null and result is not null` (68 on 09-22).
+
+### B33 - NFL prop edge: volume modelling is not the answer
+Tested 09-22, recorded so it is not re-attempted blind.
+
+Built our own usage projection - trailing target share x team target
+volume x yards-per-target, all strictly from prior weeks - on 5 seasons
+of `nfl_player_stats` (36,881 regular-season rows). Head to head against
+Sleeper/ESPN on the same 1,545 player-weeks:
+
+      Sleeper / ESPN     MAE 19.18   corr 0.436
+      our usage model    MAE 19.17   corr 0.556
+      blend 50/50        MAE 18.60   corr 0.549
+
+Ours ranks players clearly better at equal MAE, and the blend beating
+both means the two carry independent information. That is the
+precondition for edge.
+
+It does not convert. Fit on 2025, tested on 2026 props:
+
+      usage  edge >= 0.10   164-153  51.7%   ROI  -2.7%   n=317
+      usage  edge >= 0.20    81-69   54.0%   ROI  +1.1%   n=150
+      blend  edge >= 0.10    95-87   52.2%   ROI  -1.9%   n=182
+
+Break-even at best, and the blend is WORSE than ours alone at every
+threshold. Conclusion: NFL prop lines are efficiently priced against
+both public projections and a better volume model. A more accurate
+stat projection is not where the edge is - do not spend a build there
+expecting one.
+
+What is left worth trying, roughly in order of cost:
+  - B32 first. Without CLV we cannot evaluate ANY of this quickly.
+  - Price shopping: `book_over_odds` is a single book. Best-of-N across
+    books is a mechanical edge that needs no model.
+  - Information the market is slow on (snap counts, late inactives),
+    not information it already has.
+  - Stop publishing families that lose: P/S/L is -1.6% (n=814); minus
+    rush_yds and pass_yds it is -0.3% (n=716).
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
