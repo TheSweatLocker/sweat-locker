@@ -65,6 +65,32 @@ jobs:
 
       # 1. Grade yesterday's MLB games (mlb_game_results scores +
       #    outcomes → jerry_reads.result + prop.result + ledger_snapshots)
+      # 1a. Persist yesterday's player box scores.
+      #
+      # 2026-09-23: mlb_player_game_log was backfilled for the whole
+      # 2026 season (69,820 rows) and then had NOTHING scheduled to keep
+      # it current — a store that stops the day it is built is worse
+      # than none, because the lookback silently thins out instead of
+      # failing. backfill_prop_lookback now reads this table instead of
+      # a live gameLog fetch, so a stale table means every L5/L10 on the
+      # card quietly goes empty.
+      #
+      # Runs BEFORE the resolver so the box scores are in place for
+      # anything downstream that wants to check a grade against them.
+      # --resume makes it idempotent; a 7-day window catches suspended
+      # games that finish on a later date than they started.
+      - name: Persist MLB player game logs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          START=$(date -u -d '7 days ago' +%Y-%m-%d)
+          END=$(date -u +%Y-%m-%d)
+          python backfill_mlb_player_game_log.py --start "$START" --end "$END" --resume
+
       - name: Resolve MLB game results
         continue-on-error: true
         env:
