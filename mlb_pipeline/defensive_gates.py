@@ -716,6 +716,63 @@ _LR_MODEL_NCAAF_TOTAL = _load_lr_model('ncaaf_total_logreg.json')
 _LR_MODEL_NFL_TOTAL   = _load_lr_model('nfl_total_logreg.json')
 
 
+_BLIND_CACHE: dict = {}
+
+
+def _blind_prediction(m) -> float:
+    """What this model outputs when EVERY feature is missing.
+
+    A logistic model with all inputs imputed to their training medians
+    produces one fixed number. It is a property of the model, not of any
+    game, so it is computed once and cached by id().
+    """
+    key = id(m)
+    if key in _BLIND_CACHE:
+        return _BLIND_CACHE[key]
+    z = m['intercept']
+    for i, _f in enumerate(m['features']):
+        v = m['imputer_medians'][i]
+        scale = m['scaler_scale'][i]
+        z += m['coefficients'][i] * ((v - m['scaler_mean'][i]) / scale if scale != 0 else 0)
+    p = 1.0 / (1.0 + _math.exp(-z)) if z >= 0 else _math.exp(z) / (1.0 + _math.exp(z))
+    _BLIND_CACHE[key] = p
+    return p
+
+
+def _is_blind(p: float, n_imputed: int, m) -> bool:
+    """True when the model had nothing to go on.
+
+    2026-09-23. `_lr_predict_*` silently replaces any missing feature
+    with its training median. That is fine for an occasional gap and
+    catastrophic when every feature is missing, because the model then
+    emits a CONSTANT that the caller reads as a confident opinion:
+
+        MLB   TOTAL  ->  p_over  = 0.4718   inside the [0.45,0.55]
+        NFL   TOTAL  ->  p_over  = 0.4724   "coin flip" band, so the
+        NCAAF TOTAL  ->  p_over  = 0.4911   pick is KILLED
+        MLB   ML     ->  p_home  = 0.4284   outside the band, so a pick
+        NFL   ML     ->  p_home  = 0.5599   is INVENTED out of medians
+        NHL   ML     ->  p_home  = 0.6024
+        NBA   ML     ->  p_home  = 0.5936
+
+    Measured on MLB 08-01..09-23: 36 of 178 games (20%) carried exactly
+    0.4718, and 34 of them were demoted to COVERAGE and published as
+    "engine passed". Twenty-two had a PRIME ensemble pick underneath —
+    including a conviction-100 play — thrown away because a different
+    model had no features loaded. Removing just those takes the MLB
+    no-play rate from 27.4% to 8.4%.
+
+    The test is exact rather than a threshold. A fraction-of-imputed
+    cutoff cannot work: NCAAF totals run 65% imputed in normal healthy
+    operation, so any cutoff low enough to catch the blind case would
+    silence that model permanently. Landing on the blind constant to
+    within 1e-9 is what actually identifies "no information".
+    """
+    if n_imputed >= len(m['features']):
+        return True
+    return abs(p - _blind_prediction(m)) < 1e-9
+
+
 def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
     """Returns {p_home_win, suggested_side, suggested_tier} or None.
     Defaults to MLB model — pass model=<sport-specific> for others."""
@@ -724,16 +781,23 @@ def _lr_predict_ml(ctx: dict, model=None) -> dict | None:
     try:
         features = m['features']
         z = m['intercept']
+        n_imputed = 0
         for i, f in enumerate(features):
             v = ctx.get(f)
             try: v = float(v) if v is not None else None
             except (TypeError, ValueError): v = None
-            if v is None: v = m['imputer_medians'][i]
+            if v is None:
+                v = m['imputer_medians'][i]
+                n_imputed += 1
             scale = m['scaler_scale'][i]
             scaled = (v - m['scaler_mean'][i]) / scale if scale != 0 else 0
             z += m['coefficients'][i] * scaled
         if z >= 0: p = 1.0 / (1.0 + _math.exp(-z))
         else: ez = _math.exp(z); p = ez / (1.0 + ez)
+        # No data is not an opinion. Returning None leaves the ensemble's
+        # own pick standing instead of inventing one from medians.
+        if _is_blind(p, n_imputed, m):
+            return None
         if p >= 0.65:   tier, side = 'PRIME',  'HOME'
         elif p >= 0.55: tier, side = 'STRONG', 'HOME'
         elif p >= 0.45: tier, side = None,     'NONE'   # COIN → no play
@@ -1286,16 +1350,23 @@ def _lr_predict_total(ctx: dict, model=None) -> dict | None:
     if m is None: return None
     try:
         z = m['intercept']
+        n_imputed = 0
         for i, f in enumerate(m['features']):
             v = ctx.get(f)
             try: v = float(v) if v is not None else None
             except (TypeError, ValueError): v = None
-            if v is None: v = m['imputer_medians'][i]
+            if v is None:
+                v = m['imputer_medians'][i]
+                n_imputed += 1
             scale = m['scaler_scale'][i]
             scaled = (v - m['scaler_mean'][i]) / scale if scale != 0 else 0
             z += m['coefficients'][i] * scaled
         if z >= 0: p = 1.0 / (1.0 + _math.exp(-z))
         else: ez = _math.exp(z); p = ez / (1.0 + ez)
+        # Blind model -> no opinion. Without this the constant 0.4718
+        # lands in the coin-flip band and KILLS the ensemble's pick.
+        if _is_blind(p, n_imputed, m):
+            return None
         if p >= 0.65:   tier, side = 'PRIME',  'OVER'
         elif p >= 0.55: tier, side = 'STRONG', 'OVER'
         elif p >= 0.45: tier, side = None,     'NONE'
