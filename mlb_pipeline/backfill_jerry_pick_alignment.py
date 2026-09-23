@@ -76,6 +76,57 @@ def load_reads(sport: str, date_from: str, date_to: str) -> list:
     return r.json() if isinstance(r.json(), list) else []
 
 
+_STARTED_STATES = {'Final', 'In Progress', 'Game Over',
+                   'Completed Early', 'Suspended', 'Delayed'}
+_STARTED_CACHE: dict = {}
+
+
+def started_matchups(sport: str, date_str: str) -> set:
+    """Matchups on this date whose game has already begun.
+
+    2026-09-23 — B12. This script re-settles the CALL fields on an
+    existing read. Nothing stopped it doing that to a game that had
+    already been played, and on 09-23 that cost a real result:
+    Washington @ Detroit carried "Under 7.5", finished 4-2 for a total
+    of 6, and was rewritten to Pass/conviction 0 three hours after the
+    final out. A pass grades NO_ACTION, so a winning read silently left
+    the record.
+
+    The publish lock does not cover this. It is keyed on time-of-day
+    (MLB freezes at 12:00 ET), which happens to protect a finished game
+    at 16:35 and protects nothing at all at 11:00 for a game that
+    started at 10:05.
+
+    Only MLB and NBA are wired here; other sports fall through and are
+    unprotected until their schedule source is added. The function
+    returns an empty set on any failure, which means alignment proceeds
+    as before — a lookup outage must not block the normal path, it just
+    loses the protection for that run, and the caller says so.
+    """
+    key = (sport, date_str)
+    if key in _STARTED_CACHE:
+        return _STARTED_CACHE[key]
+    out = set()
+    if sport == 'MLB':
+        try:
+            import urllib.request as _u
+            raw = json.load(_u.urlopen(
+                'https://statsapi.mlb.com/api/v1/schedule'
+                f'?sportId=1&date={date_str}', timeout=20))
+            for d in raw.get('dates', []):
+                for g in d.get('games', []):
+                    st = (g.get('status') or {}).get('detailedState', '')
+                    if st in _STARTED_STATES:
+                        out.add((g['teams']['away']['team']['name'],
+                                 g['teams']['home']['team']['name']))
+        except Exception as e:
+            print(f'  ⚠ {sport} start-state lookup failed ({type(e).__name__}) '
+                  f'— alignment NOT protected against started games this run')
+            out = set()
+    _STARTED_CACHE[key] = out
+    return out
+
+
 def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str,
               line_only: bool = False) -> dict | None:
     """Return the PATCH payload or None if no change needed.
@@ -198,7 +249,7 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: boo
         reads = load_reads(sport, date_from, date_to)
         if not reads:
             print(f'  {sport}: no reads in window'); continue
-        aligned = 0; unchanged = 0; skipped = 0
+        aligned = 0; unchanged = 0; skipped = 0; started_skips = 0
         for r in reads:
             gid = r.get('game_id')
             ctx = ctx_by_gid.get(gid) or {}
@@ -211,6 +262,16 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: boo
             patch = align_row(sport, r, pp, ctx.get('home_team',''), ctx.get('away_team',''), line_only=line_only)
             if not patch:
                 unchanged += 1; continue
+            # B12: never re-settle a game that has already been played.
+            # See started_matchups() — on 09-23 this script rewrote a
+            # winning read to Pass three hours after the final out.
+            _started = started_matchups(sport, str(r.get('game_date'))[:10])
+            if (ctx.get('away_team'), ctx.get('home_team')) in _started:
+                started_skips += 1
+                print(f"  ⏭  {sport} {ctx.get('away_team','?')}@{ctx.get('home_team','?')}: "
+                      f"game already started — leaving "
+                      f"{r.get('call_text','?')!r} as published")
+                continue
             if dry_run:
                 aligned += 1
                 print(f"  [DRY] {sport} {ctx.get('away_team','?')}@{ctx.get('home_team','?')}: "
@@ -228,7 +289,8 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: boo
             else:
                 skipped += 1
                 print(f"  ✗ {sport} gid={gid[:12]}: {pr.status_code} {pr.text[:150]}")
-        print(f'  {sport}: aligned={aligned} unchanged={unchanged} skipped(no pp)={skipped}')
+        print(f'  {sport}: aligned={aligned} unchanged={unchanged} '
+              f'skipped(no pp)={skipped} skipped(started)={started_skips}')
         total_updated += aligned
     print(f'\n=== total aligned: {total_updated} ===')
 

@@ -164,6 +164,105 @@ _VALID_MARKETS_BY_SPORT = {
 }
 
 
+def retarget_line(prose: str | None, call_label: str, call_line=None) -> str | None:
+    """Rewrite the line numbers inside prose to match the call.
+
+    2026-09-23. When the market is right and only the NUMBER drifted —
+    MIL@PHI called Under 7.0 while the prose argued "make Under 7.5 the
+    lean" — discarding the read costs 1,400 characters of real analysis
+    over one stale digit. Correcting the digit keeps the analysis and
+    removes the lie.
+
+    Only ever applied when the prose already talks about the same market
+    as the call; a moneyline read is never retargeted into a total.
+    Returns None when there is no line to align to.
+    """
+    import re as _re
+    if not prose:
+        return None
+    m = _re.search(r'(?:Under|Over)\s*([\d]+(?:\.[\d]+)?)', str(call_label or ''))
+    target = m.group(1) if m else (str(call_line) if call_line is not None else None)
+    if target is None:
+        return None
+    try:
+        float(target)
+    except (TypeError, ValueError):
+        return None
+    # Show the line exactly as the CALL spells it. `:g` would render 7.0
+    # as "7", and a betting line written without its decimal reads as a
+    # different number to anyone scanning the card.
+    disp = target if m else f'{float(target):.1f}'
+
+    def _sub(mm):
+        return f'{mm.group(1)} {disp}'
+    out = _re.sub(r'\b(Under|Over)\s*[\d]+(?:\.[\d]+)?', _sub, prose)
+    return out
+
+
+def prose_is_stale(short: str | None, market: str, label: str,
+                   line=None) -> bool:
+    """True when short_read no longer describes the call it sits beside.
+
+    2026-09-23. Three symptoms on the 09-23 MLB card, one cause: the
+    pick moved and the prose did not.
+
+      HOU@SEA   call "Seattle Mariners ML"   prose "Under 8.0 — ..."
+      CLE@BOS   call "Cleveland Guardians ML" prose "Under 6.5 — OC-dissent flip"
+      MIL@PHI   call "Under 7.0"              prose "...make Under 7.5 the lean"
+
+    The first two changed market — a total became a moneyline and the
+    words stayed on the total. The third kept its market and had the
+    line move underneath it. A user reading either sees us recommend a
+    number we are not offering.
+
+    Previously only two cases forced a rebuild: prose that said "engine
+    passed", and prose under 60 characters. Neither catches a confident
+    sentence about the wrong bet, which is the dangerous one, because it
+    reads as analysis rather than as an obvious stub.
+
+    Checks, in order of how badly they mislead:
+      1. pass-prose sitting on a live call
+      2. prose naming a total when the call is a moneyline (or vice versa)
+      3. prose naming a different line than the call
+      4. prose so short it is a field dump, not a read
+    """
+    import re as _re
+    sr = (short or '').strip()
+    if not sr:
+        return True
+    low = sr.lower()
+    if 'engine passed' in low or low.startswith('pass'):
+        return True
+
+    mkt = (market or '').lower()
+    prose_total = bool(_re.search(r'\b(Under|Over)\s*\d', sr))
+    prose_ml = bool(_re.search(r'\bML\b|moneyline', sr, _re.I))
+    if mkt == 'ml' and prose_total and not prose_ml:
+        return True
+    if mkt in ('total', 'nrfi', 'yrfi') and prose_ml and not prose_total:
+        return True
+
+    # A line named in the prose must be the line we are offering. Only
+    # judged when the CALL itself carries a number — an ML has none.
+    call_num = None
+    m = _re.search(r'(?:Under|Over)\s*([\d]+(?:\.[\d]+)?)', str(label or ''))
+    if m:
+        call_num = m.group(1)
+    elif line is not None:
+        call_num = str(line)
+    if call_num is not None:
+        try:
+            cv = float(call_num)
+            named = [float(v) for v in
+                     _re.findall(r'(?:Under|Over)\s*([\d]+(?:\.[\d]+)?)', sr)]
+            if named and all(abs(v - cv) > 1e-9 for v in named):
+                return True
+        except ValueError:
+            pass
+
+    return len(sr) < 100
+
+
 def derive_short_read(short: str | None, long: str | None,
                       narrative: str | None = None) -> str | None:
     """A short_read worth showing, derived from long_read when needed.
@@ -331,6 +430,35 @@ def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> di
     parsed['call_side'] = str(side).upper()
     parsed['call_line'] = line
     parsed['call_text'] = label   # human-readable e.g. "PHI +5.5"
+
+    # 2026-09-23: the prose must describe THIS call. When the pick moves
+    # and the words do not, the card recommends a bet we are not
+    # offering — see prose_is_stale for the three 09-23 cases. Rebuild
+    # from long_read when there is real analysis there; fall back to the
+    # engine's own stated reason only when there is nothing else.
+    if prose_is_stale(parsed.get('short_read'), market, label, line):
+        _short = (parsed.get('short_read') or '').strip()
+        _long = (parsed.get('long_read') or '').strip()
+        _rebuilt = None
+
+        # Line-only drift: same market, wrong number. Correct the number
+        # rather than throw the analysis away — discarding 1,400
+        # characters of real reasoning over one stale digit is a worse
+        # read, not a safer one.
+        for _src in (_short, _long):
+            if not _src:
+                continue
+            _fixed = retarget_line(_src, label, line)
+            if _fixed and not prose_is_stale(_fixed, market, label, line):
+                _rebuilt = derive_short_read(None, _fixed) if _src is _long else _fixed
+                break
+
+        if not _rebuilt and _long and not prose_is_stale(_long, market, label, line):
+            _rebuilt = derive_short_read(None, _long)
+        if not _rebuilt:
+            _sub = str(pp.get('sub') or '').strip()
+            _rebuilt = f'{label} — {_sub}' if _sub else str(label)
+        parsed['short_read'] = _rebuilt[:2000]
     if isinstance(conviction, (int, float)):
         parsed['conviction'] = max(0, min(100, int(conviction)))
 

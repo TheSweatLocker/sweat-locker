@@ -134,7 +134,7 @@ def _norm_team(s) -> str:
     common token resolved 9 of 10 sampled misses.
     """
     s = str(s or '').lower().replace('.', '').replace('&', ' and ')
-    s = re.sub(r'(univ|university)', 'u', s)
+    s = re.sub(r'\b(univ|university)\b', 'u', s)
     return ' '.join(s.split())
 
 
