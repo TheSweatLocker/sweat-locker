@@ -45,6 +45,50 @@ _PROSE_NUMBERS = {
 # to a word character, and \.\d+ is matched in its own right.
 _TOKEN = re.compile(r'(?<![A-Za-z0-9])[-+]?(?:\d+\.\d+|\.\d+|\d+)')
 
+# The writer emits real typography, not ASCII. "−160" carries U+2212 and
+# "–161" an en dash; both parsed as POSITIVE 160/161 and were reported as
+# fabrications when the true value was negative and present all along.
+# "1,194 innings" lost its thousands separator and became 194. Normalise
+# before tokenising or the rate is measuring punctuation.
+_DASHES = {0x2212: '-', 0x2013: '-', 0x2014: '-', 0x2010: '-', 0x2011: '-'}
+_THOUSANDS = re.compile(r'(?<=\d),(?=\d{3}\b)')
+
+
+def normalize(text: str) -> str:
+    return _THOUSANDS.sub('', (text or '').translate(_DASHES))
+
+
+# A number sitting next to a stat name is a CLAIM ABOUT SOMETHING -
+# "5.09 xERA", "a 3.37 ERA over 50.7 innings", "102 wRC+". Those are what
+# a subscriber checks and what destroys trust when wrong. A bare number
+# in "both models project Boston by 1.8-2.4 runs" is the writer doing
+# arithmetic across fields, which legitimately matches no stored value.
+# Only the first kind gates publishing; the rest is reported separately
+# so one category cannot hide inside the other.
+_STAT_WORDS = (
+    r'era|xera|siera|whip|k/9|k-rate|k rate|k%|wrc\+?|ops|woba|xwoba|babip|'
+    r'baa|avg|average|obp|slg|iso|barrel|innings|ip\b|strikeouts?|walks?|'
+    r'park (?:run )?factor|run factor|save\s*%|save pct|bullpen|first[- ]inning|'
+    r'odds|moneyline|ml\b|wrc proxy|proxy|percentile|hit rate|win(?:s)? rate'
+)
+_STAT_NEAR = re.compile(
+    r'(?:(?P<before>' + _STAT_WORDS + r')[^.;]{0,18}$)', re.I)
+_STAT_AFTER = re.compile(r'^[^.;]{0,18}?(?:' + _STAT_WORDS + r')', re.I)
+
+# "The model projects 8.1 total" is a claim about OUR OWN number and the
+# most damaging kind to get wrong - the subscriber is being told what the
+# product concluded. It gates. But "both models project Boston by 1.8-2.4
+# runs" is a range spanning two fields and legitimately matches neither,
+# so a figure that opens or closes a range is exempt.
+_MODEL_CLAIM = re.compile(
+    r'(?:model|jerry|ensemble|sim(?:ulation)?s?|monte carlo)\b[^.;]{0,28}?'
+    r'(?:projects?|predicts?|likes|has|sees|holds|runs it|sits at)'
+    # "predicts a 1.71-run edge", "likes Under at 6.6" — a little filler
+    # sits between the verb and the figure, but never another digit, so
+    # this cannot reach across to a second number in the same clause.
+    r'[^\d.;]{0,14}$', re.I)
+_RANGE_EDGE = re.compile(r'^\s*[-/]\s*\d')
+
 # "1st", "2nd", "L5", "L14", "W3", "6-4", "2026" — structural, not claims
 _SKIP_CONTEXT = re.compile(
     r'(?:\b[LW]\d+\b'                 # streak notation
@@ -115,9 +159,16 @@ def _matches(claim: float, index: dict[float, list[str]]) -> list[str]:
 
 
 def check_values(prose: str, snap: dict) -> list[dict]:
-    """Numeric claims in the prose with no support in the snapshot."""
+    """Numeric claims in the prose with no support in the data.
+
+    Each finding carries `stat=True` when the number is attached to a
+    stat name and is therefore an assertion about a player, team or
+    market - the kind a subscriber can look up and find wrong. Callers
+    that gate publishing should act on those and treat the rest as
+    advisory.
+    """
     index = snapshot_values(snap)
-    masked = _SKIP_CONTEXT.sub(' ', prose or '')
+    masked = _SKIP_CONTEXT.sub(' ', normalize(prose))
     bad = []
     seen = set()
     for m in _TOKEN.finditer(masked):
@@ -129,12 +180,18 @@ def check_values(prose: str, snap: dict) -> list[dict]:
         if claim in _PROSE_NUMBERS or claim in seen:
             continue
         seen.add(claim)
-        if not _matches(claim, index):
-            start = max(0, m.start() - 55)
-            bad.append({
-                'value': raw,
-                'context': masked[start:m.end() + 25].strip(),
-            })
+        if _matches(claim, index):
+            continue
+        before = masked[max(0, m.start() - 40):m.start()]
+        after = masked[m.end():m.end() + 30]
+        is_stat = bool(_STAT_NEAR.search(before) or _STAT_AFTER.match(after))
+        if not is_stat and _MODEL_CLAIM.search(before) and not _RANGE_EDGE.match(after):
+            is_stat = True
+        bad.append({
+            'value': raw,
+            'stat': is_stat,
+            'context': masked[max(0, m.start() - 55):m.end() + 25].strip(),
+        })
     return bad
 
 
@@ -177,8 +234,9 @@ def check_attribution(prose: str, snap: dict) -> list[dict]:
     pattern = re.compile(
         r'\b(' + '|'.join(re.escape(s) for s in surnames) + r')\b')
 
+    prose = normalize(prose)
     bad = []
-    for m in _TOKEN.finditer(prose or ''):
+    for m in _TOKEN.finditer(prose):
         try:
             claim = round(float(m.group(0)), 4)
         except ValueError:
@@ -239,7 +297,8 @@ def audit_read(row: dict, context: dict | None = None) -> dict:
         'game_date': str(row.get('game_date'))[:10],
         'sport': row.get('sport'),
         'has_snapshot': bool(row.get('input_snapshot')),
-        'value': [],
+        'value': [],   # stat claims with no support — these gate
+        'loose': [],   # arithmetic/ranges — advisory only
         'attrib': [],
     }
     if not snap:
@@ -249,7 +308,8 @@ def audit_read(row: dict, context: dict | None = None) -> dict:
         if not text:
             continue
         for f in check_values(text, snap):
-            result['value'].append({**f, 'field': field})
+            bucket = 'value' if f.get('stat') else 'loose'
+            result[bucket].append({**f, 'field': field})
         for f in check_attribution(text, snap):
             result['attrib'].append({**f, 'field': field})
     return result
