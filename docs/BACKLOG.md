@@ -579,6 +579,74 @@ FIX (needs an Andy decision first): make the resolver write NULL, never
 history.
 VERIFY: `python backfill_mlb_player_game_log.py --verify`
 
+### B38 - The MLB LR model runs on 19% constant features in production
+Found during the 09-23 morning audit, chasing a stale-shadow warning.
+
+`_lr_predict_ml` silently substitutes the TRAINING MEDIAN for any
+feature the context does not carry:
+
+      v = ctx.get(f)
+      if v is None: v = m['imputer_medians'][i]
+
+That is reasonable for an occasional gap. It is not reasonable as the
+permanent state, and right now it is the permanent state for a fifth of
+the model.
+
+**20 of 107 ML features are never computed anywhere.** Not in
+`game_context.py`, not as columns on `mlb_game_context`. Every game,
+every day, they are the median:
+
+      sharp_ml_money      sharp_ml_bets      sharp_ml_div
+      sharp_ml_pick_home  sharp_total_money  sharp_total_bets
+      sharp_total_div     sharp_total_pick_over
+      home/away_ats_l10_wins + _losses
+      home/away_ou_l10_overs + _unders
+      home/away_ml_l10_wins + _losses
+
+The model was trained WITH those columns carrying real values. In
+production their coefficients contribute a fixed offset instead of
+signal, so the thing scoring games is not the thing that was validated.
+Eight of the twenty are sharp-money features — exactly the inputs a
+market-facing model would lean on hardest.
+
+**A further 9 features exist in memory but not in the database**
+(`home/away_sp_k_pct`, `_whiff_rate`, `_gb_pct`, `_days_rest`,
+`wind_mph`). `game_context.py` computes them and passes them in the ctx
+dict; they are never persisted. So:
+
+      main run (game_context)      model sees 87 of 107 features
+      recompute_primary_play       reads select=* from DB -> 78 of 107
+
+The two paths disagree on 9 features BY CONSTRUCTION, which means
+recompute can legitimately produce a different pick for the same game
+with the same data. Some of what recompute "fixes" is that.
+
+NOT A BUG, checked and dismissed: the 0.4284 shared by 10 of 16 games
+this morning is the all-features-missing prediction, stamped by
+`game_context.py` before the enrichers run. `recompute_primary_play`
+sits at mlb_pipeline.yml:460, after the enrichers and Monte Carlo, and
+corrects it. The pipeline self-heals. I nearly "fixed" it.
+
+Worth noting anyway: between those two steps the live board shows
+COVERAGE on games that will become PRIME. On 09-23 that was 10 of 16
+games for roughly half an hour.
+
+FIX, in order:
+  1. Make imputation audible. A model silently running on 19% medians
+     should say so — count imputed features per prediction and refuse,
+     or at minimum log, past a threshold. Same class as B11: a
+     degradation that looks identical to normal operation.
+  2. Populate or drop the 20. `home_ats_l10_wins` and friends are
+     derivable from data we already hold (team_situational_records has
+     exactly these). The 8 sharp-money features need a source decision.
+  3. Persist the 9 in-memory features so both code paths see the same
+     model.
+  4. Re-validate after. Any backtest of this model measured a feature
+     set production does not have.
+VERIFY:
+  `python -c "import defensive_gates as G; print(len(G._LR_MODEL_MLB_ML['features']))"`
+  then diff that list against `select * from mlb_game_context limit 1`.
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
