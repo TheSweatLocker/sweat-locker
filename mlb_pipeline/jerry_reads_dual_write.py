@@ -237,8 +237,59 @@ def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> di
     line = pp.get('line')
     tier = str(pp.get('tier') or '').upper()
     valid_markets = _VALID_MARKETS_BY_SPORT.get(sport.upper(), set())
-    # Soft-tier / no-pick path → force PASS on the badge, preserve prose
-    if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
+    # ── 2026-09-23: a PASS now requires that NO PICK EXISTS ─────────
+    #
+    # This used to read:
+    #
+    #     if tier in ('COVERAGE','PASS','SKIP') or market not in valid
+    #        or not side or not label:
+    #             -> emit Pass
+    #
+    # so a demoted-but-real pick became "engine passed — no publishable
+    # edge". That is not what a demotion means. COVERAGE is assigned by
+    # the LR override, the MC-dissent gate and the juice cap to a pick
+    # that still HAS a side, a line and a conviction — it means "we hold
+    # this lightly", not "we have nothing to say".
+    #
+    # On 09-23 that distinction cost the whole card: 8 of 16 games shipped
+    # as "engine passed" while carrying live picks underneath, five of
+    # them PRIME, one at conviction 97. Every one was COVERAGE only
+    # because a blind LR model emitted its all-features-missing constant
+    # (fixed separately in defensive_gates._is_blind).
+    #
+    # Andy, 09-23: "there shouldn't be any passes on any games, there
+    # should be some kind of take and a lean/strong/prime."
+    #
+    # SAFE TO SHOW, because the record does not read this field.
+    # compute_surface_records and aggregate_daily_records both filter on
+    # primary_play.tier in ('PRIME','STRONG') — a COVERAGE game is
+    # excluded from every published record no matter what the read says.
+    # So surfacing the take is a display change, not a record change: the
+    # user sees our actual lean and its confidence, and the number we
+    # publish is untouched.
+    #
+    # A pass is now emitted ONLY when there is genuinely nothing to show:
+    # no side, no label, or a market we cannot render. That makes a
+    # mislabelled pass impossible by construction rather than by
+    # vigilance — there is no branch left that turns a real pick into
+    # "engine passed".
+    have_pick = bool(side) and bool(label) and market in valid_markets
+    if have_pick and tier in ('COVERAGE', 'PASS', 'SKIP'):
+        # Demoted, not absent. Show the take at its real confidence.
+        parsed['call_market'] = market
+        parsed['call_side'] = str(side).upper()
+        parsed['call_line'] = line
+        parsed['call_text'] = label
+        if isinstance(conviction, (int, float)):
+            parsed['conviction'] = max(0, min(100, int(conviction)))
+        # Prose that argued for a PASS no longer describes this row.
+        _sr = (parsed.get('short_read') or '').strip()
+        if (not _sr) or 'engine passed' in _sr.lower() or _sr.lower().startswith('pass'):
+            _sub = str(pp.get('sub') or '').strip()
+            parsed['short_read'] = (f'{label} — {_sub}'[:2000] if _sub else str(label))
+        return parsed
+
+    if not have_pick:
         parsed['call_market'] = 'pass'
         parsed['call_side'] = None
         parsed['call_line'] = None

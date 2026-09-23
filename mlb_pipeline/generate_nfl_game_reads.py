@@ -1911,7 +1911,18 @@ def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
     # call_* mirrors it — badge and chip stay in sync regardless of
     # conviction. COVERAGE gets treated as LEAN for display; only true
     # PASS/SKIP tiers (no label) fall to the pass path.
-    _cov_promotable = (tier == 'COVERAGE'
+    # 2026-09-23: widened from COVERAGE-only to ANY soft tier. MLB hit
+    # the same wall on 09-23 — 8 of 16 games shipped "engine passed"
+    # while carrying live picks, five of them PRIME, because a blind LR
+    # model demoted them. The rule that matters is not which soft tier
+    # was stamped, it is whether a pick EXISTS. If it does, show it and
+    # let conviction carry the confidence.
+    #
+    # Safe because the record does not read this field: compute_surface
+    # _records and aggregate_daily_records both filter on
+    # primary_play.tier, so a soft-tier game stays out of the published
+    # numbers regardless of what the read displays.
+    _cov_promotable = (tier in ('COVERAGE', 'PASS', 'SKIP')
                        and market in _NFL_VALID_MARKETS and side and label)
     if _cov_promotable:
         # Treat as LEAN for display — the pick surfaces, badge/chip aligned

@@ -704,7 +704,7 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
         try:
             conv_val = int(parsed.get('conviction') or 0)
             if conv_val < 70:
-                print(f"  ⚠ MLB ML conv={conv_val} < 70 (30d hit% only 48.9% below HI band) — downgrade to PASS")
+                print(f"  ⚠ MLB ML conv={conv_val} < 70 (30d hit% only 48.9% below HI band) — flagged, shown as a weak take")
                 # 2026-09-22: this used to set parsed['_mlb_ml_hi_gate'].
                 # upsert_jerry_read posts **parsed as the row, and
                 # jerry_reads has no such column — PostgREST 400s on an
@@ -715,11 +715,25 @@ def defer_call_to_ensemble(parsed: dict, struct: dict) -> dict:
                 _note = (f'mlb_ml_hi_gate: {label} ({side}) conv={conv_val} '
                          f'< 70 — downgraded to PASS')
                 parsed['audit_notes'] = f'{_prior} | {_note}'.strip(' |')[:2000]
-                parsed['call_market'] = 'pass'
-                parsed['call_side'] = None
-                parsed['call_line'] = None
-                parsed['call_text'] = 'Pass'
-                parsed['conviction'] = 0
+                # ── 2026-09-23: annotate, do not blank ────────────────
+                #
+                # This used to overwrite the call with Pass/conviction 0.
+                # Two things were wrong with that:
+                #
+                #  1. The record does NOT read this field. compute_surface
+                #     _records filters on primary_play.tier, so the pick
+                #     still counted while the user was shown "no play" —
+                #     we were grading a bet we told them we passed on.
+                #  2. A sub-70 ML is a weak take, not an absent one. The
+                #     30d 48.9% figure is the reason to hold it lightly
+                #     and say so, not the reason to go silent. Andy,
+                #     09-23: "there shouldn't be any passes on any games,
+                #     there should be some kind of take and a lean/strong
+                #     /prime."
+                #
+                # The discipline is preserved where it belongs — the
+                # audit note above records the gate firing, and the
+                # conviction the user sees is the real one.
         except (TypeError, ValueError):
             pass
     return parsed
