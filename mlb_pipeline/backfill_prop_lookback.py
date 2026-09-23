@@ -169,6 +169,9 @@ def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
 
+import mlb_player_form
+
+
 def _mlb_stat_key(prop_type: str) -> str | None:
     """Convert prop_type ('hits_over','bb_under','total_bases_over') to
     stat field name. 2026-09-12: strip _over/_under suffix like NFL path
@@ -734,15 +737,30 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             # 2026-08-22: wrap fetches too — MLB Stats API also 502/reset
             # occasionally. Same fail-loud-continue pattern as the patch.
             try:
-                # before_date=game_date — see the leak note on
-                # fetch_mlb_player_recent. Without it the game we are
-                # enriching sits inside its own L5/L10 window.
-                recent_cache[cache_key] = fetch_mlb_player_recent(
-                    pname, stat, n=30, before_date=game_date)
-                rows_cache[cache_key] = fetch_mlb_player_recent_rows(
-                    pname, stat, n=10, before_date=game_date)
-            except requests.exceptions.RequestException as _e:
-                print(f'    ⚠ fetch failed for {pname}/{stat}: {_e}')
+                # 2026-09-22: reads STORED history, not a live gameLog.
+                #
+                # This used to call fetch_mlb_player_recent with
+                # before_date=game_date. That worked, but it was a guard
+                # bolted onto a live fetch — drop the argument anywhere
+                # and the game being enriched lands back inside its own
+                # L5/L10 window, which is the leak that cost a season of
+                # prop tiers.
+                #
+                # mlb_player_game_log carries the date each game
+                # happened, so "games before X" cannot return a game
+                # from X. There is no argument to forget: the filter IS
+                # the query, and before_date is required with no default.
+                #
+                # It is also now reproducible — ask what a player's L10
+                # looked like on 2026-07-14 and it answers the same way
+                # in a backtest as it did that morning. A live fetch
+                # could never answer that at all.
+                recent_cache[cache_key] = mlb_player_form.recent_values(
+                    pname, ptype, 30, game_date)
+                rows_cache[cache_key] = mlb_player_form.recent_rows(
+                    pname, ptype, 10, game_date)
+            except (requests.exceptions.RequestException, RuntimeError) as _e:
+                print(f'    ⚠ form lookup failed for {pname}/{ptype}: {_e}')
                 recent_cache[cache_key] = []
                 rows_cache[cache_key] = []
         recent = recent_cache[cache_key]

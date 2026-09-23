@@ -315,6 +315,28 @@ VERIFY: `rg -n "fetch_fighter_career_stats" mlb_pipeline/ufc_features.py`
 FIX: snapshot fighter stats per fight date, or rebuild the career rates
 from `ufc_fighter_history` rows strictly before the fight. Retrain after.
 
+> **⚠ 2026-09-22 LATE — B30 / B33 / B34 / B35 BELOW ARE WRONG IN PART.**
+> I tested the wrong population. Every "props have no edge" conclusion
+> was computed across ALL tiers and ALL odds. The product publishes
+> **PRIME/STRONG only, conviction != 0, banned families removed, odds
+> inside [-300, +150]** (`compute_surface_records.pick_prop`). That is
+> 2,040 graded rows, not 26,040 — I was measuring something Andy does
+> not sell. I also split the history at 09-03 only, which averaged the
+> losing pre-adjustment era together with the winning post-adjustment
+> one and buried the signal.
+>
+> Under the ACTUAL published rules, verified against boxscores:
+>
+>       before 2026-08-20 (pre-adjustment)   53.3% vs 58.1%   -4.8pp  z=-3.27  n=1112
+>       2026-08-20 -> 09-02  POST-ADJ, CLEAN  66.9% vs 57.5%   +9.4pp  z=+2.18  n=130
+>       2026-09-03 -> 09-22  LEAK WINDOW      77.3% vs 55.6%  +21.8pp  z=+12.37 n=798
+>
+> **Andy's prop-pipeline adjustments around 08-20 worked.** The clean
+> post-adjustment window is genuinely positive and ZERO of its 130
+> grades are disputed by the boxscore cross-check. Read B36 for the
+> corrected position; treat the vig analysis in B34 as true about the
+> market and wrong about the model.
+
 ### B30 · Nothing compares a pick to the price it was bet into
 The finding behind B25/B29 and the MLB/NFL prop audits. The pipeline
 stores the closing price next to every pick and never compares the two,
@@ -497,6 +519,65 @@ What is left worth trying, roughly in order of cost:
     not information it already has.
   - Stop publishing families that lose: P/S/L is -1.6% (n=814); minus
     rush_yds and pass_yds it is -0.3% (n=716).
+
+### B36 - CORRECTED position on prop edge (supersedes B30/B33/B34/B35)
+Tested 09-22 late, against the exact selection `compute_surface_records`
+publishes, and cross-checked against boxscores from the new
+`mlb_player_game_log`.
+
+      before 2026-08-20 (pre-adjustment)   53.3% vs 58.1%   -4.8pp  ROI  -8.6%  z=-3.27  n=1112
+      2026-08-20 -> 09-02  POST-ADJ CLEAN   66.9% vs 57.5%   +9.4pp  ROI +16.8%  z=+2.18  n=130
+        PRIME                               69.0% vs 57.1%  +11.9pp  ROI +20.1%  z=+1.83  n=58
+        STRONG                              65.3% vs 57.8%   +7.5pp  ROI +14.1%  z=+1.29  n=72
+      2026-09-03 -> 09-22  LEAK WINDOW      77.3% vs 55.6%  +21.8pp  ROI +40.3%  z=+12.37 n=798
+
+Three separate facts, previously conflated:
+  1. The WINS ARE REAL. 16,507 grades recomputed earlier with zero
+     disagreements, and the boxscore cross-check disputes 0 of the 130
+     clean-window grades.
+  2. The METHOD HAS REAL EDGE. +9.4pp post-adjustment, pre-leak, at
+     z=+2.18. Not conclusive on n=130, but credible and clean.
+  3. The POSTED NUMBER IS INFLATED. 798 of the epoch's 928 picks sit in
+     the leak window where tier selection was partly reading the
+     outcome. 77.3% is not a repeatable hit rate. Overstated, not
+     fabricated.
+
+The leak is fixed (`20b443cc`) and the game log now makes it
+structurally impossible (`mlb_player_game_log` + `mlb_player_form`).
+**The next ~130 published props are a clean test of whether +9.4pp
+holds.** That is a real question with a real chance of a good answer.
+
+NOTE ON B34: its market analysis stands — MLB props carry 7.5pp of vig
+(measured on 25,196 two-sided prices) and break-even needs ~3.8pp. Its
+CONCLUSION ("the model has ~zero edge") was drawn from the unpublished
+population and is wrong for the published one. A +9.4pp edge clears a
+3.8pp toll; that is exactly why the published slice is +16.8% ROI.
+
+### B37 - 208 props graded off a failed stat fetch (MEASURE ONLY)
+Found by the `mlb_player_game_log --verify` cross-check. Per Andy's
+standing instruction, **nothing was changed** — this is measurement.
+
+      comparable (player, date, family) pairs : 22,643
+      agree                                   : 22,407  (98.96%)
+      doubleheader/suspended artifacts        :     28  (expected - verify sums legs)
+      genuine single-game conflicts           :    208  (0.92%)
+
+160 of the 208 have `final_value = 0` against a boxscore showing real
+production — `outs_under` graded 0 for pitchers who recorded 12-21 outs.
+That is a failed stat fetch written as `0` instead of left unknown: the
+B11 silent-failure class reaching all the way into the record.
+
+Impact if corrected: 100 grades change, 64 Win->Loss and 36 Loss->Win.
+On PUBLISHED tiers (PRIME/STRONG) only **18** change, 10 of them
+Win->Loss — a net of about -2 picks on the published record, and **zero
+of them fall in the clean 08-20..09-02 window**, so B36 is unaffected.
+
+Clustered by date (09-04: 32, 08-31: 23, 07-26: 10), which is the
+signature of whole-day resolver failures rather than scattered noise.
+FIX (needs an Andy decision first): make the resolver write NULL, never
+0, when a stat fetch fails; then decide separately whether to re-grade
+history.
+VERIFY: `python backfill_mlb_player_game_log.py --verify`
 
 ## P2 — structural (the ones that keep causing the others)
 
