@@ -756,6 +756,45 @@ PLAN, ordered by payoff per unit of risk:
   4. Add timeout-minutes to the job.
 VERIFY: `python -c "import yaml;d=yaml.safe_load(open('.github/workflows/mlb_pipeline.yml'));s=d['jobs']['run-mlb-pipeline']['steps'];print(len(s),sum(1 for x in s if x.get('continue-on-error') is True))"`
 
+### B41 - jerry_reads has NO database-level write protection
+Found 09-23 while auditing migration state after the mutation-after-event
+incident. Every freeze trigger built on 09-17/09-18 protects a different
+table than the one that actually got rewritten.
+
+      trigger                        guards
+      enforce_publish_lock_tier()    mlb/nfl_pipeline_props
+      enforce_publish_lock_side()    mlb/nfl/ncaaf_game_context.primary_play
+      freeze_opening_lines()         *_game_context opening lines
+      freeze_receipt_identity()      public_receipts
+      ---
+      jerry_reads                    NOTHING. 0 triggers.
+      prop_jerry_reads               NOTHING. 0 triggers.
+
+`jerry_reads` carries the published narrative call - `call_text`,
+`call_market`, `conviction` - and it is the table
+`backfill_jerry_pick_alignment.py:282` PATCHes. So on 09-23 the DB
+accepted the rewrite of a finished game's winning read with no
+objection, three hours after the final out.
+
+The B12 guard added that day (`started_matchups()`) lives in Python, in
+ONE script. It protects that script and nothing else. Anything else with
+the service key - another script, a workflow step, a console - can still
+rewrite a played game's read. That is a guard sitting one layer above
+where the rule belongs.
+
+FIX: a BEFORE UPDATE trigger on jerry_reads/prop_jerry_reads refusing
+changes to call_text/call_market/conviction once the game has started,
+mirroring enforce_publish_lock_side's shape. Needs a start-time source
+the DB can see (game_context first pitch / kickoff), which is the real
+work - the trigger itself is ~20 lines.
+
+NOT the publish lock. That is keyed on time-of-day, so it protects a
+finished game at 16:35 and protects nothing at 11:00 for a game that
+started at 10:05.
+
+VERIFY: `select tgrelid::regclass, tgname from pg_trigger
+         where not tgisinternal and tgrelid::regclass::text like '%jerry_reads%';`
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
