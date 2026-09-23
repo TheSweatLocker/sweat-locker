@@ -795,6 +795,68 @@ started at 10:05.
 VERIFY: `select tgrelid::regclass, tgname from pg_trigger
          where not tgisinternal and tgrelid::regclass::text like '%jerry_reads%';`
 
+### B42 - the hallucination guard fires, then a later step erases it
+We are not missing a number validator. We have one, it works, and the
+pipeline overwrites its verdict three hours later.
+
+Measured on 728 published MLB reads (2026-07-30 -> 09-23), grounding
+every numeric claim against the data the writer was given:
+
+      window          n     fabricated stat    misattributed
+      before 09-16   624         9.8%              6.4%
+      09-16 onward   104        45.2%             15.4%
+
+Seven stable weeks, then a 4.6x step change on ONE day. Two commits
+landed 2026-09-16 on the read generator: `51c67cbb` (analyst writeup v1
+- a much denser, stat-heavy prompt) and `04aa9505` (widened the number
+validator's whitelist so analyst-mode stats stopped tripping it). The
+correlation is established; which of the two drives it is not, and that
+is worth isolating before changing either.
+
+WHAT ACTUALLY SHIPS. Running the EXISTING validator over today's slate:
+12 of 16 reads come back is_valid=False, 21 untraceable figures - more
+than my own checker found. Detection is not the problem. This is:
+
+      generate_jerry_synthesis.py:1148-1179
+        3+ bad numbers -> conviction hard-floored to 45 + user footer
+        1-2 bad numbers -> conviction capped to 55, footer HIDDEN
+        never -> refuse to publish
+
+      backfill_jerry_pick_alignment.py:188  _FIELDS includes 'conviction'
+        -> enforce_primary_play_alignment syncs conviction FROM
+           primary_play, overwriting whatever the cap set
+
+Today every read was written 12:55-13:00 and every primary_play was
+recomputed 15:31-15:59. Result:
+
+      9 of 16 reads published ABOVE their own validator's cap
+      0 of 16 carry the integrity footer
+      the only two sitting exactly at 55 are caps that happened to survive
+
+So the CHW @ KC card that named the wrong pitcher for an xERA, the
+Reds/Braves card asserting a 28.76 career ERA, and the Rays/Yankees card
+that swapped Cole's and Seymour's numbers were all flagged by our own
+code before they shipped, demoted, and then silently re-promoted.
+
+This is the manufacturing-line objection exactly: step 4 flags a defect,
+step 132 ("FINAL recompute primary_play - post-all-mutations barrier",
+B40) erases the flag, and the defect ships at full conviction.
+
+FIX, in order:
+  1. A failed number validation must BLOCK the read, not discount it.
+     Fall back to the structured card, which is not wrong.
+  2. Conviction set by a safety cap must not be a field the aligner is
+     allowed to overwrite. Carry the cap as its own column so a sync
+     cannot silently undo it.
+  3. Isolate which 09-16 commit moved the rate; consider reverting the
+     whitelist widening on its own.
+  4. Then slot-fill the numbers so the failure stops being possible
+     rather than merely caught.
+
+VERIFY: `python -c "import sys;sys.path.insert(0,'mlb_pipeline');
+         import validate_jerry_read"` and compare its
+         hallucinated_numbers against published conviction.
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
