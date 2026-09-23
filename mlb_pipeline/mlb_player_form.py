@@ -128,6 +128,38 @@ def recent_values(player_name: str, prop_type: str, n: int,
     return out
 
 
+def recent_rows(player_name: str, prop_type: str, n: int,
+                before_date: str) -> list[dict]:
+    """Per-game rows for the recent-form table, newest first.
+
+    Shape matches what `fetch_mlb_player_recent_rows` fed into
+    `signals._stat_last10`: {date, value, opponent, home_away, ip}.
+
+    The old shape also carried `decision` (a pitcher's W/L). Checked
+    before dropping it: nothing reads that key — not the client, not
+    the renderer — so it is not worth a column. If the table ever wants
+    it, the boxscore has it and it is a migration, not a redesign.
+    """
+    col = column_for(prop_type)
+    if not col:
+        return []
+    out = []
+    for g in games_before(player_name, before_date, limit=max(n * 3, 40)):
+        v = g.get(col)
+        if v is None:
+            continue
+        out.append({
+            'date': str(g.get('game_date'))[:10],
+            'value': float(v),
+            'opponent': g.get('opponent'),
+            'home_away': g.get('home_away'),
+            'ip': g.get('ip'),
+        })
+        if len(out) >= n:
+            break
+    return out
+
+
 def hit_count(values: list[float], line: float, direction: str) -> int:
     """How many of these games would have cashed this side of the line.
 
