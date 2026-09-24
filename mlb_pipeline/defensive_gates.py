@@ -983,14 +983,38 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                         _hp = ctx.get('model_pred_home_points')
                         _ap = ctx.get('model_pred_away_points')
                         if _hp is not None and _ap is not None:
+                            # 2026-09-24 MEASURED, not reasoned.
+                            #
+                            # The tempting rule — "if the favourite does not
+                            # cover the number, take the dog with the
+                            # points" — was tested against 30 settled 2026
+                            # NFL games and went 12-18 ATS (40.0%). Worse
+                            # than a coin flip, and it would have been
+                            # published as an improvement.
+                            #
+                            # The reason is a calibration bias, not a
+                            # selection problem: model_pred_*_points
+                            # projects a SMALLER favourite margin than the
+                            # market in 22 of 30 games (mean -1.21, median
+                            # -2.15). So "the side the model supports"
+                            # collapses into "the dog" almost every time,
+                            # which is exactly the dog-heaviness Andy
+                            # flagged on sight.
+                            #
+                            # Conclusion: this margin is not calibrated
+                            # well enough to choose an ATS side. It is still
+                            # good enough to REFUSE — declining to lay a
+                            # number our own model misses costs us a pick,
+                            # never a wrong side. So refuse and stop there.
+                            # Picking the other side is a scorer decision
+                            # that needs a model which can price margins.
                             _margin = ((float(_hp) - float(_ap)) if lr_side == 'HOME'
                                        else (float(_ap) - float(_hp)))
-                            _needed = abs(team_spr)
-                            if team_spr < 0 and _margin < _needed:
+                            if team_spr < 0 and _margin + team_spr <= 0:
                                 old_pp['_reroute_refused'] = {
                                     'label': new_label,
                                     'model_margin': round(_margin, 2),
-                                    'spread_needed': _needed,
+                                    'spread_needed': abs(team_spr),
                                 }
                                 new_label = None
                                 new_type = None
