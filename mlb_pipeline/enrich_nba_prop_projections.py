@@ -88,7 +88,7 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
     print(f'  {len(props)} props on {gd}')
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    matched = 0; patched = 0
+    matched = 0; patched = 0; failed = []
     for prop in props:
         pname_lc = (prop.get('player_name') or '').lower()
         proj = proj_by_name.get(pname_lc)
@@ -122,7 +122,21 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
         if not dry_run:
             pr = requests.patch(f'{SB}/rest/v1/nba_pipeline_props?id=eq.{prop["id"]}',
                                 headers=H_WRITE, json=patch, timeout=10)
-            if pr.status_code in (200, 204): patched += 1
+            if pr.status_code in (200, 204):
+                patched += 1
+            else:
+                # 2026-09-24: this branch did not exist. Every failure was
+                # counted as "not patched" and reported as a bare number, so
+                # the run ended with "patched 0" and no reason given.
+                #
+                # That hid a total outage: `projection` above is not a column
+                # on nba_pipeline_props (it has `projected_value`), and
+                # PostgREST rejects the whole PATCH on an unknown column, so
+                # the 8/22 fix broke the half that used to work. Verified:
+                # both keys -> 400 PGRST204, projected_value alone -> 204.
+                # Migration 20260924b adds the column; until it is applied
+                # this prints the reason instead of swallowing it.
+                failed.append((prop['id'], pr.status_code, (pr.text or '')[:160]))
 
         # Log the big edges
         if abs(edge) >= 2.0:
@@ -131,6 +145,13 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
                   f'line={book_line:<5} proj={projected_value}  edge={edge:+g}')
 
     print(f'\n  {"[DRY] " if dry_run else ""}matched {matched}/{len(props)} · patched {patched}')
+    if failed:
+        codes = {}
+        for _id, code, body in failed:
+            codes.setdefault(code, body)
+        print(f'  ⚠ {len(failed)} PATCH failure(s) — nothing was written for these:')
+        for code, body in codes.items():
+            print(f'      HTTP {code}: {body}')
 
 
 def main():
