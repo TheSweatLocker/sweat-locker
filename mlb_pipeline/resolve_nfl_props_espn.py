@@ -92,6 +92,49 @@ PROP_TO_ESPN = {
 }
 
 
+_ALIASES: dict[str, set] = {}
+
+
+def _load_aliases() -> None:
+    """Build code -> {every known spelling} from nfl_team_aliases.
+
+    Read once per run. Failure is non-fatal: without it the grader
+    behaves exactly as it did before, which is worse but not broken.
+    """
+    global _ALIASES
+    if _ALIASES:
+        return
+    try:
+        r = requests.get(f'{SB}/rest/v1/nfl_team_aliases', headers=H_READ,
+                         timeout=30,
+                         params={'select': 'canonical_name,full_name,city,'
+                                           'alt_names,espn_name'})
+        if r.status_code != 200:
+            print(f'  ⚠ alias load failed {r.status_code} — '
+                  f'falling back to exact abbreviation match only')
+            return
+        for a in r.json():
+            canon = a.get('canonical_name')
+            if not canon:
+                continue
+            names = {canon, a.get('full_name'), a.get('city'),
+                     a.get('espn_name')}
+            names |= set(a.get('alt_names') or [])
+            clean = {str(n).strip() for n in names if n}
+            for n in clean:
+                _ALIASES.setdefault(n.upper(), set()).update(clean)
+            _ALIASES.setdefault(canon.upper(), set()).update(clean)
+    except Exception as e:
+        print(f'  ⚠ alias load error {type(e).__name__} — exact match only')
+
+
+def _alias_variants(code: str) -> set:
+    """Every spelling of this team, including the one we were handed."""
+    if not code:
+        return set()
+    return _ALIASES.get(str(code).upper(), set()) | {code}
+
+
 def _espn_events_on_date(date_str: str) -> list:
     """Return ESPN event list for one date (YYYY-MM-DD)."""
     ymd = date_str.replace('-', '')
@@ -230,6 +273,7 @@ def resolve_date(date: str, dry_run: bool = False) -> int:
         e = _espn_events_on_date(d_query)
         events.extend(e)
     print(f'  {len(events)} ESPN events on {date} ±1 day')
+    _load_aliases()
     events_by_pair = {}
     for ev in events:
         status = ev.get('status', {}).get('type', {}).get('completed')
@@ -242,6 +286,27 @@ def resolve_date(date: str, dry_run: bool = False) -> int:
             else: away_ab = ab
         if home_ab and away_ab:
             events_by_pair[(away_ab, home_ab)] = ev['id']
+            # 2026-09-24 ROOT CAUSE of 46 permanently ungraded props.
+            #
+            # ESPN calls Washington "WSH". We store "WAS". The exact pair
+            # lookup missed, and the substring fallback below cannot save
+            # it either — 'WSH' in 'WAS' is False and so is the reverse.
+            # So every prop on WAS @ DAL (09-20, a STATUS_FINAL game we
+            # already hold a 20-37 score for) was marked ungradeable, and
+            # since the pipeline calls this with --lookback 3 those props
+            # fell out of reach permanently four days later.
+            #
+            # 19 of the 46 were STRONG tier: publishable plays missing
+            # from the record entirely, and it would have recurred every
+            # week Washington played.
+            #
+            # nfl_team_aliases already maps WSH -> WAS and 2,800 other
+            # variants. It just was not being consulted here. Index every
+            # alias so a feed renaming a team cannot silently erase a
+            # week of grades again.
+            for a in _alias_variants(away_ab):
+                for h in _alias_variants(home_ab):
+                    events_by_pair.setdefault((a, h), ev['id'])
             # Also index by full team names
             home_full = _ESPN_TEAM_ABBR.get(home_ab, '')
             away_full = _ESPN_TEAM_ABBR.get(away_ab, '')

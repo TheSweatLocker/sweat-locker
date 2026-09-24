@@ -926,6 +926,55 @@ FIX:
 
 VERIFY: `python mlb_pipeline/verify_offerable.py`
 
+### B44 - NFL externals: 4 sources against MLB's 12
+Andy 2026-09-24: "NFL needs more sources."
+
+Last 3 days, verified:
+
+      MLB     414 picks   12 sources
+      NFL     147 picks    4 sources
+      NCAAF    41 picks    2 sources
+      UFC      17 picks    1 source
+
+NFL is the second-biggest surface in the app and carries a third of MLB's
+source coverage. pickdawgz is wired for NFL but thin (9 picks/week against
+~16 published articles) because the puller reads the landing page, which
+only exposes about ten articles at a time. Crawl the per-sport archive
+instead and run closer to slate time.
+
+Sources present for MLB and absent for NFL: action, sbr, docsports,
+betfirm, bettingpros, dimers, vsin, tonyspicks, oddscrowd (partial).
+Several are known to cover NFL.
+
+VERIFY: count external_picks by (sport, source) over a 7-day window.
+
+### B45 - a fixed grader lookback turns a transient failure into a permanent gap
+Root-caused 2026-09-24 while grading 46 stranded props.
+
+      nfl_pipeline.yml: resolve_nfl_props_espn.py --lookback 3
+                        || echo "ESPN prop grader failed (non-fatal)"
+
+Two faults compounding:
+
+  1. THE ALIAS. ESPN calls Washington "WSH"; we store "WAS". The exact
+     pair lookup missed and the substring fallback could not save it
+     ('WSH' in 'WAS' is False both ways), so every prop on WAS @ DAL was
+     marked ungradeable - on a STATUS_FINAL game we already held a 20-37
+     score for. 19 of the 46 were STRONG tier: publishable plays absent
+     from the record. It would have recurred every week Washington played.
+     FIXED: the grader now indexes every spelling from nfl_team_aliases,
+     which already mapped WSH -> WAS and 2,800 other variants and simply
+     was not being consulted. 44 of 46 graded immediately; NFL ungraded
+     backlog 46 -> 0.
+  2. THE WINDOW. --lookback 3 means anything that fails for three days is
+     unreachable forever. Combined with `|| echo` nobody learns either.
+     STILL OPEN: the grader needs a catch-up pass with no fixed horizon -
+     "grade anything unresolved whose game is final", not "look back N
+     days". Same shape as the MLB yesterday-catch-up step.
+
+VERIFY: `python mlb_pipeline/resolve_nfl_props_espn.py --lookback 10 --dry-run`
+        should report 0 unresolved on every date.
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
