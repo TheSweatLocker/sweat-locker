@@ -16,12 +16,19 @@ lose a bet.
 The tracker is fixed (it now drops keys present on every graded row, and
 reports them). This removes the rows that fix cannot retract.
 
-SAFETY. A row is only deleted when ALL of these hold:
+MARKET_SCOPE DOES NOT MATTER. The first pass of this script only looked at
+market_scope in ('prop', '*') and deleted 8 rows. refresh_prop_signal_-
+calibration also writes a row per prop family, so the same 8 names existed
+112 more times under scopes like `reception_yds_over` and `receptions_under`
+— each set carrying that family's base rate, e.g. `label` tiered DISCOVERY
+at 53.9% on receptions_over. A key that is present on every row is not a
+signal at any scope, so scope is not part of the test.
+
+SAFETY. A row is only deleted when BOTH hold:
   - no signal_sources row anywhere has that signal_name, so nothing can
     look it up for a weight
   - the key is present on 100% of graded prop rows for that sport, checked
-    live against the prop table rather than taken from this list
-  - it is a prop-scope row (market_scope='prop' or '*')
+    live against the prop table rather than taken from a list in this file
 
 Anything failing a check is reported and left alone. Dry by default.
 """
@@ -105,8 +112,6 @@ def main():
         scope = row.get('market_scope') or ''
         if name in live_names:
             continue                      # a real signal — never touch
-        if scope not in ('prop', '*'):
-            continue
         if sport not in cache:
             cache[sport] = universal_keys(sport)
             print(f'  {sport}: {len(cache[sport][0])} universal keys over '
