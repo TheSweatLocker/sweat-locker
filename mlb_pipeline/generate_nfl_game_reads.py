@@ -2014,6 +2014,23 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
                 # run will persist the enriched snapshot and the LLM prompt
                 # can reference them.
                 'key_players', 'injuries',
+                # 2026-09-24: the same whitelist trap, four more keys deep.
+                # build_struct attaches team_rolling (team pace + yards
+                # per game), team_defense, weather and _analyst_facts (the
+                # PROVIDED_FACTS block analyst mode cites from) — none were
+                # listed, so none reached input_snapshot.
+                #
+                # That is not a cosmetic gap. Grounding a published read
+                # means checking its numbers against what the writer was
+                # shown, and today 9 of 22 NFL reads carry a figure like
+                # "122.5 rush yards per game" that appears nowhere in their
+                # stored snapshot. Those are almost certainly real values
+                # out of team_rolling, but with the snapshot incomplete
+                # there is no way to tell a real citation from an invented
+                # one — so every one of them has to be treated as suspect.
+                #
+                # A read we cannot audit is a read we cannot defend.
+                'team_rolling', 'team_defense', 'weather', '_analyst_facts',
             ) if struct.get(k) is not None
         } | {'source': 'generate_nfl_game_reads'},
         'short_read': parsed.get('short_read') or narrative[:500],
