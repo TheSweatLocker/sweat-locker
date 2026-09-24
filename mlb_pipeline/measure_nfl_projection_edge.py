@@ -48,9 +48,22 @@ SB = os.environ['SUPABASE_URL']
 KEY = os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
-WIN = {'WIN', 'win', 'W', 'HIT', 'hit'}
-LOSS = {'LOSS', 'loss', 'L', 'MISS', 'miss'}
+# Case-folded, because nfl_pipeline_props stores 'Win'/'Loss' in title case
+# while other surfaces use upper. Listing spellings is how the first run of
+# this script silently measured zero rows and reported "nothing to measure".
+WIN = {'WIN', 'W', 'HIT'}
+LOSS = {'LOSS', 'L', 'MISS'}
 MIN_N = 30
+
+
+def _grade(r) -> str:
+    """'' for anything not a settled win/loss — Void and UNGRADEABLE included."""
+    v = str(r.get('result') or '').strip().upper()
+    if v in WIN:
+        return 'W'
+    if v in LOSS:
+        return 'L'
+    return ''
 
 
 def fetch_graded() -> list:
@@ -89,7 +102,7 @@ def line(label, w, n):
 def main():
     rows = fetch_graded()
     graded = [r for r in rows
-              if str(r.get('result')) in WIN | LOSS
+              if _grade(r)
               and _f(r.get('projection')) is not None
               and _f(r.get('prop_line')) is not None]
     print(f'rows: {len(rows)}   graded with a projection: {len(graded)}')
@@ -107,7 +120,7 @@ def main():
         return raw if r['direction'] == 'over' else -raw
 
     # Overall baseline
-    w = sum(1 for r in graded if str(r['result']) in WIN)
+    w = sum(1 for r in graded if _grade(r) == 'W')
     print('BASELINE (every graded NFL prop carrying a projection)')
     print(line('all', w, len(graded)))
 
@@ -123,7 +136,7 @@ def main():
         for lo, hi in BUCKETS:
             if lo <= e < hi:
                 agg[(lo, hi)][1] += 1
-                if str(r['result']) in WIN:
+                if _grade(r) == 'W':
                     agg[(lo, hi)][0] += 1
                 break
     for lo, hi in BUCKETS:
@@ -138,13 +151,13 @@ def main():
                         ('edge >= 15% (supports)', lambda e: e >= 0.15),
                         ('edge >= 30% (strong)', lambda e: e >= 0.30)):
         sub = [r for r in graded if (lambda e: e is not None and test(e))(edge_of(r))]
-        print(line(label, sum(1 for r in sub if str(r['result']) in WIN), len(sub)))
+        print(line(label, sum(1 for r in sub if _grade(r) == 'W'), len(sub)))
 
     # Split by direction — an OVER-only or UNDER-only edge is a red flag
     print('\nBY DIRECTION  (a one-sided edge usually means a line-shape artifact)')
     for d in ('over', 'under'):
         sub = [r for r in graded if r['direction'] == d]
-        print(line(d, sum(1 for r in sub if str(r['result']) in WIN), len(sub)))
+        print(line(d, sum(1 for r in sub if _grade(r) == 'W'), len(sub)))
 
     # And per prop family, to see if the edge is one stat carrying everything
     print('\nBY PROP FAMILY')
@@ -152,7 +165,7 @@ def main():
     for r in graded:
         base = (r.get('prop_type') or '').rsplit('_', 1)[0]
         fam[base][1] += 1
-        if str(r['result']) in WIN:
+        if _grade(r) == 'W':
             fam[base][0] += 1
     for base in sorted(fam, key=lambda k: -fam[k][1]):
         wn, nn = fam[base]
