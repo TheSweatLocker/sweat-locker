@@ -18,12 +18,19 @@ HOW IT WORKS
 1. Run signal_contribution_tracker analysis on graded prop history
    (30d rolling default).
 2. For each signal_key with n >= MIN_SAMPLE, compute hit_rate + edge_pp.
-3. Assign tier per historical performance:
+3. Assign tier per historical performance. THESE BANDS ARE STALE — they
+   describe the pre-2026-09-02 thresholds. `_tier_for` is the authority;
+   read it, not this list. Left here only because the 09-02 change is
+   explained in that function's comment, and because a stale docstring
+   describing the wrong bands cost real debugging time on 2026-09-24 (a
+   51.4% signal tiered ANTI_VALIDATED looked like a bug against these
+   numbers and is correct against the real ones).
+
      VALIDATED       hit_rate >= 0.55 AND n >= 50   ← proven edge
-     DISCOVERY       hit_rate >= 0.55 AND n <  50   ← promising, small n
-     UNVALIDATED     hit_rate >= 0.50 AND n >= 50   ← neutral evidence
-     ANTI_VALIDATED  hit_rate <= 0.47 AND n >= 50   ← proven anti-signal
-     null            not enough evidence yet
+     DISCOVERY       hit_rate >= 0.55 AND n >= MIN_SAMPLE
+     UNVALIDATED     hit_rate >= 0.53 AND n >= 50   ← above juice, no edge
+     ANTI_VALIDATED  hit_rate <= 0.48 AND n >= 50, OR <= 0.52 AND n >= 100
+     null            n < MIN_SAMPLE — not enough evidence yet
 4. Upsert into `signal_registry` keyed on (signal_name, sport, market_scope).
 5. On next playbook cron, `_resolve_weight()` picks up the calibrated
    weights, weighting proven signals appropriately.

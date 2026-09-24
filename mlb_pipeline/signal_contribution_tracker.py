@@ -124,11 +124,13 @@ def analyze(sport: str, days: int, family_filter: str | None = None,
     # Per-signal stats
     sig_stats: dict = defaultdict(lambda: {'n': 0, 'w': 0, 'l': 0, 'p': 0,
                                             'by_family': defaultdict(lambda: {'n':0,'w':0,'l':0,'p':0})})
+    graded_rows = 0
     for row in rows:
         sig = row.get('signals') or {}
         if not isinstance(sig, dict): continue
         outcome = _outcome(row.get('result'))
         if not outcome: continue
+        graded_rows += 1
         family = _stat_family(row.get('prop_type') or '')
         for k in sig.keys():
             if k.startswith(IGNORE_PREFIXES): continue
@@ -136,6 +138,39 @@ def analyze(sport: str, days: int, family_filter: str | None = None,
             sig_stats[k][outcome.lower()] += 1
             sig_stats[k]['by_family'][family]['n'] += 1
             sig_stats[k]['by_family'][family][outcome.lower()] += 1
+
+    # 2026-09-24 — DROP KEYS THAT ARE PRESENT ON EVERY ROW.
+    #
+    # The signals blob holds two unrelated kinds of thing: signals that
+    # FIRED (prose the app renders, present only when the condition held)
+    # and model INPUTS recorded for the audit trail (l4, season_avg,
+    # opp_pct, edge_pct, games_used, league_baseline, label, opp_col).
+    # Counting a key as a signal because it exists treated all of the
+    # second group as signals, on every NFL prop:
+    #
+    #   l4  label  opp_col  opp_pct  edge_pct  games_used  season_avg
+    #   league_baseline   -> all 1803/1803 rows, all "HR 51.4% n=985"
+    #
+    # Those eight reached signal_registry as ANTI_VALIDATED "proven money
+    # losers". league_baseline is a per-stat constant and label is a
+    # display string; neither can lose money. They all scored 51.4%
+    # because that IS the base rate.
+    #
+    # The test is not a denylist or a type check — a fired signal can be
+    # bool (fade_jerry_pass) or str (weather_calm), exactly like the
+    # metadata. It is that a key present on every graded row carries no
+    # information: hit_rate(fired) is arithmetically equal to
+    # hit_rate(population), so it cannot be evidence about anything. Real
+    # signals fire on a subset (760, 606, 490 ... 45 of 1803).
+    #
+    # Guarded by min_sample so a handful of rows, where everything looks
+    # universal, does not discard the whole slate.
+    universal = []
+    if graded_rows >= min_sample:
+        universal = [k for k, d in sig_stats.items()
+                     if (d['w'] + d['l']) >= graded_rows]
+        for k in universal:
+            del sig_stats[k]
 
     # Filter by min_sample + compute hit rate
     filtered = []
@@ -160,6 +195,9 @@ def analyze(sport: str, days: int, family_filter: str | None = None,
         'min_sample': min_sample,
         'total_graded': len([r for r in rows if _outcome(r.get('result'))]),
         'signals': filtered,
+        # Reported, not hidden: a new input field landing in the blob should
+        # show up here rather than quietly becoming a calibrated signal.
+        'universal_keys_dropped': sorted(universal),
     }
 
 
