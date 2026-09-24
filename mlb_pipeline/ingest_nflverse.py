@@ -69,6 +69,128 @@ def num(v, cast=float):
         return None
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Generic loader for the phase-1 tables (migration 20260924a)
+# ──────────────────────────────────────────────────────────────────────
+# Adding a release should be a line of config, not another bespoke
+# function. Everything the player_stats ingest had to learn the hard way
+# is applied here by default:
+#
+#   * types come from the LIVE OpenAPI schema, so an integer column never
+#     receives "0.0" (22P02 killed the first player_stats chunk outright)
+#   * rows are deduped on the conflict key before sending, because one
+#     repeated key rejects an entire chunk with 21000
+#   * rows missing a NOT NULL field are dropped and counted rather than
+#     aborting the run with 23502 mid-batch
+#   * columns the table does not have are ignored instead of 42703-ing
+_SCHEMA_CACHE: dict = {}
+
+
+def table_types(table: str) -> tuple[set, set, set]:
+    """(all columns, integer columns, required columns) from live schema."""
+    if table not in _SCHEMA_CACHE:
+        spec = requests.get(f'{SB}/rest/v1/', timeout=120,
+                            headers={**H_READ, 'Accept': 'application/openapi+json'}).json()
+        d = spec.get('definitions', {}).get(table)
+        if not d:
+            raise SystemExit(f'{table}: not in schema — is the migration applied?')
+        props = d.get('properties', {})
+        ints = {k for k, v in props.items()
+                if v.get('format') in ('integer', 'bigint', 'smallint')}
+        # PostgREST reports every NOT NULL column as "required", including
+        # ones with a DEFAULT that Postgres fills itself. Treating those as
+        # required dropped 100% of every file — updated_at is NOT NULL
+        # DEFAULT now(), so 24,830 of 24,830 players were discarded as
+        # "missing updated_at". Only demand columns the database cannot
+        # supply on its own.
+        req = {k for k in d.get('required', [])
+               if 'default' not in props.get(k, {})}
+        _SCHEMA_CACHE[table] = (set(props), ints, req)
+    return _SCHEMA_CACHE[table]
+
+
+def load_release(table: str, url: str, key: list[str],
+                 rename: dict | None = None, write: bool = False,
+                 season_min: int | None = None,
+                 dedupe: list[str] | None = None) -> None:
+    """`key` is the ON CONFLICT target and may name a GENERATED column.
+    `dedupe` must name real payload columns — a generated column is absent
+    from what we send, so deduping on it would collapse every row to a
+    single None key and silently discard the file."""
+    """Pull one nflverse csv into one table."""
+    print(f'=== {table} ===')
+    raw = fetch_csv(url)
+    cols, ints, required = table_types(table)
+    rename = rename or {}
+    # generated columns are computed by Postgres and rejected on write
+    gen = {'player_key'}
+
+    mapped, dropped = [], Counter()
+    for r in raw:
+        if season_min is not None:
+            s = num(r.get('season'), int)
+            if s is not None and s < season_min:
+                continue
+        out = {}
+        for k, v in r.items():
+            col = rename.get(k, k)
+            if col not in cols or col in gen:
+                continue
+            if v in ('', 'NA', None):
+                out[col] = None
+            elif col in ints:
+                f = num(v)
+                out[col] = None if f is None else int(round(f))
+            else:
+                out[col] = v
+        missing = [c for c in required if c not in gen and out.get(c) in (None, '')]
+        if missing:
+            dropped[f'missing {",".join(sorted(missing))}'] += 1
+            continue
+        mapped.append(out)
+
+    dd = dedupe or key
+    seen = {}
+    for m in mapped:
+        seen[tuple(m.get(k) for k in dd)] = m
+    if len(seen) != len(mapped):
+        print(f'  deduped          : {len(mapped) - len(seen)} duplicate key(s)')
+    mapped = list(seen.values())
+
+    print(f'  upstream rows    : {len(raw)}')
+    print(f'  ingestable       : {len(mapped)}')
+    for why, n in dropped.most_common(4):
+        print(f'  dropped — {why}: {n}')
+    if not write:
+        if mapped:
+            print(f'  sample           : '
+                  f'{ {k: mapped[0][k] for k in list(mapped[0])[:6]} }')
+        print('  DRY RUN — re-run with --write')
+        return
+    n = push(table, mapped, on_conflict=','.join(key), chunk=500)
+    print(f'  wrote {n}')
+
+
+_REL = 'https://github.com/nflverse/nflverse-data/releases/download'
+PHASE1 = {
+    'players': dict(
+        table='nfl_players', url=f'{_REL}/players/players.csv',
+        key=['gsis_id'], rename={'headshot': 'headshot'}),
+    'rosters': dict(
+        table='nfl_rosters_weekly', url=f'{_REL}/weekly_rosters/roster_weekly_2026.csv',
+        key=['season', 'week', 'team', 'player_key'],
+        dedupe=['season', 'week', 'team', 'gsis_id', 'full_name']),
+    'injuries': dict(
+        table='nfl_injuries_weekly', url=f'{_REL}/injuries/injuries_2026.csv',
+        key=['season', 'week', 'team', 'player_key'],
+        dedupe=['season', 'week', 'team', 'gsis_id', 'full_name']),
+    'snaps': dict(
+        table='nfl_snap_counts', url=f'{_REL}/snap_counts/snap_counts_2026.csv',
+        key=['game_id', 'player_key'],
+        dedupe=['game_id', 'pfr_player_id', 'player']),
+}
+
+
 def map_game(g: dict) -> dict | None:
     """nflverse games.csv row -> nfl_game_results shape.
 
@@ -308,6 +430,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--player-stats', action='store_true',
                     help='ingest weekly player box scores instead of games')
+    ap.add_argument('--phase1', metavar='NAME',
+                    help="phase-1 releases: 'all' or a comma list of "
+                         "players,rosters,injuries,snaps")
     ap.add_argument('--write', action='store_true',
                     help='actually upsert; without it this only reports the delta')
     ap.add_argument('--since', type=int, default=1999)
@@ -323,6 +448,17 @@ def main():
                     help='re-upsert every row in range, not just unseen ids — '
                          'used to correct a value written by an earlier run')
     args = ap.parse_args()
+
+    if args.phase1:
+        for name in (args.phase1.split(',') if args.phase1 != 'all'
+                     else list(PHASE1)):
+            cfg = PHASE1.get(name.strip())
+            if not cfg:
+                print(f'unknown release {name!r}; known: {list(PHASE1)}')
+                continue
+            load_release(write=args.write, **cfg)
+            print()
+        return
 
     if args.player_stats:
         # player_stats has no game_id collision problem, so the 2019 cap

@@ -417,7 +417,29 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         _pass_prose_mismatch = (_card_has_pick and _prose_says_pass
                                 and _same_market_side_flip)
 
-        if not drift and not stale_prose and not _pass_prose_mismatch: continue
+        # 2026-09-24 CONVICTION SYNC. This scrub is one of THREE places
+        # that align a read to its pick, and it was the only one that
+        # never wrote conviction:
+        #
+        #   jerry_pick_scrub              call fields + prose   (MLB runs this)
+        #   backfill_jerry_pick_alignment call fields + prose + CONVICTION
+        #   enforce_primary_play_alignment  the shared rule
+        #
+        # MLB's pipeline runs the scrub, so MLB reads never had conviction
+        # synced. The pipeline computes primary_play LAST — the read is
+        # written ~11:43 and the FINAL recompute lands ~15:58 — so the
+        # number on the card was four hours behind the engine on 8 of 12
+        # games today: read 55 against a play of 74, read 40 against 74.
+        #
+        # Conviction can move without the label moving, so this is checked
+        # independently of `drift` rather than folded into it.
+        _pp_conv = pp.get('conviction')
+        conv_drift = (isinstance(_pp_conv, (int, float))
+                      and j.get('conviction') != int(_pp_conv))
+
+        if not drift and not stale_prose and not _pass_prose_mismatch \
+                and not conv_drift:
+            continue
 
         new_text = _derive_call_text(pp, c['home_team'], c['away_team'])
         payload = {}
@@ -428,6 +450,8 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             payload['call_line']   = pp_line
             if new_text:
                 payload['call_text'] = new_text
+        if conv_drift:
+            payload['conviction'] = int(_pp_conv)
 
         # 2026-09-07: also scrub stale LLM prose. If the pick flipped
         # (drift True), any prior short/long the LLM wrote was arguing
