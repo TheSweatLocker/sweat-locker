@@ -957,6 +957,52 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                         sign = '' if team_spr < 0 else '+'
                         new_label = f'{team_name} {sign}{team_spr:g}'
                         new_type = 'rl'
+                        # 2026-09-24 COVER CHECK. Liking a team on the
+                        # moneyline says they win. It does NOT say they win
+                        # by the number, and rerouting one into the other
+                        # published two picks our own model contradicts:
+                        #
+                        #   KC @ MIA   model KC by 5.9 (25.6-19.7),
+                        #              market KC -10.5, we shipped KC -10.5
+                        #   SEA @ WAS  model SEA by 2.1 (25.6-23.5),
+                        #              market SEA -7,   we shipped SEA -7
+                        #
+                        # In both the model's own margin lands on the DOG
+                        # with the points, and we laid them instead. The
+                        # juice problem is real — a -650 ML is unplayable —
+                        # but the answer cannot be a bet the model loses.
+                        #
+                        # model_pred_*_points is the documented source of
+                        # truth here; projected_spread comes from a
+                        # different lens and is known to disagree (see
+                        # generate_nfl_game_reads build_struct). If the
+                        # margin does not clear the number, refuse the
+                        # reroute. We do not flip to the dog automatically
+                        # — that is a different decision and belongs to the
+                        # scorer, not to a juice guard.
+                        _hp = ctx.get('model_pred_home_points')
+                        _ap = ctx.get('model_pred_away_points')
+                        if _hp is not None and _ap is not None:
+                            _margin = ((float(_hp) - float(_ap)) if lr_side == 'HOME'
+                                       else (float(_ap) - float(_hp)))
+                            _needed = abs(team_spr)
+                            if team_spr < 0 and _margin < _needed:
+                                old_pp['_reroute_refused'] = {
+                                    'label': new_label,
+                                    'model_margin': round(_margin, 2),
+                                    'spread_needed': _needed,
+                                }
+                                new_label = None
+                                new_type = None
+                        else:
+                            # Cannot verify the cover — do not manufacture a
+                            # spread pick on faith.
+                            old_pp['_reroute_refused'] = {
+                                'label': new_label,
+                                'reason': 'model_pred_points unavailable',
+                            }
+                            new_label = None
+                            new_type = None
                     except (TypeError, ValueError):
                         pass
                 old_pp['_lr_ml_shadow'] = pred

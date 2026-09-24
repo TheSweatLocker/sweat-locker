@@ -1176,13 +1176,42 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
                     else:
                         facts["edge_side"] = f"none — model and market within {abs(edge_pts):.1f} pt"
         elif ctx.get('projected_spread') is not None:
-            # No model_pred_*_points — fall back to projected_spread with EXPLICIT
-            # sign-convention warning so Jerry doesn't guess.
+            # 2026-09-24. This branch used to hand over a bare
+            # projected_spread plus a "DO NOT interpret" warning. A number
+            # in the prompt gets used, and the warning is not a lock:
+            #
+            #   KC @ MIA   projected_spread -8.83, market -10.5
+            #              read published "the model projects an 8.83-point
+            #              edge"   — the edge is 1.67
+            #   SEA @ WAS  projected_spread -5.45, market -7.0
+            #              read published "a 5.45-point edge"
+            #              — the edge is 1.55
+            #
+            # Both numbers were real; both were relabelled from *projected
+            # spread* into *edge*, overstating our advantage 5x and 3.5x on
+            # live plays. A stub looks unfinished; this looks authoritative
+            # and is wrong.
+            #
+            # So compute the edge here rather than leaving subtraction to
+            # the writer. Both numbers come from the same pipeline
+            # convention, so their difference is meaningful even without
+            # the points split, and naming the wrong reading explicitly is
+            # what keeps it out of the prose.
             ps_f = float(ctx.get('projected_spread'))
-            facts["model_favors_ambiguous"] = (
-                f"projected_spread={ps_f:+.2f} — DO NOT interpret sign without model_pred_*_points confirmation. "
-                "If you cite this, quote the raw number and say 'thin model coverage'."
-            )
+            if sp is not None:
+                edge_pts = abs(ps_f - float(sp))
+                toward = (_dog_team if abs(ps_f) < abs(float(sp)) else _fav_team) or 'the model side'
+                facts["model_vs_market"] = (
+                    f"model line {ps_f:+.2f} vs market {float(sp):+.2f} → "
+                    f"{edge_pts:.1f}-point edge toward {toward}. "
+                    f"THE EDGE IS {edge_pts:.1f}. {abs(ps_f):.2f} is the model's "
+                    f"projected spread and must never be called an edge."
+                )
+            else:
+                facts["model_coverage_thin"] = (
+                    "no market line to compare against — do not quote a model "
+                    "number or describe any edge for this game."
+                )
         # ── Total — resolve ONE canonical projection to cite; label others clearly ──
         # Panel and projected_total are DIFFERENT lenses. Jerry was double-citing
         # them as if they were one number (9/13 ARI @ LAC: "42.48 vs 46.5" AND
