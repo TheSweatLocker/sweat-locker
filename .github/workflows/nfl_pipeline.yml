@@ -112,7 +112,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_odds_pull.py || echo "nfl_odds_pull failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_odds_pull.py" python nfl_odds_pull.py
 
       # 2026-09-18 line-only jerry alignment post odds-pull.
       # Rationale (Andy directive item #5.B): when close_spread updates
@@ -166,7 +166,7 @@ jobs:
         run: |
           MONTH=$(date -u +%m)
           if [ "$MONTH" = "08" ]; then
-            cd mlb_pipeline && python nfl_odds_pull.py --preseason || echo "preseason pull failed"
+            cd mlb_pipeline && bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_odds_pull.py" python nfl_odds_pull.py --preseason
           else
             echo "skipping preseason pull (month=$MONTH)"
           fi
@@ -183,8 +183,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_pipeline.py || echo "nfl_pipeline (team stats) failed"
-          python nfl_player_stats.py || echo "nfl_player_stats failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_pipeline.py" python nfl_pipeline.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_player_stats.py" python nfl_player_stats.py
 
       # 2026-08-09 Phase 2: pull fresh Sleeper + ESPN player projections
       # BEFORE game_context builds, so Panel model has fresh data. Both
@@ -218,8 +218,8 @@ jobs:
               print(0)
           ")
           if [ "$WEEK" -gt 0 ]; then
-            python nfl_sleeper_projections_pull.py --season $SEASON --week $WEEK || echo "sleeper failed"
-            python nfl_espn_projections_pull.py --season $SEASON --week $WEEK || echo "espn failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_sleeper_projections_pull.py" python nfl_sleeper_projections_pull.py --season $SEASON --week $WEEK
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_espn_projections_pull.py" python nfl_espn_projections_pull.py --season $SEASON --week $WEEK
           fi
 
       - name: Build NFL game context (projections + confluence + sweat + Panel)
@@ -230,7 +230,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_game_context.py || echo "game_context failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_game_context.py" python nfl_game_context.py
 
       # 2026-09-09: NFL splits_v2 aggregator was missing from this workflow —
       # every other sport (MLB/NBA/NHL/NCAAF/NCAAB) calls it but NFL never did.
@@ -553,7 +553,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_generate_props.py || echo "props failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_generate_props.py" python nfl_generate_props.py
 
       # 2026-09-17 PHASE 1 SHADOW SCORER — usage_v2 variant.
       # Writes playbook_snapshot_shadow_v2 on pass-catcher + rushing
@@ -810,7 +810,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_nfl_game_reads.py || echo "game reads failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_nfl_game_reads.py" python generate_nfl_game_reads.py
 
       # 2026-09-13: signal_attribution snapshot — captures every signal
       # that fired per game at pick-lock time (EPA gap, LR shadow, GOAT,
@@ -897,7 +897,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_weekly_card.py || echo "weekly card failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_weekly_card.py" python nfl_weekly_card.py
 
       - name: Resolve completed games + backfill scores
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
@@ -906,7 +906,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_nfl_results.py || echo "resolver failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_nfl_results.py" python resolve_nfl_results.py
           # 2026-09-11: NFL was missing from grade_jerry_reads cron all along
           # (MLB/NBA/NCAAB/NHL all had it wired). Games tab / Receipts couldn't
           # show side/total records because jerry_reads.result stayed null for
@@ -915,7 +915,7 @@ jobs:
           # those to fill jerry_reads.result. Same pattern as MLB (mlb line
           # 1254). Backfill window default (yesterday + 3d prior) catches
           # any late arrivals.
-          python grade_jerry_reads.py --sport NFL || echo "NFL jerry grader failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "grade_jerry_reads.py" python grade_jerry_reads.py --sport NFL
           # 2026-09-21: NFL externals were PULLED every week and never
           # GRADED — MLB, NCAAF and NCAAB all call resolve_externals, NFL
           # never did. 451 of 460 NFL external picks sat ungraded since
@@ -927,7 +927,7 @@ jobs:
           # 2026-09-10: ESPN box-score fast grader FIRST — grades within
           # minutes of game end. Fixes 5-day wait users saw on TNF props.
           # Falls back to nflverse grader below for anything still ungraded.
-          python resolve_nfl_props_espn.py --lookback 3 || echo "ESPN prop grader failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_nfl_props_espn.py" python resolve_nfl_props_espn.py --lookback 3
           # 2026-09-19 DISABLED — resolve_nfl_props.py grades off the WRONG
           # GAME. Its _get_player_stat ignores game_date entirely:
           #
@@ -1136,7 +1136,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_cohort_backfill.py || echo "cohort backfill failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_cohort_backfill.py" python nfl_cohort_backfill.py
 
       # 2026-08-09 Phase 2: sharp-money audit trail for NFL games.
       # Same infra as MLB — writes per-game rules_triggered + cap outcome
@@ -1185,3 +1185,22 @@ jobs:
           if [ -n "$HC_URL" ]; then
             curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
           fi
+
+
+      # 2026-09-24 — turn a green-but-broken run red.
+      #
+      # Every step above used to end in `|| echo "... failed (non-fatal)"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail every night and the run still showed a
+      # green check — that is how "no games resolved yesterday" and "no prime
+      # props today" both happened with nothing flagged.
+      #
+      # Stripping the masks outright would be worse: one flaky scraper would
+      # abort the graders and writers that run after it. The pipeline
+      # continuing is correct. Continuing SILENTLY and then reporting success
+      # is the bug. run_step.sh records each failure and still returns 0, and
+      # this gate fails the run at the end, so every step executes and the run
+      # tells the truth about what happened.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
