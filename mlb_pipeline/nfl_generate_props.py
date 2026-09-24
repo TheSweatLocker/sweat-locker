@@ -1367,6 +1367,60 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     }
 
 
+# 2026-09-24 — field-coverage ledger for the bridge below.
+#
+# The `projected` bug was not a typo, it was a structural hole: a mapper
+# that silently discards any source key the author forgot, while returning
+# a perfectly valid row. Guarding the single field would only wait for the
+# next one. So every key the generator emits is accounted for here, and an
+# unaccounted key raises on the first row instead of vanishing.
+#
+# Adding a computed field to the generator now forces a decision: map it,
+# or state here why it is not persisted.
+_BRIDGE_MAPPED = {
+    'game_date', 'game_id', 'week', 'player_name', 'position', 'prop_type',
+    'projected',        # -> projection   (the 2026-09-24 fix)
+    'conviction', 'tier', 'signals',
+    'pick_side',        # -> direction
+    'pick_line',        # -> prop_line + book_line
+    'odds_american',    # -> book_over_odds / book_under_odds
+    'team',             # -> player_team + home_away
+    'opponent_team',    # -> opp_team
+    'home_team', 'away_team',   # -> matchup + home_away
+}
+_BRIDGE_INTENTIONALLY_DROPPED = {
+    # Carried inside `signals` rather than as columns — nfl_pipeline_props
+    # has no column for any of these, and the scorer reads them from the
+    # signals blob (see nfl_prop_signal_discipline._agrees_with_pick).
+    'l4_avg', 'season_avg', 'opp_rank', 'edge',
+    'season',    # derivable from game_date; no column on the target
+    'player_id',  # target keys on player_name; no player_id column
+}
+_bridge_checked = False
+
+
+def _check_bridge_coverage(row: dict) -> None:
+    """Fail loudly on a generator key nobody decided what to do with.
+
+    Runs once per process — this is a code-shape invariant, not per-row
+    validation, so there is no value in re-checking 1,700 identical dicts.
+    """
+    global _bridge_checked
+    if _bridge_checked:
+        return
+    _bridge_checked = True
+    unaccounted = set(row) - _BRIDGE_MAPPED - _BRIDGE_INTENTIONALLY_DROPPED
+    if unaccounted:
+        raise RuntimeError(
+            f'_to_pipeline_props_shape: generator emits {sorted(unaccounted)} '
+            f'but the bridge neither maps nor documents them. This mapper is '
+            f'the ONLY write path for NFL props — an unmapped key is data '
+            f'thrown away with a 200 response, which is exactly how '
+            f'`projected` was lost for a month. Map it, or add it to '
+            f'_BRIDGE_INTENTIONALLY_DROPPED with the reason.'
+        )
+
+
 def _to_pipeline_props_shape(row: dict) -> dict:
     """Map nfl_props row shape → nfl_pipeline_props schema (2026-08-22 bridge).
 
@@ -1377,13 +1431,25 @@ def _to_pipeline_props_shape(row: dict) -> dict:
     grade_prop_jerry_reads) reads nfl_pipeline_props exclusively — without
     this bridge NFL props are invisible to the ensemble framework.
 
-    Bridge is dual-write, not a table rename — nfl_weekly_card.py and
-    resolve_nfl_results.py still read from nfl_props unchanged.
+    2026-09-24 — THIS DOCSTRING WAS THE PROBLEM. It used to end:
+
+        "Bridge is dual-write, not a table rename — nfl_weekly_card.py and
+         resolve_nfl_results.py still read from nfl_props unchanged."
+
+    That stopped being true on 2026-09-03, when `nfl_props` was found to be
+    a dead table (400 on every write) and this bridge was promoted to the
+    ONLY write path. Anyone reading the old docstring would reasonably
+    assume a field missing here still landed in nfl_props. Nothing did.
+    That is how `projected` went missing for a month without a single error.
+
+    This mapper is the only persistence for NFL props. A key absent from
+    the dict below is discarded, silently, with a 200 response.
     """
     direction = (row.get('pick_side') or '').lower()
     if direction not in ('over', 'under'):
         return None
     prop_type_base = row.get('prop_type') or ''
+    _check_bridge_coverage(row)
     return {
         'game_date': row.get('game_date'),
         'game_id': row.get('game_id'),
@@ -1398,6 +1464,20 @@ def _to_pipeline_props_shape(row: dict) -> dict:
         'prop_type': f'{prop_type_base}_{direction}',
         'prop_line': row.get('pick_line'),
         'direction': direction,
+        # 2026-09-24: this mapper dropped `projected` on the floor. The
+        # generator computes it (project(), ~L1170) and it is the whole
+        # basis of the pick — but the only write path is this bridge, and
+        # `nfl_props` is a dead table, so the number was never persisted
+        # anywhere. 1,794 of 1,796 rows had projection NULL.
+        #
+        # Three signal_sources rows read p.get('projection') and were
+        # therefore dead on arrival since 2026-08-22:
+        #   nfl_prop_projection_edge_supports  (BACK, 0.55)
+        #   nfl_prop_projection_edge_opposes   (FADE, 0.60)
+        #   nfl_prop_projection_strong         (BACK, 0.75)
+        # Identical bug to the NBA one caught in the 8/22 silent-bug audit
+        # (enrich_nba_prop_projections.py:110) — same cause, same silence.
+        'projection': row.get('projected'),
         'conviction': row.get('conviction', 0),
         'tier': row.get('tier'),
         'signals': row.get('signals') or {},
