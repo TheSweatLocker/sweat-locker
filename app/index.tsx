@@ -3538,7 +3538,27 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
     READ:       {label:'👁️ READ',        color:TIER_COLOR.READ},
     LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:THEME.push},
     LIGHT:      {label:'👀 LIGHT LEAN',  color:THEME.push},
-    PASS:       {label:'❌ PASS',        color:THEME.textMuted},
+    // 2026-09-24: "❌ PASS" was wrong, and it made the card look broken.
+    //
+    // sweat_score is NOT a verdict on the game. It is
+    //     45 + f(|model spread − market|) + f(|confluence|) + f(|total edge|)
+    // i.e. how far our number sits from the book's. A score of 45 means the
+    // model AGREES with the market — no pricing edge — which is a completely
+    // different statement from "we pass on this game".
+    //
+    // That mismatch is what Andy saw: NE @ JAX shows a STRONG pick at
+    // conviction 79 sitting under a "❌ PASS" badge. The pick is fine. The
+    // model edge is 0.34 points. Both true, and the label made them look
+    // like a contradiction.
+    //
+    // Checked before relabelling whether ATS form could lift the score off
+    // its floor instead — Andy's suggestion. Measured on all 7,308 scored
+    // games: 3 straight covers 48.9%, team ATS L10 >= 7-3 49.1%, home/road
+    // ATS L6 >= 5-1 49.2%, and the cold buckets do not fade either
+    // (50.9%-51.7%). Nothing clears the 52.4% breakeven, so feeding ATS
+    // into the score would have added a measurably dead signal. The label
+    // was the whole bug.
+    PASS:       {label:'⚖️ MARKET-ALIGNED', color:THEME.textMuted},
   } as const;
   // 2026-08-18: sweat_tier fallback cutoffs — sourced from sweat_tier_config
   // (singleton row, migration 20260818_sweat_tier_config.sql). Kills the
@@ -18383,7 +18403,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
                         <View>
                           <Text style={{color:THEME.text,fontWeight:'800',fontSize:16}}>🧠 SWEAT SCORE</Text>
-                          <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>Algorithmic confidence rating</Text>
+                          {/* 2026-09-24: "Algorithmic confidence rating" was
+                              describing the wrong thing. This score measures
+                              distance between our number and the book's —
+                              it is not the engine's confidence in the pick,
+                              which lives in primary_play.conviction and is
+                              often much higher. Saying "confidence" next to
+                              a separate conviction number is what made the
+                              two look contradictory. */}
+                          <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>How far our model sits from the market</Text>
                         </View>
                         <View style={{alignItems:'center',gap:2}}>
                           <View style={{width:64,height:64,borderRadius:32,borderWidth:2.5,borderColor:tier.color,alignItems:'center',justifyContent:'center',backgroundColor:tier.color+'15'}}>
