@@ -49,7 +49,7 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 # Reuse game ensemble's edge weighting + class-balance rule
-from ensemble_scorer import MAX_CLASS_SHARE, edge_weight
+from ensemble_scorer import MAX_CLASS_SHARE, edge_weight, fetch_all_rows
 
 # Prop-specific tier thresholds (2026-08-17). Game ensemble aggregates
 # across ML/RL/Total candidates so top scores frequently hit 1.0-3.0.
@@ -188,15 +188,32 @@ def _load_signal_registry() -> dict:
         # (not signal_key) and `hit_rate` (not hit_rate_pct). Prior state
         # 42703 errored on every lookup — thousands of Postgres error
         # rows per day. hit_rate is stored on 0-100 scale (verified).
-        r = requests.get(f'{SB}/rest/v1/signal_registry',
-                         headers=H_READ,
-                         params={'select': 'signal_name,sport,hit_rate,sample_n,tier'},
-                         timeout=10)
-        rows = r.json() if r.status_code == 200 else []
+        # 2026-09-24: was a bare GET, so it saw the first 1000 of 1195
+        # registry rows and 195 calibrations were silently absent — a
+        # missing row falls back to the no-record prior rather than
+        # erroring, so proven signals quietly ran at the blind weight.
+        # Shares one paginated fetch with the game scorer instead of
+        # keeping a second copy of the same loop.
+        rows = fetch_all_rows(
+            'signal_registry',
+            {'select': 'signal_name,sport,market_scope,hit_rate,sample_n,tier'})
     except Exception:
         rows = []
+    collisions = 0
     for row in rows:
-        _REGISTRY_CACHE[(row['signal_name'], row.get('sport') or 'MLB')] = row
+        key = (row['signal_name'], row.get('sport') or 'MLB')
+        prior = _REGISTRY_CACHE.get(key)
+        if prior is not None:
+            # Same market_scope collision the game scorer documents: the
+            # table's unique key includes market_scope but lookups here do
+            # not, so keep the better-evidenced row deterministically.
+            collisions += 1
+            if int(row.get('sample_n') or 0) <= int(prior.get('sample_n') or 0):
+                continue
+        _REGISTRY_CACHE[key] = row
+    if collisions:
+        print(f'  [prop-ensemble] {collisions} registry rows collided on '
+              f'(signal_name, sport); kept the larger graded sample')
     return _REGISTRY_CACHE
 
 

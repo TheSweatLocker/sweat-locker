@@ -255,6 +255,49 @@ _REGISTRY_CACHE: Optional[dict] = None
 _TRACK_CACHE: Optional[dict] = None
 
 
+_PAGE = 1000
+
+
+def fetch_all_rows(path: str, params: dict, page: int = _PAGE) -> list[dict]:
+    """GET every row, not the first 1000.
+
+    2026-09-24. Both scorers loaded signal_sources and signal_registry with
+    a bare GET. PostgREST answers at most 1000 rows and says so only in a
+    Content-Range header nobody read, so the 1195-row registry arrived as
+    1000 rows and 195 calibrations were simply absent. A signal whose
+    registry row is absent falls back to the no-record prior, so the
+    truncation did not error or warn — it silently repriced signals:
+
+      ncaaf_fbs_vs_fcs_early_season  63.8% n=69 VALIDATED   0.783 -> 0.150
+      home_pitcher_owns_opp          46.2% n=26 ANTI        0.000 -> 0.150
+
+    Proven signals ran at a fifth of their earned weight while a signal
+    measured to be actively wrong got un-muted. 36 enabled signals were
+    affected across MLB, NFL and NCAAF.
+
+    Ordered by id so paging is stable — without ORDER BY, PostgREST may
+    return overlapping or skipped rows across offsets.
+    """
+    out: list[dict] = []
+    offset = 0
+    while True:
+        r = requests.get(f'{_SB}/rest/v1/{path}', headers=_H_READ,
+                         params={**params, 'order': 'id.asc',
+                                 'limit': page, 'offset': offset},
+                         timeout=20)
+        if r.status_code != 200:
+            # Surface the failure instead of returning a short list that
+            # reads as "this is all there is".
+            print(f'  [ensemble] {path} page at offset {offset} failed '
+                  f'{r.status_code}: {(r.text or "")[:120]}')
+            return out
+        batch = r.json()
+        out.extend(batch)
+        if len(batch) < page:
+            return out
+        offset += page
+
+
 def _load_sources(sport: str) -> list[dict]:
     """Load all enabled signal_sources for a sport (+ universal '*')."""
     global _SOURCES_CACHE
@@ -263,11 +306,8 @@ def _load_sources(sport: str) -> list[dict]:
             _SOURCES_CACHE = []
             return _SOURCES_CACHE
         try:
-            r = requests.get(f'{_SB}/rest/v1/signal_sources',
-                             headers=_H_READ,
-                             params={'select': '*', 'enabled': 'eq.true'},
-                             timeout=10)
-            _SOURCES_CACHE = r.json() if r.status_code == 200 else []
+            _SOURCES_CACHE = fetch_all_rows(
+                'signal_sources', {'select': '*', 'enabled': 'eq.true'})
         except Exception:
             _SOURCES_CACHE = []
     return [s for s in _SOURCES_CACHE if s.get('sport') in (sport, '*')]
@@ -292,6 +332,20 @@ def _load_registry() -> dict:
 
     2026-08-26 STALENESS FILTER: drop rows whose last_computed_at is
     older than MAX_REGISTRY_AGE_DAYS. Stale rows produce stale weights.
+
+    2026-09-24 TRUNCATION: this used a bare GET and so saw only the first
+    1000 of 1195 rows. See fetch_all_rows for what that cost.
+
+    2026-09-24 SCOPE COLLISION: the 2026-08-21 note above fixed exactly
+    this bug one dimension up — keying by signal_name alone let NHL weights
+    land on MLB signals. The same "last-loaded wins" remains at
+    market_scope, which is part of the table's real unique key
+    (signal_name, sport, market_scope). 78 name+sport pairs hold more than
+    one row, e.g. long_rest_home_ats MLB is 57.0% VALIDATED on `spread` and
+    48.1% UNVALIDATED on `rl` — a 0.5-vs-0.0 weight decided by row order.
+    Callers here look up by name+sport only, so rather than guess a scope we
+    keep the best-evidenced row (largest graded sample) and make the choice
+    deterministic instead of incidental.
     """
     global _REGISTRY_CACHE
     if _REGISTRY_CACHE is not None:
@@ -299,15 +353,15 @@ def _load_registry() -> dict:
     from datetime import datetime, timezone, timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_REGISTRY_AGE_DAYS)
     dropped_stale = 0
+    collisions = 0
     out: dict = {}
     if _SB:
         try:
-            r = requests.get(f'{_SB}/rest/v1/signal_registry',
-                             headers=_H_READ,
-                             params={'select': 'signal_name,sport,tier,recommended_weight,'
-                                               'hit_rate,sample_n,last_computed_at,updated_at'},
-                             timeout=10)
-            for row in (r.json() if r.status_code == 200 else []):
+            for row in fetch_all_rows(
+                    'signal_registry',
+                    {'select': 'signal_name,sport,market_scope,tier,'
+                               'recommended_weight,hit_rate,sample_n,'
+                               'last_computed_at,updated_at'}):
                 # Staleness filter
                 ts_str = row.get('last_computed_at') or row.get('updated_at')
                 if ts_str:
@@ -321,11 +375,22 @@ def _load_registry() -> dict:
                     except (ValueError, TypeError):
                         pass
                 key = (row['signal_name'], row.get('sport') or '*')
+                prior = out.get(key)
+                if prior is not None:
+                    collisions += 1
+                    # Keep whichever scope carries the larger graded sample.
+                    # A row with no sample_n loses to one that has any.
+                    if int(row.get('sample_n') or 0) <= int(prior.get('sample_n') or 0):
+                        continue
                 out[key] = row
         except Exception:
             pass
     if dropped_stale > 0:
         print(f'  [ensemble] dropped {dropped_stale} stale registry rows (>{MAX_REGISTRY_AGE_DAYS}d)')
+    if collisions > 0:
+        print(f'  [ensemble] {collisions} registry rows collided on '
+              f'(signal_name, sport); kept the larger graded sample')
+    print(f'  [ensemble] registry loaded {len(out)} signals')
     _REGISTRY_CACHE = out
     return out
 
