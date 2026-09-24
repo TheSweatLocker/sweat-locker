@@ -557,8 +557,30 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     # "vs." period). If short is under 100 chars, derive from the
     # first 1-2 sentences of long_read instead so users don't see
     # mid-sentence garbage. Preserves LLM when it wrote a real short.
+    # 2026-09-24 MARKER GUARD. A section marker is a parser instruction
+    # and must never reach a subscriber. Three NFL reads shipped with
+    # short_read literally beginning "---SHORT---\nLA's passing offense
+    # ranks 11th..." because some write path stored the raw narrative
+    # instead of the parsed sections.
+    #
+    # The parser itself is fine — re-running parse_synthesis on those
+    # stored strings returns clean prose. So rather than hunt every
+    # caller that might hand over raw text, re-parse here whenever a
+    # marker is present. This is the last gate before the write, so it
+    # catches the bad text no matter which path produced it.
+    def _demarker(txt, fallback_key):
+        if not txt or '---SHORT---' not in txt and '---LONG---' not in txt:
+            return txt
+        reparsed = parse_synthesis(txt)
+        return reparsed.get(fallback_key) or re.sub(
+            r'---[A-Z]+---\s*', '', txt).strip()
+
+    parsed = dict(parsed)
+    parsed['short_read'] = _demarker(parsed.get('short_read'), 'short_read')
+    parsed['long_read'] = _demarker(parsed.get('long_read'), 'long_read')
+
     _short_raw = parsed.get('short_read') or ''
-    _long_raw = parsed.get('long_read') or narrative or ''
+    _long_raw = _demarker(parsed.get('long_read') or narrative or '', 'long_read')
     if _short_raw and len(_short_raw) >= 100:
         _short_final = _short_raw
     elif _long_raw:

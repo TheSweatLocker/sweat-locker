@@ -119,15 +119,26 @@ def load_templates():
 
 
 def fetch_upcoming_games():
-    """nhl_game_context for today + 5 days. NHL is daily-cadence."""
-    today = today_et()
-    horizon = (datetime.now(timezone.utc) + timedelta(days=5)
-               - timedelta(hours=4)).strftime('%Y-%m-%d')
+    """Every nhl_game_context row from today forward.
+
+    Deliberately NOT a fixed day horizon. The first version copied
+    NCAAB's "today + 5 days" and immediately left three games stubbed:
+    nhl_game_context carried data out to 09-30 while the generator
+    stopped at 09-29, so the edge of the window kept the engine-sub
+    placeholder the generator exists to replace.
+
+    A second horizon that disagrees with the context table's own reach
+    can only ever produce that. Read what context holds; the row cap is
+    the safety valve, not an invented date.
+    """
     url = (f'{SUPABASE_URL}/rest/v1/nhl_game_context'
-           f'?game_date=gte.{today}&game_date=lte.{horizon}'
-           f'&select=*&order=sweat_score.desc.nullslast&limit=80')
+           f'?game_date=gte.{today_et()}'
+           f'&select=*&order=game_date.asc,sweat_score.desc.nullslast&limit=120')
     r = requests.get(url, headers=SB_READ, timeout=20)
-    return r.json() if r.status_code == 200 else []
+    if r.status_code != 200:
+        print(f'  ⚠ nhl_game_context fetch {r.status_code}: {r.text[:140]}')
+        return []
+    return r.json()
 
 
 def _goalie_block(ctx, side):
