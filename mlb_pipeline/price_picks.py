@@ -164,6 +164,32 @@ def price_one(grouped: dict, key: str, market: str, side: str, line, text: str) 
     }
 
 
+def _has_started(read: dict, ctx: dict) -> bool:
+    """True when this game's scheduled start is already behind us.
+
+    A started game's price is a receipt — it records what we published and
+    must not be overwritten by a later market. An unstarted game's price is
+    a live quote and has to be refreshed. Falls back to 'not started' when
+    the kickoff is unknown, because re-pricing a forward game is harmless
+    while freezing a wrong price is not.
+    """
+    c = ctx.get(read.get('game_id')) or {}
+    for key in ('kickoff_utc', 'commence_time', 'game_time_utc'):
+        raw = c.get(key)
+        if raw:
+            try:
+                ts = str(raw).replace('Z', '+00:00')
+                return datetime.fromisoformat(ts) <= datetime.now(timezone.utc)
+            except (TypeError, ValueError):
+                pass
+    gd = str(c.get('game_date') or read.get('game_date') or '')[:10]
+    if gd:
+        # No clock available — only treat it as started once the date has
+        # fully passed, so a same-day game is still re-priced.
+        return gd < str(datetime.now(timezone.utc).date())
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--since', default=None, help='game_date lower bound (default 14d back)')
@@ -190,7 +216,24 @@ def main():
         reasons = defaultdict(int)
         patches = []
         for r in reads:
-            if r.get('price_american') is not None:
+            # 2026-09-24. This used to skip any row that already carried a
+            # price, which quietly guaranteed a stale one. A price belongs
+            # to a specific (market, side, line); when the pick moves, the
+            # old price is not merely old, it is wrong.
+            #
+            # It happened the same day this was written. The juice-reroute
+            # cover check flipped KC @ MIA and SEA @ WAS from a spread back
+            # to a moneyline, and the reads kept the spread's price:
+            #
+            #     KC ML  showed -110   actual moneyline -650
+            #     DET ML showed -115   actual moneyline -298
+            #
+            # Telling a subscriber they can have -650 at -110 is worse than
+            # showing nothing. Forward games are re-priced every run — the
+            # market moves, so the number has to. Only a game that has
+            # already started keeps its price, because that one is a
+            # historical record of what we published.
+            if r.get('price_american') is not None and _has_started(r, ctx):
                 skip += 1
                 continue
             if not r.get('call_text') or not r.get('call_market'):
