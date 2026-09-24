@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-22 (night)**
+**Last verified: 2026-09-24 (night)**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -1019,6 +1019,69 @@ VERIFY: `select count(*) from jerry_reads where sport='NHL'
          and length(coalesce(long_read,''))=0 and game_date>=current_date;`
 
 ## P2 — structural (the ones that keep causing the others)
+
+### B47 - NFL prop publish gate ships the losing tier and hides the winning one
+Found 2026-09-24. **Andy concurred with the R3 candidate on 09-24 and asked
+to see results after the 2026-09-27 weekend before it gates anything. Check
+this after that weekend.**
+
+`v_nfl_props_publishable` gates on `tier IN ('PRIME','STRONG')`. What that
+actually publishes, measured on 1,331 graded props to 09-21 at the prices we
+paid:
+
+      R1 (live)   202-189   51.7%   needs 54.6%   ROI -5.21%   -20.4u  n=391
+
+LEAN is never published. It is the largest tier (627 rows) and the most
+profitable. PRIME stopped occurring after 09-13 (57 rows total, all on
+09-09/09-10/09-13), so in practice users see STRONG and nothing else — 51 of
+51 on the 09-24 slate were STRONG.
+
+CANDIDATE R3: publish PRIME+STRONG+LEAN, counting stats only, inside the
+-150..+150 price band.
+
+      R3          198-162   55.0%   needs 52.8%   ROI +4.22%   +15.2u  n=360
+
+Same exposure as today (360 vs 391), ROI +9.43pp, +35.5u. Neither filter
+works alone — price gate only is -3.80%, counting only is +1.07%.
+
+WHY NOT NOW: both filters were chosen by looking at the same rows they score
+on. The mechanisms are sound (juice outrunning the hit rate; yardage decided
+by explosive plays) and the effects are large, but in-sample selection always
+flatters. The 09-27 slate is the first honest test.
+
+STILL OPEN INSIDE R3: the ladder is mildly inverted — LEAN +5.08% (n=185)
+beats STRONG +2.33% (n=146). Both profitable, so it is a labelling question
+rather than a money question. Three options were put to Andy: accept it,
+re-cut the conviction bands to match measured ROI order, or collapse to one
+published label (the calibration map only resolved two confidence levels, so
+four tiers was always more resolution than the data supports).
+
+IF IMPLEMENTING: `v_nfl_props_publishable` already carries a tier whitelist,
+a conviction floor, a kickoff filter and a volume cap. Rebuild it from the
+LIVE definition, not from a migration file — see
+`feedback_publishable_view_drift`, a view replacement has already silently
+dropped a prior WHERE clause once. Verify the published count before and
+after.
+
+VERIFY (the Monday command):
+      python mlb_pipeline/audit_nfl_publish_rules.py --since 2026-09-27 --by-tier
+Compares R1 against R3 and four alternatives on graded results only, and
+labels the window in-sample or out-of-sample. It reads nfl_pipeline_props
+rather than public_receipts on purpose: NFL rows there are 998 reconstructed
+against 2 live. Safe to read after the fact because nfl_generate_props only
+builds rows for games -1h to +14 days out, so a row freezes at kickoff.
+
+SHIPPED ALREADY (not waiting on the weekend):
+  * `-150..+150` price band at source in nfl_generate_props, env-overridable
+    via NFL_PROP_ODDS_MIN/MAX — `33f90b12`. 11 of 51 publishable props on the
+    09-24 slate sat outside it.
+  * Both sides of every market now persisted so the vig can be removed —
+    `9a1fe183`. Cannot be backtested; zero of 1,331 graded props held both
+    prices. MLB already stored both (99%), so this was NFL-only.
+
+SCOPE: NFL props only. MLB's view gates on `tier != 'SKIP'` so it already
+publishes LEAN, and MLB's clean post-leak window is three days (PRIME n=29,
+STRONG n=23) with the season ending 09-25 — it cannot be measured this year.
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
 `return r.json() if r.status_code == 200 else []` — a 400, 429, 500 and
