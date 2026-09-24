@@ -1110,6 +1110,32 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     if not player_name or line is None or side not in ('OVER', 'UNDER'):
         return None
 
+    # 2026-09-24 — KEEP BOTH SIDES OF THE MARKET.
+    #
+    # This function is called once per outcome, and each outcome is one side.
+    # We recorded only the side we published, so zero of 1,331 graded props
+    # held both prices, and without both prices the vig cannot be removed.
+    # That is the difference between "our projection is 8% above the line"
+    # and "we think this is 57% and the fair market price says 54%" — the
+    # second is an edge, the first is a number.
+    #
+    # It also cost us the ability to see what we were paying. Measured on
+    # published history: average price -118.6, which needs 54.2% to break
+    # even while we hit 50.9%, and the -300..+150 band admitted props needing
+    # 69.8%. Both sides are already sitting in market['outcomes'] here; the
+    # loop simply threw the counterpart away.
+    odds_over = odds_under = None
+    for _o in (market.get('outcomes') or []):
+        if (_o.get('description') or '') != player_name:
+            continue
+        if _f(_o.get('point')) != line:
+            continue
+        _s = (_o.get('name') or '').upper()
+        if _s == 'OVER':
+            odds_over = _i(_o.get('price'))
+        elif _s == 'UNDER':
+            odds_under = _i(_o.get('price'))
+
     # Player lookup
     player = player_id_lookup(player_name, position=cfg['position'])
     if not player:
@@ -1356,6 +1382,9 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         'pick_side': side,
         'pick_line': line,
         'odds_american': odds,
+        # Both sides as quoted, so the vig can be removed downstream.
+        'odds_over': odds_over,
+        'odds_under': odds_under,
         'projected': proj,
         'edge': edge,
         'l4_avg': l4,
@@ -1384,6 +1413,7 @@ _BRIDGE_MAPPED = {
     'pick_side',        # -> direction
     'pick_line',        # -> prop_line + book_line
     'odds_american',    # -> book_over_odds / book_under_odds
+    'odds_over', 'odds_under',   # both sides, for de-vigging (2026-09-24)
     'team',             # -> player_team + home_away
     'opponent_team',    # -> opp_team
     'home_team', 'away_team',   # -> matchup + home_away
@@ -1482,8 +1512,14 @@ def _to_pipeline_props_shape(row: dict) -> dict:
         'tier': row.get('tier'),
         'signals': row.get('signals') or {},
         'book_line': row.get('pick_line'),
-        'book_over_odds': row.get('odds_american') if direction == 'over' else None,
-        'book_under_odds': row.get('odds_american') if direction == 'under' else None,
+        # Both sides when the book quoted both, falling back to the published
+        # side alone so a one-sided market still records what we took.
+        'book_over_odds': (row.get('odds_over') if row.get('odds_over') is not None
+                           else (row.get('odds_american') if direction == 'over'
+                                 else None)),
+        'book_under_odds': (row.get('odds_under') if row.get('odds_under') is not None
+                            else (row.get('odds_american') if direction == 'under'
+                                  else None)),
     }
 
 
