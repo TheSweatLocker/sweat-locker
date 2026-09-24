@@ -857,6 +857,46 @@ VERIFY: `python -c "import sys;sys.path.insert(0,'mlb_pipeline');
          import validate_jerry_read"` and compare its
          hallucinated_numbers against published conviction.
 
+### B43 - we publish picks the market does not offer
+Found 2026-09-23 while pricing the slate. Seven NCAAF picks name a line
+no book quotes, and two of them are on the OPPOSITE SIDE of the market:
+
+      Oregon @ USC        published "USC -2.5"        STRONG conv 83
+                          every book has USC at +3.0
+      OkSt @ West Virginia published "West Virginia +2.5"  conv 71
+                          every book has WVU at -1.0 to -2.0
+
+USC is a three-point underdog. We told a subscriber to lay two and a half
+points on a dog. That is not a stale number - it is the opposite team,
+and no model confidence makes it placeable.
+
+The reads are FAITHFUL. Every published line matches
+ncaaf_game_context.close_spread exactly. The defect is in the context
+row, not the prose or the LLM.
+
+WHAT IS NOT THE TEST. I first framed this as a close_spread sign bug and
+counted sign inversions across all sports - 2 NFL, 2 NCAAF, 10 MLB. Most
+are legitimate: PHI @ CHI opened home -1.5 and closed home +4.5, a real
+six-point move, and CHI +4.5 is quoted at ten books. MLB's +/-1.5 flips
+are run lines where the favourite changed. Sign movement is normal.
+
+THE TEST is whether any book quotes the exact thing we named. Today:
+
+      WRONG_SIDE  2     DRIFTED  5     NO_QUOTES  29     OK  33
+
+All seven bad ones are NCAAF. MLB, NFL and NHL are clean.
+
+FIX:
+  1. `verify_offerable.py` exists and exits 2 on WRONG_SIDE. Wire it as a
+     publish gate - a pick the market does not offer must not ship.
+  2. Root-cause why ncaaf_game_context.close_spread inverts. Oregon @ USC
+     stored open_spread=2.5 and close_spread=-2.5 with the magnitude
+     unchanged, which no real market move produces.
+  3. DRIFTED picks should refresh their line, not ship stale. Miami @
+     Clemson published +7 against a market of +17.5.
+
+VERIFY: `python mlb_pipeline/verify_offerable.py`
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
