@@ -9932,11 +9932,28 @@ setJerryHistory(prev => {
       // old sharp+prop split so display never breaks.
       try {
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('sport','MLB').in('surface',['sharp','prop','sharp_card']).eq('window_key','epoch');
+          .select('*').eq('sport','MLB')
+          .in('surface',['sharp','prop','sharp_card','sharp_card_sides','sharp_card_props'])
+          .eq('window_key','epoch');
         if (srRows && srRows.length) {
           const cardRow = srRows.find((r: any) => r.surface === 'sharp_card');
           const sharpRow = srRows.find((r: any) => r.surface === 'sharp') || {wins:0,losses:0,pushes:0,units_net:0};
           const propRow  = srRows.find((r: any) => r.surface === 'prop')  || {wins:0,losses:0,pushes:0,units_net:0};
+          // 2026-09-24: the breakdown under the headline MUST come from the
+          // same population as the headline. It did not. The headline read
+          // sharp_card (401-274-8, 683 picks) while the sub-line read the
+          // separate 'sharp' (348) and 'prop' (981) surfaces — 1,329 picks
+          // presented as a decomposition of 683. The 09-05 comment above
+          // explains why the headline was moved off that pair; the sub-line
+          // was never moved with it.
+          //
+          // sharp_card_sides / sharp_card_props are derived from the card's
+          // own graded legs, so sides + props == headline in every window.
+          // Fall back to the old pair only if they are missing, so the
+          // display never breaks — but then the mismatch is back, which is
+          // why the fallback is last.
+          const sidesRow = srRows.find((r: any) => r.surface === 'sharp_card_sides');
+          const propsRow = srRows.find((r: any) => r.surface === 'sharp_card_props');
           // Prefer sharp_card authoritative row; fall back to sharp+prop sum
           const totW = cardRow ? (cardRow.wins || 0)   : (sharpRow.wins || 0) + (propRow.wins || 0);
           const totL = cardRow ? (cardRow.losses || 0) : (sharpRow.losses || 0) + (propRow.losses || 0);
@@ -9945,8 +9962,10 @@ setJerryHistory(prev => {
           setSharpRecord({
             w: totW, l: totL, p: totP,
             unitsNet: Math.round(totU * 100) / 100,
-            sidesW: sharpRow.wins || 0, sidesL: sharpRow.losses || 0,
-            propsW: propRow.wins || 0,  propsL: propRow.losses || 0,
+            sidesW: (sidesRow ? sidesRow.wins : sharpRow.wins) || 0,
+            sidesL: (sidesRow ? sidesRow.losses : sharpRow.losses) || 0,
+            propsW: (propsRow ? propsRow.wins : propRow.wins) || 0,
+            propsL: (propsRow ? propsRow.losses : propRow.losses) || 0,
             wPrev, lPrev, pPrev,
             unitsNetPrev: Math.round(unitsNetPrev*100)/100,
             yW, yL, yP, yUnits: Math.round(yUnits*100)/100,
