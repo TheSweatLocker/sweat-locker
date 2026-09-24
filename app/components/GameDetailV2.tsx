@@ -627,11 +627,11 @@ export default function GameDetailV2({
             rank chip (quintile-colored). NCAAF-only content today; MLB/
             NFL/NBA/NCAAB/NHL follow-up ships. See
             project_rolling_rollup_architecture_901. */}
+        {/* 2026-09-24: the hint was hardcoded "ranks are FBS-only" and
+            rendered on every sport, so an MLB card claimed its ranks were
+            college-football-only. The qualifier is real but it is NCAAF's
+            alone. Andy caught it on a Cardinals/Pirates card. */}
         {showTeamStats && (
-          {/* 2026-09-24: the hint was hardcoded "ranks are FBS-only" and
-              rendered on every sport, so an MLB card claimed its ranks
-              were college-football-only. The qualifier is real but it is
-              NCAAF's alone. Andy caught it on a Cardinals/Pirates card. */}
           <Section title="Team Stats"
                    hint={`raw value + rank · green = better${
                      gamesSport === 'NCAAF' ? ' · ranks are FBS-only' : ''}`}>
