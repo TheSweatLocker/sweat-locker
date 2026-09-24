@@ -168,8 +168,146 @@ def push(table: str, rows: list[dict], on_conflict: str, chunk: int = 500) -> in
     return done
 
 
+# ──────────────────────────────────────────────────────────────────────
+# player_stats — weekly player box scores, 2000 onward
+# ──────────────────────────────────────────────────────────────────────
+# 2026-09-24. Andy: "lets know everything we can get out and the plan to
+# exploit for our processes."
+#
+# We held 38,504 rows; upstream carries 134,470. 41 of our 43 columns map
+# straight across (their recent_team is our team), so this needs no
+# migration — it is the same table with the other 71% of its history.
+#
+# Why it matters beyond volume: B10 is that NFL props carry a projection
+# on 2 of 1,423 rows, so there is nothing to price an edge against. A
+# shrinkage baseline fitted out-of-sample needs prior seasons of player
+# form to fit ON. Two seasons cannot do that; twenty-six can.
+#
+# The 11 upstream columns we have nowhere to put are named here rather
+# than silently dropped, so the next person who wants fumbles or 2-point
+# conversions knows they exist upstream and only need a column.
+_PS_SKIP = {
+    'headshot_url', 'player_display_name', 'recent_team',
+    'passing_2pt_conversions', 'rushing_2pt_conversions',
+    'receiving_2pt_conversions', 'rushing_fumbles', 'rushing_fumbles_lost',
+    'receiving_fumbles', 'receiving_fumbles_lost', 'sack_fumbles',
+    'sack_fumbles_lost',
+}
+_PS_TEXT = {'player_id', 'player_name', 'position', 'position_group',
+            'season_type', 'opponent_team'}
+
+# The CSV writes whole numbers as "0.0", and 24 of our columns are typed
+# integer. Sending 0.0 to an integer column fails the whole chunk with
+# 22P02 invalid input syntax — which is what happened on the first run:
+# "wrote 0". A clean total failure rather than a partial write, which is
+# the one good thing about it. Types are read from the live OpenAPI schema
+# rather than guessed, so this list cannot drift from the table.
+_PS_INT = {
+    'attempts', 'carries', 'completions', 'interceptions',
+    'passing_air_yards', 'passing_first_downs', 'passing_tds',
+    'passing_yards', 'passing_yards_after_catch', 'receiving_air_yards',
+    'receiving_first_downs', 'receiving_tds', 'receiving_yards',
+    'receiving_yards_after_catch', 'receptions', 'rushing_first_downs',
+    'rushing_tds', 'rushing_yards', 'sack_yards', 'sacks', 'season',
+    'special_teams_tds', 'targets', 'week',
+}
+
+
+def _as_int(v):
+    """'0.0' -> 0, '7' -> 7, '' -> None. Rounds rather than truncates so a
+    fractional sack total (0.5 sacks is a real stat) lands on the nearest
+    whole number instead of silently flooring to zero."""
+    f = num(v)
+    return None if f is None else int(round(f))
+PLAYER_STATS_URL = ('https://github.com/nflverse/nflverse-data/releases/'
+                    'download/player_stats/player_stats.csv')
+
+
+def map_player_stat(row: dict, keep: set) -> dict | None:
+    if not row.get('player_id') or not row.get('season'):
+        return None
+    out = {}
+    for k, v in row.items():
+        if k in _PS_SKIP or k not in keep:
+            continue
+        if v in ('', 'NA', None):
+            out[k] = None
+        elif k in _PS_TEXT:
+            out[k] = v
+        elif k in _PS_INT:
+            out[k] = _as_int(v)
+        else:
+            out[k] = num(v)
+    out['team'] = row.get('recent_team') or None
+    # player_name is EMPTY on 67,401 of 134,470 upstream rows — every older
+    # season carries the name in player_display_name instead. Ingesting the
+    # blank would have written half the history with no name, and every
+    # prop and form lookup we have joins on name, so it would have been
+    # silently useless rather than visibly broken.
+    if not out.get('player_name'):
+        out['player_name'] = (row.get('player_display_name')
+                              or row.get('player_name') or None)
+    # Three rows of 134,470 carry no name in either field, and player_name
+    # is NOT NULL here. One of them aborted a chunk mid-backfill (23502)
+    # after 1,500 rows had already landed. A row we cannot name is a row
+    # nothing can join to, so drop it rather than invent a placeholder that
+    # would later look like a real player.
+    if not out.get('player_name'):
+        return None
+    return out
+
+
+def ingest_player_stats(write: bool, since: int, until: int) -> None:
+    print('=== nflverse player_stats ===')
+    raw = fetch_csv(PLAYER_STATS_URL)
+    probe = requests.get(f'{SB}/rest/v1/nfl_player_stats', headers=H_READ,
+                         timeout=60, params={'select': '*', 'limit': 1}).json()
+    keep = set(probe[0].keys()) if probe else set()
+    mapped = []
+    for r in raw:
+        s = num(r.get('season'), int)
+        if s is None or not (since <= s <= until):
+            continue
+        m = map_player_stat(r, keep)
+        if m:
+            mapped.append(m)
+    # Exactly one duplicate key exists upstream — Matthew Stafford, 2010
+    # week 8 REG, listed twice with identical figures. Postgres rejects a
+    # whole chunk with 21000 "ON CONFLICT DO UPDATE command cannot affect
+    # row a second time" when a batch contains the same key twice, so that
+    # single row aborted the backfill at 57,000 written. Dedupe on the
+    # conflict key, last occurrence wins.
+    _seen: dict = {}
+    for m in mapped:
+        _seen[(m.get('player_id'), m.get('season'),
+               m.get('week'), m.get('season_type'))] = m
+    if len(_seen) != len(mapped):
+        print(f'  deduped           : {len(mapped) - len(_seen)} duplicate key(s)')
+    mapped = list(_seen.values())
+
+    print(f'  upstream rows     : {len(raw)}')
+    print(f'  mapped {since}-{until} : {len(mapped)}')
+    if mapped:
+        by = Counter(m['season'] for m in mapped)
+        print(f'  seasons           : {min(by)}-{max(by)} ({len(by)} seasons)')
+    if not write:
+        print('  DRY RUN — re-run with --write to upsert.')
+        if mapped:
+            sm = mapped[0]
+            print(f"  sample: {sm.get('player_name')} {sm.get('season')}"
+                  f"w{sm.get('week')} {sm.get('team')} "
+                  f"rec_yds={sm.get('receiving_yards')} epa={sm.get('receiving_epa')}")
+        return
+    print(f'  upserting {len(mapped)} rows...')
+    n = push('nfl_player_stats', mapped,
+             on_conflict='player_id,season,week,season_type', chunk=500)
+    print(f'  wrote {n}')
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--player-stats', action='store_true',
+                    help='ingest weekly player box scores instead of games')
     ap.add_argument('--write', action='store_true',
                     help='actually upsert; without it this only reports the delta')
     ap.add_argument('--since', type=int, default=1999)
@@ -185,6 +323,12 @@ def main():
                     help='re-upsert every row in range, not just unseen ids — '
                          'used to correct a value written by an earlier run')
     args = ap.parse_args()
+
+    if args.player_stats:
+        # player_stats has no game_id collision problem, so the 2019 cap
+        # that protects nfl_game_results does not apply here — take it all.
+        ingest_player_stats(args.write, args.since, 2026)
+        return
 
     print('=== nflverse games.csv ===')
     raw = fetch_csv(GAMES_URL)
