@@ -87,10 +87,40 @@ def is_publishable(prop: dict) -> tuple[bool, str]:
     """
     sig = _coerce_signals(prop.get('signals'))
 
-    # Hard kill 1: coverage kill gate
+    # Hard kill 1: coverage kill gate — but only while it is still TRUE.
+    #
+    # 2026-09-24. This check, and the matching Rule 1 in
+    # v_mlb_props_publishable, emptied the MLB prop surface: 0 publishable on
+    # a 1,127-row slate for 09-24, 3 for 09-23, against 90 for 09-22.
+    #
+    # _demote_coverage_tier stamps signals._coverage_kill_gate when it kills a
+    # COVERAGE-tier prop, and also sets tier='SKIP', conviction=0. A later
+    # pipeline pass re-scores those rows: tier and conviction are overwritten,
+    # the tag is not. So a prop that was briefly a coverage stub and then
+    # legitimately re-scored to STRONG conviction 80 — Tyler Phillips
+    # er_under, Kumar Rocker er_under, Bryan Woo outs_over — carried a
+    # permanent publication ban. 131 rows held the tag while no longer being
+    # SKIP, 59 of them with conviction > 0, which a demoted row cannot have
+    # because demotion forces it to 0.
+    #
+    # A transient condition was stored as permanent state. The fix is to ask
+    # whether the condition still holds rather than whether it once did: if
+    # the row is still COVERAGE or SKIP the demotion stands, and if it has
+    # since been re-tiered to a publishable tier the demotion is superseded.
+    #
+    # NOT removed outright, unlike the SQL rule. The views carry their own
+    # tier whitelist (Rule 5) so dropping the clause there is safe; this
+    # function has no tier gate of its own, so removing the check entirely
+    # would make it answer 'ok' for a live COVERAGE or SKIP row.
+    #
+    # The tag itself is kept either way — it is useful history about what
+    # happened to the row. See migration 20260924c.
+    _PUBLISHABLE_TIERS = ('PRIME', 'STRONG', 'LEAN')
     kill = sig.get('_coverage_kill_gate')
     if kill and str(kill).lower() not in ('false', '0', 'no', ''):
-        return False, f'coverage_kill={kill}'
+        _tier_now = (prop.get('tier') or '').upper()
+        if _tier_now not in _PUBLISHABLE_TIERS:
+            return False, f'coverage_kill={kill} tier={_tier_now or "none"}'
 
     # Hard kill 2: LR tier drift (LR says lower than stored)
     lr_tier = (sig.get('_lr_tier_raw') or '').upper()
