@@ -37,6 +37,35 @@ _SB_WRITE = ({'apikey': SUPABASE_KEY,
              if SUPABASE_KEY else None)
 
 
+def _write_env() -> tuple[str | None, dict | None]:
+    """Resolve the write credentials AT CALL TIME, not at import.
+
+    2026-09-23. Reading these at module scope is a landmine, and it went
+    off. generate_ncaaf_game_reads.py imports this module on line 27 and
+    calls load_dotenv on line 91 — sixty-four lines later. So the module
+    captured SUPABASE_URL=None, _SB_WRITE=None, and upsert_jerry_read
+    returned False from its guard on every single call while the caller
+    printed "✓ wrote cache" and reported 85/85 success.
+
+    In CI the vars are already exported into the environment, so the
+    dual-write works there and the defect is invisible. It only bites a
+    local run — which is exactly when someone is repairing something and
+    most needs the write to land. Two full 85-game regenerations were
+    spent before this surfaced, both reporting success, neither writing a
+    row.
+
+    Reading os.environ on each call costs nothing and removes any
+    dependence on import order.
+    """
+    url = os.environ.get('SUPABASE_URL') or SUPABASE_URL
+    key = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+           or os.environ.get('SUPABASE_KEY') or SUPABASE_KEY)
+    if not url or not key:
+        return url, None
+    return url, {'apikey': key, 'Authorization': f'Bearer {key}',
+                 'Content-Type': 'application/json'}
+
+
 _VALID_MARKETS = {'ml', 'spread', 'rl', 'total', 'prop', 'lean', 'pass', None}
 _VALID_SIDES = {'HOME', 'AWAY', 'OVER', 'UNDER', None}
 
@@ -512,7 +541,13 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     2026-09-10: enforces ensemble alignment on every write. See
     enforce_primary_play_alignment() docstring above.
     """
-    if not _SB_WRITE or not SUPABASE_URL:
+    _url, _hdr = _write_env()
+    if not _hdr or not _url:
+        # Say so. This used to return False in silence, which is how two
+        # full 85-game regenerations reported success while writing
+        # nothing.
+        print('  ⚠ jerry_reads dual-write SKIPPED — no Supabase write '
+              'credentials in os.environ at call time')
         return False
     # ─── ENSEMBLE ALIGNMENT ENFORCER ───────────────────────────────
     # Runs BEFORE the truncation guard so the guard sees final prose.
@@ -571,8 +606,8 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     }
     try:
         r = requests.post(
-            f'{SUPABASE_URL}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
-            headers={**_SB_WRITE,
+            f'{_url}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
+            headers={**_hdr,
                      'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=15,
         )
