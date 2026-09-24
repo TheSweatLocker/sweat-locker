@@ -1096,6 +1096,49 @@ def _et_game_date(commence: str | None) -> str:
     return (dt - timedelta(hours=4)).date().isoformat()
 
 
+# 2026-09-24 — NFL PROP PRICE BAND. There was none.
+#
+# CLAUDE.md documents a -300..+150 prop odds band, but that gate lives in the
+# MLB path only. NFL props had no price filter at any layer — not the
+# generator, not nfl_prop_signal_discipline, not v_nfl_props_publishable —
+# and shipped as wide as -276 and +190, outside even the documented band.
+#
+# Measured on 1,331 graded NFL props, at the prices we actually published:
+#
+#   worse than -200   59.5% (needs 69.8%)  n=37    ROI -14.58%
+#   -200 to -150      56.7% (needs 62.7%)  n=150   ROI  -9.54%
+#   -150 to -130      63.7% (needs 58.4%)  n=113   ROI  +8.96%
+#   -130 to -115      48.4% (needs 54.7%)  n=215   ROI -11.64%
+#   -115 to -101      49.6% (needs 52.7%)  n=645   ROI  -5.72%
+#   plus money        43.3% (needs 46.1%)  n=171   ROI  -6.03%
+#
+# Both bands worse than -150 lose money while hitting well above 55% — the
+# juice outruns the hit rate. Same trap already documented for MLB heavy
+# favourites (feedback_heavy_fav_ml_trap_803, project_juice_fav_rl_trap_724),
+# never applied here. A -150 ceiling declines 187 of those props, which
+# together lost 19.7u.
+#
+# Gated at SOURCE rather than in the scorer, per feedback_source_gate_pattern:
+# a row that should never be offered should not exist to be picked up by a
+# composer, a card, or a backfill.
+#
+# Env-overridable so the band can be loosened or tightened without a deploy.
+# These are selected on the same sample they are measured on, so the ceiling
+# is a judgement backed by 187 props and a mechanism, not a validated edge.
+NFL_PROP_ODDS_MIN = int(os.environ.get('NFL_PROP_ODDS_MIN', '-150'))
+NFL_PROP_ODDS_MAX = int(os.environ.get('NFL_PROP_ODDS_MAX', '150'))
+_PRICE_REJECTS: dict = defaultdict(int)
+
+
+def _price_ok(odds: Optional[int]) -> bool:
+    """Reject prices where the required hit rate is beyond anything measured."""
+    if odds is None:
+        return False
+    if odds < 0:
+        return odds >= NFL_PROP_ODDS_MIN
+    return odds <= NFL_PROP_ODDS_MAX
+
+
 def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
                    aliases: dict, season: int, ctx: dict | None = None) -> Optional[dict]:
     """Build one nfl_props row from an Odds API prop outcome."""
@@ -1108,6 +1151,13 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     side = (outcome.get('name') or '').upper()   # 'Over' | 'Under'
     odds = _i(outcome.get('price'))
     if not player_name or line is None or side not in ('OVER', 'UNDER'):
+        return None
+
+    # Price band — see NFL_PROP_ODDS_MIN. Rejected here so the row is never
+    # created, rather than created and filtered later by something that might
+    # forget to.
+    if not _price_ok(odds):
+        _PRICE_REJECTS[market_key] += 1
         return None
 
     # 2026-09-24 — KEEP BOTH SIDES OF THE MARKET.
@@ -1675,6 +1725,12 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
 
     print(f'  events with props pulled: {events_with_props}')
     print(f'  prop picks generated: {len(all_rows)}')
+    if _PRICE_REJECTS:
+        _tot = sum(_PRICE_REJECTS.values())
+        print(f'  price band {NFL_PROP_ODDS_MIN}..+{NFL_PROP_ODDS_MAX} '
+              f'declined {_tot} outcome(s):')
+        for _mk, _n in sorted(_PRICE_REJECTS.items(), key=lambda x: -x[1]):
+            print(f'      · {_mk}: {_n}')
     if _PROP_FETCH_ERRS:
         print(f'  ⚠ Odds API prop fetch errors ({sum(_PROP_FETCH_ERRS.values())} total):')
         for (code, body), n in sorted(_PROP_FETCH_ERRS.items(), key=lambda x: -x[1]):

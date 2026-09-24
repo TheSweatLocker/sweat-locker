@@ -43,11 +43,62 @@ Breakeven is 52.4% at -110. Every rate prints its n; under 30 is unreadable.
 """
 import os
 import sys
+import math
 import argparse
 import statistics
 from collections import defaultdict
 
 import requests
+
+
+# ── probability helpers, stdlib only ────────────────────────────────────
+def norm_sf(x: float) -> float:
+    """P(Z > x) for standard normal, via erf. No scipy dependency."""
+    return 0.5 * (1.0 - math.erf(x / math.sqrt(2.0)))
+
+
+def poisson_sf(k: int, lam: float) -> float:
+    """P(X >= k) for Poisson(lam). Counting stats are counts, not normals."""
+    if lam <= 0:
+        return 0.0 if k > 0 else 1.0
+    if k <= 0:
+        return 1.0
+    # 1 - CDF(k-1), summed directly; k here is small (receptions, TDs, attempts)
+    term = math.exp(-lam)
+    cdf = term
+    for i in range(1, k):
+        term *= lam / i
+        cdf += term
+        if cdf >= 1.0:
+            return 0.0
+    return max(0.0, 1.0 - cdf)
+
+
+COUNTING_FAMILIES = {'receptions', 'pass_attempts', 'pass_completions',
+                     'rush_attempts', 'pass_tds', 'rush_tds',
+                     'pass_interceptions', 'anytime_td'}
+
+
+def p_clear(fam: str, proj: float, line: float, sd: float,
+            direction: str) -> float | None:
+    """P(the side we published clears), from our own projection.
+
+    Counting families use Poisson on the projection, because a reception
+    total is a count with variance tied to its mean — a normal centred on
+    4.7 with SD 1.5 puts real mass below zero. Yardage uses a normal with
+    the player's own dispersion, which is the honest first approximation for
+    a continuous, right-skewed total.
+    """
+    if fam in COUNTING_FAMILIES:
+        # Lines are x.5, so "over 4.5" is "5 or more".
+        k = int(math.floor(line)) + 1
+        p_over = poisson_sf(k, proj)
+    else:
+        if sd <= 0:
+            return None
+        p_over = norm_sf((line - proj) / sd)
+    p_over = min(max(p_over, 1e-6), 1 - 1e-6)
+    return p_over if direction == 'over' else 1.0 - p_over
 
 sys.stdout.reconfigure(encoding='utf-8')
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -327,6 +378,147 @@ def main():
         print(f'  {label:34s} {100.0*w/len(sub):5.1f}%  n={len(sub):<5d} '
               f'avg price {am:+7.1f} (needs {be:4.1f}%)  '
               f'ROI {r_pct:+6.2f}%  ({units:+.1f}u on {n_priced})')
+
+    # ── can our numbers become calibrated probabilities? ────────────────
+    #
+    # This is the one test that matters for moving to probability-space
+    # scoring, and it needs no both-side odds, so it can run on history.
+    # If we say 60% and 60% of those land, the projection can be turned into
+    # a probability and compared against a fair price. If it cannot, then
+    # de-vigging will just compare a good market number to a bad one of ours.
+    print('\nCALIBRATION OF OUR OWN PROBABILITY  (say 60%, hit 60%?)')
+    print('  Counting families use Poisson on the projection; yardage uses a')
+    print('  normal with the player\'s own dispersion. Predicted is for the')
+    print('  side we actually published.')
+    for r in usable:
+        r['_p'] = p_clear(family(r), _f(r['projection']), _f(r['prop_line']),
+                          r['_sd'], r['direction'])
+    cal = [r for r in usable if r.get('_p') is not None]
+    P_BANDS = [(0.0, 0.40), (0.40, 0.50), (0.50, 0.55), (0.55, 0.60),
+               (0.60, 0.70), (0.70, 0.85), (0.85, 1.01)]
+    P_LABELS = ['<40%', '40-50%', '50-55%', '55-60%', '60-70%', '70-85%',
+                '85%+']
+    print(f"  {'predicted':12s} {'actual':>18s} {'gap':>8s}  n")
+    rows_out = []
+    for (lo, hi), label in zip(P_BANDS, P_LABELS):
+        sub = [r for r in cal if lo <= r['_p'] < hi]
+        if not sub:
+            continue
+        w = sum(1 for r in sub if won(r))
+        actual = 100.0 * w / len(sub)
+        pred = 100.0 * statistics.mean([r['_p'] for r in sub])
+        flag = '   n<30' if len(sub) < MIN_N else ''
+        print(f'  {label:12s} said {pred:5.1f}% got {actual:5.1f}% '
+              f'{actual - pred:+7.1f}pp  n={len(sub)}{flag}')
+        rows_out.append((label, pred, actual, len(sub)))
+    big = [x for x in rows_out if x[3] >= MIN_N]
+    if big:
+        mean_gap = statistics.mean([a - p for _, p, a, _ in big])
+        worst = max(big, key=lambda x: abs(x[2] - x[1]))
+        print(f'  mean signed gap across readable bands: {mean_gap:+.1f}pp')
+        print(f'  worst band: {worst[0]} said {worst[1]:.1f}% got '
+              f'{worst[2]:.1f}% (n={worst[3]})')
+        print('  A projection that is confident and wrong is worse than no')
+        print('  projection: it would size up exactly where it is least right.')
+
+    # ── does calibrating it out-of-sample produce something usable? ─────
+    #
+    # The raw probability is overconfident and the error grows with
+    # confidence, but the actual hit rate still rises across bands — the
+    # ranking carries some information and only the scale is wrong. That is
+    # the textbook case for a calibration map: learn the monotonic mapping
+    # from raw score to observed frequency on early games, then apply it to
+    # later ones and check it holds. Fitting and testing on the same rows
+    # would prove nothing, so this is split by date.
+    print('\nOUT-OF-SAMPLE CALIBRATION  (fit on early dates, test on later)')
+    dated = sorted([r for r in cal if r.get('game_date')],
+                   key=lambda r: str(r['game_date']))
+    if len(dated) < 200:
+        print('  not enough dated rows')
+    else:
+        cut_idx = int(len(dated) * 0.55)
+        cut_date = str(dated[cut_idx]['game_date'])[:10]
+        fit = [r for r in dated if str(r['game_date'])[:10] < cut_date]
+        test = [r for r in dated if str(r['game_date'])[:10] >= cut_date]
+        print(f'  split at {cut_date}:  fit n={len(fit)}   test n={len(test)}')
+        if not fit or not test:
+            print('  split produced an empty side')
+        else:
+            # Monotonic map by equal-count bins on the raw score.
+            BINS = 5
+            fit_sorted = sorted(fit, key=lambda r: r['_p'])
+            step = max(1, len(fit_sorted) // BINS)
+            table = []
+            for i in range(0, len(fit_sorted), step):
+                chunk = fit_sorted[i:i + step]
+                if len(chunk) < 20:
+                    if table:
+                        break
+                lo = chunk[0]['_p']
+                w = sum(1 for r in chunk if won(r))
+                table.append((lo, w / len(chunk), len(chunk)))
+            # Enforce monotonicity by pooling adjacent violations.
+            changed = True
+            while changed and len(table) > 1:
+                changed = False
+                for i in range(len(table) - 1):
+                    if table[i][1] > table[i + 1][1]:
+                        lo = table[i][0]
+                        n = table[i][2] + table[i + 1][2]
+                        rate = ((table[i][1] * table[i][2]
+                                 + table[i + 1][1] * table[i + 1][2]) / n)
+                        table[i:i + 2] = [(lo, rate, n)]
+                        changed = True
+                        break
+            print('  fitted map (raw score floor -> observed rate, fit rows):')
+            for lo, rate, n in table:
+                print(f'      raw >= {lo:.3f}  ->  {rate*100:5.1f}%   (n={n})')
+
+            def calibrated(p):
+                out = table[0][1]
+                for lo, rate, _ in table:
+                    if p >= lo:
+                        out = rate
+                return out
+
+            print('  applied to the held-out later dates:')
+            agg = defaultdict(lambda: [0, 0, 0.0])
+            for r in test:
+                c = calibrated(r['_p'])
+                agg[round(c, 3)][1] += 1
+                agg[round(c, 3)][2] += c
+                if won(r):
+                    agg[round(c, 3)][0] += 1
+            for c in sorted(agg):
+                w, n, _ = agg[c]
+                flag = '   n<30' if n < MIN_N else ''
+                print(f'      said {c*100:5.1f}%  got {100.0*w/n:5.1f}%  '
+                      f'n={n}{flag}')
+            big = [(c, v) for c, v in agg.items() if v[1] >= MIN_N]
+            if big:
+                gaps = [100.0 * v[0] / v[1] - c * 100 for c, v in big]
+                print(f'      mean signed gap OOS: '
+                      f'{statistics.mean(gaps):+.1f}pp  '
+                      f'(raw model was -14.9pp)')
+            # Does a calibrated number find +EV against the price we paid?
+            print('  betting only where calibrated P beats the price we paid:')
+            for margin in (0.0, 0.02, 0.04):
+                sel = []
+                for r in test:
+                    o = taken_odds(r)
+                    if o is None:
+                        continue
+                    if calibrated(r['_p']) > implied_prob(o) + margin:
+                        sel.append(r)
+                if not sel:
+                    print(f'      margin {margin:.0%}: no qualifying plays')
+                    continue
+                w = sum(1 for r in sel if won(r))
+                r_pct, _, units = roi(sel)
+                flag = '   n<30' if len(sel) < MIN_N else ''
+                print(f'      margin {margin:.0%}: {w}-{len(sel)-w} '
+                      f'{100.0*w/len(sel):5.1f}%  n={len(sel):<4d} '
+                      f'ROI {r_pct:+6.2f}%  {units:+6.1f}u{flag}')
 
     # ── price is a selection variable we currently ignore ───────────────
     print('\nROI BY THE PRICE WE PAID  (the band is -300..+150 today)')
