@@ -146,6 +146,31 @@ jobs:
           cd mlb_pipeline
           python backfill_nhl_team_tendencies.py
 
+      # ─── NHL game reads (2026-09-24) ───────────────────────────────
+      # Until now this workflow had NO read generator. Odds, results,
+      # context, externals, tendencies and props all ran; nothing wrote
+      # prose. sync_jerry_reads_from_ctx then backfilled
+      # primary_play.sub as the visible short_read, so all 37 NHL cards
+      # read like "Model conviction on Canucks · 64%" — 33 characters,
+      # empty long_read, behind a real moneyline at conviction 64.
+      #
+      # Deliberately NOT wrapped in `|| echo`. A read generator that
+      # fails silently is what left the NFL slate as engine stubs earlier
+      # today: the failure printed one line, the week-lock froze the
+      # empty slate, and the sync bridge filled it with jargon. If this
+      # breaks, the step should go red.
+      #
+      # Runs BEFORE props so a failure here is visible on its own rather
+      # than buried among prop warnings.
+      - name: Generate NHL game reads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_nhl_game_reads.py
+
       # ─── NHL prop pipeline (2026-08-17) ────────────────────────────
       # Sweeps Odds API for goalie + skater props, upserts stubs into
       # nhl_pipeline_props. Playbook scorer (shared with MLB/NFL) runs
