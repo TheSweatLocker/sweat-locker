@@ -628,7 +628,13 @@ export default function GameDetailV2({
             NFL/NBA/NCAAB/NHL follow-up ships. See
             project_rolling_rollup_architecture_901. */}
         {showTeamStats && (
-          <Section title="Team Stats" hint="raw value + rank · ranks are FBS-only">
+          {/* 2026-09-24: the hint was hardcoded "ranks are FBS-only" and
+              rendered on every sport, so an MLB card claimed its ranks
+              were college-football-only. The qualifier is real but it is
+              NCAAF's alone. Andy caught it on a Cardinals/Pirates card. */}
+          <Section title="Team Stats"
+                   hint={`raw value + rank · green = better${
+                     gamesSport === 'NCAAF' ? ' · ranks are FBS-only' : ''}`}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
           </Section>
         )}
@@ -3024,22 +3030,56 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
   );
 }
 
+// 2026-09-24 ADVANTAGE COLOURING. Andy: "if the other team is better the
+// stat green and the other team stat red ... I want users to be able to
+// readily identify which team is better in any given aspect, across all
+// sports."
+//
+// Compared on RANK, not raw value, for two reasons. Rank is already
+// polarity-aware everywhere — RankChip colours by rank/league_size with
+// the top quintile green, so rank 1 is the best team at that stat whether
+// the stat is points scored or points allowed or strikeout rate. That
+// means this needs no per-stat higher_is_better table and works for every
+// sport the moment the sport populates team_stats_rolling. And rank
+// carries context a raw value does not: .241 vs .254 is 18th vs 4th,
+// which is the thing worth seeing.
+//
+// A neutral band is deliberate. Colouring every row would claim an edge
+// on gaps that are noise, and a screen where everything is coloured says
+// nothing. Under 5 places apart, neither side is tinted.
+const ADV_STRONG = 12;   // clear edge — colour plus weight
+const ADV_SLIGHT = 5;    // visible edge — colour only
+
+function advantage(aRank: any, bRank: any): 'strong' | 'slight' | null {
+  if (aRank == null || bRank == null) return null;
+  const gap = Math.abs(Number(aRank) - Number(bRank));
+  if (!isFinite(gap)) return null;
+  if (gap >= ADV_STRONG) return 'strong';
+  if (gap >= ADV_SLIGHT) return 'slight';
+  return null;
+}
+
 function StatRow({statKey, awayRow, homeRow}: any) {
   // Prefer whichever has display_label present (both should have same);
   // fall back to prettified stat_key.
   const label = awayRow?.display_label || homeRow?.display_label
              || statKey.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   const unit = awayRow?.unit || homeRow?.unit || '';
+  // Lower rank is better. Only assign an edge when both sides are ranked.
+  const tier = advantage(awayRow?.rank, homeRow?.rank);
+  const awayBetter = tier != null && Number(awayRow.rank) < Number(homeRow.rank);
   return (
     <View style={tsStyles.statRow}>
-      <StatCell row={awayRow} unit={unit} align="right" />
+      <StatCell row={awayRow} unit={unit} align="right"
+                edge={tier ? (awayBetter ? 'good' : 'bad') : null} strong={tier === 'strong'} />
       <Text style={tsStyles.statLabel}>{label}</Text>
-      <StatCell row={homeRow} unit={unit} align="left" />
+      <StatCell row={homeRow} unit={unit} align="left"
+                edge={tier ? (awayBetter ? 'bad' : 'good') : null} strong={tier === 'strong'} />
     </View>
   );
 }
 
-function StatCell({row, unit, align}: any) {
+function StatCell({row, unit, align, edge, strong}: any) {
   if (!row || row.raw_value == null) {
     return (
       <View style={[tsStyles.statCell, align==='left' ? {alignItems: 'flex-start'} : {alignItems: 'flex-end'}]}>
@@ -3063,7 +3103,14 @@ function StatCell({row, unit, align}: any) {
             combinations, resulting in default-black text. Siblings each
             hold their own StyleSheet reference so color is always
             explicit. */}
-        <Text style={tsStyles.statValue}>{row.raw_value}</Text>
+        <Text style={[
+          tsStyles.statValue,
+          edge === 'good' ? {color: C.win} : edge === 'bad' ? {color: C.loss} : null,
+          // Weight carries the size of the gap, so a clear edge still
+          // reads as one in greyscale or to a colour-blind user rather
+          // than relying on hue alone.
+          strong && edge ? {fontWeight: '800' as const} : null,
+        ]}>{row.raw_value}</Text>
         {unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
         <RankChip rank={row.rank} leagueSize={row.league_size} />
       </View>
