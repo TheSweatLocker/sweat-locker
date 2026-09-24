@@ -886,6 +886,35 @@ THE TEST is whether any book quotes the exact thing we named. Today:
 
 All seven bad ones are NCAAF. MLB, NFL and NHL are clean.
 
+ROOT CAUSE FOUND 2026-09-23. Not a sign convention bug at all.
+
+ncaaf_odds_pull.py was correct the whole time - it reads Oregon @ USC as
+sp=3.0, ml=140/-166, which matches the books exactly, and writes that to
+ncaaf_game_results. The defect was one layer later:
+
+  * ncaaf_game_results holds the same fixture twice for neutral-site and
+    UTC-boundary games - ncaaf_20261010_Oklahoma_Texas alongside
+    ncaaf_20261010_Texas_Oklahoma, and Georgia_Alabama on both 10-10 and
+    10-11 with OPPOSITE spread signs.
+  * ncaaf_game_context has a unique index on (game_date, LEAST(home,away),
+    GREATEST(home,away)) which correctly rejects them.
+  * the context upsert POSTs all rows in ONE request, which is atomic, so
+    that single conflicting pair aborted all 90 writes and returned 0.
+  * the workflow wraps the call in `|| echo "game_context failed"`.
+
+So every NCAAF context row was frozen at 2026-09-05 while team form,
+projections and reads kept refreshing around it. Three weeks of stale
+lines, announced by one echo line nobody reads. B11's silent-failure
+class, at the writer.
+
+FIXED: the upsert now falls back to one request per row on 409. Good rows
+land, conflicting fixtures are named. 88 of 90 wrote; the 2 rejected are
+exactly the duplicate pair. Oregon @ USC corrected -2.5 -> +3.0 and its
+primary_play flipped from "USC -2.5" to "Oregon ML".
+
+STILL OPEN: dedupe ncaaf_game_results itself. Two rows for one fixture is
+the upstream defect; the resilient upsert only stops it being fatal.
+
 FIX:
   1. `verify_offerable.py` exists and exits 2 on WRONG_SIDE. Wire it as a
      publish gate - a pick the market does not offer must not ship.

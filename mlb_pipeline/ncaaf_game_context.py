@@ -1470,6 +1470,44 @@ def upsert(rows: list, dry_run: bool = False) -> int:
         retry_rounds += 1
     if stripped_total and r.status_code in (200, 201, 204):
         print(f'  ⚠ ncaaf ctx stripped {len(stripped_total)} unknown cols: {stripped_total} — add ALTER TABLE for these')
+    if r.status_code == 409:
+        # 2026-09-23. One row can no longer cost the other eighty-nine.
+        #
+        # ncaaf_game_results holds the same fixture twice for neutral-site
+        # and UTC-boundary games — ncaaf_20261010_Oklahoma_Texas alongside
+        # ncaaf_20261010_Texas_Oklahoma, and Georgia_Alabama on both 10-10
+        # and 10-11 with OPPOSITE spread signs. The table's unique index on
+        # (game_date, LEAST(home,away), GREATEST(home,away)) is right to
+        # reject them. What was wrong is that a batch POST is atomic, so
+        # the single conflicting pair aborted all 90 writes and returned 0.
+        #
+        # The workflow wraps this call in `|| echo "game_context failed"`,
+        # so it printed one line and carried on. Every NCAAF context row
+        # sat frozen from 2026-09-05 while team form kept refreshing around
+        # it — which is how we came to publish "USC -2.5" against a market
+        # of USC +3.0.
+        #
+        # Fall back to one request per row: good rows land, and the
+        # conflicting fixtures are named instead of being inferred from a
+        # truncated Postgres error.
+        ok, clashed = 0, []
+        for row in rows:
+            rr = requests.post(
+                f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
+                headers=H_WRITE, json=[row], timeout=30,
+            )
+            if rr.status_code in (200, 201, 204):
+                ok += 1
+            elif rr.status_code == 409:
+                clashed.append(row.get('game_id'))
+            else:
+                print(f"  ⚠ {row.get('game_id')}: {rr.status_code} {rr.text[:120]}")
+        if clashed:
+            print(f'  ⚠ {len(clashed)} row(s) rejected as duplicate fixtures '
+                  f'(same matchup already present under another game_id): '
+                  f'{clashed[:6]}')
+        print(f'  ↻ batch conflicted; wrote {ok}/{len(rows)} row-by-row')
+        return ok
     if r.status_code not in (200, 201, 204):
         print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
         return 0
