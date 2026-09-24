@@ -52,6 +52,27 @@ def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
+def _et_date_from_utc(ts) -> str | None:
+    """UTC timestamp -> the ET calendar date the game is played on.
+
+    Uses the same fixed -4 offset the rest of this file already uses for
+    today_et(). That is EDT, correct through early November; a real
+    timezone would be better but introducing a second convention here is
+    how the duplicate arose in the first place. One offset, used
+    everywhere, beats two that are individually more correct.
+    """
+    if not ts:
+        return None
+    try:
+        return (datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+                .astimezone(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+    except (TypeError, ValueError):
+        # Malformed timestamp — fall back to the raw date slice rather
+        # than writing nothing, but say so.
+        print(f'  ⚠ could not parse commence_time {ts!r} — using UTC date')
+        return str(ts)[:10] or None
+
+
 def ncaaf_week_write_locked():
     """NCAAF equivalent of nfl_week_write_locked.
 
@@ -1991,8 +2012,25 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     # 2026-09-10: enforce ensemble alignment BEFORE writing so badge + prose agree.
     parsed = defer_call_to_ensemble_nfl(parsed, struct)
     game_id = game.get('id')  # Odds API game id
-    # commence_time to game_date ET
-    ct = game.get('commence_time', '')[:10] or today_et()
+    # 2026-09-24 DUPLICATE CARDS. The comment said "commence_time to
+    # game_date ET" but the code just sliced the first ten characters of a
+    # UTC timestamp, which is the UTC date. Every night game crosses
+    # midnight UTC, so a Thursday 8:15pm ET kickoff is 00:15Z on Friday
+    # and landed under the NEXT day:
+    #
+    #   ATL @ GB   kickoff 2026-09-25T00:15Z
+    #              nfl_game_context says 2026-09-24 (ET, correct)
+    #              jerry_reads got BOTH 09-24 and 09-25
+    #
+    # jerry_reads is keyed on (sport, game_id, game_date), so the two
+    # dates are two rows for one game and the app shows the card twice.
+    # Four games were duplicated this week — every Thursday, Sunday and
+    # Monday night game.
+    #
+    # Convert to ET properly instead. ET is the date the context table and
+    # the app both use, so this makes the key agree with everything else
+    # rather than adding another reconciler.
+    ct = _et_date_from_utc(game.get('commence_time')) or today_et()
 
     # 2026-09-16 WEEK-LOCK GUARD. Once we're past Thu 8am ET, existing
     # jerry_reads rows for the week are frozen. Skip write if a row
