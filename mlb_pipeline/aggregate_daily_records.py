@@ -367,7 +367,14 @@ def agg_sharp_card(date: str) -> list[dict] | None:
             # can render "4-2-1 · 8 pending" honestly. Consumers that need
             # only graded count use w+l+p directly.
             'pick_count':b['shipped'],
-            'detail':{'legs':b['detail'][:50], 'source':'jerry_cache.sharp_card',
+            # 2026-09-24: cap raised 50 -> 400. These legs are not decoration;
+            # split_sharp_card_record.py derives the card's sides/props
+            # breakdown from them, so a truncated day silently breaks the
+            # arithmetic on the user-facing record. 2026-09-04 shipped 57
+            # items, stored 50, and the epoch breakdown came up exactly 7
+            # picks short of its own headline. 400 clears the largest day we
+            # have ever shipped by a wide margin.
+            'detail':{'legs':b['detail'][:400], 'source':'jerry_cache.sharp_card',
                        'pending':b['pending'], 'graded':b['w']+b['l']+b['p_ct'],
                        'shipped':b['shipped']},
         })
@@ -386,7 +393,7 @@ def agg_sharp_card(date: str) -> list[dict] | None:
             'units_won':round(all_won,2),
             # 2026-09-12: pick_count = total SHIPPED for the ALL row too.
             'pick_count':all_shipped,
-            'detail':{'legs':all_detail[:50], 'source':'jerry_cache.sharp_card',
+            'detail':{'legs':all_detail[:400], 'source':'jerry_cache.sharp_card',
                        'sports_included': sorted(per_sport.keys()),
                        'pending':all_pending, 'graded':all_w+all_l+all_p,
                        'shipped':all_shipped},
