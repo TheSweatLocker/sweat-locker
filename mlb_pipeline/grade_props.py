@@ -368,7 +368,32 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
                 tally['V'] += 1
                 continue
             if stats_map.get(_norm_name(prop.get('player_name'))) is None:
+                # 2026-09-24. A player who never appeared in a FINAL game did
+                # not "fail to grade" — his prop resolved to no action. Left
+                # as NULL these accumulate forever and are re-reported every
+                # single morning as "player not found in boxscore", a message
+                # that names the symptom and buries the cause. 48 props from
+                # 09-22 and 09-23 were sitting in exactly that state.
+                #
+                # The postponed-game branch above already Voids for the same
+                # reason; this is the late-scratch and never-appeared case,
+                # which it never covered. Void is already the established
+                # outcome for unresolvable props (2,189 rows carry it).
+                #
+                # Gated on the game being final: an in-progress or unstarted
+                # game has a legitimately absent boxscore line and must stay
+                # pending. fetch_player_stats_for_date only loads final
+                # games, so a non-empty stats_map is that guarantee.
                 tally['skipped_no_player'] += 1
+                if stats_map:
+                    if not dry_run:
+                        requests.patch(
+                            f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                            headers=H_WRITE, timeout=10,
+                            data=json.dumps({
+                                'result': 'Void',
+                                'resolved_at': datetime.now(timezone.utc).isoformat()}))
+                    tally['V'] += 1
             else:
                 tally['skipped_no_stat'] += 1
             continue
