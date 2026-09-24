@@ -975,6 +975,49 @@ Two faults compounding:
 VERIFY: `python mlb_pipeline/resolve_nfl_props_espn.py --lookback 10 --dry-run`
         should report 0 unresolved on every date.
 
+### B46 - NHL publishes 37 picks with no reasoning behind any of them
+Found 2026-09-24 while clearing duplicate reads.
+
+Every NHL read on the board is the engine's own `sub` string, 31-33
+characters, with long_read EMPTY:
+
+      "Model conviction on Canucks · 64%"    conv 64
+      "Model conviction on Kraken · 63%"     conv 63
+      "Model conviction on Sharks · 60%"     conv 60
+
+37 of 37, covering 09-24 through 09-30, each attached to a real ML pick.
+Worse than the NFL stub incident and nobody had looked.
+
+ROOT CAUSE: nhl_pipeline.yml has NO read generator. It runs nhl_odds_pull,
+nhl_resolve_results, nhl_game_context, pull_externals_nhl,
+backfill_nhl_team_tendencies and nhl_generate_props — nothing writes
+prose. sync_jerry_reads_from_ctx.py then backfills primary_play.sub as the
+visible short_read, exactly as it did for NFL when that generator failed.
+
+NOT a new build. The pattern exists four times over
+(generate_jerry_synthesis, generate_ncaab_game_reads,
+generate_ncaaf_game_reads, generate_nfl_game_reads all share
+jerry_reads_dual_write), and _prompt_game_read_rules_NHL.txt is already
+written. It is 10 lines and it already states the honest framing:
+
+      "Market-based analysis — no NHL model active yet."
+      "Do NOT fabricate model metrics."
+      Lead on confirmed goalie starters, pace, special teams, form.
+
+So the intent was decided; the wiring was never done. generate_ncaab_game_reads
+is the closest analog — another soft-launched sport.
+
+DECISION NEEDED: NHL opens 10-08. Either wire the generator before then,
+or stop publishing NHL picks until it exists. Shipping a conviction-64 ML
+with 33 characters of engine output as its analysis is the worse of the
+two.
+
+ALSO: 29 of 37 NHL reads carry no price — line_history has no quotes for
+preseason games.
+
+VERIFY: `select count(*) from jerry_reads where sport='NHL'
+         and length(coalesce(long_read,''))=0 and game_date>=current_date;`
+
 ## P2 — structural (the ones that keep causing the others)
 
 ### B11 · 319 sites turn an HTTP failure into an empty list
