@@ -367,7 +367,33 @@ LEAN (+0.8pp) beats STRONG (-4.1pp) — and a projection exists on 2 of
 FIX: make edge-vs-implied the publishing gate, with a sample floor.
 Report: https://claude.ai/artifact/CZ9Fqvrw74MjgkbiTaNZRj
 
-### B26 · Markdown leaking into short_read
+### B26 · Markdown leaking into short_read — **CLOSED 2026-09-24**
+`20309487`. Established first, not assumed: reads render in a plain React
+Native `<Text>` (app/index.tsx:14870, :16029) via `scrubJerryText`, which only
+strips `[Auto-...]` tags. **package.json has no markdown dependency** and
+nothing converts `**`, so subscribers saw literal asterisks.
+
+Scope was larger than this item said — it logged short_read only:
+**19 of 152 forward-slate reads** carried `**`, 8 in short_read and 19 in
+long_read, across all four sports. One NFL short_read was just `**` and a
+newline. No `#` headers, no bullets.
+
+`strip_markdown_emphasis` (jerry_reads_dual_write) strips bold/italic and any
+unpaired `**`, and deliberately leaves em dashes, `---` rules and arithmetic
+asterisks alone — 10 test inputs, 0 failures. Wired into the shared writer
+(covers NCAAF/NCAAB/NHL), `generate_nfl_game_reads`, and
+`sync_jerry_reads_from_ctx`. Also added to `jerry_pre_publish_audit.auto_repair`
+so any of the ~30 writers not patched gets cleaned nightly — writer-side
+prevention failed three times today on the parser-marker case, so the boundary
+repair is the part that cannot be outflanked.
+
+VERIFIED: 152 reads, 0 `**` in either field, 0 parser markers, 0 blanked
+fields, min short/long 122/406 chars.
+VERIFY: `python mlb_pipeline/verify_backlog.py --only B26`
+
+Original finding follows.
+
+### B26-orig · Markdown leaking into short_read
 `Ari@Col` and `Tam@New` short_reads begin `**PITCHERS:**` and one
 contains a literal newline. The card renders short_read as plain text,
 so users see the asterisks. Cosmetic half of the non-uniformity Andy
@@ -1097,6 +1123,49 @@ Same class as B26 (markdown in short_read): nothing enforces the boundary
 between generated prose and fixed product copy.
 
 VERIFY: `python mlb_pipeline/verify_backlog.py --only NEW`
+
+---
+
+### B49 - MLB's publish gate reports 4 criticals a day and nothing stops
+Found 2026-09-24 while running the audit for the markdown sweep.
+
+`jerry_pre_publish_audit` is designed to exit 1 so the sweat card build is
+skipped — its own docstring calls that "the cost of a bad read shipping > cost
+of a missed cron". `mlb_pipeline.yml` invokes it with **`--warn-only`**, so it
+has never blocked anything. Today's MLB slate reports:
+
+      engine_breakdown: 0/12 rows on ensemble_v2 — ensemble silently disabled
+      refit coverage 38% (22/58) — apply_prop_refit likely failed this cycle
+      sharp-fade discipline violation · LA@SEA UNDER, sharp 79% same side
+      prop_jerry Cam Schlittler er_under LEAN on refit=7.4 (trap zone)
+
+THE ENSEMBLE ONE IS THE WORST. `_engine` on `mlb_game_context.primary_play`:
+
+      09-20   lr_v1 13 · ensemble_v2  2
+      09-21   lr_v1  2 · ensemble_v2  1
+      09-22   lr_v1 12 · ensemble_v2  3 · None 1
+      09-23   lr_v1 16 · ensemble_v2  0
+      09-24   lr_v1 12 · ensemble_v2  0
+
+So `lr_v1` has decided every MLB game for two days and the ensemble contributes
+nothing. NOT caused by the 09-24 registry pagination fix (`1c6d9129`) — checked
+before assuming, and 09-23 was already zero, before that commit landed. The
+audit names the place to look: "ensemble_scorer import + score_game exceptions
+in recompute_primary_play logs". `ensemble_scorer` imports cleanly and loads 842
+registry signals and 217 MLB sources when called directly, so the failure is
+inside `recompute_primary_play`'s use of it, not the module.
+
+Two separate things:
+  1. Why is ensemble_v2 losing every game to lr_v1? Either scoring raises and is
+     swallowed, or the ensemble genuinely scores below the LEAN threshold on
+     every game — which would itself be worth knowing.
+  2. `--warn-only` means the gate is decorative on the sport that has the most
+     reads. The NFL wiring added today records failures and turns the run red
+     without skipping the graders (which run after the card in that workflow);
+     MLB should get the same treatment rather than silence.
+
+VERIFY: `python mlb_pipeline/jerry_pre_publish_audit.py --sport MLB --date <today>`
+(exits 1 and lists them; add --warn-only to reproduce what the cron sees)
 
 ---
 
