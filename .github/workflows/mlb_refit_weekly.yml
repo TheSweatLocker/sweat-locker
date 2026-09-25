@@ -56,7 +56,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_historical_odds_backfill.py --year 2026 || echo "ncaaf odds backfill non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_historical_odds_backfill.py" python ncaaf_historical_odds_backfill.py --year 2026
 
       # 2026-09-14: NHL + NBA historical odds backfill via The Odds API
       # historical endpoint. Fills close_* on newly-resolved 2026-27
@@ -70,8 +70,8 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_historical_odds_hoops_hockey.py --sport nhl || echo "nhl odds backfill non-fatal"
-          python backfill_historical_odds_hoops_hockey.py --sport nba || echo "nba odds backfill non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_historical_odds_hoops_hockey.py" python backfill_historical_odds_hoops_hockey.py --sport nhl
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_historical_odds_hoops_hockey.py" python backfill_historical_odds_hoops_hockey.py --sport nba
 
       # 2026-09-03: LR predictors are trained from resolved outcomes and
       # drift as data grows. Weekly retrain keeps coefficients calibrated.
@@ -82,18 +82,18 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python mlb_ml_logreg_train.py    || echo "mlb_ml_logreg non-fatal"
-          python mlb_prop_logreg_train.py  || echo "mlb_prop_logreg non-fatal"
-          python mlb_total_logreg_train.py || echo "mlb_total_logreg non-fatal"
-          python nfl_ml_logreg_train.py    || echo "nfl_ml_logreg non-fatal"
-          python ncaaf_ml_logreg_train.py  || echo "ncaaf_ml_logreg non-fatal"
-          python ncaaf_total_logreg_train.py || echo "ncaaf_total_logreg non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mlb_ml_logreg_train.py" python mlb_ml_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mlb_prop_logreg_train.py" python mlb_prop_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mlb_total_logreg_train.py" python mlb_total_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_ml_logreg_train.py" python nfl_ml_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_ml_logreg_train.py" python ncaaf_ml_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_total_logreg_train.py" python ncaaf_total_logreg_train.py
           # 2026-09-14: NHL + NBA newly unblocked (v1.0.1 #12 backfill).
           # NHL 1335 games test acc 64.8% +7.5pp; NBA 1324 games 67.1% +10.3pp.
           # NCAAB still data-blocked pending Nov 3 season start.
-          python nba_ml_logreg_train.py    || echo "nba_ml_logreg non-fatal"
-          python nhl_ml_logreg_train.py    || echo "nhl_ml_logreg non-fatal"
-          python ncaab_ml_logreg_train.py  || echo "ncaab_ml_logreg data-blocked (expected)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nba_ml_logreg_train.py" python nba_ml_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nhl_ml_logreg_train.py" python nhl_ml_logreg_train.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_ml_logreg_train.py" python ncaab_ml_logreg_train.py
 
       # 2026-09-13: signal-registry refit reads freshly-graded signal_attribution
       # rows (LR_SHADOW, GOAT, ANCHOR, cohort chips, EPA_GAP, ...) plus prop
@@ -106,7 +106,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refit_signal_registry.py --days 90 || echo "refit_signal_registry non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refit_signal_registry.py" python refit_signal_registry.py --days 90
 
       # 2026-09-13: rebuild NFL + NCAAF cohort_tag_records from the fresh set of
       # graded games. Feeds the "48.5% · fade" chip labels + colors on the game
@@ -117,7 +117,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python build_cohort_tag_records.py || echo "build_cohort_tag_records non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "build_cohort_tag_records.py" python build_cohort_tag_records.py
 
       - name: Commit fresh weights if changed
         run: |
@@ -133,3 +133,20 @@ jobs:
             git commit -m "Weekly refit + LR retrain $(date +%Y-%m-%d)"
             git push
           fi
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

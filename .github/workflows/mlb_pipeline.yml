@@ -135,7 +135,7 @@ jobs:
           pip install pybaseball requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost playwright
           # Chromium binary for Playwright-rendered external scrapers
           # (Dimers/Action/BettingPros). Adds ~200MB but only runs on external pull step.
-          python -m playwright install --with-deps chromium || echo "chromium install failed (non-fatal — Playwright scrapers will skip)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "playwright install" python -m playwright install --with-deps chromium
 
       # 2026-09-14 YESTERDAY-CATCH-UP BLOCK. Front-loaded so records on
       # the app are current BEFORE the ~30min pick-build sequence starts.
@@ -167,7 +167,7 @@ jobs:
           python grade_jerry_reads.py --sport MLB
           python grade_jerry_reads.py --sport NFL
           python grade_jerry_reads.py --sport NCAAF
-          python resolve_potd.py || echo "resolve_potd catch-up non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_potd.py" python resolve_potd.py
           python aggregate_daily_records.py --backfill 2
           python compute_surface_records.py
 
@@ -601,7 +601,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_prop_bucket_roi.py || echo "prop bucket recompute failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_prop_bucket_roi.py" python compute_prop_bucket_roi.py
           python compute_game_bucket_roi.py
 
       # Prop refit conviction (2026-07-31 · Option C step 1). Post-hoc
@@ -640,14 +640,14 @@ jobs:
           DOW=$(date -u +%u)
           if [ "$DOW" = "7" ]; then
             cd mlb_pipeline
-            python refit_signal_registry.py --days 90 --min-n 10 || echo "signal registry refit failed (non-fatal)"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refit_signal_registry.py" python refit_signal_registry.py --days 90 --min-n 10
             # 2026-08-26: weekly auto-mining across all sports.
             # discover_patterns.py walks each sport's ctx+results, enumerates
             # 2-way and 3-way combos of model/split/form features, and
             # auto-seeds any that beat n>=15 AND |edge|>=10pp. Seeded with
             # disabled=True so user reviews + enables. Non-fatal — mining
             # errors on one sport don't stop the others.
-            python discover_patterns.py --all --days 90 || echo "discover_patterns failed (non-fatal)"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "discover_patterns.py" python discover_patterns.py --all --days 90
             # 2026-09-08: removed redundant compute_external_source_records
             # call from inside Sunday block — the standalone step at line
             # ~619 runs it EVERY day, so this was a Sunday-only 2x invocation.
@@ -683,21 +683,21 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_scenario_audit.py --sport MLB --window lifetime || echo "scenario audit MLB lifetime failed"
-          python compute_scenario_audit.py --sport MLB --window 90d || echo "scenario audit MLB 90d failed"
-          python compute_scenario_audit.py --sport MLB --window 30d || echo "scenario audit MLB 30d failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport MLB --window lifetime
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport MLB --window 90d
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport MLB --window 30d
           # 2026-08-11: NCAAF results-primary path (15k+ games via CFBD).
           # NCAAF ctx is thin — builder pulls scenarios directly from results.
-          python compute_scenario_audit.py --sport NCAAF --window lifetime || echo "scenario audit NCAAF lifetime failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport NCAAF --window lifetime
           # 2026-08-28 Phase 4 kill #8: NHL + NCAAB scenario audits gated
           # to their in-season months. Silent no-ops off-season were
           # firing 3x/day for nothing. Re-runs Nov 3 (NCAAB) / Oct 7 (NHL).
           MONTH=$(date -u -d '-4 hours' +%m)
           if [ "$MONTH" -ge 10 ] || [ "$MONTH" -le 04 ]; then
-            python compute_scenario_audit.py --sport NHL --window lifetime || echo "scenario audit NHL lifetime failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport NHL --window lifetime
           fi
           if [ "$MONTH" -ge 11 ] || [ "$MONTH" -le 04 ]; then
-            python compute_scenario_audit.py --sport NCAAB --window lifetime || echo "scenario audit NCAAB lifetime failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_scenario_audit.py" python compute_scenario_audit.py --sport NCAAB --window lifetime
           fi
           # 2026-08-12: sharp scenario matrix — 30+ patterns per sport
           # tracked with per-game match cache. Sport-universal, MLB first.
@@ -761,7 +761,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python dedup_prop_dupes.py || echo "prop dedup failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "dedup_prop_dupes.py" python dedup_prop_dupes.py
 
       # 2026-08-23 Sport-universal coverage audit. Runs read-only, reports
       # per-family signal-firing gaps to stdout. Findings map 1:1 to the
@@ -775,7 +775,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_coverage_audit.py --sport MLB || echo "coverage audit failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "prop_coverage_audit.py" python prop_coverage_audit.py --sport MLB
 
       # 2026-08-23 End-to-end pipeline healthcheck. Verifies all 8 layers
       # of the prop flow (ingest → scoring → conviction → refit → playbook
@@ -790,7 +790,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python prop_pipeline_healthcheck.py --sport MLB --sample 3 || echo "healthcheck failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "prop_pipeline_healthcheck.py" python prop_pipeline_healthcheck.py --sport MLB --sample 3
 
       # 2026-08-23 Per-signal ROI tracker — empirical validation of each
       # signal_key's historical hit rate on graded props. Answers "which
@@ -804,7 +804,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python signal_contribution_tracker.py --sport MLB --days 30 || echo "signal tracker failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "signal_contribution_tracker.py" python signal_contribution_tracker.py --sport MLB --days 30
 
       # 2026-08-23 Auto-calibration bridge: writes empirical signal hit
       # rates into signal_registry so playbook's edge_weight() picks up
@@ -818,7 +818,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport MLB --days 30 || echo "signal calibration refresh failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_prop_signal_calibration.py" python refresh_prop_signal_calibration.py --sport MLB --days 30
 
       # Prop ensemble scorer — SHADOW MODE (2026-08-17). Reads
       # signal_sources rows with subject_scope IN ('prop','player_prop')
@@ -940,7 +940,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python dedup_prop_dupes.py --sport MLB || echo "final dedup failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "dedup_prop_dupes.py" python dedup_prop_dupes.py --sport MLB
 
       # 2026-09-13 Jerry-read orphan sweep. After dedup + refit override,
       # some jerry_reads point at (player, prop_type, direction) tuples
@@ -1113,7 +1113,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python retry_missing_starters.py || echo "retry_missing_starters non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "retry_missing_starters.py" python retry_missing_starters.py
 
       # v5 nightly retrain (2026-06-21) — rolling 90d window. v5_ml +
       # v5_total are stacked ensembles read by play_of_day's POTD
@@ -1134,8 +1134,8 @@ jobs:
           HOUR_UTC=$(date -u +%H)
           if [ "$HOUR_UTC" -ge 5 ] && [ "$HOUR_UTC" -le 12 ]; then
             echo "Morning slot — running v5 retrain"
-            python train_v5_ml.py || echo "v5_ml retrain failed (non-fatal)"
-            python train_v5_total.py || echo "v5_total retrain failed (non-fatal)"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "train_v5_ml.py" python train_v5_ml.py
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "train_v5_total.py" python train_v5_total.py
           else
             echo "Outside morning slot ($HOUR_UTC UTC) — skipping retrain"
           fi
@@ -1182,18 +1182,18 @@ jobs:
           # resolve_props.py fallback removed after 14-day parallel-run window
           # closed cleanly (grade_props no known misses). File moved to
           # _legacy/resolve_props.py for reference.
-          python grade_props.py || echo "grade_props non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "grade_props.py" python grade_props.py
           # 2026-08-18: copy result + compute unit_pnl using SNAPSHOTTED
           # odds so historical PnL uses the odds at card-lock, not whatever
           # was live at grade time. Backfills last 7 days each run so late
           # settles catch up automatically.
-          python grade_pick_snapshots.py --days 7 || echo "grade_pick_snapshots non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "grade_pick_snapshots.py" python grade_pick_snapshots.py --days 7
           # 2026-08-22: grade prop_playbook_decisions. Was --backfill 21
           # for one-shot catchup; trimmed to 3 for steady-state. Grader
           # runs every cron cycle so a 3-day window is more than enough
           # to catch late grades — 21 was adding ~8 min of MLB stats API
           # calls per cron for zero incremental benefit after catchup.
-          python grade_prop_playbook.py --backfill 3 || echo "grade_prop_playbook non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "grade_prop_playbook.py" python grade_prop_playbook.py --backfill 3
 
       # Prop playbook shadow audit (2026-08-17). Compares legacy prop
       # scoring vs plug-in playbook decisions over rolling 14-day window
@@ -1655,7 +1655,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python play_of_day_multi_sport.py || echo "cross-sport POTD non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "play_of_day_multi_sport.py" python play_of_day_multi_sport.py
 
       # 2026-09-09 CONSOLIDATION: snapshot_pick_lock moved FROM the tail
       # to right before generate_sharp_card so composers can READ the
@@ -1692,7 +1692,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_sharp_card.py || echo "sharp card generation non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_sharp_card.py" python generate_sharp_card.py
 
       # 2026-08-28 Phase 4 kill #3: v7/v1_ml shadow inference deleted.
       # Auditors (audit_v7_shadow.py, audit_ml_v1_shadow.py) went dead
@@ -1793,7 +1793,7 @@ jobs:
           # Result: LLM runs once per day (first successful cron), backup + afternoon
           # crons no-op if morning succeeded. jerry_pick_scrub keeps CALL fields
           # synced with primary_play flips post-recompute.
-          python generate_jerry_synthesis.py || echo "jerry synthesis failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_jerry_synthesis.py" python generate_jerry_synthesis.py
 
           # 2026-08-28 Phase 3: defense-in-depth — sync jerry_reads from ctx
           # even after parse_synthesis. If parse fails silently (has happened
@@ -2020,7 +2020,7 @@ jobs:
         run: |
           cd mlb_pipeline
           if [ "$(date -u +%u)" = "7" ]; then
-            python refresh_jerry_prompt_context.py --sport MLB || echo "prompt refresh failed (non-fatal)"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_jerry_prompt_context.py" python refresh_jerry_prompt_context.py --sport MLB
           else
             echo "skip (not Sunday UTC)"
           fi
@@ -2099,7 +2099,7 @@ jobs:
           python verify_starters.py "$TOMORROW"
           # 2026-08-22: parallel bucket warmup (same fix as main run) so
           # tomorrow's context build doesn't inline-refresh serially.
-          python warmup_pitcher_buckets.py --date "$TOMORROW" --workers 6 || echo "tomorrow bucket warmup non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "warmup_pitcher_buckets.py" python warmup_pitcher_buckets.py --date "$TOMORROW" --workers 6
           python patch_projected_ks.py --date "$TOMORROW"
 
       # Auto tier calibration — runs daily, computes rolling 7d/30d/STD hit rates
@@ -2294,7 +2294,7 @@ jobs:
           # run keeps home-page Live Audit numbers current. Snapshot was
           # locked at sweat_card gen time (12:32 UTC) but calibration
           # recomputes throughout the day. See refresh_audit_rollup.py.
-          python refresh_audit_rollup.py || echo "audit rollup refresh failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_audit_rollup.py" python refresh_audit_rollup.py
           # 2026-09-22: write the Games-tab note from REAL pipeline state.
           # Runs here because by this point context is built and scored, so
           # "is the slate ready" is answerable from the DB instead of being
@@ -2477,7 +2477,7 @@ jobs:
         continue-on-error: true
         run: |
           cd mlb_pipeline
-          python mine_line_patterns.py --refresh --sport ALL || echo "pattern refresh failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mine_line_patterns.py" python mine_line_patterns.py --refresh --sport ALL
           python mine_line_patterns.py --discover --sport ALL
 
       # Freeze TRUE closing lines at T-Xmin (per line_movement_config).
@@ -2652,7 +2652,7 @@ jobs:
           echo "Bullpen effective ERA missing on: $BULLPEN_MISSING games"
           if [ "$BULLPEN_MISSING" -gt 0 ]; then
             echo "🚨 RESCUE: re-running mlb_advanced_metrics.py"
-            python mlb_advanced_metrics.py || echo "advanced_metrics rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mlb_advanced_metrics.py" python mlb_advanced_metrics.py
           fi
 
           TENDENCIES_MISSING=$(check_url "mlb_game_context?game_date=eq.$TODAY&home_ou_l10_at_home_overs=is.null&select=game_id")
@@ -2660,7 +2660,7 @@ jobs:
           echo "Team tendencies missing on: $TENDENCIES_MISSING games"
           if [ "$TENDENCIES_MISSING" -gt 0 ]; then
             echo "🚨 RESCUE: re-running backfill_team_tendencies.py"
-            python backfill_team_tendencies.py || echo "tendencies rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_team_tendencies.py" python backfill_team_tendencies.py
           fi
 
           MC_COUNT=$(check_url "mlb_game_context?game_date=eq.$TODAY&mc_probabilities=not.is.null&select=game_id")
@@ -2668,7 +2668,7 @@ jobs:
           echo "MC coverage: $MC_COUNT games"
           if [ "$MC_COUNT" -lt 3 ]; then
             echo "🚨 RESCUE: re-running enrich_monte_carlo.py"
-            python enrich_monte_carlo.py || echo "MC rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "enrich_monte_carlo.py" python enrich_monte_carlo.py
             python recompute_primary_play.py --date $TODAY
             # 2026-08-27: cascade to jerry_reads so badge + prose don't drift
             python jerry_pick_scrub.py --sport MLB --date $TODAY
@@ -2679,8 +2679,8 @@ jobs:
           echo "Props coverage: $PROPS_COUNT rows"
           if [ "$PROPS_COUNT" -lt 20 ]; then
             echo "🚨 RESCUE: re-running generate_props.py"
-            python generate_props.py || echo "props rescue failed"
-            python sweep_prop_coverage.py || echo "coverage sweep rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_props.py" python generate_props.py
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "sweep_prop_coverage.py" python sweep_prop_coverage.py
           fi
 
           # Refit conviction — this is what promotes/demotes props based on
@@ -2691,7 +2691,7 @@ jobs:
           echo "Props with NULL refit_conviction: $REFIT_NULL"
           if [ "$REFIT_NULL" -gt 5 ]; then
             echo "🚨 RESCUE: re-running apply_refit_verdict_override.py"
-            python apply_refit_verdict_override.py || echo "refit override rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_refit_verdict_override.py" python apply_refit_verdict_override.py
           fi
 
           LADDER_COUNT=$(check_url "ladder_rung?game_date=eq.$TODAY&select=id")
@@ -2699,7 +2699,7 @@ jobs:
           echo "Ladder coverage: $LADDER_COUNT rungs"
           if [ "$LADDER_COUNT" -lt 1 ]; then
             echo "🚨 RESCUE: re-running steam_room_ladder.py"
-            python steam_room_ladder.py || echo "ladder rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "steam_room_ladder.py" python steam_room_ladder.py
           fi
 
           LEDGER_COUNT=$(check_url "ledger_suggestions?game_date=eq.$TODAY&select=id")
@@ -2707,14 +2707,14 @@ jobs:
           echo "Ledger coverage: $LEDGER_COUNT suggestions"
           if [ "$LEDGER_COUNT" -lt 1 ]; then
             echo "🚨 RESCUE: re-running generate_ledger.py"
-            python generate_ledger.py || echo "ledger rescue failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_ledger.py" python generate_ledger.py
           fi
 
           # 2026-08-27: POTD resolver was never in any cron — daily_best_bet_history
           # rows were staying Pending until manual runs. Backfills up to 30d.
           # Cheap when everything is already resolved.
           echo "🔄 RESCUE: running resolve_potd.py (backfills any missing results)"
-          python resolve_potd.py || echo "POTD resolver rescue failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_potd.py" python resolve_potd.py
 
           # 2026-08-27: surface_records aggregator — single source of truth
           # for Sharp Card + Receipts. Runs unconditionally at rescue-time
@@ -2958,3 +2958,20 @@ jobs:
             GIT_EDITOR=true git rebase --continue
           fi
           git push
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

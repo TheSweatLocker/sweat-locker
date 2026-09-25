@@ -65,7 +65,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests python-dotenv beautifulsoup4 scikit-learn numpy playwright
-          python -m playwright install chromium --with-deps || echo "playwright chromium install non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "playwright install" python -m playwright install chromium --with-deps
 
       - name: Detect run mode
         id: mode
@@ -97,7 +97,7 @@ jobs:
           cd mlb_pipeline
           # Debug probe (temporary — remove after first successful Monday cron confirms key)
           if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
-          python ncaab_pipeline.py || echo "KenPom pull failed (non-fatal — game context can run on prior snapshot)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_pipeline.py" python ncaab_pipeline.py
 
       # 2026-08-23: Roster physicality — ESPN scraper for frontcourt height +
       # class year. Monday-only (kenpom_only mode) — rosters don't churn
@@ -151,7 +151,7 @@ jobs:
         run: |
           cd mlb_pipeline
           # Haslam XML uses brotli compression — needed by requests lib
-          pip install --quiet brotli || echo "brotli install non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pip install brotli" pip install --quiet brotli
           python ncaab_haslam_pull.py
 
       # ────── ALIAS ENRICHMENT (weekly on Monday, cheap idempotent) ──────
@@ -165,7 +165,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_enrich_aliases.py || echo "enrichment failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_enrich_aliases.py" python ncaab_enrich_aliases.py
 
       # ────── ODDS PULL ──────
       - name: Pull Odds API NCAAB lines
@@ -176,7 +176,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_odds_pull.py || echo "ncaab_odds_pull failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_odds_pull.py" python ncaab_odds_pull.py
 
       # ────── GAME CONTEXT ──────
       - name: Build NCAAB game context
@@ -187,7 +187,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_game_context.py || echo "game_context failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_game_context.py" python ncaab_game_context.py
 
       # 2026-08-17: teamrankings season aggregates for NCAAB. NCAAB is the
       # only sport where PER-GAME odds backfill is blocked (0/5911 games
@@ -360,7 +360,7 @@ jobs:
           PRIOR_START=$((START - 1))
           PRIOR_END=$(printf '%02d' $(( (PRIOR_START + 1) % 100 )))
           PRIOR_SEASON="${PRIOR_START}-${PRIOR_END}"
-          python ncaab_efficiency_model.py --season "$SEASON"       || echo "ncaab_efficiency_model current failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_efficiency_model.py" python ncaab_efficiency_model.py --season "$SEASON"
           python ncaab_efficiency_model.py --season "$PRIOR_SEASON"
 
       # 2026-09-01: refresh cross-sport rollup matviews after NCAAB
@@ -443,7 +443,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_ncaab_game_reads.py || echo "game reads failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_ncaab_game_reads.py" python generate_ncaab_game_reads.py
 
       # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
       # NCAAB prompt is prose-only. See docs/JERRY_UNIFICATION.md.
@@ -485,9 +485,9 @@ jobs:
           cd mlb_pipeline
           # 4pm cron = --refresh (subset for late-day updates)
           if [ "${{ github.event.schedule }}" = "0 20 * * *" ]; then
-            python pull_externals_ncaab.py --refresh || echo "external refresh failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaab.py" python pull_externals_ncaab.py --refresh
           else
-            python pull_externals_ncaab.py || echo "external pull failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaab.py" python pull_externals_ncaab.py
           fi
 
       # ────── CONSENSUS FADE DETECTOR ──────
@@ -509,7 +509,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_ncaab_results.py --days-back 2 || echo "resolver failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_ncaab_results.py" python resolve_ncaab_results.py --days-back 2
 
       # 2026-09-08 wired: grade NCAAB jerry_reads after resolver so
       # NCAAB doesn't wait on the MLB nightly for grading. Parallels
@@ -570,3 +570,20 @@ jobs:
           if [ -n "$HC_URL" ]; then
             curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
           fi
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

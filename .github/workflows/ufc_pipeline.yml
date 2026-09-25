@@ -106,7 +106,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_calibration_fit.py --days 365 || echo "calibrator refit failed (score card falls back to raw)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_calibration_fit.py" python ufc_calibration_fit.py --days 365
 
       - name: Score card with 4-model ensemble
         if: steps.mode.outputs.mode == 'full'
@@ -115,7 +115,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_score_card.py || echo "score card failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_score_card.py" python ufc_score_card.py
 
       - name: Pull market odds (Odds API h2h)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
@@ -125,7 +125,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_odds_pull.py || echo "odds pull failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_odds_pull.py" python ufc_odds_pull.py
 
       - name: Compute EV tiers
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only' || steps.mode.outputs.mode == 'card_only'
@@ -139,7 +139,7 @@ jobs:
           UFC_SHARP_FADE_MODE: 'false'
         run: |
           cd mlb_pipeline
-          python ufc_compute_ev.py || echo "EV compute failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_compute_ev.py" python ufc_compute_ev.py
 
       - name: Build weekly card payload
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -148,7 +148,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_weekly_card.py --format markdown || echo "weekly card failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_weekly_card.py" python ufc_weekly_card.py --format markdown
 
       - name: Pull external UFC picks (handicappers + BFO market)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -167,7 +167,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ufc_resolve_fights.py || echo "resolver failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ufc_resolve_fights.py" python ufc_resolve_fights.py
 
       # 2026-08-08 ESPN fighter enrichment.
       # ufcstats.com scraper broken (JS anti-scraper), left 940/1000 rows
@@ -267,3 +267,20 @@ jobs:
           if [ -n "$HC_URL" ]; then
             curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
           fi
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

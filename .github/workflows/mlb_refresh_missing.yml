@@ -64,4 +64,21 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python refresh_missing_sweat_scores.py || echo "refresh_missing non-fatal"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_missing_sweat_scores.py" python refresh_missing_sweat_scores.py
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

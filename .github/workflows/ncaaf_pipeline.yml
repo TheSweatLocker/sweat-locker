@@ -99,7 +99,7 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_odds_pull.py || echo "ncaaf_odds_pull failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_odds_pull.py" python ncaaf_odds_pull.py
 
       # 2026-08-09 Phase 2: refresh returning production % from CFBD.
       # Weekly (Tue) refresh is enough — this is a season-level number.
@@ -156,7 +156,7 @@ jobs:
         run: |
           cd mlb_pipeline
           if [ -f ncaaf_stats_pull.py ]; then
-            python ncaaf_stats_pull.py || echo "stats pull failed (non-fatal)"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_stats_pull.py" python ncaaf_stats_pull.py
           else
             echo "ncaaf_stats_pull.py not yet built — Phase 1b"
           fi
@@ -168,7 +168,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_game_context.py || echo "game_context failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_game_context.py" python ncaaf_game_context.py
 
       # 2026-09-01: NCAAF MC simulator (5th lens). Runs after game_context
       # since it reads projected_spread + projected_total off the ctx row.
@@ -380,7 +380,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_ncaaf_game_reads.py || echo "game reads failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_ncaaf_game_reads.py" python generate_ncaaf_game_reads.py
 
       # 2026-08-28: NCAAF prompt template writes prose only (no structured
       # CALL block) so parse_synthesis returns empty and dual-write to
@@ -419,9 +419,9 @@ jobs:
           cd mlb_pipeline
           # Sat cron uses --refresh mode (subset of sources for late-week updates)
           if [ "${{ github.event.schedule }}" = "0 12 * * 6" ]; then
-            python pull_externals_ncaaf.py --refresh || echo "external refresh failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py --refresh
           else
-            python pull_externals_ncaaf.py || echo "external pull failed"
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py
           fi
 
       - name: Detect consensus-fade alerts (NCAAF)
@@ -480,7 +480,7 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: |
           cd mlb_pipeline
-          python resolve_ncaaf_results.py || echo "resolver failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_ncaaf_results.py" python resolve_ncaaf_results.py
           # 2026-09-11: NCAAF was missing from grade_jerry_reads cron all
           # along (MLB/NBA/NCAAB/NHL wired, NCAAF/NFL not). Games tab /
           # Receipts couldn't show side/total records because
@@ -489,7 +489,7 @@ jobs:
           # ncaaf_game_results with scores; grader then reads those to
           # populate jerry_reads.result. Same class of fix as NFL cron
           # sibling entry landed 9/11.
-          python grade_jerry_reads.py --sport NCAAF || echo "NCAAF jerry grader failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "grade_jerry_reads.py" python grade_jerry_reads.py --sport NCAAF
           # 2026-09-12 RECEIPTS-CLOSURE (sibling to NFL cron addition).
           # Andy spec (docs/SPEC_NFL_NCAAF_GRADING_AND_RECEIPTS.md): grade →
           # roll up to daily_surface_records so app Receipts tab shows
@@ -497,9 +497,9 @@ jobs:
           # props per college policy).
           _YESTERDAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4,days=1)).date().isoformat())")
           _TODAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4)).date().isoformat())")
-          python aggregate_daily_records.py --date $_YESTERDAY || echo "aggregate yesterday failed (non-fatal)"
-          python aggregate_daily_records.py --date $_TODAY || echo "aggregate today failed (non-fatal)"
-          python compute_surface_records.py --sport NCAAF || echo "compute_surface_records NCAAF failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "aggregate_daily_records.py" python aggregate_daily_records.py --date $_YESTERDAY
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "aggregate_daily_records.py" python aggregate_daily_records.py --date $_TODAY
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_surface_records.py" python compute_surface_records.py --sport NCAAF
 
       - name: Recompute NCAAF cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
@@ -508,7 +508,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaaf_cohort_backfill.py || echo "cohort backfill failed"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaaf_cohort_backfill.py" python ncaaf_cohort_backfill.py
 
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver + cohort recompute. Powers the expanded
@@ -771,7 +771,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python compute_sport_patterns.py --sport NCAAF || echo "NCAAF vault patterns failed (non-fatal)"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_sport_patterns.py" python compute_sport_patterns.py --sport NCAAF
           python attach_vault_matches.py --sport NCAAF
 
       # 2026-09-08 heartbeat END. Success = start row AND end row for same
@@ -801,3 +801,20 @@ jobs:
           if [ -n "$HC_URL" ]; then
             curl -fsS --retry 3 --max-time 10 -o /dev/null "$HC_URL" || true
           fi
+
+      # 2026-09-24 B18 — turn a green-but-broken run red.
+      #
+      # Every masked step above used to end in `|| echo "... non-fatal"`,
+      # which makes the shell succeed, so the step succeeds, so the job
+      # succeeds. A grader could fail nightly and the run still showed a
+      # green check. That is the mechanism behind "no games resolved
+      # yesterday" and "no prime props today".
+      #
+      # The masks were not simply deleted: one flaky optional scraper would
+      # then abort the graders and writers that run after it. Continuing is
+      # correct. Continuing silently and claiming success is the bug.
+      # run_step.sh records each failure and still returns 0; this gate
+      # fails the run at the end with the list.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
