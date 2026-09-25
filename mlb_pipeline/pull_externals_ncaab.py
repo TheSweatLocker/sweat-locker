@@ -521,12 +521,28 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
     return picks, 200
 
 
-# Stubbed for Phase 3 iteration — reserve source keys so the pull_log
-# structure is complete and expansion doesn't need registry changes.
 def fetch_covers(slate: list, game_date: str, aliases: dict) -> tuple:
-    return [], 200
+    """Covers.com public against-the-spread consensus.
+
+    2026-09-25: wired to the shared parser that took NCAAF from 0 to 49 picks.
+    NCAAB is offseason, so the endpoint currently serves an empty table and
+    this returns 0 picks legitimately — UNTESTED against a live slate, and
+    must be re-checked at the 11-03 launch. Wiring it now so launch day is not
+    spent rediscovering a stub.
+    """
+    from externals_covers import fetch_covers_generic
+    return fetch_covers_generic(
+        sport='NCAAB', slate=slate, year=_et_now().year,
+        find_game_id_fn=find_game_id, make_pick_fn=ExternalPick,
+    )
 
 
+# STILL STUBBED — deliberately, as of 2026-09-25. Both gate what we want
+# behind a paywall, which is very likely why they were never written.
+# Recorded so nobody re-derives it; re-check if either opens a free tier.
+#   vsin        data.vsin.com/propicks is client-rendered behind a sign-in.
+#   bettingpros picks, projections, EV and money% are all premium; the free
+#               data duplicates money-flow sources we already have.
 def fetch_vsin(slate: list, game_date: str, aliases: dict) -> tuple:
     return [], 200
 

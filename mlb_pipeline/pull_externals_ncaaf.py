@@ -588,12 +588,38 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
     return picks, 200
 
 
-# Stubbed for Phase 3 iteration — reserve source keys so the pull_log
-# structure is complete and expansion doesn't need registry changes.
 def fetch_covers(slate: list, game_date: str, aliases: dict) -> tuple:
-    return [], 200
+    """Covers.com public against-the-spread consensus.
+
+    2026-09-25: was a stub returning ([], 200) — a silent success that made
+    the source look wired while contributing nothing, for the whole season.
+    The NFL puller's version works (557 picks) and the NCAAF endpoint serves
+    the identical table (72 rows, verified live), so this now shares one
+    implementation instead of carrying a second copy that can drift.
+    """
+    from externals_covers import fetch_covers_generic
+    return fetch_covers_generic(
+        sport='NCAAF', slate=slate, year=_et_now().year,
+        find_game_id_fn=find_game_id, make_pick_fn=ExternalPick,
+    )
 
 
+# STILL STUBBED — and deliberately so, as of 2026-09-25. Both sites gate the
+# data we would want behind a paywall, which is very likely why these were
+# never written. Recorded here so the next person does not spend another hour
+# rediscovering it; re-check if either changes its free tier.
+#
+#   vsin        data.vsin.com/propicks renders client-side behind a sign-in
+#               wall. VSiN Pro Picks is a paid product.
+#   bettingpros /nfl/picks/spread-projections/ returns a full slate, but every
+#               column worth having is premium: all 33 `experts-projection`
+#               elements are empty, all 16 games show "0 out of 5 stars", and
+#               "% of Money" is locked. What IS free — public bet% and
+#               open/consensus lines — duplicates four money-flow sources that
+#               already cover the slate completely, plus line_history.
+#
+# The externals watchdog reports both as NEVER PRODUCED, which is accurate and
+# should stay visible rather than being silenced.
 def fetch_vsin(slate: list, game_date: str, aliases: dict) -> tuple:
     return [], 200
 
