@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-24 (late night)**
+**Last verified: 2026-09-24 (late night) — run `python mlb_pipeline/verify_backlog.py` before quoting any number in this file**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -124,12 +124,23 @@ REMAINING: the client-side filter itself — match odds events against
 fighters from `ufc_upcoming_event` where `event_date >= today`.
 BUILD-GATED (client change).
 
-### B10 · NFL props have no projection
-`projection` populated on **2 of 1423** rows; `consensus` and
-`consensus_delta` on **0**. Tier is built from L5/L10 hit trends +
-opponent rank + `edge_pct`, with no projected stat value — so there is
-no real edge to compute against the line. NFL is clean of the MLB leak
-(reads a stored pre-game array, not a live fetch).
+### B10 · NFL props have no projection — **CLOSED 2026-09-24**
+`2606fedf` (writer) + `backfill_nfl_prop_projection.py` (history).
+**projection now populated on 1,805 of 1,807.** The generator always computed
+it; `_to_pipeline_props_shape` never mapped it, and `nfl_props` — the table the
+docstring claimed was a dual-write target — has been dead since 09-03, so the
+value was discarded on every write with a 200 response. Three signal_sources
+rows gating on `p.get('projection')` were dead from 08-22.
+
+**But the projection does not pay.** Measured on 1,331 graded props: 50.9%
+overall, best bucket 51.8%, against a **54.2%** break-even at the prices we
+actually paid. Buckets are non-monotonic and the probability is badly
+overconfident (says 93%, gets 59%). `backfill_prop_signal_tiers` was run and
+`edge_weight` correctly zeroed both projection signals on that evidence. So the
+data gap is closed and the modelling question is open — see B36 and
+`project_nfl_prop_scoring_diagnosis_924`.
+
+VERIFY: `python mlb_pipeline/verify_backlog.py --only B10`
 Fastest win: `rush_yds_over` is 20-29 (40.8%, **-23.1%/bet**) on n=49 —
 ban it. `pass_completions_under` and `pass_attempts_over` also negative
 but thin (n=18, n=13) — shadow rather than ban.
@@ -926,7 +937,7 @@ FIX:
 
 VERIFY: `python mlb_pipeline/verify_offerable.py`
 
-### B44 - NFL externals: 4 sources against MLB's 12
+### B44 - NFL externals: 7 sources against MLB's 13
 Andy 2026-09-24: "NFL needs more sources."
 
 Last 3 days, verified:
@@ -975,7 +986,20 @@ Two faults compounding:
 VERIFY: `python mlb_pipeline/resolve_nfl_props_espn.py --lookback 10 --dry-run`
         should report 0 unresolved on every date.
 
-### B46 - NHL publishes 37 picks with no reasoning behind any of them
+### B46 - NHL publishes 37 picks with no reasoning — **CLOSED 2026-09-24**
+`1d74e499` wired `generate_nhl_game_reads.py`. Verified: **37 NHL reads, 0
+engine-sub shorts, 0 with long_read under 300 chars.** The horizon was the
+second half of the fix — the generator first copied NCAAB's "today + 5 days"
+and left three games stubbed because `nhl_game_context` reached further than
+the generator did; it now reads whatever context holds.
+
+Follow-ups that are NOT closed: 29 of the 37 carry no price (preseason, no book
+quotes), and every one of them makes a fabricated product claim — see B48.
+
+VERIFY: `python mlb_pipeline/verify_backlog.py --only B46`
+
+Original finding follows.
+
 Found 2026-09-24 while clearing duplicate reads.
 
 Every NHL read on the board is the engine's own `sub` string, 31-33
@@ -1017,6 +1041,47 @@ preseason games.
 
 VERIFY: `select count(*) from jerry_reads where sport='NHL'
          and length(coalesce(long_read,''))=0 and game_date>=current_date;`
+
+### B48 - every NHL read promises a product we have not built
+Found 2026-09-24 while auditing this file against reality.
+
+**37 of 37 live NHL reads** tell subscribers a proprietary NHL model
+**launches in the 2026-27 season**. Nobody authorised that claim. 17 of them
+also render it with a typo — "2026-27season", no space.
+
+      "Market-based analysis — proprietary NHL model launches 2026-27season."
+
+WHERE IT COMES FROM, and it is not the template. Two instructions got merged by
+the LLM:
+
+  * `prompt_templates` (NHL, game_read_rules): 'Attribute EVERYTHING to the
+    "Sweat Locker model" or "proprietary model"'
+  * `_prompt_game_read_rules_NHL.txt` line 3: 'Open with one line:
+    "Market-based analysis — no NHL model active yet."'
+
+Neither contains a launch date. "proprietary" is instructed; "launches 2026-27
+season" is invented. I previously flagged this phrase, then retracted on the
+belief it was in the template verbatim — the retraction was wrong, and only the
+attribution half was ever there.
+
+WHY IT MATTERS MORE THAN A TYPO. It is a forward-looking commitment about the
+product, shipped to paying subscribers, on every read of a sport that has no
+model. It is also self-contradicting: the same sentence says the analysis is
+market-based because no model exists, then promises when the model arrives.
+
+FIX SHAPE: the opening line should be the one the rules file already specifies,
+and it should not be left to the LLM to paraphrase a claim about the roadmap.
+Either pin it as literal text prepended server-side (it is a constant, not
+generated content), or forbid launch/roadmap language in the prompt and add it
+to the pre-publish audit alongside the parser-marker check. Prepending a
+constant is the smaller change and removes the LLM from the sentence entirely.
+
+Same class as B26 (markdown in short_read) and the parser markers: the boundary
+between generated prose and fixed product copy is not enforced anywhere.
+
+VERIFY: `python mlb_pipeline/verify_backlog.py --only NEW`
+
+---
 
 ## P2 — structural (the ones that keep causing the others)
 
