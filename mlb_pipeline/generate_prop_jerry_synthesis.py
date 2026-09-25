@@ -38,9 +38,6 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 MODEL = 'claude-haiku-4-5-20251001'
 PROMPT_VERSION = 'prop_synthesis_v1'
 
-# One-shot warn latch for a missing prop id on the publish-lock path.
-_LOCK_NO_ID_WARNED = False
-
 # Sport → table. Add sports as their prop pipelines ship.
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
@@ -408,36 +405,36 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         print(f'  ⚠ upsert transport failure: {_e}')
         return False
     if r.status_code in (200, 201, 204):
-        # 2026-09-17: PUBLISH-LOCK. A prop with a jerry_read is a prop
-        # the user could have seen on the Prop Jerry tab. Snapshot
-        # source-prop tier at this moment via shared publish_lock table
-        # (migration 20260917e). First-publisher-wins — later mutations
-        # to the live tier field can't change what the grader counts.
-        # Fail-soft: silent on error so a Supabase hiccup doesn't
-        # cascade back to the synth write.
-        try:
-            from prop_publish_lock import lock_publish as _lock
-            _pid = prop.get('id')
-            if _pid:
-                _lock(sport,
-                      'prop',
-                      _pid,
-                      (prop.get('tier') or '').upper(),
-                      prop.get('conviction'),
-                      'prop_jerry')
-            else:
-                # Never silently skip the lock again. A missing id means
-                # the props SELECT lost the column, and the only symptom
-                # would be surface_records quietly drifting back to live
-                # tier — invisible until someone audits the record.
-                global _LOCK_NO_ID_WARNED
-                if not _LOCK_NO_ID_WARNED:
-                    print('  ⚠ publish_lock SKIPPED — prop row has no `id`. '
-                          'Check the props SELECT includes id, or every '
-                          'record falls back to live tier.')
-                    _LOCK_NO_ID_WARNED = True
-        except Exception as _lock_err:
-            print(f'  ⚠ publish_lock failed: {_lock_err}')
+        # ══ 2026-09-25 · PUBLISH-LOCK MOVED OUT OF THIS FUNCTION ══
+        #
+        # This used to call lock_publish() right here, per prop. It was
+        # locking an INTERMEDIATE tier, which is the one thing the lock
+        # module's own docstring tells callers not to do:
+        #
+        #   "composers should call this AT THE MOMENT the pick lands on a
+        #    user surface — after all LR / calibration / dedup passes have
+        #    decided the tier. Calling too early locks in an intermediate
+        #    tier. Correct order: compose → filter → cap → lock → write."
+        #
+        # In the MLB workflow this step is 877. Two discipline passes run
+        # AFTER it and both decide tier:
+        #
+        #   877  generate_prop_jerry_synthesis   <- locked here (too early)
+        #   927  apply_refit_verdict_override    <- directional-edge gate
+        #   943  dedup_prop_dupes --sport MLB
+        #
+        # Because the trigger from 20260917f rewrites NEW.tier back to the
+        # locked value on every UPDATE — and returns HTTP 200 while doing
+        # it — every demotion at 927 was silently discarded. The
+        # coverage-kill gate reported 985 demotions and the board never
+        # moved a single row. The gate was not broken; its writes were
+        # being reverted by a lock taken 50 steps earlier.
+        #
+        # The lock now happens after the discipline passes, from the same
+        # population (prop_jerry_reads for the date), via:
+        #     python backfill_publish_locks.py --props-only
+        # Do not re-add a lock call here. Locking a prop before 927 puts
+        # the tier beyond the reach of every gate that follows.
         return True
     # If the 'source' column doesn't exist yet (pre-migration), retry without it
     if r.status_code == 400 and 'source' in (r.text or ''):

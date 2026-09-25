@@ -985,6 +985,34 @@ jobs:
           cd mlb_pipeline
           python jerry_pick_scrub.py --sport NFL
 
+      # 2026-09-25 PUBLISH LOCK — moved out of generate_prop_jerry_synthesis
+      # (step ~729 in this workflow), which locked prop tier the moment the
+      # jerry read was written. The 20260917f trigger then reverted every
+      # later tier change while returning HTTP 200. See the matching note in
+      # mlb_pipeline.yml and backfill_publish_locks.py.
+      #
+      # NOTE FOR WHOEVER TOUCHES NFL PROPS NEXT: this workflow does not run
+      # apply_refit_verdict_override at all, so the directional-edge gate
+      # shipped 2026-09-25 is MLB-only in practice. Moving the lock is
+      # necessary for that gate to work but not sufficient for NFL — the
+      # gate step still has to be added here. Tracked separately; not done
+      # in this change because it needs its own before/after measurement on
+      # an NFL slate rather than being slipped in behind a lock fix.
+      #
+      # Locks game-day props only, so Sunday's board is locked by Sunday's
+      # run and stays mutable until then.
+      - name: Publish-lock props (post-discipline)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_publish_locks.py --props-only (NFL)" \
+            python backfill_publish_locks.py --props-only
+
       - name: Build weekly slate card
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

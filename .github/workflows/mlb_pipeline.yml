@@ -958,6 +958,36 @@ jobs:
           cd mlb_pipeline
           python cleanup_stale_coverage_props.py --sport MLB --jerry-orphan-scan
 
+      # 2026-09-25 PUBLISH LOCK — moved here from inside
+      # generate_prop_jerry_synthesis (step ~877). That inline call locked
+      # tier BEFORE the two passes below it could decide anything:
+      #
+      #   877  generate_prop_jerry_synthesis  <- old lock point
+      #   927  apply_refit_verdict_override      directional-edge gate
+      #   943  dedup_prop_dupes (final pass)
+      #        cleanup_stale_coverage_props      orphan sweep
+      #   HERE the tier is actually final
+      #
+      # The 20260917f trigger rewrites NEW.tier back to the locked value on
+      # every UPDATE and still returns HTTP 200, so every demotion at 927
+      # was silently thrown away — the coverage-kill gate reported 985
+      # demotions and the board never moved one row.
+      #
+      # Locks game-day props only. Future slates stay mutable so their own
+      # game-day discipline can still demote them; see the docstring in
+      # backfill_publish_locks.py. Non-fatal: an unlocked prop grades off
+      # live tier, which is the pre-lock behaviour, not a corruption.
+      - name: Publish-lock props (post-discipline)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_publish_locks.py --props-only" \
+            python backfill_publish_locks.py --props-only
+
       # 2026-08-14 · FADE→PASS discipline for bomb-list prop_types.
       # 30d audit showed outs_over / er_under / bb_over / bb_under / ks_under
       # natural FADEs hit <45% (see apply_fade_type_discipline.py docstring).

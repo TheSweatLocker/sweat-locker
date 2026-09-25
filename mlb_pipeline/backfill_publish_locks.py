@@ -157,62 +157,194 @@ def backfill_sharp_card(game_date: str, dry_run: bool = False) -> int:
     return n
 
 
-def backfill_prop_jerry_reads(game_date: str, dry_run: bool = False) -> int:
+def _page(path: str, params: dict) -> list[dict]:
+    """Paginated read. The prior prop path used a Range header capped at
+    9999 and then issued TWO more requests per row; on a full MLB slate
+    that was ~3,300 round trips for one step. PostgREST also truncates
+    silently at 1000 without explicit paging (project_postgrest_truncation
+    _audit_912), so page properly rather than trusting one large read."""
+    out: list[dict] = []
+    off = 0
+    while True:
+        q = dict(params, limit='1000', offset=str(off))
+        r = requests.get(f'{SB}/rest/v1/{path}', headers=H_READ,
+                         params=q, timeout=90)
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ read {path} -> {r.status_code}: {(r.text or "")[:160]}')
+            return out
+        body = r.json()
+        if not isinstance(body, list):
+            return out
+        out += body
+        if len(body) < 1000:
+            return out
+        off += 1000
+
+
+_PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props'}
+
+
+def backfill_prop_jerry_reads(game_date: str, dry_run: bool = False,
+                              reset_ungraded: bool = False) -> int:
     """Lock every prop_jerry_reads row (every prop card that a user
-    could have opened on the Prop Jerry tab)."""
-    r = requests.get(
-        f'{SB}/rest/v1/prop_jerry_reads',
-        headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-9999'},
-        params={
-            'game_date': f'eq.{game_date}',
-            'select': 'sport,player_name,prop_type,direction,conviction',
-        },
-        timeout=20,
-    )
-    rows = r.json() if r.status_code == 200 else []
+    could have opened on the Prop Jerry tab) at its SOURCE prop tier.
+
+    2026-09-25: this is now the canonical prop lock point, called from the
+    pipeline AFTER the discipline passes. It used to run inline inside
+    generate_prop_jerry_synthesis (MLB step 877), which locked before
+    apply_refit_verdict_override (927) could demote anything — and the
+    20260917f trigger then reverted every demotion while returning 200.
+    See the note at the old call site.
+
+    Joins in memory off two paginated reads instead of the previous
+    per-row (lookup id, then fetch tier) pair of requests.
+
+    ══ WHY THIS LOCKS GAME-DAY ONLY, AND WHY THAT LOOKS LIKE A BUG ══
+    The re-lock is scoped to game_date == game_date. On a Friday run that
+    means ~145 MLB props and ZERO NFL props, because NFL props are for
+    Sunday. That is deliberate, not a missed filter.
+
+    A prop is only FINAL on its own game day. Sunday's NFL board is
+    genuinely still moving on Friday — lines shift, props regenerate, and
+    Saturday's discipline passes still have to be able to demote. Locking
+    a Sunday prop on Friday recreates the exact bug this move fixes, just
+    two days earlier instead of 50 workflow steps earlier. So each slate
+    gets locked by its own game-day run, after that day's discipline.
+
+    The RESET scope is deliberately wider — see reset_ungraded below.
+    """
     n = 0
-    for row in rows:
-        sport = (row.get('sport') or '').upper()
-        if sport not in ('MLB', 'NFL'): continue
-        sid = _lookup_prop_id(
-            sport, game_date,
-            row.get('player_name'), row.get('prop_type'), row.get('direction'),
-        )
-        if not sid: continue
-        # Prop Jerry stores its own conviction; tier we don't have on
-        # the jerry_reads row — fetch it from the source prop instead
-        # so we lock the SOURCE tier the composer decided.
-        tbl = 'mlb_pipeline_props' if sport == 'MLB' else 'nfl_pipeline_props'
-        pr = requests.get(
-            f'{SB}/rest/v1/{tbl}',
-            headers=H_READ,
-            params={'id': f'eq.{sid}', 'select': 'tier,conviction'},
-            timeout=10,
-        )
-        prop = pr.json()[0] if pr.status_code == 200 and pr.json() else {}
-        tier = (prop.get('tier') or '').upper()
-        conv = prop.get('conviction')
-        if lock_publish(sport, 'prop', sid, tier, conv,
-                        'prop_jerry', dry_run=dry_run):
-            n += 1
+    for sport, tbl in _PROPS_TABLE.items():
+        # ── reset: every unplayed prop, not just today's ──
+        # Locks written by the old inline call site are premature at EVERY
+        # date, so clearing only today's would leave Sunday's NFL board
+        # frozen at its pre-discipline tier. Graded rows are excluded
+        # inside _clear_ungraded_locks, so this cannot move a record.
+        if reset_ungraded:
+            future = _page(tbl, {
+                'game_date': f'gte.{game_date}',
+                'select': 'id,result',
+            })
+            n_cleared = _clear_ungraded_locks(sport, future, dry_run=dry_run)
+            print(f'  {sport}: cleared {n_cleared} premature ungraded prop '
+                  f'locks (game_date >= {game_date})')
+            # Deliberately NO relock in this mode. Relocking right after a
+            # reset would re-freeze the same pre-discipline tier we just
+            # released, making the reset a no-op. The correct relock happens
+            # on the next pipeline run, at the post-discipline lock step.
+            continue
+
+        # ── re-lock: game day only ──
+        reads = _page('prop_jerry_reads', {
+            'game_date': f'eq.{game_date}',
+            'sport': f'eq.{sport}',
+            'select': 'player_name,prop_type,direction',
+        })
+        if not reads:
+            print(f'  {sport}: no prop_jerry_reads for {game_date} — '
+                  f'nothing to lock (slate is on another date)')
+            continue
+        want = {(r.get('player_name'), r.get('prop_type'), r.get('direction'))
+                for r in reads}
+        props = _page(tbl, {
+            'game_date': f'eq.{game_date}',
+            'select': 'id,player_name,prop_type,direction,tier,conviction,result',
+        })
+        # Key on the same tuple the old _lookup_prop_id matched on.
+        matched = [p for p in props
+                   if (p.get('player_name'), p.get('prop_type'),
+                       p.get('direction')) in want]
+        locked = 0
+        for p in matched:
+            if lock_publish(sport, 'prop', p['id'],
+                            (p.get('tier') or '').upper(), p.get('conviction'),
+                            'prop_jerry', dry_run=dry_run):
+                locked += 1
+        print(f'  {sport}: {locked} locked of {len(matched)} matched '
+              f'({len(reads)} jerry reads)')
+        n += locked
     return n
+
+
+def _clear_ungraded_locks(sport: str, props: list[dict],
+                          dry_run: bool = False) -> int:
+    """Delete prop locks for props that have NOT been graded yet.
+
+    Needed only when migrating the lock point. lock_publish is
+    first-publisher-wins (ON CONFLICT DO NOTHING), so a lock already
+    written at the wrong moment would keep winning forever and the move
+    would only take effect on tomorrow's slate.
+
+    GRADING SAFETY — this cannot alter any record. A lock only matters to
+    compute_surface_records at grade time; a prop with result IS NULL has
+    never been counted in anything. Rows WITH a result are skipped, full
+    stop, so no settled number can move. Re-locking happens immediately
+    after, at the post-discipline tier.
+    """
+    ungraded = {str(p['id']) for p in props if p.get('result') is None}
+    if not ungraded:
+        return 0
+    # Intersect with locks that actually EXIST. Without this the dry run
+    # reported every ungraded prop as "cleared" (1,668 for MLB when only
+    # 145 held a lock), and the live path issued DELETEs for rows that
+    # were never locked. The count has to mean something to be worth
+    # printing before a destructive step.
+    locked_ids = {str(r['source_id']) for r in _page('publish_lock', {
+        'sport': f'eq.{sport}', 'market': 'eq.prop', 'select': 'source_id',
+    })}
+    targets = sorted(ungraded & locked_ids)
+    if not targets:
+        return 0
+    cleared = 0
+    for i in range(0, len(targets), 100):
+        chunk = targets[i:i + 100]
+        ids = ','.join(f'"{c}"' for c in chunk)
+        if dry_run:
+            cleared += len(chunk)
+            continue
+        r = requests.delete(
+            f'{SB}/rest/v1/publish_lock',
+            headers={**H_READ, 'Prefer': 'return=representation'},
+            params={'sport': f'eq.{sport}', 'market': 'eq.prop',
+                    'source_id': f'in.({ids})'},
+            timeout=60,
+        )
+        if r.status_code in (200, 204):
+            body = r.json() if r.status_code == 200 else []
+            cleared += len(body) if isinstance(body, list) else len(chunk)
+        else:
+            print(f'  ⚠ lock clear -> {r.status_code}: {(r.text or "")[:160]}')
+    return cleared
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--date', help='YYYY-MM-DD (default: today ET)')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--props-only', action='store_true',
+                   help='lock props only — the in-pipeline lock step. The '
+                        'card surfaces are composed LATER in the run, so '
+                        'locking them from here would snapshot a stale cache.')
+    p.add_argument('--reset-ungraded', action='store_true',
+                   help='drop existing prop locks on UNGRADED props before '
+                        'relocking. One-time migration aid for moving the '
+                        'lock point; graded props are never touched.')
     args = p.parse_args()
     gd = args.date or _today_et()
 
-    print(f'=== backfill_publish_locks · {gd}{" [DRY]" if args.dry_run else ""} ===')
+    mode = ' props-only' if args.props_only else ''
+    print(f'=== backfill_publish_locks · {gd}{mode}'
+          f'{" [DRY]" if args.dry_run else ""} ===')
     print()
 
-    s = backfill_sweat_card(gd, dry_run=args.dry_run)
-    print(f'  sweat_card:        {s} locks')
-    p_ = backfill_sharp_card(gd, dry_run=args.dry_run)
-    print(f'  sharp_card:        {p_} locks')
-    j = backfill_prop_jerry_reads(gd, dry_run=args.dry_run)
+    s = p_ = 0
+    if not args.props_only:
+        s = backfill_sweat_card(gd, dry_run=args.dry_run)
+        print(f'  sweat_card:        {s} locks')
+        p_ = backfill_sharp_card(gd, dry_run=args.dry_run)
+        print(f'  sharp_card:        {p_} locks')
+    j = backfill_prop_jerry_reads(gd, dry_run=args.dry_run,
+                                  reset_ungraded=args.reset_ungraded)
     print(f'  prop_jerry_reads:  {j} locks')
     print()
     print(f'  total: {s + p_ + j} locks written')
