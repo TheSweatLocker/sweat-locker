@@ -188,9 +188,34 @@ def fetch_pickdawgz_generic(sport: str, game_date: str, slate: list,
     if landing.status_code != 200:
         return [], landing.status_code
 
-    urls = _article_urls(landing.text, game_date)
+    # 2026-09-25: was `_article_urls(landing.text, game_date)` — a SINGLE date.
+    # That is right for a daily sport (every MLB game shares one date) and
+    # structurally wrong for a weekly one. NFL's slate spans Thu/Sun/Mon, and
+    # PickDawgz dates each article to its own game day, so filtering to the
+    # anchor date could only ever match the games played on that one day: on a
+    # Thursday, the single TNF game. NFL collected 15 picks all season against
+    # MLB's 3,008 for exactly this reason. Andy: "pickdawgz has every game
+    # usually posted by Fridays" — they do, we were only ever looking at one day
+    # of them.
+    #
+    # Derive the dates from the slate instead of guessing a horizon; the slate
+    # is already the ±7d window the caller wants covered.
+    dates = sorted({r.get('game_date') for r in (slate or []) if r.get('game_date')})
+    if not dates:
+        dates = [game_date]
+    urls = set()
+    for d in dates[:10]:
+        urls |= _article_urls(landing.text, d)
     if not urls:
+        print(f'  pickdawgz {sport}: no articles matched {len(dates)} slate '
+              f'date(s) {dates[0]}..{dates[-1]}')
         return [], 200
+
+    # Each pick must carry ITS OWN game date. Stamping every pick with the
+    # anchor date put Sunday games on Thursday, which misfiles them for grading
+    # and for any per-date reporting.
+    gid_date = {r.get('game_id'): r.get('game_date')
+                for r in (slate or []) if r.get('game_id')}
 
     from bs4 import BeautifulSoup
     picks = []
@@ -218,7 +243,8 @@ def fetch_pickdawgz_generic(sport: str, game_date: str, slate: list,
                 continue
             surface, side, line, odds = parsed
             picks.append(make_pick_fn(
-                game_id=gid, sport=str(sport).upper(), game_date=game_date,
+                game_id=gid, sport=str(sport).upper(),
+                game_date=gid_date.get(gid) or game_date,
                 source='pickdawgz', surface=surface, pick_side=side,
                 pick_line=line, odds_american=odds,
                 raw_text=f'PickDawgz: {pm[-1].group(1).strip()[:120]}',
