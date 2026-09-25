@@ -2262,6 +2262,13 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
 // `team_recent_games` matview (supabase/migrations/20260901_team_recent_games_matview.sql)
 // which unions {sport}_game_results into a team-perspective per-game row.
 //
+// Column widths for the Recent Schedule table, shared by the header and
+// RecentGameRow so the two can never disagree. H2H trades width from the
+// team column (3 chars + a venue letter) to ATS, which carries a team
+// prefix there ("DEN -3") and overflows at the team-tab width on a phone.
+const RS_FLEX     = {date: 0.9, opp: 1.6, score: 1.4, ats: 1.0, ou: 1.0};
+const RS_FLEX_H2H = {date: 0.9, opp: 1.1, score: 1.3, ats: 1.6, ou: 1.0};
+
 // Three sub-tabs: away / H2H / home. Cross-sport by design — same
 // component renders MLB, NCAAF, and (future) NFL/NBA/NCAAB/NHL by
 // filtering on sport. No client-side computation of records; matview
@@ -2338,13 +2345,28 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
         <TabPill label={abbrev3(homeTeam)} active={tab==='home'} onPress={() => setTab('home')} />
       </View>
 
-      {/* Column header */}
+      {/* Column header. 2026-09-25: on H2H every row has the SAME opponent,
+          so an "OPP" column is dead weight there — and worse, users read
+          that abbrev as the winner. Andy: "it will have final score 34-30
+          and a W, but you dont really know who W." On H2H the column names
+          the winner instead, and the ATS chip gains a team prefix, so the
+          two columns trade width. Header and rows read the SAME flex map
+          (RS_FLEX / RS_FLEX_H2H) so they cannot drift out of alignment. */}
       <View style={rsStyles.headRow}>
-        <Text style={[rsStyles.hCol, {flex: 0.9}]}>DATE</Text>
-        <Text style={[rsStyles.hCol, {flex: 1.6, textAlign: 'left'}]}>OPP</Text>
-        <Text style={[rsStyles.hCol, {flex: 1.4}]}>SCORE</Text>
-        <Text style={[rsStyles.hCol, {flex: 1.0}]}>ATS</Text>
-        <Text style={[rsStyles.hCol, {flex: 1.0}]}>O/U</Text>
+        {(() => {
+          const f = tab === 'h2h' ? RS_FLEX_H2H : RS_FLEX;
+          return (
+            <>
+              <Text style={[rsStyles.hCol, {flex: f.date}]}>DATE</Text>
+              <Text style={[rsStyles.hCol, {flex: f.opp, textAlign: 'left'}]}>
+                {tab === 'h2h' ? 'WON' : 'OPP'}
+              </Text>
+              <Text style={[rsStyles.hCol, {flex: f.score}]}>SCORE</Text>
+              <Text style={[rsStyles.hCol, {flex: f.ats}]}>ATS</Text>
+              <Text style={[rsStyles.hCol, {flex: f.ou}]}>O/U</Text>
+            </>
+          );
+        })()}
       </View>
 
       {/* Rows */}
@@ -2354,7 +2376,9 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
         </Text>
       ) : (
         <>
-          {rowsSorted.map((r, i) => <RecentGameRow key={r.game_id || i} row={r} />)}
+          {rowsSorted.map((r, i) => (
+            <RecentGameRow key={r.game_id || i} row={r} h2h={tab === 'h2h'} />
+          ))}
           {/* 2026-09-17: thin-data note. Andy caught NO@BAL Week 2
               rendering with 1 row and reading as broken. Below-3 hints
               at the season stage so users know it's not an error — just
@@ -2388,10 +2412,24 @@ function TabPill({label, active, onPress}: any) {
   );
 }
 
-function RecentGameRow({row}: any) {
+// `h2h` switches the row from "one team's schedule" framing to "this
+// matchup's history" framing. 2026-09-25 — the H2H tab was genuinely
+// unreadable before, and for a structural reason worth spelling out.
+//
+// Every column here is written from the perspective of row.team, which on
+// the H2H query is ALWAYS the current game's home team. On the away/home
+// tabs the active tab names that subject, so "W 34-30" and an ATS chip of
+// "-3" are unambiguous. On H2H nothing named the subject, so:
+//   · "W 34-30" told you someone won 34-30, not who.
+//   · the OPP abbrev is the *opponent*, which reads as the winner.
+//   · "-3" gave a spread with no indication whose it was.
+// Three cells, none of them attributable. Fixed by naming the subject in
+// the cells themselves rather than adding a legend above the table.
+function RecentGameRow({row, h2h = false}: any) {
   const isHome = !!row.is_home;
   const isNeutral = !!row.is_neutral;
   const opp = row.opp || '—';
+  const subject = row.team || '—';
   const scoreUs = row.score_us;
   const scoreThem = row.score_them;
   // total_score can be null on older MLB rows — fall back to sum
@@ -2412,23 +2450,53 @@ function RecentGameRow({row}: any) {
   } catch {}
 
   const venuePrefix = isNeutral ? 'vs' : isHome ? 'vs' : '@';
-  const scoreText = (scoreUs != null && scoreThem != null) ? `${scoreUs}-${scoreThem}` : '—';
+
+  // H2H: who actually won, and show the score winner-first so the two
+  // numbers read in the same order as the name beside them. `won` is
+  // relative to the subject, so the winner is subject when true, opp when
+  // false, and unknown (tie / ungraded) when null.
+  const winner = wonSU === true ? subject : wonSU === false ? opp : null;
+  const hiLo = (scoreUs != null && scoreThem != null)
+    ? [Math.max(Number(scoreUs), Number(scoreThem)), Math.min(Number(scoreUs), Number(scoreThem))]
+    : null;
+  const scoreText = (scoreUs != null && scoreThem != null)
+    ? (h2h && winner && hiLo ? `${hiLo[0]}-${hiLo[1]}` : `${scoreUs}-${scoreThem}`)
+    : '—';
+
+  const F = h2h ? RS_FLEX_H2H : RS_FLEX;
 
   return (
     <View style={rsStyles.dataRow}>
-      <Text style={[rsStyles.cell, {flex: 0.9, color: C.textMuted}]}>{dateShort}</Text>
-      <Text style={[rsStyles.cell, {flex: 1.6, textAlign: 'left'}]} numberOfLines={1}>
-        <Text style={{color: C.textMuted}}>{venuePrefix} </Text>
-        <Text style={{color: C.text, fontWeight: '700'}}>{abbrev3(opp)}</Text>
-        {isNeutral ? <Text style={{color: C.textMuted, fontSize: 9}}>  N</Text> : null}
-      </Text>
+      <Text style={[rsStyles.cell, {flex: F.date, color: C.textMuted}]}>{dateShort}</Text>
+      {h2h ? (
+        // WON column. The venue marker moves onto the SUBJECT (the current
+        // home team) so "@" still reads correctly — it says where the game
+        // was played relative to tonight's home side, which is the part of
+        // H2H that carries signal.
+        <Text style={[rsStyles.cell, {flex: F.opp, textAlign: 'left'}]} numberOfLines={1}>
+          <Text style={{color: C.textMuted, fontSize: 9}}>
+            {isNeutral ? 'N ' : isHome ? 'H ' : 'A '}
+          </Text>
+          <Text style={{
+            color: winner ? C.text : C.textMuted, fontWeight: '700',
+          }}>
+            {winner ? abbrev3(winner) : 'TIE'}
+          </Text>
+        </Text>
+      ) : (
+        <Text style={[rsStyles.cell, {flex: F.opp, textAlign: 'left'}]} numberOfLines={1}>
+          <Text style={{color: C.textMuted}}>{venuePrefix} </Text>
+          <Text style={{color: C.text, fontWeight: '700'}}>{abbrev3(opp)}</Text>
+          {isNeutral ? <Text style={{color: C.textMuted, fontSize: 9}}>  N</Text> : null}
+        </Text>
+      )}
       {/* Score chip w/ W/L color. 2026-09-01: flattened nested Text —
           prior nested <Text style={{fontWeight:'700'}}> had no explicit
           color, and RN's inheritance through conditional-falsy style
           arrays isn't reliable → score rendered black on dark background
           for games w/ null won. Combining into one Text ensures the
           semantic color (win/loss/muted) applies to the whole string. */}
-      <View style={{flex: 1.4, alignItems: 'center'}}>
+      <View style={{flex: F.score, alignItems: 'center'}}>
         <View style={[
           rsStyles.chip,
           wonSU === true  && rsStyles.chipWin,
@@ -2437,13 +2505,17 @@ function RecentGameRow({row}: any) {
           {/* 2026-09-01 v4: text stays bright cream ALWAYS. See RecordPill
               rationale — colored text on tinted bg = muddy contrast that
               reads as "black text." Background alone signals win/loss. */}
+          {/* On H2H the WON column already names the winner and the score
+              is printed winner-first, so a W/L letter would be describing
+              the subject while the numbers describe the winner — the exact
+              ambiguity this tab had. Letter is team-tab only. */}
           <Text style={rsStyles.chipText}>
-            {(wonSU === true ? 'W ' : wonSU === false ? 'L ' : '') + scoreText}
+            {(h2h ? '' : wonSU === true ? 'W ' : wonSU === false ? 'L ' : '') + scoreText}
           </Text>
         </View>
       </View>
       {/* ATS chip */}
-      <View style={{flex: 1.0, alignItems: 'center'}}>
+      <View style={{flex: F.ats, alignItems: 'center'}}>
         {spreadRes ? (
           <View style={[
             rsStyles.chip,
@@ -2451,14 +2523,20 @@ function RecentGameRow({row}: any) {
             spreadRes === 'lost' && rsStyles.chipLoss,
             spreadRes === 'push' && rsStyles.chipPush,
           ]}>
+            {/* spread_line is the SUBJECT's line, and spread_result is
+                whether the subject covered it. On H2H that subject was
+                never named, so "+3 (green)" left you guessing which side
+                the number belonged to. Prefixing the abbrev makes the chip
+                self-contained: "DEN -3" green = Denver covered -3. */}
             <Text style={rsStyles.chipText}>
+              {h2h && subject !== '—' ? `${abbrev3(subject)} ` : ''}
               {spreadLine != null ? (Number(spreadLine) > 0 ? '+' : '') + spreadLine : '—'}
             </Text>
           </View>
         ) : <Text style={rsStyles.dashCell}>—</Text>}
       </View>
       {/* O/U chip */}
-      <View style={{flex: 1.0, alignItems: 'center'}}>
+      <View style={{flex: F.ou, alignItems: 'center'}}>
         {totalRes ? (
           <View style={[
             rsStyles.chip,
@@ -2783,10 +2861,33 @@ function RecordPill({rec, market}: any) {
   }
   const total = w + l;  // pushes excluded from hit%
   const hitPct = total > 0 ? Math.round((w / total) * 100) : 0;
-  // Color the pill by hit%: >=58 green (hot), <=42 red (cold), else neutral
-  const tint = total >= 5 ? (
-    hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral'
-  ) : 'neutral';
+  // 2026-09-25: football pills were ALWAYS dark. Andy: "for situational in
+  // NFL boxes arent green and red ... in MLB the boxes are red and green
+  // probably should be uniform across all sports."
+  //
+  // Cause was the flat `total >= 5` floor below. MLB teams sit at 60-140
+  // games per filter so every cell clears it; football in Week 3 does not.
+  // Measured against team_situational_records season=2026, market=spread:
+  //
+  //   MLB    overall median n=141   30/30  cells clear n>=5   -> colored
+  //   NFL    overall median n=2      0/32  cells clear n>=5   -> all dark
+  //   NCAAF  overall median n=3      0/182 cells clear n>=5   -> all dark
+  //
+  // Not one football cell out of 1,000+ could ever be coloured. It was a
+  // baseball threshold applied to every sport, not a football bug.
+  //
+  // Fix is one rule for all sports rather than a per-sport floor: below
+  // n=7 require a MARGIN of 2+ games, above it use the hit-% bands. A 3-0
+  // sweep colours, 2-1 stays neutral — so small samples only speak when
+  // they're lopsided, and nothing colours off a single game. The two rules
+  // agree exactly where they meet (n=6: 4-2 is both margin-2 and 66.7%),
+  // so there's no visible jump as the season fills in.
+  const MARGIN_REGIME_MAX = 6;   // n<=6 -> margin rule; n>6 -> hit-% rule
+  const tint: 'win'|'loss'|'neutral' =
+    total < 2 ? 'neutral'
+    : total <= MARGIN_REGIME_MAX
+      ? (w - l >= 2 ? 'win' : l - w >= 2 ? 'loss' : 'neutral')
+      : (hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral');
   // 2026-09-02: label the display so users know what W-L means per market.
   //   total: "O 6 · U 4" (over/under, prevents "6-4" ambiguity from user report)
   //   spread: "6-4 ATS" (against the spread)
