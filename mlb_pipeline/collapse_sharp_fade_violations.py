@@ -259,7 +259,28 @@ def sync_primary_play(read: dict, ctx: dict, new_side: str, dry_run: bool = Fals
     #   legacy jerry-fallback (original behavior)
     #   ensemble_v2 with matching market — new 2026-08-23 path
     from_jerry_fallback = 'jerry_read fallback' in audit
-    from_ensemble = engine == 'ensemble_v2' and str(pp.get('type', '')).lower() == 'total'
+    # 2026-09-24 — lr_v1/lr_v2 ADDED. This gated on ensemble_v2 alone, so on any
+    # game the LR override had decided it flipped jerry_reads and returned
+    # WITHOUT patching primary_play. jerry_pick_scrub then aligns the read back
+    # to primary_play later in the same run (step 133 against this script's 108),
+    # reverting the flip and leaving only the audit_note behind — which is
+    # exactly the state LA@SEA was found in: audit_notes reading "Auto-flipped
+    # ... sharp-fade discipline: sharp $79% on UNDER but 2 models sit on OVER"
+    # while call_text still said Under 7.0 at conviction 74.
+    #
+    # lr_v1 is not an edge case any more: it decided 12 of 12 MLB games on
+    # 09-24, and ensemble_v2 decided none. So the condition excluded the
+    # dominant engine.
+    #
+    # Third component today found gating on ensemble_v2 alone, all written
+    # before the LR override shipped: jerry_pre_publish_audit's engine check
+    # (fired a false "ensemble disabled" critical daily) and
+    # reconcile_jerry_to_primary (which correctly logs a warning rather than
+    # flipping on legacy engines, so it is not the reverter). Worth a sweep for
+    # others rather than waiting to trip over the next one.
+    _MODERN_TOTAL_ENGINES = ('ensemble_v2', 'lr_v1', 'lr_v2')
+    from_ensemble = (engine in _MODERN_TOTAL_ENGINES
+                     and str(pp.get('type', '')).lower() == 'total')
     if not (from_jerry_fallback or from_ensemble): return
     line = ctx.get('close_total')
     new_label = f'{new_side.title()} {line}'
