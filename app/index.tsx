@@ -9687,7 +9687,14 @@ setJerryHistory(prev => {
         // all), so it is derived below rather than dropped.
         const {data: recs} = await supabase.from('external_source_track_record')
           .select('source,sport,surface,window_days,hit_rate,n_picks,n_wins,n_losses,n_pushes')
-          .limit(500);
+          // 2026-09-25: was .limit(500). The table holds one row per
+          // (source × sport × surface × window) and is already at 291 with
+          // three sports live (MLB 139, NFL 80, NCAAF 72). NBA, NHL and NCAAB
+          // coming online would cross 500 and silently truncate — and because
+          // the component indexes by source::sport::market, the rows that
+          // vanish are whichever sort last, so some sources would just stop
+          // showing a track record with no error anywhere.
+          .limit(5000);
         // Component expects `market` — alias surface into it.
         // n_graded = settled picks only. Deliberately NOT n_picks, which
         // includes ungraded rows and would inflate the sample behind every

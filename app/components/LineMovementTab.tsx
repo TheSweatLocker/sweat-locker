@@ -893,7 +893,14 @@ function LineMovementCard({groupKey, flags, sample, picks, sourceRecordIdx, rawS
               {row.hitRate != null && row.n != null && row.n > 0 ? (
                 <View style={{flexDirection: 'row', alignItems: 'baseline', gap: 4}}>
                   <Text style={{color: T.textMuted, fontSize: 9}}>{row.window}d:</Text>
-                  <Text style={{color: row.hitRate >= 52.4 ? T.win : row.hitRate >= 48 ? T.textDim : T.loss, fontSize: 10, fontWeight: '800'}}>
+                  {/* 2026-09-25: thresholds were >=52.4 green / >=48 dim / red.
+                      52.4% is the breakeven for a -110 bet, but the prices
+                      actually published average -118.6, making real breakeven
+                      54.2%. So everything in 52.4-54.2 was painted green while
+                      losing money — the colour was telling users a losing tout
+                      was profitable. Red now starts at 50%, because a sub-50
+                      source is a fade signal in its own right, not just noise. */}
+                  <Text style={{color: row.hitRate >= 54.2 ? T.win : row.hitRate >= 50 ? T.textDim : T.loss, fontSize: 10, fontWeight: '800'}}>
                     {row.hitRate.toFixed(1)}%
                   </Text>
                   <Text style={{color: T.textMuted, fontSize: 9}}>n={row.n}</Text>
