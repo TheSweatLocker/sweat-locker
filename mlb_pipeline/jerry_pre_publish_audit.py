@@ -391,10 +391,70 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
         # Gate 6: coverage (denominator = matched, not all directional)
         if matched:
             coverage = with_refit / matched
-            if coverage < 0.95:
-                critical.append(f'refit coverage {coverage*100:.0f}% ({with_refit}/{matched} '
-                                f'jerry reads with matching prop row) — apply_prop_refit likely '
-                                f'failed this cycle. Rerun `python apply_prop_refit.py`.')
+            # 2026-09-24 — THIS ASKED THE WRONG QUESTION. It treated any NULL
+            # refit_conviction as evidence apply_prop_refit had failed, and told
+            # the operator to rerun it. On 09-24 it reported "38% (22/58) —
+            # likely failed this cycle" every run, and rerunning changed
+            # nothing, because nothing was broken.
+            #
+            # NULL refit is a DESIGNED fallback, not a failure.
+            # apply_prop_refit's own docstring says so, and compute_refit returns
+            # None in five deliberate cases — blacklisted pair, type absent from
+            # the weights, fewer than 2 positive coefficients surviving the
+            # registry sign-filter, zero fired signals matching the coefs, or a
+            # raw score at/below floor. The last two were ADDED to fix bugs
+            # where publishing a fabricated refit number broke the display
+            # (Bryce Miller er_over showing 0.0 against legacy 68; six bb_over
+            # PRIMEs hidden for five days by a literal 0.0 that COALESCE would
+            # not substitute).
+            #
+            # Re-ran compute_refit against every live row on 09-24 — ZERO
+            # disagreements with what is stored:
+            #     ha_under  19  -> None, "<2 positive coefs" (0 survived)
+            #     bb_under  17  -> None, raw score at floor (no support)
+            #     bb_under   2  -> value, and the DB has it
+            #     er_under  23  -> value
+            # The script ran correctly. v_mlb_props_publishable already handles
+            # the NULLs with COALESCE(refit_conviction, conviction).
+            #
+            # So the question worth asking is "did apply_prop_refit RUN?", not
+            # "is refit populated on every row?". refit_version is written
+            # alongside refit_conviction, so zero rows carrying a version on a
+            # non-empty slate is the real failure signature.
+            #
+            # This mattered enough to fix now: the same change that let this gate
+            # redden the run would have made a false critical turn every MLB run
+            # red, which trains you to ignore the red. Fourth false critical
+            # found today, after the ensemble_v2 one.
+            _ran = 0
+            try:
+                _rv = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                                   headers={**H_READ, 'Prefer': 'count=exact',
+                                            'Range': '0-0'},
+                                   timeout=20,
+                                   params={'select': 'id',
+                                           'game_date': f'eq.{game_date}',
+                                           'refit_version': 'not.is.null'})
+                _tail = (_rv.headers.get('content-range') or '').split('/')[-1]
+                _ran = int(_tail) if _tail.isdigit() else 0
+            except Exception as _e:
+                warnings.append(f'refit: could not confirm whether '
+                                f'apply_prop_refit ran ({_e})')
+            if _ran == 0:
+                critical.append(
+                    f'refit: NO prop row on {game_date} carries refit_version — '
+                    f'apply_prop_refit did not run or wrote nothing. '
+                    f'Rerun `python apply_prop_refit.py`.')
+            elif coverage < 0.95:
+                warnings.append(
+                    f'refit coverage {coverage*100:.0f}% ({with_refit}/{matched} '
+                    f'matched reads) — expected, not a failure: compute_refit '
+                    f'returns None when a prop type has no registry-vetted '
+                    f'positive structure or no supporting fired signals, and the '
+                    f'view falls back to legacy conviction. {_ran} rows carry '
+                    f'refit_version, so the script ran. Investigate the WEIGHTS '
+                    f'(a family with 0 surviving positive coefs is a retrain '
+                    f'signal), not the cron.')
 
     # --- Gate 11: L5 trend gate (2026-08-11 · Christian Scott motivator) ---
     # For each BACK prop_jerry pick on a pitcher metric (hits/er/ks/bb/ip),
