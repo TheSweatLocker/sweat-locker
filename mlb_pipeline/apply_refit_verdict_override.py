@@ -75,6 +75,51 @@ def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+# 2026-09-24 TAXONOMY PORT. Every gate in decide() branched on the legacy
+# BACK/FADE verdicts, and prop_jerry_reads.call_verdict has carried unified
+# TIERS since the 2026-08-30 port — PRIME/STRONG/LEAN/PASS/SKIP. Measured on
+# MLB: 0 legacy verdicts on 08-29, 08-31 and 09-10; 1 of 145 on 09-24. So these
+# gates have been dead for roughly four weeks:
+#
+#   * the hits_over / bb_under juice-trap short-circuit
+#   * NO_REFIT_CAP (missing refit should cap conviction)
+#   * FORCE_PASS_REFIT_TRAP_DISABLED (the trap-zone protection)
+#   * the Jerry-hallucination catch
+#
+# jerry_pre_publish_audit WAS ported on 08-30 and says so in a comment, which is
+# why it kept reporting "Cam Schlittler er_under LEAN on refit=7.4 —
+# apply_refit_verdict_override should have downgraded" as a critical every day.
+# The audit was right; this file never got the same treatment.
+#
+# A tiered pick is the same thing BACK used to be: a directional call we are
+# publishing. FADE has no tier equivalent, so FADE-only branches are untouched.
+#
+# MEASURED BEFORE APPLYING, on the 09-24 slate (144 matched reads):
+#     before  143 HOLD
+#     after   106 HOLD · 34 NO_REFIT_CAP · 3 BB_UNDER_JUICE_TRAP · 1 TRAP_PASS
+# All 34 NO_REFIT_CAP rows are LEAN, so no verdict changes, and only 8 sit above
+# the 55 cap today — ha_under props at conviction 60, the one family with ZERO
+# surviving positive refit coefficients. "Trust conviction less where the refit
+# model has no structure" is exactly the intent. The 3 bb_under traps are live
+# props at -210, -225 and -240 against a documented -200 house rule.
+_TIER_VERDICTS = {'PRIME', 'STRONG', 'LEAN'}
+
+
+def _is_backing(verdict: str) -> bool:
+    """True when the verdict means "we are publishing this pick".
+
+    Legacy BACK, or any publishable tier under the 08-30 taxonomy.
+    """
+    v = (verdict or '').upper()
+    return v == 'BACK' or v in _TIER_VERDICTS
+
+
+def _is_directional(verdict: str) -> bool:
+    """True for any committed call — backing or fading."""
+    v = (verdict or '').upper()
+    return _is_backing(v) or v == 'FADE'
+
+
 def decide(raw: int, refit: float | None, current_verdict: str,
            prop_type: str | None = None, direction: str | None = None,
            sample_health: dict | None = None,
@@ -107,17 +152,17 @@ def decide(raw: int, refit: float | None, current_verdict: str,
             o = int(book_odds)
             # hits_over trap: memory feedback_batter_hits_juice_trap_803
             if prop_type == 'hits_over' and direction == 'over' and o <= -200:
-                if current_verdict in ('BACK', 'FADE'):
+                if _is_directional(current_verdict):
                     return ('LEAN_CAP', f'HITS_OVER_JUICE_TRAP_{o}_no_refit_boost')
             # bb_under trap: memory equivalent from 8/9 (added 8/14 gate)
             if prop_type == 'bb_under' and direction == 'under' and o <= -200:
-                if current_verdict in ('BACK', 'FADE'):
+                if _is_directional(current_verdict):
                     return ('LEAN_CAP', f'BB_UNDER_JUICE_TRAP_{o}_no_refit_boost')
         except (TypeError, ValueError): pass
 
     if refit is None:
         # No-refit cap only applies to BACK/FADE
-        if current_verdict in ('BACK', 'FADE'):
+        if _is_directional(current_verdict):
             return (current_verdict, 'NO_REFIT_CAP')
         return None
     delta = refit - raw
@@ -142,7 +187,7 @@ def decide(raw: int, refit: float | None, current_verdict: str,
         # signal in the low-conviction band is queued for the refit
         # calibration audit (deeper piece). Until then: don't act on
         # the refit-trap signal.
-        if current_verdict == 'BACK':
+        if _is_backing(current_verdict):
             return ('PASS', 'FORCE_PASS_REFIT_TRAP_DISABLED')
         return None
     # 2026-08-11: Jerry-hallucination catch. When JR conviction is high
@@ -151,7 +196,7 @@ def decide(raw: int, refit: float | None, current_verdict: str,
     # rejection. Force PASS at minimum (or FADE if refit is very low).
     # Catches Dylan Cease er_under BACK conv=58 vs props conv=24 (SKIP)
     # vs refit=16.9 — Jerry ignored both underlying signals.
-    if current_verdict == 'BACK' and raw < 30 and refit is not None and refit < 30:
+    if _is_backing(current_verdict) and raw < 30 and refit is not None and refit < 30:
         return ('PASS', 'FORCE_PASS_JERRY_HALLUCINATION')
     if abs_d >= DELTA_BOOST and refit >= REFIT_BOOST:
         # 2026-08-11 (v4): FADE-flip must fire REGARDLESS of band health.
@@ -188,7 +233,7 @@ def decide(raw: int, refit: float | None, current_verdict: str,
                 return ('LEAN_CAP', 'REFIT_BAND_UNHEALTHY')
         else:
             return ('LEAN_CAP', 'REFIT_HEALTH_UNAVAILABLE')
-        if current_verdict in ('BACK', 'PASS'):
+        if _is_backing(current_verdict) or current_verdict == 'PASS':
             return ('BACK', 'FORCE_BACK_BOOST')
     if abs_d >= DELTA_BOOST and refit < REFIT_PASS:
         # 2026-08-14 · DISABLED FORCE_PASS_CONFLICT rule (refit calibration audit).
