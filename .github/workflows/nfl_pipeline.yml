@@ -422,15 +422,23 @@ jobs:
       # teamrankings.com data which lags 2-4 weeks into a new season, so
       # this direct backfill covers early-season display until teamrankings
       # catches up. Non-fatal + idempotent.
+      # 2026-09-24: continue-on-error dropped in favour of run_step. This step
+      # was scheduled and running, yet 14 of 30 upcoming nfl_game_context rows
+      # had NULL season ATS — so the Games-tab badge fell back to ats_l10_*,
+      # LAST season's last-ten, and showed "5-5 ATS" for teams whose actual
+      # 2026 record was 1-1. A silent failure here is indistinguishable from
+      # the horizon bug that also contributed, which is exactly why it needs to
+      # be visible rather than swallowed.
       - name: Backfill NFL season ATS/OU records from game results
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
-        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_nfl_season_records_from_results.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_nfl_season_records_from_results.py" \
+            python backfill_nfl_season_records_from_results.py
 
       # 2026-08-17: teamrankings season aggregates + enrichment for
       # season_trend signals. Runs AFTER rolling tendencies so both

@@ -81,14 +81,48 @@ def fetch_results(season: int) -> list:
 
 
 def fetch_upcoming_ctx() -> list:
-    """nfl_game_context rows for today + 8 days (the app's window)."""
+    """Every nfl_game_context row from today forward, paginated.
+
+    2026-09-24 — WAS "today + 8 days (the app's window)". The app does not have
+    an 8-day window; nfl_game_context reaches as far as the schedule pull does,
+    and on 09-24 it held rows out to 10-04. Those rows got no season ATS, so the
+    card fell back to `ats_l10_*` — LAST SEASON's last-ten — and Andy saw teams
+    showing "5-5 ATS" on a slate where the season record is 1-1.
+
+    Third instance of this exact defect today: generate_nhl_game_reads had a
+    hardcoded "today + 5 days" while nhl_game_context reached 09-30, and the NFL
+    prop synth ran `--days 3` from a Thursday while the slate it needed was
+    Sunday. A fixed day count cannot track a table whose reach is set elsewhere.
+    So read what the table holds.
+
+    Paginated because PostgREST caps a bare select at 1000 and silently
+    truncates — an NFL slate is small today, but a truncated fetch here would
+    look exactly like the bug being fixed.
+    """
     today = _et_today()
-    horizon = (datetime.now(timezone.utc) + timedelta(days=8)).date().isoformat()
-    r = requests.get(f'{SB}/rest/v1/nfl_game_context',
-                     params={'and': f'(game_date.gte.{today},game_date.lte.{horizon})',
-                             'select': 'game_id,game_date,home_team,away_team'},
-                     headers=H_READ, timeout=15)
-    return r.json() if r.status_code == 200 else []
+    out, offset = [], 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/nfl_game_context',
+                         params={'game_date': f'gte.{today}',
+                                 'select': 'game_id,game_date,home_team,away_team',
+                                 'order': 'game_date.asc,game_id.asc',
+                                 'limit': 1000, 'offset': offset},
+                         headers=H_READ, timeout=30)
+        if r.status_code != 200:
+            print(f'  ⚠ ctx fetch offset={offset} HTTP {r.status_code}: '
+                  f'{(r.text or "")[:120]}')
+            return out
+        batch = r.json()
+        if not isinstance(batch, list):
+            return out
+        out.extend(batch)
+        if len(batch) < 1000:
+            if out:
+                print(f'  ctx window: {len(out)} rows, '
+                      f'{str(out[0]["game_date"])[:10]} .. '
+                      f'{str(out[-1]["game_date"])[:10]}')
+            return out
+        offset += 1000
 
 
 def aggregate_by_team(results: list) -> dict:
