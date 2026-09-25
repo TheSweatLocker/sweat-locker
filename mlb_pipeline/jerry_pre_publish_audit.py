@@ -253,6 +253,37 @@ def audit(sport: str, game_date: str) -> dict:
     }
 
 
+def _page(url: str, params: dict, page: int = 1000) -> list:
+    """Fetch every row, not the first 1000.
+
+    2026-09-24. This gate is meant to decide whether a slate is safe to publish,
+    and it was reading a truncated slate. PostgREST returns at most 1000 rows
+    for a bare select and reports the cap only in a Content-Range header. MLB
+    carried 1,127 prop rows on 09-24.
+
+    Ordered by id so paging is stable — without ORDER BY, offsets can overlap or
+    skip rows, which would be a worse failure than the truncation it replaces.
+    Raises on a non-2xx page rather than returning a short list, because a
+    silently short list is exactly how a gate reports a clean slate that is not.
+    """
+    out, offset = [], 0
+    while True:
+        r = requests.get(url, headers=H_READ, timeout=30,
+                         params={**params, 'order': 'id.asc',
+                                 'limit': page, 'offset': offset})
+        if r.status_code not in (200, 206):
+            raise RuntimeError(f'{url} page offset={offset} '
+                               f'HTTP {r.status_code}: {(r.text or "")[:120]}')
+        batch = r.json()
+        if not isinstance(batch, list):
+            raise RuntimeError(f'{url} returned {type(batch).__name__}: '
+                               f'{str(batch)[:120]}')
+        out.extend(batch)
+        if len(batch) < page:
+            return out
+        offset += page
+
+
 def audit_prop_jerry_refit(game_date: str) -> dict:
     """2026-08-10: 4 refit-focused sanity gates on prop_jerry_reads + weights.
 
@@ -273,10 +304,18 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
     # silently won, producing false-positive CRITICAL when Jerry backed
     # the safe line but audit read the trap-line's refit → sanity check
     # tanked the whole pipeline for a bogus reason.
-    reads = requests.get(f'{SB}/rest/v1/prop_jerry_reads', headers=H_READ,
-        params={'game_date': f'eq.{game_date}',
-                'select': 'id,player_name,prop_type,prop_line,direction,call_verdict,conviction'},
-        timeout=15).json()
+    # 2026-09-24 SPORT FILTER ADDED. This fetched every sport's prop reads for
+    # the date and looked them all up in mlb_pipeline_props: 188 rows returned
+    # where MLB had 145, so 43 NFL/other reads entered the MLB refit check.
+    # They failed to match and were skipped, so the ratio survived — but a
+    # player name shared across sports would have silently counted against MLB's
+    # coverage. A gate about to be given blocking authority does not get to
+    # measure the wrong population.
+    reads = _page(f'{SB}/rest/v1/prop_jerry_reads',
+                  {'game_date': f'eq.{game_date}',
+                   'sport': 'eq.MLB',
+                   'select': 'id,player_name,prop_type,prop_line,direction,'
+                             'call_verdict,conviction'})
     if isinstance(reads, list):
         # 2026-08-30 taxonomy port: prop_jerry_reads.call_verdict now stores
         # PRIME/STRONG/LEAN/PASS/SKIP (unified tier) instead of legacy
@@ -287,11 +326,18 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
         _pub = {'PRIME','STRONG','LEAN','BACK','FADE'}
         directional = [r for r in reads
                        if (r.get('call_verdict') or '').upper() in _pub]
-        # Refit_conviction lives on the source prop row, not jerry row — cross-join
-        props = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
-            params={'game_date': f'eq.{game_date}',
-                    'select': 'player_name,prop_type,prop_line,direction,refit_conviction'},
-            timeout=15).json()
+        # Refit_conviction lives on the source prop row, not jerry row — cross-join.
+        # 2026-09-24 PAGINATED. PostgREST caps a bare select at 1000 and says so
+        # only in a header nobody read; MLB carried 1,127 prop rows on 09-24, so
+        # 127 were invisible. It happened not to move the number that day
+        # (checked both ways: 58 matched / 22 with refit either way) because an
+        # unmatched read is skipped rather than counted against coverage — but a
+        # larger slate shifts which 1000 come back, and the same truncation was
+        # mis-weighting 36 signals in both ensemble scorers earlier today.
+        props = _page(f'{SB}/rest/v1/mlb_pipeline_props',
+                      {'game_date': f'eq.{game_date}',
+                       'select': 'player_name,prop_type,prop_line,direction,'
+                                 'refit_conviction'})
         # Key now includes prop_line to prevent line-collapse ambiguity.
         prop_by_key = {(p['player_name'], p['prop_type'], p['direction'], p.get('prop_line')): p
                        for p in (props if isinstance(props, list) else [])}

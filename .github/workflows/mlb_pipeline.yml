@@ -1867,8 +1867,11 @@ jobs:
           cd mlb_pipeline
           python conviction_calibration_pass.py --sport MLB
 
-      - name: Jerry pre-publish sanity audit (soft-warn — never blocks card)
-        continue-on-error: true
+      # Name updated 2026-09-24: it no longer "soft-warns", and
+      # continue-on-error is dropped because run_step.sh already returns 0 —
+      # keeping both would mean a failure of the wrapper itself was also
+      # swallowed, which is the pattern being removed.
+      - name: Jerry pre-publish sanity audit (repairs, records, never blocks card)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -1887,7 +1890,39 @@ jobs:
           # But sanity audit CANNOT kill the pipeline anymore. If Jerry
           # reads are broken, publish the ones that pass and log the failures.
           # Better a partial card than no card after 50 min of compute.
-          python jerry_pre_publish_audit.py --sport MLB --repair --warn-only
+          #
+          # 2026-09-24 — THE 08-22 DECISION STANDS. What it was missing is a way
+          # to KNOW. --warn-only makes the script exit 0, so the step, the job
+          # and the run all went green, and MLB has been reporting criticals
+          # daily that nobody acted on: a sharp-fade violation on LA@SEA, a prop
+          # sitting on refit=7.4 in the trap zone, and refit coverage at 38%
+          # (22/58) whose remedy the message already names. A fourth was a FALSE
+          # positive until today ("ensemble disabled" — lr_v1 is the LR override
+          # superseding the ensemble, not a failure), and a check that cries
+          # wolf daily is precisely how the three real ones stayed unread.
+          #
+          # So: --warn-only is dropped and the call goes through run_step. The
+          # script exits 1 on a critical as it was designed to, run_step records
+          # that and returns 0, so EVERY later step still runs — the Sweat Card
+          # at 137, the ledger at 154, daily record aggregation at 157. Nothing
+          # is lost that --warn-only was protecting. The job's gate step then
+          # turns the run red with the list.
+          #
+          # Net: a red X on a run that did its work and can be acted on, instead
+          # of a green check on a run with three unaddressed criticals.
+          #
+          # Blocking was considered and rejected. The Sharp Card is built at
+          # step 102, BEFORE this gate, so a block cannot protect it anyway;
+          # and a block here would skip the card, ledger and daily records,
+          # which is the collateral the 08-22 note is about.
+          #
+          # The audit's own accuracy was fixed first, in the same change: its
+          # reads fetch had no sport filter (188 rows where MLB had 145) and its
+          # props fetch was unpaginated (1,000 of 1,127). A gate does not get
+          # authority over the run while it is measuring the wrong population.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "jerry_pre_publish_audit.py (MLB)" \
+            python jerry_pre_publish_audit.py --sport MLB --repair
 
       # Snapshot game_context (2026-08-02 · adaptive ensemble Phase 1B).
       # Runs AFTER generate_jerry_synthesis so we capture the state Jerry
