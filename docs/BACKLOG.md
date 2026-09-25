@@ -1051,33 +1051,50 @@ also render it with a typo — "2026-27season", no space.
 
       "Market-based analysis — proprietary NHL model launches 2026-27season."
 
-WHERE IT COMES FROM, and it is not the template. Two instructions got merged by
-the LLM:
+IT IS AUTHORED, NOT HALLUCINATED. Corrected within the hour of first writing
+this entry. The live prompt the generator actually loads —
+`prompt_templates` sport=NHL name=game_read_rules, is_active, version 2 —
+says it verbatim:
 
-  * `prompt_templates` (NHL, game_read_rules): 'Attribute EVERYTHING to the
-    "Sweat Locker model" or "proprietary model"'
-  * `_prompt_game_read_rules_NHL.txt` line 3: 'Open with one line:
-    "Market-based analysis — no NHL model active yet."'
+      - Open with one line: "Market-based analysis — proprietary NHL model
+        launches 2026-27 season."
 
-Neither contains a launch date. "proprietary" is instructed; "launches 2026-27
-season" is invented. I previously flagged this phrase, then retracted on the
-belief it was in the template verbatim — the retraction was wrong, and only the
-attribution half was ever there.
+So the LLM followed instructions exactly. Its only contribution is dropping the
+space: "2026-27season" on 17 of 37.
 
-WHY IT MATTERS MORE THAN A TYPO. It is a forward-looking commitment about the
-product, shipped to paying subscribers, on every read of a sport that has no
-model. It is also self-contradicting: the same sentence says the analysis is
-market-based because no model exists, then promises when the model arrives.
+WHAT MISLED ME, and it is its own problem.
+`mlb_pipeline/_prompt_game_read_rules_NHL.txt` line 3 says 'Open with one line:
+"Market-based analysis — no NHL model active yet."' — the honest version. That
+file is read by NO python in the repo and is UNTRACKED in git. A dead reference
+copy that contradicts production, sitting next to the code, which is exactly
+how you get a confident wrong diagnosis. I wrote the first version of this entry
+blaming the model for a sentence a human wrote in May.
 
-FIX SHAPE: the opening line should be the one the rules file already specifies,
-and it should not be left to the LLM to paraphrase a claim about the roadmap.
-Either pin it as literal text prepended server-side (it is a constant, not
-generated content), or forbid launch/roadmap language in the prompt and add it
-to the pre-publish audit alongside the parser-marker check. Prepending a
-constant is the smaller change and removes the LLM from the sentence entirely.
+My earlier retraction of this same flag was therefore CORRECT, and tonight's
+un-retraction was the error. Only NHL's prompt carries the claim; no other
+sport's does.
 
-Same class as B26 (markdown in short_read) and the parser markers: the boundary
-between generated prose and fixed product copy is not enforced anywhere.
+TWO SEPARATE THINGS TO DECIDE AND FIX:
+
+  1. THE CLAIM IS ANDY'S CALL, not an engineering fix. Does The Sweat Locker
+     want to promise subscribers a proprietary NHL model in 2026-27? It has
+     been shipping on every NHL read since 2026-05-13. It is also
+     self-contradicting: the same sentence explains the analysis is
+     market-based because no model exists, then commits to when one arrives.
+
+  2. THE MECHANISM IS A DEFECT REGARDLESS. Fixed product copy should not be
+     generated text. Because the LLM paraphrases it, we get a typo on 17 of 37
+     reads and no single place to edit the wording. Prepend it server-side from
+     one constant and drop the instruction from the prompt — that fixes the
+     typo permanently, makes the sentence one editable string, and removes the
+     LLM from a claim about the roadmap. Doing this preserves the CURRENT
+     wording verbatim so it carries no decision about (1).
+
+Also: the dead `.txt` should be deleted or reconciled with the DB row. Right now
+it is a trap.
+
+Same class as B26 (markdown in short_read): nothing enforces the boundary
+between generated prose and fixed product copy.
 
 VERIFY: `python mlb_pipeline/verify_backlog.py --only NEW`
 

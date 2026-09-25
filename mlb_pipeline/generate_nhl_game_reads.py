@@ -39,6 +39,7 @@ Usage: python generate_nhl_game_reads.py [--force] [--limit N]
 """
 import argparse
 import os
+import re
 import sys
 import json
 from datetime import datetime, timedelta, timezone
@@ -352,6 +353,10 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
             skipped += 1
         parsed = parse_synthesis(narrative)
         if parsed.get('short_read'):
+            parsed = dict(parsed)
+            parsed['short_read'] = _canonical_disclaimer(parsed['short_read'])
+            parsed['long_read'] = _canonical_disclaimer(
+                parsed.get('long_read'), prepend=False)
             # Game date from the ET kickoff, never the run date and never
             # the UTC slice. NHL plays at night so both of those are wrong
             # for most of the schedule.
@@ -367,6 +372,47 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
             print(f'  ⚠ {matchup}: no SHORT section parsed — '
                   f'jerry_reads not written')
     print(f'\n✓ cache {written} · jerry_reads {reads} · skipped {skipped}')
+
+
+# 2026-09-24 — FIXED PRODUCT COPY IS NOT GENERATED TEXT.
+#
+# The live NHL prompt (prompt_templates sport=NHL name=game_read_rules, active,
+# v2) instructs: 'Open with one line: "Market-based analysis — proprietary NHL
+# model launches 2026-27 season."' The LLM complies, but paraphrases — 17 of 37
+# reads rendered it as "2026-27season" with the space dropped, which is what a
+# subscriber actually sees on the card.
+#
+# A sentence that is the same on every read of a sport is a constant, not
+# output. Generating it buys a typo and leaves the wording with no single place
+# to edit. So the canonical line is prepended here and any LLM-written variant
+# of it is stripped first.
+#
+# THIS CARRIES NO DECISION ABOUT THE CLAIM. The wording below is the prompt's
+# current wording, byte for byte. Whether the product should promise a
+# proprietary NHL model in 2026-27 at all is Andy's call and is logged as B48 —
+# when that is decided, this one string is the only edit, and no regeneration is
+# needed.
+NHL_DISCLAIMER = ('Market-based analysis — proprietary NHL model '
+                  'launches 2026-27 season.')
+
+# Matches the canonical line and the paraphrases seen in production, including
+# the missing-space typo and the "no NHL model active yet" variant that the dead
+# _prompt_game_read_rules_NHL.txt still advertises.
+_DISCLAIMER_RE = re.compile(
+    r'^\s*Market-based analysis\s*[—-]\s*'
+    r'(?:proprietary NHL model launches\s*20\d\d[-–]\d\d\s*season'
+    r'|no NHL model active yet)\s*\.?\s*',
+    re.I)
+
+
+def _canonical_disclaimer(txt, prepend: bool = True):
+    """Strip any LLM-written disclaimer variant; prepend the canonical one."""
+    if not txt:
+        return txt
+    body = _DISCLAIMER_RE.sub('', txt).lstrip()
+    if not prepend:
+        return body or txt
+    return f'{NHL_DISCLAIMER}\n\n{body}' if body else NHL_DISCLAIMER
 
 
 def main():
