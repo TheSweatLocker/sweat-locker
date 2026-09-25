@@ -2005,6 +2005,22 @@ def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
     return parsed
 
 
+def _strip_markers(txt, fallback_key):
+    """Shared marker stripper — imported so there is exactly one copy.
+
+    Local import (not module-scope) to match how this file already pulls
+    smart_truncate_short, and so a missing helper degrades to unstripped text
+    with a warning rather than failing the whole generator at import time.
+    """
+    try:
+        from jerry_reads_dual_write import strip_section_markers
+    except Exception as _e:  # pragma: no cover
+        print(f'  ⚠ strip_section_markers unavailable ({_e}) — '
+              f'markers may reach the read')
+        return txt
+    return strip_section_markers(txt, fallback_key)
+
+
 def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     """Write structured NFL Jerry read to jerry_reads table (2026-08-06 Phase 2).
     Uses (sport, game_id, game_date) unique key. This is what the sweat card
@@ -2100,8 +2116,28 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
                 'team_rolling', 'team_defense', 'weather', '_analyst_facts',
             ) if struct.get(k) is not None
         } | {'source': 'generate_nfl_game_reads'},
-        'short_read': parsed.get('short_read') or narrative[:500],
-        'long_read': parsed.get('long_read') or narrative,
+        # 2026-09-24 MARKER LEAK — fixed here, where it actually lives.
+        #
+        # These two fallbacks publish the RAW narrative when parse_synthesis
+        # yields no section, and the raw narrative still carries its
+        # ---SHORT--- / ---LONG--- markers. That is how three reads shipped
+        # with short_read beginning "---SHORT---" followed by real prose.
+        #
+        # I had already "fixed" this once today by adding a guard inside
+        # jerry_reads_dual_write.upsert_jerry_read and claiming it was the last
+        # gate before the write. It was not: this function is a SEPARATE
+        # writer that posts to jerry_reads directly and imports only
+        # smart_truncate_short from that module. The guard never ran on the NFL
+        # path, and the markers were back on the next generator run — the same
+        # three reads, regenerated at 21:31 the same evening.
+        #
+        # strip_section_markers is now module-level in jerry_reads_dual_write
+        # and both writers call the one implementation, rather than this file
+        # getting a second copy that can drift from the first.
+        'short_read': _strip_markers(
+            parsed.get('short_read') or narrative[:500], 'short_read'),
+        'long_read': _strip_markers(
+            parsed.get('long_read') or narrative, 'long_read'),
         'call_text': parsed.get('call_text'),
         'call_market': parsed.get('call_market'),
         'call_side': parsed.get('call_side'),

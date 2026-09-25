@@ -97,6 +97,54 @@ def smart_truncate_short(text: str, max_chars: int = 350) -> str:
     return cut.rstrip() + '…'
 
 
+def strip_section_markers(txt, fallback_key: str):
+    """Remove parser section markers from text that is about to be published.
+
+    A marker like ---SHORT--- is an instruction to the parser and must never
+    reach a subscriber. Three NFL reads shipped with short_read literally
+    beginning with the marker, then a newline, then "LA's passing offense
+    ranks 11th...".
+
+    SHARED ON PURPOSE. 2026-09-24: this started life as a nested helper inside
+    upsert_jerry_read, and I claimed in the commit that being "the last gate
+    before the write" meant it caught bad text "no matter which path produced
+    it". That was wrong. generate_nfl_game_reads has its OWN writer,
+    upsert_jerry_read_nfl, which posts to jerry_reads directly and imports only
+    smart_truncate_short from this module. So the guard never ran on the NFL
+    path, and the markers came back on the very next generator run — the same
+    three reads I had repaired by hand that morning.
+
+    The real leak is that writer's fallback:
+
+        'short_read': parsed.get('short_read') or narrative[:500]
+
+    When parse_synthesis yields no section, the RAW narrative is published,
+    markers included.
+
+    So this lives at module level and both writers call it. A third writer
+    should call it too rather than grow a fourth copy — the duplicated
+    "align read to pick" logic in this codebase is the same mistake one level
+    up.
+    """
+    if not txt:
+        return txt
+    if '---SHORT---' not in txt and '---LONG---' not in txt:
+        return txt
+    reparsed = parse_synthesis(txt) or {}
+    candidate = reparsed.get(fallback_key)
+    # VERIFY THE OUTPUT, do not trust it. parse_synthesis has an
+    # unmarked-prose fallback: when no section yields content it assigns the
+    # whole raw string to short_read and long_read. Feed it a string whose
+    # section is empty — "---SHORT---" alone, or a marker with nothing after
+    # it — and it hands the marker straight back, so this function returned
+    # the exact text it exists to remove. A guard that can emit the thing it
+    # is guarding against is not a guard.
+    if candidate and '---' not in candidate:
+        return candidate
+    stripped = re.sub(r'---[A-Z]+---\s*', '', txt).strip()
+    return stripped or None
+
+
 def parse_synthesis(raw: str) -> dict:
     """Parse a Jerry LLM synthesis into structured pick fields.
 
@@ -568,12 +616,7 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     # caller that might hand over raw text, re-parse here whenever a
     # marker is present. This is the last gate before the write, so it
     # catches the bad text no matter which path produced it.
-    def _demarker(txt, fallback_key):
-        if not txt or '---SHORT---' not in txt and '---LONG---' not in txt:
-            return txt
-        reparsed = parse_synthesis(txt)
-        return reparsed.get(fallback_key) or re.sub(
-            r'---[A-Z]+---\s*', '', txt).strip()
+    _demarker = strip_section_markers
 
     parsed = dict(parsed)
     parsed['short_read'] = _demarker(parsed.get('short_read'), 'short_read')
