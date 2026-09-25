@@ -161,6 +161,38 @@ def predict_fight(fighter_a_url, fighter_b_url, fight_date, total_rounds_schedul
                 with open(calib_path, "rb") as f:
                     calib_bundle = pickle.load(f)
                 iso = calib_bundle.get("calibrator")
+                # 2026-09-25 DEGENERACY GUARD. An isotonic fit on a small
+                # sample collapses into a few plateaus and stops discriminating.
+                # The shipped v1 calibrator (trained 08-21 on n=53, below this
+                # script's own stated 100+ target) maps EVERYTHING from raw 0.25
+                # to raw 0.55 onto 0.583-0.588 — all above 0.50. So a fight the
+                # model gives fighter A a 25% chance comes out "A favoured": it
+                # does not just flatten the signal, it INVERTS the underdog end
+                # of it.
+                #
+                # Measured damage: from 08-22 the recommended side went all-'a'
+                # and p_winner_a collapsed to near-constant — the 09-26 card had
+                # 2 distinct probabilities across 9 fights. Graded record over
+                # the period is 25-38 (39.7%), which is what picking one corner
+                # by default looks like.
+                #
+                # A calibrator that cannot separate the input range is worse
+                # than none, and the raw model (overconfident but ordered) is
+                # the better fallback. Refuse it and say so, rather than
+                # silently shipping a constant.
+                if iso is not None:
+                    try:
+                        _probe = [float(iso.predict([x])[0])
+                                  for x in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)]
+                        _levels = len({round(v, 3) for v in _probe})
+                        _n = int(calib_bundle.get("n_samples") or 0)
+                    except Exception:
+                        _probe, _levels, _n = [], 0, 0
+                    if _levels < 5 or _n < 100:
+                        out["_calibrator_rejected"] = (
+                            f"degenerate: {_levels} distinct outputs over "
+                            f"0.2-0.8, n_samples={_n} (<100)")
+                        iso = None
                 if iso is not None:
                     raw_p = p
                     p = float(iso.predict([raw_p])[0])

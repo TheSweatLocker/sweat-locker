@@ -14392,7 +14392,43 @@ setJerryHistory(prev => {
                      don't get confused by a Sat game showing under "TODAY"
                      on a Wednesday. */}
                  <Text style={styles.sectionLabel}>{gamesData.length} GAMES — {(['NFL','NCAAF','UFC'].includes(gamesSport) ? (gamesDay === 'today' ? 'THIS WEEK' : 'NEXT WEEK') : gamesDay.toUpperCase())}</Text>
-                {gamesData.filter((game) => {
+                {gamesData.filter((game: any) => {
+  // 2026-09-25 UFC-ONLY GATE. Andy: "I don't want to see any fight except UFC."
+  // SPORT_KEYS maps UFC -> 'mma_mixed_martial_arts', which is the Odds API's
+  // GENERIC MMA feed — it returns Bellator, PFL, ONE, Cage Warriors and every
+  // other promotion alongside UFC, and the vendor has no UFC-only key. The MMA
+  // event payload carries no promotion field either, so the promotion has to
+  // come from our side.
+  //
+  // ufc_picks is scraped from ufcstats.com, so it is UFC by construction. A
+  // fight that matches a ufc_picks row is a UFC fight; one that doesn't is
+  // another promotion. Same last-name matcher already used below to attach
+  // ufcPick, so the two can't disagree about what a UFC fight is.
+  //
+  // Fails OPEN when ufcPicks hasn't loaded yet — an empty list must not blank
+  // the whole card on a slow fetch.
+  if (gamesSport === 'UFC' && (ufcPicks || []).length > 0) {
+    // Normalize away accents and punctuation — ufcstats and the Odds API
+    // disagree on "Medić"/"Medic", "Jr."/"Jr", "O'Malley"/"OMalley".
+    const norm = (s: string) => (s || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[^a-z ]/g, '').trim();
+    // A fighter matches if the full normalized names are equal, or if the
+    // surnames match. Surname alone is the fallback, not the primary test,
+    // so two different fighters sharing a surname can't pair up unless the
+    // OTHER fighter in the bout also matches.
+    const same = (x: string, y: string) => {
+      const nx = norm(x), ny = norm(y);
+      if (!nx || !ny) return false;
+      if (nx === ny) return true;
+      const lx = nx.split(' ').pop(), ly = ny.split(' ').pop();
+      return !!lx && lx === ly;
+    };
+    const isUfc = ufcPicks.some((p:any) =>
+      (same(p.fighter_a, game.away_team) && same(p.fighter_b, game.home_team)) ||
+      (same(p.fighter_a, game.home_team) && same(p.fighter_b, game.away_team)));
+    if (!isUfc) return false;
+  }
   // Hide completed games
   if(game.gameState === 'Final') return false;
   // Always keep games that MLB Stats API says are still live, even if
