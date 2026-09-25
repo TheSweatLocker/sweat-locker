@@ -129,6 +129,30 @@ const C = {
   home: '#e8b8ff',
   away: '#a8d8ff',
   overlay: 'rgba(255,255,255,0.05)',
+  // 2026-09-25: these four were USED but never DEFINED — 28 references to
+  // keys that did not exist on this object. Andy: "colors of stats are dark
+  // not green or red."
+  //
+  // `{color: C.win}` with C.win undefined does not fall back to the inherited
+  // colour: in a RN style array the later entry still wins, so the explicit
+  // undefined clears the colour and the platform default (black) renders. On
+  // C.bg #0e1116 that is invisible, which is exactly the Team Stats screenshot
+  // — every advantaged value went black while neutral rows, which never enter
+  // that branch, stayed readable.
+  //
+  // Worse where it is concatenated: `C.win + '30'` evaluates to the STRING
+  // "undefined30", an invalid colour that RN drops. That is why RankChip
+  // showed amber (C.warn) and blue (C.sharp) pills but never a green or red
+  // one — the exact two tiers the card's "green = better" legend promises.
+  //
+  // borderStrong and surface3 were defined and unused, so this reads as a
+  // rename whose call sites were never updated. Values match the sibling
+  // components (LineMovementTab, UfcFightDetail) so win/loss are one colour
+  // across the app.
+  win: '#4ade80',
+  loss: '#f87171',
+  surfaceAlt: '#232c39',
+  borderSoft: '#2a3341',
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────
