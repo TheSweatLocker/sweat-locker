@@ -483,6 +483,41 @@ def grade_props(days: int, dry_run: bool) -> None:
     if other:
         skipped['no_inherit_path'] = len(other)
 
+    # 2026-09-25: BOX-SCORE FALLBACK. Everything above inherits a result from
+    # the source row, which is exactly the design that stranded 618 receipts —
+    # prop_jerry_reads and mlb_pipeline_props are pruned, and an immutable
+    # ledger cannot depend on a mutable one. Anything the inherit could not
+    # resolve now settles from the MLB box score using only what the receipt
+    # itself carries, so a pruned source is no longer fatal.
+    #
+    # One implementation, one scheduled job: settle_prop_receipts owns the
+    # box-score logic and the FADE guard, and is imported here rather than
+    # duplicated. It stays runnable standalone for backfills and for its
+    # --validate mode.
+    done_ids = {rid for rid, _ in patches}
+    remaining = [r for r in recs if r['id'] not in done_ids]
+    if remaining:
+        try:
+            from settle_prop_receipts import (
+                settle as _settle, fadeable_families as _fadeable,
+                source_verdicts as _verdicts,
+            )
+            sports = {str(r.get('sport') or 'MLB') for r in remaining}
+            for sp in sports:
+                mine = [r for r in remaining if str(r.get('sport') or 'MLB') == sp]
+                fam = _fadeable(sp, (lo - timedelta(days=120)).isoformat())
+                vmap = _verdicts(mine)
+                for r in mine:
+                    res, _actual, why = _settle(r, fam, vmap)
+                    if res:
+                        patches.append((r['id'], res))
+                        skipped['settled_from_boxscore'] += 1
+                    else:
+                        skipped[f'boxscore:{why}'] += 1
+        except Exception as e:
+            # Never let the fallback take down the inherit pass that works.
+            print(f'  ⚠ box-score fallback unavailable: {type(e).__name__}: {e}')
+
     print(f'  gradeable: {len(patches)}')
     if skipped:
         print(f'  skipped: {dict(skipped)}')

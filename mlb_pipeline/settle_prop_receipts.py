@@ -102,7 +102,13 @@ def fadeable_families(sport: str, since: str) -> set:
 
 def source_verdicts(recs: list) -> dict:
     """source_id -> (call_verdict, direction) for rows that still exist."""
-    ids = sorted({str(r['source_id']) for r in recs if r.get('source_id')})
+    # Numeric ids only. Sharp-card receipts carry a composite string source_id
+    # ("prop:Arizona Diamondbacks @ Colorado Rockies|Merrill Kelly Over 15.5
+    # outs_over|15.5"), and feeding that to a bigint `id=in.()` filter 400s the
+    # whole batch — taking down grading for every receipt in it, not just that
+    # row.
+    ids = sorted({str(r['source_id']) for r in recs
+                  if r.get('source_id') and str(r['source_id']).isdigit()})
     out = {}
     for i in range(0, len(ids), 80):
         batch = ids[i:i + 80]
