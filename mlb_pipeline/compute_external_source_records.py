@@ -77,7 +77,7 @@ def run(sport_filter: str | None = None) -> None:
     for off in range(0, 20000, 1000):
         r = requests.get(
             f'{SB}/rest/v1/external_picks?result=not.is.null'
-            f'&select=source,sport,surface,odds_american,result,resolved_at,game_date'
+            f'&select=source,sport,surface,odds_american,result,resolved_at,game_date,game_id,pick_side'
             f'&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
         if r.status_code != 200: break
@@ -87,6 +87,37 @@ def run(sport_filter: str | None = None) -> None:
     if sport_filter:
         rows = [r for r in rows if r.get('sport') == sport_filter]
     print(f'  graded external picks: {len(rows)}')
+
+    # 2026-09-25: collapse repeats of the SAME logical pick before counting.
+    # NFL pullers stamped picks with the pull date rather than the game date,
+    # so a Sunday game pulled Tue/Wed/Thu/Fri wrote four rows that the unique
+    # constraint (source, game_id, surface, game_date, pick_side) could not
+    # merge. Every one was then counted as a separate graded pick, inflating
+    # sample sizes up to 3.81x — scoresandodds NFL reported 202 graded picks
+    # against 53 real ones, and dimers cleared the n>=30 publish gate on 15.
+    # Hit rates were roughly preserved (checked: zero duplicates disagreed on
+    # result) but n was not, and n is what gates whether a rate is shown.
+    #
+    # The puller is fixed, but the mis-dated rows already in the table would
+    # keep inflating this for as long as their window lasts, so the dedup is
+    # applied here too rather than trusting upstream. NCAAF (fixed 08-29) and
+    # MLB (daily, pull date == game date) measure 1.00-1.08x, so this is
+    # effectively a no-op for them.
+    before = len(rows)
+    best: dict = {}
+    for r in rows:
+        key = (r.get('source'), r.get('sport'), r.get('surface'),
+               r.get('game_id'), r.get('pick_side'))
+        prev = best.get(key)
+        # Prefer a row that carries a price, so ROI keeps whatever odds
+        # coverage exists; otherwise first-seen wins.
+        if prev is None or (prev.get('odds_american') is None
+                            and r.get('odds_american') is not None):
+            best[key] = r
+    rows = list(best.values())
+    if before != len(rows):
+        print(f'  deduped {before} -> {len(rows)} '
+              f'({before - len(rows)} repeat row(s) of the same pick)')
 
     today = date.today()
 

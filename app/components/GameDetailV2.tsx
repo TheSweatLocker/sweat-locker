@@ -335,16 +335,36 @@ export default function GameDetailV2({
 
       // Fetch externals
       if (!externalPicksProp || externalPicksProp.length === 0) {
+        // 2026-09-25: dropped .eq('game_date', gameDate). game_id already
+        // identifies the game uniquely, and the date equality was actively
+        // hiding sources: most pullers stamped the pick with the PULL date,
+        // not the game's date, so a Sunday game pulled on Tue/Wed/Thu wrote
+        // rows under four dates and this filter matched none of them.
+        // ARI @ SF had 9 external picks and rendered ONE — covers, the only
+        // source that already stamped the real date. The puller is fixed
+        // going forward; dropping the filter also recovers every historical
+        // row that is already mis-dated.
         const {data: extData, error: extErr} = await client
           .from('external_picks')
-          .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american')
+          .select('source,surface,pick_side,confidence,fade_flag,pick_line,odds_american,game_date,pulled_at')
           .eq('sport', gamesSport)
-          .eq('game_date', gameDate)
           .eq('game_id', gid);
         if (extErr) console.warn('[GameDetailV2] externals fetch error:', extErr.message);
         if (!cancelled && extData) {
-          console.log(`[GameDetailV2] fetched ${extData.length} external_picks for gid=${gid}`);
-          setFetchedExternals(extData);
+          // Collapse the repeats the mis-dating created: one row per
+          // source × surface × side, keeping the most recent pull. Without
+          // this the same tout renders as four identical chips.
+          const latest = new Map<string, any>();
+          for (const e of extData) {
+            const k = `${e.source}::${e.surface}::${e.pick_side}`;
+            const prev = latest.get(k);
+            if (!prev || String(e.pulled_at || '') > String(prev.pulled_at || '')) {
+              latest.set(k, e);
+            }
+          }
+          const deduped = Array.from(latest.values());
+          console.log(`[GameDetailV2] fetched ${extData.length} external_picks for gid=${gid}, ${deduped.length} after dedup`);
+          setFetchedExternals(deduped);
         }
         // 2026-08-26: also fetch 30d W-L record per source×surface so chips
         // can show "The Chalk 24-13" instead of just "The Chalk".

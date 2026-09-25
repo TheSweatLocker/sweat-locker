@@ -187,12 +187,40 @@ def complete_pull_log(pull_id: Optional[str], status: str,
         print(f'  ⚠ pull_log complete exception: {e}')
 
 
+# game_id -> real game_date, filled from the slate in main(). See write_picks.
+_SLATE_DATES: dict = {}
+
+
 def write_picks(picks: list, pull_id: Optional[str]) -> int:
     if not picks: return 0
     payload = []
+    fixed = 0
     for p in picks:
         d = asdict(p); d['pull_id'] = pull_id
+        # 2026-09-25: stamp every pick with ITS GAME'S date, not the pull
+        # anchor. Most fetchers passed `game_date=game_date` (the anchor), so a
+        # Sunday game pulled on Tuesday/Wednesday/Thursday was written four
+        # times under four different dates. Two consequences, both live:
+        #
+        #  * The app fetches game detail externals with .eq('game_date', ...)
+        #    against the GAME's date, so all the anchor-dated rows were
+        #    filtered out. ARI @ SF had 9 external picks and showed ONE — the
+        #    only source (covers) that already stamped the real date.
+        #  * The unique constraint is (source, game_id, surface, game_date,
+        #    pick_side), so a differing date defeated dedup and the same pick
+        #    counted once per pull day. Track records were inflated up to
+        #    3.81x: scoresandodds showed 202 graded picks against 53 real ones.
+        #
+        # Normalising here rather than at six call sites means every source —
+        # including any added later — is correct by construction, and repeat
+        # pulls now merge through the constraint instead of accumulating.
+        real = _SLATE_DATES.get(d.get('game_id'))
+        if real and d.get('game_date') != real:
+            d['game_date'] = real
+            fixed += 1
         payload.append(d)
+    if fixed:
+        print(f'    (re-dated {fixed} pick(s) to their real game date)')
     try:
         # 2026-09-11: on_conflict added to route through the unique constraint
         # `external_picks_dedup_key_v2` (source, game_id, surface, game_date).
@@ -717,6 +745,11 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
     print(f'\n=== NFL external pull · {game_date} · {triggered_by} ===')
     slate = load_slate(game_date)
     print(f'  slate: {len(slate)} games in ±7d window')
+    # Authoritative game_id -> game_date for write_picks. Built once here so
+    # every source is re-dated on the way out, whatever it stamped internally.
+    _SLATE_DATES.clear()
+    _SLATE_DATES.update({g['game_id']: g['game_date'] for g in slate
+                         if g.get('game_id') and g.get('game_date')})
     if not slate:
         print('  ⚠ no NFL games in window — abort')
         return {'games': 0, 'sources_pulled': 0, 'picks_written': 0}
