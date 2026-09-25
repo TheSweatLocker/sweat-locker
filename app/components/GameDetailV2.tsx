@@ -294,6 +294,18 @@ export default function GameDetailV2({
   const showPredictedScore = useSectionEnabled(_sport, 'game_detail', 'predicted_score',       true);
   const showStatProjections = useSectionEnabled(_sport, 'game_detail', 'stat_projections',     true);
   const showMoneyFlow      = useSectionEnabled(_sport, 'game_detail', 'money_flow',            true);
+  // 2026-09-25: Public Splits was the one section with no toggle — it rendered
+  // on `ctx?.splits_summary` alone, so it could never be turned off without a
+  // build, against the convention every other section follows.
+  //
+  // Andy: "for the public splits in game details lets remove it, money flow
+  // shows the data." It does — both render money% vs bets% off the same split
+  // sources; Public Splits was the raw pair and Money Flow is the divergence
+  // read on it. Two panels, one dataset, and the weaker framing of the two.
+  //
+  // Defaults FALSE so it is hidden as soon as this build ships, and the row in
+  // config_ui_sections can bring it back with no App Store round-trip.
+  const showPublicSplits   = useSectionEnabled(_sport, 'game_detail', 'public_splits',          false);
   const showLineMovement   = useSectionEnabled(_sport, 'game_detail', 'line_movement',         true);
   const showModelConsensus = useSectionEnabled(_sport, 'game_detail', 'model_consensus',       true);
   const showExternalHandicappers = useSectionEnabled(_sport, 'game_detail', 'external_handicappers', true);
@@ -687,7 +699,7 @@ export default function GameDetailV2({
             (populated by splits_v2_pipeline aggregator). Shows sources_present
             + triple_confirmed markets. User feedback: college football game
             detail was missing splits despite backend data landing. */}
-        {ctx?.splits_summary && (
+        {showPublicSplits && ctx?.splits_summary && (
           <Expander title="Public Splits" badge={splitsBadge(ctx.splits_summary)}>
             <SplitsSummaryPanel summary={ctx.splits_summary} sport={gamesSport} />
           </Expander>
