@@ -114,8 +114,13 @@ def audit(sport: str, game_date: str) -> dict:
     """Returns {critical: [...], warnings: [...], totals: {...}}."""
     r = requests.get(f'{SB}/rest/v1/jerry_reads', headers=H_READ,
         params={'sport': f'eq.{sport}', 'game_date': f'eq.{game_date}',
+                # prompt_version added 2026-09-24 so the marker check can name
+                # the writer that leaked. An absent column reads back as None
+                # rather than erroring, which would have made the finding say
+                # "prompt_version=None" and point at nothing.
                 'select': 'id,game_id,call_market,call_side,call_line,'
-                          'call_text,conviction,short_read,long_read'},
+                          'call_text,conviction,short_read,long_read,'
+                          'prompt_version'},
         timeout=15)
     reads = r.json() if r.status_code == 200 else []
     ctxs_r = requests.get(f'{SB}/rest/v1/mlb_game_context' if sport == 'MLB' else
@@ -137,6 +142,35 @@ def audit(sport: str, game_date: str) -> dict:
         mkt = (r.get('call_market') or '').lower()
         side = r.get('call_side')
         prose = ((r.get('short_read') or '') + ' ' + (r.get('long_read') or '')).strip()
+
+        # 0. PARSER MARKERS IN PUBLISHED PROSE (2026-09-24).
+        #
+        # A ---SHORT--- / ---LONG--- / ---CALL--- marker is an instruction to
+        # the parser and must never reach a subscriber. Three NFL reads shipped
+        # with short_read beginning "---SHORT---" followed by real prose.
+        #
+        # This check lives HERE, at the publish boundary, because fixing it at
+        # the writer failed twice in one day. I guarded
+        # jerry_reads_dual_write.upsert_jerry_read and the markers came back,
+        # because generate_nfl_game_reads has its own writer. I guarded that
+        # one too and they came back again, because sync_jerry_reads_from_ctx
+        # is a THIRD writer that pulls the raw narrative out of jerry_cache and
+        # publishes it unparsed. About 30 scripts write jerry_reads; guarding
+        # them one at a time is a losing race.
+        #
+        # 37 of 40 cached NFL narratives contain markers, so the upstream
+        # material is full of them and any new writer that forwards a narrative
+        # reintroduces this instantly. A boundary assertion cannot be
+        # outflanked by a writer nobody remembered to patch.
+        #
+        # CRITICAL, not a warning: this is gibberish in the first line of a
+        # paid read.
+        _marker = re.search(r'---(SHORT|LONG|CALL)---', prose)
+        if _marker:
+            critical.append(
+                f'{matchup} id={r["id"]}: PARSER MARKER {_marker.group(0)!r} in '
+                f'published prose (prompt_version={r.get("prompt_version")}) — '
+                f'a writer forwarded a raw narrative without parsing it')
 
         # 1. NULL call_text on non-pass read
         if not ct and mkt != 'pass':

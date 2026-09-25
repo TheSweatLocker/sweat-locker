@@ -878,13 +878,57 @@ jobs:
       # See docs/JERRY_UNIFICATION.md.
       - name: Sync NFL jerry_reads from ctx
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
-        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NFL --window 8
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "sync_jerry_reads_from_ctx.py (NFL)" \
+            python sync_jerry_reads_from_ctx.py --sport NFL --window 8
+
+      # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and
+      # was wired for MLB only, so no NFL read was ever checked before
+      # publication.
+      #
+      # It would have caught the thing Andy found tonight: three NFL reads
+      # whose short_read literally began "---SHORT---". The marker check is
+      # check 0 in jerry_pre_publish_audit.
+      #
+      # Runs over the same 8-day window the sync above writes. A single-date
+      # audit is useless here — NFL carries the Thu, Sun and Mon slates at
+      # once, and the three bad reads sat on 09-27/09-28/10-01 where a
+      # today-only audit would never have looked.
+      #
+      # Looped in bash rather than adding --window to the audit, because MLB's
+      # publish gate depends on that script's control flow and this is not the
+      # night to restructure it.
+      #
+      # RECORDS RATHER THAN BLOCKS, deliberately, and this differs from how MLB
+      # uses the same script. In this workflow the weekly card is built BEFORE
+      # resolve_nfl_results and grade_jerry_reads. A hard failure here skips
+      # every later step, so one bad read would also stop Sunday's resolver and
+      # grader and leave every NFL record stale for a day. That is a worse
+      # outcome than the thing being guarded.
+      #
+      # --repair still auto-fixes the classes it can. Anything it cannot is
+      # recorded by run_step and turns the run red at the job's gate, so it is
+      # visible and actionable without taking the graders down with it. If we
+      # later split card-build and grading into separate jobs, this should
+      # become a hard gate on the card job only.
+      - name: Pre-publish audit — NFL reads (8-day window)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          for i in $(seq 0 7); do
+            d=$(date -u -d "+$i days -4 hours" +%Y-%m-%d)
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+              --label "jerry_pre_publish_audit.py NFL $d" \
+              python jerry_pre_publish_audit.py --sport NFL --date "$d" --repair
+          done
 
       # 2026-09-19: jerry_pick_scrub has supported NFL since it shipped
       # (SPORT_CONFIG carries MLB/NFL/NCAAF) but was only ever invoked
