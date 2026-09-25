@@ -657,6 +657,84 @@ def _demote_coverage_tier(game_date: str, dry_run: bool = False) -> int:
     return demoted
 
 
+DIRECTIONAL_EDGE_FLOOR = -0.10   # demote at or below this
+
+
+def _directional_edge_gate(game_date: str, dry_run: bool = False) -> int:
+    """Demote props whose OWN projection points the other way.
+
+    2026-09-25. sweep_prop_coverage writes `_edge_pct = (proj - line) / line`
+    with no direction term, because at sweep time the signal is built per prop
+    FAMILY before a side is chosen. render_prop_template already flips the sign
+    for DISPLAY (fixed 09-17 after Andy caught Aaron Nola HA_UNDER 5.5 showing
+    "edge -1.8%" on a pick the projection supported) — but nothing flipped it
+    for SELECTION. The sign was corrected where users read it, not where the
+    pick is made.
+
+    Measured over 2,405 graded MLB props since 09-01, splitting on directional
+    edge = raw for OVER, -raw for UNDER:
+
+        projection SUPPORTS the pick   691-641  n=1332   51.9%
+        projection OPPOSES the pick    509-564  n=1073   47.4%
+
+      restricted to |edge| >= 10%, the threshold the filter uses:
+        supports                       446-371  n= 817   54.6%   <- above breakeven
+        opposes                        297-348  n= 645   46.0%
+
+    8.6 points of separation. The projection is not broken — it is predictive,
+    and respecting its sign clears the 54.2% breakeven. We were publishing the
+    wrong side of a number that was right, on 44% of admitted props.
+
+    This gate removes only the proven-bad tail (directional edge <= -10%,
+    the 46.0% bucket) rather than everything negative, so volume is preserved
+    for the marginal band while the clear losers stop shipping.
+
+    Idempotent via the _dir_edge_gate tag.
+    """
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'game_date': f'eq.{game_date}',
+                             'tier': 'in.(PRIME,STRONG,LEAN)',
+                             'select': 'id,player_name,prop_type,direction,'
+                                       'tier,conviction,signals'},
+                     timeout=20)
+    if r.status_code != 200:
+        return 0
+    demoted = 0
+    for prop in r.json():
+        sig = prop.get('signals') or {}
+        if isinstance(sig, str):
+            try: sig = json.loads(sig)
+            except Exception: sig = {}
+        if not isinstance(sig, dict) or sig.get('_dir_edge_gate'):
+            continue
+        raw = sig.get('_edge_pct')
+        if raw is None:
+            continue
+        try:
+            raw = float(raw)
+        except (TypeError, ValueError):
+            continue
+        dir_edge = -raw if (prop.get('direction') or '').lower() == 'under' else raw
+        if dir_edge > DIRECTIONAL_EDGE_FLOOR:
+            continue
+        sig['_dir_edge_gate'] = f'PROJECTION_OPPOSES_{dir_edge*100:+.0f}pct'
+        sig['_refit_override_at'] = _et_today()
+        print(f'  dir-edge-gate: {prop["player_name"]:22} {prop["prop_type"]:12} '
+              f'{prop.get("direction"):5} dir_edge={dir_edge*100:+.0f}% '
+              f'{prop.get("tier")}/{prop.get("conviction")} -> SKIP')
+        if dry_run:
+            demoted += 1
+            continue
+        pr = requests.patch(
+            f'{SB}/rest/v1/mlb_pipeline_props?id=eq.{prop["id"]}',
+            headers=H_WRITE,
+            json={'tier': 'SKIP', 'conviction': 0, 'signals': sig}, timeout=10)
+        if pr.status_code in (200, 204):
+            demoted += 1
+    return demoted
+
+
 def _playbook_gate_props(game_date: str, dry_run: bool = False) -> int:
     """Prop playbook phase 2: demote PRIME/STRONG props whose stack is
     dominated by ANTI_VALIDATED signals from the prop signal_registry.
@@ -1174,6 +1252,14 @@ def run(game_date: str, dry_run: bool = False) -> int:
     if under_capped:
         print(f'  under-juice: {under_capped} PRIME/STRONG UNDER props demoted '
               f'(book_line worse than -140)')
+
+    # 2026-09-25: demote props their own projection argues against. Runs
+    # BEFORE coverage-kill so the log reads in decision order.
+    dir_edge_demoted = _directional_edge_gate(game_date, dry_run=dry_run)
+    if dir_edge_demoted:
+        print(f'  dir-edge-gate: {dir_edge_demoted} rows demoted to SKIP '
+              f'(directional edge <= {DIRECTIONAL_EDGE_FLOOR*100:.0f}%; that '
+              f'bucket graded 46.0% over n=645)')
 
     coverage_killed = _demote_coverage_tier(game_date, dry_run=dry_run)
     if coverage_killed:
