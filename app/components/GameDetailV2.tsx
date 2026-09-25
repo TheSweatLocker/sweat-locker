@@ -741,10 +741,23 @@ export default function GameDetailV2({
             on late-add NCAAF games where odds fetch missed. */}
         {(game.bookmakers || []).length > 0 && (
           <Expander title="All Book Lines" badge={`${(game.bookmakers || []).length} books`}>
+            {/* 2026-09-25: pass the ODDS-API team names, not ctx's.
+                This panel matches outcome.name against these strings, and
+                outcome.name comes from the Odds API as a full team name
+                ("Pittsburgh Steelers"). nfl_game_context.home_team stores an
+                ABBREVIATION ("PIT"), and ctx wins the `ctx?.home_team ||
+                game.home_team` precedence used everywhere else — so on NFL
+                and NCAAF the spread and ML lookups never matched and every
+                book rendered "—" for both. Totals still rendered because they
+                match the literal string "over", not a team name, which is
+                exactly the pattern in Andy's screenshot: 21 books, totals on
+                every row, spread and ML blank.
+                MLB was unaffected because mlb_game_context.home_team is
+                already a full name. */}
             <AllBookLinesPanel
               bookmakers={game.bookmakers || []}
-              homeTeam={homeTeam}
-              awayTeam={awayTeam}
+              homeTeam={game.home_team || homeTeam}
+              awayTeam={game.away_team || awayTeam}
               onAddParlayLeg={onAddParlayLeg}
             />
           </Expander>
