@@ -1267,7 +1267,12 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
     chalk = build_chalk_parlay(combined_pool, exclude_games=used_games)
     if chalk:
         suggestions.append(chalk); register(chalk)
-        print(f'  ✓ CHALK TRIO: {chalk["combined_odds"]:+d} · {len(chalk["legs"])} legs')
+        # Label from the actual leg count. The app fixed this on 09-03; this
+        # log kept saying TRIO for a 2-leg parlay, so pipeline output disagreed
+        # with what users saw.
+        _n = len(chalk['legs'])
+        _name = {2: 'DUO', 3: 'TRIO', 4: 'QUAD', 5: 'QUINT'}.get(_n, 'PARLAY')
+        print(f'  ✓ CHALK {_name}: {chalk["combined_odds"]:+d} · {_n} legs')
 
     # 2026-09-15 LEDGER DISCIPLINE PASS. 50-pick audit found only
     # chalk_parlay positive (+0.75u). Every other kind bled:
@@ -1301,16 +1306,40 @@ def run(game_date: Optional[str] = None, sports: Optional[list[str]] = None, dry
                 suggestions.append(t); register(t)
                 print(f'  ✓ {sf} TEASER: {t["combined_odds"]:+d}')
 
-    # 2. Single-leg PRIME teased — the winning cheat. Fires only when
-    # a PRIME total/spread exists that hasn't been used by chalk_parlay.
-    # Silent no-op on quiet slates; no bet is a bet.
-    prime_teased = build_prime_teased_single(picks, exclude_games=used_games)
-    if prime_teased:
-        suggestions.append(prime_teased); register(prime_teased)
-        leg0 = prime_teased['legs'][0]
-        print(f'  ✓ PRIME TEASED SINGLE: {leg0["pick"]} → {leg0["teased_line"]} '
-              f'@ {"+" if leg0["teased_odds"]>0 else ""}{leg0["teased_odds"]} '
-              f'(conv {leg0["conviction"]})')
+    # 2. Single-leg PRIME teased — KILLED 2026-09-24 per Andy.
+    #
+    # "the prime_teased_single for the ledger is useless — the point is a 2-3
+    # leg parlay for about even money of plays we like but cheated."
+    #
+    # He is right, and the record agrees: 5-4 but -2.37u. A single teased leg
+    # pays for the cheated line and gets nothing back, because there is no
+    # parlay multiplier to cover the juice. Today's suggestion was a one-leg
+    # tease at -245 — the exact opposite of the even-money target. The 09-15
+    # note above called it "the winning cheat" on n=0 graded; nine days later it
+    # is the second-worst kind in the set.
+    #
+    # It was introduced to "avoid empty Ledger days" after the three multi-leg
+    # teasers were killed. That trade was wrong: shipping a -245 single to fill
+    # a slot is worse than shipping nothing. An empty Ledger day is honest.
+    #
+    # WHAT REPLACES IT is the multi-leg teased combo Andy specced — 2-3 legs,
+    # each teased in the FAVOURABLE direction (U46.5 -> U51.5, dog +6.5 ->
+    # +14.5), priced together near even money. That is a real build, not a flag
+    # flip, and the teaser edge lives in crossing key numbers (3 and 7 in
+    # football; college basketball has no such clustering and is the better
+    # fit). Until it exists and is measured, the Ledger ships chalk_parlay plus
+    # whatever is entered by hand — see ledger_manual_entry.py.
+    LEDGER_PRIME_TEASED_SINGLE_KILL = True
+
+    if not LEDGER_PRIME_TEASED_SINGLE_KILL:
+        # DEAD PATH kept for rollback, same convention as the multi-tease kill.
+        prime_teased = build_prime_teased_single(picks, exclude_games=used_games)
+        if prime_teased:
+            suggestions.append(prime_teased); register(prime_teased)
+            leg0 = prime_teased['legs'][0]
+            print(f'  ✓ PRIME TEASED SINGLE: {leg0["pick"]} → {leg0["teased_line"]} '
+                  f'@ {"+" if leg0["teased_odds"]>0 else ""}{leg0["teased_odds"]} '
+                  f'(conv {leg0["conviction"]})')
 
     # 5. Hits parlay — KILLED 2026-09-10 per 30d audit.
     # Record: 1-3 (25%) at avg +188 = -0.60u. Occupying a Ledger slot that
