@@ -248,8 +248,34 @@ def _resolve_tier(legacy: str | None, playbook: str | None,
     return playbook if rank.get(playbook or '', 0) > rank.get(legacy or '', 0) else legacy
 
 
+# 2026-09-25 TIER-ORDERED SIZING. Was `2.0 if tier in (PRIME, STRONG) else 1.0`,
+# which made unit size carry no information: 183 of 193 Sharp picks (94.8%) were
+# 2.0u, PRIME and STRONG staked identically, and the 1.0 branch never fired
+# because the Sharp card has effectively no LEAN. The 8 ones and 2 halves in
+# that sample were juice-trap halvings, not sizing.
+#
+# Backtest, graded receipts carrying a tier and a price:
+#     CURRENT       ROI +15.7%   (contaminated set, n=2094)
+#     FLAT 1u       ROI +11.0%
+#     ORDERED 3/2/1 ROI +18.7%
+# and on the clean post-09-22 set, +12.4% / +12.7% / +14.0%.
+#
+# HONEST LIMIT: 98% of that history predates the L5 lookback-leak fix, which
+# inflated PRIME props (76.3% pre-fix vs 66.7% after). The clean slice is 39
+# graded picks — 30 PRIME, 9 STRONG, zero LEAN — which cannot settle a sizing
+# question. Ordered 3/2/1 wins on both slices, so the DIRECTION is supported;
+# the magnitudes are not yet earned.
+#
+# This raises max exposure 50% (2u -> 3u) on the top tier against n=30 of clean
+# evidence. If that is too aggressive, 3.0/2.0/1.0 -> 2.0/1.5/1.0 keeps today's
+# ceiling while still making the ladder informative — one-line change here.
+# Revisit when ~150-200 clean graded picks exist (roughly two weeks at current
+# volume) and size on measured inputs: directional edge and family record.
+_TIER_UNITS = {'PRIME': 3.0, 'STRONG': 2.0, 'LEAN': 1.0}
+
+
 def _units_for_tier(tier: str | None) -> float:
-    return 2.0 if tier in ('PRIME', 'STRONG') else 1.0
+    return _TIER_UNITS.get(tier or '', 1.0)
 
 
 def _units_for_pick(tier: str | None, type_: str | None, odds: Any,
