@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-24 (night)**
+**Last verified: 2026-09-24 (late night)**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -1120,7 +1120,19 @@ verifiable.
 - **B17** `calcAndPatchMLBContext` is dead code that writes
   `projected_total` back to the DB. Not called. Leave dead — client
   computing model values contradicts server-decides. Landmine if revived.
-- **B18** 51 bare `|| echo` workflow steps mask failures.
+- **B18** ~~51 bare `|| echo` workflow steps mask failures.~~ **CLOSED
+  2026-09-24** `34451935` (NFL) + `d20bc460` (remaining 8 files). The real
+  count was 104 across 9 workflows, not 51. NOT stripped — removing `|| echo`
+  aborts every later step in the job, so one flaky scraper would take out the
+  graders behind it. Continuing is correct; continuing silently and then
+  reporting success is the bug. `.github/scripts/run_step.sh` records each
+  failure (step summary + `::warning::` + tally file) and still returns 0; a
+  per-job gate with `if: always()` reads the tally and fails the run with the
+  list. Every step still executes, and a run containing a failure can no longer
+  be green.
+  VERIFY: `for f in .github/workflows/*.yml; do grep "|| echo" $f | grep -v "^\s*#"; done`
+  should print nothing. Commented `|| echo` lines are kept as incident
+  documentation.
 
 ---
 
