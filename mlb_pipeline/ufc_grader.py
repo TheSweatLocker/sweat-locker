@@ -70,6 +70,12 @@ def fetch_espn_event_results(event_date: str) -> list:
     return r.json().get('events', [])
 
 
+# Detail strings the method parser could not classify. Surfaced at the end of
+# a run so a parser that silently stops matching becomes visible immediately
+# rather than after 108 fights of fabricated "decisions".
+_UNPARSED_METHODS: list = []
+
+
 def parse_fight_result(comp: dict) -> Optional[dict]:
     """From an ESPN competition (fight), extract winner + method + rounds.
     Returns dict or None if not yet complete."""
@@ -88,43 +94,100 @@ def parse_fight_result(comp: dict) -> Optional[dict]:
     # Method + round from status/detail
     status = comp.get('status', {})
     detail = (status.get('type', {}).get('detail') or '').lower()
-    # ESPN details look like "Final - KO/TKO Round 3 3:24" or "Final - Decision"
+
+    # 2026-09-25 ROOT FIX. The docstring claims ESPN details look like
+    # "Final - KO/TKO Round 3 3:24". They do not, and have not: every fight
+    # returns detail == 'Final', full stop. So the tag loop below never matched
+    # and the old `default to DEC` line fired on ALL 108 graded fights —
+    # method_actual='DEC' and distance_actual=True on every single one, which
+    # is why the distance model has never been scored against a real outcome.
+    #
+    # The method actually lives in comp['details'][].type.text:
+    #     "Unofficial Winner Kotko"       -> KO/TKO  (ESPN's own typo)
+    #     "Unofficial Winner Submission"  -> SUB
+    #     "Unofficial Winner Decision"    -> DEC
+    # Verified on the 2026-09-19 card: 5 decisions, 7 finishes — the realistic
+    # split, against the 12/12 "decisions" the old parser would have recorded.
     method = None
-    for tag, m in (('ko/tko','KO'), ('sub','SUB'), ('submission','SUB'),
-                    ('tko','TKO'), ('ko ','KO'),
-                    ('decision','DEC'), ('unan','DEC'), ('split','DEC'), ('majority','DEC'),
-                    ('dq','DQ'), ('disqualif','DQ'),
-                    ('no contest','NC'), ('draw','DRAW')):
-        if tag in detail:
+    _texts = ' '.join(
+        str(((d or {}).get('type') or {}).get('text') or '')
+        for d in (comp.get('details') or [])).lower()
+    for tag, m in (('kotko', 'KO'), ('ko/tko', 'KO'), ('submission', 'SUB'),
+                   ('decision', 'DEC'), ('disqualif', 'DQ'),
+                   ('no contest', 'NC'), ('draw', 'DRAW')):
+        if tag in _texts:
             method = m
             break
-    if not method and 'final' in detail: method = 'DEC'  # default assumption
 
-    rounds = None
-    m = re.search(r'round\s*(\d+)', detail)
-    if m: rounds = int(m.group(1))
+    # Fallback to the status detail string, in case ESPN ever populates it
+    # the way the original docstring assumed.
+    if not method:
+        for tag, m in (('ko/tko','KO'), ('sub','SUB'), ('submission','SUB'),
+                        ('tko','TKO'), ('ko ','KO'),
+                        ('decision','DEC'), ('unan','DEC'), ('split','DEC'),
+                        ('majority','DEC'), ('dq','DQ'), ('disqualif','DQ'),
+                        ('no contest','NC'), ('draw','DRAW')):
+            if tag in detail:
+                method = m
+                break
+    # 2026-09-25: was `if not method and 'final' in detail: method = 'DEC'`
+    # — a silent default that ASSERTED a decision whenever the detail string
+    # failed to match any method tag. It matched every single fight: all 108
+    # graded rows carry method_actual='DEC' and distance_actual=True, which is
+    # impossible (roughly half of UFC fights end inside the distance).
+    #
+    # So the method and distance columns are not measurements, they are the
+    # default. p_distance and the method probabilities have never once been
+    # scored against a real outcome, and any "goes the distance" record
+    # computed from this is fabricated.
+    #
+    # Never assert an outcome we did not observe: leave it NULL and count it,
+    # so a parser that stops matching shows up as missing data instead of as
+    # 100% decisions. Winner grading is unaffected — it comes from the
+    # competitor payload, not this string, which is why winner_actual looks
+    # sane (52 'a' / 56 'b') while method does not.
+    if not method:
+        _UNPARSED_METHODS.append(detail[:120])
+
+    # Round the fight ended in. status.period carries it directly (verified:
+    # period=1 with displayClock 1:57 on a round-1 finish, period=3 clock 5:00
+    # on a decision), so the regex on the detail string is only a fallback.
+    rounds = status.get('period')
+    if rounds is None:
+        m = re.search(r'round\s*(\d+)', detail)
+        if m: rounds = int(m.group(1))
     if rounds is None and method == 'DEC':
-        # Full-distance: 3 rounds unless main event / championship (5)
-        rounds = 3
+        # Full-distance: scheduled rounds when ESPN gives them, else 3.
+        rounds = ((comp.get('format') or {}).get('regulation') or {}).get('periods') or 3
 
-    distance = (method == 'DEC')
+    # None, not False, when the method is unknown — False would claim we saw
+    # the fight end early.
+    distance = (method == 'DEC') if method else None
 
     return {'winner_name': winner_name, 'method': method,
             'rounds': rounds, 'distance': distance,
             'detail': detail}
 
 
-def grade_event(event_date: str, dry_run: bool = False) -> int:
-    """Backfill grades for one event_date."""
+def grade_event(event_date: str, dry_run: bool = False,
+                regrade: bool = False) -> int:
+    """Backfill grades for one event_date.
+
+    regrade=True re-processes rows that already carry graded_at. Added
+    2026-09-25 to repair the 108 fights whose method_actual/distance_actual
+    were written by the old `default to DEC` line rather than observed —
+    every one of them recorded as a decision that went the distance.
+    """
     picks = requests.get(f'{SB}/rest/v1/ufc_picks', headers=H_R,
         params={'event_date': f'eq.{event_date}', 'select': '*',
                 'order': 'fight_order.asc'}, timeout=15).json()
     if not isinstance(picks, list) or not picks:
         print(f'  no ufc_picks for {event_date}')
         return 0
-    ungraded = [p for p in picks if not p.get('graded_at')]
+    ungraded = picks if regrade else [p for p in picks if not p.get('graded_at')]
     if not ungraded:
-        print(f'  all {len(picks)} picks already graded for {event_date}')
+        print(f'  all {len(picks)} picks already graded for {event_date}'
+              f'{" (use --regrade to redo)" if not regrade else ""}')
         return 0
     print(f'  {len(ungraded)} ungraded picks on {event_date}')
 
@@ -201,7 +264,7 @@ def grade_event(event_date: str, dry_run: bool = False) -> int:
     return updated
 
 
-def backfill_all(dry_run: bool = False) -> int:
+def backfill_all(dry_run: bool = False, regrade: bool = False) -> int:
     """Grade every event_date that has ungraded picks."""
     r = requests.get(f'{SB}/rest/v1/ufc_picks', headers=H_R,
         params={'graded_at': 'is.null', 'select': 'event_date'}, timeout=15)
@@ -210,7 +273,7 @@ def backfill_all(dry_run: bool = False) -> int:
     print(f'  {len(dates)} event dates with ungraded picks')
     total = 0
     for d in dates:
-        total += grade_event(d, dry_run=dry_run)
+        total += grade_event(d, dry_run=dry_run, regrade=regrade)
     print(f'\n=== TOTAL: graded {total} picks across {len(dates)} events ===')
     return total
 
@@ -242,16 +305,30 @@ def main():
     ap.add_argument('--event-date')
     ap.add_argument('--backfill-all', action='store_true')
     ap.add_argument('--summary', action='store_true')
+    ap.add_argument('--regrade', action='store_true',
+                    help='re-process rows that already have graded_at')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
     if args.event_date:
-        grade_event(args.event_date, dry_run=args.dry_run)
+        grade_event(args.event_date, dry_run=args.dry_run, regrade=args.regrade)
     elif args.backfill_all:
-        backfill_all(dry_run=args.dry_run)
+        backfill_all(dry_run=args.dry_run, regrade=args.regrade)
     elif args.summary:
         summary()
     else:
         print('specify --event-date, --backfill-all, or --summary')
+
+    # 2026-09-25: make a broken method parser loud. The old code defaulted an
+    # unparseable detail to 'DEC', so a parser that stopped matching produced
+    # 108 fabricated "decisions" instead of an error. Now it reports.
+    if _UNPARSED_METHODS:
+        from collections import Counter as _C
+        print(f'\n🚨 method unparsed on {len(_UNPARSED_METHODS)} fight(s) — '
+              f'method_actual/distance_actual left NULL rather than guessed.')
+        for _d, _n in _C(_UNPARSED_METHODS).most_common(5):
+            print(f'    {_n:3d}x  detail={_d!r}')
+        print('    If this is every fight, the ESPN detail format changed and '
+              'the tag list above needs updating.')
 
 
 if __name__ == '__main__':
