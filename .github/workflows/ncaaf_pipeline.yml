@@ -446,6 +446,24 @@ jobs:
           cd mlb_pipeline
           python watchdog_external_sources.py --sport NCAAF --days 21
 
+      # 2026-09-25: NCAAF carried the same *_season_ats_* / *_season_ou_*
+      # columns as NFL and NOTHING ever wrote them — 0 of 82 upcoming games
+      # populated against NFL's 239/239 — so the app's Situational Records
+      # "OVERALL x-x ATS" boxes rendered empty for college all season. The
+      # backfill script was NFL-only because it was built for the 09-14 NFL
+      # badge request; it is now sport-generic and this runs the NCAAF side.
+      - name: Backfill NCAAF season ATS/OU records from game results
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_season_records NCAAF" \
+            python backfill_nfl_season_records_from_results.py --sport NCAAF
+
       - name: Detect consensus-fade alerts (NCAAF)
         if: steps.mode.outputs.mode == 'full'
         continue-on-error: true

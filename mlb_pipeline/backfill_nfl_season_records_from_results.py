@@ -53,6 +53,25 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 
+# 2026-09-25 SPORT-GENERIC. NCAAF carried the same *_season_ats_* /
+# *_season_ou_* columns on ncaaf_game_context and NOTHING ever wrote them:
+# 0 of 82 upcoming games populated, against 239/239 for NFL. So the app's
+# Situational Records "OVERALL x-x ATS" boxes rendered empty for college.
+#
+# This script was NFL-only because it was built for the 09-14 NFL badge
+# request. Cloning it for NCAAF is how this repo keeps ending up with a fix
+# in one sport and not its sibling — generalised instead.
+SPORTS = {
+    'NFL':   {'results': 'nfl_game_results',   'ctx': 'nfl_game_context',
+              'reg_only': True},
+    # NCAAF has no game_type column, so there is no REG filter to apply.
+    'NCAAF': {'results': 'ncaaf_game_results', 'ctx': 'ncaaf_game_context',
+              'reg_only': False},
+}
+SPORT = 'NFL'          # set from --sport in main()
+CFG = SPORTS[SPORT]
+
+
 def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
@@ -61,10 +80,12 @@ def fetch_results(season: int) -> list:
     """All 2026 REG games with a settled spread + total."""
     rows: list = []
     for page in range(6):
-        r = requests.get(f'{SB}/rest/v1/nfl_game_results',
-                         params={'season': f'eq.{season}',
-                                 'game_type': 'eq.REG',
-                                 'spread_result': 'not.is.null',
+        _params = {'season': f'eq.{season}',
+                   'spread_result': 'not.is.null'}
+        if CFG['reg_only']:
+            _params['game_type'] = 'eq.REG'
+        r = requests.get(f"{SB}/rest/v1/{CFG['results']}",
+                         params={**_params,
                                  'total_result': 'not.is.null',
                                  'select': 'game_id,home_team,away_team,'
                                            'home_score,away_score,close_spread,close_total,'
@@ -102,7 +123,7 @@ def fetch_upcoming_ctx() -> list:
     today = _et_today()
     out, offset = [], 0
     while True:
-        r = requests.get(f'{SB}/rest/v1/nfl_game_context',
+        r = requests.get(f"{SB}/rest/v1/{CFG['ctx']}",
                          params={'game_date': f'gte.{today}',
                                  'select': 'game_id,game_date,home_team,away_team',
                                  'order': 'game_date.asc,game_id.asc',
@@ -198,12 +219,12 @@ def patch_ctx(agg: dict, upcoming: list, dry_run: bool = False) -> int:
         marker = 'DRY' if dry_run else 'PATCH'
         print(f'  [{marker}]  {g.get("game_date")}  {away:4s}@{home:4s}  '
               f'H {payload["home_season_ats_wins"]}-{payload["home_season_ats_losses"]} '
-              f'({payload["home_season_cover_pct"] or "—"}% cover, '
+              f'({"—" if payload["home_season_cover_pct"] is None else payload["home_season_cover_pct"]}% cover, '
               f'{payload["home_season_ou_overs"]}O-{payload["home_season_ou_unders"]}U)  '
               f'A {payload["away_season_ats_wins"]}-{payload["away_season_ats_losses"]} '
-              f'({payload["away_season_cover_pct"] or "—"}% cover)')
+              f'({"—" if payload["away_season_cover_pct"] is None else payload["away_season_cover_pct"]}% cover)')
         if dry_run: continue
-        pr = requests.patch(f'{SB}/rest/v1/nfl_game_context?game_id=eq.{gid}',
+        pr = requests.patch(f"{SB}/rest/v1/{CFG['ctx']}?game_id=eq.{gid}",
                            headers=H_WRITE, json=payload, timeout=10)
         if pr.status_code in (200, 204): patched += 1
     return patched
@@ -211,13 +232,18 @@ def patch_ctx(agg: dict, upcoming: list, dry_run: bool = False) -> int:
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('--sport', default='NFL', choices=sorted(SPORTS))
     p.add_argument('--season', type=int, default=2026)
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    print(f'=== backfill_nfl_season_records_from_results · season={args.season}'
+    global SPORT, CFG
+    SPORT = args.sport.upper()
+    CFG = SPORTS[SPORT]
+    print(f'=== backfill_season_records · {SPORT} · season={args.season}'
           f' · dry_run={args.dry_run} ===')
     results = fetch_results(args.season)
-    print(f'  {len(results)} settled REG games in season {args.season}')
+    print(f"  {len(results)} settled games in season {args.season}"
+          f"{' (REG only)' if CFG['reg_only'] else ''}")
     if not results:
         print('  (nothing to aggregate — season may not have started or results not landed)')
         return
