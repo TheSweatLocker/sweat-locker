@@ -17785,8 +17785,21 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         // renders "CHALK PROP PARLAY" instead of the raw
                         // "CHALK_PROP_PARLAY" (default toUpperCase fallback).
                         'chalk_prop_parlay':     {label: '🎯 CHALK PROP PARLAY',    color: THEME.accent},
+                        // 2026-09-25: prime_teased_single had NO entry, so it
+                        // fell through to kind.toUpperCase() and shipped to
+                        // users as the raw snake_case "PRIME_TEASED_SINGLE".
+                        // The kind is killed as of 09-24 but historical rows
+                        // still render here.
+                        'prime_teased_single':   {label: '🎯 TEASED SINGLE',        color: THEME.accent},
+                        'teased_single':         {label: '🎯 TEASED SINGLE',        color: THEME.accent},
                       };
-                      const meta = KIND_META[s.kind] || {label: (s.kind || 'COMBO').toUpperCase(), color: THEME.textMuted};
+                      // Fallback must never leak a raw DB value. Any unmapped
+                      // kind becomes spaced Title-case caps ("manual_teaser" ->
+                      // "MANUAL TEASER") so a new kind added server-side looks
+                      // deliberate on an old build instead of looking like a bug.
+                      const prettyKind = (s.kind || 'combo')
+                        .replace(/_/g, ' ').replace(/\s+/g, ' ').trim().toUpperCase();
+                      const meta = KIND_META[s.kind] || {label: prettyKind, color: THEME.textMuted};
                       const oddsFmt = s.combined_odds > 0 ? `+${s.combined_odds}` : `${s.combined_odds}`;
                       return (
                         <View key={i} style={[styles.card, {padding:14, borderLeftWidth:3, borderLeftColor: meta.color}]}>
@@ -17843,8 +17856,13 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         {[
                           ['🏆', 'Chalk parlays — 2-3 mid-tier ML favorites for even-money math'],
                           ['🎯', 'Teasers — move a total or spread into higher-hit-% zone, pair for even money'],
-                          ['📊', "Auto-generated from today's ensemble picks (PRIME/STRONG only)"],
-                          ['✏️', 'Editable builder coming soon — pick your own legs'],
+                          // 2026-09-25: was "Auto-generated from today's
+                          // ensemble picks" flat out. Hand-selected plays now
+                          // reach this surface too (ledger_manual_entry.py), and
+                          // they carry the same record, so the copy can't claim
+                          // everything here is machine-picked.
+                          ['📊', "Built from today's ensemble picks (PRIME/STRONG only) — some days hand-selected"],
+                          ['✏️', 'In-app builder coming soon — pick your own legs'],
                         ].map(([icon, txt], k) => (
                           <View key={k} style={{flexDirection:'row', alignItems:'flex-start', gap:6}}>
                             <Text style={{fontSize:11, marginTop:1}}>{icon}</Text>
