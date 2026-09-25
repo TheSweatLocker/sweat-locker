@@ -58,7 +58,25 @@
 -- Every other rule is reproduced byte-for-byte from the current definitions
 -- (MLB: 20260918c, NFL: 20260919a), per feedback_publishable_view_drift — a
 -- view replacement has already silently dropped a prior WHERE clause once.
--- Rules retained: MLB 2,3,4,5,6 and NFL 2,3,4,5,6,7.
+--
+-- Rules retained: MLB 2,3,4,5,6 and NFL 2,3,4.
+--
+-- CORRECTED 2026-09-24 (post-apply): this line originally read "NFL
+-- 2,3,4,5,6,7". NFL only ever had four rules — 1 (this gate), 2 (SKIP needs
+-- BACK at conviction >= 60), 3 (tier whitelist, LEAN dropped by 20260919a) and
+-- 4 (per-slate volume cap, _rn <= 40). Removing Rule 1 leaves 2,3,4. The SQL
+-- was always right; the comment claimed two rules that do not exist, which is
+-- the same class of stale documentation that caused three wrong diagnoses
+-- today. Diffed against the source views to confirm: MLB 70 -> 65 lines and
+-- NFL 74 -> 69, the only changes being Rule 1's comment, its two conditions,
+-- its closing paren, and the `AND ` stripped from the next clause so it can
+-- open the WHERE.
+--
+-- VERIFY block below re-run after apply — matched exactly:
+--     2026-09-23  LEAN 61 · STRONG 7      (68 total)
+--     2026-09-24  LEAN 50 · STRONG 7      (57 total)
+--     rows with tier COVERAGE or SKIP: 0
+--     NFL unchanged: 51 rows, all STRONG
 --
 -- VERIFY after applying:
 --     select game_date, tier, count(*) from v_mlb_props_publishable
