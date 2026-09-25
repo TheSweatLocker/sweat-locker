@@ -65,6 +65,12 @@ def edge_method(p_ko, p_sub, p_dec):
     return None
 
 
+try:
+    from ufc_detail_view import SUPPRESS_DISTANCE as _SUPPRESS
+except Exception:
+    _SUPPRESS = True
+
+
 def edge_distance(p_distance):
     """Return OVER/UNDER if model has strong distance signal."""
     if p_distance >= 0.65:
@@ -202,10 +208,22 @@ def run():
             "fighter_a_url": a_url,
             "fighter_b_url": b_url,
             "p_winner_a": round(p_winner_a, 4),
-            "p_method_ko": round(pred.get("p_method_ko", 0), 4),
-            "p_method_sub": round(pred.get("p_method_sub", 0), 4),
-            "p_method_dec": round(pred.get("p_method_dec", 0), 4),
-            "p_distance": round(pred.get("p_distance", 0), 4),
+            # 2026-09-25 SUPPRESSED — see ufc_detail_view.SUPPRESS_DISTANCE.
+            # The distance model scores 56.4% against a 67.0% baseline of
+            # always predicting NOT-distance (n=94, measured only after the
+            # grader stopped recording all 108 fights as decisions). It is
+            # worse than a constant, and biased toward "goes the distance":
+            # at p_distance 0.50-0.60 it claims 54.9% where reality is 21.1%.
+            #
+            # The app reads p_method_* / p_distance straight off this row to
+            # draw its bars, so suppressing them in detail_view alone would
+            # leave the same broken numbers on screen. Written as None while
+            # suppressed; historical rows keep their values, and flipping
+            # SUPPRESS_DISTANCE plus a rerun restores them.
+            "p_method_ko": None if _SUPPRESS else round(pred.get("p_method_ko", 0), 4),
+            "p_method_sub": None if _SUPPRESS else round(pred.get("p_method_sub", 0), 4),
+            "p_method_dec": None if _SUPPRESS else round(pred.get("p_method_dec", 0), 4),
+            "p_distance": None if _SUPPRESS else round(pred.get("p_distance", 0), 4),
             "p_round_1": round(pred.get("p_round_1", 0), 4),
             "p_round_2": round(pred.get("p_round_2", 0), 4),
             "p_round_3": round(pred.get("p_round_3", 0), 4),

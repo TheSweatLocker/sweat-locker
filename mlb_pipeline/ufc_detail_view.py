@@ -173,7 +173,15 @@ def _compare_rows(a: dict, b: dict) -> list:
 
 
 def _method_chart(pick: dict) -> list:
-    """Bar-chart-friendly method distribution."""
+    """Bar-chart-friendly method distribution.
+
+    Suppressed alongside distance — method and distance are the same
+    prediction viewed two ways (p_method_dec IS the distance probability), so
+    showing the method split while hiding the distance label would surface the
+    identical broken number under a different chart. See SUPPRESS_DISTANCE.
+    """
+    if SUPPRESS_DISTANCE:
+        return []
     def _pct(v): return round(float(v)*100, 1) if v is not None else 0
     ko = _pct(pick.get('p_method_ko'))
     sub = _pct(pick.get('p_method_sub'))
@@ -199,7 +207,32 @@ def _round_chart(pick: dict) -> list:
     return out
 
 
+# 2026-09-25 DISTANCE/METHOD SUPPRESSED.
+#
+# The distance model is worse than a one-line constant. Measured on 94 fights,
+# after repairing the grader that had recorded all 108 as decisions:
+#
+#     actual went-the-distance rate      33.0%
+#     always predict NOT-distance        67.0%   <- the benchmark
+#     our model (p >= 0.5)               56.4%   <- below it
+#
+# And it is biased, not just weak: at p_distance 0.50-0.60 it claims 54.9% and
+# reality is 21.1%, a -33.8pp gap. It systematically over-predicts fights going
+# the distance, which is the worst direction for a user betting a "goes the
+# distance" prop.
+#
+# A model that loses to a constant has negative value on a surface, so the
+# label is suppressed rather than shown with a caveat. The underlying
+# p_distance / p_method_* columns are LEFT INTACT on historical rows — the
+# regrade finally produced real method and distance labels (KO 42 / DEC 36 /
+# SUB 28), which is the training signal this model never had. Flip
+# SUPPRESS_DISTANCE back to False once it beats 67%.
+SUPPRESS_DISTANCE = True
+
+
 def _distance_block(pick: dict) -> dict:
+    if SUPPRESS_DISTANCE:
+        return {'label': '—', 'pct': None, 'expected_finish_pct': None}
     d = _f(pick.get('p_distance'))
     if d is None: return {'label': '—', 'pct': None, 'expected_finish_pct': None}
     dist_pct = round(d * 100)
