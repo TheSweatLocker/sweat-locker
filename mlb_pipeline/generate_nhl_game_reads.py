@@ -374,26 +374,40 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
     print(f'\n✓ cache {written} · jerry_reads {reads} · skipped {skipped}')
 
 
-# 2026-09-24 — FIXED PRODUCT COPY IS NOT GENERATED TEXT.
+# 2026-09-24 — THE ROADMAP DISCLAIMER IS DROPPED. Andy's call: "Drop it, NHL
+# model will be live."
 #
 # The live NHL prompt (prompt_templates sport=NHL name=game_read_rules, active,
 # v2) instructs: 'Open with one line: "Market-based analysis — proprietary NHL
-# model launches 2026-27 season."' The LLM complies, but paraphrases — 17 of 37
-# reads rendered it as "2026-27season" with the space dropped, which is what a
-# subscriber actually sees on the card.
+# model launches 2026-27 season."' It shipped on all 37 reads, 17 of them with
+# the space dropped ("2026-27season"), which is what a subscriber saw.
 #
-# A sentence that is the same on every read of a sport is a constant, not
-# output. Generating it buys a typo and leaves the wording with no single place
-# to edit. So the canonical line is prepended here and any LLM-written variant
-# of it is stripped first.
+# WHY DROPPING IT IS RIGHT, not just shorter:
 #
-# THIS CARRIES NO DECISION ABOUT THE CLAIM. The wording below is the prompt's
-# current wording, byte for byte. Whether the product should promise a
-# proprietary NHL model in 2026-27 at all is Andy's call and is logged as B48 —
-# when that is decided, this one string is the only edit, and no regeneration is
-# needed.
-NHL_DISCLAIMER = ('Market-based analysis — proprietary NHL model '
-                  'launches 2026-27 season.')
+#   1. It is a forward-looking product promise. A game read is not the place to
+#      commit to a roadmap.
+#   2. It contradicted the read underneath it. 28 of 37 NHL reads say "the
+#      model" — "the model pegs Kraken at 62.7% win probability", "the model
+#      sees this 60-40 lean" — and those numbers are REAL, computed from the
+#      Elo + market values in struct.model (elo_home, elo_away,
+#      projected_home_wp, projected_total). So a model is producing them. What
+#      does not exist is a TRAINED one, which is a distinction the sentence
+#      never made and a subscriber cannot act on.
+#   3. The honest sport-level caveat already has a home and is already correct:
+#      sport_registry.state_message reads "NHL season starts Oct 8 — probable
+#      goalies and MoneyPuck refresh land end of September." That is where a
+#      caveat about a sport belongs, not repeated on every card.
+#
+# The prompt still instructs the line, so the LLM keeps writing it and this
+# keeps removing it. That is deliberate: stripping here needs no prompt
+# migration and no regeneration, and it holds even if the prompt is edited
+# later or the LLM paraphrases again.
+#
+# NOTE FOR WHOEVER SHIPS THE REAL MODEL: struct.model.status currently reads
+# "no trained NHL model — market-based read only". Update that when the trained
+# model lands, or the next person auditing these reads will reach the same
+# wrong conclusion I did.
+NHL_DISCLAIMER = None
 
 # Matches the canonical line and the paraphrases seen in production, including
 # the missing-space typo and the "no NHL model active yet" variant that the dead
@@ -406,11 +420,19 @@ _DISCLAIMER_RE = re.compile(
 
 
 def _canonical_disclaimer(txt, prepend: bool = True):
-    """Strip any LLM-written disclaimer variant; prepend the canonical one."""
+    """Remove the disclaimer line. Prepend a replacement only if one is set.
+
+    NHL_DISCLAIMER is None as of 2026-09-24, so this strips and returns the
+    body. The prepend path is kept because the mechanism is the useful part:
+    if a one-line caveat is ever wanted again, setting that constant is the
+    whole change — no prompt migration, no regeneration.
+    """
     if not txt:
         return txt
     body = _DISCLAIMER_RE.sub('', txt).lstrip()
-    if not prepend:
+    if not prepend or not NHL_DISCLAIMER:
+        # Never return an empty read: if the disclaimer was the entire field,
+        # keep the original rather than blanking a card.
         return body or txt
     return f'{NHL_DISCLAIMER}\n\n{body}' if body else NHL_DISCLAIMER
 
