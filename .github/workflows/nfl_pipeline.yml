@@ -681,17 +681,34 @@ jobs:
       # --force refreshes render_sections when we ship template updates.
       - name: NFL prop Jerry synthesis (structured template render)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
-        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          # 2026-09-12: --days 3 covers today + Sun/Mon slates. Prior single-day
-          # default caused Sun 9/13 PRIME props to never synth on Sat cron
-          # (game_date=today = 9/12 for NFL = empty). Andy audit finding.
-          python generate_prop_jerry_synthesis.py --sport NFL --days 3 --force --tier-gate NONE
+          # 2026-09-24: --days 0 derives the window from the dates that have
+          # props, replacing --days 3.
+          #
+          # --days 3 was set on 09-12 to reach Sun/Mon FROM THE SATURDAY CRON,
+          # then ran on all seven slots. From Thursday it reaches only
+          # Saturday, so Sunday's 256 props had zero prop_jerry_reads rows and
+          # every Sunday prop card rendered with no L5/L10 graph from Tuesday
+          # until the Sat 10am run. Found 2026-09-24 when Andy reported missing
+          # graphs; confirmed via the runbook's coverage check (09-24 100%,
+          # 09-27 0%).
+          #
+          # A fixed count cannot track a slate whose distance from today
+          # changes with the weekday, and 3 also wasted two runs on 09-25/26
+          # which hold no NFL props at all. Discovery from Thursday returns
+          # 09-24, 09-27, 09-28 — the days that exist.
+          #
+          # continue-on-error dropped: run_step records the failure and the
+          # job's gate step fails the run, so a synth outage shows up red
+          # instead of as a warning icon nobody opens.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "generate_prop_jerry_synthesis.py (NFL)" \
+            python generate_prop_jerry_synthesis.py --sport NFL --days 0 --force --tier-gate NONE
 
       # 2026-09-13 Jerry-read orphan sweep for NFL. Same class as MLB
       # cleanup after final dedup — NFL 9/13 audit found 55 orphan

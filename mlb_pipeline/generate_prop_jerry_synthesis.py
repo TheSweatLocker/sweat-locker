@@ -362,10 +362,17 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         },
         **{k: v for k, v in parsed.items() if k != 'source'},
     }
-    r = requests.post(
-        f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
-        headers=H_WRITE, json=payload, timeout=20,
-    )
+    try:
+        r = _write_session().post(
+            f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
+            headers=H_WRITE, json=payload, timeout=20,
+        )
+    except requests.exceptions.RequestException as _e:
+        # Was uncaught: a single pooler reset aborted the whole run mid-slate
+        # while the process still exited 0. Report and return False so the
+        # caller's counters show the shortfall instead of the run looking done.
+        print(f'  ⚠ upsert transport failure: {_e}')
+        return False
     if r.status_code in (200, 201, 204):
         # 2026-09-17: PUBLISH-LOCK. A prop with a jerry_read is a prop
         # the user could have seen on the Prop Jerry tab. Snapshot
@@ -401,10 +408,14 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
     # If the 'source' column doesn't exist yet (pre-migration), retry without it
     if r.status_code == 400 and 'source' in (r.text or ''):
         payload2 = {k: v for k, v in payload.items() if k != 'source'}
-        r = requests.post(
-            f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
-            headers=H_WRITE, json=payload2, timeout=20,
-        )
+        try:
+            r = _write_session().post(
+                f'{SUPABASE_URL}/rest/v1/prop_jerry_reads?on_conflict=sport,game_id,player_name,prop_type,direction,game_date',
+                headers=H_WRITE, json=payload2, timeout=20,
+            )
+        except requests.exceptions.RequestException as _e:
+            print(f'  ⚠ upsert retry transport failure: {_e}')
+            return False
         if r.status_code in (200, 201, 204):
             return True
     print(f'  ⚠ upsert {r.status_code}: {r.text[:200]}')
@@ -998,6 +1009,100 @@ def run_for_sport(sport: str, game_date: str, template: str, force: bool = False
     return done
 
 
+# A cron should not be able to fan out indefinitely because one row carries a
+# bad date. nfl_generate_props itself only builds rows within +14 days, so
+# nothing legitimate sits past this.
+MAX_SLATE_HORIZON_DAYS = 14
+
+
+_WRITE_SESSION = None
+
+
+def _write_session():
+    """Pooled, retrying session for the prop_jerry_reads upserts.
+
+    2026-09-24. Every upsert was a bare requests.post, so one TLS handshake
+    per prop — 358 of them on the NFL Sunday slate. The Supabase pooler reset
+    one partway through and the uncaught ConnectionError killed the run after
+    172 of 256 props, leaving the Sunday slate at 67% coverage. The process
+    still exited 0, so it read as a completed run: graphs on some cards and
+    not others, with nothing reporting a failure.
+
+    Same fix, same shape as backfill_prop_lookback._nfl_session, which exists
+    because of the same pooler behaviour on the same table volume. POST is in
+    allowed_methods here because this endpoint is an idempotent upsert keyed on
+    (sport, game_id, player_name, prop_type, direction, game_date) — a retried
+    write lands on the same row rather than duplicating it.
+    """
+    global _WRITE_SESSION
+    if _WRITE_SESSION is not None:
+        return _WRITE_SESSION
+    from requests.adapters import HTTPAdapter
+    try:
+        from urllib3.util.retry import Retry
+    except ImportError:
+        from requests.packages.urllib3.util.retry import Retry
+    s = requests.Session()
+    retry = Retry(total=4, backoff_factor=0.6,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(['GET', 'POST', 'PATCH']))
+    s.mount('https://', HTTPAdapter(max_retries=retry, pool_connections=4,
+                                    pool_maxsize=8))
+    _WRITE_SESSION = s
+    return s
+
+
+def _discover_slate_dates(sports: list[str], start) -> list[str]:
+    """The game_dates that actually have props, from `start` forward.
+
+    Paginated — PostgREST caps a bare select at 1000 rows, and the NFL Sunday
+    slate alone is ~380, so an unpaginated scan would miss dates entirely and
+    reintroduce the gap this replaces by a different route.
+    """
+    from datetime import timedelta as _td
+    limit_date = (start + _td(days=MAX_SLATE_HORIZON_DAYS)).isoformat()
+    found: set[str] = set()
+    beyond: set[str] = set()
+    for s in sports:
+        table = PROPS_TABLE.get(s)
+        if not table:
+            continue
+        offset = 0
+        while True:
+            try:
+                r = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/{table}', headers=H_READ,
+                    params={'select': 'game_date',
+                            'game_date': f'gte.{start.isoformat()}',
+                            'order': 'game_date.asc',
+                            'limit': 1000, 'offset': offset},
+                    timeout=30)
+            except Exception as e:
+                print(f'  ⚠ {s}: slate-date discovery failed ({e})')
+                break
+            if r.status_code != 200:
+                print(f'  ⚠ {s}: slate-date discovery {r.status_code} '
+                      f'{(r.text or "")[:120]}')
+                break
+            batch = r.json()
+            for row in batch:
+                d = str(row.get('game_date') or '')[:10]
+                if not d:
+                    continue
+                (found if d <= limit_date else beyond).add(d)
+            if len(batch) < 1000:
+                break
+            offset += 1000
+    if beyond:
+        print(f'  ⚠ ignoring {len(beyond)} date(s) past the '
+              f'{MAX_SLATE_HORIZON_DAYS}-day cap: {sorted(beyond)[:5]}')
+    dates = sorted(found)
+    if dates:
+        print(f'  slate discovery: {len(dates)} date(s) with props — '
+              f'{dates[0]} .. {dates[-1]}')
+    return dates
+
+
 def main(force: bool = False, sport: str | None = None,
          game_date: str | None = None, limit: int | None = None,
          tier_gate: set[str] | None = None, days: int = 1):
@@ -1007,9 +1112,40 @@ def main(force: bool = False, sport: str | None = None,
     # Extending to iterate over the next N game_dates lets the daily cron
     # cover the full upcoming window without needing per-day manual invokes.
     # Default days=1 preserves prior behavior; --days 3 covers Sun+Mon slates.
+    # 2026-09-24 — `--days 0` DERIVES the window instead of guessing it.
+    #
+    # --days 3 above was chosen on 09-12 to reach the Sun/Mon slates FROM THE
+    # SATURDAY CRON, and was then applied to all seven NFL cron slots. From
+    # Thursday, three days reaches only Saturday, so Sunday's 256 props sat
+    # with zero prop_jerry_reads rows and every prop card on the Sunday slate
+    # rendered without its L5/L10 graph from Tuesday until the Sat 10am run.
+    #
+    #     Tue 11am   09-22 -> 09-24   misses Sunday
+    #     Wed 6pm    09-23 -> 09-25   misses Sunday
+    #     Thu 8am    09-24 -> 09-26   misses Sunday
+    #     Sat 10am   09-26 -> 09-28   reaches it
+    #
+    # A fixed day count cannot track a slate whose distance from "today"
+    # changes with the day of week. The 09-12 fix replaced a 1-day guess with
+    # a 3-day guess and kept the shape of the bug. So: ask the props table
+    # which dates actually have props and synthesize those. Same correction as
+    # generate_nhl_game_reads, where a hardcoded "today + 5 days" left the
+    # games at the edge of the window stubbed because nhl_game_context reached
+    # further than the generator did.
+    #
+    # Capped at MAX_SLATE_HORIZON_DAYS so a stray far-future row cannot turn
+    # one cron into an unbounded run — the cap is a safety valve, not the
+    # horizon. Anything beyond it is reported rather than silently dropped.
     from datetime import date as _date, timedelta as _td
     start = _date.fromisoformat(game_date) if game_date else _date.fromisoformat(today_et())
-    game_dates = [(start + _td(days=i)).isoformat() for i in range(max(1, days))]
+    if days <= 0:
+        game_dates = _discover_slate_dates(
+            [sport] if sport else list(PROPS_TABLE.keys()), start)
+        if not game_dates:
+            print(f'  no prop rows on or after {start.isoformat()} — nothing to do')
+            return
+    else:
+        game_dates = [(start + _td(days=i)).isoformat() for i in range(max(1, days))]
     if len(game_dates) > 1:
         print(f'=== generate_prop_jerry_synthesis · window {game_dates[0]}→{game_dates[-1]} ({len(game_dates)}d) ===')
     else:
@@ -1043,7 +1179,10 @@ if __name__ == '__main__':
     # short_read for the skipped props so app renders cleanly.
     p.add_argument('--tier-gate', help='Comma-separated tiers to synthesize (e.g. PRIME,STRONG). Others skipped.')
     p.add_argument('--days', type=int, default=1,
-                   help='Iterate the next N game_dates from --date (or today). '
+                   help='0 = derive the window from the dates that actually '
+                        'have props (recommended for NFL, whose slate sits a '
+                        'different distance from today depending on the day of '
+                        'week). Otherwise: iterate the next N game_dates from --date (or today). '
                         'Use --days 3 to cover Sat cron + Sun/Mon slates in one invocation.')
     args = p.parse_args()
     gate = None
