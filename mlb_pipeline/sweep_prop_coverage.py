@@ -224,6 +224,30 @@ def _pitcher_is_home(pitcher_lc: str, ctx: dict) -> bool | None:
     return None
 
 
+def _with_directional_edge(signals: dict | None, direction: str | None) -> dict:
+    """Stamp `_edge_pct_dir` — the edge FOR the side on this row.
+
+    `_edge_pct` is (proj - line)/line, computed per prop family before a side
+    exists, so its sign says nothing about whether the projection supports the
+    pick. This resolves it once, at the only point where both the projection
+    and the direction are known, so no consumer has to remember the flip.
+
+    Positive means the projection supports this row's side. Negative means the
+    projection argues against it.
+    """
+    sig = dict(signals) if isinstance(signals, dict) else {}
+    raw = sig.get('_edge_pct')
+    if raw is None or not direction:
+        return sig
+    try:
+        raw = float(raw)
+    except (TypeError, ValueError):
+        return sig
+    sig['_edge_pct_dir'] = round(
+        -raw if str(direction).lower() == 'under' else raw, 3)
+    return sig
+
+
 def build_signals(display: str, prop_type: str, prop_line: float, ctx: dict | None) -> tuple[dict, float | None]:
     """Return (signals_dict, edge_pct). edge_pct = (proj − line) / line when computable."""
     if not ctx: return {'_coverage_stub': True}, None
@@ -561,7 +585,25 @@ def sweep(game_date: str, dry_run: bool = False) -> None:
                     # the signals NOT NULL constraint. Migration 20260909d set
                     # DEFAULT '{}'::jsonb but PostgREST sending explicit null
                     # bypasses the default. Batter stubs have no signals data.
-                    'signals': signals if signals else {},
+                    # 2026-09-25 ROOT FIX for the direction-blind edge.
+                    # build_signals() computes _edge_pct = (proj - line)/line
+                    # per prop FAMILY, before a side is chosen, so its sign is
+                    # meaningless on its own: for an UNDER, a projection ABOVE
+                    # the line argues AGAINST the pick but still reads +.
+                    #
+                    # Consumers were each expected to remember the flip.
+                    # render_prop_template did (fixed 09-17, Aaron Nola
+                    # HA_UNDER 5.5). The selection path did not, and over 2,405
+                    # graded props the side the projection OPPOSED went 46.0%
+                    # (n=645) while the side it SUPPORTED went 54.6% (n=817) —
+                    # 8.6 points, straddling the 54.2% breakeven.
+                    #
+                    # direction IS known here, so resolve it once at write time
+                    # and store it. Downstream reads a number that already means
+                    # "edge FOR the side on this row", and a new consumer cannot
+                    # reintroduce the bug by forgetting to flip.
+                    # _edge_pct is left as-is so nothing reading it breaks.
+                    'signals': _with_directional_edge(signals, direction),
                     'tier': 'COVERAGE',
                     'conviction': 0,
                     'lineup_state': 'coverage_stub',

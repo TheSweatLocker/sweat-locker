@@ -708,14 +708,24 @@ def _directional_edge_gate(game_date: str, dry_run: bool = False) -> int:
             except Exception: sig = {}
         if not isinstance(sig, dict) or sig.get('_dir_edge_gate'):
             continue
-        raw = sig.get('_edge_pct')
-        if raw is None:
-            continue
+        # Prefer the value sweep_prop_coverage already resolved for this row's
+        # side (2026-09-25 root fix). Fall back to flipping the raw family-level
+        # edge for rows written before that landed, so the gate covers history
+        # as well as new writes.
+        dir_edge = sig.get('_edge_pct_dir')
+        if dir_edge is None:
+            raw = sig.get('_edge_pct')
+            if raw is None:
+                continue
+            try:
+                raw = float(raw)
+            except (TypeError, ValueError):
+                continue
+            dir_edge = -raw if (prop.get('direction') or '').lower() == 'under' else raw
         try:
-            raw = float(raw)
+            dir_edge = float(dir_edge)
         except (TypeError, ValueError):
             continue
-        dir_edge = -raw if (prop.get('direction') or '').lower() == 'under' else raw
         if dir_edge > DIRECTIONAL_EDGE_FLOOR:
             continue
         sig['_dir_edge_gate'] = f'PROJECTION_OPPOSES_{dir_edge*100:+.0f}pct'
