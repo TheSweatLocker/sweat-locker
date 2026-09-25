@@ -421,6 +421,12 @@ def audit_prop_jerry_refit(game_date: str) -> dict:
     return {'critical': critical, 'warnings': warnings}
 
 
+# Engines that mean "a modern model decided this", kept in step with
+# watchdogs.MODERN. lr_v1/lr_v2 are the LR override in defensive_gates
+# restamping a pick the ensemble already produced — not an ensemble failure.
+_LR_OVERRIDE_ENGINES = {'lr_v1', 'lr_v2'}
+
+
 def audit_engine_breakdown(sport: str, game_date: str) -> dict:
     """2026-08-17: report primary_play._engine tag distribution.
 
@@ -451,7 +457,8 @@ def audit_engine_breakdown(sport: str, game_date: str) -> dict:
 
     if not rows: return {'critical': critical, 'warnings': warnings}
 
-    counts = {'ensemble_v2': 0, 'legacy_compute_primary_play': 0, 'other': 0, 'missing': 0}
+    counts = {'ensemble_v2': 0, 'lr_override': 0,
+              'legacy_compute_primary_play': 0, 'other': 0, 'missing': 0}
     missing_gids = []
     for row in rows:
         pp = row.get('primary_play')
@@ -463,25 +470,56 @@ def audit_engine_breakdown(sport: str, game_date: str) -> dict:
             continue
         eng = pp.get('_engine')
         if eng == 'ensemble_v2': counts['ensemble_v2'] += 1
+        elif eng in _LR_OVERRIDE_ENGINES: counts['lr_override'] += 1
         elif eng == 'legacy_compute_primary_play': counts['legacy_compute_primary_play'] += 1
         elif eng: counts['other'] += 1
         else: counts['missing'] += 1; missing_gids.append(row.get('game_id'))
 
     total = sum(counts.values())
+    modern = counts['ensemble_v2'] + counts['lr_override']
     ens_pct = round(100 * counts['ensemble_v2'] / total, 1) if total else 0
+    mod_pct = round(100 * modern / total, 1) if total else 0
     print(f'  primary_play engine: ensemble={counts["ensemble_v2"]} '
+          f'lr_override={counts["lr_override"]} '
           f'legacy={counts["legacy_compute_primary_play"]} '
           f'other={counts["other"]} missing={counts["missing"]} '
-          f'({ens_pct}% ensemble)')
+          f'({ens_pct}% ensemble, {mod_pct}% modern)')
 
     if counts['missing'] > 0:
         warnings.append(f'engine_breakdown: {counts["missing"]}/{total} primary_play rows '
                         f'missing _engine tag (recompute_primary_play didn\'t propagate). '
                         f'Sample gids: {missing_gids[:3]}')
-    if total >= 5 and counts['ensemble_v2'] == 0:
-        critical.append(f'engine_breakdown: 0/{total} rows on ensemble_v2 — ensemble silently '
-                        f'disabled. Check ensemble_scorer import + score_game exceptions in '
+    # 2026-09-24 FALSE CRITICAL FIXED. This fired "ensemble silently disabled"
+    # on every MLB slate since at least 09-23 because it counted ONLY
+    # ensemble_v2 and bucketed lr_v1 into 'other'.
+    #
+    # lr_v1 does not mean the ensemble failed. It means the ensemble ran, and
+    # then the LR override in defensive_gates deliberately superseded its pick
+    # and restamped _engine. watchdogs.py has had this right since 09-09 —
+    # `MODERN = {'ensemble_v2','lr_v1','lr_v2'}`, with a note that these
+    # "represent LR intentionally overriding, not a stale ensemble result".
+    # This check was written 08-17, before the LR override existed, and was
+    # never updated, so the two files disagreed about what lr_v1 means.
+    #
+    # Cost of the false positive: 4 criticals a day on MLB that nobody could
+    # act on, which is how the other three in that list stayed unexamined. I
+    # also repeated its wording — "lr_v1 has decided every MLB game, the
+    # ensemble contributes nothing" — until Andy pushed back that picks were
+    # clearly being made. He was right.
+    #
+    # The real failure mode is no MODERN engine at all: everything on legacy,
+    # or missing. That is what fires now.
+    if total >= 5 and modern == 0:
+        critical.append(f'engine_breakdown: 0/{total} rows on a modern engine '
+                        f'(ensemble_v2 / {"/".join(sorted(_LR_OVERRIDE_ENGINES))}) — '
+                        f'every game fell to legacy or has no tag. Check '
+                        f'ensemble_scorer import + score_game exceptions in '
                         f'recompute_primary_play logs.')
+    elif total >= 5 and counts['ensemble_v2'] == 0 and counts['lr_override'] == total:
+        warnings.append(f'engine_breakdown: LR override took all {total} games '
+                        f'(ensemble_v2 share 0%). Expected when LR is confident '
+                        f'on the whole slate, but worth a look if it persists '
+                        f'— see mlb_lr_dissent_audit.py.')
 
     _log_health_event(game_date, 'engine_breakdown', rule='ensemble_share',
                       severity='info', count=counts['ensemble_v2'],

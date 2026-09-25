@@ -1139,30 +1139,45 @@ has never blocked anything. Today's MLB slate reports:
       sharp-fade discipline violation · LA@SEA UNDER, sharp 79% same side
       prop_jerry Cam Schlittler er_under LEAN on refit=7.4 (trap zone)
 
-THE ENSEMBLE ONE IS THE WORST. `_engine` on `mlb_game_context.primary_play`:
+THE "ENSEMBLE DISABLED" ONE WAS A FALSE POSITIVE — **fixed 2026-09-24**, and my
+first version of this entry repeated it as fact.
 
-      09-20   lr_v1 13 · ensemble_v2  2
-      09-21   lr_v1  2 · ensemble_v2  1
-      09-22   lr_v1 12 · ensemble_v2  3 · None 1
-      09-23   lr_v1 16 · ensemble_v2  0
-      09-24   lr_v1 12 · ensemble_v2  0
+I wrote that `lr_v1` deciding every game meant "the ensemble contributes
+nothing". Andy pushed back: picks were clearly being made on those days. He was
+right and I had not checked what `lr_v1` means.
 
-So `lr_v1` has decided every MLB game for two days and the ensemble contributes
-nothing. NOT caused by the 09-24 registry pagination fix (`1c6d9129`) — checked
-before assuming, and 09-23 was already zero, before that commit landed. The
-audit names the place to look: "ensemble_scorer import + score_game exceptions
-in recompute_primary_play logs". `ensemble_scorer` imports cleanly and loads 842
-registry signals and 217 MLB sources when called directly, so the failure is
-inside `recompute_primary_play`'s use of it, not the module.
+`lr_v1` is stamped by `defensive_gates.py` when the **LR override deliberately
+supersedes** the ensemble's pick. The ensemble runs first and produces a pick;
+LR then overrides it and restamps `_engine`. `watchdogs.py` has had this correct
+since 2026-09-09 — `MODERN = {'ensemble_v2','lr_v1','lr_v2'}` with the note that
+these "represent LR intentionally overriding, not a stale ensemble result".
 
-Two separate things:
-  1. Why is ensemble_v2 losing every game to lr_v1? Either scoring raises and is
-     swallowed, or the ensemble genuinely scores below the LEAN threshold on
-     every game — which would itself be worth knowing.
-  2. `--warn-only` means the gate is decorative on the sport that has the most
-     reads. The NFL wiring added today records failures and turns the run red
-     without skipping the graders (which run after the card in that workflow);
-     MLB should get the same treatment rather than silence.
+`audit_engine_breakdown` was written 2026-08-17, before the LR override existed.
+It counted only `ensemble_v2`, bucketed `lr_v1` into `other`, and fired critical
+whenever `ensemble_v2 == 0`. Two files in the same repo disagreed about what
+`lr_v1` means, and the audit lost.
+
+Fixed: the check now treats lr_v1/lr_v2 as modern, fires critical only when NO
+modern engine is present (everything on legacy or untagged), and warns — not
+criticals — when LR takes an entire slate, pointing at
+`mlb_lr_dissent_audit.py`. MLB now reports 3 criticals and 2 warnings instead of
+4 and 1.
+
+Cost of the false positive: a daily critical nobody could act on, which is how
+the other three in the list stayed unexamined for days. Distinguishing a broken
+check from a broken pipeline is the whole job of a gate.
+
+STILL OPEN, and these three are real:
+  1. sharp-fade discipline violation · LA@SEA UNDER, sharp 79% same side, 2
+     models against
+  2. `prop_jerry` Cam Schlittler er_under LEAN on refit=7.4 —
+     apply_refit_verdict_override should have downgraded it
+  3. refit coverage 38% (22/58), with the audit's own remedy: rerun
+     `apply_prop_refit.py`
+  4. `--warn-only` makes the gate decorative on the sport with the most reads.
+     The NFL wiring added today records failures and turns the run red without
+     skipping the graders (which run after the card in that workflow); MLB
+     should get the same treatment rather than silence.
 
 VERIFY: `python mlb_pipeline/jerry_pre_publish_audit.py --sport MLB --date <today>`
 (exits 1 and lists them; add --warn-only to reproduce what the cron sees)
