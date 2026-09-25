@@ -383,9 +383,14 @@ def fetch_action(slate: list, game_date: str, aliases: dict) -> tuple:
         from _playwright_helper import render_page
     except ImportError:
         return [], 500
+    # 2026-09-25: was wait_until='networkidle', which timed out at 45s on every
+    # run — Action Network holds long-lived connections (ads/analytics/websocket)
+    # so the network never goes idle and goto() never returns. The page content
+    # is present well before that. domcontentloaded + a fixed settle wait is
+    # what the other JS sources use and what actually returns.
     text, err = render_page(
         'https://www.actionnetwork.com/nfl/public-betting',
-        wait_ms=6000, wait_until='networkidle', timeout_ms=45000,
+        wait_ms=8000, wait_until='domcontentloaded', timeout_ms=45000,
     )
     if err == 'unavailable':
         print('  ⚠ Action: Playwright unavailable — skip')

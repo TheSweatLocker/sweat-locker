@@ -456,9 +456,12 @@ def fetch_action(slate: list, game_date: str, aliases: dict) -> tuple:
         from _playwright_helper import render_page
     except ImportError:
         return [], 500
+    # 2026-09-25: networkidle timed out at 45s on every run — Action Network
+    # holds long-lived connections so the network never goes idle. Same fix as
+    # pull_externals_nfl.py, where it took the source from 0 picks to 13.
     text, err = render_page(
         'https://www.actionnetwork.com/ncaaf/public-betting',
-        wait_ms=6000, wait_until='networkidle', timeout_ms=45000,
+        wait_ms=8000, wait_until='domcontentloaded', timeout_ms=45000,
     )
     if err == 'unavailable':
         print('  ⚠ Action: Playwright unavailable — skip')

@@ -85,7 +85,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dotenv beautifulsoup4 nfl_data_py pandas scikit-learn numpy xgboost
+          pip install requests python-dotenv beautifulsoup4 nfl_data_py pandas scikit-learn numpy xgboost playwright
+          # 2026-09-25: playwright was MISSING here while mlb_pipeline.yml had
+          # it. pull_externals_nfl.py's dimers + action fetchers render JS via
+          # _playwright_helper.render_page, which returns (None,'unavailable')
+          # when the import fails and the fetchers then treat that as a graceful
+          # skip — returning 0 picks with HTTP 200, logged status='success'.
+          # Result: both sources looked wired and had been silently dead in CI
+          # while working fine locally (dimers pulls 14 picks on the same slate).
+          # Chromium install is fail-soft: a runner hiccup must not fail the
+          # whole NFL pipeline, and render_page already degrades to 'unavailable'.
+          python -m playwright install --with-deps chromium || echo "⚠ chromium install failed — JS-rendered externals (dimers, action) will skip this run"
 
       - name: Detect run mode
         id: mode
@@ -743,6 +753,22 @@ jobs:
         run: |
           cd mlb_pipeline
           python pull_externals_nfl.py
+
+      # 2026-09-25: report sources that have gone dark. The pull above writes
+      # status='success' even on a 0-pick run, which is how vsin + bettingpros
+      # (stub fetchers) and dimers + action (no Playwright in this workflow)
+      # stayed silently dead for an entire NFL season. This step is the only
+      # thing that will say so. Peer-relative, so a quiet Tuesday is not an
+      # alert. Reporting only — never fails the pipeline (no --strict).
+      - name: Externals watchdog (NFL)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdog_external_sources.py --sport NFL --days 21
 
       # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
       # nfl_game_context. Required prerequisite for the sharp-split

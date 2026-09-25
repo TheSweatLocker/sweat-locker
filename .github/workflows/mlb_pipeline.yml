@@ -1755,6 +1755,19 @@ jobs:
             python pull_externals_mlb.py
           fi
 
+      # 2026-09-25: report dark sources. MLB carries 5 stub fetchers (cbs,
+      # oddsshark, scp, fangraphs, ballparkpal — zero picks ever) that have been
+      # logging status='success' on every run. Peer-relative so an off-day is
+      # not an alert. Reporting only; never fails the pipeline.
+      - name: Externals watchdog (MLB)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdog_external_sources.py --sport MLB --days 14
+
       # After externals land, run consensus-fade detector to flag games
       # where public heat + fade sources = card-level Tier 1 alert.
       # continue-on-error so an empty picks day never blocks downstream.

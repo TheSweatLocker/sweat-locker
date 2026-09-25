@@ -490,6 +490,20 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaab.py" python pull_externals_ncaab.py
           fi
 
+      # 2026-09-25: report dark sources. NCAAB carries 3 stub fetchers (covers,
+      # vsin, bettingpros) that will log status='success' with zero picks the
+      # moment the season opens. Wired now so 11-03 launch does not repeat what
+      # NFL just went through — offseason it simply prints "nothing to check".
+      - name: Externals watchdog (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdog_external_sources.py --sport NCAAB --days 21
+
       # ────── CONSENSUS FADE DETECTOR ──────
       - name: Detect consensus-fade alerts (NCAAB)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'

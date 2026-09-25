@@ -75,7 +75,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dotenv beautifulsoup4 scikit-learn numpy
+          pip install requests python-dotenv beautifulsoup4 scikit-learn numpy playwright
+          # 2026-09-25: same gap as nfl_pipeline.yml — playwright was missing, so
+          # pull_externals_ncaaf.py's dimers + action fetchers silently skipped
+          # (render_page -> 'unavailable' -> 0 picks -> status='success'). Both
+          # went dark 09-17 with the pull log still reporting green.
+          # Fail-soft: render_page degrades cleanly, so a chromium hiccup must
+          # not take down the NCAAF pipeline.
+          python -m playwright install --with-deps chromium || echo "⚠ chromium install failed — JS-rendered externals (dimers, action) will skip this run"
 
       - name: Detect run mode
         id: mode
@@ -423,6 +430,21 @@ jobs:
           else
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py
           fi
+
+      # 2026-09-25: report dark sources. NCAAF has 3 stub fetchers (covers,
+      # vsin, bettingpros — zero picks ever) plus dimers + action dark since
+      # 09-17 for want of Playwright, all logging status='success'. NCAAF pulls
+      # run only a few times a week, so the peer-productive gap accrues slowly —
+      # use a 21d window here or a real break can sit under the threshold.
+      - name: Externals watchdog (NCAAF)
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdog_external_sources.py --sport NCAAF --days 21
 
       - name: Detect consensus-fade alerts (NCAAF)
         if: steps.mode.outputs.mode == 'full'
