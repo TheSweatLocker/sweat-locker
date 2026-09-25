@@ -2006,19 +2006,25 @@ def defer_call_to_ensemble_nfl(parsed: dict, struct: dict) -> dict:
 
 
 def _strip_markers(txt, fallback_key):
-    """Shared marker stripper — imported so there is exactly one copy.
+    """Shared marker + markdown stripper — imported so there is one copy.
 
     Local import (not module-scope) to match how this file already pulls
     smart_truncate_short, and so a missing helper degrades to unstripped text
     with a warning rather than failing the whole generator at import time.
+
+    2026-09-24: also strips markdown emphasis. The app renders reads in a plain
+    React Native <Text> with no markdown dependency, so "**MATCHUP:**" shows a
+    subscriber four literal asterisks. Markers first, then emphasis — the
+    marker strip re-parses the narrative and needs it in the parser's shape.
     """
     try:
-        from jerry_reads_dual_write import strip_section_markers
+        from jerry_reads_dual_write import (strip_section_markers,
+                                            strip_markdown_emphasis)
     except Exception as _e:  # pragma: no cover
-        print(f'  ⚠ strip_section_markers unavailable ({_e}) — '
-              f'markers may reach the read')
+        print(f'  ⚠ read normalisers unavailable ({_e}) — '
+              f'markers or markdown may reach the read')
         return txt
-    return strip_section_markers(txt, fallback_key)
+    return strip_markdown_emphasis(strip_section_markers(txt, fallback_key))
 
 
 def upsert_jerry_read_nfl(game, struct, parsed, narrative):

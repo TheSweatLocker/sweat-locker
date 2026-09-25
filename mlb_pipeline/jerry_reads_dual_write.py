@@ -97,6 +97,41 @@ def smart_truncate_short(text: str, max_chars: int = 350) -> str:
     return cut.rstrip() + '…'
 
 
+def strip_markdown_emphasis(txt):
+    """Remove markdown bold/italic markers from text that will be published.
+
+    2026-09-24. The app renders reads inside a plain React Native <Text>
+    (app/index.tsx:14870 and :16029, via scrubJerryText which only strips
+    [Auto-...] audit tags), and package.json carries NO markdown dependency.
+    Nothing anywhere converts ** for display. So a read containing
+    "**MATCHUP:**" shows a subscriber four literal asterisks.
+
+    Measured on the forward slate: 19 of 152 reads carried ** — 8 in
+    short_read, 19 in long_read, across all four sports. No # headers and no
+    bullets, so bold markers are the whole problem.
+
+    The prompts ask for "markdown section headers", which is why the LLM emits
+    them. Rather than fight that, the emphasis is stripped at write time and
+    the words are kept: "**MATCHUP:**" becomes "MATCHUP:". Per
+    feedback_prop_graph_rendering_912 the app render is not the place to fix a
+    prose defect.
+
+    Deliberately narrow: bold and italic runs only. It does not touch a bare
+    "---" rule, an em dash, or a lone asterisk inside prose, because those are
+    either legitimate punctuation or handled elsewhere (see
+    strip_section_markers for the parser-marker case).
+    """
+    if not txt:
+        return txt
+    out = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', txt, flags=re.S)   # ***bold italic***
+    out = re.sub(r'\*\*(.+?)\*\*', r'\1', out, flags=re.S)       # **bold**
+    out = re.sub(r'(?<![\w*])\*([^\s*][^*]*?)\*(?![\w*])', r'\1', out, flags=re.S)  # *italic*
+    # Any unpaired ** left over (an LLM opening a bold it never closed — one
+    # NFL read's short_read was literally "**" then a newline) is noise.
+    out = out.replace('**', '')
+    return out
+
+
 def strip_section_markers(txt, fallback_key: str):
     """Remove parser section markers from text that is about to be published.
 
@@ -621,6 +656,10 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     parsed = dict(parsed)
     parsed['short_read'] = _demarker(parsed.get('short_read'), 'short_read')
     parsed['long_read'] = _demarker(parsed.get('long_read'), 'long_read')
+    # Markers first, then emphasis: strip_section_markers re-parses the raw
+    # narrative, so it must see the text in the shape the parser expects.
+    parsed['short_read'] = strip_markdown_emphasis(parsed.get('short_read'))
+    parsed['long_read'] = strip_markdown_emphasis(parsed.get('long_read'))
 
     _short_raw = parsed.get('short_read') or ''
     _long_raw = _demarker(parsed.get('long_read') or narrative or '', 'long_read')

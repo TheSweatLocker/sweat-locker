@@ -101,14 +101,21 @@ def _parse_narrative(narrative: str) -> tuple[str | None, str | None]:
     if not narrative:
         return None, None
     try:
-        from jerry_reads_dual_write import parse_synthesis, strip_section_markers
+        from jerry_reads_dual_write import (parse_synthesis,
+                                            strip_section_markers,
+                                            strip_markdown_emphasis)
     except Exception as e:
         print(f'  ⚠ parser unavailable ({e}) — refusing to publish raw '
               f'narrative that may contain markers')
         return None, None
     parsed = parse_synthesis(narrative) or {}
-    short = strip_section_markers(parsed.get('short_read'), 'short_read')
-    long_ = strip_section_markers(parsed.get('long_read') or narrative, 'long_read')
+    # Markers first (that re-parses, so it needs the parser's shape), then
+    # markdown emphasis — the app has no markdown renderer, so "**MATCHUP:**"
+    # reaches a subscriber as four literal asterisks.
+    short = strip_markdown_emphasis(
+        strip_section_markers(parsed.get('short_read'), 'short_read'))
+    long_ = strip_markdown_emphasis(
+        strip_section_markers(parsed.get('long_read') or narrative, 'long_read'))
     if short:
         short = short.strip()
         # Keep the old first-sentence shape when the parsed SHORT is long-form.

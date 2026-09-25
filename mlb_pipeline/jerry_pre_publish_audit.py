@@ -514,7 +514,53 @@ def auto_repair(sport: str, game_date: str) -> dict:
     repairs = {'A_layer_d_jerry_reads': 0, 'A_layer_d_prop_jerry': 0,
                'B_trend_forced_pass': 0,
                'Z_refit_reapplied': 0,
-               'AA_audit_leak_scrubbed': 0}
+               'AA_audit_leak_scrubbed': 0,
+               'MD_markdown_stripped': 0}
+
+    # --- MD. MARKDOWN EMPHASIS SELF-HEAL (2026-09-24) ---
+    # The app renders reads in a plain React Native <Text> (index.tsx:14870,
+    # :16029) and package.json has NO markdown dependency, so "**MATCHUP:**"
+    # reaches a subscriber as four literal asterisks. Measured on the forward
+    # slate: 19 of 152 reads carried `**`, across all four sports, including
+    # one NFL short_read that was just "**" and a newline.
+    #
+    # The writers strip it now, but this repair exists because prevention at the
+    # writer failed three times in one day for the parser-marker case — I
+    # guarded jerry_reads_dual_write, then generate_nfl_game_reads, and the leak
+    # was in sync_jerry_reads_from_ctx. About 30 scripts write jerry_reads.
+    # Whichever one I have not found yet, this cleans up after it nightly.
+    #
+    # Safe to run unconditionally: strip_markdown_emphasis is a no-op on text
+    # with no emphasis markers, and it deliberately leaves em dashes, "---"
+    # rules and arithmetic asterisks alone.
+    try:
+        from jerry_reads_dual_write import strip_markdown_emphasis as _smd
+        _md_rows = requests.get(
+            f'{SB}/rest/v1/jerry_reads', headers=H_READ, timeout=20,
+            params={'sport': f'eq.{sport}', 'game_date': f'eq.{game_date}',
+                    'select': 'id,short_read,long_read'})
+        for _r in (_md_rows.json() if _md_rows.status_code == 200 else []):
+            _s0, _l0 = _r.get('short_read'), _r.get('long_read')
+            if '*' not in ((_s0 or '') + (_l0 or '')):
+                continue
+            _s1, _l1 = _smd(_s0), _smd(_l0)
+            if _s1 == _s0 and _l1 == _l0:
+                continue
+            # Never blank a field that had content.
+            if (_s0 and not _s1) or (_l0 and not _l1):
+                print(f'  ⚠ markdown strip would blank id={_r["id"]} — skipped')
+                continue
+            _pr = requests.patch(
+                f'{SB}/rest/v1/jerry_reads', headers=H_WRITE, timeout=20,
+                params={'id': f'eq.{_r["id"]}'},
+                json={'short_read': _s1, 'long_read': _l1})
+            if _pr.status_code in (200, 204):
+                repairs['MD_markdown_stripped'] += 1
+            else:
+                print(f'  ⚠ markdown strip id={_r["id"]} '
+                      f'{_pr.status_code} {(_pr.text or "")[:100]}')
+    except Exception as _e:
+        print(f'  ⚠ markdown self-heal skipped: {_e}')
 
     # --- AA. STALE AUDIT-TAG SELF-HEAL (2026-09-07) ---
     # Root-cause fix for the "[Auto-*-repair …] Original take: …" text
