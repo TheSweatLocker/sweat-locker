@@ -54,6 +54,22 @@ def today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+def _clamp_conviction(v):
+    """Coerce to the int 0-100 the column's CHECK constraint allows.
+
+    Returns None rather than a guess when the value is missing or unparseable —
+    generator_conviction exists to be trustworthy, so a wrong number in it is
+    worse than an honest gap. Out-of-range values are clamped rather than
+    dropped so the row still inserts (a rejected insert would lose the read).
+    """
+    if v is None:
+        return None
+    try:
+        return max(0, min(100, int(round(float(v)))))
+    except (TypeError, ValueError):
+        return None
+
+
 def _implied_prob(odds):
     if odds is None: return None
     try: o = int(odds)
@@ -360,6 +376,24 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
             'source': source,
             **({'render_sections': render_sections} if render_sections else {}),
         },
+        # 2026-09-25 (migration 20260925a). Immutable record of what the
+        # generator itself decided, captured at the only moment it is knowable.
+        #
+        # Eight scripts PATCH call_verdict/conviction after this row exists
+        # (refit override, fade discipline, both contradiction collapsers,
+        # calibration pass, pre-publish audit, NFL fade pass, grader). None of
+        # them record what they replaced — the pre-override take survives only
+        # as prose inside audit_notes, which names the pick but not the tier or
+        # the score it was demoted from. So "the model said PRIME" was never
+        # answerable, and the refit override could never be evaluated against
+        # the decision it overrode.
+        #
+        # Captured HERE, after this function's own direction-contradiction
+        # downgrade, because that check is part of the generator's judgement
+        # rather than an external override. Those mutators PATCH named columns,
+        # so they cannot touch these two by construction.
+        'generator_verdict': parsed.get('call_verdict'),
+        'generator_conviction': _clamp_conviction(parsed.get('conviction')),
         **{k: v for k, v in parsed.items() if k != 'source'},
     }
     try:
