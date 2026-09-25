@@ -1126,7 +1126,66 @@ VERIFY: `python mlb_pipeline/verify_backlog.py --only NEW`
 
 ---
 
-### B49 - MLB's publish gate reports 4 criticals a day and nothing stops
+### B50 - the MLB workflow is load-bearing for three sports that have no records of their own
+Found 2026-09-24. **Andy: not now — later this week. Must land before 2026-10-08
+(NHL opening night).**
+
+`mlb_pipeline.yml` is 173 steps in ONE fully serial job. 159 are MLB-scoped, but
+**7 are load-bearing for other sports**:
+
+      step   6   yesterday catch-up grading — NFL + NCAAF
+      step  39   compute_scenario_audit — NCAAF / NCAAB / NHL
+      step  49   generate_prop_jerry_synthesis — NO --sport, so every sport
+      step  85   compute_surface_records — every sport
+      step 157   aggregate_daily_records — every sport
+      step 158   rescue pass — MC + props + ladder + ledger
+
+THE BLOCKER, and it is the reason this cannot be gated first: **NHL, NBA and
+NCAAB have no records steps at all.** All three workflows are missing BOTH
+`compute_surface_records` and `aggregate_daily_records` — their records are
+computed only by the MLB pipeline. `compute_scenario_audit` likewise exists only
+in mlb_pipeline.yml. NFL and NCAAF are fine; they call both themselves.
+
+So gating or shortening the MLB pipeline for the offseason, before those steps
+move, silently stops record-keeping for the three sports about to come online —
+NHL 10-08, NBA 10-21, NCAAB 11-03. Same failure shape as everything else found
+today: nothing errors, records just stop.
+
+ORDER OF WORK:
+  1. Move the 7 cross-sport steps into a sport-agnostic workflow.
+     `mlb_grade_overnight.yml` is the natural home — 24 steps, runs 3x/day on
+     its own cron, already calls both records scripts.
+  2. THEN the 166 MLB-only steps can be seasonally gated.
+
+NOT YET VERIFIED, and step 1 should not start without it: whether those 7 steps
+have ordering dependencies on MLB steps that run before them. Moving a step that
+depends on something upstream is a new bug, not a fix. Check what each reads
+before it writes.
+
+Urgency split: step 1 is deadline-bound (10-08). Step 2 is not — MLB runs
+through the postseason to ~11-05, so the wasted runtime costs minutes, not
+correctness.
+
+VERIFY (the 3 sports missing records steps):
+      for f in nhl nba ncaab; do grep -c compute_surface_records \
+        .github/workflows/${f}_pipeline.yml; done      # expect 0 0 0
+
+---
+
+### B49 - MLB's publish gate: posture FIXED 2026-09-24, three criticals still open
+`2a4eab4c`. The gate's accuracy was fixed first (no sport filter — 188 rows where
+MLB had 145; unpaginated props fetch — 1,000 of 1,127), verified not to move the
+answer (58/22 either way), and only then given the ability to redden the run.
+`--warn-only` dropped, call routed through run_step: the script exits 1 as
+designed, run_step records it and returns 0, every later step still runs (card
+137, ledger 154, daily records 157), and the job gate turns the run red.
+
+The 2026-08-22 decision not to let this kill the pipeline STANDS — blocking was
+considered and rejected, because generate_sharp_card is step 102, BEFORE the
+gate, so a block cannot protect the Steam Room anyway and would only cost the
+card, ledger and records.
+
+THE THREE REAL CRITICALS REMAIN OPEN — see below.
 Found 2026-09-24 while running the audit for the markdown sweep.
 
 `jerry_pre_publish_audit` is designed to exit 1 so the sweat card build is
