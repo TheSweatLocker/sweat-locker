@@ -137,11 +137,22 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
         except (TypeError, ValueError):
             odds_int = None
         direction = (row.get('direction') or '').lower()
-        pick_side = direction.upper() if direction in ('over', 'under') else None
         # Pull tier from the source prop for a snapshot
         # (tier not in prop_jerry_reads itself)
         # We use call_verdict as a proxy — BACK/FADE/PASS.
         verdict = (row.get('call_verdict') or '').upper() or None
+        # 2026-09-25: record the side we BACKED, not the prop's own side.
+        # On a FADE we bet the opposite of the prop, but this wrote the prop's
+        # direction regardless — so all 72 graded FADE prop receipts displayed
+        # e.g. "Jose Quintana UNDER 10.5" while carrying the OVER's win/loss.
+        # The receipt contradicted itself, and a user reading it saw the wrong
+        # pick. grade_prop_jerry_reads already flips for FADE when grading
+        # (flip_for_fade), so the RESULT was right and only the label was
+        # wrong — which is the hardest version to notice.
+        _backed = direction
+        if verdict == 'FADE' and direction in ('over', 'under'):
+            _backed = 'under' if direction == 'over' else 'over'
+        pick_side = _backed.upper() if _backed in ('over', 'under') else None
         result = (row.get('result') or None)
         # Normalize result
         if result:
@@ -166,7 +177,7 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
             'matchup': None,
             'pick_label': (
                 f"{row.get('player_name','')} "
-                f"{direction.upper()} {prop_line} {row.get('prop_type','')}"
+                f"{(_backed or direction).upper()} {prop_line} {row.get('prop_type','')}"
                 f" @ {odds_int if odds_int else '?'}"
             ),
             'tier': None,           # prop_jerry_reads doesn't carry tier — reconstructable via mlb_pipeline_props if needed
