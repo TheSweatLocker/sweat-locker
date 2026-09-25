@@ -706,7 +706,16 @@ def _directional_edge_gate(game_date: str, dry_run: bool = False) -> int:
         if isinstance(sig, str):
             try: sig = json.loads(sig)
             except Exception: sig = {}
-        if not isinstance(sig, dict) or sig.get('_dir_edge_gate'):
+        if not isinstance(sig, dict):
+            continue
+        # Idempotency is checked against the ROW STATE, not the tag.
+        # 2026-09-25: the first live run demoted correctly, then the 14:00 ET
+        # pipeline regenerated the props — tier reset to LEAN while the signals
+        # merge preserved the tag. A tag-only guard then skipped those rows
+        # forever, so the demotion silently never re-applied and the board went
+        # back to 78. The tag records that we judged the row; only `tier`
+        # records whether the judgement is currently in force.
+        if (prop.get('tier') or '').upper() == 'SKIP':
             continue
         # Prefer the value sweep_prop_coverage already resolved for this row's
         # side (2026-09-25 root fix). Fall back to flipping the raw family-level
