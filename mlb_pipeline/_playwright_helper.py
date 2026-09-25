@@ -20,8 +20,9 @@ from typing import Optional
 def render_page(url: str, wait_ms: int = 6000,
                 wait_until: str = 'domcontentloaded',
                 timeout_ms: int = 30000,
-                user_agent: Optional[str] = None) -> tuple:
-    """Render a page and return (body_text, error).
+                user_agent: Optional[str] = None,
+                html: bool = False) -> tuple:
+    """Render a page and return (body_text_or_html, error).
 
     (text, None)          → success
     (None, 'unavailable') → Playwright/Chromium missing (skip source)
@@ -50,6 +51,14 @@ def render_page(url: str, wait_ms: int = 6000,
                 page = browser.new_page(user_agent=ua)
                 page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                 page.wait_for_timeout(wait_ms)
+                # 2026-09-25: html=True returns the rendered DOM instead of
+                # body text. Text is enough for sources parsed with regex
+                # (dimers, action), but a source parsed with BeautifulSoup
+                # needs real markup — OddsCrowd moved to client-render, so its
+                # listing and detail pages arrive as an empty shell over HTTP
+                # and only exist after the page runs.
+                if html:
+                    return page.content(), None
                 text = page.inner_text('body')
                 return text, None
             finally:
