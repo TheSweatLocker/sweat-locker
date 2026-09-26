@@ -518,6 +518,8 @@ export default function GameDetailV2({
             closeTotal={closeTotal}
             homeML={homeML}
             awayML={awayML}
+            homeTeam={homeTeam}
+            awayTeam={awayTeam}
           />
         </Section>
         )}
@@ -1194,10 +1196,23 @@ function Expander({title, badge, children}: any) {
 }
 
 // ─── MARKET ROW ─────────────────────────────────────────────────────────
-function MarketRow({closeSpread, closeTotal, homeML, awayML}: any) {
+function MarketRow({closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam}: any) {
+  // 2026-09-26: "Spread 13.5" never said WHICH team was favoured, so the
+  // headline market number was unreadable on its own — a user had to scroll
+  // to the pick card to find out. The favourite is derived from the cheaper
+  // MONEYLINE rather than the sign of close_spread, whose convention differs
+  // by sport (project_close_spread_sign_bug_914). Magnitude only, attached
+  // to the favourite, so no storage convention can flip it.
+  const _h = Number(homeML), _a = Number(awayML);
+  const _mag = Math.abs(Number(closeSpread));
+  const favAbbrev = (isFinite(_h) && isFinite(_a) && homeTeam && awayTeam)
+    ? abbrev3(_h < _a ? homeTeam : awayTeam) : null;
+  const spreadText = (favAbbrev && isFinite(_mag))
+    ? `${favAbbrev} -${_mag % 1 === 0 ? _mag.toFixed(0) : _mag.toFixed(1)}`
+    : f(closeSpread, 1);
   return (
     <View style={styles.marketRow}>
-      <Text style={styles.marketItem}>Spread <Text style={styles.marketVal}>{f(closeSpread, 1)}</Text></Text>
+      <Text style={styles.marketItem}>Spread <Text style={styles.marketVal}>{spreadText}</Text></Text>
       <Text style={styles.marketItem}>Total <Text style={styles.marketVal}>{f(closeTotal, 1)}</Text></Text>
       <Text style={styles.marketItem}>ML <Text style={styles.marketVal}>{fmtOdds(awayML)}/{fmtOdds(homeML)}</Text></Text>
     </View>
@@ -1527,11 +1542,11 @@ function MoneyFlow({ctx, sport}: any) {
   const movedTotal  = _moved(ctx?.open_total,  ctx?.close_total);
   const movedML     = _moved(ctx?.home_ml_open, ctx?.close_home_ml);
 
-  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any; moved: boolean | undefined}[] = [
-    {key: 'ml', label: 'Moneyline', data: src.ml, moved: movedML},
-    {key: 'rl', label: rlLabel(sport), data: src.rl, moved: movedSpread},
-    {key: 'total', label: 'Total', data: src.total, moved: movedTotal},
-  ].filter(x => x.data);
+  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any; moved: boolean | undefined}[] = ([
+    {key: 'ml' as const, label: 'Moneyline', data: src.ml, moved: movedML},
+    {key: 'rl' as const, label: rlLabel(sport), data: src.rl, moved: movedSpread},
+    {key: 'total' as const, label: 'Total', data: src.total, moved: movedTotal},
+  ]).filter(x => x.data);
   return (
     <View style={{gap: 8}}>
       {markets.map(m => (
@@ -1657,7 +1672,15 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
   const items = [
     {label: 'Spread', open: openSp, current: closeSp, fmt: (v: any) => f(v, 1)},
     {label: 'Total', open: openTot, current: closeTot, fmt: (v: any) => f(v, 1)},
-    {label: 'ML (Home)', open: openHomeML, current: closeHomeML, fmt: (v: any) => v == null ? '—' : String(v)},
+    // 2026-09-26: American odds need their sign. This printed a bare "400"
+    // while the MARKET strip on the same sheet showed "+400" for the same
+    // price, so one number appeared twice in two formats.
+    {label: 'ML (Home)', open: openHomeML, current: closeHomeML,
+     fmt: (v: any) => {
+       if (v == null) return '—';
+       const n = Number(v);
+       return isFinite(n) ? (n > 0 ? `+${n}` : String(n)) : String(v);
+     }},
   ];
 
   return (
@@ -3584,12 +3607,23 @@ function RankChip({rank, leagueSize}: any) {
   // report. Now: only BG tints, text stays high-contrast. Same pattern
   // as RecordPill fix (2026-09-01).
   const pct = rank / leagueSize;
-  let bg = C.surfaceAlt;
-  if (pct <= 0.20)      bg = C.win  + '30';
-  else if (pct <= 0.40) bg = C.sharp + '25';
-  else if (pct <= 0.60) bg = C.surfaceAlt;
-  else if (pct <= 0.80) bg = C.warn + '28';
-  else                  bg = C.loss + '30';
+  // ══ 2026-09-26 · ONE COLOUR SYSTEM, ONE DIRECTION ══
+  // Two problems Andy flagged on the same chip.
+  //
+  // (#10) The chip used to carry its own quintile colour while the NUMBER
+  // beside it is coloured head-to-head. Two colour scales in one row, saying
+  // different things: "RUSH YDS/G 172" rendered GREEN (better than Akron)
+  // directly beside a RED chip meaning "bottom third of the league". Both
+  // were true and together they read as a contradiction. The chip is now
+  // neutral — colour in this panel means one thing only, which team has the
+  // better side of this matchup. The chip's TEXT still carries the absolute
+  // standing, so nothing is lost.
+  //
+  // (#12) "Bot 46%" and "Top 50%" are adjacent percentiles that read as
+  // opposites because the label flips direction across the median. Now a
+  // single upward scale: the percentile of teams this one is BETTER than.
+  // 79th is good, 4th is bad, and it never inverts.
+  const bg = C.surfaceAlt;
   const fg = C.text;
   // ══ 2026-09-25 · PERCENTILE, NOT A BARE ORDINAL ══
   // Andy screenshot (UNLV @ Akron, Defense): one panel showed "95th" and
@@ -3609,8 +3643,13 @@ function RankChip({rank, leagueSize}: any) {
   // The percentile was already being computed right above for the colour;
   // it just wasn't the thing displayed. Showing it makes every row
   // comparable regardless of universe, and kills the sub-134 confusion.
-  const pctile = Math.max(1, Math.round((pct <= 0.5 ? pct : 1 - pct) * 100));
-  const label = pct <= 0.5 ? `Top ${pctile}%` : `Bot ${pctile}%`;
+  const better = Math.max(1, Math.min(99, Math.round((1 - pct) * 100)));
+  const _sfx = (n: number) => {
+    const t = n % 100;
+    if (t >= 11 && t <= 13) return 'th';
+    return n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th';
+  };
+  const label = `${better}${_sfx(better)} pct`;
   return (
     <View style={[tsStyles.rankChip, {backgroundColor: bg}]}>
       <Text style={[tsStyles.rankText, {color: fg}]}>{label}</Text>
