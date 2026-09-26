@@ -539,7 +539,13 @@ jobs:
           _TODAY=$(python -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=4)).date().isoformat())")
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "aggregate_daily_records.py" python aggregate_daily_records.py --date $_YESTERDAY
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "aggregate_daily_records.py" python aggregate_daily_records.py --date $_TODAY
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_surface_records.py" python compute_surface_records.py --sport NCAAF
+          # 2026-09-26: dropped `--sport NCAAF`. compute_surface_records has only
+          # ever accepted --dry-run and --json, so argparse rejected the flag and
+          # the step exited 2 in under a second on EVERY run — it has never once
+          # computed a record here. The script is cross-sport by design (one run
+          # emits sharp, prop, ladder, ledger, potd, dawg, ncaaf_sides, ...), so
+          # there is nothing to filter; the flag was never real.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_surface_records.py" python compute_surface_records.py
 
       - name: Recompute NCAAF cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'

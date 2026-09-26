@@ -1105,7 +1105,9 @@ jobs:
           python aggregate_daily_records.py --date $_TODAY
           # Roll windowed records (7d/30d/lifetime) so app header + drilldown
           # reflect the fresh outcomes.
-          python compute_surface_records.py --sport NFL
+          # 2026-09-26: dropped `--sport NFL` — same never-accepted flag that made
+          # the NCAAF step exit 2 on every run. See ncaaf_pipeline.yml.
+          python compute_surface_records.py
 
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NFL
