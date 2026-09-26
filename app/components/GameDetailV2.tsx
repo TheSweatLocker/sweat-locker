@@ -2609,12 +2609,54 @@ function RecentGameRow({row, h2h = false}: any) {
   const spreadLine = row.spread_line;
   const totalLine = row.total_line;
 
-  // Compact date "MM/DD"
+  // Compact date "MM/DD" — with the year on H2H, where rows span seasons.
+  // 2026-09-26: Andy read the H2H list as "dates out of chronological
+  // order ... 9/10, 12/8, 12/20, 11/27, 10/7". The query orders
+  // game_date DESC and is correct; what was missing is that those five
+  // rows are 2022, 2018, 2014, 2010 and 2006. Hiding the year made a
+  // correctly ordered multi-season list look shuffled. Third report of
+  // this, so the year goes on the H2H tab.
   let dateShort = '';
   try {
     const d = new Date(row.game_date);
-    if (!isNaN(d.getTime())) dateShort = `${d.getMonth()+1}/${d.getDate()}`;
+    if (!isNaN(d.getTime())) {
+      dateShort = h2h
+        ? `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`
+        : `${d.getMonth()+1}/${d.getDate()}`;
+    }
   } catch {}
+
+  // 2026-09-26 · THE LINE ON THE CHIP MUST BELONG TO THE TEAM NAMED.
+  //
+  // Andy: "H2H cover coloring is inverted on two of five rows ... 12/20
+  // CAR won 17-13, CLE -6, green — CLE didn't cover."
+  //
+  // Measured across both sports, spread_result is 100% self-consistent
+  // but the two sports store spread_line from OPPOSITE perspectives:
+  //     NFL    (n=14,226)  result matches  margin - line
+  //     NCAAF  (n=12,376)  result matches  margin + line
+  // Same sign-convention split as close_spread.
+  //
+  // So the COLOUR was right all along and the LABEL was wrong: on that
+  // row Cleveland was +6 and did cover a 4-point loss, but the chip
+  // printed the opponent's -6 next to Cleveland's name.
+  //
+  // Rather than keep a per-sport sign table that the next sport breaks,
+  // derive the owner from the row itself: spread_result is ground truth,
+  // so the subject's line is whichever sign makes the arithmetic agree
+  // with the recorded result. Self-correcting per row, and it degrades
+  // to the stored value when the row is ungraded.
+  const _subjectLine = (() => {
+    const L = spreadLine == null ? null : Number(spreadLine);
+    if (L == null || !isFinite(L)) return null;
+    if (scoreUs == null || scoreThem == null) return L;
+    if (spreadRes !== 'won' && spreadRes !== 'lost') return L;
+    const margin = Number(scoreUs) - Number(scoreThem);
+    const won = spreadRes === 'won';
+    if (((margin + L) > 0) === won) return L;      // stored as subject's
+    if (((margin - L) > 0) === won) return -L;     // stored as opponent's
+    return L;
+  })();
 
   const venuePrefix = isNeutral ? 'vs' : isHome ? 'vs' : '@';
 
@@ -2697,7 +2739,7 @@ function RecentGameRow({row, h2h = false}: any) {
                 self-contained: "DEN -3" green = Denver covered -3. */}
             <Text style={rsStyles.chipText}>
               {h2h && subject !== '—' ? `${abbrev3(subject)} ` : ''}
-              {spreadLine != null ? (Number(spreadLine) > 0 ? '+' : '') + spreadLine : '—'}
+              {_subjectLine != null ? (_subjectLine > 0 ? '+' : '') + _subjectLine : '—'}
             </Text>
           </View>
         ) : <Text style={rsStyles.dashCell}>—</Text>}
