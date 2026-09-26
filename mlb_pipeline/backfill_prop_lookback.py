@@ -825,6 +825,83 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
         cur_tier = patch.get('tier') or (prop.get('tier') or '').upper()
         cur_conv = prop.get('conviction') or 0
 
+        # 2026-09-26 · A TIER WITHOUT A CONVICTION IS A PICK NOBODY CAN SEE.
+        #
+        # Andy, twice: "why no prime props on the sweat card / on the sharp
+        # when they are visible." They were not filtered out — they were
+        # sorted to the bottom. Measured on the 09-26 board, 6 of 8 PRIME
+        # props carried conviction under 50 and five were exactly 0:
+        #
+        #     Aaron Nola   er_over 0.5   PRIME   conviction 0
+        #     Aaron Nola   ha_over 2.5   PRIME   conviction 0
+        #     Aaron Nola   outs_over 7.5 PRIME   conviction 0
+        #     Aaron Nola   bb_over 0.5   PRIME   conviction 0
+        #     Trey Yesavage er_over 0.5  PRIME   conviction 0
+        #
+        # Every surface — Sweat Card, The Sharp, the publishable view —
+        # ranks by conviction, not tier. So a PRIME at 0 sits below a
+        # STRONG at 58 and never reaches a card. The user sees "no PRIME
+        # props" while the DB says there are eight.
+        #
+        # The tier itself is earned: these rows carry _r4_convergence_hot
+        # and _r1_l10_momentum, both fired on real L5/L10 evidence. What
+        # is missing is conviction, because the base scorer never ran for
+        # them (all five are lineup_state=coverage_stub, scored before
+        # lineups post). The promotion rules below then moved tier up and
+        # left conviction untouched — note the DEMOTION path right below
+        # already does set conviction, so the asymmetry was the bug.
+        #
+        # Fix: promotion carries conviction with it. A tier and a number
+        # that disagree is the same defect as the 67/77/87 Blue Jays POTD,
+        # and the invariant is the same: one decision, one number.
+        # Conviction is DERIVED FROM THE EVIDENCE, never from the tier
+        # label. Stamping "PRIME therefore 70" would be inventing
+        # confidence to win a sort — the same sin as the hardcoded 4.3%.
+        # These rows have real measured history (Nola er_over: L10 10/10,
+        # L5 5/5, season 93.3%), so the honest number comes from that.
+        #
+        # Weighted toward the longer window: L5 is five games and swings
+        # wildly, season is the stable anchor. Capped at 85 because a
+        # lookback hit rate alone is never as informative as the full
+        # scorer, which also sees xERA, park, opponent and weather.
+        def _conviction_from_history():
+            l10, l5 = lb.get('l10'), lb.get('l5')
+            season = lb.get('season_pct')
+            parts, weights = [], []
+            if l10 is not None:
+                parts.append(l10 / 10.0); weights.append(0.5)
+            if l5 is not None:
+                parts.append(l5 / 5.0); weights.append(0.2)
+            if season is not None:
+                parts.append(float(season) / 100.0); weights.append(0.3)
+            if not parts:
+                return None
+            rate = sum(p * w for p, w in zip(parts, weights)) / sum(weights)
+            return int(round(min(85.0, max(0.0, rate * 100.0))))
+
+        def _carry_conviction(new_tier=None):
+            """Fill in a conviction the base scorer never wrote.
+
+            Only ever RAISES, and only from 0/missing — a scorer that
+            produced 87 keeps 87, and a genuinely low score like 29 is
+            left alone because that is a real opinion, not an absence of
+            one. A row we cannot score from history keeps 0 and stays
+            unranked, which is correct: we have nothing to say about it.
+            """
+            have = patch.get('conviction', cur_conv) or 0
+            if have > 0:
+                return
+            derived = _conviction_from_history()
+            if derived is None:
+                return
+            patch['conviction'] = derived
+            existing_signals['_conviction_from_history'] = (
+                f'base scorer never scored this row (lineup_state='
+                f'{prop.get("lineup_state")}); conviction {derived} derived '
+                f'from L10={lb.get("l10")}/10, L5={lb.get("l5")}/5, '
+                f'season={lb.get("season_pct")}%')
+            patch['signals'] = existing_signals
+
         if cur_tier not in ('SKIP', 'PASS', 'COVERAGE'):
             _promote = {'COVERAGE': 'LEAN', 'LEAN': 'STRONG', 'STRONG': 'PRIME'}
 
@@ -840,6 +917,7 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                         existing_signals['_r4_convergence_hot'] = True
                         patch['signals'] = existing_signals
                         cur_tier = new_t
+                        _carry_conviction(new_t)
 
             # R1 momentum: L10 in current direction >= 8 → bump one tier
             # (may re-fire after R4 for another bump — capped by promotion map)
@@ -850,6 +928,7 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                     existing_signals['_r1_l10_momentum'] = True
                     patch['signals'] = existing_signals
                     cur_tier = new_t
+                    _carry_conviction(new_t)
             # L10 cold (<= 3) with tier PRIME/STRONG — cap at LEAN
             elif lb['l10'] is not None and lb['l10'] <= 3:
                 if cur_tier in ('PRIME', 'STRONG'):
@@ -865,9 +944,20 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                 if cur_conv >= 60 and cur_tier in ('COVERAGE', 'LEAN', 'STRONG'):
                     patch['tier'] = 'PRIME'
                     patch['_r3_stack_prime'] = True
+                    _carry_conviction('PRIME')
                 elif cur_tier == 'LEAN':
                     patch['tier'] = 'STRONG'
                     patch['_r3_stack_promote'] = True
+                    _carry_conviction('STRONG')
+
+        # Enforce the invariant EVERY run, not only on the run that
+        # promotes. The five PRIME/0 rows on the 09-26 board were promoted
+        # days earlier, so a promotion-only fix left them exactly as
+        # broken — already PRIME, no promotion fires, conviction still 0,
+        # still sorted beneath every STRONG. Self-healing beats
+        # fix-forward here because the bad rows are already in the table.
+        if cur_tier in ('PRIME', 'STRONG', 'LEAN'):
+            _carry_conviction(cur_tier)
 
         # 2026-09-03 LR CUTOVER — supervised model REPLACES legacy tier for
         # all MLB props with the L5/L10 features populated. 90d audit

@@ -71,6 +71,35 @@ def lock_publish(sport: str, market: str, source_id, tier: str,
         return False
     if not SB or not KEY:
         return False
+
+    # 2026-09-26 · NEVER LOCK A NON-DECISION.
+    #
+    # The lock is first-publisher-wins and a DB trigger reverts later
+    # writes to the locked value, so locking a half-finished pick freezes
+    # it permanently. On the 09-26 MLB board that is exactly what
+    # happened: prop_jerry locked five Aaron Nola / Trey Yesavage props at
+    # 21:21 while the base scorer had not yet written a conviction, so
+    # publish_lock captured conviction_at_publish=0 on rows tiered PRIME.
+    #
+    # Every surface ranks by conviction, so those PRIME props sorted below
+    # every STRONG and never reached the Sweat Card or The Sharp — which
+    # is the "why are there no PRIME props" Andy asked about twice. Worse,
+    # the freeze was unfixable from upstream: recomputing conviction
+    # returned HTTP 200 and the trigger reverted it to 0 on every attempt.
+    #
+    # A conviction of 0 on a publishable tier is not a decision, it is the
+    # absence of one. Refusing to lock it leaves the row writable so the
+    # scorer can finish, and the next lock attempt captures a real number.
+    # The guard lives HERE rather than in the callers because there are
+    # several and they drift — same reason pick_lock failed when it was
+    # wired into 1 writer out of 7.
+    _tier = str(tier or '').upper()
+    if _tier in ('PRIME', 'STRONG', 'LEAN') and not conviction:
+        print(f'  ⚠ publish_lock REFUSED {sport}/{market} id={source_id}: '
+              f'tier={_tier} but conviction={conviction!r}. Locking this '
+              f'would freeze an unrankable pick — leaving it open for the '
+              f'scorer to finish.')
+        return False
     if dry_run:
         print(f'  [DRY] publish_lock sport={sport} market={market} '
               f'source_id={source_id} tier={tier} conv={conviction} by={published_by}')
