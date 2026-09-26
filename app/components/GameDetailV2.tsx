@@ -3785,7 +3785,7 @@ const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
 
   sos: {name: 'Strength of Schedule',
         what: 'How hard the opponents this team has already played are — their combined win rate, with games against this team removed.',
-        read: 'Higher means a tougher slate faced. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited.'},
+        read: 'Higher means a tougher slate faced. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited. Early in a season this lands on very few possible values — after three games it can only be a handful of fractions — so two teams showing the identical number is normal, not an error.'},
   sor: {name: 'Strength of Record',
         what: 'How impressive this record is GIVEN that schedule — this team\'s win rate minus the rate an average team would expect against the same opponents.',
         read: '+0.30 means winning 30 points more often than a neutral team would against this slate. 0.00 is exactly as expected. Negative means the record flatters them. This is the one that separates teams; SOS alone does not.'},
@@ -3855,6 +3855,28 @@ function StatRow({statKey, awayRow, homeRow}: any) {
   const tier = advantage(awayRow?.rank, homeRow?.rank,
                          awayRow?.league_size || homeRow?.league_size);
   const awayBetter = tier != null && Number(awayRow.rank) < Number(homeRow.rank);
+
+  // 2026-09-26 · A TIE MUST READ AS A TIE.
+  //
+  // Andy has now reported the same shape five times — "both teams show
+  // byte-identical values and percentiles on two consecutive rows ...
+  // something is mirroring one column into both." Checked by hand on
+  // Oregon State @ UTEP and the numbers are genuinely equal: both teams
+  // played one undefeated opponent, one opponent with no other result,
+  // and one 2-1 opponent, so strength of schedule lands on 0.750 for
+  // each. Not a mirror — a real coincidence.
+  //
+  // But it will keep happening and it will keep looking broken, because
+  // early in a season these metrics are extremely coarse: measured on
+  // 2026-09-26, NCAAF sos had 21 distinct values across 152 teams and
+  // turnovers_pg had 27 across 216. Identical columns are the expected
+  // outcome of a small sample, not evidence of a bug.
+  //
+  // So say so on the row. An explicit "=" is how the situational card
+  // already marks a tie, and reusing it means an identical pair reads as
+  // "these are level" instead of "this screen is duplicating data".
+  const _tied = (awayRow?.raw_value != null && homeRow?.raw_value != null
+                 && Number(awayRow.raw_value) === Number(homeRow.raw_value));
   // 2026-09-26: the stat NAME is the info affordance. Tapping it explains
   // the metric and, more usefully, how to read the number — "is 0.446 good"
   // is the question a rank alone never answers. Attached to the label rather
@@ -3877,10 +3899,14 @@ function StatRow({statKey, awayRow, homeRow}: any) {
                 baseline out of line with the rest. */}
             <Text style={tsStyles.statLabel} numberOfLines={2}>
               {label} <Text style={{color: C.accent, fontSize: 10}}>{INFO_GLYPH}</Text>
+              {_tied ? <Text style={{color: C.textDim, fontSize: 10}}>{'  ='}</Text> : null}
             </Text>
           </TouchableOpacity>
         ) : (
-          <Text style={tsStyles.statLabel}>{label}</Text>
+          <Text style={tsStyles.statLabel}>
+            {label}
+            {_tied ? <Text style={{color: C.textDim, fontSize: 10}}>{'  ='}</Text> : null}
+          </Text>
         )}
         <StatCell row={homeRow} unit={unit} align="left"
                   edge={tier ? (awayBetter ? 'bad' : 'good') : null} strong={tier === 'strong'} />
