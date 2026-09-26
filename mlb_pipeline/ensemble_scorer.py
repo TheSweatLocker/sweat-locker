@@ -803,9 +803,52 @@ _SOURCE_PERSONA = {
 }
 
 
+# 2026-09-26 · ONE NAME PER SOURCE, AND IT IS THE ONE USERS ALREADY SEE.
+#
+# Andy: "New undefined acronym, old baseball jargon. 'PDZ is on this side
+# (304-203 on RL)' — 'PDZ' is new (Vandy had 'COV'), and 'RL' is still the
+# run line in an NCAAF read."
+#
+# Two naming systems were shipping on the SAME card. The External
+# Handicappers section renders app/lib/sourcePersona.ts — "The Ticket",
+# "The Dog", "The Volume" — while the pick's own sub line rendered the
+# 3-letter scrub codes from _SOURCE_PERSONA. So a user read "The Dog" in
+# one panel and "PDZ" in another, for the same handicapper, with nothing
+# connecting them and no definition of either code.
+#
+# The "The X" names are already the approved user-facing labels
+# (project_the_x_naming_convention_824) and are equally ToS-safe — they
+# leak no vendor name. So prose uses them, and the 3-letter codes go back
+# to being what they were meant to be: internal keys.
+_SOURCE_DISPLAY = {
+    'action': 'The Book',        'dimers': 'The Grinder',
+    'covers': 'The Volume',      'vsin': 'The Pulse',
+    'pickswise': 'The Chalk',    'pickdawgz': 'The Dog',
+    'bettingpros': 'The Spread', 'docsports': 'The Lock',
+    'cbs': 'The Consensus',      'oddsshark': 'The Line',
+    'fangraphs': 'The Nerd',     'ballparkpal': 'The Park',
+    'scp': 'The Fade',           'sbr': 'The Room',
+    'betfirm': 'The Sharp',      'tonyspicks': 'The Play',
+    'oddscrowd': 'The Money',    'fadereport': 'The Splits',
+    'cleatz': 'The Signal',      'scoresandodds': 'The Ticket',
+    'so': 'The Ticket',
+}
+
+
 def _persona(src: str) -> str:
-    """Map raw handicapper source names to abbrev codes (ToS-scrub
-    feedback 8/21). Never surface raw provider names in user prose."""
+    """User-facing handicapper name (ToS-scrub feedback 8/21).
+
+    Returns the same "The X" label the app renders in the External
+    Handicappers panel, so one source cannot appear under two names on
+    one card. Falls back to "The Source" rather than a bare vendor
+    string — never surface raw provider names in user prose.
+    """
+    key = (src or '').lower().strip()
+    return _SOURCE_DISPLAY.get(key, 'The Source')
+
+
+def _persona_code(src: str) -> str:
+    """Internal 3-letter code. For logs and keys, never for user prose."""
     return _SOURCE_PERSONA.get((src or '').lower(), (src or '').upper()[:4])
 
 
