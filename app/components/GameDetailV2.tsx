@@ -2994,23 +2994,38 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
 // a team whose games go OVER, red marks UNDER, and the section hint says so
 // on that tab. Nothing is asserted about which is good. Spread and ML keep
 // the head-to-head comparison, where better genuinely means better.
+// ══ 2026-09-26 · RAW RATE, NOT LAPLACE ══
+// The smoothed version collapsed genuinely different records onto the same
+// number, because +1/+2 rewards a tiny sample far more than a larger one:
+//
+//     RMU 0-1  raw 0.000   Laplace (0+1)/(1+2) = 0.333
+//     BUF 1-3  raw 0.250   Laplace (1+1)/(4+2) = 0.333   <- identical
+//
+// A real 25-point gap became a tie, and the row rendered grey. That is the
+// moneyline complaint: ML records are plain W-L with the smallest, most
+// lopsided samples, so they hit this collapse constantly while spread and
+// total — which vary with the line — mostly escaped it.
+//
+// Compare what the user can actually see. The pill prints the record, so
+// the sample is never hidden behind the colour, and a reader who sees
+// "0-1 vs 1-3" and expects the 1-3 side to be greener is simply right.
 function _sitRate(rec: any): number | null {
   const w = Number(rec?.wins) || 0;
   const l = Number(rec?.losses) || 0;
   if (w + l === 0) return null;
-  // Laplace smoothing pulls tiny samples toward .500, so 1-0 beats 0-1 but
-  // by far less than 3-0 beats 0-3, and one game can't manufacture a blowout.
-  return (w + 1) / (w + l + 2);
+  return w / (w + l);
 }
 
-const SIT_EDGE_MIN = 0.10;   // head-to-head gap needed on spread / ML
+// Raised from 0.10 with the switch to raw rates — unsmoothed rates spread
+// much wider, so the old floor would have coloured near-noise.
+const SIT_EDGE_MIN = 0.15;   // head-to-head gap needed on spread / ML
 const SIT_LEAN_MIN = 0.60;   // own-rate needed to call a total a lean
 
 function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
   const lr = _sitRate(leftRec);
   const rr = _sitRate(rightRec);
-  let leftEdge: 'good' | 'bad' | null = null;
-  let rightEdge: 'good' | 'bad' | null = null;
+  let leftEdge: 'good' | 'bad' | 'even' | null = null;
+  let rightEdge: 'good' | 'bad' | 'even' | null = null;
   if (market === 'total') {
     // Each side judged on its OWN lean — the two teams are not competing
     // for the same outcome here, they each just tend over or under.
@@ -3021,9 +3036,26 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
       : null;
     leftEdge = lean(lr);
     rightEdge = lean(rr);
-  } else if (lr != null && rr != null && Math.abs(lr - rr) >= SIT_EDGE_MIN) {
-    leftEdge  = lr > rr ? 'good' : 'bad';
-    rightEdge = lr > rr ? 'bad' : 'good';
+  } else if (lr != null && rr != null) {
+    if (Math.abs(lr - rr) >= SIT_EDGE_MIN) {
+      leftEdge  = lr > rr ? 'good' : 'bad';
+      rightEdge = lr > rr ? 'bad' : 'good';
+    } else {
+      // ══ 2026-09-26 · A TIE IS NOT MISSING DATA ══
+      // Andy, 7th report: "moneyline tab still not rendering red and green,
+      // spread and total are fine." It was not a rendering bug. Moneyline
+      // records are plain win-loss, so two teams at week 4 tie constantly —
+      // on CSU @ UTSA both are 2-1 overall AND 2-1 in the L10, while spread
+      // (2-1 vs 3-0) and total (3-0 vs 1-2) differ and colour normally.
+      //
+      // So the comparison was right and the OUTPUT was still wrong: a
+      // compared-and-level row rendered identically to a row with no data,
+      // and a tab that is mostly grey reads as broken no matter how correct
+      // the logic is. "These two are level" is a real answer and now looks
+      // like one.
+      leftEdge = 'even';
+      rightEdge = 'even';
+    }
   }
   return (
     <View style={sitStyles.row}>
@@ -3089,9 +3121,10 @@ function RecordPill({rec, market, edge}: any) {
   // counterpart (edge === undefined). Nothing does that today; it exists so
   // reuse elsewhere degrades sensibly instead of rendering colourless.
   const MARGIN_REGIME_MAX = 6;   // n<=6 -> margin rule; n>6 -> hit-% rule
-  const tint: 'win'|'loss'|'neutral' =
+  const tint: 'win'|'loss'|'neutral'|'even' =
     edge !== undefined
-      ? (edge === 'good' ? 'win' : edge === 'bad' ? 'loss' : 'neutral')
+      ? (edge === 'good' ? 'win' : edge === 'bad' ? 'loss'
+         : edge === 'even' ? 'even' : 'neutral')
       : total < 2 ? 'neutral'
       : total <= MARGIN_REGIME_MAX
         ? (w - l >= 2 ? 'win' : l - w >= 2 ? 'loss' : 'neutral')
@@ -3116,8 +3149,11 @@ function RecordPill({rec, market, edge}: any) {
       sitStyles.pill,
       tint === 'win'  && sitStyles.pillWin,
       tint === 'loss' && sitStyles.pillLoss,
+      tint === 'even' && sitStyles.pillEven,
     ]}>
-      <Text style={sitStyles.pillText}>{label}</Text>
+      <Text style={sitStyles.pillText}>
+        {label}{tint === 'even' ? '  =' : ''}
+      </Text>
     </View>
   );
 }
@@ -3151,6 +3187,9 @@ const sitStyles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 8,
   },
+  // 2026-09-26: "compared, and level" — visibly distinct from an empty
+  // cell, without claiming either side is better.
+  pillEven: {backgroundColor: C.surfaceAlt, borderWidth: 1, borderColor: C.borderSoft},
   pillWin:  {backgroundColor: C.win  + '22'},
   pillLoss: {backgroundColor: C.loss + '22'},
   pillText: {
@@ -3576,8 +3615,14 @@ function StatRow({statKey, awayRow, homeRow}: any) {
         {info ? (
           <TouchableOpacity style={{flex: 1}} activeOpacity={0.6}
                             onPress={() => setShowInfo(v => !v)}>
-            <Text style={[tsStyles.statLabel, {textDecorationLine: 'underline',
-                          textDecorationStyle: 'dotted'}]}>
+            {/* 2026-09-26: had textDecorationLine:'underline' +
+                textDecorationStyle:'dotted', which RN resolves to
+                LINE-THROUGH on iOS — all nine labels rendered struck out,
+                so the whole table read as retracted. The ⓘ is affordance
+                enough. numberOfLines caps the wrap that was splitting
+                "OFF EXPLOSIVENES / S" mid-word and knocking that row's
+                baseline out of line with the rest. */}
+            <Text style={tsStyles.statLabel} numberOfLines={2}>
               {label} <Text style={{color: C.accent, fontSize: 10}}>{INFO_GLYPH}</Text>
             </Text>
           </TouchableOpacity>
@@ -3618,14 +3663,29 @@ function StatCell({row, unit, align, edge, strong}: any) {
             combinations, resulting in default-black text. Siblings each
             hold their own StyleSheet reference so color is always
             explicit. */}
+        {/* ══ 2026-09-26 · TWO SIGNALS, TWO CHANNELS ══
+            Colour used to mean head-to-head while the pill beside it
+            states the absolute standing, and once the pill became a plain
+            percentile the conflict was unmissable: on CSU @ UTSA a
+            70th-percentile offence rendered RED while three below-median
+            rows rendered GREEN. Both were "true" and together they were
+            nonsense.
+
+            Colour now comes from the PERCENTILE — it agrees with the pill
+            by construction. The head-to-head edge moves to a small
+            triangle on the better side, so the two facts never compete
+            for the same channel. Andy's suggestion, and it is the right
+            one. */}
         <Text style={[
           tsStyles.statValue,
-          edge === 'good' ? {color: C.win} : edge === 'bad' ? {color: C.loss} : null,
-          // Weight carries the size of the gap, so a clear edge still
-          // reads as one in greyscale or to a colour-blind user rather
-          // than relying on hue alone.
+          _pctileColor(row.rank, row.league_size),
           strong && edge ? {fontWeight: '800' as const} : null,
         ]}>{fmtStatValue(row.raw_value)}</Text>
+        {edge === 'good' ? (
+          <Text style={{color: C.win, fontSize: 10, fontWeight: '800'}}>{'\u25B2'}</Text>
+        ) : edge === 'bad' ? (
+          <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '800'}}>{'\u25BC'}</Text>
+        ) : null}
         {unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
         <RankChip rank={row.rank} leagueSize={row.league_size} />
       </View>
@@ -3646,6 +3706,19 @@ function fmtStatValue(v: any): string {
   if (a < 2)   return n.toFixed(3);
   if (a < 100) return n.toFixed(1);
   return n.toFixed(0);
+}
+
+// 2026-09-26: colour keyed to the SAME percentile the chip prints, so the
+// number and the pill can never disagree. Neutral band kept wide — most
+// teams are unremarkable and colouring them implies a verdict we do not
+// have.
+function _pctileColor(rank: any, leagueSize: any): any {
+  const r = Number(rank), n = Number(leagueSize);
+  if (!isFinite(r) || !isFinite(n) || n <= 0) return null;
+  const better = 1 - (r / n);          // share of teams this one beats
+  if (better >= 0.70) return {color: C.win};
+  if (better <= 0.30) return {color: C.loss};
+  return null;
 }
 
 function RankChip({rank, leagueSize}: any) {
@@ -3699,7 +3772,10 @@ function RankChip({rank, leagueSize}: any) {
     if (t >= 11 && t <= 13) return 'th';
     return n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th';
   };
-  const label = `${better}${_sfx(better)} pct`;
+  // 2026-09-26: "2nd pct" reads as "2nd best" — the ordinal fights the
+  // meaning exactly at the low end, where the number matters most.
+  // "%ile" is unambiguous in both directions.
+  const label = `${better}${_sfx(better)} %ile`;
   return (
     <View style={[tsStyles.rankChip, {backgroundColor: bg}]}>
       <Text style={[tsStyles.rankText, {color: fg}]}>{label}</Text>
