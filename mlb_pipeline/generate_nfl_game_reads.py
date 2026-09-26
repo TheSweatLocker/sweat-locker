@@ -1513,6 +1513,35 @@ def render_prompt(templates, struct):
                    'tier_note']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
+        # 2026-09-26 · the WRITING CONSTRAINTS the NCAAF reads already got,
+        # ported after Andy found the identical failures on an NFL card.
+        # Each line exists because a specific sentence shipped:
+        #   #7  "Deshaun Watson's been locked in L3 ... That efficiency is
+        #       real even on a two-game sample." The label claims three
+        #       games and the next clause admits there are two — and the
+        #       recent-schedule tab agrees: "Early season — 2 games logged".
+        #   #12 "304.67 pass yards" — five significant figures on a
+        #       two-game average.
+        #   #20 "Away averages 8.53 penalties/game — undisciplined" is the
+        #       LEAD argument for the pick, off two games, with no n, and
+        #       the stats table shows penalty YARDS so the reader cannot
+        #       cross-check it anywhere on the card.
+        _lines.append("")
+        _lines.append("WRITING CONSTRAINTS (each has shipped as a real "
+                      "error on an NFL card):")
+        _lines.append("  - Never write an L3 / L5 / last-N label when fewer "
+                      "games than that have been played. State the real "
+                      "number of games, or omit the window entirely.")
+        _lines.append("  - Round to the precision the sample supports: one "
+                      "decimal at most for a per-game average. '304.67 pass "
+                      "yards' over two games is false precision.")
+        _lines.append("  - Any rate you LEAD an argument with must carry its "
+                      "sample size, e.g. '8.5 penalties a game (2 games)'. "
+                      "Do not build the case for a pick on a two-game number.")
+        _lines.append("  - Never invent a numeric threshold, hit rate or "
+                      "cohort condition. Quote only figures given above.")
+        _lines.append("  - Plain analyst register, and no model version "
+                      "strings ('v3', 'v4') in user-facing prose.")
         facts_block = "\n".join(_lines) + "\n\n"
     # 2026-09-13 Phase 1 read enrichment: INJURY REPORT block hoisted above
     # the JSON. When a STARTER (QB1/RB1/WR1/WR2/TE1 per KEY PLAYERS) is
