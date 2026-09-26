@@ -894,6 +894,41 @@ def compute_primary_play(ctx):
     proj_total = ctx.get('projected_total')
     close_total = ctx.get('close_total')
 
+    # 2026-09-26 · NO SP+ ON ONE SIDE MEANS NO MARGIN OPINION.
+    #
+    # Andy asked whether the LR-warn gate would produce "a whole bunch of
+    # passes". Measuring that turned up a worse problem underneath it.
+    #
+    # projected_spread comes from `sp_gap * K_PTS_SP + hfa`, but SP+ only
+    # exists for FBS teams. In an FBS-vs-FCS game the FCS side is NULL, so
+    # the code drops to the EPA fallback — computed from ncaaf_team_stats
+    # rows whose `games` count we already know is wrong for exactly these
+    # teams (see recompute_ncaaf_per_game_stats.py). The result is a
+    # near-zero projected margin against a 30-40 point market line:
+    #
+    #     Western Kentucky  market -40.5   model projected  1.19
+    #     FIU               market -37.5   model projected  4.65
+    #     Texas State       market -30.5   model projected  0.82
+    #     William & Mary    market -43.5   model projected  None  ← still picked
+    #
+    # spread_edge then reads as a 30-40 point edge, which is not an edge,
+    # it is the absence of information. That is the mechanism behind the
+    # -23.7 pt mean divergence measured on the 21+ band, and it is why
+    # NCAAF dog picks have gone 8-22 (26.7%) while favourite picks went
+    # 50-40 (55.6%) on the same board.
+    #
+    # Gated at the SOURCE rather than in the scorer, per
+    # feedback_source_gate_pattern: a pick that should never exist should
+    # not be created and then filtered. Totals are unaffected — they come
+    # from projected_total, which does not depend on SP+.
+    #
+    # Already-published picks are protected by the database pick lock
+    # (20260926b); this only changes what future runs produce.
+    _sp_missing = (ctx.get('home_sp_overall') is None
+                   or ctx.get('away_sp_overall') is None)
+    if _sp_missing:
+        proj_spread = None
+
     spread_edge = None
     if proj_spread is not None and close_spread is not None:
         # 2026-09-16 SIGN CONVENTION FIX (Andy MIA@WF audit).
