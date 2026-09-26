@@ -126,6 +126,21 @@ def _norm_team(name: str) -> str:
     return ' '.join(toks)
 
 
+# 2026-09-26: every normalised team name seen in any season or alias row.
+# The suffix-strip guard in _resolve_team_key consults this in addition to
+# the index it is searching, so a school that exists in one season cannot
+# be eaten as a mascot suffix while resolving against another season that
+# happens not to list it. Populated by load_team_stats.
+_KNOWN_TEAM_KEYS: set = set()
+
+
+def _register_known_teams(names) -> None:
+    for n in names:
+        k = _norm_team(n)
+        if k:
+            _KNOWN_TEAM_KEYS.add(k)
+
+
 def _resolve_team_key(name: str, index: dict) -> str | None:
     """Map an odds-pipe team name onto a CFBD canonical key.
 
@@ -163,8 +178,35 @@ def _resolve_team_key(name: str, index: dict) -> str | None:
         if short not in index:
             continue
         pre = short + ' '
+        # 2026-09-26 · THE GUARD IS ONLY AS GOOD AS THE INDEX IT CHECKS.
+        #
+        # This refusal worked perfectly against the CURRENT-season index,
+        # where 'Houston Christian' is itself a key, so stripping to
+        # 'Houston' was correctly rejected. But load_team_stats resolves
+        # against the PRIOR season too, and the prior index contains only
+        # teams that had rows that year — FCS schools mostly do not. With
+        # nothing extending 'houston' in that index, the strip was
+        # accepted and the FCS school inherited the FBS school's rating:
+        #
+        #     Houston Christian      -> Houston 2025        SP+  +7.4
+        #     North Carolina Central -> North Carolina 2025 SP+  -6.6
+        #
+        # Consequence on the live board: the model had Houston Christian
+        # (+7.4) BETTER than North Texas (-9.2) and projected them to win
+        # by 11.3, against a market line of +38.5. That is not a
+        # compressed projection, it is the wrong team's rating, and it is
+        # the mechanism behind the fabricated dog edges on FBS-vs-FCS
+        # games. The docstring above already named this exact failure as
+        # the reason the guard exists — it just was not consulted widely
+        # enough.
+        #
+        # _KNOWN_TEAM_KEYS accumulates every team name seen in ANY season
+        # and in the alias table, so a name that is a real school
+        # somewhere can never be swallowed as a mascot suffix here.
         if any(k != short and k.startswith(pre) for k in index):
             return None         # ambiguous truncation -- refuse outright
+        if any(k != short and k.startswith(pre) for k in _KNOWN_TEAM_KEYS):
+            return None         # known elsewhere -- still ambiguous
         return index[short]
     return None
 
@@ -250,10 +292,14 @@ def load_team_stats(season: int) -> dict:
             headers=H_READ, timeout=15,
         )
         base = {row['team']: row for row in r.json()} if r.status_code == 200 else {}
+        # Register BEFORE any resolution happens, so the guard already
+        # knows about this season's schools when another season is walked.
+        _register_known_teams(base.keys())
         out = _TeamStats(base)
         # Genuine synonyms an algorithm cannot derive: FIU ->
         # Florida International, UConn, UL Monroe, Southern Miss.
         _aliases = _load_ncaaf_team_aliases()
+        _register_known_teams(_aliases.keys())
         for ctx_name, canon in _aliases.items():
             if canon in base and ctx_name not in base:
                 out[ctx_name] = base[canon]
@@ -286,6 +332,8 @@ def load_team_stats(season: int) -> dict:
             pass
         return out
 
+    # Both seasons are fetched before either is resolved against, so the
+    # guard sees the union of school names rather than one season's view.
     current = _fetch(season)
     prior = _fetch(season - 1)
 
