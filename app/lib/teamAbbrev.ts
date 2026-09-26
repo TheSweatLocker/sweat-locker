@@ -93,7 +93,7 @@ const ALIASES: Record<string, string> = {
   // playing this weekend gets an explicit entry. Long-term this should be
   // backend-driven via ncaaf_team_display table (v1.0.1 refactor).
   'South Florida': 'USF', 'Appalachian State': 'APP', 'App State': 'APP',
-  'Virginia Tech': 'VT', 'Virginia Tech Hokies': 'VT', 'Old Dominion': 'ODU',
+  'Virginia Tech Hokies': 'VT', 'Old Dominion': 'ODU',
   'East Carolina': 'ECU', 'Army': 'ARMY', 'Navy': 'NAVY', 'Air Force': 'AF',
   'Florida Atlantic': 'FAU', 'Florida International': 'FIU', 'FIU': 'FIU',
   'Charlotte': 'CHAR', 'Marshall': 'MRSH', 'Rice': 'RICE', 'Tulane': 'TUL',
@@ -111,13 +111,13 @@ const ALIASES: Record<string, string> = {
   'Wyoming': 'WYO', 'New Mexico': 'UNM', 'North Texas': 'UNT',
   'UTEP': 'UTEP', 'UTSA': 'UTSA', 'Sam Houston': 'SHSU', 'Sam Houston State': 'SHSU',
   'Missouri State': 'MOST', 'Jacksonville State': 'JVST', 'Liberty': 'LIB',
-  'Kennesaw State': 'KENN', 'Delaware': 'DEL', 'Delaware State': 'DSU',
+  'Kennesaw State': 'KENN', 'Delaware': 'DEL',
+  // 'Delaware State' is defined once, in the FCS block below, as 'DELS'.
   'James Madison': 'JMU', 'Coastal Carolina': 'CCU', 'Georgia Southern': 'GASO',
   'Georgia State': 'GAST', 'Arkansas State': 'ARST', 'Louisiana': 'ULL',
   'Louisiana-Lafayette': 'ULL', 'Louisiana Tech': 'LATECH', 'Louisiana Monroe': 'ULM',
   'Troy': 'TROY', 'South Alabama': 'USA', 'Southern Miss': 'USM',
   'Southern Mississippi': 'USM', 'Middle Tennessee': 'MTSU', 'Middle Tennessee State': 'MTSU',
-  'North Carolina': 'UNC', 'Wake Forest': 'WAKE', 'NC State': 'NCST',
   // FCS common opponents (Saturday's non-conference blowouts)
   'North Dakota State': 'NDSU', 'South Dakota State': 'SDSU-D1',
   'Montana State': 'MTST', 'Montana': 'MONT', 'Sacramento State': 'SAC',
@@ -152,7 +152,7 @@ const ALIASES: Record<string, string> = {
   'McNeese': 'MCN', 'Nicholls': 'NICH', 'Northwestern State': 'NWST',
   'Southeastern Louisiana': 'SELA', 'Stephen F. Austin': 'SFA',
   'Houston Christian': 'HCU', 'Tarleton State': 'TAR',
-  'Youngstown State': 'YSU', 'Missouri State': 'MOST',
+  'Youngstown State': 'YSU',
   'Indiana State': 'INST', 'South Dakota': 'USD',
   'Western Michigan': 'WMU',
 };

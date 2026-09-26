@@ -2006,7 +2006,16 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     let cancelled = false;
     (async () => {
       try {
-        const {data, error} = await supabase.from('v_signal_records')
+        // 2026-09-26: was `supabase.from(...)` — a name that does not exist
+        // in this module (every other call site here goes through sb()).
+        // The ReferenceError was swallowed by this function's own catch, so
+        // the feature failed silently from the day it shipped: signal chips
+        // have only ever shown glossary text, never the "68% (n=87)" track
+        // record the fetch exists to provide. Nothing logged, nothing blank
+        // on screen — the fallback path looked like the Week 1-2 state.
+        const client = sb();
+        if (!client) return;
+        const {data, error} = await client.from('v_signal_records')
           .select('signal_key,kind,wins_30d,losses_30d,hit_pct_30d,wins_lifetime,losses_lifetime,hit_pct_lifetime')
           .eq('sport', gamesSport);
         if (cancelled || error) return;

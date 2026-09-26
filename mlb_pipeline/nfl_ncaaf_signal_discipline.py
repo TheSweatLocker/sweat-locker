@@ -6,8 +6,16 @@ applies two hard gates to nfl_game_context.primary_play + ncaaf_game_context.pri
   1. LR-warn hard-cap: if LR shadow DISAGREES with pick direction
      strongly (p_home_win >= 0.60 opposite pick OR <= 0.40 opposite
      pick), cap the tier at PASS (or LEAN if we want to keep it on
-     the card as a low-conviction lean). Backed by 4.3% hit rate on
-     LR-warn games (n=22 NCAAF 9/12) vs 93.6% on LR-agree.
+     the card as a low-conviction lean). The published hit rate is read
+     live from v_signal_records per sport (2026-09-26: NCAAF LR-warn
+     7-29, 19.4%, n=36 — against 66.7% on LR-agree). It used to be the
+     literal "4.3%", measured once on n=22 and never refreshed.
+
+     OPEN POLICY QUESTION, for Andy: at 19.4% on n=36 this is not a
+     dampened lean, it is a fade. Capping to LEAN still publishes a
+     pick that loses four times out of five. Changing it to PASS would
+     change which picks publish, so it is NOT being done mid-weekend
+     while picks are locked — it needs a deliberate call.
 
   2. Anchor cap: if spread_anchor_weight > 0 AND tier in
      PRIME/STRONG, downgrade to LEAN. Anchored picks hit 30% (n=40).
@@ -73,6 +81,62 @@ ANCHOR_CAP_NEW_TIER = 'LEAN'
 _TIER_RANK = {'PASS': 0, 'SKIP': 0, 'LIGHT': 1, 'COVERAGE': 2,
               'LEAN': 3, 'STRONG': 4, 'PRIME': 5}
 
+# 2026-09-26 — the published hit rate was a LITERAL, and it was stale.
+#
+# Andy: "LR-warn hits 4.3% historically is published under a playable
+# LEAN. If spots where LR warns against the pick hit 4.3% of the time,
+# that isn't a capped LEAN — it's a fade."
+#
+# He is right twice over. The 4.3% was measured once, on n=22 NCAAF
+# games on 09-12, and hardcoded into the user-facing string — while this
+# module's own docstring claims it "reads real per-signal performance
+# data from v_signal_records". It never did. The live number today is
+# 19.4% (7-29, n=36 NCAAF), so for two weeks every card carrying this
+# flag published a figure wrong by 15 points.
+#
+# Now sourced live, with the sample size attached — per
+# feedback_sample_size_with_pct, every percentage we show carries its n.
+# If the view has no row for a sport yet, the sentence simply omits the
+# rate rather than inventing one.
+_LR_WARN_CACHE: dict = {}
+
+
+def _lr_warn_record(sport: str) -> Optional[dict]:
+    """Live LR-warn hit rate for a sport, or None. Cached per run."""
+    key = (sport or '').upper()
+    if key in _LR_WARN_CACHE:
+        return _LR_WARN_CACHE[key]
+    rec = None
+    try:
+        r = requests.get(f'{SB}/rest/v1/v_signal_records', headers=H_READ,
+                         params={'select': 'wins_lifetime,losses_lifetime,'
+                                           'hit_pct_lifetime',
+                                 'sport': f'eq.{key}',
+                                 'signal_key': 'eq.LR_SHADOW',
+                                 'kind': 'eq.warn', 'limit': '1'}, timeout=20)
+        if r.status_code == 200:
+            body = r.json()
+            if isinstance(body, list) and body:
+                rec = body[0]
+    except Exception as e:
+        print(f'  ⚠ LR-warn record lookup failed ({type(e).__name__}) — '
+              f'flag will omit the rate')
+    _LR_WARN_CACHE[key] = rec
+    return rec
+
+
+def _lr_warn_sentence(sport: str) -> str:
+    rec = _lr_warn_record(sport)
+    if not rec or rec.get('hit_pct_lifetime') is None:
+        return ''
+    w = rec.get('wins_lifetime') or 0
+    l = rec.get('losses_lifetime') or 0
+    n = w + l
+    if n < 10:          # too thin to publish as a rate
+        return ''
+    return (f' Picks carrying this warning have gone {w}-{l} '
+            f'({float(rec["hit_pct_lifetime"]):.0f}%, n={n}).')
+
 
 def _record_cap(pp: dict, cap_tier: str, cap_conv: int, reason: str) -> None:
     """Apply a cap AND leave a durable record of it on the pick.
@@ -122,7 +186,8 @@ def _fetch_games(sport: str, game_date: str) -> list[dict]:
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
 
-def _apply_gates(pp: dict, spread_anchor_weight) -> tuple[dict, list[str]]:
+def _apply_gates(pp: dict, spread_anchor_weight,
+                 sport: Optional[str] = None) -> tuple[dict, list[str]]:
     """Return (new_pp, applied_gates_list). new_pp is a copy with
     tier / conviction possibly capped + gate reasons appended to `sub`."""
     if not isinstance(pp, dict):
@@ -160,7 +225,7 @@ def _apply_gates(pp: dict, spread_anchor_weight) -> tuple[dict, list[str]]:
                     _record_cap(new_pp, 'LEAN', 55,
                                 f'lr_warn:p_home={p_home:.2f}')
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
-                             f'capped to LEAN. LR-warn hits 4.3% historically.')
+                             f'capped to LEAN.' + _lr_warn_sentence(sport))
                     _append_flag(new_pp, _flag)
                     applied.append(f'lr_warn_cap:p={p_home:.2f}')
             except (TypeError, ValueError):
@@ -207,7 +272,7 @@ def run(sport: Optional[str] = None,
         for g in games:
             pp = g.get('primary_play') or {}
             aw = g.get('spread_anchor_weight')
-            new_pp, gates = _apply_gates(pp, aw)
+            new_pp, gates = _apply_gates(pp, aw, sp)
             if not gates:
                 no_change += 1
                 continue

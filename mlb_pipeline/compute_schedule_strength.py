@@ -134,11 +134,38 @@ def compute(sport: str, season: int) -> list[dict]:
 
 
 def _ranked(vals: list[dict], key: str) -> dict:
-    """Rank 1 = best. Both metrics are higher-is-better: a higher SOS means
-    a tougher slate (so the record deserves more credit), a higher SOR
-    means outperforming it."""
+    """Rank 1 = best, TIES SHARE A RANK. Both metrics are higher-is-better:
+    a higher SOS means a tougher slate (so the record deserves more
+    credit), a higher SOR means outperforming it.
+
+    Competition ranking (1,2,2,4) is not cosmetic here — it is required for
+    correctness downstream. Early in a season these values are coarsely
+    quantised: a win rate over four opponents can only land on a handful of
+    values, so on 2026-09-26 twenty-eight NCAAF teams shared SOS 0.5000
+    exactly. Ranking by array position gave them 91 through 118, and the
+    client turns rank into a percentile — so GameDetailV2 rendered "40th
+    %ile" against "22nd %ile", and advantage() painted one side green and
+    the other red, for two schedules that are identical to four decimals.
+    That is precisely the manufactured-edge complaint Andy raised about the
+    situational section. Every stat already in team_stats_rolling_full
+    tie-ranks (29 teams at 1.0 turnovers/game all carry rank 46); this
+    brings the computed half in line with the matview half.
+    """
     order = sorted(vals, key=lambda x: -x[key])
-    return {v['team']: i + 1 for i, v in enumerate(order)}
+    out: dict = {}
+    prev_val, prev_rank = None, 0
+    for i, v in enumerate(order):
+        cur = v[key]
+        # float equality is the right test: identical arithmetic on identical
+        # inputs yields bit-identical results, and near-but-not-equal values
+        # are genuinely different schedules that should not be merged.
+        if prev_val is not None and cur == prev_val:
+            out[v['team']] = prev_rank          # tie -> same rank
+        else:
+            prev_rank = i + 1                   # skip the consumed slots
+            prev_val = cur
+            out[v['team']] = prev_rank
+    return out
 
 
 def main():

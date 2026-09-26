@@ -22,6 +22,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
+
+import matchup_story
 from dotenv import load_dotenv
 
 from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
@@ -373,10 +375,57 @@ def build_struct(ctx):
                 f"Model {pt:.2f} vs market {ct:.1f} — "
                 f"{'OVER lean' if _delta > 0 else 'UNDER lean' if _delta < 0 else 'flat'} of {abs(_delta):.2f} pts"
             )
+    # 2026-09-26 · SP+ AS A STATED FACT, NOT A RAW FIELD.
+    # Vanderbilt @ Auburn: the prompt carried home_sp_overall=11.6,
+    # away_sp_overall=9.7, sp_gap=1.9, and the read still said "Auburn's
+    # SP+ sits around 24-26 ... Vanderbilt closer to 8-12 — that 12-15
+    # point efficiency gap mirrors the 10-point spread." The data was
+    # there; it arrived as raw JSON under `efficiency`, so the model
+    # re-derived it from memory. Every later sentence ("model and market
+    # alignment here is clean") was reasoning from the invented gap.
+    # Same disease the moneyline/spread facts already cure, same cure.
+    _h_sp, _a_sp = _f(ctx.get('home_sp_overall')), _f(ctx.get('away_sp_overall'))
+    if _h_sp is not None and _a_sp is not None:
+        _sp_lead = home if _h_sp > _a_sp else away
+        facts['sp_plus_verbatim'] = (
+            f'{home} SP+ {_h_sp:+.1f}, {away} SP+ {_a_sp:+.1f} — '
+            f'a {abs(_h_sp - _a_sp):.1f} point gap favouring {_sp_lead}. '
+            f'These are the only SP+ figures for this game; do not cite any other.')
+
+    # 2026-09-26 · THE STAT SHEET, READ FOR THE USER.
+    # Andy: "all that data tells a story and that's what Jerry should be
+    # talking about ... top rushing team facing bottom run defense ...
+    # SOS/SOR. It all tells a story." The comparison is arithmetic, so it
+    # is done in Python against the same rows the card renders — the read
+    # and the stats section then cannot contradict each other, which is
+    # the failure mode that produced the 12-15 point gap above.
+    try:
+        _stats = _team_stats_cache(ctx.get('season') or 2026)
+        _story = matchup_story.build_story('NCAAF', home, away, _stats)
+        if _story.get('dominance'):
+            facts['stat_sheet_verdict'] = _story['dominance']
+        if _story.get('lines'):
+            facts['stat_matchups'] = ' | '.join(_story['lines'][:6])
+    except Exception as _e:
+        print(f'  ⚠ matchup story unavailable ({type(_e).__name__}: {_e})')
+
     if facts:
         struct["pre_parsed_facts"] = facts
 
     return struct
+
+
+# 2026-09-26: one read of team_stats_rolling per run, shared by every game
+# on the slate. Andy: "injected in current processes not adding workflow."
+_TS_CACHE: dict = {}
+
+
+def _team_stats_cache(season):
+    key = int(season)
+    if key not in _TS_CACHE:
+        _TS_CACHE[key] = matchup_story.load_team_stats('NCAAF', key)
+        print(f'  · loaded {len(_TS_CACHE[key])} NCAAF stat rows for the story layer')
+    return _TS_CACHE[key]
 
 
 def render_prompt(templates, struct):
@@ -390,6 +439,15 @@ def render_prompt(templates, struct):
     _pf = _struct_for_json.pop('pre_parsed_facts', None)
     facts_block = ""
     if _pf:
+        # 2026-09-26: strip raw sp_overall once it is stated as a fact.
+        # Leaving both in lets the model pick the raw field and paraphrase
+        # it — which is how "24-26" appeared next to a stored 11.6.
+        if _pf.get('sp_plus_verbatim') and isinstance(_struct_for_json.get('efficiency'), dict):
+            _eff = {}
+            for _side, _vals in _struct_for_json['efficiency'].items():
+                _eff[_side] = ({k: v for k, v in _vals.items() if k != 'sp_overall'}
+                               if isinstance(_vals, dict) else _vals)
+            _struct_for_json['efficiency'] = _eff
         if 'market' in _struct_for_json and isinstance(_struct_for_json['market'], dict):
             _mkt = dict(_struct_for_json['market'])
             for _k in ('spread', 'home_ml', 'away_ml'):
@@ -399,7 +457,11 @@ def render_prompt(templates, struct):
         for _k in ['moneyline_verbatim', 'moneyline_favorite', 'moneyline_dog',
                    'market_spread_verbatim', 'market_favors',
                    'model_favors', 'model_favors_ambiguous', 'edge_side',
-                   'total_canonical', 'total_market_delta']:
+                   'total_canonical', 'total_market_delta',
+                   # 2026-09-26: SP+ and the stat-sheet story. Ordered last
+                   # so the market facts still lead, but inside the same
+                   # verbatim-quote contract.
+                   'sp_plus_verbatim', 'stat_sheet_verdict', 'stat_matchups']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
         facts_block = "\n".join(_lines) + "\n\n"
