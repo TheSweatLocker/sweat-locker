@@ -82,6 +82,24 @@ def _git_sha() -> str:
         return 'unknown'
 
 
+# ══ 2026-09-25 · COLUMN NAMES WERE WRONG, AND THE ERRORS WERE SWALLOWED ══
+# Three of the fields written below did not exist on external_pull_log:
+#     git_sha       -> agent_version
+#     picks_written -> picks_pulled
+#     error_text    -> error_message
+# PostgREST rejects the whole insert on one unknown column (42703), the bare
+# `except: pass` turned that into a None pull_id, and complete_pull_log then
+# returns immediately on a None id. Net effect: SportPuller — which is the
+# ONLY puller for NHL and NBA — has never written a single external_pull_log
+# row. NFL/NCAAF/MLB were unaffected because their pullers log inline.
+#
+# That is why watchdog_external_sources reports "0 pull attempts" for NHL: it
+# reads external_pull_log, so it was structurally blind to both sports. A
+# broken source on the Oct 8 opener would have looked exactly like a healthy
+# offseason one.
+#
+# The excepts now report instead of passing silently. A logging failure still
+# must not abort a pull — but it must not be invisible either.
 def start_pull_log(source: str, sport: str, triggered_by: str) -> Optional[str]:
     try:
         r = requests.post(
@@ -91,11 +109,12 @@ def start_pull_log(source: str, sport: str, triggered_by: str) -> Optional[str]:
                   'scheduled_at': _et_now().isoformat(),
                   'started_at': _et_now().isoformat(),
                   'status': 'running', 'triggered_by': triggered_by,
-                  'git_sha': _git_sha()}, timeout=15)
+                  'agent_version': _git_sha()}, timeout=15)
         if r.status_code in (200, 201) and r.json():
             return r.json()[0].get('id')
-    except Exception:
-        pass
+        print(f'  ⚠ pull_log insert -> {r.status_code}: {(r.text or "")[:160]}')
+    except Exception as e:
+        print(f'  ⚠ pull_log insert failed: {e}')
     return None
 
 
@@ -103,17 +122,19 @@ def complete_pull_log(pull_id, status, picks=0, games=0, err=None, ms=None):
     if not pull_id:
         return
     body = {'status': status, 'completed_at': _et_now().isoformat(),
-            'picks_written': picks, 'games_covered': games}
+            'picks_pulled': picks, 'games_covered': games}
     if err:
-        body['error_text'] = str(err)[:500]
+        body['error_message'] = str(err)[:500]
     if ms is not None:
         body['duration_ms'] = ms
     try:
-        requests.patch(f'{SB}/rest/v1/external_pull_log?id=eq.{pull_id}',
-                       headers={**H_WRITE, 'Prefer': 'return=minimal'},
-                       json=body, timeout=15)
-    except Exception:
-        pass
+        r = requests.patch(f'{SB}/rest/v1/external_pull_log?id=eq.{pull_id}',
+                           headers={**H_WRITE, 'Prefer': 'return=minimal'},
+                           json=body, timeout=15)
+        if r.status_code not in (200, 204):
+            print(f'  ⚠ pull_log update -> {r.status_code}: {(r.text or "")[:160]}')
+    except Exception as e:
+        print(f'  ⚠ pull_log update failed: {e}')
 
 
 def write_picks(picks: list, pull_id) -> int:
@@ -318,7 +339,14 @@ class SportPuller:
                 ok += 1
                 continue
             n = write_picks(picks, pull_id)
-            complete_pull_log(pull_id, 'ok' if status == 200 else 'partial',
+            # 2026-09-25: was 'ok' / 'partial'. external_pull_log has a CHECK
+            # constraint permitting only success / failed / running, so every
+            # completion PATCH was rejected with 23514 and each row stayed
+            # 'running' forever. Paired with the wrong column names above,
+            # this is why SportPuller sports never appeared in the watchdog.
+            # A non-200 fetch is 'failed', not a softer word the table would
+            # reject — the constraint is the contract.
+            complete_pull_log(pull_id, 'success' if status == 200 else 'failed',
                               picks=n, games=games, ms=ms)
             print(f'  ✓ {name}: {n} picks / {games} games ({ms}ms)')
             total += n

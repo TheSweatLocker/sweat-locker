@@ -26,7 +26,15 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install requests python-dotenv
+          # 2026-09-25: added beautifulsoup4 + playwright. The externals
+          # pullers need both and neither was here — the same omission that
+          # kept dimers and action at 0 picks on NFL/NCAAF until 09-25,
+          # because _playwright_helper.render_page returns (None,
+          # 'unavailable') and each source then reports success with no data.
+          # NHL externals have never produced a single pick, so this has to
+          # be right BEFORE the Oct 8 opener rather than discovered after it.
+          pip install requests python-dotenv beautifulsoup4 playwright
+          python -m playwright install --with-deps chromium || echo "⚠ chromium install failed — JS-rendered externals will skip this run"
 
       # 2026-09-08 heartbeat START (parity w/ mlb_pipeline).
       - name: Heartbeat — start
@@ -120,6 +128,32 @@ jobs:
         run: |
           cd mlb_pipeline
           python pull_externals_nhl.py --triggered-by cron
+
+      # 2026-09-25 EXTERNALS WATCHDOG — parity with MLB/NFL/NCAAF.
+      #
+      # Every NHL source currently returns 0 picks and reports "✓ success":
+      #   ✓ oddscrowd: 0 picks / 0 games
+      #   ✓ scoresandodds: 0 picks / 0 games
+      #   ✓ pickdawgz: 0 picks / 0 games
+      #   === Summary === sources ok/fail: 3/0 · picks: 0
+      #
+      # That is CORRECT today — verified 09-25 that pickdawgz /nhl-picks
+      # carries no article newer than the June playoffs, so there is nothing
+      # to scrape in the offseason. The parse path itself is proven: article
+      # discovery for 2026-06-11 returns exactly the Vegas @ Carolina preview
+      # matching that game in nhl_game_results.
+      #
+      # The danger is that a genuinely BROKEN source on Oct 9 produces output
+      # identical to a healthy offseason one. Reporting-only, so it can never
+      # fail the run — it just makes the difference visible.
+      - name: Externals watchdog (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python watchdog_external_sources.py --sport NHL --days 21
           python resolve_externals.py --sport NHL --days 14
 
       # 2026-08-18: universal team-form (venue-split L10 + H2H last 5)
