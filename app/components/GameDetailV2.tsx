@@ -721,8 +721,12 @@ export default function GameDetailV2({
             green meant something it no longer means. */}
         {showTeamStats && (
           <Section title="Team Stats"
-                   hint={`▲ = better matchup side · colour = percentile strength${
-                     gamesSport === 'NCAAF' ? ' · pool size varies by stat' : ''}`}>
+                   // 2026-09-26: the caveat was gated to NCAAF, so the same
+                   // component shipped two different legends and Andy read it
+                   // as drift. Pool size varies by stat in every sport — NFL
+                   // offense ranks over 32 while several computed rows rank
+                   // over a filtered subset — so the qualifier is universal.
+                   hint={'▲ = better matchup side · colour = percentile strength · pool size varies by stat'}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
                            statsSource={ctx?.stats_source} />
           </Section>
@@ -3148,9 +3152,35 @@ function _sitRate(rec: any): number | null {
 const SIT_EDGE_MIN = 0.15;   // head-to-head gap needed on spread / ML
 const SIT_LEAN_MIN = 0.60;   // own-rate needed to call a total a lean
 
+// ══ 2026-09-26 · THE LEGEND PROMISED A SAMPLE GATE THAT DID NOT EXIST ══
+// Andy: "the thin-sample rule doesn't match what's implemented. AWAY 1-0
+// vs an empty HOME renders neutral; AS FAV 1-0 vs AS DOG 1-1 renders full
+// green/red. Both are <=3 games. The = marker appears to fire on exact
+// ties, not on sample size."
+//
+// Exactly right. The only reason a 1-0 / 0-games row looked neutral is
+// that one side had NO record at all and the comparison bailed — not
+// because anything checked the sample. 1-0 against 1-1 is a 0.50 rate
+// gap, clears SIT_EDGE_MIN of 0.15 easily, and painted full green/red off
+// three games total. The legend has been claiming a gate the code never
+// had, which is worse than having no legend.
+//
+// Two decided games per side is the floor for saying one team is better
+// at something. Below it the row renders neutral and says why.
+const SIT_MIN_N = 3;
+
+function _sitN(rec: any): number {
+  return (Number(rec?.wins) || 0) + (Number(rec?.losses) || 0);
+}
+
 function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
   const lr = _sitRate(leftRec);
   const rr = _sitRate(rightRec);
+  const lN = _sitN(leftRec), rN = _sitN(rightRec);
+  // A side with no games at all is a different state from a thin one —
+  // "no home games yet" is information, an empty dashed box is not.
+  const noLeft = lN === 0, noRight = rN === 0;
+  const thin = (lN > 0 && lN < SIT_MIN_N) || (rN > 0 && rN < SIT_MIN_N);
   let leftEdge: 'good' | 'bad' | 'even' | null = null;
   let rightEdge: 'good' | 'bad' | 'even' | null = null;
   if (market === 'total') {
@@ -3184,21 +3214,40 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
       rightEdge = 'even';
     }
   }
+
+  // Sample gate LAST, so it overrides every colouring branch above. A
+  // three-game sample cannot support "this team is better at covering",
+  // and the legend has been promising this gate all along.
+  if (thin) {
+    leftEdge = null;
+    rightEdge = null;
+  }
+
   return (
-    <View style={sitStyles.row}>
-      <View style={sitStyles.side}>
-        <Text style={sitStyles.rowLabel}>{leftLabel}</Text>
-        <RecordPill rec={leftRec} market={market} edge={leftEdge} />
+    <View>
+      <View style={sitStyles.row}>
+        <View style={sitStyles.side}>
+          <Text style={sitStyles.rowLabel}>{leftLabel}</Text>
+          <RecordPill rec={leftRec} market={market} edge={leftEdge}
+                      emptyNote={noLeft ? leftLabel : null} />
+        </View>
+        <View style={sitStyles.side}>
+          <Text style={[sitStyles.rowLabel, {textAlign: 'right'}]}>{rightLabel}</Text>
+          <RecordPill rec={rightRec} market={market} edge={rightEdge}
+                      emptyNote={noRight ? rightLabel : null} />
+        </View>
       </View>
-      <View style={sitStyles.side}>
-        <Text style={[sitStyles.rowLabel, {textAlign: 'right'}]}>{rightLabel}</Text>
-        <RecordPill rec={rightRec} market={market} edge={rightEdge} />
-      </View>
+      {thin && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: -2, marginBottom: 4}}>
+          too few games to call an edge
+        </Text>
+      )}
     </View>
   );
 }
 
-function RecordPill({rec, market, edge}: any) {
+function RecordPill({rec, market, edge, emptyNote}: any) {
   // 2026-09-06 dashes-everywhere bug fix. Prior guard read `rec.games`
   // — a column that does NOT exist in team_situational_records. The
   // matview stores wins/losses/pushes only; games is derived at render
@@ -3211,7 +3260,20 @@ function RecordPill({rec, market, edge}: any) {
   const p = Number(rec?.pushes) || 0;
   const games = w + l + p;
   if (!rec || games === 0) {
-    return <View style={sitStyles.pillEmpty}><Text style={sitStyles.pillEmptyText}>—</Text></View>;
+    // 2026-09-26: "Cleveland's HOME tile is an empty dashed box on all
+    // three tabs with no explanation. If both their games were road
+    // games, a 'no home games yet' label would say so." A bare dash
+    // reads as broken data; naming the reason reads as a fact.
+    const _why = emptyNote
+      ? `no ${String(emptyNote).toLowerCase()} games yet`
+      : '—';
+    return (
+      <View style={sitStyles.pillEmpty}>
+        <Text style={[sitStyles.pillEmptyText, emptyNote ? {fontSize: 9} : null]}>
+          {_why}
+        </Text>
+      </View>
+    );
   }
   const total = w + l;  // pushes excluded from hit%
   const hitPct = total > 0 ? Math.round((w / total) * 100) : 0;
@@ -3264,7 +3326,10 @@ function RecordPill({rec, market, edge}: any) {
     ? `O ${w} · U ${l}${p ? ` · P ${p}` : ''}`
     : market === 'spread'
     ? `${w}-${l}${p ? `-${p}` : ''} ATS`
-    : `${w}-${l}${p ? `-${p}` : ''}`;
+    // 2026-09-26: the moneyline row was the only one with no unit, so
+    // "1-1" sat in a column where its neighbours read "1-1 ATS" and
+    // "O 2 · U 0" and could be read as either. SU (straight up) names it.
+    : `${w}-${l}${p ? `-${p}` : ''} SU`;
   // 2026-09-01 v4: text stays bright cream ALWAYS. Prior version set
   // text color to C.loss (red) on C.loss+22 background (light red) —
   // contrast between red-on-red rendered as muddy/dark (user reported
