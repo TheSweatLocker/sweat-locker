@@ -972,6 +972,31 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             'line': pick_line,
             'units': units,
             'juice_swapped': juice_swapped,
+            # ══ 2026-09-26 · game_id + conviction, for EVERY sport ══
+            # _compose_mlb_sides has carried these since 2026-09-17 with the
+            # note "preserve conviction + game_id so publish_lock at
+            # write-time can snapshot (sport, market, source_id) → tier +
+            # conviction". That fix was never applied here, so NCAAF, NFL,
+            # NBA, NHL and NCAAB shipped every side pick with game_id=None.
+            #
+            # Three consequences, all live:
+            #  1. publish_lock cannot key a football side, so the pick is
+            #     free to change after users have seen it. Andy 09-26:
+            #     "it was Clemson in the sharp but Cal ML was the take in
+            #     app." Both were true — the card froze primary_play at
+            #     15:53 and the read regenerated at 21:17 after the NCAAF
+            #     LR pass flipped the side ("LR sees coin flip p=0.46 —
+            #     legacy demoted"). Nothing reconciled them, and nothing
+            #     could, because there was no id to lock.
+            #  2. Grading by game_id join is impossible, which is why
+            #     Clemson ML sat ungraded after the game finished.
+            #  3. The card rendered conviction=None on every football pick
+            #     while MLB showed 88/80/78.
+            #
+            # NHL opens 10-08 and NBA 10-21, so this had to land before
+            # either sport puts a side on the Sharp.
+            'conviction': pp.get('conviction'),
+            'game_id': g.get('game_id'),
         })
     if is_football and (dropped_lean or dropped_chalk or dropped_pass or dropped_anchor):
         print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  '
