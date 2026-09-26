@@ -357,6 +357,32 @@ jobs:
             exit 1
           fi
 
+      # 5e. Snapshot the values 5d just rebuilt into team_stats_rolling_history.
+      #     Migration: 20260926a_team_stats_rolling_history.sql
+      #
+      #     WHY: study_stat_edge (09-25) came back 0-for-30 — the five stats
+      #     with leak-free history (ppg, points allowed, margin, ATS rate,
+      #     over rate) carry no ATS edge across 16,736 games. The stats most
+      #     likely to carry one — EPA, success rate, explosiveness, SP+ —
+      #     could not be tested AT ALL, because team_stats_rolling is a
+      #     matview holding only the current value. That history was never
+      #     written down and cannot be recovered; this step is the only
+      #     thing that makes those stats testable a season from now.
+      #
+      #     MUST run after 5d, not before — the point is to capture the
+      #     post-refresh values. Change-only writes, so a quiet day costs
+      #     nothing. Non-fatal: a missed day leaves a gap in the series,
+      #     which is recoverable, whereas failing the job would also stop
+      #     the data-quality and alerting steps below it.
+      - name: Snapshot team stats history
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python snapshot_team_stats.py
+
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
       #    logged, not blocked) but exits non-zero when findings exist
