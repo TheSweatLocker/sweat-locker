@@ -5932,9 +5932,39 @@ function YourBookTiles({
   // grade against.
   const _pick = (consensus: any, bookPoint: any) =>
     (consensus != null ? consensus : bookPoint);
-  const spreadHomeLine = _pick(closeSpread, homeSpreadOutcome?.point);
+
+  // 2026-09-26 · WHICH TEAM LAYS THE POINTS COMES FROM THE MONEYLINE.
+  //
+  // Andy, on Carolina @ Cleveland: "three sources have Carolina as the
+  // favorite; the spread tiles have Cleveland ... these are the tiles a
+  // user taps to log a pick, so the logged bet would be the wrong side."
+  // Correct, and this one is the most dangerous bug on the card.
+  //
+  // Cause: close_spread's SIGN CONVENTION IS NOT THE SAME ACROSS SPORTS,
+  // which is documented (project_close_spread_sign_bug_914) and which I
+  // walked straight into when I made these tiles prefer the consensus:
+  //
+  //     NFL    MIN @ SF   close_spread +3.5  -> SF (HOME) favoured
+  //     NCAAF  ORST @ UTEP close_spread +11.5 -> UTEP (HOME) is the DOG
+  //
+  // Opposite meanings for the same sign. So ANY fix that reads the sign
+  // is correct in one sport and inverted in the other, which is exactly
+  // how CAR @ CLE (close_spread -2.5, home ML +120, away ML -142) came
+  // out as "CLE -2.5" when Carolina is the favourite.
+  //
+  // The moneyline has no such ambiguity in any sport: the negative price
+  // is the favourite, always. So take the MAGNITUDE from the spread and
+  // the DIRECTION from the moneyline. That is convention-proof, and it
+  // also self-checks — the tiles can no longer disagree with the ML
+  // tiles sitting beside them on the same row.
+  const _mag = closeSpread != null ? Math.abs(Number(closeSpread)) : null;
+  const _hML = Number(homeML), _aML = Number(awayML);
+  const _homeIsFav = (isFinite(_hML) && isFinite(_aML)) ? _hML < _aML : null;
+  const _homeConsensus = (_mag != null && _homeIsFav != null)
+    ? (_homeIsFav ? -_mag : _mag) : null;
+  const spreadHomeLine = _pick(_homeConsensus, homeSpreadOutcome?.point);
   const spreadHomeOdds = homeSpreadOutcome?.price;
-  const spreadAwayLine = _pick(closeSpread != null ? -closeSpread : null,
+  const spreadAwayLine = _pick(_homeConsensus != null ? -_homeConsensus : null,
                                awaySpreadOutcome?.point);
   const spreadAwayOdds = awaySpreadOutcome?.price;
   const totalLine = _pick(closeTotal, overOutcome?.point);
@@ -5946,8 +5976,8 @@ function YourBookTiles({
   const totalStale = (_bookTotal != null && closeTotal != null
                       && Number(_bookTotal) !== Number(closeTotal));
   const _bookSpread = homeSpreadOutcome?.point;
-  const spreadStale = (_bookSpread != null && closeSpread != null
-                       && Number(_bookSpread) !== Number(closeSpread));
+  const spreadStale = (_bookSpread != null && _homeConsensus != null
+                       && Number(_bookSpread) !== Number(_homeConsensus));
   const finalHomeML = homeMLOutcome?.price ?? homeML;
   const finalAwayML = awayMLOutcome?.price ?? awayML;
 
