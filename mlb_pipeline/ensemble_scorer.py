@@ -1289,7 +1289,8 @@ def _humanize_signal_key(key: str) -> str:
 
 
 def _score_market(market: str, opinions: list[Opinion], ctx: dict,
-                   lean_override: Optional[float] = None) -> MarketDecision:
+                   lean_override: Optional[float] = None,
+                   sport: Optional[str] = None) -> MarketDecision:
     """Score one market (ml/rl/total) from the opinion pool.
     Filters opinions to those relevant to this market's candidates.
 
@@ -1548,7 +1549,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     conviction = int(round(base + margin_boost + classes_boost))
     conviction = max(45, min(97, conviction))
 
-    display_label, side, line = _label_from_candidate(winner_cand, ctx)
+    display_label, side, line = _label_from_candidate(winner_cand, ctx, sport=sport)
 
     return MarketDecision(
         market=market,
@@ -1571,7 +1572,8 @@ def _no_pick(market: str, ctx: dict) -> MarketDecision:
     )
 
 
-def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str], Optional[float]]:
+def _label_from_candidate(candidate: str, ctx: dict,
+                          sport: Optional[str] = None) -> tuple[str, Optional[str], Optional[float]]:
     home = ctx.get('home_team') or 'HOME'
     away = ctx.get('away_team') or 'AWAY'
     close_spread = ctx.get('close_spread')
@@ -1592,11 +1594,30 @@ def _label_from_candidate(candidate: str, ctx: dict) -> tuple[str, Optional[str]
     # perspective here so HOME_RL always displays home's line and AWAY_RL
     # always displays away's line — regardless of sport. Was shipping
     # "PHI +5.5" for -5.5 home favorite before this fix.
-    sport = str(ctx.get('_sport') or '').upper()
+    # 2026-09-26: sport now arrives as an ARGUMENT, with the ctx stamp only
+    # as a fallback. It used to be read solely from ctx['_sport'], stamped
+    # by score_game — so any caller that did not stamp it silently got the
+    # non-NFL branch and an INVERTED line. Proven on NO @ BAL
+    # (close_spread 8.5):
+    #
+    #     with _sport='NFL'   ->  'BAL -8.5'   correct
+    #     stamp missing       ->  'BAL +8.5'   exactly the stored bad value
+    #
+    # 11 NFL rows since 09-19 carry a line that disagrees with the
+    # convention, ~5 of them pure sign flips of this shape. A pick whose
+    # own line has the wrong sign is unbettable and ungradeable, and it
+    # failed silently because guessing a convention is indistinguishable
+    # from knowing one.
+    sport = str(sport or ctx.get('_sport') or '').upper()
     try:
         raw_sp = float(close_spread) if close_spread is not None else None
     except (TypeError, ValueError):
         raw_sp = None
+    if not sport and raw_sp is not None and candidate in ('HOME_RL', 'AWAY_RL'):
+        # Do not guess. NFL and every other sport store close_spread with
+        # OPPOSITE polarity, so a missing sport is a coin flip on the sign.
+        print(f'  ⚠ _label_from_candidate: no sport for {candidate} with '
+              f'close_spread={raw_sp} — spread sign cannot be resolved')
     if raw_sp is not None and sport == 'NFL':
         home_line = -raw_sp  # flip to home perspective for NFL
     else:
@@ -1666,12 +1687,12 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
 
     # Score only markets applicable to this sport (UFC = fight only, etc.)
     markets = MARKETS_BY_SPORT.get(sport.upper(), ['ml', 'rl', 'total'])
-    ml_dec = _score_market('ml', opinions, ctx, lean_override=lean_override) if 'ml' in markets else _no_pick('ml', ctx)
-    rl_dec = _score_market('rl', opinions, ctx, lean_override=lean_override) if 'rl' in markets else _no_pick('rl', ctx)
-    total_dec = _score_market('total', opinions, ctx, lean_override=lean_override) if 'total' in markets else _no_pick('total', ctx)
+    ml_dec = _score_market('ml', opinions, ctx, lean_override=lean_override, sport=sport) if 'ml' in markets else _no_pick('ml', ctx)
+    rl_dec = _score_market('rl', opinions, ctx, lean_override=lean_override, sport=sport) if 'rl' in markets else _no_pick('rl', ctx)
+    total_dec = _score_market('total', opinions, ctx, lean_override=lean_override, sport=sport) if 'total' in markets else _no_pick('total', ctx)
     # Combat sports: fight-market decision replaces ML
     if 'fight' in markets:
-        ml_dec = _score_market('fight', opinions, ctx, lean_override=lean_override)
+        ml_dec = _score_market('fight', opinions, ctx, lean_override=lean_override, sport=sport)
         # Convert fight to 'ml' shape for downstream since app reads primary_play.type=='ml' universally
         ml_dec.market = 'ml'
 
