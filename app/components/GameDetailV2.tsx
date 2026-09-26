@@ -670,10 +670,20 @@ export default function GameDetailV2({
 
         {/* 2026-09-01: Situational Records — reads team_situational_records
             matview. Sub-tabs Spread/Total/ML × 4 filter rows (Overall,
-            L10, Home/Away, Fav/Dog). Hit-% color coding (>=58 green,
-            <=42 red). See project_rolling_rollup_architecture_901. */}
+            L10, Home/Away, Fav/Dog). See RecordPill for the colour rule and
+            project_rolling_rollup_architecture_901 for the matview.
+
+            2026-09-25: the hint states the COLOUR RULE, because the recurring
+            QA report on this card is "the colours aren't showing." They are
+            usually working — the cell just holds a 1-2 game sample, which
+            cannot be coloured honestly. Football is current-season only by
+            directive (20260916a killed the prior-season blend), so at NCAAF
+            week 4 the median filter cell has 3 games and many have 1. Saying
+            so turns a grey grid from "broken" into "not enough games yet",
+            and it self-resolves as n grows. */}
         {showSituationalRec && (
-          <Section title="Situational Records" hint="records × market · hit-% color">
+          <Section title="Situational Records"
+                   hint="records × market · colour marks a clear edge; thin samples stay neutral">
             <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
           </Section>
         )}
