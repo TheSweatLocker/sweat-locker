@@ -913,6 +913,34 @@ def compute_primary_play(ctx):
 
     stale_note = ' · prior-season regressed, LEAN cap' if stats_stale else ''
 
+    # 2026-09-26 · SAY WHO, NOT JUST HOW MUCH.
+    # Andy: "Model projects 4.42 vs market -10.00 — same direction,
+    # opposite signs. Reads as if the model has Vandy winning by 4.4."
+    #
+    # Both numbers meant Auburn. projected_spread is HOME-POSITIVE
+    # (+4.42 = home by 4.4) and close_spread here is HOME-NEGATIVE
+    # (-10.0 = home by 10), so printing them side by side showed a "+"
+    # and a "-" for two statements that agree. Naming the team drops the
+    # sign convention out of the user-facing string entirely — which
+    # matters more than usual because the convention is not even
+    # consistent across sports (project_close_spread_sign_bug_914: NFL
+    # stores away-perspective, everyone else home-perspective).
+    def _spread_sentence() -> str:
+        try:
+            p, c = float(proj_spread), float(close_spread)
+        except (TypeError, ValueError):
+            return ''
+        m_side, m_mag = (home_team, p) if p > 0 else (away_team, -p)
+        k_side, k_mag = (home_team, -c) if c < 0 else (away_team, c)
+        base = (f'Model has {m_side} by {m_mag:.1f}; '
+                f'market has {k_side} by {k_mag:.1f}')
+        if spread_edge is not None:
+            # spread_edge < 0 means the model likes AWAY more than the
+            # market does (see the derivation just above).
+            lean = away_team if spread_edge < 0 else home_team
+            base += f' — {abs_edge:.1f} pts of value on {lean}'
+        return base
+
     # 2026-09-10 humanize spread labels: "GB spread cover" → "GB -3.5"
     # + populate side/line so downstream badge alignment works.
     _spread_side = 'HOME' if (proj_spread is not None and float(proj_spread) > 0) else 'AWAY'
@@ -928,7 +956,7 @@ def compute_primary_play(ctx):
         return {'type': 'spread', 'tier': tier,
                 'side': _spread_side, 'line': _fav_line,
                 'label': _spread_label,
-                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}, conf {conf:+d}){stale_note}',
+                'sub': f'{_spread_sentence()} (conf {conf:+d}){stale_note}',
                 'signal_floor': floor}
     # STRONG spread — meaningful edge
     if abs_edge >= 4.0 and abs(conf) >= 2:
@@ -937,7 +965,7 @@ def compute_primary_play(ctx):
         return {'type': 'spread', 'tier': tier,
                 'side': _spread_side, 'line': _fav_line,
                 'label': _spread_label,
-                'sub': f'Model {proj_spread:+.1f} vs market {close_spread:+.1f} (edge {abs_edge:.1f}){stale_note}',
+                'sub': f'{_spread_sentence()}{stale_note}',
                 'signal_floor': floor}
     # STRONG total
     if total_edge is not None and abs(total_edge) >= 5.0:

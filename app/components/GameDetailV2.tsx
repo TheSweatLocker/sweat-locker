@@ -705,11 +705,24 @@ export default function GameDetailV2({
             defensive rates and 266 for offensive ones, against 134 FBS teams.
             Akron reading "Bot 1%" is real, but it is a percentile of a pool
             that includes non-FBS teams. Saying so is better than a legend
-            that is wrong, until the pools are actually FBS-filtered. */}
+            that is wrong, until the pools are actually FBS-filtered.
+
+            2026-09-26 later: the five per-game keys (pass/rush/total yds,
+            penalty yds, turnovers) now rank over 133 teams with a verified
+            denominator — see recompute_ncaaf_per_game_stats.py + 20260926d.
+            The rate and SP+ pools are still mixed, so the caveat stays but
+            is now "pool size varies by stat", which is what is actually
+            true rather than a blanket non-FBS warning.
+
+            The colour legend also had to change. Colour tracks the absolute
+            percentile and the ▲/▼ carries the head-to-head — they were
+            split onto separate channels on 09-25 but the legend still
+            described the old single-channel rule, so it was telling users
+            green meant something it no longer means. */}
         {showTeamStats && (
           <Section title="Team Stats"
-                   hint={`raw value + percentile · green = better matchup side${
-                     gamesSport === 'NCAAF' ? ' · percentile pool includes non-FBS' : ''}`}>
+                   hint={`▲ = better matchup side · colour = percentile strength${
+                     gamesSport === 'NCAAF' ? ' · pool size varies by stat' : ''}`}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
                            statsSource={ctx?.stats_source} />
           </Section>
@@ -6479,9 +6492,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18, paddingVertical: 16,
     borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  sectionTitleRow: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10},
-  sectionTitle: {fontSize: 10, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1.2},
-  sectionHint: {fontSize: 10, color: C.textDim, fontStyle: 'italic'},
+  // 2026-09-26: the hint was clipping mid-word ("…color marks a clear
+  // edge; th…") on its third straight build. Shortening the copy was
+  // never the fix — the row is flexDirection:'row' and the hint had no
+  // flexShrink, so ANY hint wider than the leftover space gets cut at the
+  // container edge instead of wrapping. flexShrink lets it wrap, and
+  // flexShrink:0 on the title stops the label collapsing instead.
+  // Structural, so every current and future hint is covered.
+  sectionTitleRow: {flexDirection: 'row', justifyContent: 'space-between',
+                    alignItems: 'flex-start', marginBottom: 10, gap: 10},
+  sectionTitle: {fontSize: 10, fontWeight: '700', color: C.textMuted,
+                 textTransform: 'uppercase', letterSpacing: 1.2, flexShrink: 0},
+  sectionHint: {fontSize: 10, color: C.textDim, fontStyle: 'italic',
+                flexShrink: 1, textAlign: 'right'},
   emptyMuted: {fontSize: 11, color: C.textDim, fontStyle: 'italic'},
 
   // Expander

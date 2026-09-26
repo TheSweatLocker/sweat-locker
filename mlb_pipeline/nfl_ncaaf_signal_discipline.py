@@ -158,6 +158,28 @@ def _record_cap(pp: dict, cap_tier: str, cap_conv: int, reason: str) -> None:
                              'reasons': reasons}
 
 
+def _strip_lr_warn(pp: dict) -> None:
+    """Remove any previously written LR-warn sentence from `sub`.
+
+    2026-09-26: the published rate moved from a hardcoded 4.3% to the
+    live figure, but _append_flag only skips EXACT duplicates — so a
+    re-run would have left the stale sentence in place and appended the
+    new one beside it, showing users two different hit rates for the same
+    signal in one line. The old text has to come out before the new one
+    goes in. Matches on the stable prefix, not on the rate, so it also
+    catches whatever the rate happened to be on an older run.
+    """
+    sub = str(pp.get('sub') or '')
+    if '⚠ LR shadow warns other way' not in sub:
+        return
+    kept = []
+    for part in sub.split(' · '):
+        if part.strip().startswith('⚠ LR shadow warns other way'):
+            continue
+        kept.append(part)
+    pp['sub'] = ' · '.join(kept).strip(' ·')
+
+
 def _append_flag(pp: dict, flag: str) -> None:
     """Append a gate warning to `sub` at most once.
 
@@ -224,6 +246,7 @@ def _apply_gates(pp: dict, spread_anchor_weight,
                         conv = new_pp['conviction']
                     _record_cap(new_pp, 'LEAN', 55,
                                 f'lr_warn:p_home={p_home:.2f}')
+                    _strip_lr_warn(new_pp)
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
                              f'capped to LEAN.' + _lr_warn_sentence(sport))
                     _append_flag(new_pp, _flag)

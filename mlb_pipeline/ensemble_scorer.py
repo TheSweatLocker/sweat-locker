@@ -809,6 +809,33 @@ def _persona(src: str) -> str:
     return _SOURCE_PERSONA.get((src or '').lower(), (src or '').upper()[:4])
 
 
+# 2026-09-26 · market codes are INTERNAL, not display text.
+# Andy: "COV is on this side (177-147 on RL) — 'RL' is the run line.
+# Should be ATS." He is right: `rl` is used across the codebase as a
+# generic spread-ish code, and these prose builders printed it raw with
+# .upper(), so a college football card told users about the run line.
+# The code stays sport-agnostic; only the label is resolved per sport.
+_MARKET_LABEL = {
+    'MLB':   {'rl': 'RL', 'spread': 'RL', 'ml': 'ML', 'total': 'O/U'},
+    'NHL':   {'rl': 'PL', 'spread': 'PL', 'ml': 'ML', 'total': 'O/U'},
+    'NFL':   {'rl': 'ATS', 'spread': 'ATS', 'ml': 'ML', 'total': 'O/U'},
+    'NCAAF': {'rl': 'ATS', 'spread': 'ATS', 'ml': 'ML', 'total': 'O/U'},
+    'NBA':   {'rl': 'ATS', 'spread': 'ATS', 'ml': 'ML', 'total': 'O/U'},
+    'NCAAB': {'rl': 'ATS', 'spread': 'ATS', 'ml': 'ML', 'total': 'O/U'},
+}
+
+
+def _market_label(market, sport) -> str:
+    """Display label for a market code in a given sport.
+
+    Falls back to the raw code upper-cased, which is the old behaviour —
+    a sport we have not mapped yet is no worse off than before.
+    """
+    m = str(market or '').lower()
+    table = _MARKET_LABEL.get(str(sport or '').upper(), {})
+    return table.get(m, m.upper())
+
+
 def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
     """External handicapper picks for this game, each weighted by that
     handicapper's own track record (external_source_track_record).
@@ -895,7 +922,8 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
                     signal_key=f'external:{src}__fade',
                     signal_class='external_pick', side=flipped, strength=0.5,
                     hit_rate=fade_hr, sample_n=n, tier=fade_tier,
-                    display_prose=f'Fade {persona}: {wins}-{losses} on {market.upper()} picks',
+                    display_prose=f'Fade {persona}: {wins}-{losses} on '
+                                 f'{_market_label(market, sport)} picks',
                 ))
                 continue  # emit fade only, skip the losing-side opinion
 
@@ -910,7 +938,8 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
             signal_key=f'external:{src}',
             signal_class='external_pick', side=cand, strength=0.5,
             hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=f'{persona} is on this side ({rec_str} on {market.upper()})',
+            display_prose=f'{persona} is on this side '
+                         f'({rec_str} on {_market_label(market, sport)})',
         ))
     return out
 

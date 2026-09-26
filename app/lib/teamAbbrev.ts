@@ -155,6 +155,34 @@ const ALIASES: Record<string, string> = {
   'Youngstown State': 'YSU',
   'Indiana State': 'INST', 'South Dakota': 'USD',
   'Western Michigan': 'WMU',
+
+  // 2026-09-26 · COLLISION FIXES.
+  // Andy, on a Houston card: "9/4 vs ORE · W 33-20 · -21 — a 21-point
+  // favorite beating 'ORE' 33-20. If that's Oregon, neither team on this
+  // card plays them. Likely an opponent-abbreviation collision."
+  //
+  // It was. Houston beat OREGON STATE 33-20 on 9/5. "Oregon State" had no
+  // entry, so abbrev() fell through to slice(0,3) and produced ORE — the
+  // code for Oregon. Auditing all 237 NCAAF teams currently in play found
+  // 14 more pairs of DIFFERENT teams sharing one code, including TEX for
+  // Texas / Texas A&M / Texas State and UVA for Virginia / West Virginia.
+  // A wrong opponent chip in a game log is not cosmetic: it is the line
+  // users read to judge whether a result was impressive.
+  'Oregon State': 'ORST',
+  'Arizona State': 'ASU',
+  'Texas A&M': 'TAMU', 'Texas State': 'TXST',
+  'West Virginia': 'WVU',
+  'West Georgia': 'UWG',
+  'North Alabama': 'UNA',
+  'Eastern Kentucky': 'EKU', 'Western Kentucky': 'WKU',
+  'Eastern Illinois': 'EIU', 'Southern Illinois': 'SIU',
+  'Northern Iowa': 'UNI',
+  'Louisiana Ragin Cajuns': 'ULL',
+  'Mercyhurst Lakers': 'MRCY',
+  'North Carolina A&T': 'NCAT', 'North Carolina A&T Aggies': 'NCAT',
+  'North Dakota': 'UND', 'North Dakota State Bison': 'NDSU',
+  'Southeast Missouri State': 'SEMO',
+  'Houston Baptist Huskies': 'HCU',
 };
 
 /**
@@ -174,6 +202,30 @@ export function abbrev(name?: string | null): string {
   if (ALIASES[last]) return ALIASES[last];
   // Already an abbreviation (2-3 uppercase chars)?
   if (/^[A-Z]{2,3}$/.test(n)) return n;
+
+  // 2026-09-26: the old fallback was slice(0,3), which maps "Oregon
+  // State" and "Oregon" to the same ORE — and did, on a live card. The
+  // explicit entries above cover every team currently in play, but new
+  // opponents arrive every week (FCS non-conference especially), so the
+  // fallback itself must not silently merge two schools.
+  //
+  // Two patterns cause nearly all of it, and both are recoverable from
+  // the name: a "<School> State" suffix, and a directional prefix. Both
+  // now encode the distinguishing word instead of discarding it.
+  const words = n.split(/\s+/).filter(Boolean);
+  if (words.length >= 2 && /^state$/i.test(words[words.length - 1])) {
+    // "Oregon State" -> ORST, "Ball State" -> BALST
+    return (words[0].slice(0, 3) + 'ST').toUpperCase();
+  }
+  const DIRECTION: Record<string, string> = {
+    north: 'N', south: 'S', east: 'E', west: 'W',
+    northern: 'N', southern: 'S', eastern: 'E', western: 'W',
+    central: 'C', middle: 'M',
+  };
+  if (words.length >= 2 && DIRECTION[words[0].toLowerCase()]) {
+    // "West Virginia" -> WVIR, distinct from "Virginia" -> VIR
+    return (DIRECTION[words[0].toLowerCase()] + words[1].slice(0, 3)).toUpperCase();
+  }
   // Fallback: first 3 chars, uppercased
   return n.slice(0, 3).toUpperCase();
 }

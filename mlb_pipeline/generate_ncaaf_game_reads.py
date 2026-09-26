@@ -409,6 +409,10 @@ def build_struct(ctx):
     except Exception as _e:
         print(f'  ⚠ matchup story unavailable ({type(_e).__name__}: {_e})')
 
+    _tc = _total_context_fact(ctx.get('close_total'))
+    if _tc:
+        facts['total_board_context'] = _tc
+
     if facts:
         struct["pre_parsed_facts"] = facts
 
@@ -428,10 +432,62 @@ def _team_stats_cache(season):
     return _TS_CACHE[key]
 
 
+# 2026-09-26 · give the model the comparison so it stops inventing one.
+# Andy: "'54.5 is notably under what you'd expect for two Power 4 teams.'
+# 54.5 is at or above the typical SEC number. Another adjective not
+# checked against the value." The prompt handed over a bare total and no
+# baseline, so "notably under" was a guess dressed as analysis. One read
+# of the slate gives it something real to compare against.
+_TOTAL_BASELINE: dict = {}
+
+
+def _total_baseline():
+    if 'v' not in _TOTAL_BASELINE:
+        vals = []
+        try:
+            rows = sb_get('ncaaf_game_context',
+                          {'select': 'close_total', 'limit': '400'})
+            vals = sorted(float(r['close_total']) for r in rows
+                          if r.get('close_total') is not None)
+        except Exception as e:
+            print(f'  ⚠ total baseline unavailable ({type(e).__name__})')
+        _TOTAL_BASELINE['v'] = vals
+    return _TOTAL_BASELINE['v']
+
+
+def _total_context_fact(close_total) -> str:
+    """Where this total actually sits on the current board."""
+    ct = _f(close_total)
+    vals = _total_baseline()
+    if ct is None or len(vals) < 20:
+        return ''
+    med = vals[len(vals) // 2]
+    below = sum(1 for v in vals if v < ct)
+    pctile = 100.0 * below / len(vals)
+    if pctile >= 70:
+        where = 'one of the higher totals on the board'
+    elif pctile <= 30:
+        where = 'one of the lower totals on the board'
+    else:
+        where = 'a middling total for this board'
+    return (f'{ct:.1f} is {where} — slate median {med:.1f}, '
+            f'higher than {pctile:.0f}% of today\'s games (n={len(vals)}). '
+            f'Do not describe it as high or low in any other terms.')
+
+
 def render_prompt(templates, struct):
     ss = struct['sweat'].get('score')
     tier = struct['sweat'].get('tier') or '—'
-    confidence_tier = f'{tier} — sweat {ss}/100 (SP+ + EPA rich lens)'
+    # 2026-09-26 · ONE NAME FOR THIS NUMBER.
+    # Andy: "'Sweat Score at 53' — sixth name for this field (conv, score,
+    # Jerry X/100, X% confidence, Model conviction X%, now Sweat Score)."
+    # The prompt handed over a bare "sweat 53/100" and left the model to
+    # name it, so it invented a new label every run. Naming it explicitly
+    # — and saying it is the only permitted name — costs nothing and stops
+    # the drift at the source.
+    confidence_tier = (f'{tier} — Sweat Score {ss}/100 (SP+ + EPA rich lens). '
+                       f'Call this number "Sweat Score" if you mention it; '
+                       f'do not rename it to conviction, confidence or score.')
     # 2026-09-07: hoist pre_parsed_facts to CONFIRMED FACTS top-of-context
     # + redact ambiguous raw fields from JSON. Same pattern as NFL v3 (d0feecf4)
     # and MLB (0add7e7c). Kills sign-convention re-derivation + odds paraphrasing.
@@ -461,9 +517,37 @@ def render_prompt(templates, struct):
                    # 2026-09-26: SP+ and the stat-sheet story. Ordered last
                    # so the market facts still lead, but inside the same
                    # verbatim-quote contract.
-                   'sp_plus_verbatim', 'stat_sheet_verdict', 'stat_matchups']:
+                   'sp_plus_verbatim', 'stat_sheet_verdict', 'stat_matchups',
+                   'total_board_context']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
+        # 2026-09-26 · constraints aimed at the exact failure modes Andy
+        # catalogued on the Vanderbilt @ Auburn and Oklahoma @ Georgia
+        # reads. Each line exists because a specific sentence shipped:
+        #   "in a revenge spot (if they've played recently)" — hedging out
+        #       loud on a fact the generator could have looked up.
+        #   "injury torpedo", "straight chalk vibes" — register drift.
+        #   "heavy road dog cohort ... when the model gap tops 12 points"
+        #       while this card's own model gap was 4.42. The cohort name
+        #       is real; the numeric condition was invented wholesale.
+        #   "54.5 is notably under what you'd expect" — an adjective never
+        #       checked against the value. total_board_context now supplies
+        #       the comparison, so there is no reason to guess.
+        _lines.append("")
+        _lines.append("WRITING CONSTRAINTS (each of these has shipped as a "
+                      "real error on this card):")
+        _lines.append("  - Never invent a numeric condition, threshold or "
+                      "hit rate for a cohort, trend or signal. Quote only "
+                      "figures given above. Without the number, describe "
+                      "the cohort without one.")
+        _lines.append("  - Never hedge in prose about something you cannot "
+                      "look up (\"if they've played recently\", \"assuming "
+                      "health\"). Omit the point instead.")
+        _lines.append("  - Do not call a line or total high, low, rich or "
+                      "cheap unless a fact above says where it sits; use "
+                      "that fact's wording.")
+        _lines.append("  - Plain analyst register. No invented slang "
+                      "(\"injury torpedo\", \"chalk vibes\").")
         facts_block = "\n".join(_lines) + "\n\n"
     # 2026-09-13 Phase 6 NCAAF port: ENGINE PICK block. Same rationale
     # as the NFL Phase 6 fix — Jerry sees primary_play buried in JSON,
