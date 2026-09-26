@@ -1410,12 +1410,42 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
             of NON-NULL lenses. Say "N of N lenses" so the reader
             understands the denominator excludes empty lenses (V4 dashed,
             etc.). If it's split, show the split. */}
-        {line != null && overCount + underCount > 0 && (
-          overCount === preds.length ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean ` :
-          underCount === preds.length ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean ` :
-          `${Math.max(overCount, underCount)} of ${overCount + underCount} lenses lean `
-        )}
-        {line != null && <Text style={{color: totalDir === 'OVER' ? C.accent : C.sharp, fontWeight: '700'}}>{totalDir}</Text>}
+        {/* 2026-09-26 · A WIDE RANGE IS DISAGREEMENT, NOT A MAJORITY.
+            Andy: "Total range 31.7–43.0 · Line 42.5 → 2 of 3 lenses lean
+            OVER. The range midpoint is 37.4 — five points below the line.
+            Only the extreme top of the range clears 42.5 ... The range
+            itself is 11.3 points wide, which is enormous for a consensus."
+
+            The tally is arithmetically fine — two lenses can both sit near
+            43.0 without being deduped — but reporting a majority when the
+            lenses span 11 points tells the reader the models agree when
+            they emphatically do not, and the midpoint sits on the other
+            side of the line from the stated lean. When the spread of lens
+            totals is wider than the distance that would flip the call,
+            say "split" and show the midpoint, which is the number that
+            actually summarises them. */}
+        {line != null && overCount + underCount > 0 && (() => {
+          const spread = totMax - totMin;
+          const mid = (totMax + totMin) / 2;
+          const wide = spread >= 6 && Math.abs(mid - Number(line)) >= 2;
+          if (wide) {
+            return `lenses split ${spread.toFixed(1)} pts wide · midpoint ${mid.toFixed(1)} → `;
+          }
+          return overCount === preds.length
+            ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean `
+            : underCount === preds.length
+            ? `all ${preds.length} lens${preds.length === 1 ? '' : 'es'} lean `
+            : `${Math.max(overCount, underCount)} of ${overCount + underCount} lenses lean `;
+        })()}
+        {line != null && (() => {
+          const spread = totMax - totMin;
+          const mid = (totMax + totMin) / 2;
+          const wide = spread >= 6 && Math.abs(mid - Number(line)) >= 2;
+          // With a wide split the honest direction is the one the MIDPOINT
+          // implies, not the one a bare head-count implies.
+          const dir = wide ? (mid > Number(line) ? 'OVER' : 'UNDER') : totalDir;
+          return <Text style={{color: dir === 'OVER' ? C.accent : C.sharp, fontWeight: '700'}}>{dir}</Text>;
+        })()}
       </Text>
       {jerry ? (
         <View style={styles.jerryBanner}>
