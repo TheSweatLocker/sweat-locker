@@ -1092,6 +1092,83 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # almost always LR noise — market has priced in edges LR's 107
         # features don't see. Demote to COVERAGE (LOW CONVICTION chip
         # + still visible in game detail) rather than surface as the pick.
+        # ══ 2026-09-26 · MODEL-CONSENSUS GATE ══
+        # Andy: "how is LR able to override but in theory exposed to less
+        # data?" It could, and that is the bug. LR reads market prices,
+        # rest and div_game — no EPA, no defensive matchup, no team stats
+        # at all. The ensemble models it was overriding read all of them.
+        # A model with strictly LESS information had unconditional
+        # authority over models with more.
+        #
+        # The existing dissent gate below only consults MONEY-FLOW
+        # consensus, and on Oklahoma @ Georgia it came up one source
+        # short and let the override through:
+        #
+        #     projected_spread (v3)  +11.81   Georgia by ~12
+        #     sp_plus_pred_spread    +11.81   Georgia by ~12
+        #     mc_p_home               0.751   Georgia 75%
+        #     LR p_home               0.126   Georgia 12.6%
+        #     money 94% on Georgia, but sources_agree = 2 (gate needs 3)
+        #
+        # Result: a PRIME "Oklahoma ML" on a +410 dog, on a card where
+        # every other lens said Georgia. So the gate now also asks the
+        # ensemble's own margin models. If they point the other way with
+        # real magnitude, LR stays a shadow — which is exactly what the
+        # LR SHADOW explainer already promises users it does: "when it
+        # disagrees, we treat it as a heads-up, not a reason to flip."
+        try:
+            lr_side_mc = pred['suggested_side']
+            # projected_spread / sp_plus_pred_spread are HOME-POSITIVE
+            # (see nfl_game_context.compute_projections: power_diff *
+            # K_PTS + HOME_FIELD). Deliberately NOT close_spread, whose
+            # sign convention differs by sport and has already caused a
+            # grading bug (project_close_spread_sign_bug_914).
+            votes, margins = [], []
+            for fld in ('projected_spread', 'sp_plus_pred_spread'):
+                v = ctx.get(fld)
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                margins.append(abs(v))
+                votes.append('HOME' if v > 0 else 'AWAY')
+            mcp = ctx.get('mc_probabilities') or {}
+            if isinstance(mcp, str):
+                try:
+                    import json as _j
+                    mcp = _j.loads(mcp)
+                except Exception:
+                    mcp = {}
+            if isinstance(mcp, dict) and mcp.get('mc_p_home') is not None:
+                try:
+                    votes.append('HOME' if float(mcp['mc_p_home']) >= 0.5 else 'AWAY')
+                except (TypeError, ValueError):
+                    pass
+            against = [v for v in votes if v and v != lr_side_mc]
+            worst = max(margins) if margins else 0.0
+            # Two or more stat-based lenses on the other side, and the
+            # projection is not a coin flip. 3 points is roughly a
+            # field goal — below that the models are not really disagreeing.
+            if len(against) >= 2 and worst >= 3.0:
+                old_pp = pp if isinstance(pp, dict) else {}
+                old_pp['_lr_ml_shadow'] = pred
+                old_pp['_lr_model_dissent'] = {
+                    'reason': (f'LR wanted {lr_side_mc} but {len(against)} of '
+                               f'{len(votes)} stat-based lenses favour '
+                               f'{against[0]} by up to {worst:.1f} pts — LR '
+                               f'sees no team stats, so it does not outrank them'),
+                    'lenses_against': len(against),
+                    'lenses_total': len(votes),
+                    'max_projected_margin': round(worst, 2),
+                }
+                print(f'  🛑 {sport} LR override blocked: {len(against)}/{len(votes)} '
+                      f'stat lenses favour {against[0]} by up to {worst:.1f} pts '
+                      f'(LR wanted {lr_side_mc})')
+                return old_pp
+        except Exception as _e:
+            print(f'  ⚠ LR model-consensus gate errored ({type(_e).__name__}) — '
+                  f'override allowed through')
+
         try:
             ss = ctx.get('splits_summary') or {}
             ml_split = ss.get('ml') if isinstance(ss, dict) else None
