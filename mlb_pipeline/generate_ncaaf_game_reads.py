@@ -409,6 +409,21 @@ def build_struct(ctx):
     except Exception as _e:
         print(f'  ⚠ matchup story unavailable ({type(_e).__name__}: {_e})')
 
+    # 2026-09-26 · MONEY FLOW, EXPLAINED RATHER THAN HANDED OVER RAW.
+    # Andy: "Jerry should explain the why — if sharp money in certain
+    # buckets in comparison to market and bets, along with previously seen
+    # edges. Jerry should explain it coherently and without
+    # hallucinations." The dict was already in the prompt; the comparison
+    # is now done in Python so there is nothing left to paraphrase.
+    try:
+        _mf = matchup_story.money_flow_story(
+            'NCAAF', home, away, ctx.get('splits_summary'),
+            _signal_records_cache())
+        if _mf:
+            facts['money_flow'] = ' | '.join(_mf[:5])
+    except Exception as _e:
+        print(f'  ⚠ money-flow story unavailable ({type(_e).__name__}: {_e})')
+
     _tc = _total_context_fact(ctx.get('close_total'))
     if _tc:
         facts['total_board_context'] = _tc
@@ -439,6 +454,16 @@ def _team_stats_cache(season):
 # baseline, so "notably under" was a guess dressed as analysis. One read
 # of the slate gives it something real to compare against.
 _TOTAL_BASELINE: dict = {}
+_SIGREC_CACHE: dict = {}
+
+
+def _signal_records_cache():
+    if 'v' not in _SIGREC_CACHE:
+        try:
+            _SIGREC_CACHE['v'] = matchup_story.load_signal_records('NCAAF')
+        except Exception:
+            _SIGREC_CACHE['v'] = {}
+    return _SIGREC_CACHE['v']
 
 
 def _total_baseline():
@@ -518,7 +543,7 @@ def render_prompt(templates, struct):
                    # so the market facts still lead, but inside the same
                    # verbatim-quote contract.
                    'sp_plus_verbatim', 'stat_sheet_verdict', 'stat_matchups',
-                   'total_board_context']:
+                   'total_board_context', 'money_flow']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
         # 2026-09-26 · constraints aimed at the exact failure modes Andy

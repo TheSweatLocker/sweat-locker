@@ -221,3 +221,134 @@ def build_story(sport: str, home: str, away: str, stats: dict) -> dict:
                          f'{h_win} of {graded} categories, {away} in {a_win}')
 
     return {'lines': lines, 'dominance': dominance}
+
+
+# ── MONEY FLOW, EXPLAINED ────────────────────────────────────────────────
+# Andy 2026-09-26: "Jerry should explain the why — if sharp money in
+# certain buckets in comparison to market and bets, along with previously
+# seen edges. Jerry should explain it coherently and without
+# hallucinations."
+#
+# The "without hallucinations" half is why this is arithmetic in Python
+# and not an instruction to the model. splits_summary already carries
+# bets_pct_avg, money_pct_avg and sources_agree per market and side; the
+# read generator was handing that raw dict to the LLM and hoping. Same
+# failure mode that produced "Auburn's SP+ sits around 24-26" against a
+# stored 11.6 — the data was present and got paraphrased into fiction.
+#
+# THE SIGNAL. bets% is ticket count, money% is dollars. When dollars run
+# ahead of tickets on a side, the average bet on that side is bigger than
+# the average bet against it, which is the usual fingerprint of sharp
+# money. When they track each other, the split says nothing and should be
+# reported as saying nothing rather than dressed up.
+#
+# "previously seen edges" is read from v_signal_records, never invented,
+# and omitted entirely when the sample is too thin to publish
+# (feedback_sample_size_with_pct: every % carries its n, gate at n>=30).
+
+MONEY_MARKET_LABEL = {
+    'MLB':   {'rl': 'run line', 'ml': 'moneyline', 'total': 'total', 'spread': 'run line'},
+    'NHL':   {'rl': 'puck line', 'ml': 'moneyline', 'total': 'total', 'spread': 'puck line'},
+    'NFL':   {'rl': 'spread', 'ml': 'moneyline', 'total': 'total', 'spread': 'spread'},
+    'NCAAF': {'rl': 'spread', 'ml': 'moneyline', 'total': 'total', 'spread': 'spread'},
+    'NBA':   {'rl': 'spread', 'ml': 'moneyline', 'total': 'total', 'spread': 'spread'},
+    'NCAAB': {'rl': 'spread', 'ml': 'moneyline', 'total': 'total', 'spread': 'spread'},
+}
+
+# Dollars must lead tickets by this much before it is worth a sentence.
+# Below it, the two are tracking and the honest report is "no signal".
+SHARP_GAP_PP = 8.0
+
+
+def _side_name(key, home, away):
+    k = str(key).upper()
+    if k == 'HOME':
+        return home
+    if k == 'AWAY':
+        return away
+    return k.title()          # OVER / UNDER
+
+
+def money_flow_story(sport, home, away, splits, signal_records=None):
+    """-> list[str]. Plain-English money-flow facts, safe to quote verbatim.
+
+    `signal_records` is an optional {signal_key: row} from v_signal_records
+    so a live hit rate can be attached. Nothing is invented when it is
+    absent — the sentence simply omits the record.
+    """
+    if not isinstance(splits, dict):
+        return []
+    labels = MONEY_MARKET_LABEL.get(str(sport).upper(), {})
+    lines, quiet = [], []
+
+    for market, sides in splits.items():
+        if not isinstance(sides, dict) or market in (
+                'captured_at', 'dissent_flags', 'sources_present',
+                'triple_confirmed'):
+            continue
+        label = labels.get(str(market).lower(), str(market))
+        best = None
+        for side_key, vals in sides.items():
+            if not isinstance(vals, dict):
+                continue
+            bets, money = vals.get('bets_pct_avg'), vals.get('money_pct_avg')
+            try:
+                bets, money = float(bets), float(money)
+            except (TypeError, ValueError):
+                continue
+            gap = money - bets
+            if best is None or gap > best[0]:
+                best = (gap, side_key, bets, money, vals.get('sources_agree'))
+        if not best:
+            continue
+        gap, side_key, bets, money, agree = best
+        who = _side_name(side_key, home, away)
+        src = f', {int(agree)} sources agree' if agree else ''
+        if gap >= SHARP_GAP_PP:
+            lines.append(
+                f'{label}: {money:.0f}% of the money is on {who} but only '
+                f'{bets:.0f}% of the bets — dollars are {gap:.0f} points '
+                f'ahead of tickets, the usual sign of sharp money{src}')
+        else:
+            quiet.append(
+                f'{label}: money {money:.0f}% vs bets {bets:.0f}% on {who} '
+                f'— tracking each other, no sharp signal')
+
+    # Report the quiet markets too. A read that only ever mentions money
+    # flow when it fires teaches users that silence means nothing was
+    # checked, when in fact it means it was checked and was flat.
+    lines.extend(quiet[:2])
+
+    tc = splits.get('triple_confirmed')
+    if isinstance(tc, list) and tc:
+        lines.append(f'{len(tc)} market/side combinations are confirmed by '
+                     f'all three split sources')
+    df = splits.get('dissent_flags')
+    if isinstance(df, list) and df:
+        lines.append(f'sources disagree on: {", ".join(str(d) for d in df[:3])}')
+
+    if isinstance(signal_records, dict):
+        for key in ('SHARP_MOVE', 'CONSENSUS_ML', 'CONSENSUS'):
+            rec = signal_records.get(key)
+            if not rec:
+                continue
+            w = rec.get('wins_lifetime') or 0
+            l = rec.get('losses_lifetime') or 0
+            if w + l >= 30:
+                lines.append(f'for reference, {key.replace("_", " ").lower()} '
+                             f'signals have gone {w}-{l} '
+                             f'({100.0*w/(w+l):.0f}%, n={w+l})')
+            break
+    return lines
+
+
+def load_signal_records(sport):
+    """{signal_key: row} from v_signal_records, or {} on any failure."""
+    try:
+        rows = _page('v_signal_records', {
+            'sport': f'eq.{sport}',
+            'select': 'signal_key,kind,wins_lifetime,losses_lifetime,'
+                      'hit_pct_lifetime'})
+    except Exception:
+        return {}
+    return {r['signal_key']: r for r in rows if r.get('kind') in (None, 'ok')}
