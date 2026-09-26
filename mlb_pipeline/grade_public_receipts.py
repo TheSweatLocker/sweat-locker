@@ -78,6 +78,26 @@ RESULTS_TABLE = {
     'NCAAB': 'ncaab_game_results',
 }
 
+# 2026-09-26: hockey does not have a column called close_spread — its line
+# is stored as close_puckline. The results SELECT below hardcoded
+# close_spread for every sport, so the NHL fetch returned 42703 and the
+# sport indexed ZERO result rows. PostgREST rejects the whole query on one
+# unknown column, so this did not degrade to "spreads missing" — it took
+# down the entire NHL branch, and today's run printed:
+#
+#   ⚠ fetch 400: column nhl_game_results.close_spread does not exist
+#   NHL: 0 result rows indexed
+#
+# Confirmed against real receipts: four NHL game reads from 09-25 sat
+# ungraded with finished games. NHL opens 10-08, so this would have
+# silently voided grading for the entire first week.
+#
+# Aliased rather than renamed downstream: PostgREST returns the alias as
+# the key, so res.get('close_spread') keeps working for every sport and
+# the sign-handling logic below stays untouched.
+SPREAD_COL = {'NHL': 'close_spread:close_puckline'}
+DEFAULT_SPREAD_COL = 'close_spread'
+
 # close_spread sign is NOT consistent across sports. Verified empirically
 # 2026-09-20: NCAAF/MLB store NEGATIVE = home favored; NFL stores
 # POSITIVE = home favored. Getting this backwards silently inverts every
@@ -259,8 +279,9 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
             continue
         by_gid, by_match = {}, {}
         got = 0
+        spread_col = SPREAD_COL.get(sport, DEFAULT_SPREAD_COL)
         for row in paged(f'{SB}/rest/v1/{tbl}?select=game_id,game_date,home_team,'
-                         f'away_team,home_score,away_score,close_spread,close_total'
+                         f'away_team,home_score,away_score,{spread_col},close_total'
                          f'&game_date=gte.{lo}&game_date=lte.{hi}'):
             got += 1
             if row.get('game_id'):
