@@ -2839,22 +2839,62 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
   );
 }
 
+// ══ 2026-09-25 · COLOUR BY ADVANTAGE, NOT BY ABSOLUTE QUALITY ══
+// Andy: "college football situational record colouring red/green for
+// advantage, just not uniform."
+//
+// The pill used to grade each team's record on its own — is 3-1 "good?" At
+// NCAAF week 4 the answer is almost always "too few games to say", so
+// football stayed grey while MLB (140 games) lit up. Two sports, two
+// behaviours, from one rule that only ever suited baseball.
+//
+// Comparing the two teams instead is both more useful and more honest. The
+// row already puts the same split side by side (Away ATS vs Home ATS), and
+// "Pitt is 3-0 here, Akron is 1-2" is a true statement at n=3 in a way that
+// "3-0 is a strong record" is not. The record itself stays visible in the
+// pill, so the reader can always see the sample behind the colour. This is
+// the same comparative model the Team Stats panel already uses, which is
+// what makes it uniform across sports.
+//
+// TOTALS ARE DELIBERATELY EXCLUDED. There, a "win" is the OVER, and being
+// more over than your opponent is a tendency, not an advantage — painting
+// it green would assert that overs are good. Those rows stay neutral and
+// let the "O 6 · U 4" label speak.
+function _sitRate(rec: any): number | null {
+  const w = Number(rec?.wins) || 0;
+  const l = Number(rec?.losses) || 0;
+  if (w + l === 0) return null;
+  // Laplace smoothing pulls tiny samples toward .500, so 1-0 beats 0-1 but
+  // by far less than 3-0 beats 0-3, and one game can't manufacture a blowout.
+  return (w + 1) / (w + l + 2);
+}
+
+const SIT_EDGE_MIN = 0.10;  // smoothed-rate gap needed before colouring
+
 function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
+  const lr = market === 'total' ? null : _sitRate(leftRec);
+  const rr = market === 'total' ? null : _sitRate(rightRec);
+  let leftEdge: 'good' | 'bad' | null = null;
+  let rightEdge: 'good' | 'bad' | null = null;
+  if (lr != null && rr != null && Math.abs(lr - rr) >= SIT_EDGE_MIN) {
+    leftEdge  = lr > rr ? 'good' : 'bad';
+    rightEdge = lr > rr ? 'bad' : 'good';
+  }
   return (
     <View style={sitStyles.row}>
       <View style={sitStyles.side}>
         <Text style={sitStyles.rowLabel}>{leftLabel}</Text>
-        <RecordPill rec={leftRec} market={market} />
+        <RecordPill rec={leftRec} market={market} edge={leftEdge} />
       </View>
       <View style={sitStyles.side}>
         <Text style={[sitStyles.rowLabel, {textAlign: 'right'}]}>{rightLabel}</Text>
-        <RecordPill rec={rightRec} market={market} />
+        <RecordPill rec={rightRec} market={market} edge={rightEdge} />
       </View>
     </View>
   );
 }
 
-function RecordPill({rec, market}: any) {
+function RecordPill({rec, market, edge}: any) {
   // 2026-09-06 dashes-everywhere bug fix. Prior guard read `rec.games`
   // — a column that does NOT exist in team_situational_records. The
   // matview stores wins/losses/pushes only; games is derived at render
@@ -2892,12 +2932,25 @@ function RecordPill({rec, market}: any) {
   // they're lopsided, and nothing colours off a single game. The two rules
   // agree exactly where they meet (n=6: 4-2 is both margin-2 and 66.7%),
   // so there's no visible jump as the season fills in.
+  // ══ 2026-09-25 · THE COMPARISON IS AUTHORITATIVE ══
+  // SitRow always passes `edge` (possibly null, meaning "compared, and the
+  // two teams are too close to separate"). When it does, that verdict wins
+  // outright and a null means NEUTRAL — deliberately not a fall-through to
+  // the absolute rule below. Falling through is what produced the report
+  // in the first place: one pill lit by its own record while the pill
+  // beside it stayed grey, which reads as broken rather than as "even".
+  //
+  // The absolute rule is kept strictly for a pill rendered with no
+  // counterpart (edge === undefined). Nothing does that today; it exists so
+  // reuse elsewhere degrades sensibly instead of rendering colourless.
   const MARGIN_REGIME_MAX = 6;   // n<=6 -> margin rule; n>6 -> hit-% rule
   const tint: 'win'|'loss'|'neutral' =
-    total < 2 ? 'neutral'
-    : total <= MARGIN_REGIME_MAX
-      ? (w - l >= 2 ? 'win' : l - w >= 2 ? 'loss' : 'neutral')
-      : (hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral');
+    edge !== undefined
+      ? (edge === 'good' ? 'win' : edge === 'bad' ? 'loss' : 'neutral')
+      : total < 2 ? 'neutral'
+      : total <= MARGIN_REGIME_MAX
+        ? (w - l >= 2 ? 'win' : l - w >= 2 ? 'loss' : 'neutral')
+        : (hitPct >= 58 ? 'win' : hitPct <= 42 ? 'loss' : 'neutral');
   // 2026-09-02: label the display so users know what W-L means per market.
   //   total: "O 6 · U 4" (over/under, prevents "6-4" ambiguity from user report)
   //   spread: "6-4 ATS" (against the spread)
@@ -3227,15 +3280,28 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
 // A neutral band is deliberate. Colouring every row would claim an edge
 // on gaps that are noise, and a screen where everything is coloured says
 // nothing. Under 5 places apart, neither side is tinted.
-const ADV_STRONG = 12;   // clear edge — colour plus weight
-const ADV_SLIGHT = 5;    // visible edge — colour only
+// Percentile gaps, not raw rank gaps — see advantage(). 9% of a 134-team
+// league is ~12 places, which is what these used to mean for FBS; they now
+// mean the same thing in every universe instead of only that one.
+const ADV_STRONG = 0.09;  // clear edge — colour plus weight
+const ADV_SLIGHT = 0.04;  // visible edge — colour only
 
-function advantage(aRank: any, bRank: any): 'strong' | 'slight' | null {
+// 2026-09-25: was a raw rank gap, which is not comparable across rows.
+// league_size differs BY STAT (139 for SP+, 216 for most defensive rates,
+// 266 for offensive rates), so a 12-place gap is a big edge in a 139-team
+// universe and noise in a 266-team one — the same defect that made the
+// rank chips unreadable. Thresholds are now percentile gaps, so one rule
+// holds for every stat and every sport.
+function advantage(aRank: any, bRank: any,
+                   leagueSize?: any): 'strong' | 'slight' | null {
   if (aRank == null || bRank == null) return null;
+  const size = Number(leagueSize);
   const gap = Math.abs(Number(aRank) - Number(bRank));
   if (!isFinite(gap)) return null;
-  if (gap >= ADV_STRONG) return 'strong';
-  if (gap >= ADV_SLIGHT) return 'slight';
+  // Fall back to the old absolute gap only when league_size is missing.
+  const pctGap = isFinite(size) && size > 0 ? gap / size : gap / 134;
+  if (pctGap >= ADV_STRONG) return 'strong';
+  if (pctGap >= ADV_SLIGHT) return 'slight';
   return null;
 }
 
@@ -3246,7 +3312,8 @@ function StatRow({statKey, awayRow, homeRow}: any) {
              || statKey.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   const unit = awayRow?.unit || homeRow?.unit || '';
   // Lower rank is better. Only assign an edge when both sides are ranked.
-  const tier = advantage(awayRow?.rank, homeRow?.rank);
+  const tier = advantage(awayRow?.rank, homeRow?.rank,
+                         awayRow?.league_size || homeRow?.league_size);
   const awayBetter = tier != null && Number(awayRow.rank) < Number(homeRow.rank);
   return (
     <View style={tsStyles.statRow}>
@@ -3290,12 +3357,27 @@ function StatCell({row, unit, align, edge, strong}: any) {
           // reads as one in greyscale or to a colour-blind user rather
           // than relying on hue alone.
           strong && edge ? {fontWeight: '800' as const} : null,
-        ]}>{row.raw_value}</Text>
+        ]}>{fmtStatValue(row.raw_value)}</Text>
         {unit ? <Text style={tsStyles.statUnit}> {unit}</Text> : null}
         <RankChip rank={row.rank} leagueSize={row.league_size} />
       </View>
     </View>
   );
+}
+
+// 2026-09-25: Akron's Def Rush EPA rendered as a bare "0" beside UNLV's
+// "0.126" — the value really is 0.0, but printing it raw made a legitimate
+// number look like missing data. Decimals now follow magnitude, so every
+// cell in a row is written to the same precision: per-play/EPA-scale values
+// (|v| < 2) get 3 dp, rate and per-game values get 1, counting stats get 0.
+function fmtStatValue(v: any): string {
+  if (v == null) return '—';
+  const n = Number(v);
+  if (!isFinite(n)) return String(v);
+  const a = Math.abs(n);
+  if (a < 2)   return n.toFixed(3);
+  if (a < 100) return n.toFixed(1);
+  return n.toFixed(0);
 }
 
 function RankChip({rank, leagueSize}: any) {
@@ -3314,16 +3396,29 @@ function RankChip({rank, leagueSize}: any) {
   else if (pct <= 0.80) bg = C.warn + '28';
   else                  bg = C.loss + '30';
   const fg = C.text;
-  // Ordinal suffix
-  const s = String(rank);
-  const last = rank % 100;
-  const suffix = (last >= 11 && last <= 13) ? 'th'
-               : (rank % 10 === 1) ? 'st'
-               : (rank % 10 === 2) ? 'nd'
-               : (rank % 10 === 3) ? 'rd' : 'th';
+  // ══ 2026-09-25 · PERCENTILE, NOT A BARE ORDINAL ══
+  // Andy screenshot (UNLV @ Akron, Defense): one panel showed "95th" and
+  // "188th" stacked on top of each other. They are not on the same scale —
+  // league_size varies BY STAT because the sources cover different team
+  // universes:
+  //
+  //   sp_defense / sp_offense / sp_overall   139
+  //   def_epa_per_play, points_allowed_pg…   216
+  //   off_epa_per_play, third_down_pct…      266
+  //
+  // So 95th was the 32nd percentile and 188th was the 13th, and the chip
+  // showed neither denominator. Worse, FBS is 134 teams, so a raw "188th"
+  // reads as "worse than last place" to anyone who knows the sport — the
+  // 216/266 universes include non-FBS teams.
+  //
+  // The percentile was already being computed right above for the colour;
+  // it just wasn't the thing displayed. Showing it makes every row
+  // comparable regardless of universe, and kills the sub-134 confusion.
+  const pctile = Math.max(1, Math.round((pct <= 0.5 ? pct : 1 - pct) * 100));
+  const label = pct <= 0.5 ? `Top ${pctile}%` : `Bot ${pctile}%`;
   return (
     <View style={[tsStyles.rankChip, {backgroundColor: bg}]}>
-      <Text style={[tsStyles.rankText, {color: fg}]}>{s}{suffix}</Text>
+      <Text style={[tsStyles.rankText, {color: fg}]}>{label}</Text>
     </View>
   );
 }
