@@ -712,6 +712,7 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
 
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = 0
+    failed_patch = 0   # 2026-09-26: writes that were silently discarded
     # Cache player recent-values so we only fetch each player once
     # 2026-08-22: also cache per-game rows for ESPN-table rendering
     recent_cache: dict[tuple, list[float]] = {}
@@ -836,7 +837,8 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                     _tier_ord = {'COVERAGE':0,'LEAN':1,'STRONG':2,'PRIME':3}
                     if _tier_ord.get(new_t, 0) > _tier_ord.get(cur_tier, 0):
                         patch['tier'] = new_t
-                        patch['_r4_convergence_hot'] = True
+                        existing_signals['_r4_convergence_hot'] = True
+                        patch['signals'] = existing_signals
                         cur_tier = new_t
 
             # R1 momentum: L10 in current direction >= 8 → bump one tier
@@ -845,14 +847,16 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
                 new_t = _promote.get(cur_tier)
                 if new_t:
                     patch['tier'] = new_t
-                    patch['_r1_l10_momentum'] = True
+                    existing_signals['_r1_l10_momentum'] = True
+                    patch['signals'] = existing_signals
                     cur_tier = new_t
             # L10 cold (<= 3) with tier PRIME/STRONG — cap at LEAN
             elif lb['l10'] is not None and lb['l10'] <= 3:
                 if cur_tier in ('PRIME', 'STRONG'):
                     patch['tier'] = 'LEAN'
                     patch['conviction'] = min(cur_conv, 60)
-                    patch['_r1_l10_cold_cap'] = True
+                    existing_signals['_r1_l10_cold_cap'] = True
+                    patch['signals'] = existing_signals
                     cur_tier = 'LEAN'
 
             # R3 stack_alert: stack_alert=True hit 68.5% n=343 in backtest.
@@ -1008,7 +1012,15 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             if pr is None:
                 continue
             if pr.status_code not in (200, 204):
-                print(f'    ✗ patch {prop["id"]} failed: {pr.status_code}')
+                # 2026-09-26: the body was being thrown away, so a PATCH that
+                # failed every single day printed a bare "failed: 400" and
+                # nobody could act on it. The enrichment is computed fine and
+                # then never lands, conviction stays 0, and the board falls to
+                # single digits — with the run still reporting a count that
+                # looks like success. Print the reason.
+                print(f'    ✗ patch {prop["id"]} failed: {pr.status_code} '
+                      f'{(pr.text or "")[:240]}')
+                failed_patch += 1
                 continue
         updated += 1
         if lb['l10_extreme']:
@@ -1027,6 +1039,11 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
     print(f'  MLB backfill: {updated}/{eligible} eligible props ({coverage_pct:.1f}%) — '
           f'skips: missing_fields={skip_missing_fields}, no_stat_map={skip_no_stat}, '
           f'player_id_null={skip_player_id_null}, no_recent_games={skip_no_recent}')
+    if failed_patch:
+        print(f'  🚨 {failed_patch} enrichment write(s) REJECTED by the database. '
+              f'Those props keep conviction=0 and cannot tier, which is what '
+              f'collapses the published board — this is not a skip, it is a '
+              f'failed write.')
     if skip_banned_family:
         print(f'  ⚡ fast path: skipped {skip_banned_family}/{total} '
               f'({100.0*skip_banned_family/total:.0f}%) banned-family props — '
