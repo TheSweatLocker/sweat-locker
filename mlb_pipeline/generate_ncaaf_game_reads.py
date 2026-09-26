@@ -223,6 +223,26 @@ def _build_casual_summary(ctx):
     }
 
 
+
+# 2026-09-26: raw cohort keys must never reach the model — see the call site.
+# Mirrors ensemble_scorer._humanize_signal_key, plus the numeric band
+# suffixes that only NCAAF cohorts carry (_7_13, _14, _14plus).
+def _humanize_cohort_tag(key) -> str:
+    if not key or not isinstance(key, str):
+        return str(key or '')
+    s = key
+    for pfx in ('nfl_', 'ncaaf_', 'mlb_', 'nba_', 'nhl_', 'ncaab_', 'ufc_'):
+        if s.lower().startswith(pfx):
+            s = s[len(pfx):]
+            break
+    s = s.replace('heavy_home_dog_7_13', 'heavy home underdog (7-13 pts)')
+    s = s.replace('heavy_home_dog_14plus', 'heavy home underdog (14+ pts)')
+    s = s.replace('heavy_home_dog_14', 'heavy home underdog (14+ pts)')
+    s = s.replace('heavy_home_dog', 'heavy home underdog')
+    s = s.replace('_', ' ').strip()
+    return s[0].upper() + s[1:] if s and s[0].isalpha() else s
+
+
 def build_struct(ctx):
     home = ctx.get('home_team'); away = ctx.get('away_team')
     struct = {
@@ -270,7 +290,13 @@ def build_struct(ctx):
             'score': ctx.get('sweat_score'),
             'tier': ctx.get('sweat_tier'),
         },
-        'cohort_tags': ctx.get('cohort_tags') or [],
+        # 2026-09-26: cohort tags reached the LLM as raw snake_case, and it
+        # quoted them straight into the read — "lands in the
+        # heavy_home_dog_7_13 cohort". The chip row on the same card renders
+        # the same cohort correctly as "Heavy Home Underdog", so the display
+        # name existed; the prompt just never got it. Humanise before the
+        # model sees it, because anything we hand it can end up in prose.
+        'cohort_tags': [_humanize_cohort_tag(t) for t in (ctx.get('cohort_tags') or [])],
         'meta': {
             'game_date': today_et(),
             'game_has_not_been_played': True,

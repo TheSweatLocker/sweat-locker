@@ -1016,6 +1016,27 @@ def _build_casual_summary(struct):
     return {"headlines": top, "bottom_line": bottom}
 
 
+
+# 2026-09-26: raw cohort keys must never reach the model. NCAAF leaked
+# "heavy_home_dog_7_13" straight into a published read; NFL feeds the same
+# field to the same model, so it gets the same guard rather than waiting to
+# be caught in a screenshot.
+def _humanize_cohort_tag(key) -> str:
+    if not key or not isinstance(key, str):
+        return str(key or '')
+    s = key
+    for pfx in ('nfl_', 'ncaaf_', 'mlb_', 'nba_', 'nhl_', 'ncaab_', 'ufc_'):
+        if s.lower().startswith(pfx):
+            s = s[len(pfx):]
+            break
+    s = s.replace('heavy_home_dog_7_13', 'heavy home underdog (7-13 pts)')
+    s = s.replace('heavy_home_dog_14plus', 'heavy home underdog (14+ pts)')
+    s = s.replace('heavy_home_dog_14', 'heavy home underdog (14+ pts)')
+    s = s.replace('heavy_home_dog', 'heavy home underdog')
+    s = s.replace('_', ' ').strip()
+    return s[0].upper() + s[1:] if s and s[0].isalpha() else s
+
+
 def build_struct(game, stats, contexts=None, injuries=None, key_players=None, team_pace=None, team_defense=None):
     home, away = game.get("home_team"), game.get("away_team")
     h, a = _team(stats, home), _team(stats, away)
@@ -1075,7 +1096,7 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         }
         struct["confluence"] = {
             "net": ctx.get('signal_confluence_net'),
-            "cohort_tags": ctx.get('cohort_tags'),
+            "cohort_tags": [_humanize_cohort_tag(t) for t in (ctx.get('cohort_tags') or [])],
         }
         struct["sweat"] = {
             "score": ctx.get('sweat_score'),
@@ -1097,7 +1118,7 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         # Slim signals blob — pull only useful non-personal fields
         _sig = {
             'confluence_net': ctx.get('signal_confluence_net'),
-            'cohort_tags': ctx.get('cohort_tags'),
+            'cohort_tags': [_humanize_cohort_tag(t) for t in (ctx.get('cohort_tags') or [])],
             'sweat_score': ctx.get('sweat_score'),
             'sweat_tier': ctx.get('sweat_tier'),
             'panel_confidence': ctx.get('panel_confidence'),

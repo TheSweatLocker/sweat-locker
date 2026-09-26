@@ -1230,7 +1230,17 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
                     'HOME_RL':   'Historical trend: similar spots hit HOME +pts',
                     'AWAY_RL':   'Historical trend: similar spots hit AWAY +pts',
                 }.get(flipped_side, 'Historical trend fades this signal')
-                fade_prose = f'{side_narrative} {pct}% of the time (n={n})'
+                # 2026-09-26: two different fade signals produced the SAME
+                # generic label with different rates, so a card read
+                # "similar spots hit HOME +pts 61% (n=64) · similar spots
+                # hit HOME +pts 57% (n=107)" back to back — identical claim,
+                # two answers. They are genuinely different cohorts; the
+                # label just never said which. Name the cohort so the two
+                # lines are distinguishable, and so a real duplicate can be
+                # collapsed downstream by exact match.
+                _cohort = _humanize_signal_key(source['signal_key'])
+                fade_prose = (f'{side_narrative} {pct}% of the time '
+                              f'(n={n}{", " + _cohort if _cohort else ""})')
                 out.append(Opinion(
                     signal_key=f'{source["signal_key"]}__fade',
                     signal_class=cls,
