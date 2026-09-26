@@ -843,6 +843,34 @@ jobs:
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport MLB --refresh-existing
 
+      # 2026-09-26 PROMOTE THE SHADOW SCORE ONTO THE LIVE ROWS.
+      #
+      # prop_ensemble_scorer above writes ONLY to prop_playbook_decisions —
+      # the step is literally named "shadow mode". Meanwhile
+      # sweep_prop_coverage creates ~500 stub props a day that the legacy
+      # scorer never touches, so they sit at conviction=0 forever, get
+      # tiered COVERAGE, and are killed by the coverage gate. Traced on
+      # 09-26: 126 props carried L5/L10 and only 20 had any conviction.
+      #
+      # This copies the playbook's conviction onto those unscored rows so
+      # the board can actually be EVALUATED. It does not change what
+      # publishes: tier only moves for tiers that cleared the evidence bar
+      # (PRIME by default), everything else keeps the tier it has. It also
+      # never overwrites a row the legacy scorer already scored.
+      #
+      # MUST RUN BEFORE the publish-lock step. Conviction is scoring, and
+      # scoring has to finish before the pick is frozen — running it after
+      # the lock is why the first live attempt patched 11 rows and landed
+      # 0, with publish_lock silently reverting every one.
+      - name: Promote playbook conviction to live props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "promote_playbook_conviction.py"             python promote_playbook_conviction.py --sport MLB
+
       # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
       # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
       # take + BACK/FADE/PASS verdict + conviction to prop_jerry_reads.
