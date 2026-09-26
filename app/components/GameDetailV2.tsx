@@ -1124,12 +1124,42 @@ function AlignmentStrip({ctx}: any) {
   }
   const overall = align.overall || {};
   const verdictStr = overall.verdict || 'no_data';
-  const isAligned = overall.aligned === true;
   const isDisagree = verdictStr === 'disagreement';
+
+  // 2026-09-26 · ALIGNED WITH EACH OTHER IS NOT ALIGNED WITH THE PICK.
+  //
+  // Andy, on Oregon State @ UTEP: "Overall ✓ ALIGNED on a card where the
+  // pick opposes everything ... the badge certifies alignment on the one
+  // screen where the pick is the outlier." Second confirmed instance
+  // after Oklahoma @ Georgia, so it is systematic.
+  //
+  // `overall.aligned` answers "do the signals agree with EACH OTHER" —
+  // and on that card they emphatically did: Handicappers 1/1 AWAY,
+  // Models 2/2 AWAY, every model margin on Oregon State. The pick was
+  // UTEP. The strip rendered that unanimity as a green tick next to a
+  // pick it unanimously contradicted, which is worse than showing
+  // nothing: it converts the strongest available warning into an
+  // endorsement.
+  //
+  // The chips already carry the side each group landed on, and ctx
+  // carries the pick, so the honest verdict is computable right here:
+  // consensus is only reassuring when it points the same way we do.
+  const _pickSide = String(ctx?.primary_play?.side || '').toUpperCase();
+  const _sides = [ml.lens_side, ml.ext_lead, ml.money_side]
+    .filter((s: any) => s === 'H' || s === 'A')
+    .map((s: any) => (s === 'H' ? 'HOME' : 'AWAY'));
+  const _against = _sides.filter((s: string) => s !== _pickSide).length;
+  const _withPick = _sides.filter((s: string) => s === _pickSide).length;
+  const _pickIsOutlier = (_pickSide === 'HOME' || _pickSide === 'AWAY')
+    && _sides.length >= 2 && _against >= 2 && _withPick === 0;
+
+  const isAligned = overall.aligned === true && !_pickIsOutlier;
   chips.push({
     label: 'Overall',
-    value: isAligned ? '✓ ALIGNED' : isDisagree ? '⚠ DISAGREE' : '—',
-    kind: isAligned ? 'ok' : isDisagree ? 'warn' : 'neutral',
+    value: _pickIsOutlier
+      ? `⚠ ${_against} AGAINST PICK`
+      : isAligned ? '✓ ALIGNED' : isDisagree ? '⚠ DISAGREE' : '—',
+    kind: (_pickIsOutlier || isDisagree) ? 'warn' : isAligned ? 'ok' : 'neutral',
   });
 
   // 2026-09-12 v1.0.1 #12a: backend-driven chips via align.chips_extra[].
@@ -5856,13 +5886,42 @@ function YourBookTiles({
   const homeMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
   const awayMLOutcome = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
 
-  const spreadHomeLine = homeSpreadOutcome?.point ?? closeSpread;
+  // 2026-09-26 · THE LINE ON A TILE MUST BE THE LINE WE WOULD GRADE.
+  //
+  // Andy, on Oregon State @ UTEP: "the read and the odds tiles are bound
+  // to the opening line, not the current one ... the total one matters
+  // most, because the OVER/UNDER tiles are what a user taps to log a
+  // pick." The MARKET header read Total 56.5 while these tiles read
+  // O 55.5 / U 55.5, and line movement confirmed 55.5 -> 56.5.
+  //
+  // Cause: the tiles preferred the per-book snapshot (`outcome.point`)
+  // over the consensus close, and that snapshot can be older than
+  // ctx.close_total. Two surfaces on one screen then disagree.
+  //
+  // The tie-break is not "which is prettier", it is which number the
+  // receipt will be graded against — the consensus close. A user who
+  // taps Under 55.5 and gets graded at 56.5 has been shown the wrong
+  // bet. So the consensus wins the LINE, while the book still supplies
+  // the PRICE, which is genuinely book-specific and not something we
+  // grade against.
+  const _pick = (consensus: any, bookPoint: any) =>
+    (consensus != null ? consensus : bookPoint);
+  const spreadHomeLine = _pick(closeSpread, homeSpreadOutcome?.point);
   const spreadHomeOdds = homeSpreadOutcome?.price;
-  const spreadAwayLine = awaySpreadOutcome?.point ?? (closeSpread != null ? -closeSpread : null);
+  const spreadAwayLine = _pick(closeSpread != null ? -closeSpread : null,
+                               awaySpreadOutcome?.point);
   const spreadAwayOdds = awaySpreadOutcome?.price;
-  const totalLine = overOutcome?.point ?? closeTotal;
+  const totalLine = _pick(closeTotal, overOutcome?.point);
   const overOdds = overOutcome?.price;
   const underOdds = underOutcome?.price;
+  // Surfaced so the user is told when their book is off the consensus
+  // rather than silently shown one number here and another in the header.
+  const _bookTotal = overOutcome?.point;
+  const totalStale = (_bookTotal != null && closeTotal != null
+                      && Number(_bookTotal) !== Number(closeTotal));
+  const _bookSpread = homeSpreadOutcome?.point;
+  const spreadStale = (_bookSpread != null && closeSpread != null
+                       && Number(_bookSpread) !== Number(closeSpread));
   const finalHomeML = homeMLOutcome?.price ?? homeML;
   const finalAwayML = awayMLOutcome?.price ?? awayML;
 
@@ -5990,6 +6049,20 @@ function YourBookTiles({
         {renderTile('under')}
         {renderTile('ml_away')}
       </View>
+
+      {/* 2026-09-26: say so when the book's own number has drifted off the
+          consensus, instead of quietly showing one line here and another
+          in the MARKET header. The tiles now show the consensus (what a
+          logged pick is graded against); this tells the user what their
+          book had when we last saw it. */}
+      {(totalStale || spreadStale) && (
+        <Text style={[styles.hrbSelectionHint, {color: C.textDim}]}>
+          {`lines shown are the current consensus · this book last posted `
+            + [spreadStale ? `spread ${_bookSpread > 0 ? '+' : ''}${_bookSpread}` : null,
+               totalStale ? `total ${_bookTotal}` : null]
+              .filter(Boolean).join(' · ')}
+        </Text>
+      )}
 
       {/* Selection status + Action buttons */}
       <Text style={styles.hrbSelectionHint}>
