@@ -1246,7 +1246,7 @@ function hasAnyPredictedScore(ctx: any): boolean {
 
 function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
-  const preds: {name: string; a: number; h: number}[] = [];
+  let preds: {name: string; a: number; h: number}[] = [];
   const addPred = (name: string, tot: any, mgn: any) => {
     if (tot == null || mgn == null) return;
     const t = parseFloat(tot); const m = parseFloat(mgn);
@@ -1306,6 +1306,30 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
   // available" text inside the Predicted Score Section. Parent now
   // gates via hasAnyPredictedScore(). This is defense-in-depth.
   if (preds.length === 0) return null;
+
+  // ══ 2026-09-26 · COLLAPSE LENSES THAT ARE THE SAME NUMBERS TWICE ══
+  // Verified on UNLV @ Akron: every SP+ field in ncaaf_game_context is
+  // byte-identical to the model field it sits beside —
+  //   projected_spread -12.07 == sp_plus_pred_spread -12.07
+  //   projected_total   52.21 == sp_plus_pred_total   52.21
+  //   model_pred_away_points 29.5 == sp_plus_pred_away_pts 29.5
+  // so SP+ is not an independent lens, it is V3 relabelled. Already
+  // recorded on 2026-09-20 (project_ncaaf_duplicate_total_lens_920) and
+  // never acted on.
+  //
+  // Counting it twice inflated the denominator AND the tally: the card read
+  // "3 of 4 lenses lean UNDER" when only two lenses carry a total at all
+  // (V3 under 52.21, MC over 53.6) — a 1-1 split reported as 3-1. Deduping
+  // by value fixes the count and the range together, and it self-heals: if
+  // SP+ ever becomes genuinely independent, it stops collapsing on its own.
+  const _seen = new Set<string>();
+  const uniqPreds = preds.filter(p => {
+    const k = `${p.a.toFixed(2)}|${p.h.toFixed(2)}`;
+    if (_seen.has(k)) return false;
+    _seen.add(k);
+    return true;
+  });
+  preds = uniqPreds;
 
   const aMin = Math.min(...preds.map(p => p.a)); const aMax = Math.max(...preds.map(p => p.a));
   const hMin = Math.min(...preds.map(p => p.h)); const hMax = Math.max(...preds.map(p => p.h));
