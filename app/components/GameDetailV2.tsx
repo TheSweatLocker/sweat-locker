@@ -683,7 +683,7 @@ export default function GameDetailV2({
             and it self-resolves as n grows. */}
         {showSituationalRec && (
           <Section title="Situational Records"
-                   hint="records × market · colour marks a clear edge; thin samples stay neutral">
+                   hint="records × market · color marks a clear edge; thin samples stay neutral">
             <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
           </Section>
         )}
@@ -697,10 +697,16 @@ export default function GameDetailV2({
             rendered on every sport, so an MLB card claimed its ranks were
             college-football-only. The qualifier is real but it is NCAAF's
             alone. Andy caught it on a Cardinals/Pirates card. */}
+        {/* 2026-09-26: the NCAAF suffix claimed "ranks are FBS-only" and that
+            is not true — league_size on these rows is 139 for SP+, 216 for
+            defensive rates and 266 for offensive ones, against 134 FBS teams.
+            Akron reading "Bot 1%" is real, but it is a percentile of a pool
+            that includes non-FBS teams. Saying so is better than a legend
+            that is wrong, until the pools are actually FBS-filtered. */}
         {showTeamStats && (
           <Section title="Team Stats"
-                   hint={`raw value + rank · green = better${
-                     gamesSport === 'NCAAF' ? ' · ranks are FBS-only' : ''}`}>
+                   hint={`raw value + percentile · green = better matchup side${
+                     gamesSport === 'NCAAF' ? ' · percentile pool includes non-FBS' : ''}`}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
           </Section>
         )}
@@ -1443,8 +1449,23 @@ function _sideFromAgg(agg: any): {money: number; bets: number; div: number; sour
               : null;
   const bets  = typeof agg.bets_pct_avg  === 'number' ? agg.bets_pct_avg  : null;
   if (money == null && bets == null) return null;
-  let div = typeof agg.divergence_avg === 'number' ? agg.divergence_avg : null;
-  if (div == null && money != null && bets != null) div = Math.round(money - bets);
+  // ══ 2026-09-26 · DIVERGENCE IS DERIVED, NEVER READ ══
+  // This used to prefer a stored divergence_avg and only compute the
+  // difference as a fallback. divergence_avg is the AVERAGE OF PER-SOURCE
+  // DIFFERENCES, while the bars above it show the AVERAGE MONEY and the
+  // AVERAGE BETS. Those are not the same quantity whenever the sources
+  // cover different books — average-of-differences ≠ difference-of-averages
+  // — so the header contradicted the two bars directly beneath it:
+  //
+  //   moneyline  67% money / 86.5% bets  -> real -19.5pp, displayed +24pp
+  //   spread     76% money / 46%   bets  -> real +30pp,   displayed +52pp
+  //   total      53% money / 66.7% bets  -> real -13.7pp, displayed  +0pp
+  //
+  // Any user can do this subtraction, so a stored number that disagrees
+  // with the bars is worse than no number. Derive it from exactly what is
+  // rendered; if the aggregate wants a different figure it has to change
+  // the bars too.
+  const div = (money != null && bets != null) ? Math.round(money - bets) : null;
   // 2026-09-07: propagate `sources_agree` down so MoneyMarket can
   // downgrade the SHARP/STEAM label when only one source is reporting.
   // User audit found FSU game showed "SHARP · OVER 99% money" from a
@@ -1489,19 +1510,37 @@ function MoneyFlow({ctx, sport}: any) {
     // Hidden rather than "no data" copy since presence is itself a signal.
     return null;
   }
-  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any}[] = [
-    {key: 'ml', label: 'Moneyline', data: src.ml},
-    {key: 'rl', label: rlLabel(sport), data: src.rl},
-    {key: 'total', label: 'Total', data: src.total},
+  // 2026-09-26: STEAM claims a reverse LINE MOVE, so it needs to know
+  // whether the line actually moved. Same open/close fields the Line
+  // Movement strip below renders, so the two sections cannot contradict
+  // each other — which is exactly what "STEAM +52pp" over "13.5 -> 13.5
+  // flat" was doing. undefined (no opener on file) is NOT treated as
+  // moved: unknown must not license the loudest badge we have.
+  const _moved = (open: any, close: any): boolean | undefined => {
+    if (open == null || close == null) return undefined;
+    const a = Number(open), b = Number(close);
+    if (!isFinite(a) || !isFinite(b)) return undefined;
+    return Math.abs(a - b) >= 0.5;
+  };
+  const movedSpread = _moved(ctx?.open_spread, ctx?.close_spread);
+  const movedTotal  = _moved(ctx?.open_total,  ctx?.close_total);
+  const movedML     = _moved(ctx?.home_ml_open, ctx?.close_home_ml);
+
+  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any; moved: boolean | undefined}[] = [
+    {key: 'ml', label: 'Moneyline', data: src.ml, moved: movedML},
+    {key: 'rl', label: rlLabel(sport), data: src.rl, moved: movedSpread},
+    {key: 'total', label: 'Total', data: src.total, moved: movedTotal},
   ].filter(x => x.data);
   return (
     <View style={{gap: 8}}>
-      {markets.map(m => <MoneyMarket key={m.key} label={m.label} data={m.data} />)}
+      {markets.map(m => (
+        <MoneyMarket key={m.key} label={m.label} data={m.data} lineMoved={m.moved} />
+      ))}
     </View>
   );
 }
 
-function MoneyMarket({label, data}: any) {
+function MoneyMarket({label, data, lineMoved}: any) {
   if (!data) return null;
   const div = data.div ?? 0;
   const money = Math.max(0, Math.min(100, data.money ?? 0));
@@ -1524,8 +1563,21 @@ function MoneyMarket({label, data}: any) {
   // Fix: require actual divergence >= 5pp before tagging SHARP.
   // multiSource + money>=60 alone is downgraded to consensus, not
   // sharp. Extreme still requires large money-vs-bets gap.
-  const sharp = multiSource && Math.abs(div) >= 5 && (Math.abs(div) >= 20 || money >= 60);
-  const extremeSharp = multiSource && (Math.abs(div) >= 50 || (money >= 80 && bets <= 30));
+  // ══ 2026-09-26 · SIGN MATTERS. abs() WAS CALLING THE PUBLIC SIDE SHARP ══
+  // Sharp action means the MONEY share exceeds the TICKET share: few bets
+  // carrying big handle. div < 0 is the opposite — lots of tickets, little
+  // money — which is the retail pattern. Gating on Math.abs() meant the
+  // moneyline row rendered "SHARP · money loading on AWAY while public sits
+  // out" on 67% money against 86.5% of tickets. 86.5% of tickets IS the
+  // public, and they were not sitting out. Confirmed by Andy in two sports.
+  const sharp = multiSource && div >= 5 && (div >= 20 || money >= 60);
+  // STEAM additionally requires the LINE TO HAVE MOVED. "Massive reverse-
+  // line signal" on SPREAD 13.5 -> 13.5 flat is a claim about a move that
+  // did not happen — a reverse line move is by definition the line going
+  // against the money. This is the loudest badge in the app and it was
+  // firing on nothing.
+  const extremeSharp = multiSource && lineMoved === true
+                       && (div >= 50 || (money >= 80 && bets <= 30));
   return (
     <View style={[
       styles.moneyMarket,
@@ -1563,8 +1615,12 @@ function MoneyMarket({label, data}: any) {
       )}
       {sharp && !extremeSharp && (
         <Text style={styles.moneyDivNote}>
-          <Text style={{color: C.sharp, fontWeight: '700'}}>+{Math.abs(div)}pp sharp divergence</Text>
-          {' · '}money loading on {data.pick} while public sits out
+          {/* 2026-09-26: was +{abs(div)}, which printed a plus sign on a
+              negative divergence. `sharp` now requires div >= 5 so this is
+              genuinely positive, but print the real signed number so the
+              header, the bars and this line can never disagree again. */}
+          <Text style={{color: C.sharp, fontWeight: '700'}}>+{div}pp sharp divergence</Text>
+          {' · '}money share ({money}%) running ahead of ticket share ({bets}%) on {data.pick}
         </Text>
       )}
     </View>
@@ -3231,7 +3287,9 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
             <View style={tsStyles.spSide}>
               <Explainer term="SP+" color={C.textMuted} activeColor={C.accent}
                          helpColor={C.text} helpBg={C.accent + '18'}>
-                <Text style={tsStyles.spLabel}>{abbrev3(awayTeam)} SP+ ⓘ</Text>
+                {/* 2026-09-26: literal glyph removed — Explainer renders its
+                    own affordance, so this printed "UNLV SP+ ⓘ ⓘ". */}
+                <Text style={tsStyles.spLabel}>{abbrev3(awayTeam)} SP+</Text>
               </Explainer>
               {spOvrA ? (
                 <View style={tsStyles.spRow}>
@@ -3242,7 +3300,12 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
             </View>
             <View style={tsStyles.spDivider} />
             <View style={tsStyles.spSide}>
-              <Text style={tsStyles.spLabel}>{abbrev3(homeTeam)} SP+</Text>
+              {/* 2026-09-26: home side had no Explainer while away did, so the
+                  tap affordance appeared on one team only. */}
+              <Explainer term="SP+" color={C.textMuted} activeColor={C.accent}
+                         helpColor={C.text} helpBg={C.accent + '18'}>
+                <Text style={tsStyles.spLabel}>{abbrev3(homeTeam)} SP+</Text>
+              </Explainer>
               {spOvrH ? (
                 <View style={tsStyles.spRow}>
                   <Text style={tsStyles.spValue}>{spOvrH.raw_value > 0 ? '+' : ''}{spOvrH.raw_value}</Text>
@@ -3325,6 +3388,75 @@ function advantage(aRank: any, bRank: any,
   return null;
 }
 
+// ══ 2026-09-26 · PER-STAT INFO ══
+// Andy: "there should be info things in each stat to explain to users what
+// they mean" / "an info button on the stat in the card detail to explain
+// what the stat means and what the number means."
+//
+// Deliberately NOT routed through the Explainer glossary. A glossary answers
+// "what is EPA"; it cannot answer "is 0.446 good", which is the half that
+// actually decides a bet. Each entry carries both: what the metric is, and
+// how to read the number in front of you, with a real anchor value so the
+// scale means something.
+//
+// `hi` names which direction is better, so the copy can state it rather than
+// leaving the user to infer it from the colour.
+const INFO_GLYPH = 'ⓘ';
+const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
+  sp_overall:  {name: 'SP+ Overall', what: 'A tempo- and opponent-adjusted rating of overall team quality, in points.',
+                read: 'It is a points-above-average figure, so 0 is an average team. +10 is a strong team, -10 a weak one. The gap between two teams is roughly the spread on a neutral field.'},
+  sp_offense:  {name: 'SP+ Offense', what: 'The offensive half of SP+ — points the offense is worth against an average defense.',
+                read: 'Higher is better. Around 26 is average; low teens is a bottom-tier offense.'},
+  sp_defense:  {name: 'SP+ Defense', what: 'The defensive half of SP+ — points allowed against an average offense.',
+                read: 'LOWER is better here, which is the opposite of the offense number. Around 26 is average; 33+ is a leaky defense.'},
+  off_epa_per_play: {name: 'Offensive EPA / Play', what: 'Expected Points Added per snap — how much each play moves the scoreboard forecast.',
+                read: 'Per-play, so the numbers are small. Above +0.10 is very good, 0.00 is average, below -0.05 is poor.'},
+  def_epa_per_play: {name: 'Defensive EPA Allowed', what: 'Expected Points Added the defense gives up per opposing snap.',
+                read: 'LOWER is better. Below 0.00 means the defense is taking points off the board; above +0.15 is being moved at will.'},
+  def_rush_epa_allowed: {name: 'Defensive Rush EPA', what: 'Expected Points Added allowed per opposing run.',
+                read: 'Lower is better. 0.00 is a solid run defense; above +0.10 means runs are consistently gaining real value.'},
+  off_success_rate: {name: 'Offensive Success Rate', what: 'Share of plays that gain enough yardage to stay on schedule for a first down.',
+                read: 'Higher is better. Around 43% is average; 48%+ is an efficient offense that rarely faces long third downs.'},
+  def_success_rate_allowed: {name: 'Success Rate Allowed', what: 'Share of opposing plays that stayed on schedule.',
+                read: 'LOWER is better. Under 40% is a defense that gets teams behind the sticks; 46%+ means opponents move freely.'},
+  off_explosiveness: {name: 'Offensive Explosiveness', what: 'Average value of the plays that DO succeed — big-play punch rather than frequency.',
+                read: 'Higher is better. Around 1.20 is average. A low number with a decent success rate means an offense that grinds but never breaks one.'},
+  points_allowed_pg: {name: 'Points Allowed / Game', what: 'Average points conceded per game this season.',
+                read: 'Lower is better. Raw and unadjusted, so a soft schedule flatters it — check SP+ Defense alongside it.'},
+  pass_yds_pg: {name: 'Pass Yards / Game', what: 'Average passing yards gained per game.',
+                read: 'Volume, not efficiency. A high number can just mean a team trails often and throws to catch up.'},
+  rush_yds_pg: {name: 'Rush Yards / Game', what: 'Average rushing yards gained per game.',
+                read: 'Volume, not efficiency. Teams that lead tend to run more, so this partly measures game script.'},
+  total_yds_pg: {name: 'Total Yards / Game', what: 'Combined pass and rush yards per game.',
+                read: 'Volume. Two teams can share a number with very different efficiency — EPA/play separates them.'},
+  third_down_pct: {name: 'Third Down %', what: 'Share of third downs converted into a first down.',
+                read: 'Higher is better. Around 40% is average. It is noisy early in a season — a few plays swing it several points.'},
+  turnovers_pg: {name: 'Turnovers / Game', what: 'Giveaways per game.',
+                read: 'Lower is better, and this is the least sticky number on the card — turnover rates regress hard, so do not weight it like the efficiency stats.'},
+  penalty_yds_pg: {name: 'Penalty Yards / Game', what: 'Penalty yardage conceded per game.',
+                read: 'Lower is better, but the effect on a result is small relative to efficiency.'},
+  def_pass_ypg: {name: 'Pass Yards Allowed / Game', what: 'Average passing yards conceded per game.',
+                read: 'Lower looks better but is misleading on its own — teams that lead get passed on more. Pair it with Defensive EPA.'},
+  def_rush_ypg: {name: 'Rush Yards Allowed / Game', what: 'Average rushing yards conceded per game.',
+                read: 'Lower looks better, with the same caveat: teams that trail get run on late.'},
+};
+
+function StatInfoRow({info, onClose}: any) {
+  return (
+    <View style={{
+      backgroundColor: C.surfaceAlt, borderRadius: 8, padding: 10, gap: 4,
+      borderLeftWidth: 3, borderLeftColor: C.accent, marginTop: 2,
+    }}>
+      <Text style={{color: C.text, fontSize: 12, fontWeight: '800'}}>{info.name}</Text>
+      <Text style={{color: C.textDim, fontSize: 11, lineHeight: 16}}>{info.what}</Text>
+      <Text style={{color: C.text, fontSize: 11, lineHeight: 16}}>{info.read}</Text>
+      <TouchableOpacity onPress={onClose} activeOpacity={0.7} style={{alignSelf: 'flex-start', paddingTop: 2}}>
+        <Text style={{color: C.accent, fontSize: 10, fontWeight: '700'}}>Close</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 function StatRow({statKey, awayRow, homeRow}: any) {
   // Prefer whichever has display_label present (both should have same);
   // fall back to prettified stat_key.
@@ -3332,16 +3464,38 @@ function StatRow({statKey, awayRow, homeRow}: any) {
              || statKey.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
   const unit = awayRow?.unit || homeRow?.unit || '';
   // Lower rank is better. Only assign an edge when both sides are ranked.
+  const info = STAT_INFO[statKey];
+  const [showInfo, setShowInfo] = React.useState(false);
   const tier = advantage(awayRow?.rank, homeRow?.rank,
                          awayRow?.league_size || homeRow?.league_size);
   const awayBetter = tier != null && Number(awayRow.rank) < Number(homeRow.rank);
+  // 2026-09-26: the stat NAME is the info affordance. Tapping it explains
+  // the metric and, more usefully, how to read the number — "is 0.446 good"
+  // is the question a rank alone never answers. Attached to the label rather
+  // than a separate icon so the row does not gain a third glyph and the tap
+  // target is the whole name.
   return (
-    <View style={tsStyles.statRow}>
-      <StatCell row={awayRow} unit={unit} align="right"
-                edge={tier ? (awayBetter ? 'good' : 'bad') : null} strong={tier === 'strong'} />
-      <Text style={tsStyles.statLabel}>{label}</Text>
-      <StatCell row={homeRow} unit={unit} align="left"
-                edge={tier ? (awayBetter ? 'bad' : 'good') : null} strong={tier === 'strong'} />
+    <View>
+      <View style={tsStyles.statRow}>
+        <StatCell row={awayRow} unit={unit} align="right"
+                  edge={tier ? (awayBetter ? 'good' : 'bad') : null} strong={tier === 'strong'} />
+        {info ? (
+          <TouchableOpacity style={{flex: 1}} activeOpacity={0.6}
+                            onPress={() => setShowInfo(v => !v)}>
+            <Text style={[tsStyles.statLabel, {textDecorationLine: 'underline',
+                          textDecorationStyle: 'dotted'}]}>
+              {label} <Text style={{color: C.accent, fontSize: 10}}>{INFO_GLYPH}</Text>
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={tsStyles.statLabel}>{label}</Text>
+        )}
+        <StatCell row={homeRow} unit={unit} align="left"
+                  edge={tier ? (awayBetter ? 'bad' : 'good') : null} strong={tier === 'strong'} />
+      </View>
+      {showInfo && info ? (
+        <StatInfoRow info={info} onClose={() => setShowInfo(false)} />
+      ) : null}
     </View>
   );
 }
