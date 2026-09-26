@@ -3298,7 +3298,10 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // Stat groups per sport. All keys resolve to rows in team_stats_rolling
   // (populated by 20260901c + 20260901f migrations). Order matters — rendered
   // top-to-bottom in the card.
+  // 2026-09-26: SOS/SOR appended for every sport — schedule context
+  // belongs next to the raw stats it should be read against.
   const NCAAF_OFFENSE = [
+    'sos', 'sor',
     'pass_yds_pg', 'rush_yds_pg', 'total_yds_pg',
     'third_down_pct', 'off_epa_per_play', 'off_success_rate',
     'off_explosiveness', 'sp_offense',
@@ -3309,6 +3312,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
     'def_epa_per_play', 'def_rush_epa_allowed', 'def_success_rate_allowed',
   ];
   const NFL_OFFENSE = [
+    'sos', 'sor',
     'pass_yds_pg', 'rush_yds_pg', 'total_yds_pg',
     'pass_tds_pg', 'rush_tds_pg',
     'off_pass_epa', 'off_rush_epa',
@@ -3323,6 +3327,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // isn't offense-vs-defense in the same way. "Offense" tab shows scoring/
   // pace; "Defense" tab shows opponent-scoring/defensive rating.
   const NCAAB_OFFENSE = [
+    'sos', 'sor',
     'ppg_for', 'off_rating', 'net_rating', 'avg_margin', 'tempo',
   ];
   const NCAAB_DEFENSE = [
@@ -3331,6 +3336,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // MLB — batting from mlb_team_offense; pitching from mlb_team_pitching
   // (persisted 2026-09-01, populated by mlb_team_pitching_pull.py) + bullpen.
   const MLB_OFFENSE = [
+    'sos', 'sor',
     'team_avg', 'team_obp', 'team_slg', 'team_ops',
     'team_woba', 'team_wrc_plus', 'team_iso',
     'team_bb_pct', 'team_k_pct',
@@ -3345,6 +3351,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // (nba_elo writes PPG, not per-100-poss). Four-factors (efg/tov/orb/
   // ftr + opp) rows appear only once a puller populates them.
   const NBA_OFFENSE = [
+    'sos', 'sor',
     'points_pg', 'net_pts_pg', 'pace',
     'efg_pct', 'tov_pct', 'orb_pct', 'ft_rate',
   ];
@@ -3353,6 +3360,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   ];
   // NHL — expected-goal + special teams + possession
   const NHL_OFFENSE = [
+    'sos', 'sor',
     'xgf_per60', 'high_danger_for',
     'pp_pct', 'corsi_5v5',
   ];
@@ -3536,6 +3544,14 @@ function advantage(aRank: any, bRank: any,
 // leaving the user to infer it from the colour.
 const INFO_GLYPH = 'ⓘ';
 const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
+  // 2026-09-26: SOS and SOR are the two people conflate most, so the copy
+  // leads with the difference rather than a definition.
+  sos: {name: 'Strength of Schedule',
+        what: 'How hard the opponents this team has already played are — their combined win rate, with games against this team removed.',
+        read: 'Higher means a tougher slate faced. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited.'},
+  sor: {name: 'Strength of Record',
+        what: 'How impressive this record is GIVEN that schedule — this team\'s win rate minus the rate an average team would expect against the same opponents.',
+        read: '+0.30 means winning 30 points more often than a neutral team would against this slate. 0.00 is exactly as expected. Negative means the record flatters them. This is the one that separates teams; SOS alone does not.'},
   sp_overall:  {name: 'SP+ Overall', what: 'A tempo- and opponent-adjusted rating of overall team quality, in points.',
                 read: 'It is a points-above-average figure, so 0 is an average team. +10 is a strong team, -10 a weak one. The gap between two teams is roughly the spread on a neutral field.'},
   sp_offense:  {name: 'SP+ Offense', what: 'The offensive half of SP+ — points the offense is worth against an average defense.',
