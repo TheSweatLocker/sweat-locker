@@ -891,6 +891,36 @@ def backfill_mlb(game_date: str, dry_run: bool = False) -> int:
             have = patch.get('conviction', cur_conv) or 0
             if have > 0:
                 return
+
+            # 2026-09-26 — ONLY fill a conviction nobody ever wrote.
+            #
+            # First version of this filled ANY zero, which is wrong and
+            # nearly shipped a bad pick. Jose Quintana ks_under had been
+            # scored at 97 and then deliberately cut to 29 by book
+            # recalibration — "Book Ks Under 3.5 vs proj 4.3 = -0.8 K edge
+            # — NO EDGE (book priced our signal in)". A deliberate cut for
+            # negative edge is a DECISION, and this fallback happily
+            # overwrote it with 80 derived from hit rate. It only failed to
+            # ship because recalibration happened to run afterwards, which
+            # is ordering luck rather than design.
+            #
+            # _pre_recal_conviction is the fingerprint that a scorer ran.
+            # Its presence means the zero is an opinion; its absence means
+            # the row was never scored at all (the coverage_stub case this
+            # fallback exists for). Audited on the 09-26 board: 8 of the 9
+            # rows it fired on had no fingerprint and were legitimate,
+            # Quintana was the one that was not.
+            _scored_before = (
+                existing_signals.get('_pre_recal_conviction') is not None
+                or existing_signals.get('_edge_at_book') is not None
+                or existing_signals.get('book_recalibration') is not None)
+            if _scored_before:
+                existing_signals['_conviction_fill_declined'] = (
+                    'conviction 0 is a deliberate scorer/recalibration '
+                    'decision on this row, not a gap — not filling it')
+                patch['signals'] = existing_signals
+                return
+
             derived = _conviction_from_history()
             if derived is None:
                 return

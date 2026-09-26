@@ -248,7 +248,12 @@ def backfill_prop_jerry_reads(game_date: str, dry_run: bool = False,
                 for r in reads}
         props = _page(tbl, {
             'game_date': f'eq.{game_date}',
-            'select': 'id,player_name,prop_type,direction,tier,conviction,result',
+            # 2026-09-26: pull `signals` too so lock_publish can run the
+            # coherence check — the vetoes (negative book edge, prime_gate)
+            # live in signals, and without them the lock cannot tell a
+            # real PRIME from a contradicted one.
+            'select': 'id,player_name,prop_type,direction,tier,conviction,'
+                      'result,signals',
         })
         # Key on the same tuple the old _lookup_prop_id matched on.
         matched = [p for p in props
@@ -258,7 +263,7 @@ def backfill_prop_jerry_reads(game_date: str, dry_run: bool = False,
         for p in matched:
             if lock_publish(sport, 'prop', p['id'],
                             (p.get('tier') or '').upper(), p.get('conviction'),
-                            'prop_jerry', dry_run=dry_run):
+                            'prop_jerry', dry_run=dry_run, prop_row=p):
                 locked += 1
         print(f'  {sport}: {locked} locked of {len(matched)} matched '
               f'({len(reads)} jerry reads)')

@@ -45,7 +45,8 @@ H_WRITE = {
 
 def lock_publish(sport: str, market: str, source_id, tier: str,
                  conviction: Optional[int], published_by: str,
-                 dry_run: bool = False) -> bool:
+                 dry_run: bool = False,
+                 prop_row: Optional[dict] = None) -> bool:
     """Snapshot tier + conviction at first user-visible publish.
 
     Args:
@@ -100,6 +101,39 @@ def lock_publish(sport: str, market: str, source_id, tier: str,
               f'would freeze an unrankable pick — leaving it open for the '
               f'scorer to finish.')
         return False
+
+    # 2026-09-26 · AND REFUSE ANY PICK WHOSE TIER AND CONVICTION DISAGREE.
+    #
+    # The conviction=0 guard above was necessary but not sufficient. Jose
+    # Quintana ks_under was locked at 17:47 carrying tier PRIME with
+    # conviction 29, a negative edge at the book (-0.8) and its own
+    # prime_gate signal saying "PRIME tier capped". Every one of those says
+    # the pick is not PRIME, and the lock froze PRIME anyway — after which
+    # the revert trigger made it permanent, so reconcile_prop_decision's
+    # correction returned HTTP 200 and changed nothing.
+    #
+    # That is the root cause of this whole class, stated exactly: the lock
+    # will immortalise ANY state, including a self-contradictory one, and
+    # nothing checked coherence before the freeze. Fixing it here rather
+    # than in prop_jerry is deliberate — several callers lock, they drift,
+    # and a guard in one of them is the pick_lock-in-1-of-7 mistake again.
+    #
+    # `decide()` is the single definition of what tier a conviction plus
+    # its vetoes supports. Imported lazily so this module stays importable
+    # in contexts that never lock props.
+    if _tier in ('PRIME', 'STRONG', 'LEAN') and isinstance(prop_row, dict):
+        try:
+            from reconcile_prop_decision import decide, _RANK
+            _want, _why = decide(dict(prop_row, tier=_tier,
+                                      conviction=conviction))
+            if _RANK.get(_want, 9) < _RANK.get(_tier, 0):
+                print(f'  ⚠ publish_lock REFUSED {sport}/{market} '
+                      f'id={source_id}: tier={_tier} but its conviction '
+                      f'({conviction}) and vetoes support {_want} '
+                      f'[{"; ".join(_why)}]. Not freezing a contradiction.')
+                return False
+        except ImportError:
+            pass          # arbiter absent — fall through to the old behaviour
     if dry_run:
         print(f'  [DRY] publish_lock sport={sport} market={market} '
               f'source_id={source_id} tier={tier} conv={conviction} by={published_by}')
