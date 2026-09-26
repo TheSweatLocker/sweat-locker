@@ -273,16 +273,66 @@ def _resolve_tier(legacy: str | None, playbook: str | None,
 # volume) and size on measured inputs: directional edge and family record.
 _TIER_UNITS = {'PRIME': 3.0, 'STRONG': 2.0, 'LEAN': 1.0}
 
+# 2026-09-26 · STAKE FOLLOWS CONVICTION, NOT JUST THE TIER LABEL.
+#
+# Andy, looking at today's card: "everything says 3 units, have a feeling
+# we are going to bleed in the sharp today — one was Maryland ML and they
+# got beat 54-3."
+#
+# He is reading it correctly. Measured on the 09-26 card: 17 of 20 picks
+# were PRIME and 16 of 20 were staked at the 3.0 maximum, so a PRIME at
+# conviction 65 carried exactly the same stake as a PRIME at 91. At that
+# rate the tier label has stopped discriminating and the ladder carries no
+# information — every play is a max play.
+#
+# That is dangerous right now specifically because tier is NOT reliable:
+# the same slate had props tiered PRIME at conviction 0 and 29. Flat-
+# staking off a label that can be wrong is how a card bleeds.
+#
+# So the band still comes from the tier, but position WITHIN the band comes
+# from conviction. A PRIME only earns the 3.0 ceiling near the top of its
+# range. This is what the note above already called for — "size on
+# measured inputs" — using the one measured input we have on every pick.
+_TIER_UNIT_BAND = {
+    # tier: (floor, ceiling, conviction that earns the floor, conv for ceiling)
+    'PRIME':  (2.0, 3.0, 65, 90),
+    'STRONG': (1.5, 2.0, 55, 75),
+    'LEAN':   (1.0, 1.0, 0, 100),
+}
+
 
 def _units_for_tier(tier: str | None) -> float:
     return _TIER_UNITS.get(tier or '', 1.0)
 
 
+def _units_for_tier_conv(tier: str | None, conviction: Any) -> float:
+    """Tier sets the band; conviction sets the position inside it.
+
+    Falls back to the flat tier stake when conviction is missing, so a
+    pick we cannot size is never silently given the maximum.
+    """
+    band = _TIER_UNIT_BAND.get((tier or '').upper())
+    if not band:
+        return _units_for_tier(tier)
+    lo, hi, c_lo, c_hi = band
+    try:
+        c = float(conviction)
+    except (TypeError, ValueError):
+        return lo          # unknown conviction sizes at the FLOOR, not the top
+    if c <= c_lo:
+        return lo
+    if c >= c_hi:
+        return hi
+    frac = (c - c_lo) / float(c_hi - c_lo)
+    return round(lo + frac * (hi - lo), 1)
+
+
 def _units_for_pick(tier: str | None, type_: str | None, odds: Any,
                     side_price_american: Any = None,
-                    prop_type: str | None = None) -> float:
+                    prop_type: str | None = None,
+                    conviction: Any = None) -> float:
     """Mirror app unitsForPick(). Returns unit stake or 0 for filtered picks."""
-    base = _units_for_tier(tier)
+    base = _units_for_tier_conv(tier, conviction)
     if base == 0: return 0.0
     o = odds
     # Prop with no captured odds → skip
@@ -623,7 +673,9 @@ def _ensure_mlb_market_floor(mlb_ctx: list, mlb_props: list,
                 'reason': f"Market floor · top prop conv {best_conv}",
                 'odds': odds,
                 'line': best_prop.get('prop_line'),
-                'units': _units_for_pick(best_prop.get('tier'), 'prop', odds, side_price_american=odds),
+                'units': _units_for_pick(best_prop.get('tier'), 'prop', odds,
+                                         side_price_american=odds,
+                                         conviction=best_prop.get('conviction')),
                 '_floor_backfill': True,
                 'player_team': best_prop.get('player_team'),
                 'playbook_lifted': False,
@@ -705,7 +757,8 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
             'line': line,
             'units': _units_for_pick(pp.get('tier'), pp_type,
                                      side_ml if pp_type == 'ml' else -110,
-                                     side_price_american=side_ml),
+                                     side_price_american=side_ml,
+                                     conviction=pp.get('conviction')),
             # 2026-09-17: preserve conviction + game_id so publish_lock
             # at write-time can snapshot (sport, market, source_id) →
             # tier + conviction. See prop_publish_lock.py.
@@ -813,7 +866,8 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             continue
         prop_odds = p.get('book_over_odds') if p.get('direction') == 'over' else p.get('book_under_odds')
         units = _units_for_pick(effective_tier, 'prop', prop_odds,
-                                 prop_type=p.get('prop_type'))
+                                 prop_type=p.get('prop_type'),
+                                 conviction=p.get('conviction'))
         if units <= 0: continue
         prop_short = (p.get('prop_type') or '').split('_')[0].upper()
         picks.append({
@@ -959,7 +1013,8 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
 
         units = _units_for_pick(pp.get('tier'), pick_type,
                                  pick_odds,
-                                 side_price_american=side_ml)
+                                 side_price_american=side_ml,
+                                 conviction=pp.get('conviction'))
         if units <= 0: continue
         picks.append({
             'sport': sport,
