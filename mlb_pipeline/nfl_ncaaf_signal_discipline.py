@@ -11,11 +11,15 @@ applies two hard gates to nfl_game_context.primary_play + ncaaf_game_context.pri
      7-29, 19.4%, n=36 — against 66.7% on LR-agree). It used to be the
      literal "4.3%", measured once on n=22 and never refreshed.
 
-     OPEN POLICY QUESTION, for Andy: at 19.4% on n=36 this is not a
-     dampened lean, it is a fade. Capping to LEAN still publishes a
-     pick that loses four times out of five. Changing it to PASS would
-     change which picks publish, so it is NOT being done mid-weekend
-     while picks are locked — it needs a deliberate call.
+     RESOLVED 2026-09-26 (Andy: "flip as necessary for those"). At
+     19.4% on n=36 this is not a dampened lean, it is a losing cohort,
+     so an UNLOCKED pick carrying it is now PASS rather than a playable
+     LEAN. A pick the database has already stamped (20260926b) keeps the
+     tier it shipped with and only gets its explanatory text refreshed —
+     re-tiering a published pick would break the lock built three days
+     earlier to stop picks moving between runs, and would rewrite
+     receipts after users had already seen them. All 18 on the 09-26
+     board were locked and playing that day, so none of them moved.
 
   2. Anchor cap: if spread_anchor_weight > 0 AND tier in
      PRIME/STRONG, downgrade to LEAN. Anchored picks hit 30% (n=40).
@@ -202,16 +206,24 @@ def _fetch_games(sport: str, game_date: str) -> list[dict]:
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
                      params={
                          'game_date': f'eq.{game_date}',
-                         'select': 'game_id,home_team,away_team,primary_play,spread_anchor_weight',
+                         'select': 'game_id,home_team,away_team,primary_play,'
+                                   'spread_anchor_weight,pick_locked_at',
                      },
                      timeout=20)
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
 
 def _apply_gates(pp: dict, spread_anchor_weight,
-                 sport: Optional[str] = None) -> tuple[dict, list[str]]:
+                 sport: Optional[str] = None,
+                 locked: bool = False) -> tuple[dict, list[str]]:
     """Return (new_pp, applied_gates_list). new_pp is a copy with
-    tier / conviction possibly capped + gate reasons appended to `sub`."""
+    tier / conviction possibly capped + gate reasons appended to `sub`.
+
+    `locked` = this pick has already been published and stamped by the
+    database pick lock (20260926b). Tier is then left exactly as it
+    shipped; only the explanatory text is refreshed. See the LR-warn
+    gate below for why that distinction matters.
+    """
     if not isinstance(pp, dict):
         return pp, []
 
@@ -237,20 +249,47 @@ def _apply_gates(pp: dict, spread_anchor_weight,
                     (side == 'AWAY' and p_home >= LR_WARN_HARD_THRESHOLD)
                 )
                 if lr_disagrees_strongly:
-                    # Cap to LEAN — the pick still appears but with dampened conviction
-                    # + explicit reason. Don't PASS entirely; user can see the flag.
-                    if tier in ('PRIME', 'STRONG'):
-                        new_pp['tier'] = 'LEAN'
+                    # 2026-09-26 · LEAN -> PASS for picks that have not
+                    # shipped yet.
+                    #
+                    # Andy: "If spots where LR warns against the pick hit
+                    # 4.3% of the time, that isn't a capped LEAN — it's a
+                    # fade." The real figure is worse than a rounding
+                    # error either way: 7-29, 19%, n=36. A LEAN is a
+                    # playable call, and publishing a playable call on a
+                    # cohort that loses four times out of five is not a
+                    # dampened opinion, it is a bad pick with a caveat.
+                    #
+                    # BUT a locked pick is one users have already seen and
+                    # may have bet. All 18 on the 09-26 board were locked
+                    # and playing that day. Re-tiering those would break
+                    # the lock built three days earlier specifically to
+                    # stop picks moving between runs, and would rewrite
+                    # receipts after the fact. So the honest gate applies
+                    # going forward; anything already stamped keeps the
+                    # tier it shipped with and only gets refreshed text.
+                    if locked:
+                        if tier in ('PRIME', 'STRONG'):
+                            new_pp['tier'] = 'LEAN'
                         tier = 'LEAN'  # for cascade with anchor check below
                         new_pp['conviction'] = min(conv, 55)
                         conv = new_pp['conviction']
-                    _record_cap(new_pp, 'LEAN', 55,
-                                f'lr_warn:p_home={p_home:.2f}')
+                        _record_cap(new_pp, 'LEAN', 55,
+                                    f'lr_warn:p_home={p_home:.2f}')
+                        _cap_word = 'capped to LEAN'
+                    else:
+                        new_pp['tier'] = 'PASS'
+                        tier = 'PASS'
+                        new_pp['conviction'] = min(conv, 40)
+                        conv = new_pp['conviction']
+                        _record_cap(new_pp, 'PASS', 40,
+                                    f'lr_warn_pass:p_home={p_home:.2f}')
+                        _cap_word = 'no play'
                     _strip_lr_warn(new_pp)
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
-                             f'capped to LEAN.' + _lr_warn_sentence(sport))
+                             f'{_cap_word}.' + _lr_warn_sentence(sport))
                     _append_flag(new_pp, _flag)
-                    applied.append(f'lr_warn_cap:p={p_home:.2f}')
+                    applied.append(f'lr_warn_{"cap" if locked else "pass"}:p={p_home:.2f}')
             except (TypeError, ValueError):
                 pass
 
@@ -295,7 +334,10 @@ def run(sport: Optional[str] = None,
         for g in games:
             pp = g.get('primary_play') or {}
             aw = g.get('spread_anchor_weight')
-            new_pp, gates = _apply_gates(pp, aw, sp)
+            # A pick the database has already stamped is published;
+            # the LR-warn gate must not re-tier it. See _apply_gates.
+            new_pp, gates = _apply_gates(pp, aw, sp,
+                                         locked=bool(g.get('pick_locked_at')))
             if not gates:
                 no_change += 1
                 continue
