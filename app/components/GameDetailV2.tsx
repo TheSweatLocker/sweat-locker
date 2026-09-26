@@ -2856,10 +2856,19 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
 // the same comparative model the Team Stats panel already uses, which is
 // what makes it uniform across sports.
 //
-// TOTALS ARE DELIBERATELY EXCLUDED. There, a "win" is the OVER, and being
-// more over than your opponent is a tendency, not an advantage — painting
-// it green would assert that overs are good. Those rows stay neutral and
-// let the "O 6 · U 4" label speak.
+// TOTALS USE A DIFFERENT RULE, they are not excluded. 2026-09-26: the first
+// version skipped them on the reasoning that a "win" there is the OVER, so
+// one team being more over than the other is a tendency rather than an
+// advantage. That reasoning was right about the semantics and wrong about
+// the product — it left the Total tab entirely grey, including UNLV at
+// O 0 · U 3 against Akron at O 2 · U 1, which is the most one-sided split
+// on the card. Andy, correctly: "the most one-sided split on the card and
+// it's gray."
+//
+// So totals colour by LEAN DIRECTION rather than by advantage: green marks
+// a team whose games go OVER, red marks UNDER, and the section hint says so
+// on that tab. Nothing is asserted about which is good. Spread and ML keep
+// the head-to-head comparison, where better genuinely means better.
 function _sitRate(rec: any): number | null {
   const w = Number(rec?.wins) || 0;
   const l = Number(rec?.losses) || 0;
@@ -2869,14 +2878,25 @@ function _sitRate(rec: any): number | null {
   return (w + 1) / (w + l + 2);
 }
 
-const SIT_EDGE_MIN = 0.10;  // smoothed-rate gap needed before colouring
+const SIT_EDGE_MIN = 0.10;   // head-to-head gap needed on spread / ML
+const SIT_LEAN_MIN = 0.60;   // own-rate needed to call a total a lean
 
 function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
-  const lr = market === 'total' ? null : _sitRate(leftRec);
-  const rr = market === 'total' ? null : _sitRate(rightRec);
+  const lr = _sitRate(leftRec);
+  const rr = _sitRate(rightRec);
   let leftEdge: 'good' | 'bad' | null = null;
   let rightEdge: 'good' | 'bad' | null = null;
-  if (lr != null && rr != null && Math.abs(lr - rr) >= SIT_EDGE_MIN) {
+  if (market === 'total') {
+    // Each side judged on its OWN lean — the two teams are not competing
+    // for the same outcome here, they each just tend over or under.
+    const lean = (v: number | null): 'good' | 'bad' | null =>
+      v == null ? null
+      : v >= SIT_LEAN_MIN ? 'good'
+      : v <= 1 - SIT_LEAN_MIN ? 'bad'
+      : null;
+    leftEdge = lean(lr);
+    rightEdge = lean(rr);
+  } else if (lr != null && rr != null && Math.abs(lr - rr) >= SIT_EDGE_MIN) {
     leftEdge  = lr > rr ? 'good' : 'bad';
     rightEdge = lr > rr ? 'bad' : 'good';
   }
