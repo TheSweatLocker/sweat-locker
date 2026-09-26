@@ -684,7 +684,8 @@ export default function GameDetailV2({
         {showSituationalRec && (
           <Section title="Situational Records"
                    hint="records × market · color marks a clear edge; thin samples stay neutral">
-            <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+            <SituationalCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
+                             homeML={ctx?.close_home_ml ?? ctx?.home_ml_close} awayML={ctx?.close_away_ml ?? ctx?.away_ml_close} />
           </Section>
         )}
 
@@ -2702,7 +2703,7 @@ const rsStyles = StyleSheet.create({
 // Uses the matview's `filter` dimension without any per-sport branches.
 // When a filter has 0 games for a team (e.g. NCAAF team never played as
 // underdog), renders "—" gracefully.
-function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
+function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: any) {
   const [awayRecs, setAwayRecs] = React.useState<any[]>([]);
   const [homeRecs, setHomeRecs] = React.useState<any[]>([]);
   const [market, setMarket] = React.useState<'spread'|'total'|'ml'>('spread');
@@ -2822,11 +2823,31 @@ function SituationalCard({sport, homeTeam, awayTeam, season}: any) {
   }
 
   // Row spec: [rowLabel_left, filter_for_away, rowLabel_right, filter_for_home]
+  // ══ 2026-09-26 · FAV/DOG MUST FOLLOW THIS GAME'S ROLES ══
+  // This row was hardcoded away->as_dog, home->as_fav. On UNLV @ Akron the
+  // away team is a 13.5-point FAVOURITE, so the card showed UNLV under
+  // "AS DOG" (empty, because they have not been a dog) and Akron under
+  // "AS FAV" — each team's opposite role, and the two splits that actually
+  // matter here were not shown at all.
+  //
+  // Favourite is derived from the MONEYLINE, not the spread. close_spread's
+  // sign convention differs by sport and has already caused one grading bug
+  // (project_close_spread_sign_bug_914); the cheaper ML is the favourite in
+  // every sport, with no convention to get wrong. Falls back to the old
+  // fixed layout when no prices are available.
+  const _hml = Number(homeML), _aml = Number(awayML);
+  const _havePrices = isFinite(_hml) && isFinite(_aml);
+  const homeIsFav = _havePrices ? _hml < _aml : true;
+  const awayRoleFilter = homeIsFav ? 'as_dog' : 'as_fav';
+  const homeRoleFilter = homeIsFav ? 'as_fav' : 'as_dog';
+  const awayRoleLabel  = homeIsFav ? 'As Dog' : 'As Fav';
+  const homeRoleLabel  = homeIsFav ? 'As Fav' : 'As Dog';
+
   const rows: [string, string, string, string][] = [
     ['Overall',   'overall', 'Overall',   'overall'],
     ['Last 10',   'l10',     'Last 10',   'l10'],
     ['Away',      'road',    'Home',      'home'],
-    ['As Dog',    'as_dog',  'As Fav',    'as_fav'],
+    [awayRoleLabel, awayRoleFilter, homeRoleLabel, homeRoleFilter],
   ];
 
   return (
@@ -5662,6 +5683,27 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
     if (!isFinite(n) || n === 0) return null;
     return n > 0 ? 1 + n / 100 : 1 + 100 / Math.abs(n);
   };
+  // ══ 2026-09-26 · A TOTAL IS SHOPPED BY THE NUMBER FIRST, THEN THE JUICE ══
+  // The comment above says "we shop by juice, not line", which is true for
+  // moneylines and defensible for spreads, and wrong for totals. Comparing
+  // only price starred DraftKings O53.5 while seven books offered O52.5 —
+  // a better number for an over bettor at almost identical juice — and four
+  // offered O54, better for an under bettor. 53.5 is the middle: the one
+  // number no side should want. Third build Andy has caught this on.
+  //
+  // The star on the TOTAL column now means "best OVER": lowest line wins,
+  // and price breaks ties. Half a point of total is worth far more than the
+  // 2 cents of juice that was deciding it before.
+  const bestLines: Record<string, {book: string; line: number; price: any}> = {};
+  const markLineAsc = (bookTitle: string, marketKey: string, line: any, price: any) => {
+    const ln = Number(line);
+    if (!isFinite(ln)) return;
+    const cur = bestLines[marketKey];
+    if (!cur || ln < cur.line
+        || (ln === cur.line && (_toDec(price) ?? 0) > (_toDec(cur.price) ?? 0))) {
+      bestLines[marketKey] = {book: bookTitle, line: ln, price};
+    }
+  };
   const bestPrices: Record<string, {book: string; price: number}> = {};
   const markKey = (bookTitle: string, marketKey: string, price: any) => {
     const dec = _toDec(price);
@@ -5680,12 +5722,14 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
     const awayML = h2hMkt?.outcomes?.find((o: any) => o.name === awayTeam);
     const homeML = h2hMkt?.outcomes?.find((o: any) => o.name === homeTeam);
     markKey(bm.title || bm.key, 'homeSpread', homeSpread?.price);
-    markKey(bm.title || bm.key, 'overTotal', overTot?.price);
+    markLineAsc(bm.title || bm.key, 'overTotal', overTot?.point, overTot?.price);
     markKey(bm.title || bm.key, 'awayML', awayML?.price);
     markKey(bm.title || bm.key, 'homeML', homeML?.price);
   }
   const isBestFor = (bookTitle: string, marketKey: string): boolean =>
-    bestPrices[marketKey]?.book === bookTitle;
+    marketKey === 'overTotal'
+      ? bestLines[marketKey]?.book === bookTitle
+      : bestPrices[marketKey]?.book === bookTitle;
 
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{paddingRight: 12}}>
@@ -5694,7 +5738,10 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
         <View style={styles.bookTableHeader}>
           <Text style={[styles.bookTh, {flex: 1.6}]}>Book</Text>
           <Text style={[styles.bookTh, {flex: 1.6, textAlign: 'right'}]}>Spread</Text>
-          <Text style={[styles.bookTh, {flex: 1.2, textAlign: 'right'}]}>Total</Text>
+          {/* 2026-09-26: the star here means best OVER (lowest number), which
+              is side-specific in a way the spread and ML stars are not. Say so
+              in the header rather than leaving a bare star to be misread. */}
+          <Text style={[styles.bookTh, {flex: 1.2, textAlign: 'right'}]}>Total (O)</Text>
           <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML A</Text>
           <Text style={[styles.bookTh, {flex: 1, textAlign: 'right'}]}>ML H</Text>
         </View>
