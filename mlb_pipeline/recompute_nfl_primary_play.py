@@ -226,9 +226,54 @@ def _normalize_pp_side_label(pp: dict, ctx: dict) -> dict:
     return pp
 
 
+# ══ 2026-09-26 · HONOUR THE PUBLISH LOCK ══
+# Andy: "why did the Akron game primary play change, now says Over when it
+# said Akron +13.5 — I thought NCAAF picks were locked for the weekend."
+#
+# They were supposed to be. pick_lock.lock_active('NCAAF') returns True from
+# Thu 8am ET through Sunday and did return True at the moment the pick
+# changed. But the lock was only wired into nfl_game_context.py's write path, and this
+# script PATCHes primary_play directly — so it walked straight past it.
+#
+# That is the exact failure pick_lock's own docstring records for MLB:
+# "its recompute script honoured the lock while the context builder wrote
+# primary_play directly". Same bug, mirror image: here the context builder
+# honours it and the recompute script does not.
+#
+# A published pick now survives; a game with no published pick is still
+# written, because a gap is not a change.
+def _pp_locked(game_id, new_pp):
+    """True when a published pick exists and must not be overwritten."""
+    try:
+        from pick_lock import lock_active
+    except Exception as _e:
+        print(f'  ⚠ pick_lock unavailable ({type(_e).__name__}) — writing UNLOCKED')
+        return False
+    if not lock_active('NFL'):
+        return False
+    try:
+        rr = requests.get(f'{SB}/rest/v1/nfl_game_context', headers=H_W, timeout=15,
+                          params={'game_id': f'eq.{game_id}',
+                                  'select': 'primary_play'})
+        rows = rr.json() if rr.status_code == 200 else []
+    except Exception:
+        return True   # cannot verify under an active lock -> refuse to write
+    if not rows:
+        return False
+    published = rows[0].get('primary_play')
+    if not published:
+        return False  # a gap is not a change
+    old = published.get('label') if isinstance(published, dict) else published
+    new = new_pp.get('label') if isinstance(new_pp, dict) else new_pp
+    if old != new:
+        print(f'  🔒 NFL lock: kept published {old!r} (recompute wanted {new!r})')
+    return True
+
 def patch_pp(game_id: str, pp: dict) -> bool:
     # nfl_game_context has no primary_play_computed_at col (same as
     # ncaaf_game_context). Skip the stamp.
+    if _pp_locked(game_id, pp):
+        return False
     payload = {'primary_play': pp}
     for attempt in range(3):
         try:

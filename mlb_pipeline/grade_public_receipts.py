@@ -36,6 +36,7 @@ CLI
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -106,6 +107,33 @@ HOME_FAV_IS_NEGATIVE = {'MLB': True, 'NCAAF': True, 'NCAAB': True,
                         'NBA': True, 'NHL': True, 'NFL': False}
 
 GAME_MARKETS = {'ml', 'rl', 'spread', 'total'}
+
+# 2026-09-26: POTD / Dawg receipts store a SURFACE code in `market` rather
+# than a real market -- deliberately, so rows already counted under those
+# codes stay countable (see public_receipt._bet_market). The consequence was
+# that they never passed the GAME_MARKETS filter in run(), so they were
+# dropped BEFORE grade_one ever saw them and sat ungraded forever. Andy found
+# a POTD (Chicago White Sox ML, conviction 88) ungraded while the identical
+# pick graded WIN as a game_read on the same slate; the White Sox won 6-1.
+#
+# The real market is already recorded in audit.bet_market for exactly this
+# purpose. Resolve it here so countability and gradeability stop conflicting.
+SURFACE_MARKETS = {'potd', 'dawg', 'dotd'}
+
+
+def _effective_market(rec):
+    """Real market for grading; surface codes resolve via audit.bet_market."""
+    m = str(rec.get('market') or '').lower()
+    if m not in SURFACE_MARKETS:
+        return m
+    a = rec.get('audit')
+    if isinstance(a, str):
+        try:
+            a = json.loads(a)
+        except Exception:
+            a = None
+    bm = (a or {}).get('bet_market') if isinstance(a, dict) else None
+    return str(bm).lower() if bm else m
 
 # 2026-09-21: grading the prop backlog issues ~1,000 sequential PATCHes and
 # the host reset the connection partway through — and because each patch was
@@ -179,7 +207,19 @@ def pick_side(label: str, home: str, away: str) -> str | None:
 
 def grade_one(rec: dict, res: dict, sport: str) -> tuple[str | None, str]:
     """-> (result, reason). result None means leave ungraded."""
-    market = str(rec.get('market') or '').lower()
+    market = _effective_market(rec)
+    # ══ 2026-09-26 · SURFACE CODES ARE NOT MARKETS ══
+    # POTD and Dawg receipts carry market='potd' / 'dawg' — a SURFACE code,
+    # deliberately, so the rows already counted under those codes stay
+    # countable (see public_receipt._bet_market). But grade_one only knows
+    # ml / rl / total, so every one of them fell through all three branches
+    # and stayed ungraded forever. Andy found a POTD (Chicago White Sox ML,
+    # conviction 88) sitting ungraded while the SAME pick graded WIN as a
+    # game_read on the same slate.
+    #
+    # public_receipt already records the real market in audit.bet_market
+    # precisely for this. Use it for grading and leave the `market` column
+    # alone, so countability and gradeability stop being in conflict.
     hs, as_ = _f(res.get('home_score')), _f(res.get('away_score'))
     if hs is None or as_ is None:
         return None, 'no final score'
@@ -263,7 +303,7 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
     if surface:
         url += f'&surface=eq.{surface}'
     recs = [r for r in paged(url)
-            if str(r.get('market') or '').lower() in GAME_MARKETS]
+            if _effective_market(r) in GAME_MARKETS]
     print(f'=== grade_public_receipts · {lo}..{hi} · '
           f'surface={surface or "ALL"} {"(DRY)" if dry_run else "(APPLY)"} ===')
     print(f'  ungraded game-market receipts: {len(recs)}')

@@ -232,16 +232,28 @@ _RESULT_MAP = {
     'win': 'WIN', 'w': 'WIN', 'hit': 'WIN',
     'loss': 'LOSS', 'l': 'LOSS', 'lose': 'LOSS', 'miss': 'LOSS',
     'push': 'PUSH', 'tie': 'PUSH',
-    'pending': 'PENDING', 'no-pick': None, 'none': None, '': None,
+    # ══ 2026-09-26 · PENDING IS NOT A RESULT ══
+    # This used to store the string 'PENDING'. grade_public_receipts selects
+    # `result=is.null` to find work, so a non-null sentinel meaning "not
+    # graded yet" made the row invisible to the grader FOREVER — it looked
+    # graded to the query and ungraded to a human. 103 receipts were stuck
+    # that way, 90 of them Sweat Card, including a POTD (Chicago White Sox
+    # ML, conviction 88) whose game had finished and which graded WIN as a
+    # game_read on the same slate.
+    #
+    # Pending is the ABSENCE of a result, and NULL already means exactly
+    # that. Two spellings for one state is what created the hole.
+    'pending': None, 'no-pick': None, 'none': None, '': None,
 }
 
 
 def norm_result(v) -> str | None:
     """Source tables spell results however they like — daily_dawg says
     'Win'/'Loss'/'Push', daily_best_bet_history adds 'Pending'/'no-pick'.
-    public_receipts is uppercase (WIN/LOSS/PUSH/PENDING). A record split
-    across two spellings of the same outcome is a record nobody can
-    total, so normalise at the boundary.
+    public_receipts is uppercase (WIN/LOSS/PUSH) with NULL for not-yet-
+    graded. A record split across two spellings of the same outcome is a
+    record nobody can total, so normalise at the boundary — and "pending"
+    normalises to NULL, not to a fourth value (see _RESULT_MAP).
     """
     if v is None:
         return None
