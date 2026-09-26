@@ -1654,7 +1654,30 @@ function MoneyMarket({label, data, lineMoved}: any) {
   // moneyline row rendered "SHARP · money loading on AWAY while public sits
   // out" on 67% money against 86.5% of tickets. 86.5% of tickets IS the
   // public, and they were not sitting out. Confirmed by Andy in two sports.
-  const sharp = multiSource && div >= 5 && (div >= 20 || money >= 60);
+  // ══ 2026-09-26 · A ONE-SIDED MARKET HAS NOTHING TO DIVERGE FROM ══
+  // Andy, third card in a row: "95% money badged SHARP ... at that level
+  // there's no two-sided market to diverge from" (ORST 99%, MIA@CHC 99%,
+  // CAR@CLE 95%). He is right — when 95% of the handle and 90% of the
+  // tickets are on one side, everyone is on that side and the remaining
+  // gap is noise on a tiny base, not sharp money picking a side. Badging
+  // it tells the user that a near-unanimous market is a signal.
+  const oneSided = money >= 92 || bets >= 92;
+  const sharp = multiSource && !oneSided && div >= 5 && (div >= 20 || money >= 60);
+
+  // ══ 2026-09-26 · THE PUBLIC-HEAVY SIDE IS A SIGNAL TOO ══
+  // Andy: "the largest divergence on the card is unbadged. SPREAD AWAY
+  // -28pp — money 52%, bets 80.5% ... rendered as a plain gray row with
+  // no explanatory copy. Meanwhile +10pp on the moneyline gets a SHARP
+  // badge and a full sentence. The badge threshold only looks at positive
+  // divergence."
+  //
+  // Correct, and it was my own doing: when I fixed abs() calling the
+  // public side SHARP, I gated on div >= 5 and left the negative case
+  // rendering nothing at all. But heavy tickets with light money is the
+  // textbook fade pattern — the strongest thing on that card — and it was
+  // the one row with no label. It gets its own badge rather than being
+  // folded into SHARP, because it means the opposite thing.
+  const publicHeavy = multiSource && !oneSided && div <= -15;
   // STEAM additionally requires the LINE TO HAVE MOVED. "Massive reverse-
   // line signal" on SPREAD 13.5 -> 13.5 flat is a claim about a move that
   // did not happen — a reverse line move is by definition the line going
@@ -1679,6 +1702,10 @@ function MoneyMarket({label, data, lineMoved}: any) {
             <View style={styles.sharpBadge}>
               <Text style={styles.sharpBadgeText}>SHARP</Text>
             </View>
+          ) : publicHeavy ? (
+            <View style={[styles.sharpBadge, {backgroundColor: C.warn}]}>
+              <Text style={[styles.sharpBadgeText, {color: '#000'}]}>PUBLIC</Text>
+            </View>
           ) : sources === 1 ? (
             <View style={[styles.sharpBadge, {backgroundColor: 'transparent', borderWidth: 1, borderColor: C.textMuted}]}>
               <Text style={[styles.sharpBadgeText, {color: C.textMuted}]}>1 SRC</Text>
@@ -1695,6 +1722,12 @@ function MoneyMarket({label, data, lineMoved}: any) {
         <Text style={styles.moneyDivNote}>
           <Text style={{color: C.sharp, fontWeight: '800'}}>🚨 STEAM — {money}% money vs {bets}% bets on {data.pick}</Text>
           {' · '}massive reverse-line signal, sharps hammering while public backs the other side
+        </Text>
+      )}
+      {publicHeavy && (
+        <Text style={styles.moneyDivNote}>
+          <Text style={{color: C.warn, fontWeight: '800'}}>{`${bets}% of bets but only ${money}% of the money on ${data.pick || 'this side'}`}</Text>
+          {' · '}tickets are piling in without the handle behind them — the public-heavy pattern, and the side to fade rather than follow
         </Text>
       )}
       {sharp && !extremeSharp && (
