@@ -710,7 +710,8 @@ export default function GameDetailV2({
           <Section title="Team Stats"
                    hint={`raw value + percentile · green = better matchup side${
                      gamesSport === 'NCAAF' ? ' · percentile pool includes non-FBS' : ''}`}>
-            <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season} />
+            <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
+                           statsSource={ctx?.stats_source} />
           </Section>
         )}
 
@@ -3187,7 +3188,7 @@ const sitStyles = StyleSheet.create({
 //   - SP+ overall shown as a header banner above the sub-tabs (composite
 //     rating that spans offense + defense)
 //   - Silent hide when team_stats_rolling returns 0 for both teams
-function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
+function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   const [awayStats, setAwayStats] = React.useState<any[]>([]);
   const [homeStats, setHomeStats] = React.useState<any[]>([]);
   const [side, setSide] = React.useState<'off'|'def'>('off');
@@ -3349,8 +3350,33 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season}: any) {
       {/* SP+ overall banner. 2026-09-01: SP+ label wrapped in Explainer
           — casual users don't know what SP+ means. Tap on either side's
           label opens the glossary help inline. */}
+      {/* ══ 2026-09-26 · SAY WHICH SEASON THE RATING IS FROM ══
+          Andy: "how does SP move that much if there is no game going on?"
+          It did not move — the SOURCE changed underneath it. ncaaf_game_context
+          served prior_season_regressed through 09-19 and current from 09-24,
+          with no games in between:
+
+            Akron  -6.73 (last season, shrunk toward the mean) -> -20.8 (real)
+            UNLV    2.37 (same)                                ->  -3.3 (real)
+
+          A 14-point jump that is not form, it is the regression coming off.
+          ctx already records stats_source; the card just never showed it.
+          Same pattern as the situational prior-season badge. */}
       {(spOvrH || spOvrA) && (
         <View>
+          {statsSource && statsSource !== 'current' ? (
+            <View style={{flexDirection: 'row', alignItems: 'center', gap: 6, paddingBottom: 6}}>
+              <View style={{backgroundColor: C.warnDim, borderRadius: 4,
+                            paddingVertical: 2, paddingHorizontal: 6}}>
+                <Text style={{color: C.warn, fontSize: 9, fontWeight: '700', letterSpacing: 0.04}}>
+                  LAST SEASON
+                </Text>
+              </View>
+              <Text style={{color: C.textDim, fontSize: 10}}>
+                too few games this year — prior-season rating, pulled toward average
+              </Text>
+            </View>
+          ) : null}
           <View style={tsStyles.spBanner}>
             <View style={tsStyles.spSide}>
               <Explainer term="SP+" color={C.textMuted} activeColor={C.accent}
