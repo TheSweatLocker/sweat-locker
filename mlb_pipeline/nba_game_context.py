@@ -419,6 +419,29 @@ def _apply_ensemble(row: dict) -> None:
     row['primary_play'] before upsert. Ensemble is sport-universal — as
     long as signal_sources rows for NBA are enabled, this works.
     Fallback: leaves primary_play None if ensemble errors or returns None."""
+    # 2026-09-26 · DO NOT PICK GAMES THE SEASON HAS NOT REACHED.
+    #
+    # Measured this date: every dated game in this table was
+    # PRESEASON. NBA games ran before sport_registry's own
+    # declared season_start, and picks were being generated on
+    # them anyway — exhibition games where starters play a
+    # fraction of the minutes and the model has no current-season
+    # data. NHL's preseason picks had already been GRADED into the
+    # public record (20-12 across 32 receipts, 3 of them on The
+    # Sharp) before anyone noticed.
+    #
+    # sport_registry already carried state='preseason' and a
+    # season_start for every sport, and auto_flip_sport_state keeps
+    # it current — the pick path was simply the one component that
+    # never read it. This is the existing declaration being
+    # enforced, not a new competing source of truth.
+    try:
+        from sport_season_gate import assert_publishable
+        if not assert_publishable('NBA', row.get('game_date')):
+            return
+    except ImportError:
+        pass          # gate absent — fail open, never mute a live sport
+
     try:
         from ensemble_scorer import score_game as _ensemble_score
         from game_context import _compose_ensemble_sub
