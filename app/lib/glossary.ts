@@ -50,7 +50,14 @@ export const GLOSSARY: Record<string, {label?: string; help: string}> = {
   'GOAT': {help: 'Proprietary independent win-probability model. Fuses team quality, player projections, live matchup data, and historical outcomes. Runs in parallel to the primary pick — agreement strengthens conviction; dissent flags the game for closer look.'},
 
   // ─── COHORT TAGS (fired via signals, hit-rate anchored) ───
-  'HEAVY_HOME_DOG': {help: 'Situational cohort — the home team is a +7 or larger underdog. Historically covers 65% of the time (n=81 since 2022). Uncommon spot but a legitimate market bias.'},
+  // 2026-09-26: the hardcoded "covers 65% (n=81 since 2022)" sat directly
+  // beneath a chip reading "hits 62.42% (n=149)" — same cohort, two rates,
+  // two samples, adjacent on screen. Same defect as the literal 4.3%
+  // LR-warn figure: measured once, frozen into copy, and left behind when
+  // the live record moved. The chip already renders the current rate and
+  // sample from cohort_tag_records, so the explainer says what the cohort
+  // IS and defers the number to the one surface that computes it.
+  'HEAVY_HOME_DOG': {help: 'Situational cohort — the home team is a +7 or larger underdog. An uncommon spot and a legitimate market bias: books shade heavy road favorites, so the home dog has historically covered more often than the price implies. The chip shows this cohort’s live hit rate and sample.'},
   'HEAVY_HOME_FAV': {help: 'Home team is a 7-point-or-more favorite. Historically a trap zone — heavy home chalks cover -1.5 only ~29% of the time; look for the underdog spread or the moneyline dog. When the chip is yellow ("fade"), the hit rate on this cohort is below 52% in the size shown.'},
   'HOME_FAV': {help: 'Home team is favored (any margin). A broad cohort — the specific hit rate on the chip is what to read. Yellow ("fade") means home favorites have covered below 52% in this sample.'},
   'DIV_HOME_UNDERDOG': {help: 'Division game where the home team is the underdog. Historically bites into the road favorite\'s spread — divisional familiarity + home crowd tightens the game.'},
