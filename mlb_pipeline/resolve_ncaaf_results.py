@@ -127,6 +127,42 @@ def compute_outcome_patch(cfbd_game: dict, existing: dict) -> Optional[dict]:
     return payload
 
 
+_DB_ALIAS_CACHE: dict = {}
+
+
+def _db_aliases() -> dict:
+    """{folded ctx_name: folded cfbd_canonical} from ncaaf_team_name_aliases.
+
+    Cached for the process. Fails soft to an empty dict — an unreachable
+    table must never stop a resolver run, it just falls back to the
+    hardcoded maps below.
+    """
+    if 'v' in _DB_ALIAS_CACHE:
+        return _DB_ALIAS_CACHE['v']
+    out: dict = {}
+    try:
+        import unicodedata as _u
+
+        def _basic(s):
+            s = _u.normalize('NFKD', s or '')
+            s = ''.join(c for c in s if not _u.combining(c))
+            return s.lower().replace("'", '').replace('-', ' ').strip()
+
+        r = requests.get(f'{SB}/rest/v1/ncaaf_team_name_aliases',
+                         headers=H_READ,
+                         params={'select': 'ctx_name,cfbd_canonical'},
+                         timeout=15)
+        if r.status_code == 200:
+            for row in (r.json() or []):
+                a, b = _basic(row.get('ctx_name')), _basic(row.get('cfbd_canonical'))
+                if a and b and a != b:
+                    out[a] = b
+    except Exception:
+        pass
+    _DB_ALIAS_CACHE['v'] = out
+    return out
+
+
 def _fold_name(name: str) -> str:
     """Normalize team name for cross-source matching.
 
@@ -142,6 +178,33 @@ def _fold_name(name: str) -> str:
     n = _u.normalize('NFKD', name)
     n = ''.join(c for c in n if not _u.combining(c))
     n = n.lower().replace("'", '').replace('-', ' ')
+
+    # ══ 2026-09-27 · CONSULT THE ALIAS TABLE, NOT JUST THIS FILE ══
+    # Andy: "is the ncaaf issue correlated to issue with fuzzmatch and
+    # matching team names in general to database?" It is, and the reason
+    # is that NCAAF name matching is implemented THREE times and the
+    # copies drift:
+    #   1. ncaaf_team_name_aliases (DB)  -> game context / team stats
+    #   2. _NCAAF_ALIASES + _MASCOTS     -> this resolver, hardcoded
+    #   3. teamAbbrev.ts                 -> the client
+    #
+    # Measured today: 24 of 266 team names in the 2026 results had never
+    # matched a CFBD game, 18 of them purely because a mascot was
+    # appended — including Wake Forest Demon Deacons, a Power-4 team.
+    # Thirteen verified aliases were added to the DB table, but seven of
+    # their mascots (dukes, paladins, bengals, leopards, black bears,
+    # texans, vaqueros, wolves) are absent from _MASCOTS below, so the
+    # resolver could not see them.
+    #
+    # The comment above says this file stays "DB-independent" on purpose.
+    # That is what let the copies drift apart, and it costs real graded
+    # games — Saturday's slate had 65 games and 4 that had finished hours
+    # earlier still could not be matched. The table is now consulted
+    # FIRST and this file's own maps remain as the offline fallback, so
+    # one place can be corrected and every consumer sees it.
+    _tbl = _db_aliases()
+    if _tbl:
+        n = _tbl.get(n, n)
     # 2026-09-06: canonical rewrite BEFORE mascot-strip so abbreviations
     # and renamed teams map to the canonical form used by CFBD/ESPN. Fixes
     # 4-of-9 Week 1 ungraded games (FIU, LIU Sharks, Youngstown St
