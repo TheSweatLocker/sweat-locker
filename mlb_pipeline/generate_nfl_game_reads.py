@@ -1042,11 +1042,36 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
     h, a = _team(stats, home), _team(stats, away)
     spread, total, hml, aml = extract_market(game)
 
+    # 2026-09-26 · THE READ MUST QUOTE THE SAME EPA THE CARD SHOWS.
+    #
+    # Andy: "The read and the stat table give different values for the
+    # same stat. Jerry's read: 1st, 12.973. Team stats table: 0.194
+    # (97th %ile). The EPA fix landed in one surface and not the other,
+    # and the two now contradict each other within a single card."
+    #
+    # Right. recompute_nfl_epa_units.py put team_stats_rolling on a
+    # per-play footing to match NCAAF, but this generator reads
+    # nfl_team_stats directly and got the untouched season TOTAL. So the
+    # same card carried 12.973 in the prose and 0.194 in the table.
+    #
+    # Divided here by the same denominators the stats fix used, so both
+    # surfaces derive from one definition. The attempts floor mirrors
+    # that script: below ~25 attempts a per-play rate is one series of
+    # noise, and the raw total is not a usable substitute either, so the
+    # field goes None and the prose simply omits it.
+    _MIN_ATT = 25
+
+    def _per_play(total, attempts):
+        tv, av = _f(total), _f(attempts)
+        if tv is None or not av or av < _MIN_ATT:
+            return None
+        return round(tv / av, 3)
+
     def eff(t):
         return {
             "games": t.get("games"),
-            "pass_epa": _f(t.get("pass_epa")),
-            "rush_epa": _f(t.get("rush_epa")),
+            "pass_epa": _per_play(t.get("pass_epa"), t.get("pass_attempts")),
+            "rush_epa": _per_play(t.get("rush_epa"), t.get("rush_attempts")),
             "pass_cpoe": _f(t.get("pass_cpoe")),
             "sacks_suffered": t.get("sacks_suffered"),
             "def_sacks": t.get("def_sacks"),
