@@ -1942,6 +1942,9 @@ function hasAnyLensValue(ctx: any, gamesSport: string): boolean {
 }
 
 function LensGrid({ctx, gamesSport}: any) {
+  // Lenses deliberately omitted this card, with the reason. Rendered as a
+  // footnote so the tile count is never silently different between games.
+  const _hiddenLenses: string[] = [];
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   // 2026-09-01: NCAAF gets MC lens too — mirrors NFL/MLB. Simulator
   // populates mc_probabilities via mlb_pipeline/ncaaf_mc_simulator.py
@@ -2073,6 +2076,13 @@ function LensGrid({ctx, gamesSport}: any) {
     const _v4m = ctx?.v4_spread ?? ctx?.model_pred_spread;
     const _v4t = ctx?.v4_total ?? ctx?.model_pred_total;
     const _v4Live = _v4m != null || _v4t != null;
+    // 2026-09-26: Andy — "V4 is gone entirely ... if it's conditional,
+    // the card should say so rather than silently changing the lens
+    // count." Fair: hiding a dead tile is right, doing it invisibly is
+    // not, because the reader counts the tiles to judge how many
+    // independent opinions back the pick. Recorded so the grid can say
+    // which lens is absent and why.
+    if (!_v4Live) _hiddenLenses.push('V4 not reporting');
     return [
       {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
       ...(_v4Live ? [{name: 'v4', m: _v4m, t: _v4t}] : []),
@@ -2107,6 +2117,11 @@ function LensGrid({ctx, gamesSport}: any) {
 
   return (
     <View>
+      {_hiddenLenses.length > 0 && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic', marginBottom: 4}}>
+          {_hiddenLenses.join(' · ')}
+        </Text>
+      )}
       <View style={styles.lensGrid}>
         {rows.map((r, i) => {
           const mgnSide = signSide(r.m);
@@ -3167,6 +3182,9 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
   const awayRoleLabel  = homeIsFav ? 'As Dog' : 'As Fav';
   const homeRoleLabel  = homeIsFav ? 'As Fav' : 'As Dog';
 
+  // Splits skipped because neither team has played one yet — named in a
+  // footnote so the row count is never silently different between cards.
+  const _droppedSplits: string[] = [];
   const rows: [string, string, string, string][] = [
     ['Overall',   'overall', 'Overall',   'overall'],
     ['Last 10',   'l10',     'Last 10',   'l10'],
@@ -3219,12 +3237,22 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
           "7-3 ATS road" for Portland State with nothing for Oregon —
           asymmetric records read as data bug to users. If neither side
           has data for the filter, skip the row entirely. */}
+      {/* 2026-09-26: Andy — "the AWAY / HOME row is missing from
+          situational records on this card. CAR@CLE had four rows; this
+          has three." Correct, and dropping it is right: on KC @ MIA both
+          of Kansas City's games were at home and both of Miami's were on
+          the road, so neither team has a single game in that split.
+          Rendering two empty boxes would be worse.
+
+          But a silently shorter list makes the reader wonder what they
+          missed — the same objection as the hidden V4 lens. Dropped
+          splits are now named underneath. */}
       {rows.map(([labelL, filterA, labelR, filterH], i) => {
         const lr = awayByFilter[filterA];
         const rr = homeByFilter[filterH];
         const lTot = (Number(lr?.wins) || 0) + (Number(lr?.losses) || 0) + (Number(lr?.pushes) || 0);
         const rTot = (Number(rr?.wins) || 0) + (Number(rr?.losses) || 0) + (Number(rr?.pushes) || 0);
-        if (lTot === 0 && rTot === 0) return null;
+        if (lTot === 0 && rTot === 0) { _droppedSplits.push(`${labelL}/${labelR}`); return null; }
         return (
           <SitRow
             key={i}
@@ -3234,6 +3262,13 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
           />
         );
       })}
+
+      {_droppedSplits.length > 0 && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: 2}}>
+          {`${_droppedSplits.join(' · ')} — neither team has played that split yet`}
+        </Text>
+      )}
 
       {loading && <Text style={rsStyles.empty}>Loading…</Text>}
     </View>
@@ -4073,7 +4108,7 @@ const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
         read: 'Higher means a tougher slate faced. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited. Early in a season this lands on very few possible values — after three games it can only be a handful of fractions — so two teams showing the identical number is normal, not an error.'},
   sor: {name: 'Strength of Record',
         what: 'How impressive this record is GIVEN that schedule — this team\'s win rate minus the rate an average team would expect against the same opponents.',
-        read: '+0.30 means winning 30 points more often than a neutral team would against this slate. 0.00 is exactly as expected. Negative means the record flatters them. This is the one that separates teams; SOS alone does not.'},
+        read: '+0.30 means winning 30 points more often than a neutral team would against this slate. 0.00 is exactly as expected. Negative means the record flatters them. This is the one that separates teams; SOS alone does not. Early in a season it lands on very few possible values — after two games there are only six across the whole league — so teams cluster on identical numbers and the percentile can jump a long way between neighbouring values.'},
   sp_overall:  {name: 'SP+ Overall', what: 'A tempo- and opponent-adjusted rating of overall team quality, in points.',
                 read: 'It is a points-above-average figure, so 0 is an average team. +10 is a strong team, -10 a weak one. The gap between two teams is roughly the spread on a neutral field.'},
   sp_offense:  {name: 'SP+ Offense', what: 'The offensive half of SP+ — points the offense is worth against an average defense.',
