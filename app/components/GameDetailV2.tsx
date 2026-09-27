@@ -6286,8 +6286,30 @@ function YourBookTiles({
   const finalHomeML = homeMLOutcome?.price ?? homeML;
   const finalAwayML = awayMLOutcome?.price ?? awayML;
 
+  // 2026-09-26 · DO NOT PRE-LOAD A BET WE JUST TOLD THEM NOT TO MAKE.
+  //
+  // Andy: "A 'not a recommended play' still has Log Pick and +Parlay
+  // fully enabled. The card says 'Not a recommended play — thin signal
+  // support or unplayable price' and then offers Selected: KC ML @ -625
+  // with both action buttons live."
+  //
+  // On that card the tier was COVERAGE at -625 — a price we would not
+  // publish anywhere — and the panel had it pre-selected and one tap
+  // from a logged bet. Disabling the buttons outright is the wrong
+  // answer: a user is entitled to back whatever they like, and greying
+  // out the whole panel would also block the OTHER five tiles, which
+  // are perfectly fine bets.
+  //
+  // So the fix is narrower: a low-conviction play is not auto-selected.
+  // The tile is still there, still tappable, still loggable — we simply
+  // stop doing it FOR them, which is what turned a disclaimer into an
+  // endorsement.
+  const _lowConv = ['COVERAGE', 'PASS', 'SKIP']
+    .includes(String(primaryPlay?.tier || '').toUpperCase());
+
   // Default-select the primary_play if it maps to one of our tiles
   const primaryDefault: any = (() => {
+    if (_lowConv) return null;
     if (!primaryPlay?.type) return null;
     if (primaryPlay.type === 'ml' && primaryPlay.label) {
       if (primaryPlay.label.includes(homeTeam)) return {key: 'ml_home'};
@@ -6373,6 +6395,13 @@ function YourBookTiles({
 
   const selected = selectedKey ? tiles[selectedKey] : null;
   const canAct = !!selected && selected.val !== '—';
+  // Does the currently selected tile happen to BE the low-conviction play?
+  const _selectedIsPrimary = (() => {
+    if (!selected || !primaryPlay?.label) return false;
+    const a = String(selected.pickLabel || '').toLowerCase();
+    const b = String(primaryPlay.label || '').toLowerCase();
+    return !!a && (a === b || b.includes(a) || a.includes(b));
+  })();
 
   const doAddParlay = () => {
     if (!selected) return;
@@ -6431,6 +6460,14 @@ function YourBookTiles({
           ? <>Selected: <Text style={{color: C.accent, fontWeight: '700'}}>{selected.pickLabel}</Text> {selected.odds != null ? `@ ${fmtOdds(selected.odds)}` : ''}</>
           : 'Tap a tile above to select a pick'}
       </Text>
+      {/* If they pick the low-conviction play anyway, restate it here
+          rather than letting the disclaimer sit forgotten at the top of
+          a long card. Informed, not blocked. */}
+      {_lowConv && selected && _selectedIsPrimary && (
+        <Text style={{color: C.warn, fontSize: 10, textAlign: 'center', marginTop: 2}}>
+          this is the low-conviction read — not a play we recommend
+        </Text>
+      )}
 
       <View style={{flexDirection: 'row', gap: 8, marginTop: 10}}>
         <TouchableOpacity
