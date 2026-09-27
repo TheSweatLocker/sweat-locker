@@ -1943,10 +1943,30 @@ function LensGrid({ctx, gamesSport}: any) {
     // duplicated totals are dropped — v3 carries the shared SP+ total and
     // MC carries the one real second opinion (0/68 identical, mean |diff|
     // 1.13).
+    // ══ 2026-09-26 · SP+ IS NOT A SECOND OPINION ON THE MARGIN EITHER ══
+    // The note above kept the SP+ MARGIN on the grounds that margins are
+    // "genuinely independent", citing one game. Measured across the whole
+    // board on 2026-09-26: 88 of 88 NCAAF games have BYTE-IDENTICAL v3 and
+    // SP+ margins, mean |difference| 0.000, max 0.00. It is v3 relabelled
+    // for the margin exactly as it already was for the total.
+    //
+    // Andy has now flagged it three times ("V3 and SP+ identical for the
+    // third time ... the SP+ tile is mirroring V3") and the underlying
+    // finding has been open since project_ncaaf_duplicate_total_lens_920
+    // on 09-20. Showing it twice makes MODEL CONSENSUS read as six
+    // independent lenses when it is five, and manufactures corroboration
+    // on exactly the screen a user checks for corroboration.
+    //
+    // Dropped only WHEN IT DUPLICATES, so this self-heals: if SP+ ever
+    // becomes a real second model the tile returns on its own.
+    const _v3m = ctx?.projected_spread;
+    const _spm = ctx?.sp_plus_pred_spread;
+    const _spDupe = (_v3m != null && _spm != null
+                     && Math.abs(Number(_v3m) - Number(_spm)) < 0.005);
     return [
-      {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+      {name: 'v3', m: _v3m, t: ctx?.projected_total},
       {name: 'v4', m: _v4Margin, t: null},
-      {name: 'SP+', m: ctx?.sp_plus_pred_spread, t: null},
+      ...(_spDupe ? [] : [{name: 'SP+', m: _spm, t: null}]),
       {name: 'MC',  m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
       ...(lrTile ? [lrTile] : []),
       {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
@@ -1983,10 +2003,26 @@ function LensGrid({ctx, gamesSport}: any) {
         displayMargin: `${goatTeam}${goatTier ? ` · ${goatTier}` : ''}`,
       };
     }
+    // ══ 2026-09-26 · AN EMPTY LENS IS NOT A LENS ══
+    // Andy: "V4 is completely empty — first card where it has no margin
+    // and no total at all." Measured: nfl_game_context.v4_spread is
+    // populated 0 of 239 rows, as are v4_total, v4_confidence and
+    // v4_features_used, and the fallback field model_pred_spread does not
+    // exist on the NFL table at all. So the NFL V4 tile has never had
+    // anything to show and renders a dead slot in a row the user reads as
+    // "each model's read".
+    //
+    // A model with no output should be absent, not present-and-blank —
+    // a blank tile reads as "this model has no opinion", which is a
+    // different and much stronger claim than "this model did not run".
+    // Computed from the same fields the tile uses, so it returns the
+    // moment the v4 columns start being populated.
+    const _v4m = ctx?.v4_spread ?? ctx?.model_pred_spread;
+    const _v4t = ctx?.v4_total ?? ctx?.model_pred_total;
+    const _v4Live = _v4m != null || _v4t != null;
     return [
       {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
-      {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
-                    t: ctx?.v4_total  ?? ctx?.model_pred_total},
+      ...(_v4Live ? [{name: 'v4', m: _v4m, t: _v4t}] : []),
       {name: 'Panel',
         m: (ctx?.panel_pred_home_pts != null && ctx?.panel_pred_away_pts != null)
              ? (Number(ctx.panel_pred_home_pts) - Number(ctx.panel_pred_away_pts))
