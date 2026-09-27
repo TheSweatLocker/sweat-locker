@@ -1,165 +1,133 @@
-"""nfl_game_id_bridge — helpers for the NFL game_id schism.
+"""Join nfl_game_context to nfl_game_results despite incompatible ids.
 
-2026-09-15 · centralizes the workaround for [[project_nfl_game_id_mismatch_911]].
+Andy 2026-09-27, asking whether the sharp-money indicator has actually
+worked in the NFL: it cannot be answered, because the two tables share
+no key.
 
-`nfl_game_context` uses the Odds API event hash (`5ad8135dc2b5f27de0b777acd317855a`).
-`nfl_game_results` uses schedule-format ids (`20260915_DEN_KC`).
-Zero overlap on raw `game_id` join → every naive ctx→results join
-silently no-ops. Fix everywhere is: match by (game_date, home_team,
-away_team) composite with a small date-window tolerance.
+    nfl_game_context.game_id   60e1d27b083a335b722c2c852ea85612
+    nfl_game_results.game_id   2023_13_CAR_TB
+    overlap between the id sets                              ZERO
 
-This module wraps that pattern so new consumers don't have to
-re-derive it. Sibling helper for NCAAF exposed via `sport='NCAAF'`.
+Consequences, all measured on 2026-09-27:
+  * no NFL pick, signal or money-flow reading has EVER been joined to a
+    result, so nothing NFL has been validated
+  * only ~15 NFL side picks have graded receipts, against 935 for the
+    sport overall — the rest could not be matched
+  * the SHARP badge ships on NFL cards having never once been checked
 
-Usage:
+Logged as project_nfl_game_id_mismatch_911 on 09-11 and still open.
 
-    from nfl_game_id_bridge import ctx_id_to_results_id
+WHY A BRIDGE RATHER THAN A SCHEMA CHANGE. Rewriting either table's
+primary key touches every writer and every foreign reference, and this
+pipeline has repeatedly been bitten by exactly that kind of wide change.
+The two tables already agree on everything needed to identify a game —
+both use the same team codes (ARI, ATL, BAL...) and carry a date — so a
+lookup is enough, costs nothing, and cannot corrupt either side.
 
-    # For a single ctx game_id
-    results_id = ctx_id_to_results_id(
-        ctx_game_id='5ad8135dc2b5f27de0b777acd317855a',
-        ctx_game_date='2026-09-15',
-        home_team='KC', away_team='DEN',
-    )
-    # results_id = '20260915_DEN_KC'  or None if no match
-
-    # For a batch of ctx rows
-    from nfl_game_id_bridge import bulk_ctx_to_results_ids
-    mapping = bulk_ctx_to_results_ids(
-        ctx_rows=[
-            {'game_id': 'abc...', 'game_date': '2026-09-15', 'home_team': 'KC', 'away_team': 'DEN'},
-            ...
-        ],
-        sport='NFL',
-    )
-    # mapping = {'abc...': '20260915_DEN_KC', ...}
-
-See also grade_jerry_reads.py:203-234 for the reference tuple-lookup
-pattern, and resolve_nfl_results.py for another patched consumer.
+DATE TOLERANCE IS REQUIRED. Matching on (game_date, home, away) alone
+resolves 274 of 316 current rows; the missing 42 are games the two
+tables date a day apart (late kickoffs crossing UTC midnight). A +/- 1
+day window recovers them without introducing ambiguity, because no team
+plays twice inside two days.
 """
 from __future__ import annotations
-import os
-from datetime import date, timedelta
-from pathlib import Path
-from typing import Optional
 
-for _env in (Path(__file__).parent / '.env', Path(__file__).parent.parent / '.env'):
-    if _env.exists():
-        for line in _env.read_text().split('\n'):
-            if '=' in line and not line.startswith('#'):
-                k, v = line.split('=', 1)
-                os.environ.setdefault(k.strip(), v.strip())
+import os
+from datetime import datetime, timedelta
 
 import requests
 
-_SB = os.environ.get('SUPABASE_URL')
-_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_KEY')
-_H = {'apikey': _KEY or '', 'Authorization': f'Bearer {_KEY or ""}'}
-
-_RESULTS_TABLE_BY_SPORT = {
-    'NFL':   'nfl_game_results',
-    'NCAAF': 'ncaaf_game_results',
-}
+_CACHE: dict = {}
 
 
-def ctx_id_to_results_id(
-    ctx_game_id: str,
-    ctx_game_date: str,
-    home_team: str,
-    away_team: str,
-    sport: str = 'NFL',
-    date_window_days: int = 1,
-) -> Optional[str]:
-    """Return the results-table game_id matching the given ctx row, or None.
+def _env():
+    sb = os.environ.get('SUPABASE_URL')
+    key = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+           or os.environ.get('SUPABASE_KEY'))
+    if not sb or not key:
+        raise RuntimeError('SUPABASE_URL / key not in environment')
+    return sb, {'apikey': key, 'Authorization': f'Bearer {key}'}
 
-    Matches on (game_date ±date_window_days, home_team, away_team). The
-    window absorbs timezone drift where ctx.game_date and results.game_date
-    can disagree by 1 day for late-night games.
 
-    Returns None when no match — caller decides whether to retry with a
-    wider window, log a warning, or fall through.
-    """
-    if not (_SB and _KEY):
-        return None
-    tbl = _RESULTS_TABLE_BY_SPORT.get((sport or '').upper())
-    if not tbl or not ctx_game_date or not home_team or not away_team:
-        return None
+def _page(path: str, params: dict) -> list:
+    sb, h = _env()
+    out, off = [], 0
+    while True:
+        r = requests.get(f'{sb}/rest/v1/{path}', headers=h,
+                         params=dict(params, limit='1000', offset=str(off)),
+                         timeout=90)
+        if r.status_code not in (200, 206):
+            raise RuntimeError(f'{path} -> {r.status_code}: {(r.text or "")[:160]}')
+        body = r.json()
+        if not isinstance(body, list):
+            return out
+        out += body
+        if len(body) < 1000:
+            return out
+        off += 1000
+
+
+def _d(v):
     try:
-        d = date.fromisoformat(ctx_game_date)
-        lo = (d - timedelta(days=date_window_days)).isoformat()
-        hi = (d + timedelta(days=date_window_days)).isoformat()
-        r = requests.get(
-            f'{_SB}/rest/v1/{tbl}',
-            headers=_H,
-            params={
-                'select': 'game_id',
-                'game_date': f'gte.{lo}',
-                'and': f'(game_date.lte.{hi},home_team.eq.{home_team},away_team.eq.{away_team})',
-                'limit': '2',
-            },
-            timeout=10,
-        )
-        rows = r.json() if r.status_code == 200 else []
-        if not isinstance(rows, list) or not rows:
-            return None
-        return rows[0].get('game_id')
-    except Exception:
+        return datetime.strptime(str(v)[:10], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
         return None
 
 
-def bulk_ctx_to_results_ids(
-    ctx_rows: list,
-    sport: str = 'NFL',
-    date_window_days: int = 1,
-) -> dict:
-    """Given a list of ctx rows (with game_id, game_date, home_team, away_team),
-    return a dict mapping ctx game_id → results game_id (or None per row).
+def build_bridge(select: str = 'game_id,game_date,home_team,away_team,'
+                                'spread_result,close_spread,home_score,away_score'
+                 ) -> dict:
+    """-> {context_game_id: results_row}. Cached per process."""
+    key = select
+    if key in _CACHE:
+        return _CACHE[key]
 
-    Uses one bulk fetch of the results-table date-window then joins in Python.
-    Cheaper than per-row queries when the ctx batch is >~5 rows.
-    """
-    if not ctx_rows or not (_SB and _KEY):
-        return {}
-    tbl = _RESULTS_TABLE_BY_SPORT.get((sport or '').upper())
-    if not tbl:
-        return {}
-    dates = [r.get('game_date') for r in ctx_rows if r.get('game_date')]
-    if not dates:
-        return {}
-    dmin = min(dates); dmax = max(dates)
-    lo = (date.fromisoformat(dmin) - timedelta(days=date_window_days)).isoformat()
-    hi = (date.fromisoformat(dmax) + timedelta(days=date_window_days)).isoformat()
-    try:
-        r = requests.get(
-            f'{_SB}/rest/v1/{tbl}',
-            headers=_H,
-            params={
-                'select': 'game_id,game_date,home_team,away_team',
-                'game_date': f'gte.{lo}',
-                'and': f'(game_date.lte.{hi})',
-                'limit': '2000',
-            },
-            timeout=15,
-        )
-        res_rows = r.json() if r.status_code == 200 else []
-        by_composite = {
-            (row.get('home_team'), row.get('away_team')): row.get('game_id')
-            for row in res_rows if isinstance(row, dict)
-        }
-    except Exception:
-        return {}
-    return {
-        r['game_id']: by_composite.get((r.get('home_team'), r.get('away_team')))
-        for r in ctx_rows if r.get('game_id')
-    }
+    ctx = _page('nfl_game_context',
+                {'select': 'game_id,game_date,home_team,away_team'})
+    res = _page('nfl_game_results', {'select': select})
+
+    # (home, away) -> [rows], so a date window can pick the right season.
+    by_teams: dict = {}
+    for r in res:
+        by_teams.setdefault((r.get('home_team'), r.get('away_team')), []).append(r)
+
+    out: dict = {}
+    for c in ctx:
+        cand = by_teams.get((c.get('home_team'), c.get('away_team')))
+        if not cand:
+            continue
+        cd = _d(c.get('game_date'))
+        if cd is None:
+            continue
+        best, best_gap = None, None
+        for r in cand:
+            rd = _d(r.get('game_date'))
+            if rd is None:
+                continue
+            gap = abs((rd - cd).days)
+            if gap <= 1 and (best_gap is None or gap < best_gap):
+                best, best_gap = r, gap
+        if best is not None:
+            out[c['game_id']] = best
+
+    _CACHE[key] = out
+    return out
+
+
+def coverage() -> tuple[int, int]:
+    """-> (matched, total_context_rows). For health checks."""
+    ctx = _page('nfl_game_context', {'select': 'game_id'})
+    return len(build_bridge()), len(ctx)
 
 
 if __name__ == '__main__':
-    # Smoke test: MNF DEN@KC 2026-09-15 (known case from the schism audit)
-    rid = ctx_id_to_results_id(
-        ctx_game_id='5ad8135dc2b5f27de0b777acd317855a',
-        ctx_game_date='2026-09-15',
-        home_team='KC', away_team='DEN',
-        sport='NFL',
-    )
-    print(f'MNF DEN@KC 2026-09-15 → results_id={rid}')
+    import sys
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    for _l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '.env'), encoding='utf-8'):
+        if '=' in _l and not _l.startswith('#'):
+            k, v = _l.split('=', 1)
+            os.environ.setdefault(k.strip(), v.strip())
+    m, t = coverage()
+    print(f'NFL context->results bridge: {m}/{t} rows resolved '
+          f'({100.0*m/t:.0f}%)' if t else 'no context rows')
