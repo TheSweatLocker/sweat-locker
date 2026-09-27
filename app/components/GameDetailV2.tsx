@@ -726,7 +726,7 @@ export default function GameDetailV2({
                    // as drift. Pool size varies by stat in every sport — NFL
                    // offense ranks over 32 while several computed rows rank
                    // over a filtered subset — so the qualifier is universal.
-                   hint={'▲ = better matchup side · colour = percentile strength · pool size varies by stat'}>
+                   hint={'▲ = better matchup side · color = percentile strength · pool size varies by stat'}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
                            statsSource={ctx?.stats_source} />
           </Section>
@@ -4868,8 +4868,21 @@ function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
   // if you want to toggle them independently. For now, treated as one
   // logical section with two render variants.
   const isEnabled = useSectionEnabled('NCAAF', 'game_detail', 'rosters_continuity', true);
-  const rpH = ctx?.home_returning_production;
-  const rpA = ctx?.away_returning_production;
+  // 2026-09-26: "RETURN PROD — UTEP -1%. Returning production can't be
+  // negative." Correct — it is the share of last season's production
+  // coming back, so the domain is 0..1. Measured across the NCAAF board:
+  // 3 of 159 values are slightly negative (-0.06, -0.01), which is a
+  // small computation artifact around zero rather than a real quantity.
+  // Clamped to the real domain at the display so the card never states
+  // something impossible; the upstream fix belongs with whoever
+  // computes the column.
+  const _clampRP = (v: any) => {
+    const n = Number(v);
+    if (v == null || !isFinite(n)) return v;
+    return Math.min(1, Math.max(0, n));
+  };
+  const rpH = _clampRP(ctx?.home_returning_production);
+  const rpA = _clampRP(ctx?.away_returning_production);
   if (!isEnabled) return null;
   const olH = ctx?.home_ol_avg_wt; const olA = ctx?.away_ol_avg_wt;
   const clsH = ctx?.home_avg_class_year; const clsA = ctx?.away_avg_class_year;
