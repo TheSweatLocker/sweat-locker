@@ -1830,10 +1830,55 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
         // BAL @ IND spread rendered "—→-3.5 flat" when there was no open.
         const openMissing = it.open == null || !isFinite(openN);
         const delta = !openMissing && isFinite(currN) ? currN - openN : null;
+
+        // ══ 2026-09-26 · COLOUR THE MOVE RELATIVE TO OUR PICK ══
+        // Andy: "Line-movement color isn't pick-relative. Both tiles
+        // render green/↑. The spread moving 10.5 -> 11.5 helps a UTEP
+        // backer; the total moving 55.5 -> 56.5 hurts the UNDER that all
+        // three lenses lean. Same color, opposite meaning."
+        //
+        // The colour was reading pure arithmetic — the number went up, so
+        // green — which says nothing about whether the move helped the
+        // bet on the card above it.
+        //
+        // "Helps" here means the CURRENT NUMBER IS BETTER THAN THE OPEN
+        // FOR OUR SIDE: a dog wants more points, a favourite wants fewer,
+        // an UNDER wants a higher total, an OVER a lower one. (Andy's
+        // total example used the opposite sense — market sentiment rather
+        // than price — and the two readings disagree, so the tile now
+        // spells out which one it means instead of relying on colour
+        // alone.) When we cannot tell, it stays neutral rather than
+        // guessing.
+        const _pp = ctx?.primary_play || {};
+        const _pt = String(_pp.type || '').toLowerCase();
+        const _side = String(_pp.side || '').toUpperCase();
+        const _line = Number(_pp.line);
+        let favours: 'us' | 'them' | null = null;
+        if (delta != null && delta !== 0) {
+          if (it.label === 'Total' && (_pt === 'total' || _side === 'OVER' || _side === 'UNDER')) {
+            const wantsUnder = _side === 'UNDER'
+              || String(_pp.label || '').toLowerCase().includes('under');
+            favours = (wantsUnder ? delta > 0 : delta < 0) ? 'us' : 'them';
+          } else if (it.label === 'Spread' && (_pt === 'rl' || _pt === 'spread')
+                     && isFinite(_line)) {
+            // A positive pick line means we are taking points.
+            const takingPoints = _line > 0;
+            // `delta` is on close_spread, whose sign convention differs by
+            // sport, so compare MAGNITUDE of the number our side lays or
+            // receives instead — that is convention-independent.
+            const openMag = Math.abs(openN), currMag = Math.abs(currN);
+            if (currMag !== openMag) {
+              favours = (takingPoints ? currMag > openMag : currMag < openMag)
+                ? 'us' : 'them';
+            }
+          }
+        }
         const deltaColor = openMissing ? C.textDim
                           : delta == null ? C.textDim
                           : delta === 0 ? C.textDim
-                          : delta > 0 ? C.accent : C.fade;
+                          : favours === 'us' ? C.accent
+                          : favours === 'them' ? C.fade
+                          : C.textDim;
         return (
           <View key={i} style={styles.lineMoveItem}>
             <Text style={styles.lineMoveLabel}>{it.label}</Text>
@@ -1845,6 +1890,14 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
             <Text style={[styles.lineMoveDelta, {color: deltaColor}]}>
               {openMissing ? 'no open' : delta == null ? '—' : delta === 0 ? 'flat' : delta > 0 ? `↑ +${delta.toFixed(1)}` : `↓ ${delta.toFixed(1)}`}
             </Text>
+            {/* Colour alone cannot distinguish "the number went up" from
+                "this move helped our bet", so the tile says which. */}
+            {favours && (
+              <Text style={{color: favours === 'us' ? C.accent : C.fade,
+                            fontSize: 8, letterSpacing: 0.3}}>
+                {favours === 'us' ? 'better for our pick' : 'worse for our pick'}
+              </Text>
+            )}
           </View>
         );
       })}
@@ -2238,11 +2291,26 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
       // fires below 47% (fade rate 53%+ clears the juice). Widening
       // the neutral band 47-58 means we stop calling coin-flip
       // patterns "fade" when they aren't yet actionable.
-      if (hp >= 58) { kind = 'ok'; value = `${hp}% · follow`; }
-      else if (hp < 47) { kind = 'warn'; value = `${hp}% · fade`; }
-      else { kind = 'neutral'; value = `${hp}%`; }
+      // 2026-09-26 · SAY WHOSE NUMBER THIS IS.
+      // Andy: "Heavy Home Underdog · 51.65% for the fourth game
+      // (UNLV@Akron, BSU@WMU, and here). Confirmed cohort base rate
+      // rendered as game-specific."
+      //
+      // Right — it is the cohort's lifetime hit rate, identical on every
+      // card the cohort fires on, and a bare "51.65%" next to this
+      // game's teams reads as a probability for THIS game. Seeing the
+      // same figure on four different matchups then reads as a bug.
+      //
+      // The n was already being shown on the thin branch below and
+      // dropped on the confident one, which is backwards and breaks the
+      // standing rule that every published percentage carries its
+      // sample. "hits 51.7% (n=310)" is unambiguously a track record.
+      const _n = rec.sample_n;
+      if (hp >= 58) { kind = 'ok'; value = `hits ${hp}% (n=${_n}) · follow`; }
+      else if (hp < 47) { kind = 'warn'; value = `hits ${hp}% (n=${_n}) · fade`; }
+      else { kind = 'neutral'; value = `hits ${hp}% (n=${_n})`; }
     } else if (rec) {
-      value = `${Number(rec.hit_rate)}% · n=${rec.sample_n}`;
+      value = `hits ${Number(rec.hit_rate)}% (n=${rec.sample_n})`;
     }
     // 2026-09-15: use COHORT_LABEL_MAP for user-facing labels — was
     // showing raw "nfl home fav" text. Andy audit callout: "the whole
@@ -4821,13 +4889,19 @@ function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
     );
   };
 
+  // 2026-09-26: `.split(' ').pop()` takes the LAST word, so "Oregon
+  // State" became "State" and "Boston College" would become "College".
+  // Andy: "'State OL outweighs opposing DL by 50 lb' — 'Oregon State'
+  // truncated to 'State', so the string builder is taking the last token
+  // of the team name." abbrev3() is the shortener the rest of this file
+  // already uses and it knows real team names.
   const notes: string[] = [];
   if (olGapH != null && Number(olGapH) >= 15)
-    notes.push(`${(homeTeam || '').split(' ').pop()} OL outweighs opposing DL by ${Math.round(Number(olGapH))} lb — ground-game leverage.`);
+    notes.push(`${abbrev3(homeTeam)} OL outweighs opposing DL by ${Math.round(Number(olGapH))} lb — ground-game leverage.`);
   if (olGapA != null && Number(olGapA) >= 15)
-    notes.push(`${(awayTeam || '').split(' ').pop()} OL outweighs opposing DL by ${Math.round(Number(olGapA))} lb.`);
+    notes.push(`${abbrev3(awayTeam)} OL outweighs opposing DL by ${Math.round(Number(olGapA))} lb.`);
   if (classEdge != null && Math.abs(Number(classEdge)) >= 0.3)
-    notes.push(`${Number(classEdge) > 0 ? (homeTeam || '').split(' ').pop() : (awayTeam || '').split(' ').pop()} carries a class-year experience edge (Weeks 1-3 significant).`);
+    notes.push(`${abbrev3(Number(classEdge) > 0 ? homeTeam : awayTeam)} carries a class-year experience edge (Weeks 1-3 significant).`);
 
   return (
     <Section title="Rosters &amp; Continuity" hint="returning production + physicality">
@@ -4962,8 +5036,9 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
   const hasAny = rpHome != null || rpAway != null || olGapH != null || olGapA != null ||
                  classEdge != null || homeOl != null || awayOl != null;
   if (!hasAny) return null;
-  const awayShort = (awayTeam || '').split(' ').pop();
-  const homeShort = (homeTeam || '').split(' ').pop();
+  // Same last-word truncation as the notes above — abbrev3 instead.
+  const awayShort = abbrev3(awayTeam);
+  const homeShort = abbrev3(homeTeam);
   return (
     <Section title="Rosters & Continuity" hint="returning production + physicality">
       <View style={{gap: 6}}>
