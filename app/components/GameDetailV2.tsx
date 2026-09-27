@@ -2083,9 +2083,29 @@ function LensGrid({ctx, gamesSport}: any) {
     // independent opinions back the pick. Recorded so the grid can say
     // which lens is absent and why.
     if (!_v4Live) _hiddenLenses.push('V4 not reporting');
+    // ══ 2026-09-26 · MC FEEDS PREDICTED SCORE, SO IT BELONGS HERE TOO ══
+    // Andy, on both CAR@CLE and KC@MIA: "neither model tile produces
+    // 48.3 ... the range's upper bound comes from somewhere not shown."
+    //
+    // Traced on KC @ MIA: the bound is the Monte Carlo lens — away 23.7,
+    // home 24.5, total 48.26 — which ScoreRange adds via mc_probabilities
+    // but which the NFL branch of this grid never listed. NCAAF has
+    // always shown it. So the two sections drew from different lens sets
+    // and the reader could not reconcile them.
+    //
+    // MC is not a rounding artifact of another model either: it has KC by
+    // -0.8 where v3 has KC by 8.5. Hiding a lens that disagrees that
+    // sharply while still using it to set the displayed range is the
+    // worst of both. Adding it makes the sections agree and surfaces a
+    // real disagreement the card was hiding.
+    const _mcNfl = safeJSON(ctx?.mc_probabilities) || {};
+    const _mcMargin = _mcNfl.mc_expected_margin;
+    const _mcTotal = _mcNfl.mc_expected_total ?? _mcNfl.mc_mean_total;
     return [
       {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
       ...(_v4Live ? [{name: 'v4', m: _v4m, t: _v4t}] : []),
+      ...(_mcMargin != null || _mcTotal != null
+          ? [{name: 'MC', m: _mcMargin, t: _mcTotal}] : []),
       {name: 'Panel',
         m: (ctx?.panel_pred_home_pts != null && ctx?.panel_pred_away_pts != null)
              ? (Number(ctx.panel_pred_home_pts) - Number(ctx.panel_pred_away_pts))
