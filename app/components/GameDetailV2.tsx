@@ -2518,6 +2518,13 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
     const w = rec?.n_wins ?? 0;
     const l = rec?.n_losses ?? 0;
     const hasRec = (w + l) >= 5;
+    // 2026-09-26: "The Dog and The Volume render with no record while The
+    // Ticket 62-78 on the same line has one." The records exist — NCAAF
+    // pickdawgz is 0-2 and covers 2-2 — and are correctly withheld by the
+    // n>=5 gate, because a 0-2 is not a track record. But withholding it
+    // SILENTLY makes a thin sample look like missing data sitting beside a
+    // populated one. Say "n=2" so the absence is a fact rather than a gap.
+    const thinRec = !hasRec && (w + l) > 0;
     const isHot = hasRec && rec?.hit_rate != null && Number(rec.hit_rate) >= 58;
     const isCold = hasRec && rec?.hit_rate != null && Number(rec.hit_rate) <= 42;
     // Boost/fade flag OR hot/cold record can color the chip. Record-based
@@ -2539,7 +2546,7 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
         ]}>
           {personaFor(p.source)}
         </Text>
-        {hasRec && (
+        {hasRec ? (
           <Text style={[
             styles.handiChipRecord,
             showBoost && {color: C.accent},
@@ -2547,7 +2554,11 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
           ]}>
             {w}-{l}
           </Text>
-        )}
+        ) : thinRec ? (
+          <Text style={[styles.handiChipRecord, {color: C.textDim}]}>
+            n={w + l}
+          </Text>
+        ) : null}
       </View>
     );
   };

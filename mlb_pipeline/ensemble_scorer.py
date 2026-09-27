@@ -1353,6 +1353,12 @@ def _humanize_signal_key(key: str) -> str:
             break
     # Common suffix normalize
     s = s.replace('_panel', ' (panel)').replace('_lens', ' (lens)')
+    # 2026-09-26: a trailing numeric pair is a RANGE, not two words.
+    # heavy_home_dog_7_13 was humanising to "Heavy home dog 7 13", which
+    # reads as a typo in user prose where it now appears as the cohort
+    # name distinguishing two otherwise identical trend lines.
+    import re as _re
+    s = _re.sub(r'_(\d+)_(\d+)$', r'_\1-\2', s)
     s = s.replace('_', ' ').strip()
     # Sentence case
     if s and s[0].isalpha():
