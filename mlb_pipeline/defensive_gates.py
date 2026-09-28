@@ -48,7 +48,13 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     """
     try:
         if not (pp and isinstance(pp, dict)): return pp
-        if pp.get('_engine') != 'ensemble_v2': return pp
+        # 2026-09-27: was ensemble_v2 only, so an LR-override pick — which
+        # REPLACES the ensemble one further down apply_all_defensive_gates
+        # — was never checked against the simulation at all. On NHL
+        # 2026-09-30 that shipped Toronto at conviction 68 and Winnipeg at
+        # 75 from lr_v1 while the sim had both near 49%. Whichever engine
+        # produced the pick, MC disagreeing with it means the same thing.
+        if pp.get('_engine') not in ('ensemble_v2', 'lr_v1'): return pp
         ptype = str(pp.get('type', '')).lower()
         if ptype not in ('ml', 'total'): return pp
         if pp.get('tier') not in ('PRIME', 'STRONG', 'LEAN'): return pp
@@ -57,15 +63,68 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
         if not mc: return pp
 
         cur_side = str(pp.get('side', '')).upper()
+
+        # ══ 2026-09-27 · THIS GATE HAD NEVER FIRED OUTSIDE MLB ══
+        #
+        # It read only mc_p_home_win / mc_p_away_win / mc_p_over /
+        # mc_p_under, and MLB is the ONLY sport that writes those names.
+        # Measured across the four context tables:
+        #
+        #     MLB    mc_p_home_win, mc_p_away_win, mc_p_over, mc_p_under
+        #     NFL    mc_p_home, mc_p_away, mc_p_over_line
+        #     NCAAF  mc_p_home, mc_p_away, mc_p_over_line
+        #     NHL    mc_p_home, mc_p_over
+        #
+        # Every non-MLB sport therefore hit `pick_prob is None` and this
+        # function returned the pick untouched — a silent no-op on three
+        # sports, in a gate whose own docstring cites the exact failure it
+        # exists to prevent ("PHI Under 8.0 shipped as STRONG 84 with -15pp
+        # MC edge because gate skipped").
+        #
+        # Surfaced on NHL 2026-09-30, where Toronto shipped at conviction
+        # 68 and Winnipeg at 75 while the sim had both at ~49% — a 25-point
+        # disagreement between two models with nothing reconciling them.
+        #
+        # Fixed HERE rather than in four writers: one reader that accepts
+        # the known spellings cannot drift, whereas four writers already
+        # have. Away and under are derived from their complement when the
+        # explicit key is absent, since a two-outcome market is fully
+        # described by one side.
+        def _mcp(*names, complement_of=None):
+            for nm in names:
+                v = mc.get(nm)
+                if v is not None:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        pass
+            if complement_of is not None:
+                for nm in complement_of:
+                    v = mc.get(nm)
+                    if v is not None:
+                        try:
+                            return 1.0 - float(v)
+                        except (TypeError, ValueError):
+                            pass
+            return None
+
         pick_prob = None
         if ptype == 'ml':
-            if cur_side == 'HOME':   pick_prob = mc.get('mc_p_home_win')
-            elif cur_side == 'AWAY': pick_prob = mc.get('mc_p_away_win')
+            if cur_side == 'HOME':
+                pick_prob = _mcp('mc_p_home_win', 'mc_p_home',
+                                 complement_of=('mc_p_away_win', 'mc_p_away'))
+            elif cur_side == 'AWAY':
+                pick_prob = _mcp('mc_p_away_win', 'mc_p_away',
+                                 complement_of=('mc_p_home_win', 'mc_p_home'))
         elif ptype == 'total':
             # 2026-08-28 extended: totals were bypassing MC gate. PHI Under 8.0
             # shipped as STRONG 84 with -15pp MC edge because gate skipped.
-            if cur_side == 'OVER':    pick_prob = mc.get('mc_p_over')
-            elif cur_side == 'UNDER': pick_prob = mc.get('mc_p_under')
+            if cur_side == 'OVER':
+                pick_prob = _mcp('mc_p_over', 'mc_p_over_line',
+                                 complement_of=('mc_p_under',))
+            elif cur_side == 'UNDER':
+                pick_prob = _mcp('mc_p_under',
+                                 complement_of=('mc_p_over', 'mc_p_over_line'))
         if pick_prob is None: return pp
         try:
             pick_prob_f = float(pick_prob)
@@ -1376,6 +1435,25 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
                     pp['_lr_total_shadow'] = _pred
         except Exception:
             pass
+
+    # ══ 2026-09-27 · RE-CHECK MC AFTER THE LR OVERRIDE ══
+    #
+    # apply_mc_dissent_gate runs near the top, but apply_ml_lr_override
+    # REPLACES the pick further down — by design, "LR fires as a final
+    # override for ML". So the pick that actually ships had never been
+    # compared to the simulation, and nothing downstream did it either.
+    #
+    # NHL 2026-09-30 is the demonstration: Toronto shipped at conviction 68
+    # and Winnipeg at 75, both from lr_v1, while MC had them at 49.1% and
+    # 49.7%. Two models 25 points apart, no reconciliation, and the card
+    # showed both numbers side by side.
+    #
+    # Running the same gate a second time is deliberately cheap: it is
+    # idempotent (a pick already demoted fails the tier check and returns
+    # untouched) and it means whatever engine wins the override still has
+    # to survive the sim. This is the "engine output soundness" check —
+    # the final pick, not an intermediate one, is what gets tested.
+    pp = apply_mc_dissent_gate(pp, ctx)
 
     # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
     # Silent contradictions between chips on the same game card.
