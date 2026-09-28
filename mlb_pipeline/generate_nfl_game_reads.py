@@ -1363,6 +1363,91 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         # fluent and is completely wrong. That is the most dangerous kind
         # of error here: the prose is the part users trust most and the
         # part no downstream check validates.
+        # ══ 2026-09-28 · QUOTE THE NUMBER THE CARD IS SHOWING ══
+        #
+        # QA on PHI @ CHI: "Jerry's stats don't match the table. Jerry says
+        # rush EPA 9.773 (2nd); the table shows 0.140 (3rd). Jerry says PHI
+        # allows 126 rush yards per game (30th); the table shows 111 (29th)."
+        #
+        # Correct, and the cause is not a data bug — it is two legitimately
+        # different numbers presented as one. nfl_game_context runs every
+        # team stat through _nfl_blend_pg, which BLENDS the current season
+        # with the prior one, weighted by games played:
+        #
+        #     w = cur_games / NFL_BLEND_UNTIL_GAMES
+        #     CHI rush yds:  0.667 * 212.5 (2026) + 0.333 * ~144.5 (2025)
+        #                    = 189.82
+        #
+        # That blend is the RIGHT input for a model in week 3 — it stops a
+        # two-game sample swinging a projection. It is the WRONG number to
+        # put in prose, because a reader comparing it to the Team Stats
+        # table sees 189.82 against 212.5 and concludes one of them is
+        # broken.
+        #
+        # nfl_game_context.py already computes a _nfl_blend_label to
+        # disclose this, and writes it to home_stats_blend_label — a column
+        # that DOES NOT EXIST in the schema. So the disclosure is built and
+        # silently discarded on every run.
+        #
+        # Rather than add a caption nobody reads, Jerry is now handed the
+        # SAME current-season values the table renders, straight from
+        # team_stats_rolling, with rank and league size. Prose and table can
+        # no longer disagree because they read one store.
+        #
+        # GAMES PLAYED is included for a second reason: the same card said
+        # "PHI games OVER 100.0% this season" off a two-game sample. A rate
+        # with no denominator is how that happens.
+        try:
+            _tsr = {}
+            _r = requests.get(
+                f'{SUPABASE_URL}/rest/v1/team_stats_rolling',
+                params={'select': 'team,stat_key,raw_value,rank,league_size',
+                        'sport': 'eq.NFL',
+                        'team': f'in.({home},{away})',
+                        'limit': '400'},
+                headers=SB_READ, timeout=20)
+            if _r.status_code == 200 and isinstance(_r.json(), list):
+                for _x in _r.json():
+                    _tsr.setdefault(_x['team'], {})[_x['stat_key']] = {
+                        'value': _x.get('raw_value'),
+                        'rank': _x.get('rank'),
+                        'of': _x.get('league_size'),
+                    }
+            if _tsr:
+                facts["displayed_team_stats"] = _tsr
+                facts["stat_source_rule"] = (
+                    "displayed_team_stats holds the EXACT values and ranks "
+                    "the Team Stats table on this card is showing, for the "
+                    "current season only. Quote THESE when citing a team "
+                    "stat. Other numbers in this payload are blended with "
+                    "last season to stabilise the model early in the year, "
+                    "so they will not match the table and must not be "
+                    "quoted as this season's figure. Every rank is 'n of "
+                    "league_size' — use that form, never a bare ordinal."
+                )
+        except Exception:
+            pass
+
+        # Games played, so no rate gets quoted without its denominator.
+        try:
+            _gp_h = (int(ctx.get('home_season_ats_wins') or 0)
+                     + int(ctx.get('home_season_ats_losses') or 0)
+                     + int(ctx.get('home_season_ats_pushes') or 0))
+            _gp_a = (int(ctx.get('away_season_ats_wins') or 0)
+                     + int(ctx.get('away_season_ats_losses') or 0)
+                     + int(ctx.get('away_season_ats_pushes') or 0))
+            if _gp_h or _gp_a:
+                facts["games_played"] = {home: _gp_h, away: _gp_a}
+                facts["small_sample_rule"] = (
+                    f"{home} has played {_gp_h} game(s) and {away} "
+                    f"{_gp_a} this season. NEVER state a season rate as a "
+                    f"percentage off a sample this small — '100% of games "
+                    f"went OVER' on two games is not a trend. Give the raw "
+                    f"count ('both games went over') or omit it."
+                )
+        except Exception:
+            pass
+
         facts["team_attribution_rule"] = (
             f"EVERY stat belongs to exactly one team: {away} (away) or "
             f"{home} (home). Name the team in the SAME sentence as its "
