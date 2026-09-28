@@ -1906,10 +1906,18 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
   // historicalOdds.opening_ml_home (NFL-style key). Andy saw ATH @ TB with
   // "ML (HOME) — → — no open" despite ctx.home_ml_open = -232 being
   // populated.
-  const openSp = ctx?.open_spread ?? historicalOdds?.opening_spread;
+  // 2026-09-28 · NHL CALLS IT A PUCK LINE.
+  // Andy on the first NHL card: "no line movement data". Measured:
+  // close_spread and open_spread are populated on 0 of 40 NHL games, while
+  // close_puckline / open_puckline are populated on 25. This strip read only
+  // the *_spread names, so the Spread row could never render for NHL — and
+  // the same omission silently emptied the pick-relative colouring below,
+  // which needs openN/currN to compute a delta.
+  const openSp = ctx?.open_spread ?? ctx?.open_puckline
+    ?? historicalOdds?.opening_spread;
   const openTot = ctx?.open_total ?? historicalOdds?.opening_total;
   const openHomeML = historicalOdds?.opening_ml_home ?? ctx?.home_ml_open;
-  const closeSp = ctx?.close_spread;
+  const closeSp = ctx?.close_spread ?? ctx?.close_puckline_home ?? ctx?.close_puckline;
   const closeTot = ctx?.close_total;
   const closeHomeML = ctx?.home_ml_close ?? ctx?.close_home_ml;
 

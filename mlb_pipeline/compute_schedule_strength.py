@@ -82,11 +82,44 @@ def page(path: str, params: dict) -> list:
         off += 1000
 
 
+def counts_competitively(sport: str, row: dict) -> bool:
+    """False for exhibition games that must not feed SOS or SOR.
+
+    2026-09-28, Andy on the first NHL game detail: "SOS and SOR look
+    strangely numbered dont think corretc in nhl." They were not correct.
+    Measured: all 130 NHL season-2026 rows in team_recent_games carry
+    game-type digits '01' — every single one a PRESEASON game. So each
+    team's SOS and SOR were computed from 4-5 exhibitions, which is how
+    Dallas ended up rated 0.75 "Strength of Record" and a third of the
+    league landed on 0.1667 (literally one win in six).
+
+    Preseason results are the least meaningful games in hockey: coaches
+    rotate four lines, split goalies by period and play prospects who will
+    not be on the roster. Rating a team on them is worse than having no
+    rating, because a number on the card reads as knowledge.
+
+    NHL game IDs encode the type at digits 4-6: 01 preseason, 02 regular
+    season, 03 playoffs. Only NHL is filtered here — the other sports do
+    not use this id shape, and their own exhibition games are excluded
+    upstream of team_recent_games. With this in place NHL simply has no
+    SOS/SOR until the regular season produces decided games, which is the
+    correct state rather than a fabricated one, and it fills in on its own.
+    """
+    if sport != 'NHL':
+        return True
+    gid = str(row.get('game_id') or '')
+    if len(gid) < 6:
+        return False          # unparseable — do not guess it counts
+    return gid[4:6] in ('02', '03')
+
+
 def compute(sport: str, season: int) -> list[dict]:
     rows = page('team_recent_games', {
         'sport': f'eq.{sport}', 'season': f'eq.{season}',
-        'select': 'team,opp,won'})
-    decided = [r for r in rows if r.get('won') is not None and r.get('opp')]
+        'select': 'team,opp,won,game_id'})
+    decided = [r for r in rows
+               if r.get('won') is not None and r.get('opp')
+               and counts_competitively(sport, r)]
     if not decided:
         return []
 
