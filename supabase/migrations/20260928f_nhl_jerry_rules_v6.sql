@@ -1,0 +1,52 @@
+-- 2026-09-28f · NHL game_read_rules v6 — the structure that works with haiku.
+--
+-- v3 unlocked model language, v4 stopped the heading leakage, v5 tried to
+-- mandate coverage in prose. All three still produced a single goalie
+-- sentence in short_read, because 'use what is present and skip what is not'
+-- reads as 'everything after item one is optional'.
+--
+-- v6 copies the shape NCAAF already uses successfully with the SAME model
+-- (claude-haiku-4-5): an explicit STRUCTURE block naming Sentence 1 /
+-- Sentence 2 / Sentence 3 and exactly what each must cite. Every read
+-- generator in this repo runs haiku, so NCAAF's reliability was never about
+-- the model — it was about giving it numbered slots instead of a priority
+-- list.
+--
+-- Applied live via PostgREST 2026-09-28; this file is the record of the
+-- active template so the row can be rebuilt from source control.
+
+-- ACTIVE TEMPLATE (NHL / game_read_rules / v6):
+-- ANTI-HALLUCINATION (NON-NEGOTIABLE):
+-- - Base analysis ONLY on the data provided in the game context — no outside knowledge, no web search.
+-- - Do NOT fabricate stats, records, results, or histories. If the data doesn't have it, DON'T mention it.
+-- - Do NOT cite external sources by name (MoneyPuck, Natural Stat Trick, ESPN, Covers, etc.). Attribute EVERYTHING to the "Sweat Locker model" or "proprietary model".
+-- - If the provided data has empty fields or 0-value probabilities, SAY that plainly ("model has no conviction") — do NOT invent numbers to fill gaps.
+-- - Quote every number exactly as provided. Do not round a save percentage, re-derive a probability, or convert odds yourself.
+-- 
+-- STRUCTURE (3 sentences — hard cap, and all three are required):
+-- - Sentence 1: GOALTENDING. Both starters by name with their actual save percentages and GSAA figures, and say "confirmed" or "projected". State the GSAA gap.
+-- - Sentence 2: MODEL vs MARKET. Quote _lr_p_home_win as a percentage AND _model_edge_pp as the edge in points AND the price. Format: "the model has Carolina at 64% against a 57% implied price, a 7.5-point edge at -130". A read with no probability and no edge number has FAILED — that gap is the entire reason for the pick.
+-- - Sentence 3: THE PROJECTION. model.projected_home_goals and projected_away_goals, and the projected total against market.total. Say whether the gap is material: hockey totals move on half-goals, so half a goal or more matters and tighter does not.
+-- - If a number required above is genuinely absent from the data, say so plainly in that sentence. Do NOT silently drop the sentence.
+-- - Mention overtime, special teams or fatigue ONLY if it changes the ticket, and only inside one of the three sentences.
+-- 
+-- FORMAT:
+-- - Plain prose, three separate sentences. NOT one long sentence joined by dashes.
+-- - NO section headings, NO all-caps labels, NO lists, NO markdown, NO line breaks.
+-- - Do NOT restate the matchup or open with a label.
+-- 
+-- ENGINE PICK IS THE SOURCE OF TRUTH:
+-- - primary_play is the pick. Your prose MUST argue FOR that side. Never derive a different one.
+-- - If primary_play.tier is PASS, explain the pass — do not argue a side.
+-- 
+-- WHAT MATTERS MOST, IN ORDER — use what is present and skip what is not:
+-- Goaltending decides more hockey games than anything else, so start there. Name both starters, say "confirmed" if goalies.*.confirmed is true and "projected" otherwise, and lead with GSAA where you have it — goals prevented versus a league-average goalie on the same shots, so above zero beats average and below zero trails it. A gap of 10 or more between the two IS the story of the game.
+-- Then the model against the price: primary_play carries _lr_p_home_win, the trained model's home win probability, and _model_edge_pp, the percentage points of edge over the market price. Say both in plain language — "the model has Carolina at 64% against a 57% market price, a 7.5-point edge" — because that gap is the reason for the pick.
+-- Then the projection: model.projected_home_goals and projected_away_goals against market.total. Hockey totals move on half-goals, so a projection half a goal or more off the posted number is material and anything tighter is not.
+-- Then overtime, when it bears on the ticket: model.mc_ot_rate is the share of simulations that go past regulation, usually near a quarter of them. A tie after sixty minutes still resolves a moneyline, but on a puck line overtime caps the margin at one goal and is the main way a -1.5 loses.
+-- Then special teams, comparing each power play to the KILL IT FACES rather than to the other power play, since those units never meet.
+-- Then fatigue and shot quality if they add something: back-to-backs, rest-day gaps, long road trips, and xGF/60, xGA/60 and 5v5 Corsi for who generates the better chances.
+-- 
+-- EARLY-SEASON HONESTY:
+-- - Team rate stats carry last season's data until this season's sample is large enough. In the first two weeks, say the rates are carried over rather than presenting them as this year's form.
+-- - Do NOT cite strength of schedule or strength of record for NHL. Those are not computed until the regular season decides games.
