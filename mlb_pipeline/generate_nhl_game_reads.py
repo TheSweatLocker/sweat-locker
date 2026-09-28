@@ -177,6 +177,17 @@ def _build_casual_summary(ctx):
 
 def build_struct(ctx):
     home, away = ctx.get('home_team'), ctx.get('away_team')
+    # mc_probabilities is JSONB and arrives as a dict from PostgREST, but a
+    # string through some paths — parse defensively so a serialization change
+    # degrades to "no MC" rather than raising mid-run.
+    _mc = ctx.get('mc_probabilities')
+    if isinstance(_mc, str):
+        try:
+            _mc = json.loads(_mc)
+        except (ValueError, TypeError):
+            _mc = None
+    if not isinstance(_mc, dict):
+        _mc = {}
     struct = {
         'matchup': f'{away} @ {home}',
         'game_id': ctx.get('game_id'),
@@ -190,15 +201,40 @@ def build_struct(ctx):
             'home_ml': ctx.get('home_ml_close'),
             'away_ml': ctx.get('away_ml_close'),
         },
-        # No trained NHL margin model exists. Say so in the struct rather
-        # than leaving empty keys the writer might fill with invention.
+        # 2026-09-28 · THE NOTE AT THE BOTTOM OF THIS FILE CAME DUE.
+        # It read: "NOTE FOR WHOEVER SHIPS THE REAL MODEL: struct.model.status
+        # currently reads 'no trained NHL model — market-based read only'.
+        # Update that when the trained model lands." It has landed, and it is
+        # the thing choosing NHL picks — measured on the 9/29 board, FLA @ CAR
+        # carries _engine lr_v1, _lr_p_home_win 0.6378 and _model_edge_pp 7.48,
+        # and it overrode ensemble_v2's LEAN/76 to STRONG/64.
+        #
+        # Three numbers the APP renders were also absent from this struct, so
+        # Jerry could not cite what a subscriber was looking at: the projected
+        # goals per team, the projected spread, and the Monte Carlo. The MC
+        # fields are flattened rather than nested because the prose rules
+        # reference them as model.mc_ot_rate — a nested blob would have the
+        # writer guessing at a path.
+        #
+        # Note projected_home_goals / projected_away_goals are handed over
+        # DIRECTLY rather than re-derived from total and spread. (t±m)/2
+        # reproduces them exactly today, and the moment it stops doing so the
+        # prose and the card must not disagree.
         'model': {
-            'status': 'no trained NHL model — market-based read only',
+            'status': ('trained logistic-regression win model (lr_v1) + Poisson '
+                       'goal projection with Monte Carlo + Elo'),
             'projected_total': _f(ctx.get('projected_total')),
+            'projected_spread': _f(ctx.get('projected_spread')),
+            'projected_home_goals': _f(ctx.get('projected_home_goals')),
+            'projected_away_goals': _f(ctx.get('projected_away_goals')),
             'projected_home_ml': ctx.get('projected_home_ml'),
             'projected_home_wp': _f(ctx.get('projected_home_wp')),
             'elo_home': _f(ctx.get('elo_home')),
             'elo_away': _f(ctx.get('elo_away')),
+            **{k: _mc.get(k) for k in
+               ('mc_sims', 'mc_p_home', 'mc_p_over', 'mc_ot_rate',
+                'mc_expected_total', 'mc_expected_margin')
+               if isinstance(_mc, dict) and _mc.get(k) is not None},
         },
         'goalies': {'home': _goalie_block(ctx, 'home'),
                     'away': _goalie_block(ctx, 'away')},
