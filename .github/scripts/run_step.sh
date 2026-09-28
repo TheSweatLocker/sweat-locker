@@ -85,6 +85,32 @@ if [ "$rc" -ne 0 ]; then
   mkdir -p "$(dirname "$TALLY")"
   printf '%s\n' "$msg" >> "$TALLY"
   _summary "- ❌ \`${LABEL}\` exit ${rc} (${dur}s)"
+  # ══ 2026-09-28 · RECORD THE FAILURE WHERE IT CAN BE QUERIED ══
+  # The tally file lives on the runner and dies with it, and the ::error::
+  # lines live in a collapsed log. So "daily_card and nfl_pipeline are
+  # failing" could only be answered by re-running nineteen steps by hand to
+  # find which one broke — which is what happened today.
+  #
+  # workflow_heartbeat already exists with a JSONB meta column and is already
+  # written by these workflows, so this needs no migration. One row per failed
+  # step makes the question answerable in a single query:
+  #
+  #   select fired_at, workflow, meta->>'label', meta->>'rc'
+  #   from workflow_heartbeat where event = 'step_failed'
+  #   order by fired_at desc;
+  #
+  # Best-effort and silent: this is diagnostics, and a logging hiccup must
+  # never change a step's outcome.
+  if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_KEY:-}" ]; then
+    _esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    curl -sf -m 10 -X POST "${SUPABASE_URL}/rest/v1/workflow_heartbeat" \
+      -H "apikey: ${SUPABASE_KEY}" \
+      -H "Authorization: Bearer ${SUPABASE_KEY}" \
+      -H "Content-Type: application/json" \
+      -H "Prefer: return=minimal" \
+      -d "{\"workflow\":\"${GITHUB_WORKFLOW:-unknown}\",\"event\":\"step_failed\",\"run_id\":\"${GITHUB_RUN_ID:-}\",\"meta\":{\"label\":\"$(_esc "$LABEL")\",\"rc\":${rc},\"duration_s\":${dur}}}" \
+      >/dev/null 2>&1 || true
+  fi
 else
   echo "ok: ${LABEL} (${dur}s)"
 fi

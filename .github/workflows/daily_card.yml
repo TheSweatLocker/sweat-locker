@@ -182,8 +182,36 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
-            --label "consistency_watchdog.py" python consistency_watchdog.py
+          # ══ 2026-09-28 · HONOUR THE WATCHDOG'S OWN EXIT CONTRACT ══
+          # consistency_watchdog.py:521 is explicit about what its codes mean:
+          #   sys.exit(2 if critical > 0 else (1 if tripped > 0 else 0))
+          #   # 0 clean, 1 warnings, 2 critical (workflow can gate on this)
+          #
+          # Wrapping it in run_step.sh threw that away: run_step records ANY
+          # non-zero as a failed step, and the --gate step then turns the run
+          # red. So a single non-critical warning failed the whole job and
+          # emailed Andy. Today it was one line — "potd_grade_mirror: 1 POTD
+          # date(s) with state mismatch" — 1 of 7 checks tripped, 0 critical.
+          # That is exactly the case the script assigns code 1 so it can be
+          # treated as a warning.
+          #
+          # My own bug, introduced when this workflow was split out earlier
+          # today. mlb_pipeline.yml calls the same script bare for this reason.
+          # A watchdog that reddens the run on every warning gets ignored,
+          # which is worse than not having one.
+          set +e
+          python consistency_watchdog.py
+          code=$?
+          set -e
+          if [ "$code" -ge 2 ]; then
+            # Critical — record it so the gate fails the run.
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+              --label "consistency_watchdog.py CRITICAL (exit $code)" false
+          elif [ "$code" -eq 1 ]; then
+            echo "::warning::consistency_watchdog: non-critical checks tripped — see log"
+          else
+            echo "ok: consistency_watchdog.py (all checks clean)"
+          fi
 
       # ══ 2026-09-28 · CROSS-SPORT MATVIEWS BELONG IN THE CROSS-SPORT JOB ══
       # team_situational_records_full and team_stats_rolling_full are refreshed
