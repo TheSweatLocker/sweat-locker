@@ -93,6 +93,66 @@ def enrich_nhl_elo(rows: list[dict]) -> None:
         row['elo_away'] = pred['away_elo']
 
 
+def enrich_nhl_projection(rows: list[dict]) -> None:
+    """Rolling-stats goal projection + Monte Carlo — two more model takes.
+
+    Andy 2026-09-27: "I would love score predictions based on rolling live
+    stats ... we should have 5 models at least for each sport, each having
+    a take." NHL had three (Elo, LR, ensemble) and mc_probabilities was
+    populated on 0 of 59 games. This adds the fourth and fifth.
+
+    DELIBERATELY SEPARATE FROM ELO. Elo keeps projected_home_wp — its take
+    is team STRENGTH from results. This model's take is the MATCHUP: each
+    side's attack rate against the other's defence and goaltending, from
+    the 32-team MoneyPuck ratings. Two independent reads that can and
+    should disagree; collapsing them into one column would be the
+    "sp_plus_pred_total is byte-identical to projected_total" mistake
+    (20260920) where one opinion got counted twice.
+
+    It DOES take over projected_total from Elo, because Elo's total is a
+    rating-difference heuristic while this one is calibrated to the league
+    scoring rate (mean 6.10 across all 992 matchups, verified). One total,
+    from the model that computes it properly.
+
+    Everything lives in nhl_projection.py with its calibration reasoning;
+    the short version is that all three league invariants check out —
+    mean total 6.10, OT rate 22.7% against a real 23%, and p(home) 0.546
+    for two identical teams against a real 0.545.
+    """
+    if not rows:
+        return
+    try:
+        from nhl_projection import load_team_ratings, project_and_simulate
+    except ImportError:
+        return
+    season = None
+    for r in rows:
+        season = r.get('season') or season
+    season = season or _et_now().year
+    ratings = load_team_ratings(SB, H_READ, int(season))
+    if not ratings:
+        print('  ⚠ no NHL team ratings — projection skipped '
+              '(run nhl_team_stats_pull.py)')
+        return
+    done = 0
+    for row in rows:
+        out = project_and_simulate(
+            row.get('home_team'), row.get('away_team'), ratings,
+            close_total=row.get('close_total'))
+        if not out:
+            continue
+        p, mc = out['projection'], out['mc']
+        row['projected_home_goals'] = p['home_goals']
+        row['projected_away_goals'] = p['away_goals']
+        row['projected_total'] = p['total']
+        # nflverse convention, matching every other sport on this field:
+        # POSITIVE means the HOME side is favoured.
+        row['projected_spread'] = p['margin']
+        row['mc_probabilities'] = mc
+        done += 1
+    print(f'  projection+MC: {done}/{len(rows)} games')
+
+
 def _et_now() -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=4)
 
@@ -774,6 +834,10 @@ def run_for_date(game_date: date, dry_run: bool = False) -> int:
     print(f'    fetched {len(games)} games — enriching...')
     enrich_market(games)
     enrich_nhl_elo(games)  # 2026-08-17: Elo-driven projected_home_wp + total
+    # 2026-09-27: runs AFTER Elo on purpose — it takes over projected_total
+    # with a league-calibrated number while leaving Elo's projected_home_wp
+    # intact as its own separate lens. See enrich_nhl_projection.
+    enrich_nhl_projection(games)
     enrich_team_stats(games, season)
     enrich_goalies(games, season)
     enrich_rest_and_travel(games)
