@@ -1,0 +1,206 @@
+name: Daily Card (sport-agnostic surfaces)
+
+# ══ WHY THIS EXISTS ══
+#
+# Andy, 9:26am 2026-09-28: "dont see a sweat card in app or POTD", then
+# "i just want to make sure top sport picks are surfacing".
+#
+# Seven of the nine user-facing surfaces were produced ONLY inside
+# mlb_pipeline.yml:
+#
+#     Sweat Card · The Sharp · POTD · Dawg of the Day
+#     Ladder · Ledger · Daily Degen
+#
+# Only money-flow splits, game reads and externals were distributed across
+# the six sport pipelines. So every headline surface in the product hung
+# off the baseball workflow — and baseball's regular season ended 2026-09-27.
+# The morning the card went missing was not a one-off, it was the first day
+# of a permanent condition.
+#
+# This runs the surfaces that DO NOT need baseball, on their own schedule,
+# so the product keeps producing picks through the MLB offseason and through
+# every future gap between sports.
+#
+# ── WHAT IS HERE, AND WHY EACH ONE QUALIFIES ──
+# Audited by the tables each script actually reads:
+#
+#   jerry_anchor_potd.py    AGNOSTIC  — reads jerry_reads (every sport
+#                                       writes it) + jerry_cache. POTD has
+#                                       always been able to pick from any
+#                                       sport; it was only ever SCHEDULED
+#                                       inside the MLB workflow.
+#   settle_prop_receipts.py AGNOSTIC  — and was in NO workflow at all. It
+#                                       is the fallback grader for props
+#                                       whose source row was pruned, and
+#                                       only ever ran when
+#                                       grade_public_receipts imported it.
+#   snapshot_ledger.py      AGNOSTIC
+#   generate_sweat_card.py  sport-aware; counts all six sports as of
+#                           2026-09-28 and composes football picks already
+#   steam_room_ladder.py    sport-aware; shared ladder_* tables
+#   generate_ledger.py      sport-aware; shared ledger_suggestions
+#   consistency_watchdog.py sport-aware; shared watchdog_alerts
+#   compute_surface_records sport-aware; already runs in four workflows
+#
+# ── WHAT IS DELIBERATELY NOT HERE ──
+#   generate_dawg_of_day.py    reads daily_dawg + mlb_game_context +
+#                              mlb_pipeline_props only — genuinely MLB-bound
+#   generate_daily_degen.py    same
+# Moving those needs them made multi-sport first, which is real work, not a
+# scheduling change. They stay in mlb_pipeline and stop with baseball. That
+# is a known gap, not an oversight.
+#
+# ── mlb_pipeline STILL RUNS ITS COPIES ──
+# These steps are NOT removed from mlb_pipeline yet. Every one is
+# idempotent (the card is wipe-and-refresh, POTD is threshold-gated,
+# ladder/ledger are upserts), so running twice produces the same result,
+# and leaving them in place means this workflow can be proven in
+# production before anything is taken away from a pipeline that is mid
+# postseason. Removal belongs to the offseason restructure.
+#
+# ── SCHEDULE ──
+# GitHub delivers this repo's crons 3.5-6 HOURS late, measured over 20 days
+# of workflow_heartbeat. Times below are therefore set early on purpose;
+# the comment on each says when it actually lands.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'    # lands ~08:30-11:00 UTC = 04:30-07:00 ET
+    - cron: '0 11 * * *'   # lands ~14:30-17:00 UTC = 10:30-13:00 ET
+    - cron: '0 17 * * *'   # lands ~20:30-23:00 UTC = 16:30-19:00 ET
+  workflow_dispatch:
+
+# Serialise against itself only. The repo has history here: a single shared
+# group let GitHub cancel QUEUED scheduled runs when a push queued behind
+# them (2026-09-11), and splitting groups by trigger source then let two
+# runs execute simultaneously against the same tables (2026-09-18). One
+# group for this workflow, cancel-in-progress off so a later run waits
+# rather than killing a half-written card.
+concurrency:
+  group: daily-card
+  cancel-in-progress: false
+
+jobs:
+  surfaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          CRON_SLOT="${{ github.event.schedule }}"
+          case "$CRON_SLOT" in
+            '0 5 * * *')   SLOT='05' ;;
+            '0 11 * * *')  SLOT='11' ;;
+            '0 17 * * *')  SLOT='17' ;;
+            *)             SLOT='manual' ;;
+          esac
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"daily_card\",\"event\":\"start\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}" || true
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dateutil pytz
+
+      # Settle anything gradeable BEFORE composing, so today's surfaces
+      # carry yesterday's results rather than a page of "Pending" — which
+      # is exactly what the 09-28 card showed.
+      - name: Settle receipts + refresh records
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          # --commit is REQUIRED: this script defaults to a dry run and
+          # prints "DRY RUN — add --commit to write." Without the flag the
+          # step would pass every day and settle nothing, which is a worse
+          # failure than not scheduling it at all — it would look fixed.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "compute_surface_records.py" python compute_surface_records.py
+
+      # POTD first: generate_sweat_card reads best_bet_<date> out of
+      # jerry_cache, so composing the card before the anchor runs gives a
+      # card with an empty POTD slot.
+      - name: Play of the Day (any sport)
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "jerry_anchor_potd.py" python jerry_anchor_potd.py --threshold 70
+
+      - name: Sweat Card
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "generate_sweat_card.py" python generate_sweat_card.py
+
+      - name: Steam Room — Ladder + Ledger
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "steam_room_ladder.py" python steam_room_ladder.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "generate_ledger.py" python generate_ledger.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "snapshot_ledger.py" python snapshot_ledger.py
+
+      - name: Consistency watchdog
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "consistency_watchdog.py" python consistency_watchdog.py
+
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"daily_card\",\"event\":\"end\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\"}" || true
+
+      # Turns the run red if any step above was recorded as failed, so a
+      # silently broken surface cannot show a green check.
+      - name: Gate — fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
