@@ -1909,8 +1909,44 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
   const closeTot = ctx?.close_total;
   const closeHomeML = ctx?.home_ml_close ?? ctx?.close_home_ml;
 
+  // ══ 2026-09-28 · A SPREAD WITHOUT A SIGN OR A TEAM SAYS NOTHING ══
+  // Andy's PHI @ CHI QA: the opener rendered a bare "1.5". A spread is a
+  // number ABOUT somebody — "1.5" does not say who is giving the points, and
+  // the reader cannot recover it from the strip.
+  //
+  // Reading close_spread's sign would be the obvious fix and it is the one
+  // trap this file documents most loudly: the convention is inverted between
+  // NFL and NCAAF (project_close_spread_sign_bug_914), so a sign-reading fix
+  // is right in one sport and backwards in the other. The market-strip tiles
+  // below already solved this — MAGNITUDE from the spread, DIRECTION from the
+  // moneyline, because the cheaper price is the favourite in every sport with
+  // no convention to get wrong. Same approach here, so the two strips cannot
+  // disagree.
+  //
+  // Both numbers are anchored to the HOME team so the movement is a
+  // like-for-like comparison, and the label names that team once. When the
+  // prices are missing the direction is genuinely unknown, so it falls back
+  // to the bare magnitude rather than guessing a side.
+  const _lmHomeML = Number(ctx?.close_home_ml ?? ctx?.home_ml_close);
+  const _lmAwayML = Number(ctx?.close_away_ml ?? ctx?.away_ml_close);
+  const _lmHomeFav = (isFinite(_lmHomeML) && isFinite(_lmAwayML))
+    ? _lmHomeML < _lmAwayML : null;
+  const _lmHomeAbbr = abbrev3(ctx?.home_team);
+  const _spreadFmt = (v: any) => {
+    if (v == null) return '—';
+    const n = Number(v);
+    if (!isFinite(n)) return String(v);
+    if (_lmHomeFav == null) return f(Math.abs(n), 1);
+    const signed = _lmHomeFav ? -Math.abs(n) : Math.abs(n);
+    return signed > 0 ? `+${f(signed, 1)}` : f(signed, 1);
+  };
+
   const items = [
-    {label: 'Spread', open: openSp, current: closeSp, fmt: (v: any) => f(v, 1)},
+    // `label` stays 'Spread' — the pick-relative colour logic below keys off
+    // it. displayLabel is the rendered caption.
+    {label: 'Spread', displayLabel: _lmHomeFav != null && _lmHomeAbbr
+       ? `Spread (${_lmHomeAbbr})` : 'Spread',
+     open: openSp, current: closeSp, fmt: _spreadFmt},
     {label: 'Total', open: openTot, current: closeTot, fmt: (v: any) => f(v, 1)},
     // 2026-09-26: American odds need their sign. This printed a bare "400"
     // while the MARKET strip on the same sheet showed "+400" for the same
@@ -1986,7 +2022,9 @@ function LineMovementStrip({ctx, historicalOdds}: any) {
                           : C.textDim;
         return (
           <View key={i} style={styles.lineMoveItem}>
-            <Text style={styles.lineMoveLabel}>{it.label}</Text>
+            <Text style={styles.lineMoveLabel} numberOfLines={1}>
+              {(it as any).displayLabel ?? it.label}
+            </Text>
             <Text style={styles.lineMoveValues}>
               <Text style={{color: C.textMuted}}>{it.fmt(it.open)}</Text>
               <Text style={{color: C.textDim, fontSize: 10}}>  →  </Text>
@@ -2162,6 +2200,15 @@ function LensGrid({ctx, gamesSport}: any) {
         m: isHomeLean ? 1 : -1,      // sign-only for color
         t: null,
         displayMargin: `${goatTeam}${goatTier ? ` · ${goatTier}` : ''}`,
+        // ══ 2026-09-28 · "STRO/NG" ══
+        // Andy's PHI @ CHI QA: the GOAT tile broke mid-word. The lens row
+        // lays up to seven tiles at flex:1, so each gets roughly 38px of
+        // content width, and "STRONG" at 12px bold is about 46px. The WORD
+        // is wider than the tile, so there is no whitespace for the wrap to
+        // land on and RN breaks inside it. Every other tile is a short
+        // "DAL 5.7"; this is the only two-word value in the row, so the
+        // smaller face applies here rather than shrinking the whole row.
+        smallText: true,
       };
     }
     // ══ 2026-09-26 · AN EMPTY LENS IS NOT A LENS ══
@@ -2287,7 +2334,10 @@ function LensGrid({ctx, gamesSport}: any) {
                 )}
               </View>
 
-              <Text style={[styles.lensMargin, {color: confSplitLabel ? C.textMuted : (missing ? C.textDim : sideColor(mgnSide))}]}>
+              <Text numberOfLines={2}
+                    style={[styles.lensMargin,
+                            (r as any).smallText && styles.lensMarginSmall,
+                            {color: confSplitLabel ? C.textMuted : (missing ? C.textDim : sideColor(mgnSide))}]}>
                 {/* 2026-09-17: displayMargin override lets LR (probability
                     tile → "H 72%") and GOAT (composite tile → "KC · STRONG")
                     render in the tile without breaking the numeric format
@@ -7654,6 +7704,10 @@ const styles = StyleSheet.create({
   },
   lensName: {fontSize: 9, fontWeight: '700', color: C.textMuted, letterSpacing: 0.6, textTransform: 'uppercase'},
   lensMargin: {fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums']},
+  // Two-word tile values ("CHI · STRONG") at a size that fits the ~38px a
+  // flex:1 lens gets in a seven-tile row, with centred wrapping so the tier
+  // drops to a second line instead of breaking inside the word.
+  lensMarginSmall: {fontSize: 9, lineHeight: 11, textAlign: 'center'},
   lensTotal: {fontSize: 9, fontVariant: ['tabular-nums']},
 
   // Handicappers
