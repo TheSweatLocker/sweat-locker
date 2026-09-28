@@ -966,9 +966,39 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
     # 2026-08-13 · V4 lens (XGBoost). Trained on 2020-2024 nflverse, inference
     # via nfl_v4_inference.py. Represents the data-driven "everything else"
     # signal — learns interactions Matchup-EPA/V3/MC don't model directly.
-    v4_spread = ctx.get('v4_spread')
-    v4_total = ctx.get('v4_total')
-    v4_confidence = ctx.get('v4_confidence')
+    # ⚠ 2026-09-27 · V4 IS NOT A LENS. Its vote is withheld here.
+    #
+    # v4_features_used, on every row that has one, contains ONLY:
+    #   temp, week, wind, season, is_dome, away_bye, div_game, home_bye,
+    #   away_rest, home_rest, is_playoff, away_short_week, home_short_week
+    # There is not one team-strength feature — no EPA, no madden, no
+    # power_diff, no team identity. So v4 cannot know who is playing, and
+    # its output is a constant: across the 29 rows that carry a value,
+    # v4_spread ranges +1.37..+1.99 (sd 0.197) and is ALWAYS positive,
+    # while v3_spread on the same rows ranges -15.74..+11.43 (sd 4.795).
+    # v4_confidence is 0.311 on every single row. CHI@CAR closed -21.5,
+    # v3 said -15.74, v4 said +1.44.
+    #
+    # +1.5-always-HOME is just league-average home-field advantage, which
+    # is the only signal those inputs carry. The model file itself is fine
+    # (models/nfl_v4_spread.pkl); the FEATURE BUILDER never passes team
+    # stats. Until that is fixed, counting v4 as an agreeing lens adds a
+    # guaranteed HOME vote to every consensus — it inflates the lens count
+    # without adding information, which is how a 2/5 gate silently becomes
+    # a 2/4 gate and how PRIME fires on less agreement than it claims.
+    #
+    # WHY NEUTRALISE HERE RATHER THAN AT EACH USE. Same reason the publish
+    # lock guard lives in lock_publish: there are several consumers and
+    # they drift. One place to re-enable when the features land.
+    #
+    # NOTE this changes no live number today — v4_spread has been NULL
+    # since 2026-09-21 (populated on 29 of 316 rows, 5 dates only), so
+    # every count below already runs without it. This makes the accident
+    # intentional and stops it silently coming back if v4 starts writing
+    # again while still feature-blind.
+    v4_spread = None
+    v4_total = None
+    v4_confidence = None
 
     # 1a. MC HIGH-CONF headline — fires when MC sim shows a decisive edge
     # AND at least one other lens (EPA model or Panel) agrees on direction.
@@ -983,6 +1013,15 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             # producing lens count is now 5 (MC + Matchup-EPA + Panel + V3 + V4).
             # Jerry LLM is a 6th synthesis lens but doesn't produce a spread
             # projection directly; not counted in agreement.
+            #
+            # 2026-09-27: the real count is 4. V4 is withheld above (no team
+            # features — see the note at its assignment), so the denominator
+            # below is 4, not 5. PRIME still requires supporting >= 4, which
+            # now means ALL FOUR lenses agree. That is deliberately left
+            # as-is rather than relaxed to 3: loosening a tier threshold is a
+            # calibration change and needs its own before/after measurement,
+            # not a quiet ride-along on a bug fix. It is also already the
+            # live behaviour, because v4 has been NULL since 09-21.
             supporting = 1  # MC counts itself
             if proj_spread is not None:
                 model_side = 'HOME' if float(proj_spread) > 0 else 'AWAY'
@@ -1009,9 +1048,10 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
                     'tier': tier,
                     'label': f'{team} ML',
                     'sub': f'MC HIGH-CONF: {mc_pct*100:.0f}% win prob (10k sim) · '
-                           f'{supporting}/5 lens confirm · margin {mc_expected_margin:+.1f}',
+                           f'{supporting}/4 lens confirm · margin {mc_expected_margin:+.1f}',
                     'signal_floor': 85 if tier == 'PRIME' else 75,
-                    'audit_note': 'MC HIGH-CONF chip · NFL 5-model rollout',
+                    'audit_note': 'MC HIGH-CONF chip · NFL 4-lens (V4 withheld '
+                                  '2026-09-27: no team features)',
                 }
 
         # 2026-08-13 · ANTI-CONSENSUS FADE (NFL) — analog of MLB's rule.
@@ -1033,7 +1073,19 @@ def compute_primary_play(ctx: dict) -> Optional[dict]:
             'v3':    _side_of(v3_spread),
             'v4':    _side_of(v4_spread),
         }
-        # Only run if ALL 5 lens produced a side
+        # Only run if ALL 5 lens produced a side.
+        #
+        # ⚠ 2026-09-27: this rule is therefore DORMANT, because v4 is now
+        # withheld (see its assignment above) so lens_sides['v4'] is always
+        # None. It was already dormant in practice — v4_spread has been NULL
+        # since 09-21 — so nothing changes today.
+        #
+        # v4 is deliberately left IN this dict rather than dropped. Dropping
+        # it would turn a 5-lens rule into a 4-lens rule, and the firing
+        # condition below (most_common == 3, i.e. a 3-2 split) would then
+        # mean a 3-1 split — a different, more lopsided trigger that would
+        # start the rule firing again on thresholds nobody measured. Re-tune
+        # it deliberately, with a before/after, when v4 gets real features.
         if all(v is not None for v in lens_sides.values()):
             from collections import Counter
             side_counts = Counter(lens_sides.values())
@@ -1744,13 +1796,46 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
                 f'{SB}/rest/v1/nfl_game_context',
                 params={'game_id': f'in.({ids_csv})',
                         'select': 'game_id,open_spread,open_total,open_home_ml,'
-                                  'open_away_ml,primary_play'},
+                                  'open_away_ml,close_total,primary_play'},
                 headers=H_READ, timeout=15)
             if _r.status_code == 200:
                 for existing in _r.json():
                     existing_opens[existing['game_id']] = existing
         except Exception as _e:
             print(f'  ⚠ open-preserve lookup failed ({_e}) — proceeding with fresh mirror')
+
+    # ══ 2026-09-27 · REFUSE A TOTAL THAT CANNOT BE REAL ══
+    #
+    # Andy, on BAL @ DAL: "Total moved 51.5 -> 62.5. An 11-point move in an
+    # NFL total is almost certainly a bad feed, such as an alt line or the
+    # wrong game. The UNDER call and the 'lenses split 10.9 pts' note both
+    # inherit that error."
+    #
+    # And it did more than mislabel the line. Every lens on that game sat
+    # at 48-57, so the card computed midpoint 57.0 against 62.5 and printed
+    # UNDER; against the real opening 51.5 the same midpoint says OVER. The
+    # bad feed inverted the call.
+    #
+    # Thresholds and the reasoning behind them live in line_sanity.py —
+    # briefly: NFL totals move a median of 0.0 and a p95 of 3.0 points
+    # across this season's 316 rows, so a >6 point jump is not a market
+    # move. The previous good value is kept rather than blanking the
+    # column, because a missing total hides the market from every lens
+    # while a stale one is wrong by the real drift, which is ~0.
+    #
+    # Not a one-off: the same window holds JAX@DEN 45.5->35.5,
+    # GB@NYJ 44.5->37.5, TEN@NYG 44.5->37.5, CLE@TB 41.5->48.5.
+    try:
+        from line_sanity import validate_total
+        for _r2 in rows:
+            _prior = (existing_opens.get(_r2.get('game_id')) or {}).get('close_total')
+            _kept, _why = validate_total('NFL', _r2.get('close_total'), _prior)
+            if _why:
+                print(f"  ⚠ close_total REJECTED {_r2.get('away_team')}@"
+                      f"{_r2.get('home_team')}: {_why}")
+                _r2['close_total'] = _kept
+    except ImportError:
+        pass        # validator absent — ingest unchanged rather than blocked
 
     # ── 2026-09-19 THURSDAY PICK LOCK ───────────────────────────────────
     # Andy: "we lock it Thursday and no changes unless something

@@ -137,31 +137,60 @@ def run_for_sport(sport: str, game_date: str, season: str, dry_run: bool = False
         a_tr = trends_by_key.get(_norm(g.get('away_team','')))
         if h_tr: matched_h += 1
         if a_tr: matched_a += 1
-        patch = {
-            'home_season_cover_pct':   h_tr.get('cover_pct') if h_tr else None,
-            'home_season_ats_wins':    h_tr.get('ats_wins') if h_tr else None,
-            'home_season_ats_losses':  h_tr.get('ats_losses') if h_tr else None,
-            # 2026-09-22: a push is neither a win nor a loss, so without
-            # these the game vanishes from the chip instead of showing
-            # as a tie. team_season_trends has carried both all along.
-            'home_season_ats_pushes':  h_tr.get('ats_pushes') if h_tr else None,
-            'home_season_ou_pushes':   h_tr.get('ou_pushes') if h_tr else None,
-            'home_season_over_pct':    h_tr.get('over_pct') if h_tr else None,
-            'home_season_ou_overs':    h_tr.get('ou_overs') if h_tr else None,
-            'home_season_ou_unders':   h_tr.get('ou_unders') if h_tr else None,
-            'away_season_cover_pct':   a_tr.get('cover_pct') if a_tr else None,
-            'away_season_ats_wins':    a_tr.get('ats_wins') if a_tr else None,
-            'away_season_ats_losses':  a_tr.get('ats_losses') if a_tr else None,
-            'away_season_ats_pushes':  a_tr.get('ats_pushes') if a_tr else None,
-            'away_season_ou_pushes':   a_tr.get('ou_pushes') if a_tr else None,
-            'away_season_over_pct':    a_tr.get('over_pct') if a_tr else None,
-            'away_season_ou_overs':    a_tr.get('ou_overs') if a_tr else None,
-            'away_season_ou_unders':   a_tr.get('ou_unders') if a_tr else None,
-            'team_trends_updated_at':  now_iso,
-        }
+        # ══ 2026-09-27 · NEVER WRITE None OVER A POPULATED FIELD ══
+        #
+        # Andy: "make sure ATS badges are just this season data now."
+        # Measured the same day: 13 of 14 NFL games for 9/27 had NULL
+        # home/away_season_ats_wins, so the Games-tab chip fell through to
+        # ats_l10_at_venue — which is n=10 for EVERY team in week 3, i.e.
+        # entirely LAST season. SEA rendered "9-1 ATS road" from 2025 on a
+        # 2026 card, unlabelled.
+        #
+        # The mechanism is ordering plus a null overwrite, not a failing
+        # step. nfl_pipeline.yml runs backfill_nfl_season_records_from_results
+        # (line ~451), which correctly derives this season's record from
+        # nfl_game_results, and THEN runs this script (line ~474). When
+        # teamrankings has no 2026 aggregate yet — it lags 2-4 weeks into a
+        # season, which is exactly why that backfill exists — h_tr/a_tr are
+        # None here and every field was patched to None, erasing the good
+        # values that had just been written.
+        #
+        # The 09-24 note in the workflow blamed a silent step failure for
+        # the same symptom and switched the step to run_step so it would be
+        # visible. It was visible; the step had succeeded. This is what was
+        # undoing it.
+        #
+        # Absence of teamrankings data is not knowledge that a team has no
+        # record. So a side with no trends row now contributes NO KEYS at
+        # all rather than null ones, and whatever the earlier, better-
+        # sourced writer put there survives.
+        patch: dict = {'team_trends_updated_at': now_iso}
+        _FIELDS = (('cover_pct', 'season_cover_pct'),
+                   ('ats_wins', 'season_ats_wins'),
+                   ('ats_losses', 'season_ats_losses'),
+                   # 2026-09-22: a push is neither a win nor a loss, so
+                   # without these the game vanishes from the chip instead
+                   # of showing as a tie. team_season_trends has carried
+                   # both all along.
+                   ('ats_pushes', 'season_ats_pushes'),
+                   ('ou_pushes', 'season_ou_pushes'),
+                   ('over_pct', 'season_over_pct'),
+                   ('ou_overs', 'season_ou_overs'),
+                   ('ou_unders', 'season_ou_unders'))
+        for _side, _tr in (('home', h_tr), ('away', a_tr)):
+            if not _tr:
+                continue        # no data != zero games
+            for _src, _dst in _FIELDS:
+                _v = _tr.get(_src)
+                if _v is not None:
+                    patch[f'{_side}_{_dst}'] = _v
         if dry_run:
             print(f'  [DRY] {g["away_team"][:20]:<20} @ {g["home_team"][:20]:<20}  '
-                  f'H={patch["home_season_cover_pct"] or "?"}%  A={patch["away_season_cover_pct"] or "?"}%')
+                  # .get, not [...]: a side with no trends row now contributes
+                  # no keys at all (see the patch note above), so subscripting
+                  # would raise instead of printing "?".
+                  f'H={patch.get("home_season_cover_pct") or "?"}%  '
+                  f'A={patch.get("away_season_cover_pct") or "?"}%')
             written += 1; continue
         pr = requests.patch(f'{SB}/rest/v1/{ctx_tbl}?game_id=eq.{g["game_id"]}',
                             headers=H_WRITE, json=patch, timeout=15)

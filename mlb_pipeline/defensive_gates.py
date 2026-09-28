@@ -1212,13 +1212,55 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # backs X" reads too clinical, doesn't tell them WHY. Swapped
         # to "Model conviction on X · N%" — shorter, warmer, still honest.
         team_short = team.split()[-1] if team else 'the pick'
+
+        # 2026-09-27 · STATE THE EDGE, NOT JUST THE CONVICTION.
+        #
+        # Andy, on BAL @ DAL: "BAL at -203 implies about 67%, and the model
+        # says 67%. That's a coin flip against the vig, yet it's labeled a
+        # LEAN. The card should show edge (model % minus implied %), not raw
+        # conviction." The row proved him exactly right — implied 67.0%,
+        # model 67.0%, edge 0.0pp, published anyway.
+        #
+        # `conviction` here IS the model's win probability (see just above),
+        # and the tier bands are absolute thresholds on it, so nothing in
+        # the pipeline ever compared it to the price. Measured over 100
+        # past ML picks: STRONG averaged -1.77pp of edge with 66% of them
+        # underwater by >2pp. Cincinnati ML -285 shipped STRONG at
+        # conviction 59 against a 74.0% implied — a -15pp pick.
+        #
+        # The edge is computed in model_edge.py so there is ONE definition
+        # rather than a second opinion per caller. It DEMOTES, never
+        # suppresses: Andy does not want an engine that passes on
+        # everything, so the play still ships with an honest label.
+        _ml_price = (ctx.get('close_home_ml') if pred['suggested_side'] == 'HOME'
+                     else ctx.get('close_away_ml'))
+        try:
+            from model_edge import edge_pp, edge_phrase, cap_tier_for_edge
+            _edge = edge_pp(conviction, _ml_price, 'ml')
+            _phrase = edge_phrase(conviction, _ml_price, 'ml')
+            _tier_after, _edge_reason = cap_tier_for_edge(
+                pred['suggested_tier'], conviction, _ml_price, 'ml')
+        except ImportError:
+            _edge, _phrase, _edge_reason = None, '', None
+            _tier_after = pred['suggested_tier']
+
+        _sub = (f'Model conviction on {team_short} · {conviction}%'
+                if not _phrase else f'{team_short} · {_phrase}')
+
         new_pp = {
             'type': 'ml',
-            'tier': pred['suggested_tier'],
+            'tier': _tier_after,
             'side': pred['suggested_side'],
             'label': f'{team} ML',
-            'sub': f'Model conviction on {team_short} · {conviction}%',
+            'sub': _sub,
             'conviction': conviction,
+            # Stored so surfaces and graders read the same number the card
+            # shows, instead of each recomputing it from a price they may
+            # have fetched at a different moment.
+            '_model_edge_pp': _edge,
+            '_ml_price_at_pick': _ml_price,
+            '_edge_cap': ({'from': pred['suggested_tier'], 'to': _tier_after,
+                           'reason': _edge_reason} if _edge_reason else None),
             '_engine': 'lr_v1',
             # 2026-09-09: standardized shadow field. Was `_lr_p_home_win` raw
             # (only on PRIME-override path); every other path in this file

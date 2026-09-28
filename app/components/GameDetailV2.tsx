@@ -1118,12 +1118,32 @@ function AlignmentStrip({ctx}: any) {
       kind: (ml.div ?? 0) >= 10 ? 'info' : 'neutral',
     });
   }
+  // ══ 2026-09-27 · ONE LENS IS NOT A CONSENSUS ══
+  //
+  // Andy, on BAL @ DAL: "'Models 1/1 HOME' in the top summary contradicts
+  // 'Model 67% AWAY' and GOAT on BAL."
+  //
+  // Both were true and they counted different things. This chip comes from
+  // align_status_common.compute_lens_ml_from_context, whose lens set is
+  // panel / jerry / v3 / v4 / mc / conf — it does NOT include LR or GOAT,
+  // the two lenses the card prints most prominently. On that game
+  // projected_spread was exactly 0.0 (no side), v4 was dead and the NFL
+  // table has no model_pred_spread at all, so a single lens voted and the
+  // strip rendered its lone opinion as "1/1 HOME" — the visual grammar of
+  // agreement — directly above a grid showing LR and GOAT on BAL.
+  //
+  // "n/n" only means something when n is a count of things that could have
+  // disagreed. Below two lenses there is no agreement to report, so the
+  // chip names it as a single read instead of implying unanimity. The
+  // deeper fix is one lens set shared by the strip and the consensus grid;
+  // this stops the card contradicting itself in the meantime.
   if (ml.lens_count) {
     const side = ml.lens_side === 'H' ? 'HOME' : ml.lens_side === 'A' ? 'AWAY' : '—';
+    const lone = (Number(ml.lens_total) || 0) < 2;
     chips.push({
-      label: 'Models',
-      value: `${ml.lens_count}/${ml.lens_total} ${side}`,
-      kind: ml.lens_count >= 5 ? 'ok' : 'neutral',
+      label: lone ? 'Model (1 lens)' : 'Models',
+      value: lone ? `${side} only` : `${ml.lens_count}/${ml.lens_total} ${side}`,
+      kind: lone ? 'neutral' : ml.lens_count >= 5 ? 'ok' : 'neutral',
     });
   }
   const overall = align.overall || {};
@@ -1644,25 +1664,75 @@ function MoneyFlow({ctx, sport}: any) {
   const movedTotal  = _moved(ctx?.open_total,  ctx?.close_total);
   const movedML     = _moved(ctx?.home_ml_open, ctx?.close_home_ml);
 
-  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any; moved: boolean | undefined}[] = ([
-    {key: 'ml' as const, label: 'Moneyline', data: src.ml, moved: movedML},
+  // ══ 2026-09-27 · MONEY SHARE IS INFLATED BY PRICE, NOT ONLY BY SHARPS ══
+  //
+  // Andy: "Money flow tagging a -203 favorite as SHARP isn't reliable.
+  // Favorites naturally draw more money than tickets because bettors have
+  // to stake more to win the same amount. Consider normalizing for price,
+  // or suppressing the tag on heavy favorites."
+  //
+  // He is right and the size of it is startling. On BAL @ DAL the card
+  // showed "+24pp sharp divergence · money 87% vs tickets 63.5% on AWAY".
+  // BAL was -203 and DAL +153, so a bettor sizing to win the same amount
+  // stakes 2.03 units on BAL against 0.65 on DAL. Feed 63.5% of TICKETS
+  // through those stakes and you get ~84% of the MONEY with not one sharp
+  // dollar involved. Against that baseline the real excess is ~3pp, not
+  // 24 — and the badge was reading a pricing identity as a signal.
+  //
+  // Only the moneyline is passed prices: spread and total sit near -110
+  // on both sides, where the effect is under a point and the raw
+  // divergence is already honest.
+  const _mlPickIsHome = String(src.ml?.pick || '').toUpperCase().includes('HOME');
+  const markets: {key: 'ml'|'rl'|'total'; label: string; data: any;
+                  moved: boolean | undefined; pickPrice?: any; oppPrice?: any}[] = ([
+    {key: 'ml' as const, label: 'Moneyline', data: src.ml, moved: movedML,
+     pickPrice: _mlPickIsHome ? ctx?.close_home_ml : ctx?.close_away_ml,
+     oppPrice:  _mlPickIsHome ? ctx?.close_away_ml : ctx?.close_home_ml},
     {key: 'rl' as const, label: rlLabel(sport), data: src.rl, moved: movedSpread},
     {key: 'total' as const, label: 'Total', data: src.total, moved: movedTotal},
   ]).filter(x => x.data);
   return (
     <View style={{gap: 8}}>
       {markets.map(m => (
-        <MoneyMarket key={m.key} label={m.label} data={m.data} lineMoved={m.moved} />
+        <MoneyMarket key={m.key} label={m.label} data={m.data} lineMoved={m.moved}
+                     pickPrice={m.pickPrice} oppPrice={m.oppPrice} />
       ))}
     </View>
   );
 }
 
-function MoneyMarket({label, data, lineMoved}: any) {
+// Stake a bettor must lay to win one unit at this American price. This is
+// the whole mechanism behind price-inflated money share: at -203 you put up
+// 2.03 to win 1; at +153 you put up 0.65.
+function _stakePerUnitWon(price: any): number | null {
+  const p = Number(price);
+  if (!isFinite(p) || p === 0) return null;
+  return p < 0 ? Math.abs(p) / 100 : 100 / p;
+}
+
+// Money share you would expect from PRICE ALONE, given the ticket split —
+// i.e. with no sharp money in the market at all. Returns null when either
+// price is missing, so an unknown price can never manufacture a baseline.
+function _expectedMoneyPct(betsPct: number, pickPrice: any, oppPrice: any): number | null {
+  const s1 = _stakePerUnitWon(pickPrice);
+  const s2 = _stakePerUnitWon(oppPrice);
+  if (s1 == null || s2 == null) return null;
+  const t = Math.max(0, Math.min(1, betsPct / 100));
+  const denom = t * s1 + (1 - t) * s2;
+  if (denom <= 0) return null;
+  return 100 * (t * s1) / denom;
+}
+
+function MoneyMarket({label, data, lineMoved, pickPrice, oppPrice}: any) {
   if (!data) return null;
-  const div = data.div ?? 0;
+  const rawDiv = data.div ?? 0;
   const money = Math.max(0, Math.min(100, data.money ?? 0));
   const bets = Math.max(0, Math.min(100, data.bets ?? 0));
+  // Divergence measured against what the PRICE already explains. Falls back
+  // to the raw gap when prices are unavailable, so markets without odds
+  // behave exactly as before rather than losing their badge.
+  const expMoney = _expectedMoneyPct(bets, pickPrice, oppPrice);
+  const div = expMoney == null ? rawDiv : Math.round(money - expMoney);
   const sources = typeof data.sources === 'number' ? data.sources : 0;
   // 2026-09-02: sharp threshold aligned with pipeline (divergence_threshold=20
   // OR money>=60). 2026-09-07 ROOT-CAUSE FIX: also require sources_agree >= 2
@@ -1771,7 +1841,15 @@ function MoneyMarket({label, data, lineMoved}: any) {
               genuinely positive, but print the real signed number so the
               header, the bars and this line can never disagree again. */}
           <Text style={{color: C.sharp, fontWeight: '700'}}>+{div}pp sharp divergence</Text>
-          {' · '}money share ({money}%) running ahead of ticket share ({bets}%) on {data.pick}
+          {expMoney == null
+            ? <>{' · '}money share ({money}%) running ahead of ticket share ({bets}%) on {data.pick}</>
+            /* 2026-09-27: state the PRICE-ADJUSTED comparison, because the
+               raw one reads as a much bigger signal than it is. At -203,
+               63.5% of tickets already produces ~84% of the money with no
+               sharp action at all, so quoting "87% money vs 63.5% tickets"
+               credited pricing arithmetic to sharps. */
+            : <>{' · '}money share ({money}%) vs the {Math.round(expMoney)}% this ticket
+               split ({bets}%) would produce at these prices anyway, on {data.pick}</>}
         </Text>
       )}
     </View>
@@ -2188,9 +2266,31 @@ function LensGrid({ctx, gamesSport}: any) {
                     render in the tile without breaking the numeric format
                     used by v3/v4/panel/sp+/mc/conf. Sign color still driven
                     by r.m so the border-top hue stays consistent. */}
+                {/* ══ 2026-09-27 · NAME THE TEAM, DON'T IMPLY IT ══
+                    Andy: "Model tiles need a sign convention. It's unclear
+                    whether MC +5.66 favors home or away, and with BAL at
+                    -3.5 that could read as backing Dallas."
+
+                    It DID mean Dallas — on BAL @ DAL, MC had mc_p_home
+                    0.651 and a +5.66 home margin while the pick was BAL.
+                    Direction was encoded only in the border-top hue, which
+                    asks the reader to know a colour convention AND to know
+                    that positive means home. Printing the abbreviation
+                    removes both assumptions, and matches how the GOAT tile
+                    ("BAL · LEAN") already reads.
+
+                    Two decimals on a point spread is precision nobody has:
+                    5.66 and 5.7 are the same forecast. Dropping to one also
+                    buys back the width the team code costs, which is the
+                    clipping Andy flagged in the same pass. */}
                 {confSplitLabel ? confSplitLabel
                   : (r as any).displayMargin ? (r as any).displayMargin
-                  : (missing ? '—' : (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2)))}
+                  : missing ? '—'
+                  /* Conf is a net signal balance, not a point margin, so it
+                     keeps the bare signed number — "DAL 1.0" would read as
+                     a one-point spread it never claimed. */
+                  : r.name === 'Conf' ? (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))
+                  : `${abbrev3(r.m > 0 ? ctx?.home_team : ctx?.away_team)} ${f(Math.abs(r.m), 1)}`}
               </Text>
               <Text style={[styles.lensTotal, {
                 color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
@@ -2531,11 +2631,41 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
 
 // ─── HANDICAPPERS ROW ───────────────────────────────────────────────────
 function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) {
-  const nonOC = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
+  const _nonOCraw = (picks || []).filter((p: any) => p.source !== 'oddscrowd');
   // 2026-09-01: hard defense — parent Section is gated but if HandicappersRow
   // is ever mounted with no non-OC picks, render nothing rather than the
   // empty-state text that read as "we forgot to build this."
-  if (nonOC.length === 0) return null;
+  if (_nonOCraw.length === 0) return null;
+
+  // ══ 2026-09-27 · ONE SOURCE, ONE CURRENT PICK PER MARKET ══
+  //
+  // Andy: "'The Book' is listed on both BAL and DAL for the moneyline."
+  //
+  // external_picks stores one row PER PULL, not one per source-pick, and
+  // nothing here collapsed them. On BAL @ DAL that game carried:
+  //     ml  action         AWAY   pulled 2026-09-27   <- current
+  //     ml  action         HOME   pulled 2026-09-25   <- stale
+  //     ml  scoresandodds  HOME   x5 separate pulls
+  //     rl  pickswise      HOME -4.0, then HOME 3.5, then HOME 3.5
+  // So a handicapper who CHANGED their pick appeared on both sides at
+  // once, and every source with repeat pulls was counted once per pull —
+  // which is what inflates the "2 / 3 / 1" tallies beside each row.
+  //
+  // Keeping the newest pull per (source, surface) is the honest reading:
+  // a handicapper has one live opinion per market, and it is their latest
+  // one. Sorting descending and taking first-seen also makes the choice
+  // deterministic rather than dependent on the order rows came back in.
+  const _ts = (p: any) => {
+    const t = Date.parse(p?.pulled_at || '');
+    return isFinite(t) ? t : -Infinity;
+  };
+  const _byLatest = new Map<string, any>();
+  for (const p of [..._nonOCraw].sort((a, b) => _ts(b) - _ts(a))) {
+    const k = `${p.source}|${p.surface}`;
+    if (!_byLatest.has(k)) _byLatest.set(k, p);
+  }
+  const nonOC = [..._byLatest.values()];
+
   const ml = nonOC.filter((p: any) => p.surface === 'ml');
   const rl = nonOC.filter((p: any) => p.surface === 'rl');
   const totals = nonOC.filter((p: any) => p.surface === 'total');
@@ -2598,12 +2728,23 @@ function HandicappersRow({picks, homeTeam, awayTeam, sport, records = {}}: any) 
     );
   };
 
+  // 2026-09-27 · Andy: "the spread handicapper count '3' wraps onto its own
+  // line." It did: handiRow was flexWrap:'wrap' with the count on
+  // marginLeft:'auto', so once the chips filled the line the count became
+  // the next flex item, wrapped, and auto-margin shoved it to the right of
+  // an otherwise empty row.
+  //
+  // The count is not part of the chip list and should not wrap with it, so
+  // the chips now wrap inside their own flex:1 container and the count sits
+  // outside it — pinned to the first line whatever the chips do.
   const bucketRow = (label: string, items: any[]) => (
     <View style={styles.handiRow}>
       <Text style={styles.handiSideLabel}>{label}</Text>
-      {items.length === 0
-        ? <Text style={styles.handiEmpty}>— none —</Text>
-        : items.map(chip)}
+      <View style={styles.handiChipWrap}>
+        {items.length === 0
+          ? <Text style={styles.handiEmpty}>— none —</Text>
+          : items.map(chip)}
+      </View>
       <Text style={styles.handiCount}>{items.length}</Text>
     </View>
   );
@@ -2833,13 +2974,30 @@ function RecentGameRow({row, h2h = false}: any) {
   // rows are 2022, 2018, 2014, 2010 and 2006. Hiding the year made a
   // correctly ordered multi-season list look shuffled. Third report of
   // this, so the year goes on the H2H tab.
+  // ══ 2026-09-27 · A DATE-ONLY STRING IS NOT AN INSTANT ══
+  //
+  // Andy: "Game dates show 9/12 and 9/19, which are Saturdays. That looks
+  // like the classic bug where a date-only value is parsed as UTC and
+  // shifts back a day in ET." Exactly right — nfl_game_context holds those
+  // games on 2026-09-13 and 2026-09-20, both Sundays.
+  //
+  // `new Date('2026-09-13')` is specified to parse a date-ONLY string as
+  // UTC midnight, but getMonth()/getDate() then read it in the device's
+  // LOCAL zone. Anywhere west of Greenwich that lands on the previous
+  // evening, so every NFL Sunday rendered as Saturday.
+  //
+  // game_date is a calendar date, not a moment, so the fix is to never
+  // build a Date from it — read the Y-M-D fields straight off the string.
+  // Adding a timezone offset would only move the bug to a different set of
+  // users; there is no offset that makes a calendar date into an instant.
   let dateShort = '';
   try {
-    const d = new Date(row.game_date);
-    if (!isNaN(d.getTime())) {
+    const m = String(row.game_date || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) {
+      const [, yy, mm, dd] = m;
       dateShort = h2h
-        ? `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`
-        : `${d.getMonth()+1}/${d.getDate()}`;
+        ? `${Number(mm)}/${Number(dd)}/${yy.slice(2)}`
+        : `${Number(mm)}/${Number(dd)}`;
     }
   } catch {}
 
@@ -3212,6 +3370,25 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
     [awayRoleLabel, awayRoleFilter, homeRoleLabel, homeRoleFilter],
   ];
 
+  // Splits suppressed because their records repeat a split already shown
+  // (see the note at the render loop). Named in a footnote for the same
+  // reason dropped splits are: a silently shorter list reads as a fault.
+  const _dupSplits: string[] = [];
+  const _sitSeen = new Set<string>();
+  const _sitSig = (rec: any): string =>
+    rec == null ? 'none'
+    : `${Number(rec.wins) || 0}-${Number(rec.losses) || 0}-${Number(rec.pushes) || 0}`;
+
+  // Every split being below the sample floor is ONE fact about the week,
+  // not one fault per row. SIT_MIN_N is the same floor SitRow applies.
+  const _allThin = rows.every(([, fa, , fh]) => {
+    const a = awayByFilter[fa], h = homeByFilter[fh];
+    const aN = (Number(a?.wins) || 0) + (Number(a?.losses) || 0);
+    const hN = (Number(h?.wins) || 0) + (Number(h?.losses) || 0);
+    if (aN === 0 && hN === 0) return true;   // dropped rows don't argue either way
+    return (aN > 0 && aN < SIT_MIN_N) || (hN > 0 && hN < SIT_MIN_N);
+  });
+
   return (
     <View style={{gap: 10}}>
       {/* 2026-09-01: prior-season badge when sample too thin for
@@ -3267,21 +3444,56 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
           But a silently shorter list makes the reader wonder what they
           missed — the same objection as the hidden V4 lens. Dropped
           splits are now named underneath. */}
+      {/* ══ 2026-09-27 · A ROW THAT REPEATS ANOTHER ROW IS NOISE ══
+          Andy, on BAL @ DAL: "'Last 10' duplicates 'Overall' at 1-1. Hide
+          it until more than 2 games have been played."
+
+          Right, and it generalises: in week 3 a team's LAST 10 *is* its
+          OVERALL, and AS FAV can equal AWAY when every road game was as a
+          favourite. Each repeat costs a row and pays nothing, and a screen
+          of five identical 1-1 boxes is most of why this section reads as
+          broken even when it is correct.
+
+          Deduped on the records themselves rather than by hard-coding
+          "hide LAST 10 before N games" — that would need a per-filter game
+          count the client does not have, and would keep the row on a game
+          where it happens to differ. Identical content is the actual test. */}
+      {(() => { _sitSeen.clear(); return null; })()}
       {rows.map(([labelL, filterA, labelR, filterH], i) => {
         const lr = awayByFilter[filterA];
         const rr = homeByFilter[filterH];
         const lTot = (Number(lr?.wins) || 0) + (Number(lr?.losses) || 0) + (Number(lr?.pushes) || 0);
         const rTot = (Number(rr?.wins) || 0) + (Number(rr?.losses) || 0) + (Number(rr?.pushes) || 0);
         if (lTot === 0 && rTot === 0) { _droppedSplits.push(`${labelL}/${labelR}`); return null; }
+        const sig = _sitSig(lr) + '|' + _sitSig(rr);
+        if (_sitSeen.has(sig)) { _dupSplits.push(labelL === labelR ? labelL : `${labelL}/${labelR}`); return null; }
+        _sitSeen.add(sig);
         return (
           <SitRow
             key={i}
             leftLabel={labelL}  leftRec={lr}
             rightLabel={labelR} rightRec={rr}
             market={market}
+            showThinNote={!_allThin}
           />
         );
       })}
+
+      {/* Say "small sample" ONCE. The per-row note repeated under every
+          line was five copies of the same sentence, which reads as five
+          separate faults rather than one early-season fact. */}
+      {_allThin && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: 2}}>
+          too few games played to call an edge in any split yet
+        </Text>
+      )}
+      {_dupSplits.length > 0 && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: 2}}>
+          {`${_dupSplits.join(' · ')} — same as a split already shown`}
+        </Text>
+      )}
 
       {_droppedSplits.length > 0 && (
         <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
@@ -3373,7 +3585,8 @@ function _sitN(rec: any): number {
   return (Number(rec?.wins) || 0) + (Number(rec?.losses) || 0);
 }
 
-function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
+function SitRow({leftLabel, leftRec, rightLabel, rightRec, market,
+                 showThinNote = true}: any) {
   const lr = _sitRate(leftRec);
   const rr = _sitRate(rightRec);
   const lN = _sitN(leftRec), rN = _sitN(rightRec);
@@ -3437,7 +3650,7 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market}: any) {
                       emptyNote={noRight ? rightLabel : null} />
         </View>
       </View>
-      {thin && (
+      {thin && showThinNote && (
         <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
                       textAlign: 'center', marginTop: -2, marginBottom: 4}}>
           too few games to call an edge
@@ -4217,6 +4430,9 @@ function StatRow({statKey, awayRow, homeRow}: any) {
   // "these are level" instead of "this screen is duplicating data".
   const _tied = (awayRow?.raw_value != null && homeRow?.raw_value != null
                  && Number(awayRow.raw_value) === Number(homeRow.raw_value));
+  // One precision for the whole row — see rowDecimals. Computed here rather
+  // than inside each StatCell so the two halves cannot disagree.
+  const _dp = rowDecimals(awayRow?.raw_value, homeRow?.raw_value, statKey);
   // 2026-09-26: the stat NAME is the info affordance. Tapping it explains
   // the metric and, more usefully, how to read the number — "is 0.446 good"
   // is the question a rank alone never answers. Attached to the label rather
@@ -4225,7 +4441,7 @@ function StatRow({statKey, awayRow, homeRow}: any) {
   return (
     <View>
       <View style={tsStyles.statRow}>
-        <StatCell row={awayRow} unit={unit} align="right"
+        <StatCell row={awayRow} unit={unit} align="right" decimals={_dp}
                   edge={tier ? (awayBetter ? 'good' : 'bad') : null} strong={tier === 'strong'} />
         {info ? (
           <TouchableOpacity style={{flex: 1}} activeOpacity={0.6}
@@ -4248,7 +4464,7 @@ function StatRow({statKey, awayRow, homeRow}: any) {
             {_tied ? <Text style={{color: C.textDim, fontSize: 10}}>{'  ='}</Text> : null}
           </Text>
         )}
-        <StatCell row={homeRow} unit={unit} align="left"
+        <StatCell row={homeRow} unit={unit} align="left" decimals={_dp}
                   edge={tier ? (awayBetter ? 'bad' : 'good') : null} strong={tier === 'strong'} />
       </View>
       {showInfo && info ? (
@@ -4258,7 +4474,7 @@ function StatRow({statKey, awayRow, homeRow}: any) {
   );
 }
 
-function StatCell({row, unit, align, edge, strong}: any) {
+function StatCell({row, unit, align, edge, strong, decimals}: any) {
   if (!row || row.raw_value == null) {
     return (
       <View style={[tsStyles.statCell, align==='left' ? {alignItems: 'flex-start'} : {alignItems: 'flex-end'}]}>
@@ -4275,6 +4491,8 @@ function StatCell({row, unit, align, edge, strong}: any) {
       <View style={{
         flexDirection: isRightAlign ? 'row' : 'row-reverse',
         alignItems: 'baseline', gap: 6,
+        // Shrink rather than overflow — see the statCell/statRow notes.
+        minWidth: 0, flexShrink: 1,
       }}>
         {/* 2026-09-01: split value + unit into sibling Text components
             instead of nesting. Nested Text inside a parent Text can lose
@@ -4299,7 +4517,7 @@ function StatCell({row, unit, align, edge, strong}: any) {
           tsStyles.statValue,
           _pctileColor(row.rank, row.league_size),
           strong && edge ? {fontWeight: '800' as const} : null,
-        ]}>{fmtStatValue(row.raw_value)}</Text>
+        ]}>{fmtStatValue(row.raw_value, decimals)}</Text>
         {edge === 'good' ? (
           <Text style={{color: C.win, fontSize: 10, fontWeight: '800'}}>{'\u25B2'}</Text>
         ) : edge === 'bad' ? (
@@ -4317,10 +4535,49 @@ function StatCell({row, unit, align, edge, strong}: any) {
 // number look like missing data. Decimals now follow magnitude, so every
 // cell in a row is written to the same precision: per-play/EPA-scale values
 // (|v| < 2) get 3 dp, rate and per-game values get 1, counting stats get 0.
-function fmtStatValue(v: any): string {
+// ══ 2026-09-27 · PRECISION IS A PROPERTY OF THE STAT, NOT OF THE VALUE ══
+//
+// Andy, on BAL @ DAL: "Decimal precision is inconsistent: 1.000 vs 3.0,
+// 2.5 vs 0.500, 2.5 vs 1.000."
+//
+// The comment above claimed "every cell in a row is written to the same
+// precision" and the code did the opposite — it chose decimals from EACH
+// CELL'S OWN magnitude, so the two halves of one row disagreed whenever
+// they straddled a threshold:
+//     PASS TDS/G      BAL 1.000   DAL 3.0     (1.0 < 2 <= 3.0)
+//     RUSH TDS/G      BAL 2.5     DAL 0.500
+//     SACKS ALLOWED/G BAL 2.5     DAL 1.000
+// Reading those as the same measurement takes real effort, and 1.000 next
+// to 3.0 implies the left number was measured three digits more finely.
+//
+// Decimals are now decided ONCE PER ROW from the larger of the two values,
+// then applied to both cells. `decimals` is threaded in from the row rather
+// than recomputed per cell so the two can't drift again.
+const _LOW_RES_STATS = new Set(['sos', 'sor']);
+
+function rowDecimals(a: any, b: any, statKey?: string): number {
+  // SOS/SOR are win-share fractions over a handful of games, so their
+  // resolution is genuinely coarse: measured 2026-09-27, NFL sos had 7
+  // distinct values across 32 teams and sor had 6. Three decimals on
+  // "0.000" advertises a precision the metric does not have and is why
+  // two tied teams read as a placeholder rather than as a real tie.
+  if (statKey && _LOW_RES_STATS.has(statKey)) return 2;
+  const mag = Math.max(
+    a == null || !isFinite(Number(a)) ? 0 : Math.abs(Number(a)),
+    b == null || !isFinite(Number(b)) ? 0 : Math.abs(Number(b)),
+  );
+  if (mag < 2)   return 3;   // per-play / EPA scale
+  if (mag < 100) return 1;   // per-game rates and counts
+  return 0;                  // yardage and other volume totals
+}
+
+function fmtStatValue(v: any, decimals?: number): string {
   if (v == null) return '—';
   const n = Number(v);
   if (!isFinite(n)) return String(v);
+  if (decimals != null) return n.toFixed(decimals);
+  // Fallback for any caller that has no row context — same thresholds as
+  // before so nothing changes shape unexpectedly.
   const a = Math.abs(n);
   if (a < 2)   return n.toFixed(3);
   if (a < 100) return n.toFixed(1);
@@ -4394,7 +4651,52 @@ function RankChip({rank, leagueSize}: any) {
   // 2026-09-26: "2nd pct" reads as "2nd best" — the ordinal fights the
   // meaning exactly at the low end, where the number matters most.
   // "%ile" is unambiguous in both directions.
-  const label = `${better}${_sfx(better)} %ile`;
+  //
+  // ══ 2026-09-27 · RANK IN A SMALL LEAGUE, PERCENTILE IN A BIG ONE ══
+  //
+  // Andy: "do we think percentile is better for users in stats and not
+  // ranks? 1-32 for NFL." Rank is better at 32 teams, for three reasons
+  // all visible on the BAL @ DAL card:
+  //
+  //   1. GRANULARITY. With 32 teams a percentile can only take 32 values,
+  //      3.2pp apart. "19th %ile" looks measured to the point and is not —
+  //      the same false precision as printing SOS as "0.000".
+  //   2. TIES READ AS TIES. BAL and DAL both sit at rank 26/32. "26/32" on
+  //      both sides is obviously one shared standing; two identical
+  //      percentiles is what made Andy file this as a placeholder bug.
+  //   3. NO MENTAL ARITHMETIC. "26/32" is the answer. "19th %ile" is one
+  //      step away from it.
+  //
+  // Percentile still earns its place where the universe is large or
+  // varies: NCAAF stats span 139/216/266-team universes and NCAAB 360+,
+  // where "188th" reads as worse than last place (the 2026-09-25 note
+  // above) and a percentile is the only comparable form.
+  //
+  // Keyed on league_size, NOT on sport, precisely because league_size
+  // already varies BY STAT within one sport. A size rule is therefore
+  // correct everywhere without plumbing a sport prop to every call site:
+  // NFL/NHL 32, NBA/MLB 30 fall under the cut; the smallest NCAAF
+  // universe is 139 and stays on percentile.
+  // A THIRD CASE, found while making the split: league_size can be far
+  // smaller than the sport's actual team count, because it counts teams
+  // that HAVE the stat, not teams that exist. On 2026-09-27 seven NHL
+  // advanced stats (corsi_5v5, xgf_per60, pp_pct, pk_pct, high_danger_*,
+  // xga_per60) had league_size 4 — only Philadelphia, NY Rangers,
+  // Pittsburgh and Ottawa have been ingested for 2026.
+  //
+  // "1/4" is arithmetically true and badly misleading: it reads as a
+  // four-team league. A percentile would be worse, claiming 100th. So
+  // below a floor the chip says what it actually is — a standing among
+  // the teams we have — rather than implying a league standing. Labelled
+  // rather than hidden, because a silently missing chip has repeatedly
+  // been read on this screen as a fault.
+  const RANK_MAX_LEAGUE = 40;
+  const RANK_MIN_LEAGUE = 10;
+  const label = Number(leagueSize) < RANK_MIN_LEAGUE
+    ? `${rank} of ${leagueSize} ranked`
+    : Number(leagueSize) <= RANK_MAX_LEAGUE
+      ? `${rank}/${leagueSize}`
+      : `${better}${_sfx(better)} %ile`;
   return (
     <View style={[tsStyles.rankChip, {backgroundColor: bg}]}>
       <Text style={[tsStyles.rankText, {color: fg}]}>{label}</Text>
@@ -4414,9 +4716,15 @@ const tsStyles = StyleSheet.create({
   spLabel: {color: C.text, opacity: 0.7, fontSize: 10, letterSpacing: 0.06, fontWeight: '700'},
   spRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   spValue: {color: C.text, fontSize: 20, fontWeight: '900', letterSpacing: -0.02},
+  // 2026-09-27: paddingHorizontal was 4, which left the outermost value
+  // touching the card edge — Andy: "Values clip the screen edges ('280' on
+  // the left, '-0.045' on the right)". The row carries a value, a unit and
+  // a rank pill per side, so 4px of gutter is consumed by the pill's own
+  // radius. 10 gives each side room without narrowing the label column
+  // enough to re-wrap the stat names.
   statRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: 8, paddingHorizontal: 4,
+    paddingVertical: 8, paddingHorizontal: 10,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.borderSoft,
   },
   statLabel: {
@@ -4425,7 +4733,11 @@ const tsStyles = StyleSheet.create({
     letterSpacing: 0.04, textTransform: 'uppercase',
     paddingHorizontal: 6,
   },
-  statCell: {flex: 1.3, justifyContent: 'center'},
+  // minWidth 0 is required for the flex child to be allowed to shrink below
+  // its content width; without it RN lets the value+unit+pill group push
+  // past the row bounds instead of compressing, which is the other half of
+  // the clipping above.
+  statCell: {flex: 1.3, justifyContent: 'center', minWidth: 0},
   statValue: {color: C.text, fontSize: 15, fontWeight: '800', letterSpacing: -0.01},
   statUnit: {color: C.textMuted, fontSize: 10, fontWeight: '600'},
   rankChip: {
@@ -7318,8 +7630,15 @@ const styles = StyleSheet.create({
   lensTotal: {fontSize: 9, fontVariant: ['tabular-nums']},
 
   // Handicappers
+  // 2026-09-27: wrapping moved to handiChipWrap so the trailing count can
+  // no longer wrap with the chips. The row itself stays on one line and
+  // grows in height as the chip container wraps inside it.
   handiRow: {
-    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4, paddingVertical: 6,
+    flexDirection: 'row', alignItems: 'flex-start', gap: 4, paddingVertical: 6,
+  },
+  handiChipWrap: {
+    flex: 1, minWidth: 0,
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4,
   },
   handiSideLabel: {fontSize: 10, color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 6},
   handiGroupLabel: {fontSize: 9, color: C.textDim, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 8, marginBottom: 2},

@@ -408,6 +408,36 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
     def _stale_flag(games):
         return not _has_current_season_data(games)
 
+    # ══ 2026-09-27 · A ROLLING WINDOW CAN CROSS THE SEASON BOUNDARY ══
+    #
+    # Andy, on BAL @ DAL: "Jerry uses 'last three' games when the schedule
+    # says only 2 have been logged. He's likely pulling last season's data
+    # without saying so. The '8.04 YPA season vs 6.36 last three'
+    # comparison can't both be 2026 numbers."
+    #
+    # Correct. The L3/L5 windows are `games[:3]` / `games[:5]` over a list
+    # that runs straight back into the prior season, and `stale` above is
+    # an ANY test — it only fires when NOTHING in the window is current.
+    # A player with 2 games in 2026 and 1 in 2025 is therefore not stale,
+    # and his "last three" quietly mixes seasons with no marker at all.
+    # In week 3 that is nearly every skill player in the league.
+    #
+    # This returns the split so the fact line can state it. Jerry cannot
+    # avoid a contradiction it is not told about, and telling it "3 games:
+    # 2 in 2026, 1 prior" is cheaper and far more reliable than hoping the
+    # model infers the boundary from a season game count elsewhere in the
+    # prompt.
+    def _win_note(window, label):
+        n = len(window or [])
+        if not n:
+            return f'{label} n/a'
+        cur = sum(1 for g in window if g.get('season') == cur_season)
+        if cur == n:
+            return f'{label} ({n}g, all {cur_season})'
+        if cur == 0:
+            return f'{label} ({n}g, ALL PRIOR SEASON)'
+        return f'{label} ({n}g: {cur} in {cur_season} + {n - cur} prior)'
+
     # 2026-09-13 v4 (post-roster-load): filter is now driven by the
     # nfl_rosters_current mapping alone. If nflverse says Herbert is on
     # LAC, we use his stats regardless of what season/team they were
@@ -463,6 +493,7 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                     'name': n, 'l3': _agg_qb(games[:3]),
                     'l5': _agg_qb(games[:5]), 'season': _agg_qb(games),
                     'stale': _stale_flag(games),
+                    'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5'),
                 }
             else:
                 # Name-only skeleton — Jerry read gets the right QB even if
@@ -480,6 +511,7 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                 'name': n, 'l3': _agg_qb(games[:3]),
                 'l5': _agg_qb(games[:5]), 'season': _agg_qb(games),
                 'stale': _stale_flag(games),
+                    'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5'),
             }
         # 2026-09-14: for RB1/WR1/WR2/TE1, prefer the authoritative name
         # from the depth-chart scrape (fetched into _authoritative above).
@@ -502,7 +534,8 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                     (_, n_), games = matched[0]
                     return {'name': n_, 'l3': stat_agg_fn(games[:3]),
                             'l5': stat_agg_fn(games[:5]), 'season': stat_agg_fn(games),
-                            'stale': _stale_flag(games)}
+                            'stale': _stale_flag(games),
+                             'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5')}
                 # Authoritative name but no stat rows (player just joined team).
                 return {'name': mapped, 'l3': None, 'l5': None, 'season': None,
                         'stale': True}
@@ -511,7 +544,8 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                                   key=lambda x: sum((g.get(stat_field) or 0) for g in x[1][:5]))
             return {'name': n_, 'l3': stat_agg_fn(games[:3]),
                     'l5': stat_agg_fn(games[:5]), 'season': stat_agg_fn(games),
-                    'stale': _stale_flag(games)}
+                    'stale': _stale_flag(games),
+                             'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5')}
 
         _rb1 = _pick_via_authoritative('RB1', 'RB', _agg_rb, 'carries')
         if _rb1: result['rb1'] = _rb1
@@ -532,7 +566,8 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                 (_, n_), games = matched[0]
                 return {'name': n_, 'l3': _agg_rec(games[:3]),
                         'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
-                        'stale': _stale_flag(games)}
+                        'stale': _stale_flag(games),
+                             'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5')}
             return {'name': mapped_name, 'l3': None, 'l5': None,
                     'season': None, 'stale': True}
         if _wr1_map:
@@ -542,7 +577,8 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
             (_, n_), games = wr_pool_sorted[0]
             result['wr1'] = {'name': n_, 'l3': _agg_rec(games[:3]),
                              'l5': _agg_rec(games[:5]), 'season': _agg_rec(games),
-                             'stale': _stale_flag(games)}
+                             'stale': _stale_flag(games),
+                             'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5')}
             _picked_wrs.append(n_)
         if _wr2_map and _wr2_map not in _picked_wrs:
             result['wr2'] = _wr_entry(_wr2_map)
@@ -553,7 +589,8 @@ def fetch_key_players_rolling(teams_needed: set | None = None) -> dict:
                 result['wr2'] = {'name': n_, 'l3': _agg_rec(games[:3]),
                                  'l5': _agg_rec(games[:5]),
                                  'season': _agg_rec(games),
-                                 'stale': _stale_flag(games)}
+                                 'stale': _stale_flag(games),
+                             'l3w': _win_note(games[:3], 'L3'), 'l5w': _win_note(games[:5], 'L5')}
                 break
 
         _te1 = _pick_via_authoritative('TE1', 'TE', _agg_rec, 'targets')
@@ -1313,6 +1350,37 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
                     "pick tier = per-market conviction after juice caps. "
                     "Do NOT conflate. If citing sweat, add 'the specific pick is [pp_tier] tier'."
                 )
+        # ══ 2026-09-27 · NAME THE TEAM YOU ARE ACTUALLY DESCRIBING ══
+        #
+        # Andy, on BAL @ DAL: "Jerry's second paragraph is headed
+        # 'Baltimore's pass D,' then describes Dallas's pass defense."
+        # It opened "Defensively, Baltimore's pass D ranks 14th in EPA
+        # allowed" and then cited "Dallas allows 6.36 yards per attempt
+        # over its last three" as if continuing about Baltimore.
+        #
+        # The facts block interleaves both teams, so a sentence that opens
+        # on one team and continues with the other's numbers reads as
+        # fluent and is completely wrong. That is the most dangerous kind
+        # of error here: the prose is the part users trust most and the
+        # part no downstream check validates.
+        facts["team_attribution_rule"] = (
+            f"EVERY stat belongs to exactly one team: {away} (away) or "
+            f"{home} (home). Name the team in the SAME sentence as its "
+            f"number. Never open a sentence or paragraph about one team "
+            f"and then cite the other's figures inside it. If a paragraph "
+            f"compares both, name each team at each number. Re-read each "
+            f"sentence and confirm the team named owns the stat quoted."
+        )
+        # Companion to the L3/L5 window notes attached per player. Windows
+        # of three or five games run back into the prior season this early,
+        # so "last three" is not automatically "this season".
+        facts["rolling_window_rule"] = (
+            "L3/L5 labels carry their own composition, e.g. "
+            "'L3 (3g: 2 in 2026 + 1 prior)'. Describe the window exactly as "
+            "labelled. Do NOT call a window 'this season' unless the label "
+            "says all its games are current-season, and never compare a "
+            "season figure against a cross-season window without saying so."
+        )
         if facts:
             struct["pre_parsed_facts"] = facts
 
@@ -1636,7 +1704,7 @@ def render_prompt(templates, struct):
             if _qb:
                 _n = _qb.get('name'); _l3 = _qb.get('l3') or {}; _l5 = _qb.get('l5') or {}; _sea = _qb.get('season') or {}
                 _lines.append(
-                    f"    QB1 {_n}{_stale_tag(_qb)}: L3 {_l3.get('cmp_pct')}% on {_l3.get('att')} att, "
+                    f"    QB1 {_n}{_stale_tag(_qb)}: {_qb.get('l3w','L3')} {_l3.get('cmp_pct')}% on {_l3.get('att')} att, "
                     f"{_l3.get('yds')} pass yds/g, {_l3.get('td')} TD / {_l3.get('int')} INT · "
                     f"L5 {_l5.get('cmp_pct')}% {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('cmp_pct')}% {_sea.get('yds')} yds/g {_sea.get('td')} TD/g"
@@ -1645,7 +1713,7 @@ def render_prompt(templates, struct):
             if _rb1:
                 _n = _rb1.get('name'); _l3 = _rb1.get('l3') or {}; _l5 = _rb1.get('l5') or {}; _sea = _rb1.get('season') or {}
                 _lines.append(
-                    f"    RB1 {_n}{_stale_tag(_rb1)}: L3 {_l3.get('car')} car/g at {_l3.get('ypc')} YPC, {_l3.get('yds')} rush yds/g, "
+                    f"    RB1 {_n}{_stale_tag(_rb1)}: {_rb1.get('l3w','L3')} {_l3.get('car')} car/g at {_l3.get('ypc')} YPC, {_l3.get('yds')} rush yds/g, "
                     f"{_l3.get('rec')}/{_l3.get('tgt')} rec on targets · "
                     f"L5 {_l5.get('car')} car/g {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('yds')} yds/g {_sea.get('rush_td')} rush TD/g"
@@ -1655,7 +1723,7 @@ def render_prompt(templates, struct):
                 if not _wr: continue
                 _n = _wr.get('name'); _l3 = _wr.get('l3') or {}; _l5 = _wr.get('l5') or {}; _sea = _wr.get('season') or {}
                 _lines.append(
-                    f"    {_label} {_n}{_stale_tag(_wr)}: L3 {_l3.get('rec')}/{_l3.get('tgt')} for {_l3.get('yds')} yds/g, {_l3.get('td')} TD/g · "
+                    f"    {_label} {_n}{_stale_tag(_wr)}: {_wr.get('l3w','L3')} {_l3.get('rec')}/{_l3.get('tgt')} for {_l3.get('yds')} yds/g, {_l3.get('td')} TD/g · "
                     f"L5 {_l5.get('rec')}/{_l5.get('tgt')} for {_l5.get('yds')} yds/g · "
                     f"season {_sea.get('games')}g {_sea.get('yds')} yds/g"
                 )

@@ -14678,11 +14678,36 @@ setJerryHistory(prev => {
                               const atsLabel = Number(p || 0) > 0 ? `${w}-${l}-${p}` : `${w}-${l}`;
                               chips.push(<Text key="ats" style={{fontSize:10,color:atsColor,fontWeight:'700'}}>{atsLabel} ATS</Text>);
                             } else if (l10W != null && l10L != null && (Number(l10W) + Number(l10L)) > 0 && chips.length < 2) {
+                              // ══ 2026-09-27 · THIS SEASON ONLY ══
+                              //
+                              // Andy: "make sure they are just this season data now."
+                              //
+                              // ats_l10_at_venue is a trailing TEN games, so early in a
+                              // season it is almost entirely LAST season. Measured on
+                              // 2026-09-27: every one of the 14 NFL games had n=10 for
+                              // both sides in week 3, when a team has played ~1 game at
+                              // a given venue. SEA rendered "9-1 ATS road" — a 2025
+                              // record, on a 2026 card, with no year on it.
+                              //
+                              // It showed at all because season_ats_* was NULL on 13 of
+                              // 14 rows (enrich_team_trends was patching None over the
+                              // backfill's good values — fixed there), so this fallback
+                              // fired as the primary chip rather than as a stopgap.
+                              //
+                              // The venue-split window can only be this-season if it
+                              // holds no more games than the team has played all season,
+                              // across all venues. When it holds more, it provably
+                              // reaches back and is dropped: an unlabelled prior-season
+                              // record is worse than no chip, because the reader has no
+                              // way to know which season they are looking at.
                               const tot = Number(l10W) + Number(l10L);
-                              const pct = Number(l10W) / tot;
-                              const c = pct >= 0.6 ? THEME.win : pct <= 0.4 ? THEME.loss : THEME.textMuted;
-                              const label = side === 'away' ? 'ATS road' : 'ATS home';
-                              chips.push(<Text key="l10" style={{fontSize:10,color:c,fontWeight:'700'}}>{l10W}-{l10L} {label}</Text>);
+                              const spansPriorSeason = tot > seasonTot;
+                              if (!spansPriorSeason) {
+                                const pct = Number(l10W) / tot;
+                                const c = pct >= 0.6 ? THEME.win : pct <= 0.4 ? THEME.loss : THEME.textMuted;
+                                const label = side === 'away' ? 'ATS road' : 'ATS home';
+                                chips.push(<Text key="l10" style={{fontSize:10,color:c,fontWeight:'700'}}>{l10W}-{l10L} {label}</Text>);
+                              }
                             }
                             // NFL-only tertiary: roster-talent chip. Just the
                             // number — no label. Side-by-side comparison

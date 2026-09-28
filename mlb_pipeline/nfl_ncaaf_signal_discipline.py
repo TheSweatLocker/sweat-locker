@@ -22,9 +22,18 @@ applies two hard gates to nfl_game_context.primary_play + ncaaf_game_context.pri
      board were locked and playing that day, so none of them moved.
 
   2. Anchor cap: if spread_anchor_weight > 0 AND tier in
-     PRIME/STRONG, downgrade to LEAN. Anchored picks hit 30% (n=40).
-     The anchor fires when the model is uncertain — anchored picks
-     should never ride at top tier.
+     PRIME/STRONG, downgrade to LEAN. The anchor fires when the model
+     is uncertain — anchored picks should never ride at top tier.
+
+     2026-09-27 RE-MEASURE. This said "anchored picks hit 30% (n=40)".
+     That is wrong. Over every graded NFL + NCAAF pick carrying an
+     anchor weight (n=92 decided):
+         anchored       49-43   53.3%
+         not anchored  130-86   60.2%
+         NCAAF anchored 34-37   47.9%  (n=71)
+         NFL   anchored 15-6    71.4%  (n=21)
+     The ~7pp gap justifies a demotion; 30% never existed. The figure
+     was also being shown to users — see the flag text below.
 
 Runs post-nfl_game_context.build (after primary_play is set) and
 BEFORE sharp_card composition (so Sharp Card sees the gated tier).
@@ -298,8 +307,33 @@ def _apply_gates(pp: dict, spread_anchor_weight,
         aw = float(spread_anchor_weight) if spread_anchor_weight is not None else 0.0
         if aw > 0 and tier in ANCHOR_CAP_TIERS:
             _record_cap(new_pp, ANCHOR_CAP_NEW_TIER, 60, f'anchor:w={aw:.2f}')
-            _flag = (f'⚠ Market anchor active (w={aw:.2f}) — '
-                     f'model uncertain, capped to LEAN. Anchored picks hit 30% historically.')
+            # ── 2026-09-27 · THE 30% WAS WRONG, AND IT WAS ON THE CARD ──
+            #
+            # Andy: "'Anchored picks hit 30% historically' undercuts the
+            # pick shown right above it. If that stat is real, anchored
+            # picks shouldn't publish."
+            #
+            # Re-measured the same day over every graded NFL + NCAAF pick
+            # with an anchor weight — 92 decided picks, not the 40 the old
+            # note cited:
+            #     anchored       49-43   53.3%   (n=92)
+            #     not anchored  130-86   60.2%   (n=216)
+            #     NCAAF anchored 34-37   47.9%   (n=71)
+            #     NFL   anchored 15-6    71.4%   (n=21)
+            # So the real figure is 53%, not 30%, and NFL anchored picks
+            # are the BEST bucket on the board. The card was asserting a
+            # number 23 points off and using it to talk users out of picks
+            # that were performing.
+            #
+            # The cap itself still stands — anchored picks do trail
+            # un-anchored ones by ~7pp, which is what a tier demotion is
+            # for. What is removed is the stale hard-coded hit rate. A
+            # number nobody re-measures will drift again, so the flag now
+            # states the MECHANISM, which stays true, and the measured
+            # rates live in this comment where they carry their date and n.
+            _flag = (f'⚠ Market anchor active (w={aw:.2f}) — model is '
+                     f'uncertain and has been pulled toward the market, '
+                     f'so the tier is capped at LEAN.')
             _append_flag(new_pp, _flag)
             applied.append(f'anchor_cap:w={aw:.2f}')
     except (TypeError, ValueError):
