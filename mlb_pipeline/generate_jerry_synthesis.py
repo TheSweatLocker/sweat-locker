@@ -197,6 +197,38 @@ def enrich_struct(struct: dict, game: dict, externals: list,
     struct["align_status"] = game.get("align_status")
     struct["money_flow"] = game.get("oddscrowd_snapshot")
 
+    # ══ 2026-09-28 · TELL JERRY WHEN IT IS OCTOBER ══
+    #
+    # Andy: "expectation for MLB playoffs, will Jerry know when writing up."
+    # It did not. mlb_game_context carries 321 columns and not one is
+    # season_type (NFL and NCAAF both have it), and nothing in the MLB path
+    # — this file, game_context.py, jerry_anchor_potd.py — mentioned
+    # postseason at all. So a Wild Card elimination game was written up in
+    # the same voice as a Tuesday in June.
+    #
+    # The slate itself arrives fine: it comes from the Odds API, which
+    # already prices all four Wild Card series, and there is no
+    # regular-season filter anywhere. Which is the worst combination —
+    # present, and silently mis-modelled.
+    #
+    # Looked up from MLB StatsAPI's gameType rather than inferred from the
+    # date: "October means playoffs" is wrong in both directions, since the
+    # regular season runs into October and the World Series into November.
+    # Fails closed to REGULAR, because a lookup failure must not make an
+    # ordinary June game look like a playoff game.
+    try:
+        from mlb_season_type import for_game, prose_note
+        _st = for_game(game.get('game_date'), game.get('away_team'),
+                       game.get('home_team'))
+        struct["season_type"] = _st
+        _note = prose_note(_st)
+        if _note:
+            # Named distinctly so it reads as a constraint on the whole
+            # write-up rather than one more stat to cite.
+            struct["postseason_context"] = _note
+    except ImportError:
+        pass
+
     # UMPIRE PRIOR (2026-08-06): the pipeline computes umpire O/U bias into
     # game.umpire_note ("Dan Bellino — hitter-friendly zone, 58% over rate")
     # but Jerry never saw it before. Wire it in as a first-class signal
