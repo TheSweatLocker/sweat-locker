@@ -3055,6 +3055,23 @@ function RecentGameRow({row, h2h = false}: any) {
   const totalRes  = row.total_result;    // 'over' | 'under' | 'push' | null
   const spreadLine = row.spread_line;
   const totalLine = row.total_line;
+  // ══ 2026-09-28 · A PRESEASON GAME HAS NO LINE TO COVER ══
+  // Andy on the NHL card: "recent scheudle is semi populated some games
+  // missing o and u and ats column". Measured: team_recent_games has
+  // spread_line and total_line on 147 of 300 NHL rows, and the blanks are
+  // all EXHIBITIONS — books do not post sides or totals on most preseason
+  // hockey, so there is genuinely no ATS or O/U result to show.
+  //
+  // A bare em-dash reads as missing data. "PRE" says the game was an
+  // exhibition, which is information: it is also why that row should not be
+  // read as form. NHL game IDs encode the type at digits 4-6 (01 preseason),
+  // the same test used to keep exhibitions out of strength-of-record and out
+  // of the situational matview.
+  const _isPreseason = (() => {
+    const gid = String(row.game_id ?? '');
+    return gid.length >= 6 && gid.slice(4, 6) === '01';
+  })();
+  const _emptyCell = _isPreseason ? 'PRE' : '—';
 
   // Compact date "MM/DD" — with the year on H2H, where rows span seasons.
   // 2026-09-26: Andy read the H2H list as "dates out of chronological
@@ -3206,7 +3223,7 @@ function RecentGameRow({row, h2h = false}: any) {
               {_subjectLine != null ? (_subjectLine > 0 ? '+' : '') + _subjectLine : '—'}
             </Text>
           </View>
-        ) : <Text style={rsStyles.dashCell}>—</Text>}
+        ) : <Text style={rsStyles.dashCell}>{_emptyCell}</Text>}
       </View>
       {/* O/U chip */}
       <View style={{flex: F.ou, alignItems: 'center'}}>
@@ -3220,7 +3237,7 @@ function RecentGameRow({row, h2h = false}: any) {
               {totalLine != null ? totalLine : '—'}
             </Text>
           </View>
-        ) : <Text style={rsStyles.dashCell}>—</Text>}
+        ) : <Text style={rsStyles.dashCell}>{_emptyCell}</Text>}
       </View>
     </View>
   );
