@@ -236,7 +236,66 @@ def _load_l10_gpg_per_team() -> dict:
 
 def enrich_goalies(rows: list[dict], season: int) -> None:
     """Attempt goalie enrichment via gamecenter (works when starters
-    confirmed ~1h before puck drop). Falls back cleanly to None."""
+    confirmed ~1h before puck drop).
+
+    ══ 2026-09-28 · CONFIRMING A STARTER USED TO DESTROY HIS STATS ══
+    Andy, opening the first NHL card: two of five games said the model had no
+    goalie numbers. It had them eight hours earlier. Measured on the 9/29+
+    board: rows last fetched at 02:2x carried GSAA on 21 of 21, rows re-fetched
+    at 19:35 carried it on 14 of 39. One run destroyed 25 games of the single
+    most predictive input in hockey.
+
+    The lookup itself was never broken — get_goalie_stats_fb('J. Swayman',
+    2026) returns sv_pct .9071 / gsaa 28.78 via its prior-season fallback, and
+    the same holds for every goalie that came back empty. So this was a
+    TRANSIENT upstream failure across ~78 lookups in one run, and the writer
+    turned it into permanent loss by assigning gs.get(...) unconditionally:
+    `get_goalie_stats_fb(...) or {}` yields {}, {}.get('gsaa') is None, and
+    None was written straight over a good value. Worse, the name and the
+    confirmed flag were still set from gamecenter, so the card showed a
+    confirmed starter with no stats — the one combination that reads as "we
+    have nothing on him" rather than "we could not reach the source".
+
+    Same defect as the season-ATS overwrite: a writer patching None over good
+    values. Fixed the same way — a null NEVER overwrites. Anything the lookup
+    cannot supply is filled from what is already in the table, so a failed
+    fetch is a no-op instead of a regression.
+    """
+    # Prior values, so a failed lookup preserves instead of erasing. Same
+    # shape as the open-line preservation below: read what is there, prefer it
+    # over a null.
+    prior: dict = {}
+    try:
+        ids = [r.get('game_id') for r in rows if r.get('game_id')]
+        if ids:
+            q = ','.join(f'"{g}"' for g in ids)
+            pr = requests.get(f'{SB}/rest/v1/nhl_game_context', headers=H_READ,
+                              params={'game_id': f'in.({q})',
+                                      'select': 'game_id,home_goalie,away_goalie,'
+                                                'home_goalie_sv_pct,away_goalie_sv_pct,'
+                                                'home_goalie_gsaa,away_goalie_gsaa,'
+                                                'home_goalie_last5_sv_pct,'
+                                                'away_goalie_last5_sv_pct'},
+                              timeout=20)
+            if pr.status_code == 200 and isinstance(pr.json(), list):
+                prior = {x['game_id']: x for x in pr.json()}
+    except Exception:
+        prior = {}          # no prior available — behave as before
+
+    def _put(row: dict, col: str, val, same_goalie: bool) -> None:
+        """Write val, or keep the stored value when val is null.
+
+        same_goalie guards the one case where preserving would be WRONG: if
+        the confirmed starter changed, the old goalie's numbers must not be
+        left attached to the new name. A different name with no stats is
+        honestly blank.
+        """
+        if val is not None:
+            row[col] = val
+            return
+        prev = (prior.get(row.get('game_id')) or {}).get(col)
+        row[col] = prev if (same_goalie and prev is not None) else None
+
     goalie_cache: dict = {}
     for row in rows:
         gid = row.get('game_id')
@@ -258,19 +317,21 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
             if home_g not in goalie_cache:
                 goalie_cache[home_g] = get_goalie_stats_fb(home_g, season) or {}
             gs = goalie_cache[home_g]
-            row['home_goalie_sv_pct'] = gs.get('sv_pct')
-            row['home_goalie_gsaa'] = gs.get('gsaa')
+            _same = (prior.get(row.get('game_id')) or {}).get('home_goalie') == home_g
+            _put(row, 'home_goalie_sv_pct', gs.get('sv_pct'), _same)
+            _put(row, 'home_goalie_gsaa', gs.get('gsaa'), _same)
             # 2026-08-22 (silent-bug audit #10): L5 SV% for goalie heater signal
-            row['home_goalie_last5_sv_pct'] = gs.get('last5_sv_pct')
+            _put(row, 'home_goalie_last5_sv_pct', gs.get('last5_sv_pct'), _same)
         if away_g:
             row['away_goalie'] = away_g
             row['away_goalie_confirmed'] = True
             if away_g not in goalie_cache:
                 goalie_cache[away_g] = get_goalie_stats_fb(away_g, season) or {}
             gs = goalie_cache[away_g]
-            row['away_goalie_sv_pct'] = gs.get('sv_pct')
-            row['away_goalie_gsaa'] = gs.get('gsaa')
-            row['away_goalie_last5_sv_pct'] = gs.get('last5_sv_pct')
+            _same = (prior.get(row.get('game_id')) or {}).get('away_goalie') == away_g
+            _put(row, 'away_goalie_sv_pct', gs.get('sv_pct'), _same)
+            _put(row, 'away_goalie_gsaa', gs.get('gsaa'), _same)
+            _put(row, 'away_goalie_last5_sv_pct', gs.get('last5_sv_pct'), _same)
 
 
 def enrich_market(rows: list[dict]) -> None:

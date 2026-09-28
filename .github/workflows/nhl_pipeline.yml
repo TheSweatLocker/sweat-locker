@@ -273,6 +273,43 @@ jobs:
           cd mlb_pipeline
           python pull_scoresandodds.py --sport NHL
 
+      # ══ 2026-09-28 · NHL MONEY FLOW OWNED BY THE NHL WORKFLOW ══
+      # Andy: "no menye flow ... we need to work on a source for money flwo
+      # right now."
+      #
+      # The aggregator below has supported NHL since it shipped, and it is
+      # wired here. What was missing is the INPUT: every money-flow scraper
+      # ran only in mlb_pipeline.yml. They do cover NHL — fadereport_scraper
+      # with no --sport iterates all six sports in SPORT_URL — so NHL money
+      # flow has been silently dependent on the BASEBALL workflow running.
+      #
+      # MLB is in the Wild Card round now and is done inside a month. When
+      # that workflow goes quiet, NHL, NBA and NCAAB all lose money flow at
+      # once, with no error — just empty cards on the sports that are in
+      # season. Each sport's workflow should own its own inputs.
+      #
+      # Scoped --sport NHL so this does not duplicate the all-sports pass that
+      # still runs from MLB while MLB is alive.
+      #
+      # FADEREPORT IS THE ONLY ONE OF THE FADE-FAMILY SCRAPERS THAT DOES NHL.
+      # Checked all three: cleatz_scraper's --sport choices are
+      # MLB/NFL/NCAAF/NBA/NCAAB, and fadethepublic_scraper declares
+      # NO_COVERAGE = ('NHL',) with the note "site has no hockey endpoint —
+      # fadereport covers it".
+      #
+      # So NHL ends up with TWO splits inputs, not one: this, plus the
+      # ScoresAndOdds step above, which writes public_splits_v2 directly.
+      # Still thin next to MLB's twelve sources, and worth widening before
+      # NHL money flow is treated as a strong signal rather than context.
+      - name: Money flow source (NHL · fadereport)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python fadereport_scraper.py --sport NHL || echo "::warning::fadereport NHL failed"
+
       - name: Splits v2 aggregator (NHL)
         continue-on-error: true
         env:

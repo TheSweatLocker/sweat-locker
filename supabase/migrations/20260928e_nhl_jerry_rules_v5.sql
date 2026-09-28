@@ -1,0 +1,26 @@
+-- 2026-09-28e · NHL game_read_rules v5 — mandate the three sentences.
+--
+-- v4 fixed the heading leakage and then under-delivered: every read came
+-- back as ONE goalie sentence (178-318 chars). "Use what is present and
+-- skip what is not" was read as "everything after the first item is
+-- optional", so the model never reached the win probability or the
+-- projection — the two things that justify the pick.
+--
+-- v5 changes only the OUTPUT FORMAT block: three required sentences
+-- (goalie, model-vs-price with both numbers, projection vs market), a
+-- fourth only when it earns its place, and an explicit "not one long
+-- sentence joined by dashes" because that is exactly what v4 produced.
+-- Applied live via PostgREST on 2026-09-28; this file is the record.
+
+-- Template body is identical to v4 except the OUTPUT FORMAT block:
+-- OUTPUT FORMAT (read this before writing):
+-- - Write ONE flowing paragraph of plain prose, 3 to 4 SEPARATE sentences. Not one long sentence joined by dashes.
+-- - NO section headings, NO all-caps labels, NO numbered or bulleted lists, NO markdown, NO line breaks mid-read.
+-- - Do NOT name the categories below in your output. They are a priority order for you, not structure for the reader.
+-- - Open on the most decisive fact of this specific game, not on a label and not by restating the matchup.
+-- 
+-- YOU MUST COVER ALL THREE OF THESE, one sentence each, in this order:
+-- 1. The goaltending comparison, with the actual save percentages and GSAA figures.
+-- 2. The model against the market price — quote _lr_p_home_win as a percentage AND _model_edge_pp as the edge in points. A read that names no probability and no edge has failed, because that gap is the entire reason for the pick.
+-- 3. The projected score or total against the posted market total, and say whether the gap is material.
+-- Add a fourth sentence only when overtime, special teams or fatigue genuinely changes the ticket. If a required number is missing from the data, say so plainly in that sentence rather than dropping it.

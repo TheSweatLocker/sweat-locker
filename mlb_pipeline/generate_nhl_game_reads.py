@@ -175,6 +175,77 @@ def _build_casual_summary(ctx):
     return out[:4]
 
 
+def _allowed_extra(struct: dict) -> set:
+    """Numbers that are legitimate but not literally in the struct.
+
+    The first run of the number check flagged almost everything, because a
+    strict "is this value in the struct" test is wrong for three kinds of
+    number this template deliberately asks for:
+
+      SIGNS. A GSAA of -11.93 is written as "-11.93" or as "11.93 below
+        average", and a price of -130 is written "-130" or "130". The
+        magnitude is the same fact, so absolute values are allowed.
+      GAPS. The rules require "state the GSAA gap" and "the edge in points",
+        which are SUBTRACTIONS the struct never stores. 28.78 and 21.25 are
+        both present, and 7.53 is the number the reader needs. Pairwise
+        differences of the goalie and probability figures are allowed.
+      UNITS. "per 60", "5v5", percentages out of 100 — scale words that
+        happen to be digits.
+
+    Without these the checker cried wolf on every read, the retry burned a
+    second model call per game, and a real error — Andersen's -3.31 written
+    as +3.31 — was buried in the noise. Narrow allowances keep it pointed at
+    invention instead.
+    """
+    vals: list[float] = []
+
+    def collect(o):
+        if isinstance(o, dict):
+            for v in o.values():
+                collect(v)
+        elif isinstance(o, list):
+            for v in o:
+                collect(v)
+        elif isinstance(o, (int, float)) and not isinstance(o, bool):
+            vals.append(float(o))
+
+    collect(struct)
+    out = set()
+    for v in vals:
+        out.add(abs(v))
+        out.add(round(abs(v), 2))
+        out.add(round(abs(v) * 100, 2))      # 0.6378 -> 63.78 as a percentage
+    # Pairwise gaps — the differences the rules ask Jerry to state.
+    for i, a in enumerate(vals):
+        for b in vals[i + 1:]:
+            d = abs(a - b)
+            if d:
+                out.add(round(d, 2))
+                out.add(round(d * 100, 2))
+    out.update({60.0, 100.0, 5.0})           # per-60, percent, 5v5
+    # validate_jerry_read._within_tolerance calls .rstrip('%') on every
+    # allowed entry, so this set must hold STRINGS. Emit both a trimmed and a
+    # 2-dp spelling of each value so "7.5" and "7.53" both resolve.
+    outs = set()
+    for x in out:
+        if x != x:                           # NaN
+            continue
+        outs.add(f'{x:g}')
+        outs.add(f'{x:.2f}')
+    return outs
+
+
+def _rw(narrative: str) -> tuple:
+    """(short_read, long_read) from a raw narrative, for the number check.
+
+    validate_jerry_read.validate takes the two reads separately, and the
+    number check has to run BEFORE the cache write — so it cannot use the
+    already-parsed dict further down.
+    """
+    p = parse_synthesis(narrative) or {}
+    return (p.get('short_read') or '', p.get('long_read') or '')
+
+
 def build_struct(ctx):
     home, away = ctx.get('home_team'), ctx.get('away_team')
     # mc_probabilities is JSONB and arrives as a dict from PostgREST, but a
@@ -378,11 +449,51 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
     for ctx in games:
         matchup = f"{ctx.get('away_team')} @ {ctx.get('home_team')}"
         struct = build_struct(ctx)
-        narrative = call_claude(render_prompt(templates, struct))
+        prompt = render_prompt(templates, struct)
+        narrative = call_claude(prompt)
         if narrative is None:
             print(f'  ✗ {matchup}: claude failed')
             skipped += 1
             continue
+
+        # ══ 2026-09-28 · NUMBER CHECK. NHL HAD NONE. ══
+        # Of the three read generators only NFL verifies numbers; NHL and
+        # NCAAF ship whatever the model writes. It showed immediately once the
+        # v3+ rules let Jerry cite figures: on VAN @ EDM the read said Andersen
+        # was "confirmed at .874 with a +3.31 GSAA" when the struct says
+        # -3.31 — a sign inversion that turns a below-average goalie into an
+        # above-average one, in the sentence the whole read is built on.
+        #
+        # validate_jerry_read.validate() is sport-universal by design (it
+        # checks NUMBERS against the struct, not player names), which is why
+        # it is reused here rather than reimplemented. A number in the prose
+        # that appears nowhere in the struct is a hallucination; retry once
+        # with the corrective prompt, and if it fails again keep the better
+        # attempt and say so rather than silently publishing it.
+        try:
+            from validate_jerry_read import validate as _validate, build_corrective_prompt
+            _extra = _allowed_extra(struct)
+            _rep = _validate(*_rw(narrative), struct, extra_allowed=_extra)
+            if not _rep.get('is_valid'):
+                print(f'  ⚠ NHL num hallucination {matchup}: '
+                      f'{_rep.get("hallucinated_numbers", [])[:4]} — retry')
+                _n2 = call_claude(build_corrective_prompt(prompt, _rep, {'suspects': []}))
+                if _n2:
+                    _rep2 = _validate(*_rw(_n2), struct, extra_allowed=_extra)
+                    if _rep2.get('is_valid'):
+                        narrative = _n2
+                        print('  ✓ retry cleaned numbers')
+                    else:
+                        # Fewer invented numbers is still better; never
+                        # silently prefer the first attempt just because it
+                        # came first.
+                        if len(_rep2.get('hallucinated_numbers', [])) < \
+                           len(_rep.get('hallucinated_numbers', [])):
+                            narrative = _n2
+                        print(f'  ⚠ still unverified: '
+                              f'{_rep2.get("hallucinated_numbers", [])[:4]}')
+        except ImportError:
+            pass
         if write_cache(ctx['game_id'], narrative, struct):
             written += 1
         else:
