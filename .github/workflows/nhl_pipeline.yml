@@ -101,6 +101,25 @@ jobs:
           cd mlb_pipeline
           python grade_jerry_reads.py --sport NHL
 
+      # 2026-09-27: team ratings for all 32 clubs from MoneyPuck. Before
+      # this, NHL carried advanced stats for FOUR teams — the context
+      # builder wrote rows only for teams that had a game that night and
+      # ranked them against each other, so a club could read "1st of 4".
+      # MoneyPuck publishes the new season only once games are played, so
+      # the puller holds on last season's final ratings until roughly a
+      # week of games exists and then switches on its own. Must run BEFORE
+      # the context build, which reads these for projections.
+      - name: Pull NHL team ratings (MoneyPuck)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "nhl_team_stats_pull.py" \
+            python nhl_team_stats_pull.py
+
       # ─── Today's game context (schedule + odds + rest) ───────────
       - name: Build NHL game context
         continue-on-error: true
