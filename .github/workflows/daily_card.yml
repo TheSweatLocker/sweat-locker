@@ -185,6 +185,41 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "consistency_watchdog.py" python consistency_watchdog.py
 
+      # ══ 2026-09-28 · CROSS-SPORT MATVIEWS BELONG IN THE CROSS-SPORT JOB ══
+      # team_situational_records_full and team_stats_rolling_full are refreshed
+      # in ONE shot for every sport, and the only place that refresh ran was
+      # mlb_grade_overnight.yml. So the Situational Records and Team Stats
+      # cards for NHL, NBA and NCAAB were all downstream of the BASEBALL
+      # workflow continuing to run — and MLB is in the Wild Card round with
+      # about a month left. Nothing would have errored; the cards would just
+      # have quietly stopped updating on whichever sports were in season.
+      #
+      # Duplicated rather than moved: MLB's copy runs right after grading,
+      # where fresh results matter most, and removing it would couple MLB's
+      # own cards to this job's schedule. A REFRESH is idempotent, so running
+      # it in both places costs a little time and risks nothing.
+      #
+      # The status code is checked, not discarded. This RPC returned 42809 for
+      # six days after the 09-16 matview rename and nobody heard, because from
+      # curl's point of view a 400 and a 204 look identical.
+      - name: Refresh cross-sport matviews (situational + team stats)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          for fn in refresh_team_situational_records refresh_team_stats_rolling; do
+            code=$(curl -s -o /tmp/rpc_$fn.json -w '%{http_code}' -X POST \
+              "$SUPABASE_URL/rest/v1/rpc/$fn" \
+              -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+              -H "Content-Type: application/json" -d '{}')
+            if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+              echo "::warning::$fn failed ($code): $(cat /tmp/rpc_$fn.json)"
+            else
+              echo "$fn ok ($code)"
+            fi
+          done
+
       - name: Heartbeat — end
         if: always()
         continue-on-error: true
