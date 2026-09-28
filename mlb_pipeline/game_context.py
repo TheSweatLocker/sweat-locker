@@ -44,6 +44,15 @@ from dotenv import load_dotenv
 # returns '' so the sentence ends after the observation.
 from cohort_evidence import phrase as _cohort_phrase
 
+# StatsAPI gameType codes for competitive games (regular season + the four
+# postseason rounds). Imported so there is ONE definition; the literal
+# fallback keeps ingest running if the helper is ever absent, since a missing
+# import here would take down the whole MLB context build.
+try:
+    from mlb_season_type import SCHEDULE_GAME_TYPES as _SCHEDULE_GAME_TYPES
+except ImportError:
+    _SCHEDULE_GAME_TYPES = 'R,F,D,L,W'
+
 # 2026-09-28: season was hard-coded 2026 in the request below, where no
 # caller could override it — it would have served 2026 rows forever.
 try:
@@ -1003,7 +1012,10 @@ def get_team_schedule_features(team_name, game_date):
 
         sched_resp = requests.get(
             'https://statsapi.mlb.com/api/v1/schedule',
-            params={'teamId': team_id, 'sportId': 1, 'startDate': start_date, 'endDate': end_date, 'hydrate': 'linescore', 'gameType': 'R'},
+            # 2026-09-28: was gameType='R'. Rest/travel features must see
+            # postseason games or October rest days are computed against the
+            # wrong last game. One definition in mlb_season_type.py.
+            params={'teamId': team_id, 'sportId': 1, 'startDate': start_date, 'endDate': end_date, 'hydrate': 'linescore', 'gameType': _SCHEDULE_GAME_TYPES},
             timeout=15
         )
 
@@ -1524,7 +1536,11 @@ def get_bullpen_usage(team_name, game_date):
         # Get recent games
         sched = requests.get(
             'https://statsapi.mlb.com/api/v1/schedule',
-            params={'teamId': team_id, 'sportId': 1, 'startDate': start, 'endDate': end, 'gameType': 'R'},
+            # 2026-09-28: was gameType='R'. This is a 3-DAY window, so in the
+            # postseason every game in it is 'F'/'D' — all filtered out,
+            # games_played 0, avg_relievers 0.0, and every playoff bullpen
+            # reported as fully rested.
+            params={'teamId': team_id, 'sportId': 1, 'startDate': start, 'endDate': end, 'gameType': _SCHEDULE_GAME_TYPES},
             timeout=10
         )
         total_relievers = 0

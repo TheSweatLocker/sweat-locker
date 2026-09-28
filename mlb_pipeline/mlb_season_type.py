@@ -52,6 +52,31 @@ GAME_TYPE = {
 }
 POSTSEASON = {'WILDCARD', 'DIVISION_SERIES', 'LCS', 'WORLD_SERIES'}
 
+# StatsAPI gameType CODES for games that count competitively: regular season
+# plus the four postseason rounds. Spring, exhibition and All-Star are
+# excluded — they would pollute a rolling window with games nobody prepared
+# for.
+#
+# Added 2026-09-28. Any StatsAPI /schedule call that feeds a ROLLING FEATURE
+# must pass this, not 'R'. Two call sites in game_context.py were filtering
+# gameType='R' and would have gone quietly wrong the moment the Wild Card
+# round started:
+#
+#   get_bullpen_usage (3-day window) — in October every game in a 3-day
+#     window is 'F'/'D', so all of them were filtered out, games_played
+#     stayed 0, and avg_relievers computed as 0.0. Every playoff team would
+#     have looked completely rested, which is the opposite of true: bullpens
+#     are the most strained they get in a short series.
+#
+#   get_team_schedule_features (30-day window) — the window straddles the
+#     season boundary, so it would still return regular-season games and
+#     compute rest days against the wrong last game, silently, with no
+#     empty-result signal to notice.
+#
+# Both are the same shape as the rest of today's findings: the data exists,
+# the filter quietly excludes it, and nothing errors.
+SCHEDULE_GAME_TYPES = 'R,F,D,L,W'
+
 # Human phrasing for prose, so Jerry is handed the words rather than a code.
 LABEL = {
     'WILDCARD': 'Wild Card round',
