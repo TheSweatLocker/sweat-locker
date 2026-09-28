@@ -1,4 +1,4 @@
--- 2026-09-28g - Restore NHL / NBA / NCAAB to team_situational_records.
+-- 2026-09-28g - Restore NHL to team_situational_records.
 --
 -- THE DRIFT
 -- 20260901e added NHL, NBA and NCAAB blocks "so the SituationalCard renders
@@ -25,6 +25,25 @@
 -- actually resolved - the entire point of 20260905a - while the rewrite used
 -- one shared row number across all games. Restoring three dormant sports is
 -- not worth breaking three live ones.
+--
+-- NHL ONLY. NBA AND NCAAB ARE DELIBERATELY LEFT OUT.
+-- The first version of this migration restored all three and Postgres
+-- rejected it: "UNION types integer and text cannot be matched". The clash is
+-- SEASON, not game_id. mlb/ncaaf/nfl_game_results store season as an INTEGER
+-- (2026); nba_game_results and ncaab_game_results store TEXT ('2024-25'); and
+-- nhl_game_results has no season column at all, which is why it is derived
+-- here as an integer.
+--
+-- That is not a cast away from working, because the app has to find the rows
+-- afterwards. nhl_game_context.season is 2026 (integer) and lines up exactly.
+-- But nba_game_context.season is '2026-27' (text), so an integer column would
+-- never match the value the SituationalCard queries with, while a text column
+-- would break the four sports that use integers. Picking one silently would
+-- ship a card that looks populated and matches nothing.
+--
+-- So NBA and NCAAB stay out until that season-format question is settled on
+-- purpose. NBA opens 2026-10-21 and NCAAB 2026-11-03; both still need this,
+-- and both need the format decision first.
 --
 -- WHAT THIS CHANGES TODAY: NOTHING VISIBLE FOR NHL, DELIBERATELY
 -- Every scored 2026 NHL game is preseason (65 of 65 carry game-type digits
@@ -216,77 +235,6 @@ WITH all_games AS (
   WHERE home_score IS NOT NULL
     AND SUBSTRING(game_id::TEXT FROM 5 FOR 2) IN ('02', '03')
 
-  -- NBA - RESTORED (season opens 2026-10-21)
-  UNION ALL
-  SELECT
-    'NBA', home_team, season, game_id, game_date,
-    TRUE,
-    (CASE WHEN close_home_ml IS NULL OR close_away_ml IS NULL THEN NULL
-          ELSE close_home_ml < close_away_ml END),
-    CASE
-      WHEN LOWER(spread_result) IN ('home_covered', 'home_cover') THEN 'won'
-      WHEN LOWER(spread_result) IN ('away_covered', 'away_cover') THEN 'lost'
-      WHEN LOWER(spread_result) = 'push' THEN 'push'
-      ELSE NULL END,
-    CASE
-      WHEN home_win IS TRUE THEN 'won'
-      WHEN home_win IS FALSE THEN 'lost'
-      ELSE NULL END,
-    LOWER(total_result)
-  FROM public.nba_game_results WHERE home_score IS NOT NULL
-  UNION ALL
-  SELECT
-    'NBA', away_team, season, game_id, game_date,
-    FALSE,
-    (CASE WHEN close_home_ml IS NULL OR close_away_ml IS NULL THEN NULL
-          ELSE close_away_ml < close_home_ml END),
-    CASE
-      WHEN LOWER(spread_result) IN ('away_covered', 'away_cover') THEN 'won'
-      WHEN LOWER(spread_result) IN ('home_covered', 'home_cover') THEN 'lost'
-      WHEN LOWER(spread_result) = 'push' THEN 'push'
-      ELSE NULL END,
-    CASE
-      WHEN home_win IS FALSE THEN 'won'
-      WHEN home_win IS TRUE THEN 'lost'
-      ELSE NULL END,
-    LOWER(total_result)
-  FROM public.nba_game_results WHERE home_score IS NOT NULL
-
-  -- NCAAB - RESTORED (season opens 2026-11-03)
-  UNION ALL
-  SELECT
-    'NCAAB', home_team, season, game_id, game_date,
-    TRUE,
-    (CASE WHEN close_home_ml IS NULL OR close_away_ml IS NULL THEN NULL
-          ELSE close_home_ml < close_away_ml END),
-    CASE
-      WHEN LOWER(spread_result) IN ('home_covered', 'home_cover') THEN 'won'
-      WHEN LOWER(spread_result) IN ('away_covered', 'away_cover') THEN 'lost'
-      WHEN LOWER(spread_result) = 'push' THEN 'push'
-      ELSE NULL END,
-    CASE
-      WHEN home_win IS TRUE THEN 'won'
-      WHEN home_win IS FALSE THEN 'lost'
-      ELSE NULL END,
-    LOWER(total_result)
-  FROM public.ncaab_game_results WHERE home_score IS NOT NULL
-  UNION ALL
-  SELECT
-    'NCAAB', away_team, season, game_id, game_date,
-    FALSE,
-    (CASE WHEN close_home_ml IS NULL OR close_away_ml IS NULL THEN NULL
-          ELSE close_away_ml < close_home_ml END),
-    CASE
-      WHEN LOWER(spread_result) IN ('away_covered', 'away_cover') THEN 'won'
-      WHEN LOWER(spread_result) IN ('home_covered', 'home_cover') THEN 'lost'
-      WHEN LOWER(spread_result) = 'push' THEN 'push'
-      ELSE NULL END,
-    CASE
-      WHEN home_win IS FALSE THEN 'won'
-      WHEN home_win IS TRUE THEN 'lost'
-      ELSE NULL END,
-    LOWER(total_result)
-  FROM public.ncaab_game_results WHERE home_score IS NOT NULL
 ),
 
 -- PER-MARKET RECENCY: rank each market separately so L10 = last 10
@@ -459,11 +407,14 @@ GRANT EXECUTE ON FUNCTION public.refresh_team_situational_records() TO authentic
 
 COMMENT ON MATERIALIZED VIEW public.team_situational_records_full IS
   'Long-format W-L-P per (sport, team, season, filter, market). SIX sports: '
-  'MLB, NCAAF, NFL, NHL, NBA, NCAAB. NHL excludes preseason via game-id type '
-  'digits. WARNING: every migration here does a FULL CREATE, which replaces '
-  'the whole definition - 20260905a and 20260906c each dropped NHL/NBA/NCAAB '
-  'without mentioning them. Count the sports in any new definition against '
-  'this list before shipping it.';
+  'MLB, NCAAF, NFL and NHL. NHL excludes preseason via game-id type digits. '
+  'NBA and NCAAB are ABSENT on purpose: their season column is text '
+  '(2024-25) while this column is integer, and nba_game_context.season is '
+  'text too, so neither a cast nor a column-type change is correct until that '
+  'is settled. WARNING: every migration here does a FULL CREATE, which '
+  'replaces the whole definition - 20260905a and 20260906c each dropped '
+  'NHL/NBA/NCAAB without mentioning them. Count the sports in any new '
+  'definition against this list before shipping it.';
 
 COMMIT;
 
