@@ -376,6 +376,47 @@ def enrich_market(rows: list[dict]) -> None:
     print(f'  market: matched {hit}/{len(rows)} context rows to results, '
           f'{priced} carry a price')
 
+    # ══ 2026-09-27 · CAPTURE THE OPENING LINE ══
+    #
+    # nhl_game_context has open_total / open_puckline / home_ml_open /
+    # away_ml_open and NOTHING has ever written them — 0 of 65 rows. So
+    # the Line Movement panel, which every other sport renders, had no
+    # data for NHL and the market's move from open to close was invisible.
+    #
+    # THE ORDER MATTERS AND NFL GOT IT WRONG FIRST. Mirroring close->open
+    # unconditionally means every re-run replaces the true opener with
+    # today's close, so movement always reads flat — that was the NFL bug
+    # fixed on 2026-09-16. The existing open is fetched and PREFERRED; the
+    # mirror only fires the first time a game is seen.
+    try:
+        ids = [r.get('game_id') for r in rows if r.get('game_id')]
+        existing = {}
+        if ids:
+            q = ','.join(f'"{g}"' for g in ids)
+            er = requests.get(f'{SB}/rest/v1/nhl_game_context', headers=H_READ,
+                              params={'game_id': f'in.({q})',
+                                      'select': 'game_id,open_total,open_puckline,'
+                                                'home_ml_open,away_ml_open'},
+                              timeout=20)
+            if er.status_code == 200 and isinstance(er.json(), list):
+                existing = {x['game_id']: x for x in er.json()}
+        opened = 0
+        for row in rows:
+            prev = existing.get(row.get('game_id')) or {}
+            for open_col, close_col in (('open_total', 'close_total'),
+                                        ('open_puckline', 'close_puckline'),
+                                        ('home_ml_open', 'close_home_ml'),
+                                        ('away_ml_open', 'close_away_ml')):
+                if prev.get(open_col) is not None:
+                    row[open_col] = prev[open_col]          # true opener wins
+                elif row.get(close_col) is not None:
+                    row[open_col] = row[close_col]          # first sighting
+                    opened += 1
+        if opened:
+            print(f'  opening lines: captured {opened} first-sighting values')
+    except Exception as e:
+        print(f'  ⚠ opening-line capture skipped ({type(e).__name__})')
+
 
 def enrich_rest_and_travel(rows: list[dict]) -> None:
     """Compute rest days, back-to-back, road-trip length from recent
