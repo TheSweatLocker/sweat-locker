@@ -272,6 +272,13 @@ const prettyCohort = (raw: string): string => {
 // the query fails. Adding a new sport = INSERT into sport_registry, no app
 // rebuild. See fetchSportRegistry() below and getSports() / getSportEmoji().
 const SPORTS_FALLBACK = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
+
+// Punctuation-insensitive team-name key for NHL context lookups. The Odds API
+// and nhl_game_context disagree on exactly one thing — "St Louis Blues" versus
+// "St. Louis Blues" — and that period alone lost 3 of 33 games. Deliberately
+// does NOT strip accents: both sources write "Montréal Canadiens", so folding
+// them would be change without a reason.
+const _nhlNameKey = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const SPORT_EMOJI_FALLBACK: Record<string,string> = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
 // 2026-09-12 v1.0.1 #2: pre-launch date labels for offseason sports so
 // Receipts renders "Coming Nov 3" instead of "no data" when a sport
@@ -2003,6 +2010,13 @@ const [ncaafGameContextMap, setNcaafGameContextMap] = useState({});  // 2026-08-
 // which holds per-TEAM season stats. The absence of this map is why NBA
 // scoring was computed client-side — there was no server number to read.
 const [nbaGameContextMap, setNbaGameContextMap] = useState({});
+// 2026-09-28: NHL game context. Same gap as NBA above, one sport later —
+// there was no map, so GameDetailV2's ctx chain handed NHL null and every
+// NHL card was dead on arrival. NHL is the sport carrying the card from 9/29.
+// Typed, unlike its siblings above: an untyped useState({}) infers `{}`, which
+// cannot be string-indexed, and that is where 136 of this file's TS7053 errors
+// come from. Typing the new one keeps this change from adding to that pile.
+const [nhlGameContextMap, setNhlGameContextMap] = useState<Record<string, any>>({});
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -5841,6 +5855,78 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           }
         });
         setNbaGameContextMap(nbaCtxMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // ══ 2026-09-28 · NHL GAME CONTEXT — THE MAP THAT NEVER EXISTED ══
+    // There was no nhl_game_context fetch anywhere in the app, so the ctx
+    // prop chain that feeds GameDetailV2 ran MLB -> NFL -> NCAAF -> null and
+    // NHL got null. Every NHL card was therefore guaranteed to render
+    // nothing no matter what the backend computed — and the backend computes
+    // a lot: 68 of 121 columns populated across the 25 games on the board,
+    // including confirmed goalies with GSAA, goal projections, Monte Carlo,
+    // PP/PK, xG per 60 and Elo.
+    //
+    // Caught only because I checked whether the new NHL slot could actually
+    // receive data before trusting it — the slot itself was correct and would
+    // have shipped completely invisible. This is the "validate the data
+    // reaches the new code" rule doing real work.
+    //
+    // The column list is the intersection of what the NHL cards read with
+    // what is actually populated, verified against the live schema. Columns
+    // confirmed empty on every NHL row (all ATS/L10/OU tendencies, h2h_*,
+    // *_travel_km, panel_pred_*, *_goalie_last5_sv_pct) are deliberately not
+    // requested — asking for a column that does not exist makes PostgREST
+    // 400 the WHOLE select, which is how one bad name blanks an entire card.
+    try {
+      const nhlCtxResult = await supabase
+        .from('nhl_game_context')
+        .select('game_id,game_date,home_team,away_team,'
+          + 'home_team_abbrev,away_team_abbrev,'
+          + 'sweat_score,sweat_tier,sweat_tier_current,'
+          + 'signal_confluence_net,signal_confluence_breakdown,'
+          + 'primary_play,projected_spread,projected_total,'
+          + 'projected_home_goals,projected_away_goals,projected_home_wp,'
+          + 'close_spread,close_total,open_total,close_home_ml,close_away_ml,'
+          + 'home_ml_close,away_ml_close,home_ml_open,away_ml_open,'
+          + 'close_puckline,close_puckline_home,open_puckline,'
+          + 'home_goalie,away_goalie,home_goalie_confirmed,away_goalie_confirmed,'
+          + 'home_goalie_sv_pct,away_goalie_sv_pct,'
+          + 'home_goalie_gsaa,away_goalie_gsaa,'
+          + 'home_pp_pct,away_pp_pct,home_pk_pct,away_pk_pct,'
+          + 'home_xgf_per60,away_xgf_per60,home_xga_per60,away_xga_per60,'
+          + 'home_5v5_cf,away_5v5_cf,'
+          + 'home_high_danger_for,away_high_danger_for,'
+          + 'home_high_danger_against,away_high_danger_against,'
+          + 'home_rest_days,away_rest_days,home_back_to_back,away_back_to_back,'
+          + 'away_consecutive_road_games,'
+          + 'elo_home,elo_away,mc_probabilities,venue,is_neutral_site,season')
+        .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
+        .limit(500);
+      if(nhlCtxResult?.data && nhlCtxResult.data.length > 0) {
+        const nhlCtxMap: Record<string, any> = {};
+        (nhlCtxResult.data as any[]).forEach((g: any) => {
+          // Keyed by game_id too, but note it will not match an Odds-API
+          // event id: nhl_game_context.game_id is the NHL's own id
+          // (2026020005), whose digits 4-6 encode the season type. Measured
+          // 0 id matches across all 33 live events, so the name key is what
+          // actually resolves and the id key is only useful to callers that
+          // already hold an NHL id.
+          if(g.game_id) nhlCtxMap[g.game_id] = g;
+          if(g.home_team && g.away_team) {
+            nhlCtxMap[`${g.away_team}@${g.home_team}`] = g;
+            // Punctuation-insensitive alias. The Odds API says "St Louis
+            // Blues" and nhl_game_context stores "St. Louis Blues", which
+            // silently lost 3 of 33 games to the period alone — and the
+            // substring fallback could not save them either, since
+            // "st louis blues".includes("st. louis blues") is false.
+            // Accents are NOT a problem here: both sources agree on
+            // "Montréal Canadiens", so stripping them is unnecessary.
+            // With this alias 32 of 33 live events resolve; the one that
+            // does not is a game genuinely outside the ctx date window.
+            nhlCtxMap[`nk:${_nhlNameKey(g.away_team)}@${_nhlNameKey(g.home_team)}`] = g;
+          }
+        });
+        setNhlGameContextMap(nhlCtxMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -12981,6 +13067,7 @@ setJerryHistory(prev => {
             const ctxMaps: Record<string, any> = {
               MLB: mlbGameContext, NFL: nflGameContextMap,
               NCAAF: ncaafGameContextMap, NBA: nbaGameContextMap,
+              NHL: nhlGameContextMap,   // 2026-09-28
             };
             const matchIn = (m: any) => Object.values(m || {}).find((c: any) =>
               c?.away_team === away && c?.home_team === home);
@@ -14454,11 +14541,16 @@ setJerryHistory(prev => {
     // NFL/NCAAF game's tier — they'd never appear in the filtered view
     // even when the game was PRIME on the ensemble. Now: pick the
     // sport's own map first, then MLB fallback, then sweatScore.
-    // NBA/NCAAB/NHL context maps not yet wired into the app (pre-season
-    // for those sports); when they land, add them here.
+    // 2026-09-28: NHL and NBA maps landed, so they are wired here now — the
+    // note below used to say "not yet wired ... when they land, add them
+    // here", and without this an NHL game card fell through to mlbGameContext
+    // and took its tier badge from whatever MLB row happened to share a team
+    // name. NCAAB still has no map (season starts Nov 3).
     const sportMap: any =
       gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
       gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+      gamesSport === 'NHL'   ? (nhlGameContextMap || {}) :
+      gamesSport === 'NBA'   ? (nbaGameContextMap || {}) :
       mlbGameContext;
     const ctxAny: any = sportMap[game.id]
       || Object.values(sportMap).find((c: any) =>
@@ -18375,6 +18467,28 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                            const aRaw = String(selectedGame.away_team||'').toLowerCase();
                            const hRaw = String(selectedGame.home_team||'').toLowerCase();
                            for (const [k, v] of Object.entries(ncaafGameContextMap || {})) {
+                             if (!k.includes('@')) continue;
+                             const [ctxAway, ctxHome] = k.split('@');
+                             if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
+                           }
+                           return null;
+                         })())
+                    : gamesSport === 'NHL'
+                      // 2026-09-28: NHL was falling through to null, so the
+                      // whole NHL detail screen — slot cards, predicted score,
+                      // model consensus, everything ctx-driven — rendered
+                      // empty. NHL team names come from the Odds API with the
+                      // mascot already attached and nhl_game_context stores the
+                      // full name too ("Vegas Golden Knights"), so the direct
+                      // away@home key hits; the substring pass is kept as the
+                      // same safety net NFL and NCAAF use.
+                      ? (nhlGameContextMap?.[`${selectedGame.away_team}@${selectedGame.home_team}`] ||
+                         nhlGameContextMap?.[`nk:${_nhlNameKey(selectedGame.away_team)}@${_nhlNameKey(selectedGame.home_team)}`] ||
+                         nhlGameContextMap?.[selectedGame.id] ||
+                         (() => {
+                           const aRaw = String(selectedGame.away_team||'').toLowerCase();
+                           const hRaw = String(selectedGame.home_team||'').toLowerCase();
+                           for (const [k, v] of Object.entries(nhlGameContextMap || {})) {
                              if (!k.includes('@')) continue;
                              const [ctxAway, ctxHome] = k.split('@');
                              if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;

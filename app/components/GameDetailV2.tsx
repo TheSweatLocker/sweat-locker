@@ -340,7 +340,11 @@ export default function GameDetailV2({
           const contextTable = gamesSport === 'MLB' ? 'mlb_game_context'
             : gamesSport === 'NFL' ? 'nfl_game_context'
             : gamesSport === 'NCAAF' ? 'ncaaf_game_context'
-            : gamesSport === 'NCAAB' ? 'ncaab_game_context' : null;
+            : gamesSport === 'NCAAB' ? 'ncaab_game_context'
+            // 2026-09-28: NHL was absent, so this fallback could never
+            // resolve a game_id for an NHL game and the externals fetch
+            // bailed out at the `!gid` guard below.
+            : gamesSport === 'NHL' ? 'nhl_game_context' : null;
           if (contextTable) {
             // 2026-08-23: Odds API returns team names WITH mascots ("TCU Horned
             // Frogs") while ctx tables store bare names ("TCU"). Exact .eq lookup
