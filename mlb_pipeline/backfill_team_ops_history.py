@@ -17,6 +17,18 @@ from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 load_dotenv()
 SU = os.environ['SUPABASE_URL']
 SK = os.environ['SUPABASE_KEY']
@@ -32,7 +44,7 @@ SEASONS = [2025, 2026]
 
 def fetch_team_id_map():
     """Get MLB team_id by team name."""
-    r = requests.get('https://statsapi.mlb.com/api/v1/teams?sportId=1&season=2026', timeout=15)
+    r = requests.get(f'https://statsapi.mlb.com/api/v1/teams?sportId=1&season={_season()}', timeout=15)
     data = r.json()
     name_to_id = {}
     for t in data.get('teams', []):

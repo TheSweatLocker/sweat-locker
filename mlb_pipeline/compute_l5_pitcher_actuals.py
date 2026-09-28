@@ -29,6 +29,18 @@ from datetime import datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -79,7 +91,7 @@ def _build_player_index():
     """Load the active 2026 roster once. ~1200 players."""
     try:
         r = requests.get(
-            "https://statsapi.mlb.com/api/v1/sports/1/players?season=2026",
+            f"https://statsapi.mlb.com/api/v1/sports/1/players?season={_season()}",
             timeout=20,
         )
         if r.status_code == 200:

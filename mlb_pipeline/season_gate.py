@@ -92,6 +92,45 @@ def is_sport_in_season(sport: str, date=None, include_preseason: bool = False) -
     return False
 
 
+def current_season(sport: str = 'MLB', date=None) -> int:
+    """The season year a given date belongs to, per that sport's convention.
+
+    ══ 2026-09-28 · WHY THIS EXISTS: A DATED TIMEBOMB ══
+    23 pipeline files hard-code the season as 2026 — 8 of them baked
+    directly into request URLs where no caller can override it:
+
+        statsapi.mlb.com/api/v1/teams?sportId=1&season=2026
+        /rest/v1/mlb_pitcher_stats?player_name=eq.X&season=eq.2026
+        /rest/v1/mlb_team_offense?season=eq.2026
+
+    Every one of those keeps returning 2026 rows forever. Nothing errors —
+    pitcher stats, team offense, whiff rates and umpire lookups would all
+    silently serve last season's numbers while the app renders them as
+    current. That is the same failure shape as the NFL season-ATS bug
+    fixed this morning, except on every MLB surface at once.
+
+    CONVENTIONS DIFFER BY SPORT, which is the whole reason this cannot be
+    `datetime.now().year`:
+      * MLB runs inside one calendar year -> that year
+      * NFL and NCAAF are labelled by the year they OPENED and run into
+        the new year (Super Bowl in Feb, CFP title in Jan), so Jan/Feb
+        belong to the PREVIOUS year's season
+      * NHL / NBA / NCAAB open in autumn and end in spring, so anything
+        before July belongs to the season that opened last year
+
+    Returns an int so it drops straight into the f-strings and query
+    params that currently hold a literal.
+    """
+    d = date or _today_et()
+    y, m = d.year, d.month
+    sp = (sport or 'MLB').upper()
+    if sp in ('NFL', 'NCAAF'):
+        return y if m >= 3 else y - 1          # Jan/Feb -> last year's season
+    if sp in ('NHL', 'NBA', 'NCAAB'):
+        return y if m >= 7 else y - 1          # spring months -> season that opened
+    return y                                   # MLB, UFC
+
+
 def season_gate_or_exit(sport: str, allow_flag: str = '--force-offseason') -> None:
     """Convenience: call at script top. Exits 0 with a log line if off-season.
     User can bypass with the flag (default `--force-offseason`).

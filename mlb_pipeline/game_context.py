@@ -43,6 +43,18 @@ from dotenv import load_dotenv
 # under the n>=30 floor). cohort_evidence looks the figure up or
 # returns '' so the sentence ends after the observation.
 from cohort_evidence import phrase as _cohort_phrase
+
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -826,7 +838,7 @@ def _refresh_pitcher_inning_buckets(pitcher_name, existing_row):
         # pitcher_stats.get_inning_bucket_splits — the fetch step is what
         # takes long; PATCH is fast but stays consistent.
         r = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.2026",
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.{_season()}",
             headers=headers,
             json=buckets,
             timeout=30,

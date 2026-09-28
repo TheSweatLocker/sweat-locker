@@ -35,6 +35,18 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -138,7 +150,7 @@ def get_pitcher_season_stats(name):
         q = urllib.parse.quote(name)
         r = urllib.request.urlopen(
             urllib.request.Request(
-                f"{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{q}&season=eq.2026"
+                f"{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{q}&season=eq.{_season()}"
                 f"&select=k_pct,bb_pct,baa_allowed,last_5_era,xera,last_3_era&limit=1",
                 headers=H_READ,
             ),

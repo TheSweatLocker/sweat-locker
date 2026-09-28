@@ -17,6 +17,18 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 
 def _norm_name(s):
     """Accent-fold + lowercase a name so 'Cristopher Sánchez' (MLB Stats API)
@@ -1694,7 +1706,7 @@ def score_pitcher_ks(g, side):
         _q = _urlp.quote(pitcher)
         _r = _urlr.urlopen(_urlr.Request(
             f"{os.environ['SUPABASE_URL']}/rest/v1/mlb_pitcher_stats"
-            f"?player_name=eq.{_q}&season=eq.2026&select=whiff_rate&limit=1",
+            f"?player_name=eq.{_q}&season=eq.{_season()}&select=whiff_rate&limit=1",
             headers={'apikey': os.environ['SUPABASE_KEY'],
                      'Authorization': f'Bearer {os.environ["SUPABASE_KEY"]}'},
         ), timeout=5)

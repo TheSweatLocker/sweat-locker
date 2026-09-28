@@ -2,6 +2,18 @@ import requests
 import os
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -276,7 +288,7 @@ def update_pitcher_nrfi_rates():
 
         # Update mlb_pitcher_stats
         patch_resp = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(pitcher_name.split(' ')[-1])}*&season=eq.2026",
+            f"{SUPABASE_URL}/rest/v1/mlb_pitcher_stats?player_name=ilike.*{requests.utils.quote(pitcher_name.split(' ')[-1])}*&season=eq.{_season()}",
             headers={**headers, "Prefer": "return=minimal"},
             json={
                 "nrfi_rate": nrfi_rate,

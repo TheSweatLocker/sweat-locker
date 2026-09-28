@@ -28,6 +28,18 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 load_dotenv()
 SB = os.environ.get('SUPABASE_URL')
 KEY = os.environ.get('SUPABASE_KEY')
@@ -85,7 +97,7 @@ def refresh_one(name: str) -> tuple[str, bool, str]:
             return (name, False, 'no split data returned')
         encoded = requests.utils.quote(name)
         r = requests.patch(
-            f'{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.2026',
+            f'{SB}/rest/v1/mlb_pitcher_stats?player_name=eq.{encoded}&season=eq.{_season()}',
             headers=H_WRITE, json=buckets, timeout=30)
         if r.status_code in (200, 204):
             return (name, True, 'refreshed')

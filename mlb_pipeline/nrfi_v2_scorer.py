@@ -16,6 +16,18 @@ import os
 import json
 import math
 
+# 2026-09-28: season was hard-coded 2026 in the request below, where no
+# caller could override it — it would have served 2026 rows forever.
+try:
+    from season_gate import current_season as _season_fn
+    def _season():
+        return _season_fn('MLB')
+except ImportError:
+    def _season():
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(hours=4)).year
+
+
 _MODEL_CACHE = None
 
 
@@ -138,7 +150,7 @@ if __name__ == "__main__":
         with urllib.request.urlopen(urllib.request.Request(URL + p, headers=H), timeout=30) as r:
             return json.loads(r.read())
     games = get('/rest/v1/mlb_game_context?game_date=eq.2026-06-06&select=*')
-    offense = get('/rest/v1/mlb_team_offense?season=eq.2026&select=team,inning_1_ops,inning_1_runs_per_game,inning_1_k_pct,inning_1_bb_pct,inning_1_hr_per_game,inning_1_wrc_plus')
+    offense = get(f'/rest/v1/mlb_team_offense?season=eq.{_season()}&select=team,inning_1_ops,inning_1_runs_per_game,inning_1_k_pct,inning_1_bb_pct,inning_1_hr_per_game,inning_1_wrc_plus')
     off_by = {o['team']: o for o in offense}
     print(f"{'MATCHUP':>45s}  OLD  NEW  TIER")
     print("-" * 80)
