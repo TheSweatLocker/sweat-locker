@@ -1779,6 +1779,20 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     except ImportError:
         pass
 
+    # 2026-09-28 · starting-QB injury ceiling. Andy's PHI @ CHI QA: the card
+    # shipped model numbers built on Caleb Williams while nfl_injuries had
+    # carried 'Out (Hamstring Strain)' since the 27th. The data was right and
+    # nothing read it — panel_injury_outs was 0 because it counts a team
+    # aggregate that is never populated, and no consumer looked at the
+    # per-player table. nfl_prop_injury_filter.py fixed exactly this for
+    # PROPS on 09-10; the sides/totals path never got the same treatment.
+    # Placed last so it can cap whatever the edge gate left standing.
+    try:
+        from nfl_qb_injury_gate import apply_to_pick as _qb_gate
+        row['primary_play'] = _qb_gate(row.get('primary_play'), row, SB, H_READ)
+    except ImportError:
+        pass
+
     return row
 
 
@@ -1891,6 +1905,50 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
             _kept += 1
     if _kept:
         print(f'     kept {_kept} locked pick(s) from the Thursday slate')
+
+    # ── 2026-09-28 · THE LOCK'S OWN EXCEPTION, FINALLY IMPLEMENTED ──────
+    # Andy's rule above is "no changes unless something significant
+    # happens." A starting quarterback ruled out is the canonical
+    # significant thing, and the block above says it lets "injuries"
+    # refresh — but it restores primary_play wholesale, so an injury could
+    # never reach the pick.
+    #
+    # THIS IS THE ACTUAL ROOT CAUSE of Andy's PHI @ CHI complaint. The gate
+    # wired into build_row fired correctly and was then thrown away here:
+    # the pick was locked Thursday 8am ET, Williams was ruled out on the
+    # 27th, and the lock faithfully restored the Williams-era pick. Verified
+    # by read-back — 0 of 17 rows carried the gate's stamp, and PHI @ CHI
+    # still read 'Over 41.5' at conviction 79. Injury news breaks Friday
+    # through Sunday, which is precisely the window the lock covers, so
+    # without this the gate would never fire on a game that mattered.
+    #
+    # WHAT IT MAY AND MAY NOT TOUCH. The published play is a receipt, so
+    # side, label and market are left exactly as published — the gate only
+    # caps tier and conviction and attaches the disclosure. So the receipt
+    # still grades against what we actually said, while the card stops
+    # presenting it with confidence it no longer deserves. Disclosure, not
+    # revision.
+    try:
+        from nfl_qb_injury_gate import apply_to_pick as _qb_gate
+        _qbn = 0
+        for row in rows:
+            pp = row.get('primary_play')
+            if not isinstance(pp, dict):
+                continue
+            before = (pp.get('tier'), pp.get('conviction'))
+            _qb_gate(pp, row, SB, H_READ)
+            if pp.get('_qb_injury'):
+                _qbn += 1
+                inj = pp['_qb_injury']
+                after = (pp.get('tier'), pp.get('conviction'))
+                chg = f'{before[0]}/{before[1]} -> {after[0]}/{after[1]}' \
+                    if before != after else 'no cap needed'
+                print(f"  🏈 QB OUT · {row['away_team']}@{row['home_team']}: "
+                      f"{inj['team']} {inj['qb']} {inj['status']} — {chg}")
+        if _qbn:
+            print(f'     {_qbn} game(s) flagged for starting-QB availability')
+    except ImportError:
+        pass
 
     # 2026-08-28: normalize batch keys — PostgREST returns
     # PGRST102 "All object keys must match" when different rows in

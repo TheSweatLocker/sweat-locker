@@ -973,6 +973,12 @@ def fetch_nfl_contexts():
            f"projected_total,projected_spread,model_pred_home_points,model_pred_away_points,"
            f"panel_pred_home_pts,panel_pred_away_pts,panel_pred_total,panel_confidence,"
            f"panel_source,panel_players_used,panel_injury_outs,"
+           # 2026-09-28 · week + QB identity feed nfl_qb_injury_gate. Without
+           # these four the gate gets a ctx with no QB name and no week,
+           # returns None, and silently declines to flag a ruled-out starter —
+           # the explicit-SELECT silent-blank trap, in the exact place where
+           # it would cost the most.
+           f"week,home_qb_name,away_qb_name,home_qb_madden_ovr,away_qb_madden_ovr,"
            f"signal_confluence_net,cohort_tags,sweat_score,sweat_tier,primary_play")
     r = requests.get(url, headers=SB_READ, timeout=20)
     if r.status_code != 200: return {}
@@ -1217,6 +1223,31 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         # for the LLM. Passed as struct.pre_parsed_facts + surfaced at the
         # top of the model_context block so it's the FIRST thing Jerry sees.
         facts = {}
+        # ── Starting-QB availability goes FIRST, ahead of the money line.
+        # 2026-09-28, PHI @ CHI: nfl_injuries had carried 'Caleb Williams ·
+        # Out · Hamstring (Strain)' since the 27th, and the read never
+        # mentioned him — it argued the Over on Chicago offense built
+        # entirely from Williams-era snaps. A ruled-out starting quarterback
+        # is the largest single fact about a football game, so it is the
+        # first thing Jerry sees and the note says outright that the model
+        # numbers below it are stale.
+        try:
+            from nfl_qb_injury_gate import assess as _qb_assess
+            _qbv = _qb_assess(ctx, SUPABASE_URL, SB_READ)
+            if _qbv:
+                facts["qb_injury_alert"] = _qbv['note']
+                facts["qb_injury_status"] = (
+                    f"{_qbv['team']} {_qbv['qb']} — {_qbv['status']}")
+                # Machine-readable copy for the week-lock release check in
+                # upsert_jerry_read_nfl, which has no `ctx` in scope. Same
+                # verdict, one lookup, no second definition. Slimmed to the
+                # two fields that check needs — the full verdict carries an
+                # `all` list whose contents already appear in the note, and
+                # dumping it into the prompt would just repeat itself.
+                struct['_qb_injury'] = {'severity': _qbv['severity'],
+                                        'qb': _qbv['qb']}
+        except ImportError:
+            pass
         # ── Money line — verbatim, no rounding. ML SIGN IS THE ONLY UNAMBIGUOUS
         # DIRECTION SIGNAL: negative = favorite (giving vig), positive = dog.
         # We derive fav/dog from ML, then attribute the spread number to the
@@ -2295,9 +2326,33 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
                                'game_date': f'eq.{ct}',
                                'select': 'id,short_read'})
             if existing and (existing[0].get('short_read') or '').strip():
-                print(f"  🔒 week-locked: existing jerry_reads row for {game_id} — skip write "
-                      f"(NFL_UNLOCK_WEEK=1 to override)")
-                return True
+                # 2026-09-28 · THE LOCK RELEASES ITSELF FOR A RULED-OUT QB.
+                # nfl_week_write_locked's own docstring names the exception:
+                # "NFL_UNLOCK_WEEK=1 env bypasses (emergency injury regen or
+                # QB1 swap scenarios)". That hatch was designed and then left
+                # as a manual env var, so it depended on somebody being at a
+                # keyboard when the news broke. Nobody was on Saturday the
+                # 27th, which is why the PHI @ CHI read argued the Over on
+                # Chicago's offense without once naming Caleb Williams.
+                #
+                # Scope is deliberately narrow: release ONLY when a starting
+                # QB is currently ruled out AND the frozen read does not
+                # already say so. A read that already discloses it stays
+                # frozen, so this cannot become a general-purpose unlock or
+                # start churning reads every cron.
+                _stale = False
+                _v = (struct or {}).get('_qb_injury')
+                if isinstance(_v, dict) and _v.get('severity') == 'out' and _v.get('qb'):
+                    _surname = str(_v['qb']).split()[-1].lower()
+                    if _surname not in (existing[0].get('short_read') or '').lower():
+                        _stale = True
+                if _stale:
+                    print(f"  🔓 week-lock RELEASED for {game_id}: starting QB ruled "
+                          f"out and the frozen read never mentions it — regenerating")
+                else:
+                    print(f"  🔒 week-locked: existing jerry_reads row for {game_id} — skip write "
+                          f"(NFL_UNLOCK_WEEK=1 to override)")
+                    return True
         except Exception:
             pass  # sb_get failure — let the write proceed (fail-safe)
     payload = {
@@ -2525,8 +2580,45 @@ def run():
         key = f"game_read_{g.get('id')}_nfl_week_{week_key}"
         if not force:
             if sb_get("jerry_cache", {"cache_key": f"eq.{key}", "select": "cache_key"}):
-                print(f"  • {away} @ {home}: locked (Thu {week_key}), skip")
-                continue
+                # ══ 2026-09-28 · THE THU-LOCK RELEASES FOR A RULED-OUT QB ══
+                # This is the lock that actually held PHI @ CHI. There are
+                # TWO Thursday locks: this jerry_cache key check, which skips
+                # the game before a prompt is ever built, and a second one
+                # inside upsert_jerry_read_nfl that guards the write. The
+                # write guard is unreachable for any game already generated,
+                # because this one skips first — so a release belongs here.
+                #
+                # The comment above already names the intended escape hatch,
+                # "or manual --force for injury regen", which is the same
+                # manual-only pattern as NFL_UNLOCK_WEEK: correct in design,
+                # dependent on somebody running it. Caleb Williams was ruled
+                # out on Saturday the 27th and the Monday read still argued
+                # the Over on Chicago's offense without naming him.
+                #
+                # Narrow on purpose, and self-limiting: release only when a
+                # starting QB is CURRENTLY ruled out AND the frozen read does
+                # not already name him. The regenerated read does name him,
+                # so the next run finds nothing stale and the lock holds
+                # again. No churn, and no general-purpose unlock.
+                _rel = False
+                _qbi = struct.get('_qb_injury') or {}
+                if _qbi.get('severity') == 'out' and _qbi.get('qb'):
+                    try:
+                        _ex = sb_get('jerry_reads',
+                                     {'sport': 'eq.NFL',
+                                      'game_id': f"eq.{g.get('id')}",
+                                      'select': 'short_read'})
+                        _txt = ' '.join((e.get('short_read') or '') for e in (_ex or []))
+                        if str(_qbi['qb']).split()[-1].lower() not in _txt.lower():
+                            _rel = True
+                    except Exception:
+                        pass        # lookup failed — keep the lock, don't churn
+                if _rel:
+                    print(f"  🔓 {away} @ {home}: Thu-lock RELEASED — {_qbi['qb']} "
+                          f"ruled out and the frozen read never mentions him")
+                else:
+                    print(f"  • {away} @ {home}: locked (Thu {week_key}), skip")
+                    continue
 
         # 2026-09-16 analyst-writeup v1 gate. When enabled for this game,
         # build PROVIDED_FACTS from team_situational_records +
