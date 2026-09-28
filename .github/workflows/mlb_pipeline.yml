@@ -7,7 +7,29 @@ on:
     # absorb GitHub Actions queue delays, which historically run 30-90
     # min late and occasionally 2-3 hrs late. Earlier trigger = larger
     # buffer to hit the in-app ready-by promise.
-    - cron: '0 10 * * *'  # 6:00am EDT (10:00 UTC) — primary morning trigger
+    # 2026-09-28 · MOVED 10:00 -> 06:00 UTC. Andy at 9:26am ET: "dont see a
+    # sweat card in app or POTD."
+    #
+    # The card was not missing, it had not been BUILT yet. Measured over 14
+    # days, the Sweat Card lands between 07:27 and 11:02 ET, so 9:26am sits
+    # inside the window where it legitimately may not exist.
+    #
+    # Root cause is that this cron has NEVER fired at its nominal time. Over
+    # 20 days of workflow_heartbeat the '10' slot started between 13:20 and
+    # 16:22 UTC — a consistent 3.5-6 HOUR queue delay, not the "30-90 min,
+    # occasionally 2-3 hrs" the note below assumed. The 2-hour buffer was
+    # fully consumed, so an 11am ET ready-by was being met at 11:02 on a bad
+    # day rather than beaten.
+    #
+    # Reliability is NOT the problem: 20 of 20 days fired a morning run. So
+    # this MOVES the existing trigger rather than adding a fifth. More
+    # concurrent runs is exactly what the push-trigger removal below was
+    # undoing, and four already-idempotent runs is enough.
+    #
+    # 06:00 UTC + the observed delay lands ~09:30-12:00 UTC = 05:30-08:00 ET,
+    # which puts the card in front of a 9am reader with room to spare.
+    - cron: '0 6 * * *'   # 2:00am EDT (06:00 UTC) — primary morning trigger
+                          # (observed delivery ~05:30-08:00 ET)
     # 2026-08-27 BACKUP TRIGGER. GitHub Actions schedule triggers
     # SILENTLY SKIP when the platform is under load. Both 6am + 8:30am
     # dropped 3-4 days in a row late Aug 2026 (user reported manually
@@ -116,8 +138,15 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           CRON_SLOT="${{ github.event.schedule }}"
+          # 2026-09-28: '0 10' -> '0 6' to match the moved primary trigger,
+          # and '15 11' added — that backup was introduced 2026-08-31 and
+          # never mapped here, so every time it fired it was recorded as
+          # 'manual'. A backup trigger that logs as a manual run is invisible
+          # in exactly the audit this table exists for.
           case "$CRON_SLOT" in
-            '0 10 * * *')   SLOT='10' ;;
+            '0 6 * * *')    SLOT='06' ;;
+            '0 10 * * *')   SLOT='10' ;;   # legacy, pre-2026-09-28 rows
+            '15 11 * * *')  SLOT='1115' ;;
             '30 12 * * *')  SLOT='1230' ;;
             '0 18 * * *')   SLOT='18' ;;
             *)              SLOT='manual' ;;
@@ -3009,8 +3038,15 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           CRON_SLOT="${{ github.event.schedule }}"
+          # 2026-09-28: '0 10' -> '0 6' to match the moved primary trigger,
+          # and '15 11' added — that backup was introduced 2026-08-31 and
+          # never mapped here, so every time it fired it was recorded as
+          # 'manual'. A backup trigger that logs as a manual run is invisible
+          # in exactly the audit this table exists for.
           case "$CRON_SLOT" in
-            '0 10 * * *')   SLOT='10' ;;
+            '0 6 * * *')    SLOT='06' ;;
+            '0 10 * * *')   SLOT='10' ;;   # legacy, pre-2026-09-28 rows
+            '15 11 * * *')  SLOT='1115' ;;
             '30 12 * * *')  SLOT='1230' ;;
             '0 18 * * *')   SLOT='18' ;;
             *)              SLOT='manual' ;;

@@ -437,6 +437,36 @@ jobs:
           echo "=============================================================="
           python reconcile_resolution.py --days 7
 
+      # 2026-09-28 · SOMETHING FINALLY READS workflow_heartbeat.
+      #
+      # The table was created 2026-08-27 specifically to tell "cron dropped"
+      # apart from "started and died", and its own note says "If no start row
+      # for today, GitHub Actions dropped the cron." Nothing in the repo ever
+      # read it — the only file touching it was an underscore-prefixed
+      # scratch script, which is gitignored. Answering "where is my card?"
+      # on 09-28 took six ad-hoc queries and produced a wrong first
+      # conclusion before the table settled it.
+      #
+      # It lives HERE rather than in mlb_pipeline on purpose: a watchdog that
+      # only runs inside the pipeline it is watching cannot report that
+      # pipeline failing to start. mlb_grade_overnight is a separate workflow
+      # on a separate schedule, so it can see an mlb_pipeline that never ran.
+      #
+      # Lateness is judged against each slot's own measured p90, not its
+      # nominal cron time — the '0 10' trigger has historically started
+      # 13:20-16:22 UTC, so a cron-time comparison would flag every day and
+      # train everyone to ignore it.
+      - name: Watchdog — scheduled runs that never started
+        if: always()
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "watchdog_workflow_heartbeat.py" \
+            python watchdog_workflow_heartbeat.py
+
       # if: always() so a failed grade step doesn't skip the heartbeat.
       - name: Heartbeat — end
         if: always()
