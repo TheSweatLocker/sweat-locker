@@ -44,6 +44,37 @@ export const TEAM_ABBREV: Record<string, string> = {
   'Phoenix Suns': 'PHX', 'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC',
   'San Antonio Spurs': 'SA', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA',
   'Washington Wizards': 'WAS',
+
+  // ══ 2026-09-28 · NHL — THE MAP HAD NONE ══
+  // Andy: "hate Florida abbrviatian being flo should be fla, all abbreviation
+  // should be correct." There was not a single NHL team in this file, so every
+  // hockey name fell through to the last-resort slice and produced things like
+  // FLO for Florida.
+  //
+  // Sourced from nhl_game_context.{home,away}_team_abbrev, which the pipeline
+  // already stores correctly for all 32 clubs — this is the same value the DB
+  // uses, not a hand-typed guess, so the card and the data agree.
+  //
+  // Note Montréal carries the accent exactly as both the Odds API and
+  // nhl_game_context write it; abbrev() lowercases but does not strip accents,
+  // so the accented key is the one that matches.
+  'Anaheim Ducks': 'ANA', 'Boston Bruins': 'BOS',
+  'Buffalo Sabres': 'BUF', 'Calgary Flames': 'CGY',
+  'Carolina Hurricanes': 'CAR', 'Chicago Blackhawks': 'CHI',
+  'Colorado Avalanche': 'COL', 'Columbus Blue Jackets': 'CBJ',
+  'Dallas Stars': 'DAL', 'Detroit Red Wings': 'DET',
+  'Edmonton Oilers': 'EDM', 'Florida Panthers': 'FLA',
+  'Los Angeles Kings': 'LAK', 'Minnesota Wild': 'MIN',
+  'Montréal Canadiens': 'MTL', 'Montreal Canadiens': 'MTL',
+  'Nashville Predators': 'NSH', 'New Jersey Devils': 'NJD',
+  'New York Islanders': 'NYI', 'New York Rangers': 'NYR',
+  'Ottawa Senators': 'OTT', 'Philadelphia Flyers': 'PHI',
+  'Pittsburgh Penguins': 'PIT', 'San Jose Sharks': 'SJS',
+  'Seattle Kraken': 'SEA', 'St. Louis Blues': 'STL',
+  'St Louis Blues': 'STL', 'Tampa Bay Lightning': 'TBL',
+  'Toronto Maple Leafs': 'TOR', 'Utah Mammoth': 'UTA',
+  'Vancouver Canucks': 'VAN', 'Vegas Golden Knights': 'VGK',
+  'Washington Capitals': 'WSH', 'Winnipeg Jets': 'WPG',
 };
 
 // Common short-form aliases that show up in various feeds (opponent codes,

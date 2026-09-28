@@ -106,15 +106,25 @@ TEAM_NAMES = {
 # a HIGH value ranks first; the client colours off rank, so getting this
 # wrong inverts the read on that row.
 STAT_META = {
-    'xgf_per60':           ('Expected Goals For /60', '', 'higher'),
-    'xga_per60':           ('Expected Goals Against /60', '', 'lower'),
+    # 2026-09-28 · LABELS SHORTENED TO FIT THE CARD.
+    # Andy: "Labels are truncated. 'Expected goals agai...' and 'Expected
+    # goals for /...' are cut off; shorten them to xGA/60 and xGF/60."
+    # The Team Stats row puts the label in a centre column between two value
+    # columns, so anything past ~18 characters ellipsises — and an ellipsised
+    # label is worse than an abbreviation, because "Expected goals agai..."
+    # and "Expected goals for /..." are indistinguishable at a glance, which
+    # is exactly the pair a reader most needs to tell apart.
+    # These strings land in team_computed_stats.display_label and are what
+    # the client renders verbatim, so this is the one place to change them.
+    'xgf_per60':           ('xGF /60', '', 'higher'),
+    'xga_per60':           ('xGA /60', '', 'lower'),
     'corsi_5v5':           ('5v5 CF %', '%', 'higher'),
-    'high_danger_for':     ('HD Chances For /60', '', 'higher'),
-    'high_danger_against': ('HD Chances Against /60', '', 'lower'),
+    'high_danger_for':     ('HD For /60', '', 'higher'),
+    'high_danger_against': ('HD Against /60', '', 'lower'),
     'gf_per60':            ('Goals For /60', '', 'higher'),
     'ga_per60':            ('Goals Against /60', '', 'lower'),
-    'pp_pct':              ('Power Play xG /60', '', 'higher'),
-    'pk_pct':              ('Penalty Kill xGA /60', '', 'lower'),
+    'pp_pct':              ('PP xG /60', '', 'higher'),
+    'pk_pct':              ('PK xGA /60', '', 'lower'),
     'shots_for_per60':     ('Shots For /60', '', 'higher'),
     'save_pct_5v5':        ('5v5 Save %', '%', 'higher'),
 }

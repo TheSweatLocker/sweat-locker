@@ -3605,6 +3605,26 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
             rightLabel={labelR} rightRec={rr}
             market={market}
             showThinNote={!_allThin}
+            // ══ 2026-09-28 · A PUCK LINE IS ALWAYS ±1.5, SO ATS IS STRUCTURAL ══
+            // Andy: "Puck-line ATS records are structural. Favorites at -1.5
+            // cover roughly 35-40% of the time by design, so 34-49 'as fav' in
+            // red and 22-11 'as dog' in green aren't edges."
+            //
+            // Correct, and this row is where it bites hardest. Hockey has no
+            // variable spread: the favourite always lays -1.5 and must win by
+            // two, the dog always takes +1.5 and cashes on any one-goal loss.
+            // So the fav/dog row puts Florida's DOG record (22-11, 66.7%)
+            // beside Carolina's FAV record (34-49, 41.0%) and colours Florida
+            // green — comparing two different structural regimes and calling
+            // the difference an edge. Both numbers are near league-normal for
+            // their role.
+            //
+            // The other rows survive because both teams are measured in the
+            // same terms. Only this one crosses regimes, and only in hockey;
+            // in football the two sides of a spread are symmetric.
+            noCompare={String(sport) === 'NHL' && market === 'spread'
+                       && (filterA === 'as_dog' || filterA === 'as_fav')}
+            noCompareNote="puck line is always ±1.5 — favourite and underdog records aren't comparable"
           />
         );
       })}
@@ -3716,7 +3736,8 @@ function _sitN(rec: any): number {
 }
 
 function SitRow({leftLabel, leftRec, rightLabel, rightRec, market,
-                 showThinNote = true}: any) {
+                 showThinNote = true, noCompare = false,
+                 noCompareNote = ''}: any) {
   const lr = _sitRate(leftRec);
   const rr = _sitRate(rightRec);
   const lN = _sitN(leftRec), rN = _sitN(rightRec);
@@ -3758,6 +3779,14 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market,
     }
   }
 
+  // Not-comparable gate. Runs before the sample gate because it is a
+  // statement about the MARKET, not the sample: no number of games makes a
+  // -1.5 favourite's cover rate comparable to a +1.5 underdog's.
+  if (noCompare) {
+    leftEdge = null;
+    rightEdge = null;
+  }
+
   // Sample gate LAST, so it overrides every colouring branch above. A
   // three-game sample cannot support "this team is better at covering",
   // and the legend has been promising this gate all along.
@@ -3791,7 +3820,13 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market,
           the comparison never ran. Suppressed when the thin note is already
           showing, since "too few games" is the stronger statement and two
           captions under one row is noise. */}
-      {!thin && leftEdge === 'even' && rightEdge === 'even' && (
+      {noCompare && noCompareNote ? (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: -2, marginBottom: 4}}>
+          {noCompareNote}
+        </Text>
+      ) : null}
+      {!noCompare && !thin && leftEdge === 'even' && rightEdge === 'even' && (
         <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
                       textAlign: 'center', marginTop: -2, marginBottom: 4}}>
           evenly matched — no edge either way
@@ -5168,7 +5203,16 @@ function NHLRestCard({ctx, homeTeam, awayTeam}: any) {
   const days = (v: any) => v == null ? '—' : `${Number(v)}d`;
   const b2b = (v: any) => v == null ? '—' : (v ? 'Yes' : 'No');
   const rows: any[] = [
-    {label: 'Rest days', away: days(aR), home: days(hR),
+    // 2026-09-28 · LABELLED FOR WHAT IT ACTUALLY COUNTS.
+    // Andy: "FLO's rest days are wrong. It played 9/26, so it's on one day of
+    // rest, not 3d." The number is right and the label was not:
+    // nhl_game_context computes (game_date - last_game_date).days, which is
+    // days ELAPSED, not days of rest. Florida played 9/26 and plays 9/29 —
+    // three days elapsed, two days of rest (the 27th and the 28th).
+    // Renaming is the safe fix: rest_days also drives back_to_back
+    // (elapsed == 1) and the long-road-trip signal, so changing the stored
+    // arithmetic would silently move those too.
+    {label: 'Days since last game', away: days(aR), home: days(hR),
      awayRaw: aR, homeRaw: hR, better: 'high'},
     // Back-to-back is a yes/no, so there is no "better" number to colour —
     // a false/false row must not paint one side green for tying.
@@ -5184,7 +5228,7 @@ function NHLRestCard({ctx, homeTeam, awayTeam}: any) {
   const roadNote = isFinite(aRoad) && aRoad >= 2
     ? `${abbrev3(awayTeam)} is on game ${aRoad + 1} of a road trip.` : null;
   return (
-    <Section title="Rest & Schedule" hint="rest days · back-to-backs">
+    <Section title="Rest & Schedule" hint="days since last game · back-to-backs">
       <NHLCompareRows awayTeam={awayTeam} homeTeam={homeTeam} rows={rows} />
       {roadNote && (
         <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>{roadNote}</Text>

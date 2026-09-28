@@ -421,6 +421,23 @@ def enrich_market(rows: list[dict]) -> None:
         hit += 1
         hml, aml = m.get('close_home_ml'), m.get('close_away_ml')
         tot, pl = m.get('close_total'), m.get('close_puckline')
+        # ══ 2026-09-28 · THE HEADER READS close_spread, NHL WRITES PUCK LINE ══
+        # Andy: "The spread says '—' but the puck line exists. The header has
+        # no spread, while the tiles and line movement both show CAR -1.5."
+        #
+        # Exactly right, and it is a naming split rather than missing data:
+        # close_spread is populated on 0 of 40 NHL games while close_puckline
+        # is populated on 25. Every shared surface that asks a game for "the
+        # spread" — the MARKET strip, and anything else reading the common
+        # column — therefore saw nothing for hockey.
+        #
+        # In hockey the puck line IS the spread, so the honest fix is to write
+        # the same number into the shared column rather than teach each
+        # consumer a sport-specific alias. Same value, one name the rest of
+        # the app already understands. close_puckline stays as the
+        # sport-native field so nothing that reads it has to change.
+        if pl is not None:
+            row['close_spread'] = float(pl)
         if hml is not None:
             row['close_home_ml'] = int(hml)
             row['home_ml_close'] = int(hml)          # legacy spelling, kept in sync
