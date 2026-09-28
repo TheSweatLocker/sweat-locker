@@ -107,6 +107,22 @@ def count_mlb_games_today():
     return len(rows)
 
 
+def count_ctx_games_today(table):
+    """Count today's games in any sport's *_game_context table.
+
+    2026-09-28: added so the slate-density check can see NFL / NCAAF /
+    NHL / NCAAB. Returns 0 rather than raising when a table does not
+    exist yet (NCAAB has no context table until its pipeline ships), so a
+    missing sport can never take the card down with it.
+    """
+    today = today_et()
+    try:
+        rows = sb_get(table, {"game_date": f"eq.{today}", "select": "game_id"})
+        return len(rows) if isinstance(rows, list) else 0
+    except Exception:
+        return 0
+
+
 def count_nba_games_today():
     """Count NBA games today via nba_game_results (unresolved = today's slate)."""
     today = today_et()
@@ -149,11 +165,33 @@ def compute_slate_density():
       - standard: 2-3 sports OR 9-24 games → current behavior, no padding needed
       - overload: 4+ sports OR 25+ games → cap N picks per sport, sport-filter UI hint
 
-    NCAAB, NFL, NCAAF, NHL not yet wired — added when those pipelines ship.
+    ══ 2026-09-28 · THE OTHER FOUR SPORTS ARE NOW WIRED ══
+
+    This counted MLB and NBA only, and its own docstring said "NCAAB, NFL,
+    NCAAF, NHL not yet wired — added when those pipelines ship." They have
+    all shipped, and the bill came due the morning after MLB's regular
+    season ended:
+
+        Slate density: empty | active=[] | games=0 | counts={'MLB': 0, 'NBA': 0}
+
+    Andy, 9:26am 9/28: "dont see a sweat card in app or POTD." There WAS a
+    slate — an NFL Monday-nighter carrying a live pick — but the card
+    counted two sports, saw zero, declared the day empty and published
+    nothing. Exactly the failure logged as project_sweat_card_multisport_921
+    ("Card breaks when MLB ends").
+
+    Counted off each sport's own context table, which is where its picks
+    live, so a sport is "active" here on the same basis the card would
+    actually draw from it. NBA keeps its results-table count because its
+    context table is not populated this far out of season.
     """
     counts = {
         "MLB": count_mlb_games_today(),
         "NBA": count_nba_games_today(),
+        "NFL": count_ctx_games_today("nfl_game_context"),
+        "NCAAF": count_ctx_games_today("ncaaf_game_context"),
+        "NHL": count_ctx_games_today("nhl_game_context"),
+        "NCAAB": count_ctx_games_today("ncaab_game_context"),
     }
     ufc_pending = count_ufc_events_within(days=3)
     active = [s for s, n in counts.items() if n > 0]
