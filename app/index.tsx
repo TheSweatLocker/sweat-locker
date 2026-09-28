@@ -7265,6 +7265,22 @@ if(isLive) {
   ? `NOTE: Sweat Locker MLB model active — pitcher xERA, wOBA/wRC+, K rate gap, platoon advantage, bullpen ERA, park factor, weather, umpire tendencies all feeding the model. Use these signals specifically.`
   : sport === 'NBA'
   ? `NOTE: Sweat Locker NBA model active — net rating, defensive rating, opp eFG%, home/away records, last 5 net rating, injury report, pace matchup all feeding the model. Use these signals specifically.`
+  // ══ 2026-09-28 · THIS LINE CALLED FOUR LIVE MODELS "MARKET ONLY" ══
+  // Only NCAAB, MLB and NBA had a branch, so NFL, NCAAF, NHL and UFC all fell
+  // through to "Market-based analysis only ... Be transparent about this
+  // limitation" — and then the writer dutifully was. The note at sportRules
+  // above records the same class of bug being fixed for NFL/NCAAF months ago;
+  // this second copy was missed, which is why the sentence kept surfacing.
+  //
+  // Andy today: "NHL writ eups till says markte base nalayisis". Three
+  // separate copies of that claim had to be found — the server template, the
+  // client sportRules, and this.
+  : sport === 'NFL'
+  ? `NOTE: Sweat Locker NFL model active — pass/rush EPA per play, CPOE, situational cohorts, weather, rest, QB injury gate all feeding the model. Use these signals specifically.`
+  : sport === 'NCAAF'
+  ? `NOTE: Sweat Locker NCAAF model active — SP+ overall, off/def EPA per play, success rate, explosiveness, cohorts all feeding the model. Use these signals specifically.`
+  : sport === 'NHL'
+  ? `NOTE: Sweat Locker NHL model active — trained logistic-regression win model, Poisson goal projection with Monte Carlo, Elo, confirmed-goalie save% and GSAA, special teams, xG per 60 all feeding the model. Use these signals specifically.`
   : `NOTE: Market-based analysis only for ${sport}. Be transparent about this limitation.`;
       const spread = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='spreads')?.outcomes?.[0];
 const total = game?.bookmakers?.[0]?.markets?.find(m=>m.key==='totals')?.outcomes?.[0];
@@ -7571,17 +7587,34 @@ STRUCTURE (3 sentences — hard cap):
 
 LENGTH: 3 sentences. Hard cap.`,
 
+    // ══ 2026-09-28 · THIS IS WHERE "MARKET BASED ANALYSIS" WAS COMING FROM ══
+    // Andy, after the server rules were replaced: "NHL writ eups till says
+    // markte base nalayisis".
+    //
+    // The SERVER side was already clean — all 108 NHL jerry_reads rows, and
+    // every jerry_cache row for an upcoming game, verified free of it. But
+    // these are the CLIENT-side fallback rules used when the app generates a
+    // read itself on a cache miss, and they still instructed the model to
+    // open with exactly that sentence. Fixing prompt_templates v3-v6 never
+    // touched this copy.
+    //
+    // Same trap as the note below: one stale copy of a prompt kept shipping
+    // after the real one was replaced. Mirrors the active server template
+    // (prompt_templates NHL game_read_rules v6), condensed.
     NHL: `
-TRANSPARENCY:
-- Open with one line: "Market-based analysis — no NHL model active yet."
-- Do NOT fabricate model metrics.
+ANTI-HALLUCINATION:
+- Only use numbers present in the context provided. Quote them exactly — do not round or re-derive.
+- Attribute everything to the "Sweat Locker model"; never name an outside source.
+- If a number is absent, say so plainly rather than inventing one.
 
-LEAD SIGNALS:
-- Confirmed goalie starters (most important signal — web search for today's starters).
-- Pace, special teams, recent form.
-- Line movement ≥2pts = flag.
+STRUCTURE (3 sentences — all three required):
+- Sentence 1: GOALTENDING. Both starters by name with save percentage and GSAA, and "confirmed" or "projected". State the GSAA gap — it is the largest edge in hockey.
+- Sentence 2: MODEL vs MARKET. The model's win probability as a percentage, the edge in points over the market price, and the price.
+- Sentence 3: THE PROJECTION. Projected goals per team and the projected total against the posted total; hockey totals move on half-goals, so half a goal or more is material.
 
-LENGTH: 2-3 sentences. Hard cap.`,
+EARLY SEASON: team rate stats carry last season's data until this season's sample is large enough — say so rather than presenting them as this year's form. Do NOT cite strength of schedule or strength of record for NHL.
+
+LENGTH: 3 sentences. Hard cap. Plain prose, no headings, no lists.`,
 
     // 2026-09-01 · ROOT CAUSE FIX for user report: "why is Jerry still
     // saying market analysis for NFL." Prior code had no NFL / NCAAF
@@ -7686,7 +7719,11 @@ CONFIDENCE TIER: ${
   sport === 'NFL' ? 'HIGH — NFL model active (pass_epa + rush_epa/play, CPOE, situational cohorts, weather, rest)' :
   sport === 'NCAAF' ? 'HIGH — NCAAF model active (SP+ overall, off/def EPA/play, success rate, explosiveness, cohorts)' :
   sport === 'UFC' ? 'MODERATE — fighter stats + public analyst consensus' :
-  sport === 'NHL' ? 'MARKET — no NHL model, pure market analysis' :
+  // 2026-09-28: was 'MARKET — no NHL model, pure market analysis', which
+  // told the writer there was nothing to cite. NHL picks are made by a
+  // trained logistic-regression win model (lr_v1) with a measured edge vs
+  // price, plus a Poisson goal projection with Monte Carlo and Elo.
+  sport === 'NHL' ? 'HIGH — NHL model active (trained LR win model, Poisson goal projection + Monte Carlo, Elo, confirmed-goalie GSAA, special teams, xG/60)' :
   'MODERATE — limited model coverage'
 }
 ${scoreData.isTournamentFloor ? 'Note: Best available play today — not a Prime Sweat. Measured tone.' : ''}

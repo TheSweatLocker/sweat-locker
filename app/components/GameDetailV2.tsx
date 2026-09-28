@@ -2106,7 +2106,7 @@ function LensGrid({ctx, gamesSport}: any) {
   // (schema in 20260901h_ncaaf_mc_column.sql, workflow step in
   // .github/workflows/ncaaf_pipeline.yml after game_context build).
   // Same lens chip shape so cross-sport rendering stays uniform.
-  const rows = gamesSport === 'MLB' ? [
+  let rows = gamesSport === 'MLB' ? [
     {name: 'Panel', m: ctx?.panel_implied_margin, t: ctx?.panel_implied_total},
     {name: 'Jerry', m: ctx?.jerry_pred_spread, t: ctx?.jerry_pred_total},
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
@@ -2288,6 +2288,30 @@ function LensGrid({ctx, gamesSport}: any) {
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ];
+
+  // ══ 2026-09-28 · THE EMPTY-LENS RULE APPLIED TO EVERY OTHER SPORT ══
+  // Andy on the NHL card: "v4 not puopulated". The 2026-09-26 fix for exactly
+  // this lives inside the NFL branch above, so it never ran for NHL — and the
+  // fallback branch hardcodes a v4 tile reading ctx.v4_spread ??
+  // ctx.model_pred_spread, NEITHER of which exists on nhl_game_context. There
+  // is no NHL v4 model at all, so that tile could never show anything.
+  //
+  // Same reasoning as the NFL fix: a model with no output should be ABSENT,
+  // not present-and-blank, because a blank tile reads as "this model has no
+  // opinion" — a much stronger claim than "this model did not run". And the
+  // reader counts tiles to judge how many independent opinions back the pick,
+  // so the absence is disclosed rather than silent.
+  //
+  // Scoped to the sports that reach the fallback branch. MLB, NCAAF and NFL
+  // already curate their own lens lists, and re-filtering them here could
+  // remove a tile one of them deliberately shows.
+  if (!['MLB', 'NCAAF', 'NFL'].includes(String(gamesSport))) {
+    const _dead = rows.filter((r: any) => r.m == null && r.t == null);
+    if (_dead.length) {
+      for (const d of _dead) _hiddenLenses.push(`${String(d.name).toUpperCase()} not reporting`);
+      rows = rows.filter((r: any) => !(r.m == null && r.t == null));
+    }
+  }
 
   const closeTot = ctx?.close_total;
   const [openLens, setOpenLens] = useState<string | null>(null);
@@ -3762,6 +3786,17 @@ function SitRow({leftLabel, leftRec, rightLabel, rightRec, market,
           too few games to call an edge
         </Text>
       )}
+      {/* 2026-09-28: the verdict the "=" used to carry, in words. Only when
+          BOTH sides are level — one 'even' pill without the other would mean
+          the comparison never ran. Suppressed when the thin note is already
+          showing, since "too few games" is the stronger statement and two
+          captions under one row is noise. */}
+      {!thin && leftEdge === 'even' && rightEdge === 'even' && (
+        <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic',
+                      textAlign: 'center', marginTop: -2, marginBottom: 4}}>
+          evenly matched — no edge either way
+        </Text>
+      )}
     </View>
   );
 }
@@ -3862,9 +3897,26 @@ function RecordPill({rec, market, edge, emptyNote}: any) {
       tint === 'loss' && sitStyles.pillLoss,
       tint === 'even' && sitStyles.pillEven,
     ]}>
-      <Text style={sitStyles.pillText}>
-        {label}{tint === 'even' ? '  =' : ''}
-      </Text>
+      {/* ══ 2026-09-28 · THE "=" READ AS A TYPO, NOT A MEANING ══
+          Andy on FLA @ CAR: "30-48 ATS = is in one block why = ... The one
+          with = at the end dont have color coordinated."
+
+          Both halves of that were fair. The glyph sat INSIDE the pill right
+          after the record, so "30-48 ATS  =" looked like a malformed number
+          rather than a verdict, and 'even' renders on C.surfaceAlt — a
+          deliberate neutral, because neither team IS better, but
+          indistinguishable from the grey of "no data" to anyone reading the
+          card rather than the source.
+
+          The comparison itself is right and stays: Florida 30-48 is 38.5%
+          ATS against Carolina's 41-53 at 43.6%, a 5.1pp gap under the 15pp
+          SIT_EDGE_MIN, so on ~80 games each they genuinely are not
+          separable. So the fix is to stop encoding that in the number and
+          say it in words underneath, which is what SitRow's existing
+          "too few games to call an edge" note already does for the other
+          non-verdict. One number, one place — a pill shows a record; the
+          note carries the verdict. */}
+      <Text style={sitStyles.pillText}>{label}</Text>
     </View>
   );
 }
