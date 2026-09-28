@@ -1767,6 +1767,18 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
         if isinstance(row['primary_play'], dict):
             row['primary_play']['_engine'] = 'legacy_nfl_compute_primary_play'
 
+    # 2026-09-27 · edge ceiling. Placed after BOTH branches so the legacy
+    # compute_primary_play path is covered too, not just the ensemble one.
+    # One definition in model_edge.py; the full reasoning is at the NHL call
+    # site. The gate first shipped inside defensive_gates' LR override,
+    # which reaches only lr_v1 — 56 of 319 recent picks; ensemble_v2 and
+    # the legacy path made the rest with no comparison to price.
+    try:
+        from model_edge import apply_to_pick
+        row['primary_play'] = apply_to_pick(row.get('primary_play'), row)
+    except ImportError:
+        pass
+
     return row
 
 

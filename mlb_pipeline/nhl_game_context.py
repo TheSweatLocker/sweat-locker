@@ -214,54 +214,107 @@ def enrich_goalies(rows: list[dict], season: int) -> None:
 
 
 def enrich_market(rows: list[dict]) -> None:
-    """Odds API pull. NHL market keys: h2h (ML), spreads (puckline), totals."""
-    if not ODDS_KEY:
-        print('  ⚠ ODDS_API_KEY missing — skipping market enrichment')
+    """Copy market prices from nhl_game_results onto the context rows.
+
+    ══ 2026-09-27 · WHY THIS NO LONGER CALLS THE ODDS API ══
+
+    Andy: "make sure NHL is equivalent to MLB/NFL ... full stack of data in
+    each game detail." NHL had close_home_ml / close_away_ml populated on
+    0 of 59 context rows, and the knock-on was severe: ALL 51 NHL picks were
+    type=ml, side=HOME, tier=STRONG, conviction=60 — a constant, not a read.
+
+    TWO BUGS, ONE SYMPTOM.
+
+    (1) THE WRITER AND THE READER USED DIFFERENT COLUMNS. This function
+        wrote `home_ml_close` / `away_ml_close` / `close_puckline`, while
+        line ~588 of THIS SAME FILE reads `close_home_ml` — as does the
+        card and every downstream consumer. The schema carries both spellings:
+
+            home_ml_close        12/59 populated
+            close_home_ml         0/59   <- what everything reads
+            away_ml_close        12/59
+            close_away_ml         0/59
+            close_puckline       12/59
+            close_puckline_home   0/59
+
+        `close_total` was the one field whose name happened to agree, which
+        is exactly why it was the only market field with any data.
+
+        So `_implied_wp(row.get('close_home_ml'))` was always None, the
+        market comparison never ran, and the pick fell through to a default.
+        The all-home STRONG/60 board was that default.
+
+    (2) THE MATCH WAS A SUBSTRING GUESS. `if home_c in h and away_c in a`
+        against odds-API names, one book deep ("first book = quick MVP"),
+        matched 12 of 59 even under the right column name.
+
+    nhl_odds_pull.py already solves both. It runs earlier in the workflow,
+    handles team naming properly, and writes close_home_ml / close_away_ml /
+    close_total / close_puckline into nhl_game_results under the CANONICAL
+    names — 923 of 1000 rows carry a price. Verified 2026-09-27: joining
+    context to results on (game_date, home_team, away_team) matches 59/59.
+    game_id CANNOT be used — the two tables share zero ids (context uses
+    NHL API ids like 2026010031, results uses 2024021239-style), the same
+    split documented for NFL in nfl_game_id_bridge.py.
+
+    Reading the already-pulled prices instead of re-fetching also means one
+    market snapshot per run rather than two that can disagree, and one less
+    Odds API call.
+
+    BOTH SPELLINGS ARE WRITTEN. The canonical ones are what consumers use;
+    the legacy ones are kept in sync because this module is not the only
+    thing that has ever read them and a half-migrated column is how this
+    bug happened in the first place.
+    """
+    if not rows:
+        return
+    dates = sorted({str(r.get('game_date'))[:10] for r in rows if r.get('game_date')})
+    if not dates:
         return
     try:
-        r = requests.get(f'{ODDS_BASE}/{SPORT_KEY}/odds/'
-                         f'?apiKey={ODDS_KEY}&regions=us&markets=h2h,spreads,totals&oddsFormat=american',
-                         timeout=20)
+        r = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=H_READ,
+                         params={'select': 'game_date,home_team,away_team,'
+                                           'close_home_ml,close_away_ml,'
+                                           'close_total,close_puckline',
+                                 'game_date': f'gte.{dates[0]}',
+                                 'limit': '2000'}, timeout=20)
         if r.status_code != 200:
-            print(f'  ⚠ Odds API {r.status_code}: {r.text[:150]}')
+            print(f'  ⚠ nhl_game_results read {r.status_code}: {r.text[:150]}')
             return
-        events = r.json()
+        res = r.json()
+        if not isinstance(res, list):
+            print('  ⚠ nhl_game_results returned no list — skipping market enrich')
+            return
     except Exception as e:
-        print(f'  ⚠ Odds API error: {e}')
+        print(f'  ⚠ market enrich read failed: {e}')
         return
 
-    # Index by (home_team, away_team) canonical name for join
-    events_by_matchup: dict = {}
-    for e in events:
-        key = (e.get('home_team'), e.get('away_team'))
-        events_by_matchup[key] = e
-
+    by_key = {(str(x.get('game_date'))[:10], x.get('home_team'), x.get('away_team')): x
+              for x in res}
+    hit = priced = 0
     for row in rows:
-        # NHL API returns just city (e.g. "Boston") — try to match odds API
-        # which returns full team ("Boston Bruins")
-        home_c = row.get('home_team') or ''
-        away_c = row.get('away_team') or ''
-        matched = None
-        for (h, a), ev in events_by_matchup.items():
-            if home_c and home_c in h and away_c and away_c in a:
-                matched = ev; break
-        if not matched: continue
-        for book in matched.get('bookmakers', [])[:1]:  # first book = quick MVP
-            for market in book.get('markets', []):
-                if market['key'] == 'h2h':
-                    for o in market.get('outcomes', []):
-                        if o['name'] == matched['home_team']:
-                            row['home_ml_close'] = int(o['price'])
-                        elif o['name'] == matched['away_team']:
-                            row['away_ml_close'] = int(o['price'])
-                elif market['key'] == 'spreads':
-                    for o in market.get('outcomes', []):
-                        if o['name'] == matched['home_team']:
-                            row['close_puckline'] = float(o.get('point'))
-                elif market['key'] == 'totals':
-                    for o in market.get('outcomes', []):
-                        if o['name'] == 'Over':
-                            row['close_total'] = float(o.get('point'))
+        k = (str(row.get('game_date'))[:10], row.get('home_team'), row.get('away_team'))
+        m = by_key.get(k)
+        if not m:
+            continue
+        hit += 1
+        hml, aml = m.get('close_home_ml'), m.get('close_away_ml')
+        tot, pl = m.get('close_total'), m.get('close_puckline')
+        if hml is not None:
+            row['close_home_ml'] = int(hml)
+            row['home_ml_close'] = int(hml)          # legacy spelling, kept in sync
+        if aml is not None:
+            row['close_away_ml'] = int(aml)
+            row['away_ml_close'] = int(aml)
+        if tot is not None:
+            row['close_total'] = float(tot)
+        if pl is not None:
+            row['close_puckline'] = float(pl)
+            row['close_puckline_home'] = float(pl)
+        if hml is not None or tot is not None:
+            priced += 1
+    print(f'  market: matched {hit}/{len(rows)} context rows to results, '
+          f'{priced} carry a price')
 
 
 def enrich_rest_and_travel(rows: list[dict]) -> None:
@@ -403,6 +456,26 @@ def _apply_ensemble(row: dict) -> None:
                 row['primary_play'], row, sport='NHL')
         except Exception:
             pass  # gates unavailable — keep raw ensemble output
+
+        # 2026-09-27 · EDGE CHECK LAST, AS A CEILING.
+        #
+        # The edge gate first shipped inside defensive_gates' LR override,
+        # which only covers the lr_v1 engine. ensemble_v2 produced 263 of
+        # 319 past picks, so 82% of the board skipped it — visible on NHL's
+        # 9/29 opener, where Toronto ML came through ensemble_v2 with no
+        # edge computed while the four LR picks all had one.
+        #
+        # Runs AFTER the defensive gates deliberately: those encode reasons
+        # to demote that have nothing to do with price (OC flip, MC dissent,
+        # juice traps), and the edge cap should only ever lower a tier
+        # further, never argue with them. It also never suppresses — Andy:
+        # "i just dont want to tread the line of engine passing on
+        # everything."
+        try:
+            from model_edge import apply_to_pick
+            row['primary_play'] = apply_to_pick(row['primary_play'], row)
+        except ImportError:
+            pass
     except Exception:
         pass  # ensemble unavailable — leave primary_play alone
 

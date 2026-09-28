@@ -115,6 +115,97 @@ def edge_phrase(conviction, american_price, pick_type: str = 'ml') -> str:
     return f'{conv:.0f}% vs {ip*100:.0f}% implied — {e:+.1f}pp edge'
 
 
+# ── 2026-09-27 · THE MONEYLINE COLUMN IS NAMED THREE DIFFERENT WAYS ──
+#
+# Found while wiring the edge gate across every sport. The context tables
+# do not agree on what the closing moneyline is called:
+#
+#     MLB    home_ml_close / away_ml_close   (also home_ml_odds)
+#     NBA    home_ml_close / away_ml_close
+#     NFL    close_home_ml / close_away_ml   (also home_ml_close, _odds)
+#     NCAAF  close_home_ml / close_away_ml
+#     NHL    BOTH spellings as of today
+#
+# A single hard-coded lookup therefore works for two sports and silently
+# finds nothing for the others — which is precisely the bug that left NHL
+# with 0/59 prices and a board of identical home picks, except there the
+# writer and reader disagreed inside ONE file.
+#
+# Resolved in one place with an ordered candidate list. Canonical spelling
+# first so the preferred name wins where both exist.
+_ML_KEYS = {
+    'HOME': ('close_home_ml', 'home_ml_close', 'home_ml_odds', 'home_ml'),
+    'AWAY': ('close_away_ml', 'away_ml_close', 'away_ml_odds', 'away_ml'),
+}
+
+
+def ml_price(ctx: Optional[dict], side: str):
+    """Closing moneyline for `side` from a context row, whatever it's called."""
+    if not isinstance(ctx, dict):
+        return None
+    for k in _ML_KEYS.get(str(side or '').upper(), ()):
+        v = ctx.get(k)
+        if v is not None:
+            return v
+    return None
+
+
+def apply_to_pick(pp: Optional[dict], ctx: Optional[dict]) -> Optional[dict]:
+    """Apply the edge check to a finished primary_play, in place. Returns it.
+
+    ── WHY THIS EXISTS SEPARATELY FROM THE LR PATH ──
+    The edge gate first shipped inside defensive_gates' LR override, which
+    covers the `lr_v1` engine only. Measured 2026-09-27 over 319 past
+    picks, `ensemble_v2` produced 263 of them — so 82% of the board was
+    bypassing the gate entirely.
+
+    It showed up immediately on NHL's 9/29 opener: four LR picks carried a
+    computed edge and two were correctly capped, while Toronto ML came from
+    ensemble_v2 with _model_edge_pp = None and no check at all.
+
+    Five sport files stamp `_engine: 'ensemble_v2'` (game_context,
+    nfl_/ncaaf_/nba_/nhl_game_context). Each calls THIS function rather
+    than repeating the logic, because five copies of a rule is how the
+    three name-matching implementations and the two publish-lock
+    mechanisms happened.
+
+    Mutates and returns pp so a call site can wrap its assignment in one
+    line. Never raises: a pick must not be lost because its price was
+    missing or malformed.
+    """
+    if not isinstance(pp, dict) or not isinstance(ctx, dict):
+        return pp
+    try:
+        if str(pp.get('type') or '').lower() != 'ml':
+            return pp
+        side = str(pp.get('side') or '').upper()
+        if side not in ('HOME', 'AWAY'):
+            return pp
+        price = ml_price(ctx, side)
+        conv = pp.get('conviction')
+        e = edge_pp(conv, price, 'ml')
+        if e is None:
+            return pp
+        pp['_model_edge_pp'] = e
+        pp['_ml_price_at_pick'] = price
+        tier_after, reason = cap_tier_for_edge(pp.get('tier'), conv, price, 'ml')
+        if reason:
+            pp['_edge_cap'] = {'from': pp.get('tier'), 'to': tier_after,
+                               'reason': reason}
+            pp['tier'] = tier_after
+        # State the edge in the sub-line the user reads. Appended rather
+        # than replacing, because the ensemble sub already names the
+        # signals that drove the pick and that is the more useful half.
+        phrase = edge_phrase(conv, price, 'ml')
+        if phrase:
+            sub = str(pp.get('sub') or '')
+            if 'implied' not in sub:
+                pp['sub'] = f'{sub} · {phrase}' if sub else phrase
+    except Exception:
+        pass
+    return pp
+
+
 def cap_tier_for_edge(tier: str, conviction, american_price,
                       pick_type: str = 'ml') -> tuple[str, Optional[str]]:
     """-> (tier_after_cap, reason_or_None). Only ever demotes.

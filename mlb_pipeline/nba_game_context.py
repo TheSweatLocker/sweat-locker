@@ -493,6 +493,16 @@ def _apply_ensemble(row: dict) -> None:
                 row['primary_play'], row, sport='NBA')
         except Exception:
             pass  # gates unavailable — keep raw ensemble output
+
+        # 2026-09-27 · edge ceiling, applied after the gates. One definition
+        # in model_edge.py; see the fuller note at the NHL call site. The LR
+        # override covered only lr_v1, which was 56 of 319 recent picks —
+        # ensemble_v2 made the other 263 with no price check at all.
+        try:
+            from model_edge import apply_to_pick
+            row['primary_play'] = apply_to_pick(row['primary_play'], row)
+        except ImportError:
+            pass
     except Exception:
         pass  # ensemble unavailable — leave primary_play alone
 

@@ -1481,6 +1481,14 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         row['primary_play'] = compute_primary_play(row)
         if isinstance(row['primary_play'], dict):
             row['primary_play']['_engine'] = 'legacy_ncaaf_compute_primary_play'
+
+    # 2026-09-27 · edge ceiling, after both branches so the legacy path is
+    # covered too. One definition in model_edge.py — see the NHL call site.
+    try:
+        from model_edge import apply_to_pick
+        row['primary_play'] = apply_to_pick(row.get('primary_play'), row)
+    except ImportError:
+        pass
     return row
 
 

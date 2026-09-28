@@ -33,7 +33,19 @@ SEASON_WINDOWS = {
     'NFL':   (8, 2),     # Late-Aug lead-up to Wk1 through early-Feb Super Bowl. 2026-08-28: was (9,2), pulled forward to Aug so Wk1 slate loads before kickoff.
     'NCAAF': (8, 1),     # Late Aug Week 0 - early Jan CFP title
     'NBA':   (10, 6),    # Oct preseason - mid-June Finals
-    'NHL':   (10, 6),    # Oct preseason - mid-June Cup
+    # 2026-09-27: was (10, 6), which put NHL off-season on the day its
+    # REGULAR season opened. Andy: "Preseason 8 oct is inaccurate then if
+    # regular season starts in 2 days." He is right — NHL game ids encode
+    # the game type at digits 4-6 (01 preseason / 02 regular / 03 playoff),
+    # and the ingested schedule decodes as:
+    #     2026-09-21 .. 09-26   type 01  PRESEASON
+    #     2026-09-29 onward     type 02  REGULAR
+    # So the 2026-27 regular season starts 2026-09-29, and a window
+    # beginning in October gated the sport off for its first nine days.
+    # nhl_game_context.py exits on this check, so context — and therefore
+    # every market price, form split and pick on the card — would have gone
+    # stale exactly as the season opened.
+    'NHL':   (9, 6),     # Late-Sept regular-season open - mid-June Cup
     'NCAAB': (11, 4),    # Early Nov - early April Final Four
     'UFC':   None,       # Year-round weekly cards; never off-season
 }

@@ -3331,6 +3331,17 @@ def upload_game_context(context, commence_time=None):
         if _new_pp is not None:
             context["primary_play"] = _new_pp
 
+        # 2026-09-27 · edge ceiling, after the gates. One definition in
+        # model_edge.py; full reasoning at the NHL call site. MLB moneyline
+        # prices live on close_home_ml / close_away_ml here too, so the same
+        # helper applies unchanged.
+        try:
+            from model_edge import apply_to_pick
+            context["primary_play"] = apply_to_pick(
+                context.get("primary_play"), context)
+        except ImportError:
+            pass
+
         # 2026-08-22 SHARP-FADE SURFACING — DISABLED 2026-08-23.
         # This block auto-populated _losing_market_notes with a Fadereport
         # "sharp opposes this play" chip when FR strength >= 15pts. Full
