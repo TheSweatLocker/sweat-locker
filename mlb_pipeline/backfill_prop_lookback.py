@@ -1355,6 +1355,42 @@ def backfill_nba_nhl(game_date: str, sport: str, dry_run: bool = False) -> int:
         try: pline = float(pline)
         except (TypeError, ValueError): continue
 
+        # ══ 2026-09-27 · NHL USES THE NHL'S OWN API, NOT ESPN ══
+        #
+        # Andy: "all prop jerry NHL need to have the graphs depicting L10
+        # meeting prop line."
+        #
+        # They never could have. The ESPN path below resolves players via
+        #   site.api.espn.com/apis/site/v2/sports/hockey/nhl/athletes
+        # which returns **HTTP 404** (tested 2026-09-27), and ESPN's
+        # common/v3 search returns count 0 for Connor McDavid, Auston
+        # Matthews and Nathan MacKinnon. Every NHL player id came back
+        # None, so the lookback produced nothing and the graphs would have
+        # stayed empty once props posted — silently, with no error.
+        #
+        # api-web.nhle.com is first-party, already used in this codebase
+        # for goalie stats, and carries opponent and home/away per game.
+        # Verified: McDavid L10 shots [3,5,1,8,4,5,8,3,6,2] with opponents.
+        # NBA still uses ESPN — that endpoint works for basketball and is
+        # out of scope here.
+        if sport == 'NHL':
+            try:
+                from nhl_player_log import recent_form as _nhl_rf
+            except ImportError:
+                _nhl_rf = None
+            cache_key = (pname, stat_field)
+            if cache_key not in recent_cache and _nhl_rf is not None:
+                _season = int(str(game_date)[:4])
+                # NHL seasons are labelled by their START year; a game in
+                # Jan-Aug belongs to the season that opened the year before.
+                if int(str(game_date)[5:7]) < 9:
+                    _season -= 1
+                _rf = _nhl_rf(pname, base, _season, n=10)
+                recent_cache[cache_key] = (
+                    [float(x['value']) for x in _rf['rows']] if _rf else [])
+            if cache_key not in recent_cache:
+                recent_cache[cache_key] = []
+
         # Try exact + normalized name lookup
         cache_key = (pname, stat_field)
         if cache_key not in recent_cache:
