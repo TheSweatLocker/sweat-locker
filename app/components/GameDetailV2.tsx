@@ -1834,6 +1834,33 @@ function MoneyMarket({label, data, lineMoved, pickPrice, oppPrice}: any) {
           {' · '}tickets are piling in without the handle behind them — the public-heavy pattern, and the side to fade rather than follow
         </Text>
       )}
+      {/* ══ 2026-09-28 · A PRICE-ADJUSTED NUMBER MUST CARRY ITS EXPLANATION ══
+          QA on PHI @ CHI: "the moneyline pp label is still broken. It shows
+          86 vs 83 as -8pp when the gap is +3."
+
+          The -8pp is CORRECT and it is mine. PHI closed -205 against CHI
+          +170, so a bettor sizing to win the same amount stakes 2.05 on PHI
+          against 0.59 on CHI. Feed 83% of TICKETS through those stakes and
+          you get ~94% of the MONEY with no sharp action at all. Only 86%
+          arrived — money is LIGHTER than the price implies, which is a fade
+          signal, not a sharp one. Raw +3 is the misleading number.
+
+          The bug is that the explanation only rendered when the SHARP badge
+          fired (div >= 5), so a NEGATIVE adjusted divergence printed a bare
+          "-8pp" beside 86% and 83% with nothing to reconcile it. Reading
+          that as broken is the correct reaction to what was on screen.
+
+          The note now renders whenever the adjustment was applied, whatever
+          the sign. A number the reader cannot reproduce from the two bars
+          above it has to say why. */}
+      {expMoney != null && !sharp && !extremeSharp && !publicHeavy && (
+        <Text style={styles.moneyDivNote}>
+          {`money share (${money}%) vs the ${Math.round(expMoney)}% this ticket split (${bets}%) would produce at these prices anyway`}
+          {div < 0
+            ? ' · handle is LIGHTER than the price implies, which leans against this side'
+            : ' · roughly in line once price is accounted for'}
+        </Text>
+      )}
       {sharp && !extremeSharp && (
         <Text style={styles.moneyDivNote}>
           {/* 2026-09-26: was +{abs(div)}, which printed a plus sign on a
