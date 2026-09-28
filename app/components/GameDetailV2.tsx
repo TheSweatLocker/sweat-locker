@@ -4861,11 +4861,255 @@ function SportSpecificSlot({ctx, gamesSport, game, cohortRecords}: any) {
     return <NCAABSlot ctx={ctx} game={game} />;
   }
   if (gamesSport === 'NHL') {
-    // 2026-09-01: killed "coming next" placeholder. Goalie matchup
-    // + B2B chip ships once nhl_starters / nhl_goalies land. Reviewer safety.
-    return null;
+    return <NHLSlot ctx={ctx} game={game} />;
   }
   return null;
+}
+
+// ─── NHL SLOT ────────────────────────────────────────────────────────────
+// 2026-09-28. This slot was `return null` with the note "Goalie matchup +
+// B2B chip ships once nhl_starters / nhl_goalies land. Reviewer safety."
+//
+// They landed. Measured across the 25 games on the board from 9/29:
+//
+//   home_goalie / away_goalie          25/25   *_goalie_confirmed  25/25
+//   *_goalie_sv_pct / *_goalie_gsaa    23-24/25
+//   home/away_pp_pct / pk_pct          25/25
+//   *_xgf_per60 / *_xga_per60          23/25
+//   *_5v5_cf / *_high_danger_for|against  23/25
+//   elo_home / elo_away                25/25
+//   *_rest_days / *_back_to_back       25/25
+//
+// So 68 of 121 columns were populated and the app rendered none of them —
+// and NHL is the sport carrying the card from 9/29 (5 playable games that
+// day, 3 on 9/30, 8 on 10/01, against NFL's 1 and MLB's 4).
+//
+// WHAT THIS DELIBERATELY DOES NOT ADD: a predicted-score card. The shared
+// ScoreRange already covers NHL through addPred('v3', projected_total,
+// projected_spread) plus MC from mc_probabilities, and (t±m)/2 reproduces
+// the stored projected_home_goals / projected_away_goals exactly — 6.38 and
+// 0.94 give 3.66 / 2.72, which is what those columns hold. A second card
+// would be the same number computed in a second place.
+//
+// Every card here reads ctx only (no fetch) and returns null when its own
+// inputs are absent, so a thin game silently shows fewer cards rather than
+// a grid of dashes. Columns confirmed NEVER populated on NHL — every
+// ATS/L10/OU tendency, h2h_*, *_travel_km, panel_pred_*, splits_summary,
+// *_goalie_last5_sv_pct — are not referenced at all.
+function NHLSlot({ctx, game}: any) {
+  const homeTeam = ctx?.home_team || game?.home_team;
+  const awayTeam = ctx?.away_team || game?.away_team;
+  return (
+    <>
+      <NHLGoalieMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NHLSpecialTeamsCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NHLShotQualityCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NHLRestCard          ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+    </>
+  );
+}
+
+// Shared comparison table for the NHL cards. `better` says which direction
+// wins so the advantaged number can be highlighted: 'high' (PP%, CF%, xGF),
+// 'low' (xGA, goals against) or null (no winner — don't colour either side).
+// The loser keeps C.text rather than an undefined key: `{color: C.win}` with
+// win undefined does not inherit, it clears the colour and RN paints black on
+// a near-black ground, which is how 28 stats went invisible on 2026-09-25.
+function NHLCompareRows({rows, awayTeam, homeTeam}: any) {
+  return (
+    <>
+      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5,
+                    borderBottomColor: C.border}}>
+        <Text style={{flex: 1.5, color: C.textMuted, fontSize: 9, fontWeight: '800'}}>STAT</Text>
+        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
+        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
+      </View>
+      {rows.map((r: any, i: number) => {
+        const aN = Number(r.awayRaw), hN = Number(r.homeRaw);
+        let edge: 'away' | 'home' | null = null;
+        if (r.better && isFinite(aN) && isFinite(hN) && aN !== hN) {
+          const awayWins = r.better === 'high' ? aN > hN : aN < hN;
+          edge = awayWins ? 'away' : 'home';
+        }
+        return (
+          <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
+            <Text style={{flex: 1.5, color: C.textDim, fontSize: 12}}>{r.label}</Text>
+            <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
+                          color: edge === 'away' ? C.accent : C.text}}>{r.away}</Text>
+            <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
+                          color: edge === 'home' ? C.accent : C.text}}>{r.home}</Text>
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
+// Goalie matchup. The single largest predictive input in hockey, and it was
+// entirely absent from the app.
+//
+// GSAA (Goals Saved Above Average) is the number that actually separates
+// goalies and it is jargon, so the card spells out the sign rather than
+// leaving the user to guess: on the 9/29 VGK game A. Hill sits at -14.17 on
+// a .8705 save percentage against S. Knight at +10.9 and .902, which is a
+// real edge the card previously showed nowhere.
+function NHLGoalieMatchupCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NHL', 'game_detail', 'goalie_matchup', true);
+  const hG = ctx?.home_goalie, aG = ctx?.away_goalie;
+  if (!isEnabled) return null;
+  if (!hG && !aG) return null;
+  const sv = (v: any) => v == null ? null : `.${String(Math.round(Number(v) * 1000)).padStart(3, '0')}`;
+  const gsaa = (v: any) => v == null ? null
+    : `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(1)}`;
+  const side = (team: string, name: any, confirmed: any, svp: any, g: any, tone: string) => (
+    <View style={[styles.pitcherCard, {borderTopColor: tone, padding: 12, gap: 3, flex: 1}]}>
+      <Text style={styles.pitcherName}>{name || 'TBD'}</Text>
+      <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '700',
+                    letterSpacing: 0.4}}>{abbrev3(team)}{confirmed === true ? ' · CONFIRMED'
+                    : confirmed === false ? ' · PROJECTED' : ''}</Text>
+      {sv(svp) && <Text style={styles.pitcherStats}>SV%: <Text style={styles.pitcherStatBold}>{sv(svp)}</Text></Text>}
+      {gsaa(g) != null && (
+        <Text style={styles.pitcherStats}>GSAA: <Text style={[styles.pitcherStatBold,
+          {color: Number(g) > 0 ? C.accent : Number(g) < 0 ? C.fade : C.text}]}>{gsaa(g)}</Text></Text>
+      )}
+    </View>
+  );
+  const anyGsaa = ctx?.home_goalie_gsaa != null || ctx?.away_goalie_gsaa != null;
+  return (
+    <Section title="Goalie Matchup" hint="save % + goals saved above average">
+      <View style={{flexDirection: 'row', gap: 8}}>
+        {side(awayTeam, aG, ctx?.away_goalie_confirmed, ctx?.away_goalie_sv_pct, ctx?.away_goalie_gsaa, C.away)}
+        {side(homeTeam, hG, ctx?.home_goalie_confirmed, ctx?.home_goalie_sv_pct, ctx?.home_goalie_gsaa, C.home)}
+      </View>
+      {anyGsaa && (
+        <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>
+          GSAA is goals prevented versus a league-average goalie on the same
+          shots — above zero is better than average, below zero is worse.
+        </Text>
+      )}
+    </Section>
+  );
+}
+
+// Special teams, read as the CROSS matchup. A power play is only as good as
+// the penalty kill it faces, so pairing each team's PP against the other's
+// PK is the read; PP-vs-PP would compare two units that never meet.
+function NHLSpecialTeamsCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NHL', 'game_detail', 'special_teams', true);
+  const hPP = ctx?.home_pp_pct, aPP = ctx?.away_pp_pct;
+  const hPK = ctx?.home_pk_pct, aPK = ctx?.away_pk_pct;
+  if (!isEnabled) return null;
+  if (hPP == null && aPP == null && hPK == null && aPK == null) return null;
+  const p = (v: any) => v == null ? '—' : `${Number(v).toFixed(1)}%`;
+  // Net = how much better this PP is than the PK it meets. Positive favours
+  // the skater advantage, negative favours the kill.
+  const net = (pp: any, pk: any) => (pp == null || pk == null) ? null
+    : Number(pp) - (100 - Number(pk));
+  const nA = net(aPP, hPK), nH = net(hPP, aPK);
+  const fmtNet = (v: any) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}`;
+  return (
+    <Section title="Special Teams" hint="each power play vs the kill it faces">
+      <NHLCompareRows awayTeam={awayTeam} homeTeam={homeTeam} rows={[
+        {label: 'Power play %', away: p(aPP), home: p(hPP),
+         awayRaw: aPP, homeRaw: hPP, better: 'high'},
+        {label: 'Penalty kill %', away: p(aPK), home: p(hPK),
+         awayRaw: aPK, homeRaw: hPK, better: 'high'},
+        {label: 'PP vs opp PK', away: fmtNet(nA), home: fmtNet(nH),
+         awayRaw: nA, homeRaw: nH, better: 'high'},
+      ]} />
+      <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>
+        "PP vs opp PK" is this team's power-play rate minus the rate the
+        opposing kill concedes — above zero means the advantage sits with the
+        skater edge.
+      </Text>
+    </Section>
+  );
+}
+
+// Shot quality + Elo: who generates and concedes the better chances.
+// xG per 60 is rate-based; high-danger chances are season counts, so they
+// are labelled as totals and paired with a differential rather than dressed
+// up as a per-game rate they are not.
+function NHLShotQualityCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NHL', 'game_detail', 'shot_quality', true);
+  const have = ['home_xgf_per60', 'away_xgf_per60', 'home_5v5_cf', 'away_5v5_cf',
+                'elo_home', 'elo_away', 'home_high_danger_for', 'away_high_danger_for']
+    .some(k => ctx?.[k] != null);
+  if (!isEnabled) return null;
+  if (!have) return null;
+  const n2 = (v: any) => v == null ? '—' : Number(v).toFixed(2);
+  const n0 = (v: any) => v == null ? '—' : Math.round(Number(v)).toString();
+  const cf = (v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`;
+  const hdDiff = (f: any, a: any) => (f == null || a == null) ? null : Number(f) - Number(a);
+  const dA = hdDiff(ctx?.away_high_danger_for, ctx?.away_high_danger_against);
+  const dH = hdDiff(ctx?.home_high_danger_for, ctx?.home_high_danger_against);
+  const rows: any[] = [];
+  if (ctx?.elo_home != null || ctx?.elo_away != null) rows.push(
+    {label: 'Elo rating', away: n0(ctx?.elo_away), home: n0(ctx?.elo_home),
+     awayRaw: ctx?.elo_away, homeRaw: ctx?.elo_home, better: 'high'});
+  if (ctx?.away_5v5_cf != null || ctx?.home_5v5_cf != null) rows.push(
+    {label: '5v5 Corsi for %', away: cf(ctx?.away_5v5_cf), home: cf(ctx?.home_5v5_cf),
+     awayRaw: ctx?.away_5v5_cf, homeRaw: ctx?.home_5v5_cf, better: 'high'});
+  if (ctx?.away_xgf_per60 != null || ctx?.home_xgf_per60 != null) rows.push(
+    {label: 'xG for /60', away: n2(ctx?.away_xgf_per60), home: n2(ctx?.home_xgf_per60),
+     awayRaw: ctx?.away_xgf_per60, homeRaw: ctx?.home_xgf_per60, better: 'high'});
+  if (ctx?.away_xga_per60 != null || ctx?.home_xga_per60 != null) rows.push(
+    {label: 'xG against /60', away: n2(ctx?.away_xga_per60), home: n2(ctx?.home_xga_per60),
+     awayRaw: ctx?.away_xga_per60, homeRaw: ctx?.home_xga_per60, better: 'low'});
+  if (dA != null || dH != null) rows.push(
+    {label: 'High-danger diff', away: dA == null ? '—' : `${dA > 0 ? '+' : ''}${n0(dA)}`,
+     home: dH == null ? '—' : `${dH > 0 ? '+' : ''}${n0(dH)}`,
+     awayRaw: dA, homeRaw: dH, better: 'high'});
+  if (!rows.length) return null;
+  return (
+    <Section title="Shot Quality" hint="Elo · Corsi · expected goals">
+      <NHLCompareRows awayTeam={awayTeam} homeTeam={homeTeam} rows={rows} />
+      <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>
+        High-danger diff is season chances for minus against. Early in the
+        season these team rates carry last season's data until this year's
+        sample is large enough to stand on its own.
+      </Text>
+    </Section>
+  );
+}
+
+// Rest, back-to-backs and road trips. NHL plays close to nightly, so the
+// schedule is a live factor most nights rather than an occasional one — the
+// same reason NBA has its own rest card.
+function NHLRestCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NHL', 'game_detail', 'rest_schedule', true);
+  const hR = ctx?.home_rest_days, aR = ctx?.away_rest_days;
+  const hB = ctx?.home_back_to_back, aB = ctx?.away_back_to_back;
+  if (!isEnabled) return null;
+  if (hR == null && aR == null && hB == null && aB == null) return null;
+  const days = (v: any) => v == null ? '—' : `${Number(v)}d`;
+  const b2b = (v: any) => v == null ? '—' : (v ? 'Yes' : 'No');
+  const rows: any[] = [
+    {label: 'Rest days', away: days(aR), home: days(hR),
+     awayRaw: aR, homeRaw: hR, better: 'high'},
+    // Back-to-back is a yes/no, so there is no "better" number to colour —
+    // a false/false row must not paint one side green for tying.
+    {label: 'Back-to-back', away: b2b(aB), home: b2b(hB), better: null},
+  ];
+  // Road trips are NOT a compare row. away_consecutive_road_games is
+  // populated on all 25 games but home_consecutive_road_games is populated on
+  // NONE of them, so a two-column row would print a permanent "—" under the
+  // home team and read as missing data rather than "the home team is home".
+  // It also only carries information once a trip is actually long, so it
+  // surfaces as a note at 2+ games and stays silent at 0 or 1.
+  const aRoad = Number(ctx?.away_consecutive_road_games);
+  const roadNote = isFinite(aRoad) && aRoad >= 2
+    ? `${abbrev3(awayTeam)} is on game ${aRoad + 1} of a road trip.` : null;
+  return (
+    <Section title="Rest & Schedule" hint="rest days · back-to-backs">
+      <NHLCompareRows awayTeam={awayTeam} homeTeam={homeTeam} rows={rows} />
+      {roadNote && (
+        <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>{roadNote}</Text>
+      )}
+    </Section>
+  );
 }
 
 // ─── NCAAF SLOT ──────────────────────────────────────────────────────────
