@@ -119,6 +119,33 @@ jobs:
           cd mlb_pipeline
           python nba_four_factors_pull.py
 
+      # ── NBA ELO RATINGS (2026-09-29) ────────────────────────────────
+      # nba_elo was in NO workflow. It had been run by hand once during
+      # 2024-25 and never again, so every net/off/def rating in
+      # nba_team_stats was from 2024-25 — two seasons stale — while the
+      # four-factors pull above kept pace and eFG% current. nba_game_context
+      # merges per-field newest-season-first keeping the first non-null, so it
+      # silently served current pace alongside two-year-old ratings, and the
+      # 2026-10-21 opening-night picks were built on that.
+      #
+      # Runs immediately AFTER the four-factors pull because both write
+      # nba_team_stats and should land together, and BEFORE the
+      # team_stats_rolling refresh below so the matview sees both, and well
+      # before nba_game_context so the context build reads fresh numbers.
+      #
+      # No --season: the script resolves the most recent season with enough
+      # finished games and falls back one when the new season is empty. A
+      # hard-coded season here is the exact timebomb season_gate.py exists to
+      # prevent.
+      - name: NBA Elo ratings (train + persist)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "nba_elo.py train"             python nba_elo.py train
+
       # 2026-09-01: refresh team_stats_rolling after four-factors write
       - name: Refresh team_stats_rolling (NBA follow-up)
         continue-on-error: true

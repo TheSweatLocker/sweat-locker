@@ -80,6 +80,74 @@ def elo_to_spread(home_elo: float, away_elo: float) -> float:
 # Training
 # ═══════════════════════════════════════════════════════════════════════
 
+# ══ 2026-09-29 · SEASON RESOLUTION, SO THIS CAN RUN UNATTENDED ══
+# Found while wiring this into nba_pipeline.yml: nba_elo was in NO workflow at
+# all. It had been run by hand once during 2024-25 and never again, so every
+# NBA rating in the system was from 2024-25 — two seasons stale — while
+# nba_four_factors_pull kept pace and eFG% current. nba_game_context merges
+# per-field keeping the first non-null newest-season-first, so it silently
+# blended current pace with two-year-old ratings and nothing said so.
+#
+# Two things had to change before a cron could own this.
+#
+# 1. It never persisted without --season. `elif args.season:` at the bottom
+#    means a bare `nba_elo.py train` trains, prints a leaderboard, and writes
+#    NOTHING. Wired into a workflow as-is it would have looked like it worked
+#    forever. Persisting now keys off the RESOLVED season instead.
+#
+# 2. There was no season default, and a hard-coded one is the timebomb
+#    season_gate.py was written to kill. current_season('NBA') gives the season
+#    that has OPENED (2026 -> '2026-27'), which in September is a season with
+#    zero completed games. Training on it would wipe good ratings with nothing.
+#
+# So: take the most recent season that actually has enough finished games,
+# otherwise fall back one. In late September that resolves to 2025-26; once
+# 2026-27 is a few weeks deep it moves forward on its own.
+MIN_GAMES_FOR_SEASON = 200
+
+
+def _season_str(year: int) -> str:
+    """2026 -> '2026-27', matching nba_team_stats.season."""
+    return f'{year}-{str(year + 1)[-2:]}'
+
+
+def resolve_season() -> str:
+    """Most recent season with >= MIN_GAMES_FOR_SEASON finished games.
+
+    The threshold is a cliff, not a blend: on the day it trips, ratings jump
+    from last season's to this season's rather than regressing across. Proper
+    Elo carryover with regression-to-mean is the real answer and is a bigger
+    change than this; 200 games (~6 weeks in) is late enough that the new
+    season is more informative than the old one.
+    """
+    try:
+        from season_gate import current_season
+        cur = int(current_season('NBA'))
+    except Exception:
+        from datetime import datetime, timedelta, timezone
+        d = datetime.now(timezone.utc) - timedelta(hours=4)
+        cur = d.year if d.month >= 7 else d.year - 1
+    for yr in (cur, cur - 1):
+        season = _season_str(yr)
+        try:
+            r = requests.get(f'{SB}/rest/v1/nba_game_results',
+                             headers={**H_READ, 'Prefer': 'count=exact'},
+                             params={'select': 'game_id', 'limit': '1',
+                                     'season': f'eq.{season}',
+                                     'home_score': 'not.is.null'},
+                             timeout=20)
+            n = int((r.headers.get('content-range') or '/0').split('/')[-1])
+        except Exception:
+            n = 0
+        if n >= MIN_GAMES_FOR_SEASON:
+            print(f'  season resolved: {season} ({n} finished games)')
+            return season
+        print(f'  season {season}: only {n} finished games — looking back')
+    fallback = _season_str(cur - 1)
+    print(f'  falling back to {fallback}')
+    return fallback
+
+
 def load_games(season: str | None = None) -> list[dict]:
     """Load resolved games from nba_game_results, ordered by date."""
     params = 'game_date=not.is.null&home_score=not.is.null&order=game_date.asc,game_id.asc'
@@ -286,8 +354,12 @@ def main():
     args = p.parse_args()
 
     if args.cmd == 'train':
-        print(f'=== nba_elo train · season {args.season or "all"} ===')
-        ratings = train(season=args.season)
+        # Resolve rather than defaulting to "all": training across every season
+        # in the table blends 2024-25 into 2025-26 and produces ratings that
+        # describe neither.
+        season = args.season or resolve_season()
+        print(f'=== nba_elo train · season {season} ===')
+        ratings = train(season=season)
         print(f'  trained {len(ratings)} teams')
         top = rankings(ratings, 5)
         print('  Top 5 by Elo:')
@@ -297,9 +369,12 @@ def main():
         for r in bottom: print(f'    {r["team"]:<25} elo={r["elo"]:.1f} gp={r["games_played"]}')
         if args.dry_run:
             print('  [DRY] not persisted')
-        elif args.season:
-            written = save_ratings(ratings, args.season)
-            print(f'  saved {written} team ratings to nba_team_stats')
+        else:
+            # Keys off the RESOLVED season, not args.season. Previously a bare
+            # `train` silently wrote nothing.
+            written = save_ratings(ratings, season)
+            print(f'  saved {written} team ratings to nba_team_stats '
+                  f'(season {season})')
 
     elif args.cmd == 'predict':
         if len(args.args) < 2:
