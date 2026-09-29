@@ -168,6 +168,26 @@ jobs:
             echo "ncaaf_stats_pull.py not yet built — Phase 1b"
           fi
 
+      # 2026-09-29 · PACE COLLECTION. Andy: "lets collect for each sport".
+      # Derives plays_pg + top_min_pg into team_computed_stats, which the
+      # team_stats_rolling view unions, so snapshot_team_stats picks them up and
+      # a leak-free as-of series accumulates. Pace CANNOT be tested today —
+      # the source holds one current value per team, and joining that to a
+      # played game puts the game inside the stat
+      # (project_rolling_stats_leak_trap_929, third time). History is the fix.
+      # Runs right after the stats pull because pace is derived from it: a
+      # denominator refreshed without the numerator is how these drift.
+      # NOT a signal — nothing selects or tiers a pick on these.
+      - name: Collect NCAAF pace stats
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "collect_pace_stats.py (NCAAF)" python collect_pace_stats.py --sport NCAAF
+
       - name: Build NCAAF game context
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

@@ -177,6 +177,45 @@ def fetch_games_count(season: int) -> dict:
     return dict(out)
 
 
+def fetch_games_count_cfbd(season: int) -> dict:
+    """Return {team: games_played} from CFBD /records — the AUTHORITATIVE count.
+
+    2026-09-29. fetch_games_count above counts rows in ncaaf_game_results, which
+    holds FBS results only, while the CUMULATIVE stats this script pulls cover
+    every game a team played including FCS opponents. Two different universes
+    over one division, so per-game stats were wrong by a per-team factor:
+
+        team          plays  games(results)  plays/g      CFBD games  plays/g
+        Baylor          325        3          108.3 (!)        4        81.3
+        Arkansas        301        3          100.3 (!)        4        75.3
+        BYU             182        4           45.5 (!)        3        60.7
+
+    Note BYU: the results-based count was too HIGH, so this is not a one-way
+    undercount that a floor could catch. 108 offensive snaps a game is not a
+    fast offense, it is a denominator from the wrong universe.
+
+    This is the same defect 20260926d describes for yardage (South Dakota State
+    at "2033 yds/g"), and that migration's own note says the real fix belongs
+    upstream: "Follow-up (separate PR): patch the CFBD stats puller ... to
+    include games in the initial upsert" — 20260916f said the same. This is it.
+    Fixing it here also relaxes recompute_ncaaf_per_game_stats.py's trust gate,
+    which was rejecting 138 of 267 teams on this denominator.
+
+    /records returns 682 teams for 2026 with a classification field, so FCS is
+    covered. Falls back to the results-based count on any failure — a worse
+    denominator beats a NULL one, which renders "—" on every card.
+    """
+    rows = cfbd_get('/records', {'year': season})
+    out = {}
+    for row in rows:
+        team = row.get('team')
+        tot = row.get('total') or {}
+        g = tot.get('games')
+        if team and isinstance(g, (int, float)) and g > 0:
+            out[team] = int(g)
+    return out
+
+
 def fetch_sp_ratings(season: int) -> dict:
     """Return {team: {sp_overall, sp_offense, sp_defense}}."""
     rows = cfbd_get('/ratings/sp', {'year': season})
@@ -242,8 +281,22 @@ def run(seasons: list) -> None:
         vol = {**vol_fbs, **vol_fcs}
         # 2026-09-16: games count — required for per-game divisions in
         # team_stats_rolling matview. CFBD volume stats are cumulative
-        # (no games count returned), so pull from ncaaf_game_results.
-        gc = fetch_games_count(season)
+        # (no games count returned).
+        # 2026-09-29: prefer CFBD /records. Counting ncaaf_game_results gives
+        # an FBS-only denominator under cumulative stats that include FCS
+        # opponents — wrong by a per-team factor in BOTH directions (Baylor
+        # 108.3 plays/g, BYU 45.5). See fetch_games_count_cfbd.
+        gc = fetch_games_count_cfbd(season)
+        if gc:
+            _fallback = fetch_games_count(season)
+            _missing = [t for t in _fallback if t not in gc]
+            for t in _missing:
+                gc[t] = _fallback[t]
+            print(f'  games count: CFBD /records {len(gc) - len(_missing)} teams'
+                  f' + {len(_missing)} from results fallback')
+        else:
+            print('  ⚠ CFBD /records empty — falling back to results count')
+            gc = fetch_games_count(season)
         print(f'  advanced: {len(adv)} (FBS {len(adv_fbs)} + FCS {len(adv_fcs)}) · '
               f'SP+: {len(sp)} · vol: {len(vol)} (FBS {len(vol_fbs)} + FCS {len(vol_fcs)}) · '
               f'games: {len(gc)} teams')

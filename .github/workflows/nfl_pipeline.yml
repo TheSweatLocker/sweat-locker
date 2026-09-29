@@ -930,6 +930,22 @@ jobs:
       # 2026-09-29: outcome check for the above — see the NCAAF twin. Derived
       # windows stop the constants drifting; this catches everything else that
       # produces the same user-visible symptom (a card with no read).
+      # 2026-09-29 · PACE COLLECTION — see the NCAAF twin for the full rationale.
+      # NFL had NO pace or possession field of any kind; plays_pg is derived
+      # free from pass_attempts + rush_attempts / games (32/32 usable,
+      # 50.7-70.7). Collected so a leak-free as-of series accumulates in
+      # team_stats_rolling_history. NOT a signal — nothing reads it to select or
+      # tier a pick until it has been graded.
+      - name: Collect NFL pace stats
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "collect_pace_stats.py (NFL)" python collect_pace_stats.py --sport NFL
+
       - name: Verify NFL read coverage vs app window
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
