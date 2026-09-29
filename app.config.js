@@ -51,6 +51,18 @@ const BLOCKED = [
   // kenpom.com calls were removed. There is no longer any reason for this to
   // be readable by the app.
   'EXPO_PUBLIC_KENPOM_KEY',
+  // Added 2026-09-29 during the 1.0.2 build preflight. balldontlie was
+  // retired as a data source on 2026-09-22 and the app has ZERO calls left
+  // to it — every reference in index.tsx is a comment explaining its removal.
+  // The key was still set in all THREE EAS environments (production, preview,
+  // development) and therefore still being inlined into every build.
+  //
+  // That is precisely the failure this file was created for: the 09-22 note
+  // quoted at the top of this comment block said a retired key "must not keep
+  // shipping in the binary", and a week later it was still shipping. Dead
+  // credentials are the easiest kind to forget, because nothing breaks when
+  // they leak — until someone uses them.
+  'EXPO_PUBLIC_BDL_API_KEY',
 ];
 
 // Known client-side secrets that cannot be blocked yet. Empty today — KenPom
