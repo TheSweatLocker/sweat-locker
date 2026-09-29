@@ -138,3 +138,4 @@
 - [🚨 NHL 3 win probs, read quoted the hidden one 9/29](project_nhl_read_card_drift_929.md) — read argued against its own pick; NOT timing drift (that claim was wrong); anthropic_guard was imported by nothing
 - [🚨 Football engine audit 9/29](project_football_engine_audit_929.md) — conviction INVERTED (80+ = 46.7% vs 50-59 = 64.7%, sides only); football totals 33.3% n=48, fading them goes 32-16; sides +30.4u
 - [🚨 Per-signal calibration gap 9/29](project_signal_calibration_gap_929.md) — registry weights COHORT rate, diverges from pick-level by up to 19pp both ways; 7 of 19 firing signals (all __fade) have NO registry entry; high-frequency signals are the bad ones
+- [🚨 Rolling stats leak trap 9/29](project_rolling_stats_leak_trap_929.md) — team_stats_rolling is CURRENT-ONLY; joining to past games gave a fake NCAAF 67.8% z=+4.07 (retracted). snapshot_team_stats was dying silently in CI, lost 9/27+9/28

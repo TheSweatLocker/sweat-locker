@@ -381,7 +381,16 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python snapshot_team_stats.py
+          # 2026-09-29: wrapped in run_step.sh. This was a bare `python x.py`,
+          # so when it died at import on the unguarded .env read (fixed today in
+          # 81572b45) the failure went nowhere — zero step_failed events ever
+          # named it, and team_stats_rolling_history silently lost 2026-09-27
+          # and 2026-09-28: Saturday's NCAAF and Sunday's NFL. Those snapshots
+          # cannot be reconstructed.
+          #
+          # A history builder that fails quietly loses data permanently, which
+          # makes it exactly the kind of step run_step.sh exists for.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "snapshot_team_stats.py"             python snapshot_team_stats.py
 
       # 6. Data quality checker — surfaces cross-attribution + MC-stale
       #    anomalies before users see them. Non-fatal in cron (findings
