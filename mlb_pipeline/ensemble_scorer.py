@@ -1878,7 +1878,53 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     # MLB/NHL/NBA/NCAAB are untouched: this was measured on football only, and
     # MLB totals are a different engine on a different sample.
     _TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
-    _barred = _TOP_PICK_BARRED.get(str(sport or '').upper(), set())
+    _barred = set(_TOP_PICK_BARRED.get(str(sport or '').upper(), set()))
+
+    # ══ 2026-09-29 · MONEYLINE ON AN UNDERDOG IS BARRED TOO ══
+    # Andy after NCAAF week 4: "no favoring spread dogs, feel like that killed us
+    # in ncaaf this weekend." Measured across every graded football side pick of
+    # 2026 — and the instinct is right about the damage but wrong about the
+    # target, which changes the fix:
+    #
+    #     ML   on underdog   1-6    14.3%  n=7    z=-2.02   <- the actual leak
+    #     ML   on favourite  52-25  67.5%  n=77   z=+2.66   <- best segment we have
+    #     SPREAD on underdog 38-33  53.5%  n=71   z=+0.19   <- fine, above breakeven
+    #     SPREAD on favourite 76-52 59.4%  n=128  z=+1.58
+    #
+    # So SPREAD dogs are NOT the problem and are deliberately left alone —
+    # suppressing them would remove 71 picks running slightly profitable. The
+    # problem is taking a DOG on the MONEYLINE: 1-6 overall and 0-5 once the dog
+    # is 3+ points. Week 4 examples that lost: Oklahoma ML at +12.5 tagged
+    # PRIME/87, Western Michigan ML at +8.5 at conv 85.
+    #
+    # That is structurally wrong rather than unlucky. An ML on a double-digit dog
+    # needs roughly 25-30% to break even at its price; publishing it as the
+    # PRIMARY play asserts the opposite. Extends the documented finding that the
+    # engine has no price discipline on this path
+    # (project_nfl_fav_ml_price_discipline_927).
+    #
+    # Barred from the TOP PICK only, exactly like totals — ml_dec is still scored
+    # and written, so the shadow record keeps accruing and this lifts on evidence.
+    # n=7 is thin; z=-2.02 is what justifies acting now rather than waiting, and
+    # the 0-5 on 3+ point dogs is the part that is hard to explain as variance.
+    try:
+        _ml_side = str(getattr(ml_dec, 'side', '') or '').upper()
+        _cs = ctx.get('close_spread')
+        if ml_dec.pick is not None and _ml_side in ('HOME', 'AWAY') and _cs is not None:
+            # Normalise to a HOME handicap. The two sports store spread with
+            # OPPOSITE sign conventions, both deliberate and both documented in
+            # their odds pulls: NFL flips to nflverse (positive = home FAVOURITE),
+            # NCAAF keeps CFBD (positive = home DOG). Measured against results:
+            # NFL 44/0 on one formula, NCAAF 287/10 on the other. Getting this
+            # backwards would bar exactly the favourites we want to keep.
+            _hl = float(_cs) if str(sport).upper() == 'NCAAF' else -float(_cs)
+            _home_is_fav = _hl < 0
+            _picked_dog = ((_home_is_fav and _ml_side == 'AWAY')
+                           or ((not _home_is_fav) and _ml_side == 'HOME'))
+            if _picked_dog and str(sport).upper() in ('NFL', 'NCAAF'):
+                _barred.add('ml')
+    except (TypeError, ValueError):
+        pass  # no line, or unparseable — leave ml eligible
 
     # Determine top market (highest conviction with a pick)
     picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
