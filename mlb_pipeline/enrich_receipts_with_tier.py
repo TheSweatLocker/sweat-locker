@@ -55,11 +55,21 @@ PROP_TABLE = {
 
 
 def paged(url: str, page_size: int = 1000):
+    """Paged reader via URL offset+limit params (Postgrest-native).
+
+    Range header wasn't reliably paginating past 1000 in this
+    deployment. Switched to explicit `offset=X&limit=Y` in the URL
+    which is the Postgrest documented mechanism. Continues until an
+    empty page comes back.
+    """
     offset = 0
+    per = min(page_size, 1000)
+    sep = '&' if '?' in url else '?'
     while True:
-        r = requests.get(url + f'&offset={offset}&limit={page_size}', headers=H_R, timeout=60)
-        if r.status_code != 200:
-            print(f'  fetch failed {r.status_code}: {r.text[:200]}')
+        u = f'{url}{sep}offset={offset}&limit={per}'
+        r = requests.get(u, headers=H_R, timeout=60)
+        if r.status_code not in (200, 206):
+            print(f'  fetch failed {r.status_code} at offset={offset}: {r.text[:200]}')
             return
         rows = r.json()
         if not rows:
@@ -67,9 +77,7 @@ def paged(url: str, page_size: int = 1000):
         for row in rows:
             if isinstance(row, dict):
                 yield row
-        if len(rows) < page_size:
-            return
-        offset += page_size
+        offset += len(rows)
 
 
 def run(sport: str, dry_run: bool = False) -> None:
