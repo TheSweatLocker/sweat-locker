@@ -647,10 +647,29 @@ SHRINK = 0.5
 MIN_POPULATED_PCT = 0.60
 
 
+def _rated_team_count(stats_dict: dict) -> int:
+    """How many teams actually carry an SP+ rating."""
+    if not stats_dict: return 0
+    return sum(1 for row in stats_dict.values() if row.get('sp_overall') is not None)
+
+
 def _populated_pct(stats_dict: dict) -> float:
+    """DEPRECATED 2026-09-29. Divided SP+ coverage by EVERY team in the dict,
+    and that denominator is not comparable across seasons: SP+ rates FBS only
+    (~139 teams) while the 2026 pull ingests FCS/D2 too.
+
+        2026   139 of 267 rated = 52.1%  -> FAILED the 60% gate
+        2025   137 of 137 rated = 100%   -> passed
+
+    Measured 2026-09-29: four weeks into the season, all 67 upcoming NCAAF
+    games projected off '2025 season 12-16 games' and ZERO used 2026 stats,
+    because the gate rejected the current season for containing MORE teams.
+    The fallback gained nothing — 2025 holds the same ~137 rated FBS teams.
+
+    Use _rated_team_count and compare like for like.
+    """
     if not stats_dict: return 0.0
-    populated = sum(1 for row in stats_dict.values() if row.get('sp_overall') is not None)
-    return populated / len(stats_dict)
+    return _rated_team_count(stats_dict) / len(stats_dict)
 
 
 def _league_mean_stats(stats_dict: dict) -> dict:
@@ -700,10 +719,33 @@ def load_team_stats_with_fallback(current_season: int) -> tuple:
     has enough games to trust.
     """
     current = load_team_stats(current_season)
-    if _populated_pct(current) >= MIN_POPULATED_PCT:
-        return current, 'current'
     prior = load_team_stats(current_season - 1)
-    if _populated_pct(prior) >= MIN_POPULATED_PCT:
+
+    # 2026-09-29 - COMPARE RATED-TEAM COUNTS, NOT A RATIO.
+    # The old gate was _populated_pct(current) >= 0.60, i.e. SP+ coverage over
+    # EVERY team in the dict. That denominator is not comparable across
+    # seasons: SP+ rates FBS only, and the 2026 pull ingests FCS/D2 as well.
+    #     2026   139 of 267 teams rated = 52.1%  -> FAILED the 60% gate
+    #     2025   137 of 137 teams rated = 100%   -> passed
+    # So the current season was rejected for containing MORE teams and every
+    # NCAAF projection fell back to 2025 - measured four weeks in, 0 of 67
+    # upcoming games used 2026 stats. The fallback gained nothing, because
+    # 2025 holds the same ~137 rated FBS teams and none of the rest.
+    #
+    # The question the gate should ask is whether the current season rates as
+    # many teams as the season we would fall back to. 2026 rates 139 against
+    # 2025's 137, so the answer has been yes since the SP+ pull started.
+    # 0.9 rather than 1.0 tolerates a few teams CFBD has not rated yet early
+    # in a season without flipping the whole sport back to last year.
+    _cur_rated = _rated_team_count(current)
+    _pri_rated = _rated_team_count(prior)
+    if _cur_rated and (_pri_rated == 0 or _cur_rated >= 0.9 * _pri_rated):
+        print('  stats source: CURRENT season %s (%d rated vs %d in %s)'
+              % (current_season, _cur_rated, _pri_rated, current_season - 1))
+        return current, 'current'
+    if _pri_rated:
+        print('  stats source: %s regressed - current rates only %d vs %d'
+              % (current_season - 1, _cur_rated, _pri_rated))
         return _regress_to_mean(prior, shrink=SHRINK), 'prior_season_regressed'
     return current or prior, 'none'
 
