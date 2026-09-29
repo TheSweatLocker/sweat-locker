@@ -146,6 +146,27 @@ def preserve_published(sport: str, table: str, context: dict,
         published = rows[0].get(field)
         if not published:
             return False      # a gap is not a change — still writable
+
+        # 2026-09-29 · DO NOT RESTORE A PICK IN A BARRED MARKET.
+        # A market that has been suppressed on measured evidence must not
+        # survive because it happened to be yesterday's published pick.
+        # Measured: 8 of 67 upcoming NCAAF rows held a `total` pick through
+        # a full context rebuild — the engine re-scored every one of them to
+        # ml or rl, and this function handed the total straight back.
+        #
+        # Same defect class as the market-selection stability gate, which
+        # also restored a barred market because it was the prior pick. A
+        # suppression that any 'keep what we had' path can undo is not a
+        # suppression.
+        try:
+            from ensemble_scorer import TOP_PICK_BARRED
+            _barred = TOP_PICK_BARRED.get(str(sport or '').upper(), set())
+            _ptype = (str(published.get('type') or '').lower()
+                      if isinstance(published, dict) else '')
+            if _ptype in _barred:
+                return False   # let the fresh pick through
+        except Exception:
+            pass  # never block the lock on this check failing
         new = context.get(field)
         old_lbl = published.get('label') if isinstance(published, dict) else published
         new_lbl = new.get('label') if isinstance(new, dict) else new

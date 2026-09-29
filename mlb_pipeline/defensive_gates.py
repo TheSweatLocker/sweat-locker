@@ -319,8 +319,26 @@ def reroute_ml_if_trapped(decision, ctx: dict, sport: str = 'NCAAF'):
         # total scored below 0.3 on Rutgers @ UMass. User doesn't want
         # a juiced ML to survive as the take; a low-signal spread with
         # a LOW CONVICTION chip is a better UX than a garbage ML price.
+        # 2026-09-29 · A REROUTE MUST NOT LAND IN A BARRED MARKET.
+        # This runs AFTER score_game has already excluded barred markets
+        # from the top-pick race, and it mutates top_market directly — so a
+        # trapped ML was being rerouted straight into a football total.
+        # Measured: 8 of 67 upcoming NCAAF rows carried a `total` pick from
+        # ensemble_v2 even though score_game returns ml/rl for every one of
+        # them. This loop is why, and it even tries 'total' FIRST.
+        #
+        # Third path today that undid the same suppression by choosing or
+        # keeping a prior/alternative market: the market-selection stability
+        # gate, pick_lock.preserve_published, and now this. Any code that
+        # re-picks a market has to consult the same barred set.
+        try:
+            from ensemble_scorer import TOP_PICK_BARRED
+            _barred = TOP_PICK_BARRED.get(str(sport or '').upper(), set())
+        except Exception:
+            _barred = set()
         candidates = []
-        for alt_market in ('total', 'rl'):
+        for alt_market in ('rl', 'total'):
+            if alt_market in _barred: continue
             alt = getattr(decision, alt_market, None)
             if alt is None or not alt.pick: continue
             candidates.append((alt_market, alt))

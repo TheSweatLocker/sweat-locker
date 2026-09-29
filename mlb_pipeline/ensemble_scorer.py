@@ -82,6 +82,18 @@ MARKETS_BY_SPORT = {
     'UFC':   ['fight'],
 }
 
+
+# ══ 2026-09-29 · MARKETS BARRED FROM BEING THE PUBLISHED TOP PICK ══
+# Module-level so there is ONE definition. score_game reads it when choosing
+# top_market, and pick_lock.preserve_published reads it so a pick published
+# BEFORE a market was barred does not get restored forever — which is exactly
+# what happened: 8 of 67 NCAAF rows kept a total pick through a full rebuild
+# because the publish lock handed the old one back every run.
+#
+# Football totals measured 16-32 (33.3%, n=48, z=-2.65). Barred, not unscored —
+# the market decision is still computed and stored for the shadow record.
+TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
+
 # Tier thresholds — v2 defaults, tune after backtest.
 # Note: LEAN.min_score can be overridden at runtime via ensemble_health
 # soft_tighten status (see _current_health_state).
@@ -1877,8 +1889,7 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     #
     # MLB/NHL/NBA/NCAAB are untouched: this was measured on football only, and
     # MLB totals are a different engine on a different sample.
-    _TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
-    _barred = set(_TOP_PICK_BARRED.get(str(sport or '').upper(), set()))
+    _barred = set(TOP_PICK_BARRED.get(str(sport or '').upper(), set()))
 
     # ══ 2026-09-29 · MONEYLINE ON AN UNDERDOG IS BARRED TOO ══
     # Andy after NCAAF week 4: "no favoring spread dogs, feel like that killed us
