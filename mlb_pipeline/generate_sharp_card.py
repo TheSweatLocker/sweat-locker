@@ -770,6 +770,34 @@ def _compose_mlb_sides(mlb_ctx: list) -> list[dict]:
     return [p for p in picks if p['units'] > 0]
 
 
+def _condense_prop_read(short_read) -> str:
+    """One card-sized line of real evidence out of a prop write-up.
+
+    short_read is a multi-line block: a header, a signal-coverage line, an
+    averages line, then a ten-game form log. The averages line is the part
+    that belongs on a card — "L5 avg 17.4 · L10 avg 17.9 · Season avg 17.43 ·
+    Implied 59%" is exactly the receipt the brand promises, and it carries its
+    own sample size. The form log is too long and the header repeats the pick.
+
+    Returns '' when there is nothing usable, so the caller keeps its fallback
+    rather than rendering an empty reason.
+    """
+    txt = str(short_read or '')
+    if not txt:
+        return ''
+    for line in txt.splitlines():
+        ln = line.strip()
+        if ln.lower().startswith('l5 avg') or ' L5 avg' in line:
+            return ln[:160]
+    # No averages line (batter props sometimes differ) — fall back to the
+    # signal-coverage line, which is still evidence rather than a debug slug.
+    for line in txt.splitlines():
+        ln = line.strip()
+        if 'SIGNAL COVERAGE' in ln.upper():
+            return ln.lstrip('✅⚠🚨 ').strip()[:160]
+    return ''
+
+
 def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
     playbook_by_key = {}
     for d in playbook:
@@ -793,12 +821,25 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
     except Exception:
         _mlb_gd = _today_et()
     jerry_canonical: dict = {}   # (player_name, family) -> winning_direction
+    jerry_reason: dict = {}      # (player, prop_type, dir, line) -> card reason
     try:
         _jr = requests.get(
             f'{SB}/rest/v1/prop_jerry_reads',
             params={'sport': 'eq.MLB', 'game_date': f'eq.{_mlb_gd}',
                     'call_verdict': 'in.(PRIME,STRONG,LEAN,BACK)',
-                    'select': 'player_name,prop_type,direction,conviction'},
+                    # ══ 2026-09-29 · short_read + prop_line ADDED ══
+                    # This fetch already had the rows the card needed and asked
+                    # for four columns. Every prop on the Sharp Card therefore
+                    # rendered reason="conv=72" — a debug string — while a
+                    # 600-char write-up with L5/L10/season averages and signal
+                    # coverage sat in short_read, unselected. Six of eleven
+                    # plays on today's card had no reasoning text at all.
+                    #
+                    # Fourth time today an explicit SELECT produced a silent
+                    # blank (NHL ctx splits_summary, the POTD prop join, my own
+                    # audit query, this).
+                    'select': 'player_name,prop_type,direction,prop_line,'
+                              'conviction,short_read'},
             headers={'apikey': K, 'Authorization': f'Bearer {K}'},
             timeout=10)
         if _jr.status_code == 200:
@@ -814,6 +855,10 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
                 _existing = jerry_canonical.get(_k)
                 if _existing is None or (jrow.get('conviction') or 0) > _existing[1]:
                     jerry_canonical[_k] = (_dir, jrow.get('conviction') or 0)
+                # Reason text, keyed on the FULL tuple (the canonical map above
+                # is per-family and deliberately coarser).
+                _rk = (jrow.get('player_name'), _pt, _dir, jrow.get('prop_line'))
+                jerry_reason[_rk] = _condense_prop_read(jrow.get('short_read'))
     except Exception as _e:
         # Never block composition on the lookup failure — fall through to
         # legacy behavior (composer publishes based on mp row direction).
@@ -877,7 +922,9 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             'pick': f"{p.get('player_name')} {'Over' if p.get('direction')=='over' else 'Under'} "
                     f"{p.get('prop_line')} {prop_short}",
             'type': 'prop',
-            'reason': f"conv={p.get('refit_conviction') or p.get('conviction')}",
+            'reason': (jerry_reason.get((p.get('player_name'), p.get('prop_type'),
+                                         p.get('direction'), p.get('prop_line')))
+                       or f"conv={p.get('refit_conviction') or p.get('conviction')}"),
             'odds': prop_odds,
             'line': p.get('prop_line'),
             # 2026-09-08: propagate player_team into composed item so
