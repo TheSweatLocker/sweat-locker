@@ -3240,7 +3240,11 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
     // for a late-night session after the slate has turned over. Tomorrow is
     // gone deliberately: KenPom refuses future dates outright ("d (date)
     // parameter cannot be beyond <today>"), so that call could only ever 400.
-    let r = {data: []};
+    //
+    // Assigns to the `r` declared just above rather than redeclaring it —
+    // the original code declared `let r;` and then filled it from whichever
+    // KenPom call succeeded, and the rest of this function still reads it.
+    r = {data: []};
     for (const d of [today, yesterday]) {
       try {
         const {data: row} = await supabase
