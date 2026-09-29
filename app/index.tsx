@@ -312,6 +312,29 @@ const SPORTS_FALLBACK = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
 // does NOT strip accents: both sources write "Montréal Canadiens", so folding
 // them would be change without a reason.
 const _nhlNameKey = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Resolve a Jerry read for the open game. Tries the Odds-API event id first
+// (MLB/NFL/NCAAF store that), then the away@home alias that NHL reads are
+// filed under because NHL uses the league's own game id. See the alias block
+// in the jerry_reads fetch for why.
+const _jerryFor = (reads: any, game: any) => {
+  if (!reads || !game) return null;
+  return reads[game.id]
+    || reads[`nk:${_nhlNameKey(game.away_team)}@${_nhlNameKey(game.home_team)}`]
+    || null;
+};
+
+// The synthesis block game detail expects, or undefined when there is no read.
+const _jerrySynth = (reads: any, game: any) => {
+  const r = _jerryFor(reads, game);
+  return r ? {
+    call_text: r.call_text,
+    conviction: r.conviction,
+    call_market: r.call_market,
+    call_side: r.call_side,
+    generated_at: r.generated_at,
+  } : undefined;
+};
 const SPORT_EMOJI_FALLBACK: Record<string,string> = { NBA:'🏀', NFL:'🏈', NHL:'🏒', MLB:'⚾', NCAAB:'🏀', NCAAF:'🏈', UFC:'🥊' };
 // 2026-09-12 v1.0.1 #2: pre-launch date labels for offseason sports so
 // Receipts renders "Coming Nov 3" instead of "no data" when a sport
@@ -5592,6 +5615,43 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
       if (jRes?.data && jRes.data.length > 0) {
         const jMap: any = {};
         jRes.data.forEach((r: any) => { if (r.game_id) jMap[r.game_id] = r; });
+        // ══ 2026-09-29 · NHL READS ARE KEYED BY THE NHL'S OWN GAME ID ══
+        // Andy: "The reads consist of jerry saying he doesnt have necessary
+        // information." The reads were fine — all five NHL games had a full
+        // writeup in jerry_reads. The LOOKUP was wrong.
+        //
+        // Game detail resolves Jerry with jerryReads[selectedGame.id], where
+        // selectedGame.id is the ODDS-API event id. For MLB/NFL/NCAAF that is
+        // also what jerry_reads.game_id holds, so it matches. NHL stores the
+        // league's own id (2026020001), which matches an Odds-API id ZERO
+        // times — measured across all 33 live events yesterday. So every NHL
+        // lookup missed, fell through to the client-side generator, and that
+        // generator, having no context, said it had no information.
+        //
+        // Exactly the symptom the comment above this block describes from
+        // 2026-09-07 ("the entire 'Jerry says he has no context' symptom
+        // flowed from that"), arriving again through a different door.
+        //
+        // Fixed by aliasing NHL reads under the same punctuation-insensitive
+        // away@home key the NHL context map already uses, so both resolve the
+        // same way. One extra query, only when NHL reads exist.
+        try {
+          const nhlIds = jRes.data
+            .filter((r: any) => r.sport === 'NHL' && r.game_id)
+            .map((r: any) => r.game_id);
+          if (nhlIds.length) {
+            const {data: nctx} = await supabase
+              .from('nhl_game_context')
+              .select('game_id,away_team,home_team')
+              .in('game_id', nhlIds);
+            (nctx || []).forEach((g: any) => {
+              const rd = jMap[g.game_id];
+              if (rd && g.away_team && g.home_team) {
+                jMap[`nk:${_nhlNameKey(g.away_team)}@${_nhlNameKey(g.home_team)}`] = rd;
+              }
+            });
+          }
+        } catch (e) { /* alias is best-effort; id lookup still works */ }
         setJerryReads(jMap);
       } else {
         setJerryReads({});
@@ -5883,7 +5943,23 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'home_high_danger_against,away_high_danger_against,'
           + 'home_rest_days,away_rest_days,home_back_to_back,away_back_to_back,'
           + 'away_consecutive_road_games,'
-          + 'elo_home,elo_away,mc_probabilities,venue,is_neutral_site,season')
+          + 'elo_home,elo_away,mc_probabilities,venue,is_neutral_site,season,'
+          // ══ 2026-09-29 · splits_summary WAS MISSING — THAT IS THE MONEY FLOW BUG ══
+          // Andy, twice: "still no moneyflow data for nhl". The data was never
+          // the problem. splits_summary is populated on all five games from the
+          // SBD scraper, and MoneyFlow reads ctx.splits_summary — but this
+          // select never asked for it, so the column simply was not on the
+          // object. oddsFromSummary returned null, MoneyFlow returned null, and
+          // the section rendered as an empty header.
+          //
+          // PostgREST does not error on a column you omit. It returns the rows
+          // without it, the request succeeds, and the surface goes quiet. Third
+          // time today this exact trap has bitten — the NFL Jerry select, the
+          // NHL slot audit, and now this one, which I wrote YESTERDAY while
+          // explaining the trap in the comment above it.
+          //
+          // projected_home_ml and commence_time were omitted the same way.
+          + 'splits_summary,projected_home_ml,commence_time')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nhlCtxResult?.data && nhlCtxResult.data.length > 0) {
@@ -18533,20 +18609,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   // ships for NFL / NCAAF / UFC too; hard-coding MLB
                   // meant NFL game detail said "no Jerry context" even
                   // when jerry_reads had rows for the game.
-                  jerryReads[selectedGame.id]?.long_read
-                    ? scrubJerryText(jerryReads[selectedGame.id].long_read)
+                  _jerryFor(jerryReads, selectedGame)?.long_read
+                    ? scrubJerryText(_jerryFor(jerryReads, selectedGame).long_read)
                     : gameNarrative
                 }
                 jerrySynthesis={
-                  jerryReads[selectedGame.id]
-                    ? {
-                        call_text: jerryReads[selectedGame.id].call_text,
-                        conviction: jerryReads[selectedGame.id].conviction,
-                        call_market: jerryReads[selectedGame.id].call_market,
-                        call_side: jerryReads[selectedGame.id].call_side,
-                        generated_at: jerryReads[selectedGame.id].generated_at,
-                      }
-                    : undefined
+                  _jerrySynth(jerryReads, selectedGame)
                 }
                 jerryLoading={gameNarrativeLoading}
                 isPro={isPro || isSubLoading}
