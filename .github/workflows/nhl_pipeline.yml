@@ -6,6 +6,28 @@ on:
     # All steps are silent no-ops until Oct 7 season opener. Restore
     # 20 UTC (post-market) cron once preseason starts ~late Sept.
     - cron: '5 12 * * *'  # 8:05am EDT (12:05 UTC) — staggered from 12:00 pile-up (2026-09-08)
+    # ══ 2026-09-28 · SECOND RUN FOR MONEY FLOW ══
+    # Andy: "When will moneyflow be present?" One run a day could only ever
+    # answer that badly. Money flow is a TIME SERIES — it accumulates through
+    # the day and the informative part arrives near puck drop — and NHL had a
+    # single 08:05 cron against MLB's four and NFL's ten.
+    #
+    # Worse, that cron does not fire at 08:05. Measured from workflow_heartbeat
+    # across 11 runs: median +4.7h late, so it actually lands ~12:45pm ET.
+    # Tomorrow's slate starts at 17:00 ET and runs to 22:30, so the only
+    # snapshot would be taken 4 hours before the first game and 10 before the
+    # last — early money only, which is the half that says least.
+    #
+    # 15:20 UTC is chosen FROM that measured lateness, not from the nominal
+    # time: 11:20am ET scheduled + ~4.7h ≈ 4pm ET actual, an hour before the
+    # earliest puck drop and close enough to the rest to catch real movement.
+    # Revisit if the lateness distribution shifts — watchdog_workflow_heartbeat
+    # measures each slot against its own p90 for exactly this reason.
+    #
+    # Safe to run twice: the NHL publish lock preserves already-published
+    # picks (verified — "preserved 8 published pick(s)"), so the second pass
+    # refreshes lines, splits and goalies without moving a pick that shipped.
+    - cron: '20 15 * * *'  # ~4pm ET actual — pre-puck-drop splits refresh
   workflow_dispatch:
     inputs:
       date:
