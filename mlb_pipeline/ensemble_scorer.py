@@ -1611,9 +1611,19 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # Measured on all 317 graded football side picks of 2026, ATS by distinct
     # source-class count — the exact knob this lane and classes_boost use:
     #
-    #     <=2 classes (no boost)          87-56   60.8%   n=143
+    #     <=2 classes (no boost)          87-56   60.8%   n=143   z=+2.02
     #      3-4 classes (+2..+4)           60-48   55.6%   n=108
-    #      5+  classes (+6..+10, PRIME)   35-31   53.0%   n=66
+    #      5+  classes (+6..+10, PRIME)   35-31   53.0%   n=66    z=+0.10
+    #
+    # HONEST READING OF THAT, added after running the significance test:
+    # the 5+ bucket is NOT losing money. 53.0% sits just above the 52.4%
+    # breakeven and z=+0.10 means it is indistinguishable from breakeven. The
+    # <=2 bucket at z=+2.02 is the only bucket that is significantly ABOVE it.
+    # So the claim this change rests on is MISALLOCATION, not loss: the boost
+    # pays its largest confidence bonus to the segment with the least
+    # demonstrated edge, and pays nothing to the one segment that has real edge.
+    # That is reason enough to stop paying it, and NOT reason enough to invert
+    # it or to suppress those picks.
     #
     # Monotonically INVERSE. The picks that receive the largest confidence
     # bonus are the least accurate, and this lane promotes that same 53% bucket
