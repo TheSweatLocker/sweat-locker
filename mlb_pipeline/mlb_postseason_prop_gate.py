@@ -74,10 +74,31 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'return=minimal'}
 
-# One notch off the top. PRIME is what the card sizes largest, so removing it
-# is the whole point; STRONG keeps the play publishable with its reasoning.
-TIER_CAP = 'STRONG'
-CONVICTION_CAP = 72
+# ══ TWO SEVERITIES, BECAUSE THERE ARE TWO DIFFERENT RISKS ══
+# The first version of this capped every prop identically — PRIME -> STRONG,
+# conviction 72 — and Andy caught what that actually did: the composer's PRIME
+# floor is conviction >= 73, so a 72 ceiling does not move props "one notch
+# down", it removes the PRIME tier from props entirely for the whole
+# postseason. I described it as a notch. It was an elimination.
+#
+# Worse, it was indiscriminate. Five of the sixteen capped were hits_under —
+# BATTER props, which rotation compression has nothing to do with.
+#
+# WORKLOAD (outs / HA / BB / K / ER): a starter's counting stats resolve on how
+#   long he lasts, and a short series is exactly when that changes. Sharp,
+#   specific, well-evidenced. Keeps the hard cap.
+#
+# BATTER (hits / TB / RBI / runs / HR): the only postseason argument is that
+#   September form describes lineups resting regulars after clinching. Real,
+#   but weak and two-sided — playoff batters face better pitching (helps an
+#   under) while playoff lineups are full-strength A-teams (hurts it). Those
+#   roughly offset. So: trim the confidence, do not remove the tier. 78 sits
+#   ABOVE the PRIME floor of 73, so a genuinely strong batter prop can still
+#   surface as PRIME while losing its max-conviction claim.
+WORKLOAD_TIER_CAP = 'STRONG'
+WORKLOAD_CONVICTION_CAP = 72
+BATTER_TIER_CAP = None          # tier untouched — confidence only
+BATTER_CONVICTION_CAP = 78
 # Ascending-good, identical to nfl_qb_injury_gate._RANK so a cap comparison
 # reads the same way in both gates. I first wrote this descending and the
 # tier cap silently never fired — the dry run showed conviction moving and
@@ -157,9 +178,21 @@ def run(date: str, dry: bool) -> int:
 
     capped = failed = 0
     for p in live:
-        cur = str(p.get('tier') or '').upper()
         stem = _stem(p.get('prop_type'))
         workload = stem in WORKLOAD_STEMS
+        tier_cap = WORKLOAD_TIER_CAP if workload else BATTER_TIER_CAP
+        conv_cap = WORKLOAD_CONVICTION_CAP if workload else BATTER_CONVICTION_CAP
+        # Always reason from the ORIGINAL values, not the current row. A prior
+        # run of this gate may have already capped it — possibly with the old
+        # blanket rule — and re-capping the capped value would ratchet
+        # downward and could never restore a tier that should not have moved.
+        # Reading _postseason_cap back makes the gate idempotent AND
+        # self-correcting when these constants change.
+        prev = (p.get('signals') or {}).get('_postseason_cap') or {}
+        cur = str(prev.get('tier_from') or p.get('tier') or '').upper()
+        orig_conv = prev.get('conviction_from')
+        if orig_conv is None:
+            orig_conv = p.get('conviction')
         patch = {}
         note = {'season_type': ps[p['game_id']],
                 'reason': ('pitcher workload prop — rotations compress and '
@@ -168,18 +201,30 @@ def run(date: str, dry: bool) -> int:
                            if workload else
                            'postseason — September form describes lineups '
                            'that rested regulars after clinching')}
-        if _RANK.get(TIER_CAP, 9) < _RANK.get(cur, 0):
-            note['tier_from'], note['tier_to'] = cur, TIER_CAP
-            patch['tier'] = TIER_CAP
+        if tier_cap and _RANK.get(tier_cap, 9) < _RANK.get(cur, 0):
+            note['tier_from'], note['tier_to'] = cur, tier_cap
+            patch['tier'] = tier_cap
+        elif str(p.get('tier') or '').upper() != cur:
+            # Restoring a tier a previous, blunter run took away.
+            note['tier_from'], note['tier_to'] = str(p.get('tier')).upper(), cur
+            patch['tier'] = cur
         # Clamped independently of the tier: a prop already at STRONG keeps its
         # tier but must not keep a PRIME-sized conviction. The NFL gate shipped
         # once without this and reported itself applied while changing nothing
         # the composer ranks on.
         try:
-            if p.get('conviction') is not None and float(p['conviction']) > CONVICTION_CAP:
-                note['conviction_from'] = p['conviction']
-                note['conviction_to'] = CONVICTION_CAP
-                patch['conviction'] = CONVICTION_CAP
+            if orig_conv is not None:
+                # int(): mlb_pipeline_props.conviction is an INTEGER column
+                # and PostgREST rejects "78.0" with 22P02. min() on floats
+                # produced exactly that, and all five batter-prop restores
+                # failed 400 until this cast. The gate reported the failure
+                # and exited non-zero rather than claiming success, which is
+                # the one part of that episode that worked as intended.
+                target = int(min(float(orig_conv), float(conv_cap)))
+                if float(p.get('conviction') or 0) != target:
+                    note['conviction_from'] = orig_conv
+                    note['conviction_to'] = target
+                    patch['conviction'] = target
         except (TypeError, ValueError):
             pass
         if not patch:
