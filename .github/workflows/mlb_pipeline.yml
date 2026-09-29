@@ -900,6 +900,28 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "promote_playbook_conviction.py"             python promote_playbook_conviction.py --sport MLB
 
+      # ── POSTSEASON CONFIDENCE CAP (2026-09-29) ──────────────────────
+      # Wild Card round opened today and the board carried 16 PRIME props,
+      # 11 of them pitcher workload (outs / hits allowed / walks / K / ER),
+      # every conviction computed from regular-season evidence. The Sharp
+      # Card then published eight at 2.4-2.8 units.
+      #
+      # Runs AFTER promote_playbook_conviction (so it caps the final number,
+      # not one a later step overwrites) and BEFORE the publish-lock step
+      # below, for the same reason that step's own comment gives: scoring has
+      # to finish before the pick is frozen.
+      #
+      # No-op outside the postseason — it reads mlb_game_context.season_type
+      # and exits 0 when nothing on the slate is a playoff game.
+      - name: Postseason prop confidence cap
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "mlb_postseason_prop_gate.py"             python mlb_postseason_prop_gate.py
+
       # Prop Jerry synthesis (2026-07-31 · sport-universal). Runs AFTER
       # apply_prop_refit so Jerry sees refit_conviction. Writes 40-60w
       # take + BACK/FADE/PASS verdict + conviction to prop_jerry_reads.

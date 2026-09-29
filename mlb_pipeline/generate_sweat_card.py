@@ -2028,6 +2028,29 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         tier = (g.get("nrfi_ensemble_tier") or "").upper()
         if not pick or tier not in ("PRIME", "STRONG"):
             continue
+        # ══ 2026-09-29 · DO NOT PLAY WHAT THE SAME CARD WARNS AGAINST ══
+        # Today's card carried, at once:
+        #
+        #   skip_alerts: Boston Red Sox @ New York Yankees, nrfi_score 98
+        #   top_picks:   NRFI — Boston Red Sox @ New York Yankees (STRONG)
+        #
+        # collect_skip_alerts exists to warn the reader off volatile NRFI at
+        # 95+, and this loop then published the same game as a pick. One
+        # surface telling a subscriber both things is worse than either.
+        #
+        # 95+ is also the band the data argues against on its own terms: the
+        # 7/18 review measured NRFI 90+ at 52.4% — the WEAKEST band — against
+        # 80-89 at 54.9% (n=981 overall). The publishable rule from that
+        # review is nrfi_score >= 85 with STRONG+ conviction, and it was
+        # never meant to run past the volatility ceiling at the top end.
+        # So the window is 85..94, which is exactly the band that review
+        # found pays.
+        _ns = g.get("nrfi_score") or 0
+        if pick.upper() == "NRFI" and _ns >= 95:
+            print(f"  🚫 NRFI skip-tier: {g.get('away_team')} @ "
+                  f"{g.get('home_team')} nrfi_score={_ns} — on skip_alerts, "
+                  f"not publishing as a pick")
+            continue
         conv = _tier_to_conv[tier]
         pick_upper = pick.upper()
         if pick_upper not in ("NRFI", "YRFI"):

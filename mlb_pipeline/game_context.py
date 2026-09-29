@@ -3642,6 +3642,51 @@ def upload_game_context(context, commence_time=None):
         except (TypeError, ValueError):
             context['model_pred_total'] = None
 
+    # ══ 2026-09-29 · SEASON TYPE. TODAY IS WILD CARD GAME 1. ══
+    # Verified against MLB StatsAPI this morning: all four of today's games
+    # are gameType 'F', game 1 of a best-of-3 — PHI@ATL, CWS@HOU, BOS@NYY,
+    # CHC@SD. mlb_game_context.season_type read 'REGULAR' on every one.
+    #
+    # mlb_season_type.py was written 2026-09-28 for exactly this and was only
+    # half-wired: the rolling-feature filter imports SCHEDULE_GAME_TYPES from
+    # it (so bullpen usage no longer filters October games out), and
+    # generate_jerry_synthesis calls for_game() so the WRITE-UP knows. But
+    # nothing ever wrote the answer onto the context row, so every consumer
+    # that is not Jerry — the prop engine, the tier gates, the card composers,
+    # the app — still believed it was a Tuesday in June.
+    #
+    # Written HERE because upload_game_context is the one place every write
+    # path passes through; enriching at the individual builders would need
+    # the same three lines in each and miss the next one added.
+    #
+    # ONLY season_type is set. The column already exists on the table
+    # (confirmed live). Adding series_game / games_in_series would need a
+    # migration first: the strip-and-retry fallback below only strips from a
+    # FIXED key list, so an unknown column 400s the entire row rather than
+    # being dropped — a much worse failure than a missing label.
+    #
+    # for_game falls back to REGULAR and never raises, which is the correct
+    # direction: a lookup failure should make a playoff game look ordinary,
+    # never the reverse.
+    if context.get('game_date') and context.get('home_team'):
+        try:
+            from mlb_season_type import for_game as _for_game
+            _st = _for_game(context.get('game_date'), context.get('away_team'),
+                            context.get('home_team'))
+            if _st and _st.get('type'):
+                context['season_type'] = _st['type']
+                if _st.get('is_postseason'):
+                    _sg = _st.get('series_game')
+                    _gis = _st.get('games_in_series')
+                    _sfx = f" g{_sg}/{_gis}" if _sg and _gis else ''
+                    print(f"  🏆 {_st['type']}{_sfx} — "
+                          f"{context.get('away_team')} @ {context.get('home_team')}")
+        except ImportError:
+            pass
+        except Exception as _e:
+            # Never let a schedule lookup block a context write.
+            print(f"  ⚠ season_type lookup failed ({_e}) — leaving default")
+
     # ── 2026-09-19 MORNING PICK LOCK ────────────────────────────────
     # Andy: "whatever comes out in the morning stays."
     #

@@ -886,6 +886,10 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             # player_team=null which made auditing orphan pitchers
             # impossible from the cache alone.
             'player_team': p.get('player_team'),
+            # 2026-09-29: carry the player through so the correlated-leg
+            # dedupe downstream does not have to parse it back out of the
+            # 'pick' string.
+            'player_name': p.get('player_name'),
             'units': units,
             # 2026-09-17: preserve mlb_pipeline_props.id + conviction so
             # publish_lock at write-time can snapshot the effective tier.
@@ -908,6 +912,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_lr_conflict = 0
     dropped_anchor = 0
     dropped_no_price = 0
+    dropped_no_edge = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -933,6 +938,32 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # that's handled at render, not composition.
         if (pp.get('type') or '').lower() == 'pass':
             dropped_pass += 1
+            continue
+        # ══ 2026-09-29 · A PICK THAT SAYS "NO EDGE" IS NOT A PICK ══
+        # Today's Sharp Card published, verbatim:
+        #
+        #   Boston Bruins ML  -120  STRONG  conv=62
+        #   "Bruins · 56% vs 55% implied — no edge"
+        #
+        # The engine wrote the refusal into its own sub-line and still emitted
+        # tier STRONG, and the card published it at 1.5 units. A subscriber
+        # reads the reason we gave them for the play and it tells them not to
+        # make it.
+        #
+        # The 'pass' check above only catches type == 'pass'. This pick's type
+        # is 'ml' — the ensemble declined on MAGNITUDE (1pp of edge, under its
+        # own threshold) rather than on direction, and nothing downstream
+        # treated that as a refusal.
+        #
+        # Gated here, at the publish surface, because that is where the harm
+        # is: the upstream NHL ensemble emitting STRONG while printing "no
+        # edge" is the real bug and wants its own fix, but until then no
+        # amount of upstream tidying should let this reach a paying user.
+        # Matched on the engine's own words so it cannot drift out of sync
+        # with a threshold constant defined somewhere else.
+        _sub = str(pp.get('sub') or '').lower()
+        if 'no edge' in _sub:
+            dropped_no_edge += 1
             continue
         # 2026-09-08 LR SHADOW GATE (parallel to _compose_mlb_sides).
         # For NCAAF this catches ~100% of shadow-endorsed conflicts since
@@ -1060,6 +1091,11 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         print(f'  {sport} no-play drops: {dropped_pass}')
     if dropped_lr_conflict:
         print(f'  {sport} LR-shadow-conflict drops: {dropped_lr_conflict}')
+    if dropped_no_edge:
+        # Printed unconditionally, not just for football: a pick refused for
+        # declaring its own lack of edge is the engine contradicting itself,
+        # and that belongs in the log rather than vanishing into a count.
+        print(f'  {sport} self-declared-no-edge drops: {dropped_no_edge}')
     if dropped_no_price:
         print(f'  {sport} no-market-price drops: {dropped_no_price} '
               f'(ML pick with no book moneyline — unbettable)')
@@ -1449,6 +1485,46 @@ def run(dry_run: bool = False, force: bool = False):
     _pre_props = len(mlb_props)
     mlb_sides = sorted(mlb_sides, key=_rank)
     mlb_props = sorted(mlb_props, key=_rank)
+    # ══ 2026-09-29 · ONE PROP PER PLAYER. CORRELATED LEGS ARE NOT A DECK. ══
+    # Today's card shipped Matthew Boyd THREE TIMES — Over 0.5 BB (-240,
+    # 2.8u), Over 13.5 OUTS (-115, 2.8u), Over 3.5 HA (-155, 2.5u) — plus
+    # Michael King twice and Chris Sale twice. Seven of eight props were three
+    # pitchers, and with SD ML that put 6 of 14 plays on a single game.
+    #
+    # Those are not three opinions, they are one opinion with three tickets.
+    # Every leg resolves off how long that starter lasts: pull Boyd in the
+    # 3rd and OUTS-over, HA-over and (likely) BB-over all die together. The
+    # card presented 8.1 units of one dependency as diversification, on the
+    # day a best-of-3 Wild Card round started.
+    #
+    # There was a total item cap (20, or 15 when cold) and per-sport quotas,
+    # but nothing whatsoever keyed on the PLAYER, so a pitcher with four
+    # publishable props could take four slots.
+    #
+    # Keeps the highest-ranked leg per player — the pool is already sorted by
+    # (tier, conviction) — so this trims the duplicate tickets, never the best
+    # play. Deliberately not a per-GAME cap as well: two different pitchers in
+    # one game are genuinely different bets, and stacking a same-game cap on
+    # top of this would start emptying 4-game slates.
+    _seen_players: dict = {}
+    _dropped_corr: list = []
+    _deduped: list = []
+    for _it in mlb_props:
+        _pl = (_it.get('player_name') or '').strip().lower()
+        if _pl and _pl in _seen_players:
+            _dropped_corr.append(_it)
+            continue
+        if _pl:
+            _seen_players[_pl] = True
+        _deduped.append(_it)
+    if _dropped_corr:
+        print(f'  🔗 correlated-leg dedupe: {len(mlb_props)} → {len(_deduped)} '
+              f'(1 prop per player)')
+        for _d in _dropped_corr:
+            print(f"      dropped {_d.get('pick')} ({_d.get('tier')}, "
+                  f"{_d.get('units')}u) — already have "
+                  f"{_d.get('player_name')}")
+    mlb_props = _deduped
     # Reserve prop slots first; unused prop capacity spills to sides.
     props_taken = mlb_props[:SHARP_CARD_MLB_PROPS_TARGET]
     prop_slack  = max(0, SHARP_CARD_MLB_PROPS_TARGET - len(props_taken))

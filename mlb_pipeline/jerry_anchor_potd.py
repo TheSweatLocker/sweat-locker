@@ -326,6 +326,42 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
         except Exception as e:
             print(f"  ⚠ {sport} prop candidates load failed: {e}")
             continue
+        # ══ 2026-09-29 · THE REAL WRITE-UP ALREADY EXISTS. LOAD IT. ══
+        # Andy: "POTD write is not there." The POTD rendered as
+        # 'outs_over over · conv 85' because the loop below SYNTHESIZED that
+        # string as short_read and set long_read to ''. Meanwhile
+        # prop_jerry_reads held a 606-character write-up for that exact tuple
+        # (Michael King · Outs Recorded OVER 14.5 @ -145, signal coverage 5/5,
+        # L5 17.4 / L10 17.9 / season 17.43, ten-game form log).
+        #
+        # So this is the same defect as the NHL Jerry lookup earlier today: the
+        # prose was generated, stored, and never read. generate_potd_narrative
+        # would have papered over it with a fresh Claude call, but that costs a
+        # request to rewrite text we already paid to produce — and it only runs
+        # after this, so a failure here (like today's) leaves the slug visible.
+        #
+        # Keyed on the tuple rather than the props-table id because
+        # prop_jerry_reads carries no foreign key to it.
+        read_by_key = {}
+        try:
+            rj = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prop_jerry_reads",
+                headers=H_READ,
+                params={"game_date": f"eq.{gd}", "sport": f"eq.{sport}",
+                        "select": "player_name,prop_type,direction,prop_line,"
+                                  "short_read,conviction"},
+                timeout=15,
+            )
+            for rr_ in (rj.json() if rj.status_code == 200 else []):
+                if not isinstance(rr_, dict):
+                    continue
+                read_by_key[(rr_.get('player_name'), rr_.get('prop_type'),
+                             rr_.get('direction'), rr_.get('prop_line'))] = rr_
+            if rj.status_code != 200:
+                print(f"  ⚠ {sport} prop_jerry_reads {rj.status_code}: {rj.text[:120]}")
+        except Exception as e:
+            print(f"  ⚠ {sport} prop_jerry_reads load failed: {e}")
+
         skipped_past = 0
         for row in rows:
             # 2026-09-10 KICKOFF FILTER — same as primary_play loader
@@ -384,7 +420,15 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
                 'call_line': row.get('prop_line'),
                 'conviction': effective_conv,
                 'call_text': call_text,
-                'short_read': f"{row.get('prop_type','')} {direction.lower()} · conv {effective_conv}",
+                # Real write-up when we have one; the old synthesized slug
+                # stays as the fallback so a prop with no read still produces
+                # a POTD rather than an empty card.
+                'short_read': ((read_by_key.get((row.get('player_name'),
+                                                 row.get('prop_type'),
+                                                 row.get('direction'),
+                                                 row.get('prop_line'))) or {}
+                                ).get('short_read')
+                               or f"{row.get('prop_type','')} {direction.lower()} · conv {effective_conv}"),
                 'long_read': '',
                 'generated_at': None,
                 '_prop_meta': {
