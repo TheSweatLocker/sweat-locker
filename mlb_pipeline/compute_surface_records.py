@@ -760,40 +760,6 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
         from prop_ban_policy import is_banned_mlb_prop
     except ImportError:
         is_banned_mlb_prop = lambda pt, tier=None: False
-    # ══ 2026-09-22 CONTAMINATED TIER WINDOW — DO NOT PUBLISH ══
-    #
-    # These rollups read mlb_pipeline_props.tier. From 2026-09-03 that
-    # tier was set by the LR override in backfill_prop_lookback, whose
-    # features (player_l5/l10_hit_count, season_hit_pct) came from an
-    # unbounded gameLog fetch — the game being predicted sat inside its
-    # own lookback window. Tier was therefore chosen partly from the
-    # outcome. Proof: l5_hit_count=5 returned 308-4 (98.7%), because
-    # "5 of the last 5 hit" includes the one we were predicting.
-    #
-    # The damage is not subtle, and it is what users were being shown:
-    #
-    #   PRIME props, same filters as below
-    #     before 2026-09-03 (legacy scorer tier)   489-362   57.5%
-    #     on/after 2026-09-03 (leaked LR tier)     450-94    82.7%
-    #
-    # surface_records.prop_prime d30 was 487-107 = 82.0% — essentially
-    # all of it drawn from the contaminated window. The app advertised
-    # 82% on a tier whose honest rate is 57.5%.
-    #
-    # The leak is fixed at source (before_date bound + LR tier authority
-    # revoked), but the tiers ALREADY WRITTEN in that window are still
-    # hindsight-picked, and re-deriving them needs leak-free features
-    # rebuilt per row. Until that backfill runs, these rows cannot appear
-    # in a published record. Excluding them shrinks the recent sample to
-    # near nothing — which is the honest state. We do not have a
-    # trustworthy recent PRIME prop record, and saying so is better than
-    # printing a number we know is wrong.
-    #
-    # Lift by rebuilding tiers for the window, then delete this constant.
-    _TIER_CONTAMINATED_FROM = '2026-09-03'
-    _TIER_CONTAMINATED_TO   = '2026-09-22'   # leak fixed mid-day 09-22
-    _skipped_contaminated = [0]
-
     for tbl, sport in [('mlb_pipeline_props', 'MLB')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
@@ -811,11 +777,6 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
                 try:
                     d = dt.date.fromisoformat(r['game_date'])
                 except Exception:
-                    continue
-                # Drop the hindsight-tiered window (see note above).
-                if sport == 'MLB' and \
-                        _TIER_CONTAMINATED_FROM <= r['game_date'] <= _TIER_CONTAMINATED_TO:
-                    _skipped_contaminated[0] += 1
                     continue
                 direction = (r.get('direction') or '').lower()
                 odds_val = r.get('book_over_odds') if direction == 'over' else r.get('book_under_odds')
@@ -838,10 +799,6 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
                             'stake': stake, 'payout': payout})
         except Exception:
             continue
-    if _skipped_contaminated[0]:
-        print(f'  [{tier_filter}] excluded {_skipped_contaminated[0]} rows from the '
-              f'{_TIER_CONTAMINATED_FROM}..{_TIER_CONTAMINATED_TO} hindsight-tier '
-              f'window — not publishable until tiers are rebuilt')
     return out
 
 
