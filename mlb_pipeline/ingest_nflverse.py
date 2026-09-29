@@ -42,7 +42,8 @@ PLAYER_URL = ('https://github.com/nflverse/nflverse-data/releases/download/'
               'player_stats/player_stats.csv')
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-for _line in open(os.path.join(_HERE, '.env'), encoding='utf-8'):
+for _line in (open(os.path.join(_HERE, '.env'), encoding='utf-8')
+              if os.path.exists(os.path.join(_HERE, '.env')) else []):
     if '=' in _line and not _line.startswith('#'):
         _k, _v = _line.split('=', 1)
         os.environ.setdefault(_k.strip(), _v.strip())

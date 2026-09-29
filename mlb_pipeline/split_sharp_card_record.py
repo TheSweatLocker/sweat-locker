@@ -46,7 +46,8 @@ from datetime import datetime, timezone
 import requests
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-for _l in open(os.path.join(_HERE, '.env'), encoding='utf-8'):
+for _l in (open(os.path.join(_HERE, '.env'), encoding='utf-8')
+              if os.path.exists(os.path.join(_HERE, '.env')) else []):
     if '=' in _l and not _l.startswith('#'):
         _k, _v = _l.split('=', 1)
         os.environ.setdefault(_k.strip(), _v.strip())
