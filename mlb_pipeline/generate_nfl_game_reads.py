@@ -22,6 +22,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
+from anthropic_guard import call as _guarded_call  # noqa: F401
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2057,24 +2058,27 @@ def render_prompt(templates, struct):
 
 
 def call_claude(prompt):
-    if not ANTHROPIC_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"},
-            json={"model": MODEL, "max_tokens": 800, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code != 200:
-            print(f"  ⚠️ claude {r.status_code}: {str(data)[:300]}")
-            return None
-        return "".join(b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text").strip() or None
-    except Exception as e:
-        print(f"  ⚠️ claude failed: {e}")
-        return None
+    """Delegates to anthropic_guard so a dead key stops the run.
 
+    ── WHY (2026-09-29) ──
+    anthropic_guard.py was written 2026-09-28 for precisely this and NOTHING
+    imported it. Proven by running it: the local key is the revoked one, and
+    this generator answered a 401 "API key is invalid" — the most fatal error
+    the API has — by printing a warning, skipping the game, doing that six more
+    times, and EXITING 0. A workflow step reports success having written zero
+    reads.
+
+    That is the guard's own docstring describing itself: "the run wrote 50
+    reads, silently abandoned 15, and EXITED 0 ... the failure mode this repo
+    keeps rediscovering." Writing the module did not fix anything; importing it
+    does. A fatal error now raises FatalLLMError on the FIRST call and is
+    deliberately not caught, so the run dies loudly instead of greenly.
+
+    Transient failures (429/5xx/timeout) still return None after backoff, so
+    every existing skip-and-continue path behaves exactly as before.
+    """
+    return _guarded_call(prompt, MODEL, max_tokens=800, timeout=30,
+                         api_key=ANTHROPIC_API_KEY)
 
 def parse_nfl_synthesis(raw: str) -> dict:
     """Parse NFL Jerry LLM output (2026-08-06). Mirrors MLB's parse_synthesis

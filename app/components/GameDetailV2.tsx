@@ -2283,6 +2283,54 @@ function LensGrid({ctx, gamesSport}: any) {
     // Fallback for NHL / NBA / NCAAB / UFC — keep MC slot since those
     // sports may still populate mc_probabilities via their own simulators.
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    // ══ 2026-09-29 · THE NUMBER THE PICK IS BUILT ON WAS INVISIBLE ══
+    // Andy: "Jerry write ups are bad." Once the NHL read lookup was fixed the
+    // reads became reachable, and MTL @ TOR read: "The model has Toronto at
+    // 48.2% to win against a 56% implied price ... stripping away any edge on
+    // the moneyline" — attached to a pick of TORONTO ML, conviction 56.
+    //
+    // A read arguing against its own pick, and citing a number found nowhere
+    // on the card. Both trace to one cause: this game has THREE win
+    // probabilities and the card showed neither of the two that matter.
+    //
+    //   projected_home_wp   0.559  Elo — WHAT THE PICK IS BUILT ON
+    //                              ("56% vs 53% implied — +2.5pp edge")
+    //                              fetched by index.tsx, rendered NOWHERE
+    //   _lr_ml_shadow       0.482  LR shadow, suggested_side NONE. The LR
+    //                              tile exists only in the NCAAF/NFL
+    //                              branches, and the LR chip suppresses
+    //                              0.45-0.55 as PASS — so on NHL it is
+    //                              invisible, yet the writer quoted it as
+    //                              "the model"
+    //   mc_p_home           0.470  Monte Carlo — the ONLY one on screen
+    //
+    // So a subscriber saw MC "A 53%" (Toronto a dog), read "48.2%" (a figure
+    // absent from the card), and a Toronto ML pick justified by 55.9% they
+    // were never shown. The pick's own basis was the one number hidden.
+    //
+    // Elo is added as its own labelled lens. It does not paper over the
+    // disagreement — it discloses it: Elo 56% H against MC 47% H is a real
+    // split between two models, and that is the receipt. Same call the NFL
+    // MC comment above makes ("Adding it makes the sections agree and
+    // surfaces a real disagreement the card was hiding").
+    //
+    // Rendered as H/A % rather than a spread because a win probability is not
+    // a margin — identical treatment to the LR and MC tiles, so the grid
+    // stays readable. Margin proxy drives border colour only.
+    ...(String(gamesSport) === 'NHL' && ctx?.projected_home_wp != null
+        && isFinite(Number(ctx.projected_home_wp))
+      ? [(() => {
+          const _eloP = Number(ctx.projected_home_wp);
+          return {
+            name: 'Elo',
+            m: (_eloP - 0.5) * 10,   // sign-only proxy for colour; not shown
+            t: null,
+            displayMargin: _eloP >= 0.5
+              ? `H ${Math.round(_eloP * 100)}%`
+              : `A ${Math.round((1 - _eloP) * 100)}%`,
+          };
+        })()]
+      : []),
     {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
     // ══ 2026-09-29 · MC IS A SIMULATION OF v3, NOT A SECOND OPINION ══

@@ -45,6 +45,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
+from anthropic_guard import call as _guarded_call  # noqa: F401
 from dotenv import load_dotenv
 
 from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
@@ -302,6 +303,24 @@ def build_struct(ctx):
             'projected_home_wp': _f(ctx.get('projected_home_wp')),
             'elo_home': _f(ctx.get('elo_home')),
             'elo_away': _f(ctx.get('elo_away')),
+            # 2026-09-29 · Say which probability is load-bearing. Stripping the
+            # LR shadow (see _public_primary_play) stops the writer quoting a
+            # hidden model, but two win probabilities remain and they can
+            # disagree on the SIDE — measured 2026-09-29, MTL @ TOR is Elo
+            # 0.559 home vs MC 0.470 home, and NYI @ TOR and PHI @ NJ split the
+            # same way. Without knowing which one the pick rests on, the writer
+            # can still pick the other and talk the call down.
+            #
+            # A STRING, deliberately not a third copy of the number: adding
+            # 'home_win_prob_used_for_pick': 0.559 would put the same value
+            # under two keys, and a reader counting distinct figures would see
+            # one model twice — the defect this repo has now hit on NCAAF
+            # (sp_plus == v3) and NHL (MC simulating v3's own lambdas).
+            'wp_note': ('projected_home_wp is the Elo win probability the pick '
+                        'is built on and the card displays; mc_p_home is the '
+                        'Monte Carlo second opinion, also displayed. Cite '
+                        'these, and when they disagree on the side say so '
+                        'plainly rather than treating either as settled.'),
             **{k: _mc.get(k) for k in
                ('mc_sims', 'mc_p_home', 'mc_p_over', 'mc_ot_rate',
                 'mc_expected_total', 'mc_expected_margin')
@@ -340,7 +359,7 @@ def build_struct(ctx):
             'net': ctx.get('signal_confluence_net'),
             'breakdown': ctx.get('signal_confluence_breakdown'),
         },
-        'primary_play': ctx.get('primary_play'),
+        'primary_play': _public_primary_play(ctx.get('primary_play')),
         'sweat': {'score': ctx.get('sweat_score'), 'tier': ctx.get('sweat_tier')},
         'meta': {
             'game_date': _et_date_from_utc(ctx.get('commence_time')) or ctx.get('game_date'),
@@ -351,6 +370,47 @@ def build_struct(ctx):
     }
     struct['casual_summary'] = _build_casual_summary(ctx)
     return struct
+
+
+def _public_primary_play(pp):
+    """Strip internals the writer must not quote as if they were the model.
+
+    ── WHY ──
+    Andy 2026-09-29: "Jerry write ups are bad." Once the NHL read LOOKUP was
+    fixed (the reads had never been reachable), what surfaced was worse than a
+    missing read. MTL @ TOR:
+
+        "The model has Toronto at 48.2% to win against a 56% implied price
+         at -115, which is backwards: the market is pricing Toronto higher
+         than the model suggests, stripping away any edge on the moneyline"
+
+    attached to a pick of TORONTO ML at conviction 56. The read argues against
+    its own pick.
+
+    48.2% is primary_play._lr_ml_shadow.p_home_win — a SHADOW model whose own
+    suggested_side is NONE. It is not what the pick is built on (that is
+    projected_home_wp, 0.559, the "56% vs 53% implied — +2.5pp edge" in
+    pp.sub), and on the NHL card it is invisible: the LR tile exists only in
+    the NCAAF/NFL branches and the LR chip suppresses 0.45-0.55 as PASS. So the
+    writer quoted, as "the model", a number the subscriber cannot find and that
+    disagrees with the pick in front of them.
+
+    The whole primary_play blob was being json.dumps'd into the prompt, so
+    every debug field read as quotable fact: _lr_ml_shadow, _pre_lr_tier,
+    _model_edge_pp, _ensemble_sources, and audit_note ("NHL LR sees coin flip
+    (p=0.48) — legacy demoted"), which hands the writer the same 0.48 in prose.
+
+    Gated at the source rather than by adding a "don't cite the shadow" rule,
+    because the writer cannot misquote what it never receives — and a prompt
+    rule is exactly the kind of control this repo has watched fail. The visible
+    reasoning is NOT lost: pp['sub'] already carries the ensemble prose
+    verbatim ("Historical trend: similar spots hit HOME ML 65% (n=26...)"),
+    which is what a subscriber should see.
+    """
+    if not isinstance(pp, dict):
+        return pp
+    return {k: v for k, v in pp.items()
+            if not k.startswith('_') and k != 'audit_note'}
 
 
 def render_prompt(templates, struct):
@@ -388,29 +448,27 @@ def render_prompt(templates, struct):
 
 
 def call_claude(prompt: str) -> Optional[str]:
-    if not ANTHROPIC_API_KEY:
-        print('  ⚠ ANTHROPIC_API_KEY missing — cannot generate')
-        return None
-    try:
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={'Content-Type': 'application/json',
-                     'x-api-key': ANTHROPIC_API_KEY,
-                     'anthropic-version': '2023-06-01'},
-            json={'model': MODEL, 'max_tokens': 800,
-                  'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code != 200:
-            print(f'  ⚠ claude {r.status_code}: {str(data)[:200]}')
-            return None
-        return ''.join(b.get('text', '') for b in (data.get('content') or [])
-                       if b.get('type') == 'text').strip() or None
-    except Exception as e:
-        print(f'  ⚠ claude call failed: {e}')
-        return None
+    """Delegates to anthropic_guard so a dead key stops the run.
 
+    ── WHY (2026-09-29) ──
+    anthropic_guard.py was written 2026-09-28 for precisely this and NOTHING
+    imported it. Proven by running it: the local key is the revoked one, and
+    this generator answered a 401 "API key is invalid" — the most fatal error
+    the API has — by printing a warning, skipping the game, doing that six more
+    times, and EXITING 0. A workflow step reports success having written zero
+    reads.
+
+    That is the guard's own docstring describing itself: "the run wrote 50
+    reads, silently abandoned 15, and EXITED 0 ... the failure mode this repo
+    keeps rediscovering." Writing the module did not fix anything; importing it
+    does. A fatal error now raises FatalLLMError on the FIRST call and is
+    deliberately not caught, so the run dies loudly instead of greenly.
+
+    Transient failures (429/5xx/timeout) still return None after backoff, so
+    every existing skip-and-continue path behaves exactly as before.
+    """
+    return _guarded_call(prompt, MODEL, max_tokens=800, timeout=30,
+                         api_key=ANTHROPIC_API_KEY)
 
 def write_cache(game_id: str, narrative: str, struct: dict) -> bool:
     payload = {
