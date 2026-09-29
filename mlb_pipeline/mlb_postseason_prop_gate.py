@@ -1,48 +1,38 @@
-"""Stop MLB props carrying max units on regular-season evidence in October.
+"""DISABLED 2026-09-29. Kept for the reasoning; it must not run as-is.
 
-Andy 2026-09-29: "Fix MLB issues and get ready for playoffs today."
+Andy, same day it shipped: "honestly looking at prop jerry i think the props
+should be measured the same as regular season, it's season length data it
+should be the same."
 
-── WHAT WAS ON THE BOARD ──
-Today is Wild Card game 1 of a best-of-3 in all four series (verified against
-MLB StatsAPI gameType 'F': PHI@ATL, CWS@HOU, BOS@NYY, CHC@SD). The prop board
-carried 16 PRIME and 397 SKIP — no STRONG, no LEAN — and 11 of those 16 PRIME
-were PITCHER WORKLOAD props: outs, hits allowed, walks, strikeouts, earned
-runs. The Sharp card then published eight of them, seven keyed to how long a
-starter lasts, at 2.4-2.8 units each.
+He is right, and the argument that killed this is the one I used to justify it.
+I wrote, in this file: there is no postseason sample to calibrate against, so
+do not adjust projections — "pretending otherwise is how the leaked prop PRIME
+happened." Then I applied a confidence penalty anyway, on a mechanism I found
+plausible (rotations compress, bullpens run nightly, September lineups rested)
+and never measured. A confidence cap IS an adjustment. I held the projections to
+a standard of evidence and exempted my own penalty from it.
 
-Every one of those convictions was computed from regular-season evidence.
-mlb_season_type.py already names why that is the wrong baseline: rotations
-compress so aces start on short rest and fourth starters do not pitch,
-bullpens are available every night instead of managed across 162 games, and
-September team stats describe lineups that rested regulars after clinching.
+MEASURED 2026-09-29, and this is the whole case: there is no prior-postseason
+data in this database at all. mlb_pipeline_props starts 2026-04-23.
+mlb_game_results has zero rows for October 2025. So the claim "playoff props
+behave differently" had a sample of ZERO behind it, in either direction.
 
-── WHAT THIS DELIBERATELY DOES NOT DO ──
-It does not adjust projections, flip sides, or change a line. There is no
-postseason sample to calibrate against — eight teams and ~32 games — and
-mlb_season_type.py's own docstring says so: "This does not try to make the
-models right for October ... pretending otherwise is how the leaked prop
-PRIME happened." Inventing a direction here would be exactly that mistake.
+The burden of proof belongs on the adjustment, not on the status quo. Same
+conclusion the repo already reached twice — the SP+ K=0.85 recalibration was
+refused for leaky backtests, and the NFL prop projection "edge" was retracted
+once measured honestly.
 
-So this caps CONFIDENCE, which is the part we know is overstated, and leaves
-the pick itself alone. Same shape as nfl_qb_injury_gate: cap tier and
-conviction, never touch side/market/line, and record what was capped.
+WHAT SURVIVED. season_type on mlb_game_context, written by upload_game_context,
+is a FACT rather than an adjustment: today's games really are WILDCARD g1/3.
+That labelling stays, and it is what lets generate_jerry_synthesis tell a reader
+the rotation is compressed — disclosure in prose, with no silent numeric
+penalty attached. That is the honest version of what this file was reaching for.
 
-── WHY A CAP AND NOT A SUPPRESSION ──
-Dropping playoff props entirely would empty the board on the days subscribers
-care most, and would claim we know these props are BAD. We do not. We know our
-confidence in them is built on a baseline that shifted. PRIME is the tier that
-drives the largest unit sizes on the card, so one notch down (PRIME -> STRONG,
-conviction ceiling 72) removes the max-stake claim while keeping the play
-visible with its reasoning intact.
+TO RE-ENABLE, and only then: accumulate graded postseason props, measure them
+against their own regular-season baselines, and show the gap is real and sized.
+Until a number exists, this stays out of the pipeline.
 
-Pitcher-workload props get the note naming rotation compression specifically,
-because that is the sharpest of the three effects and the one a reader can
-check against the lineup card.
-
-Usage:
-    python mlb_postseason_prop_gate.py                 # today
-    python mlb_postseason_prop_gate.py --date 2026-09-29
-    python mlb_postseason_prop_gate.py --dry-run
+    python mlb_postseason_prop_gate.py --revert   # undo caps already applied
 """
 from __future__ import annotations
 
@@ -259,12 +249,96 @@ def run(date: str, dry: bool) -> int:
     return 1 if failed else 0
 
 
+def revert(date: str, dry: bool) -> int:
+    """Restore tier + conviction that the cap overwrote.
+
+    Source of truth is prop_playbook_decisions.legacy_tier /
+    legacy_conviction, NOT the _postseason_cap note this script wrote.
+    The note turned out to be unreliable: the second (split-severity) run
+    recorded tier_from as the already-capped value while restoring batter
+    props, and omitted conviction_from wherever nothing changed. A record
+    that a later run of the same script can rewrite is not a record.
+
+    legacy_* is captured by the playbook scorer before any of this ran and
+    matches independently — Michael King ha_over 3.5 reads PRIME / 85 there,
+    which is exactly what the first cap run reported as the original.
+    """
+    print(f'=== mlb_postseason_prop_gate --revert · {date} ===')
+    orig = {}
+    d = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
+                     headers=H_READ,
+                     params={'select': 'player_name,prop_type,direction,'
+                                       'prop_line,legacy_tier,legacy_conviction',
+                             'game_date': f'eq.{date}', 'limit': '2000'},
+                     timeout=30)
+    if d.status_code == 200:
+        for x in d.json():
+            orig[(x.get('player_name'), x.get('prop_type'),
+                  x.get('direction'), x.get('prop_line'))] = x
+    else:
+        print(f'  ⚠ prop_playbook_decisions {d.status_code} — falling back to cap note')
+
+    r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
+                     headers=H_READ,
+                     params={'select': 'id,player_name,prop_type,direction,'
+                                       'prop_line,tier,conviction,signals',
+                             'game_date': f'eq.{date}', 'limit': '2000'},
+                     timeout=30)
+    if r.status_code != 200:
+        print(f'  ✗ props fetch {r.status_code}: {r.text[:160]}')
+        return 1
+
+    done = failed = skipped = 0
+    for p_ in r.json():
+        cap = (p_.get('signals') or {}).get('_postseason_cap')
+        if not cap:
+            continue
+        key = (p_.get('player_name'), p_.get('prop_type'),
+               p_.get('direction'), p_.get('prop_line'))
+        src = orig.get(key) or {}
+        tier = src.get('legacy_tier') or cap.get('tier_from')
+        conv = src.get('legacy_conviction')
+        if conv is None:
+            conv = cap.get('conviction_from')
+        label = f"{p_.get('player_name')} {p_.get('prop_type')} {p_.get('prop_line')}"
+        if not tier or conv is None:
+            skipped += 1
+            print(f'  ⚠ {label[:42]:42s} no original on file — left as '
+                  f"{p_.get('tier')}/{p_.get('conviction')}")
+            continue
+        patch = {'tier': tier, 'conviction': int(float(conv)),
+                 'signals': {k: v for k, v in (p_.get('signals') or {}).items()
+                             if k != '_postseason_cap'}}
+        via = 'playbook' if src.get('legacy_tier') else 'cap-note'
+        if dry:
+            print(f'  [DRY] {label[:42]:42s} -> {tier} conv {patch["conviction"]}  ({via})')
+            done += 1
+            continue
+        w = requests.patch(f"{SB}/rest/v1/mlb_pipeline_props?id=eq.{p_['id']}",
+                           headers=H_WRITE, json=patch, timeout=20)
+        if w.status_code in (200, 204):
+            done += 1
+            print(f'  ✓ {label[:42]:42s} -> {tier} conv {patch["conviction"]}  ({via})')
+        else:
+            failed += 1
+            print(f'  ✗ {label[:42]} {w.status_code}: {w.text[:110]}')
+    print()
+    print(f'  restored {done} · failed {failed} · no-original {skipped}')
+    return 1 if failed else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--revert', action='store_true',
+                    help='undo caps already written (reads _postseason_cap)')
     a = ap.parse_args()
-    sys.exit(run(a.date or today_et(), a.dry_run))
+    d = a.date or today_et()
+    if a.revert:
+        sys.exit(revert(d, a.dry_run))
+    print('  ✗ DISABLED — see module docstring. Use --revert to undo.')
+    sys.exit(0)
 
 
 if __name__ == '__main__':
