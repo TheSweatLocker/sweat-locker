@@ -2370,6 +2370,39 @@ function LensGrid({ctx, gamesSport}: any) {
        displayTotal: mc.mc_ot_rate != null
          ? `OT ${Math.round(mc.mc_ot_rate * 100)}%` : null,
      } : {})},
+    // ══ 2026-09-29 · THE LR CHIP HAD NO TILE TO POINT AT ══
+    // Measured on tonight's NHL board: 4 of 5 games render a cohort chip
+    // reading "Model 64% HOME" / "Model 66% HOME" from
+    // primary_play._lr_ml_shadow, while this grid — labelled as each model's
+    // read — contained no LR tile at all. The tile is built only inside the
+    // NCAAF and NFL branches above, so on NHL, NBA, NCAAB and UFC the chip
+    // cited a model the reader could not find.
+    //
+    // Same defect as the Jerry read quoting a hidden 48.2% earlier today, and
+    // I fixed the read side without noticing the chip side had it too. A
+    // citation with no visible source is worse than no citation: it asks the
+    // reader to trust a number they cannot check.
+    //
+    // Not scoped to one sport — the isFinite guard already self-scopes it.
+    // Measured coverage: NHL 11/40 upcoming games, NBA 8/40. Where there is
+    // no LR output the tile is simply absent, which the empty-lens rule below
+    // would enforce anyway.
+    //
+    // Rendered H/A % rather than a spread because LR is a WIN probability,
+    // not a margin — identical treatment to the NFL/NCAAF tiles and to MC and
+    // Elo above, so the grid stays one format.
+    ...(() => {
+      const _lrP = Number((ctx?.primary_play as any)?._lr_ml_shadow?.p_home_win);
+      if (!isFinite(_lrP)) return [];
+      return [{
+        name: 'LR',
+        m: (_lrP - 0.5) * 10,     // sign-only proxy for colour; not shown
+        t: null,
+        displayMargin: _lrP >= 0.5
+          ? `H ${Math.round(_lrP * 100)}%`
+          : `A ${Math.round((1 - _lrP) * 100)}%`,
+      }];
+    })(),
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ];
 
@@ -2486,7 +2519,13 @@ function LensGrid({ctx, gamesSport}: any) {
                   /* Conf is a net signal balance, not a point margin, so it
                      keeps the bare signed number — "DAL 1.0" would read as
                      a one-point spread it never claimed. */
-                  : r.name === 'Conf' ? (r.m > 0 ? `+${f(r.m, 2)}` : f(r.m, 2))
+                  /* 2026-09-29 · was f(r.m, 2), printing "+4.00" and "0.00"
+                     for a value that is an INTEGER COUNT of net signals —
+                     measured on tonight's NHL board: 1, 4, -2, 0. Two decimals
+                     on a tally claims a precision that does not exist, and it
+                     was the one thing on the grid that looked like a spread
+                     while explicitly not being one. Integer now. */
+                  : r.name === 'Conf' ? (r.m > 0 ? `+${f(r.m, 0)}` : f(r.m, 0))
                   : `${abbrev3(r.m > 0 ? ctx?.home_team : ctx?.away_team)} ${f(Math.abs(r.m), 1)}`}
               </Text>
               <Text style={[styles.lensTotal, {
