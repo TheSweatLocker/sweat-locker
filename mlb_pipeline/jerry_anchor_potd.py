@@ -629,17 +629,33 @@ def run(game_date: str | None = None, threshold: int = 70,
             ctx_row = ml_lookup.get(r["game_id"], {})
             side = (r.get("call_side") or "").upper()
             pick_ml = ctx_row.get("home_ml_close") if side == "HOME" else ctx_row.get("away_ml_close")
-            # 2026-09-12 juice gate loosened from -200 → -250 with LR guardrail.
-            # -200 was tossing legitimate PRIME plays like Brewers ML conv 100
-            # @ -207 (won 9/11, LR 1.00) and Dodgers ML conv 91 @ -209 (won,
-            # LR 0.91). At -250 implied prob = 71.4%, so pairing with the LR
-            # ≥ 0.60 gate downstream keeps EV positive: 71% market vs 60%+
-            # model = -11pp minimum edge, which pays out on the roll. Anything
-            # below -250 (e.g. -300 implied 75%) needs LR ≥ 0.75 to have EV,
-            # which the ≥0.60 gate can't guarantee — hence the hard cap stays.
-            if pick_ml is not None and pick_ml <= -250:
+            # ══ 2026-09-29 · BACK TO -200, BY ANDY'S CALL ══
+            # This was loosened -200 → -250 on 2026-09-12 on the grounds that
+            # -200 tossed legitimate plays: Brewers ML conv 100 @ -207 (won
+            # 9/11, LR 1.00) and Dodgers ML conv 91 @ -209 (won, LR 0.91),
+            # with the LR ≥ 0.60 gate downstream holding EV positive.
+            #
+            # Reverted because the evidence is lopsided the other way. The
+            # loosening rested on two winning anecdotes. Against it sit two
+            # systematic measurements already in the record: heavy-fav ML at
+            # -200+ is a documented trap (29% cover on the -1.5), and the NFL
+            # fav-ML study found 65.2% win rate but -4.9% ROI overall and
+            # -22.8% on PRIME — the engine picks favourites it cannot price.
+            # n=2 wins do not outweigh that.
+            #
+            # It also ends a real inconsistency: generate_sweat_card has
+            # refused ML at <= -200 since 2026-08-04, with a comment claiming
+            # "same principle as jerry_anchor_potd" that stopped being true on
+            # 9/12. Today it bit — POTD published Atlanta ML -205 while the
+            # Sweat Card rejected that exact play, so the headline pick was one
+            # the card itself would not carry. One threshold now, both surfaces.
+            #
+            # Cost of the tighter gate: some days Jerry passes on the POTD.
+            # _write_no_play handles that, and an honest no-play is the
+            # cheaper failure.
+            if pick_ml is not None and pick_ml <= -200:
                 ct = (r.get('call_text') or '?')[:30]
-                skipped_juice.append(f"{ct} at {pick_ml} (below -250 cap)")
+                skipped_juice.append(f"{ct} at {pick_ml} (below -200 cap)")
                 continue
             filtered.append(r)
         if skipped_juice:
