@@ -462,6 +462,55 @@ def compute_splits_summary(sport: str, game_id: str) -> dict:
 def write_summary_to_ctx(sport: str, game_id: str, summary: dict, dry: bool) -> bool:
     tbl = SPORT_CTX_TABLE.get(sport.upper())
     if not tbl or not summary: return False
+
+    # ══ 2026-09-29 · DO NOT OVERWRITE A PRE-GAME CAPTURE WITH A POST-GAME ONE ══
+    # splits_summary is a single JSONB per game with no history, so the LAST
+    # write wins — and measured across 2026, the last write is usually after
+    # kickoff:
+    #
+    #     NCAAF  272 of 334 captures (81%) were AFTER kickoff, median 6.6h late
+    #     NFL     47 of  63 captures (75%) were AFTER kickoff, median 7.6h late
+    #
+    # Mechanism: the Saturday-morning cron captures a usable pre-game state, and
+    # then the Sunday cron (and any later run) re-captures and PATCHes over it.
+    # Money flow is a pre-game signal by definition; a post-kickoff snapshot is
+    # worthless for prediction AND it destroys the only version that was not.
+    #
+    # Two things this was silently costing:
+    #   1. Money flow could not be assessed at all. Guarding on
+    #      captured_at < kickoff_utc left 28 usable observations out of 316 —
+    #      too few to conclude anything, which is why that gap stayed open.
+    #   2. The app's Money Flow panel for a played game shows post-game splits
+    #      while presenting them as the pre-game read.
+    #
+    # Same structural flaw as team_stats_rolling holding only a current value.
+    # Fixed the cheap way: refuse the write once kickoff has passed, so the
+    # pre-game capture survives. A splits history table would be better and is
+    # the real fix; this stops the bleeding without a migration.
+    try:
+        _kt = 'kickoff_utc'
+        _r = requests.get(f"{SB}/rest/v1/{tbl}", headers=H_READ,
+                          params={"game_id": f"eq.{game_id}",
+                                  "select": f"{_kt},splits_summary"}, timeout=15)
+        if _r.status_code == 200 and _r.json():
+            _row = _r.json()[0]
+            _ko = _row.get(_kt)
+            if _ko:
+                from datetime import datetime as _dt, timezone as _tz
+                _k = _dt.fromisoformat(str(_ko).replace('Z', '+00:00'))
+                if _k.tzinfo is None:
+                    _k = _k.replace(tzinfo=_tz.utc)
+                if _dt.now(_tz.utc) >= _k:
+                    # Only refuse if something is already stored. A game with no
+                    # splits at all is better served by a late capture than by
+                    # nothing — the app gates the panel on presence.
+                    if _row.get('splits_summary'):
+                        print(f"    ⏭  {game_id[:28]}: kickoff passed, keeping the "
+                              f"pre-game capture (refusing post-game overwrite)")
+                        return False
+    except Exception as _e:
+        pass  # never block a write on the guard's own failure
+
     if dry:
         print(f"    [DRY] would write splits_summary to {tbl} game_id={game_id[:8]}...")
         return False
