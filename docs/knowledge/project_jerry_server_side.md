@@ -1,0 +1,11 @@
+---
+name: Jerry reads + prompts move server-side (all sports) — pre-launch
+description: Directional decision — Jerry game reads & all prompt templates move server-side so they're editable without an App Store submission; blend pipeline-edge struct + best-plays into the read for every sport (NFL/MLB/NBA/UFC...).
+type: project
+originSessionId: 785f60eb-2896-47d0-b93c-5a98f036e862
+---
+**Decision (made 2026-05-12):** Move Jerry game reads and ALL prompt templates server-side, for every sport, BEFORE the App Store launch (~May 21-25).
+
+**Why:** Today the game-read prompt (`fetchGameNarrative`) and the anti-hallucination rules live hardcoded in `app/index.tsx`, so editing Jerry's behavior — including the queued date-confusion fix — requires a new TestFlight/App Store build. The sweat-card and POTD narratives are *already* generated server-side (`generate_sweat_card.py` writes `narrative` to `jerry_cache`); the game read is the holdout. User wants the whole Jerry layer editable without Apple in the loop, and wants every sport's read to be a *blend*: Jerry's prose breaking down the pipeline-edge struct (model total/spread vs market, confluence vote count + which signals, ump tendency, pull-early flags, mastery, pitcher class projections) PLUS surfacing the game's best plays — same pattern NFL/MLB/NBA/UFC.
+
+**How to apply:** Treat this as a launch blocker alongside RevenueCat/Sentry. Target architecture: (1) `prompt_templates` Supabase table (keyed by name/sport, app fetches active template at runtime), (2) per-sport `generate_*_game_reads.py` pipeline step that builds the struct → calls Claude with server template → writes to `jerry_cache` keyed by game_id; app renders like it renders the sweat card, (3) the same struct also renders as a deterministic "the numbers" panel under the prose (wires the existing MLB Situational tab data to the read), (4) interactive parlay analysis stays client-side (can't precompute a user's custom parlay) but pulls its prompt template from the table. Validation context: 5/12 the "fragile starter" cluster (L3 ERA + 1st-inn ERA + xERA + opp wRC+) called Cecconi-pulled-early and Rogers-pummeled-by-NYY before they happened — that's the kind of edge that should surface in the read.

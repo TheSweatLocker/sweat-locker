@@ -1,0 +1,138 @@
+- [feedback_everything_means_all_lenses.md](feedback_everything_means_all_lenses.md) — "everything" = every lens
+- [feedback_underscore_scratch_convention.md](feedback_underscore_scratch_convention.md) — mlb_pipeline/_*.py gitignored
+- [feedback_prop_jerry_odds.md](feedback_prop_jerry_odds.md) — Props -300..+150, median EV
+- [feedback_prop_family_ban_three_layer.md](feedback_prop_family_ban_three_layer.md) — 🚨 Ban families in VIEW too
+- [feedback_publishable_view_drift.md](feedback_publishable_view_drift.md) — 🚨 VIEW replace drops old WHERE
+- [feedback_surface_records_trust_levels.md](feedback_surface_records_trust_levels.md) — 🚨 prop_prime inflated; cite sides
+- [feedback_fix_at_root_three_parts.md](feedback_fix_at_root_three_parts.md) — 🚨 Writer + rows + constraint
+- [feedback_suppression_gate_needs_shadow.md](feedback_suppression_gate_needs_shadow.md) — 🚨 Shadow-record; exit on evidence
+- [project_sweat_card_multisport_921.md](project_sweat_card_multisport_921.md) — ⏭️ Card breaks when MLB ends; + tap-through
+- [NFL SOTA signal audit 9/21](project_nfl_sota_signal_audit_921.md) — primetime + pass-D tier REJECTED (no persistence)
+- [NFL wind UNDER edge 9/21](project_nfl_wind_under_edge_921.md) — 10-14mph outdoor UNDER 59.5%; shadow first
+- [Card lineage calibration 9/21](project_card_lineage_calibration_921.md) — one list; rank by (sport,source_table,band)
+- [OddsCrowd client-render 9/21](project_oddscrowd_client_render_921.md) — 🚨 splits now JS-only; fadereport covers; decision pending
+- [Money-flow source map 9/21](project_money_flow_sources_921.md) — cleatz was unplumbed; +fadethepublic; NHL 1-source
+- [FADE gate performance 9/21](project_fade_gate_performance_921.md) — 🚨 SHARP_MOVE no edge; CONSENSUS-ML 68%; football 0% graded
+- [line_history outage 9/21](project_line_history_outage_921.md) — 🚨 NFL/NCAAF dead 12d, NHL/NBA never; fixed; cadence gap open
+- [Discussion queue 9/21](project_discussion_queue_921.md) — ⏭️ Split tab vision · NCAAB readiness · NBA props · then v1.0.2 backlog
+- [🚨 PROP L5 LEAK 9/22](project_prop_l5_leak_922.md) — lookback saw the game it predicted; NO valid PRIME prop record before 9/22
+- [NCAAB+NBA readiness 9/22](project_ncaab_nba_readiness_922.md) — 3 sports had lines but 0 graded; NBA props HOLD (no logs/minutes)
+- [project_bare_mask_review_920.md](project_bare_mask_review_920.md) — ⏭️ 9/21 FIRST: 51 bare `|| echo` steps
+- [project_ncaaf_3wk_calibration_920.md](project_ncaaf_3wk_calibration_920.md) — 🚨 NCAAF 3wk: ensemble overrides own model
+- [project_ncaaf_duplicate_total_lens_920.md](project_ncaaf_duplicate_total_lens_920.md) — 🚨 sp_plus_pred_total == projected_total; not a lens
+- [project_resolution_detector_919.md](project_resolution_detector_919.md) — Run reconcile_resolution first
+- [project_workflow_trigger_layers_918.md](project_workflow_trigger_layers_918.md) — 🚨 MLB push trigger gone
+- [project_hits_ban_verdict_917.md](project_hits_ban_verdict_917.md) — hits stay banned (artifacts)
+- [feedback_jerry_game_reads.md](feedback_jerry_game_reads.md) — Jerry reads MD; unique close
+- [feedback_universal_vs_sport_specific.md](feedback_universal_vs_sport_specific.md) — Universal unless data-model diff
+- [feedback_verify_player_team_first.md](feedback_verify_player_team_first.md) — Verify team/ML direction first
+- [feedback_verify_pick_before_socials.md](feedback_verify_pick_before_socials.md) — No plays w/o direct DB verify
+- [feedback_ml_vs_rl_conflation.md](feedback_ml_vs_rl_conflation.md) — Split WINS_ML/COVERS_SPREAD
+- [feedback_brand_tagline.md](feedback_brand_tagline.md) — "More Data, Less Sweat"
+- [feedback_vs_team_gate_soften.md](feedback_vs_team_gate_soften.md) — Small-sample vs-team = light
+- [🚨 Explicit SELECT = silent blanks](feedback_explicit_select_silent_blanks.md) — missing col doesn't error; audit reads vs select per sport
+- [feedback_backside_dictates_app_renders.md](feedback_backside_dictates_app_renders.md) — Server decides; app dumb-renders
+- [feedback_tos_scrub_source_names.md](feedback_tos_scrub_source_names.md) — Externals use abbrev codes (ToS)
+- [feedback_migration_pgrst_reload.md](feedback_migration_pgrst_reload.md) — Migrations end w/ NOTIFY pgrst
+- [feedback_source_gate_pattern.md](feedback_source_gate_pattern.md) — Gate at SOURCE not just scorer
+- [feedback_no_nrfi_on_cards.md](feedback_no_nrfi_on_cards.md) — N/YRFI OK IF extreme+STRONG+
+- [feedback_always_push_after_commit.md](feedback_always_push_after_commit.md) — commit→push same turn; verify SHA
+- [feedback_validate_data_reaches_new_code.md](feedback_validate_data_reaches_new_code.md) — Audit every call site on new field
+- [feedback_let_engine_speak.md](feedback_let_engine_speak.md) — Trust engine count; no cherry-pick
+- [feedback_postgrest_batch_normalize_keys.md](feedback_postgrest_batch_normalize_keys.md) — Batch upsert unions keys
+- [feedback_confidence_in_first_pass.md](feedback_confidence_in_first_pass.md) — <3 solid = recommend 3-card
+- [feedback_user_doubt_is_signal.md](feedback_user_doubt_is_signal.md) — User doubt = high info
+- [feedback_always_include_sides_audit.md](feedback_always_include_sides_audit.md) — Morning audit MUST surface Sides
+- [feedback_ladder_separate_from_public5.md](feedback_ladder_separate_from_public5.md) — Ladder separate from public card
+- [feedback_sample_size_with_pct.md](feedback_sample_size_with_pct.md) — Every % shows n; gate n≥30
+- [feedback_quote_engine_tier_verbatim.md](feedback_quote_engine_tier_verbatim.md) — Pull resolver_side.tier verbatim
+- [feedback_card_process_discipline_718.md](feedback_card_process_discipline_718.md) — Card cap 4; sides>totals
+- [feedback_full_slate_artifact_format.md](feedback_full_slate_artifact_format.md) — Full slate → HTML artifact
+- [feedback_dont_fade_prime_on_pattern_alone.md](feedback_dont_fade_prime_on_pattern_alone.md) — No override on 1-day pattern
+- [feedback_sharp_money_discipline_802.md](feedback_sharp_money_discipline_802.md) — Sharp $ <20pp=LEAN; 2+contra=FADE
+- [feedback_heavy_fav_ml_trap_803.md](feedback_heavy_fav_ml_trap_803.md) — Heavy-fav ML -200+ trap
+- [feedback_batter_hits_juice_trap_803.md](feedback_batter_hits_juice_trap_803.md) — Batter Hits O 0.5 -200+ trap
+- [feedback_fade_not_suppress_803.md](feedback_fade_not_suppress_803.md) — <45% buckets → FADE other side
+- [feedback_potd_juice_gate_803.md](feedback_potd_juice_gate_803.md) — POTD max -250 ML juice
+- [feedback_smart_fades_809.md](feedback_smart_fades_809.md) — Fade own sim if counter-cited
+- [feedback_never_generic_pitcher_ref_809.md](feedback_never_generic_pitcher_ref_809.md) — Never "the opposing starter"
+- [feedback_methodical_no_rerun_spam.md](feedback_methodical_no_rerun_spam.md) — Batch DB reruns; --force burns IO
+- [feedback_sweat_card_vs_sharp_card.md](feedback_sweat_card_vs_sharp_card.md) — Sweat Card ≠ The Sharp
+- [feedback_sharp_card_composite_record.md](feedback_sharp_card_composite_record.md) — Sharp Card = sharp+prop records
+- [feedback_ui_and_pipeline_in_parallel.md](feedback_ui_and_pipeline_in_parallel.md) — UI+pipeline parallel
+- [feedback_data_visibility_over_layout.md](feedback_data_visibility_over_layout.md) — Data correctness > tab structure
+- [feedback_test_sports_not_scope_limit.md](feedback_test_sports_not_scope_limit.md) — "Testing" sports = canary
+- [feedback_college_sports_no_props.md](feedback_college_sports_no_props.md) — NCAAF+NCAAB: no Props anywhere
+- [feedback_signal_gate_over_tier_906.md](feedback_signal_gate_over_tier_906.md) — Composers use signal-gate
+- [feedback_steam_room_tab_names.md](feedback_steam_room_tab_names.md) — Tabs: Split/Ladder/Sharp/Ledger
+- [feedback_morning_audit_format_912.md](feedback_morning_audit_format_912.md) — CANONICAL morning audit order
+- [feedback_grading_zero_fail_912.md](feedback_grading_zero_fail_912.md) — ZERO-FAIL grading: paginate
+- [feedback_prop_graph_rendering_912.md](feedback_prop_graph_rendering_912.md) — RUNBOOK: Prop Jerry L5/L10
+- [feedback_daily_trouble_log.md](feedback_daily_trouble_log.md) — SESSION START: docs/daily log + docs/BACKLOG.md
+- [feedback_daily_yesterday_recap.md](feedback_daily_yesterday_recap.md) — Daily: sharp+jerry+props+LR recap
+- [feedback_lr_daily_verify.md](feedback_lr_daily_verify.md) — Verify LR shadow distinct daily
+- [feedback_nfl_2026_week1_anchor.md](feedback_nfl_2026_week1_anchor.md) — NFL 2026 Wk1 anchor 09-09
+- [project_mlb_prop_l5_l10_gap_912.md](project_mlb_prop_l5_l10_gap_912.md) — MLB prop L5/L10 graphs missing
+- [project_pricing_launch_decision.md](project_pricing_launch_decision.md) — $14.99/mo + $119.99/yr + 7d trial
+- [project_unified_taxonomy_decision.md](project_unified_taxonomy_decision.md) — PRIME/STRONG/LEAN public labels
+- [project_jerry_server_side.md](project_jerry_server_side.md) — Jerry server-side
+- [project_casual_bettor_ux_docket.md](project_casual_bettor_ux_docket.md) — Translation not simplification
+- [project_external_transparency_differentiator.md](project_external_transparency_differentiator.md) — Graded externals differentiator
+- [project_external_aggregation_launch.md](project_external_aggregation_launch.md) — External pick tab: cadence+tiers
+- [project_cohort_engine_universal_architecture.md](project_cohort_engine_universal_architecture.md) — Cohort engine = moat
+- [project_spread_delta_trap_zone.md](project_spread_delta_trap_zone.md) — spread_delta 1.5-2.0 = trap
+- [project_sweat_locker_ladder.md](project_sweat_locker_ladder.md) — Ladder = 1 play/day; roll winnings
+- [project_model_architecture_xgboost_role.md](project_model_architecture_xgboost_role.md) — 4-layer hybrid; XGBoost auxiliary
+- [project_xgboost_spread_model_priority.md](project_xgboost_spread_model_priority.md) — XGBoost runs +5.3pt dir lift
+- [user_2026_roster_corrections.md](user_2026_roster_corrections.md) — 2026 rosters (Alonso→BAL,
+- [reference_data_source_strategy.md](reference_data_source_strategy.md) — Per-sport data source+cost matrix
+- [reference_lineterminal_prop_ui.md](reference_lineterminal_prop_ui.md) — lineterminal.com hitter-detail
+- [reference_sport_registry_state_message.md](reference_sport_registry_state_message.md) — Sport-tab banner live-editable
+- [project_close_spread_sign_bug_914.md](project_close_spread_sign_bug_914.md) — 🚨 close_spread sign differs per
+- [project_v1_0_1_client_priorities.md](project_v1_0_1_client_priorities.md) — v1.0.1 client punchlist
+- [project_fade_receipts_semantics_917.md](project_fade_receipts_semantics_917.md) — Fade grading verified correct 9/17
+- [project_jerry_spread_preference_917.md](project_jerry_spread_preference_917.md) — Queued: route -200+ ML to spread
+- [project_nfl_oc_coverage_gap_917.md](project_nfl_oc_coverage_gap_917.md) — Queued: OC game_id join mismatch
+- [project_nfl_def_baseline_mismatch_917.md](project_nfl_def_baseline_mismatch_917.md) — Hotfixed 9/17; proper fix v1.0.2
+- [project_nfl_sota_rebuild_917.md](project_nfl_sota_rebuild_917.md) — 6-phase SOTA NFL rebuild
+- [project_public_receipts_integrity_918.md](project_public_receipts_integrity_918.md) — 🚨 P0 immutable receipts for every
+- [project_wed_thu_football_cadence_910.md](project_wed_thu_football_cadence_910.md) — Wed-back/Thu-promote cadence
+- [project_ledger_leg_selection_910.md](project_ledger_leg_selection_910.md) — 30d: chalk_parlay only winner
+- [project_scale_1500_users_911.md](project_scale_1500_users_911.md) — Queued: 1500 Sun-morning capacity
+- [project_prop_jerry_coverage_gap_911.md](project_prop_jerry_coverage_gap_911.md) — Only 32/666 MLB props get jerry
+- [project_nfl_game_id_mismatch_911.md](project_nfl_game_id_mismatch_911.md) — NFL/NCAAF game_id split; 3 sites
+- [project_sharp_scrapers_nfl_gap_911.md](project_sharp_scrapers_nfl_gap_911.md) — cleatz+fadereport 0 NFL
+- [project_nba_ncaab_discussion_queue_911.md](project_nba_ncaab_discussion_queue_911.md) — NBA modeling; NCAAB pre-launch
+- [project_nfl_external_source_gap_911.md](project_nfl_external_source_gap_911.md) — NFL externals only 2 vs MLB 13
+- [project_postgrest_truncation_audit_912.md](project_postgrest_truncation_audit_912.md) — 20+ scripts capped at 1000
+- [project_lr_under_family_unban_913.md](project_lr_under_family_unban_913.md) — v1.0.1: un-ban 4 batter UNDER
+- [project_sweat_pick_badge_912.md](project_sweat_pick_badge_912.md) — SWEAT PICK badge; Nov 3 launch
+- [🚨 NFL prop projection NO edge 9/24](project_nfl_prop_projection_no_edge_924.md) — RETRACTED 58.3%; real 50.9%, below breakeven; 5 of 7 signals now weight 0
+- [🚨 NFL prop scoring diagnosis 9/24](project_nfl_prop_scoring_diagnosis_924.md) — said 93% got 59%; real breakeven 54.2%; counting>yardage; no price gate existed
+- [🚨 Externals are mostly money flow 9/25](project_externals_are_mostly_money_flow_925.md) — only 2 of 7 are real picks; OC dead for NFL (picks + money flow)
+- [🚨 Undefined palette keys ship black text 9/25](feedback_undefined_palette_key_renders_black.md) — C.win undefined → RN paints default black; tsc saw it, 1914-error baseline hid it
+- [MLB prop stub ceiling 9/25](project_mlb_prop_stub_ceiling_925.md) - 99% coverage_stub; last run 2pm ET is before lineups; confirmed PRIME always 0-8/day
+- [🚨 UFC model fades lose 9/25](project_ufc_model_fades_lose_925.md) — 33.3% when it fades the fav vs 69.7% always-fav baseline; adds nothing
+- [Vault starved by ctx depth 9/25](project_vault_ctx_depth_starves_patterns_925.md) — built + flag-on already; 0/12 patterns clear; backtest sees ~8% of a season
+- [🚨 MLB prop board collapse 9/26](project_mlb_prop_board_collapse_926.md) — 1,377 generated → 5 published; 91% banned families, 66% of the rest are stubs
+- Early-Sep project findings (mostly shipped or superseded): [[project_game_cards_two_layer_901]], [[project_sweat_badges_901]], [[project_vault_match_901]], [[project_rolling_rollup_architecture_901]], [[project_game_detail_action_network_vision_901]], [[project_ncaaf_model_discussion_queue_902]], [[project_ncaaf_fcs_coverage_902]], [[project_ats_streak_patterns_902]], [[project_lr_dissent_calibration_903]], [[project_prop_deep_dive_tab_905]], [[project_technical_reference_manual_906]], [[project_prop_jerry_layout_v2_906]], [[project_faq_sport_registry_source_906]], [[project_nfl_prop_jerry_needs_work_906]], [[project_august_note_record_907]], [[project_ux_punchlist_907]], [[project_home_screen_hot_streak_907]], [[project_nfl_model_pipeline_discussion_907]], [[project_sportsbook_default_ux_907]], [[project_ncaaf_grading_gap_908]], [[project_ui_toggle_infrastructure_908]], [[project_cross_sport_grading_audit_908]], [[project_lr_totals_investigation_908]], [[project_potd_selection_redesign_908]], [[project_picks_engine_walkthrough_908]], [[project_supabase_health_audit_909]], [[project_pipeline_overhaul_909]], [[project_data_freshness_audit_909]], [[project_lr_shadow_stale_909]], [[project_selection_grading_walkthrough_909]], [[project_badge_record_ledger_909]], [[project_cohort_signal_ux_909]], [[project_lr_opportunities_909]]
+- Jul/Aug project findings (superseded or historical, open individually if needed): [[project_sharp_money_fade_808]], [[project_per_source_tracker_moat_818]], [[project_sides_ensemble_waterfall_819]], [[project_signal_framework_821]], [[project_roster_physicality_823]], [[project_madden_top100_nfl_signal_824]], [[project_playbook_fade_broken_824]], [[project_the_x_naming_convention_824]], [[project_calibration_architecture_805]], [[project_jerry_vs_sharp_card_817]], [[project_team_tendencies_cross_sport_817]], [[project_prop_playbook_port_817]], [[project_adaptive_model_ensemble_802]], [[project_totals_cohort_framework_801]], [[project_tier_curve_808]], [[project_card_composition_audit_803]], [[project_model_correlation_watch_803]], [[project_cohorts_v2_729]], [[project_prop_tier_ux_confusion_720]], [[project_potd_universal_pool_720]], [[project_advanced_metrics_backtest_815]], [[project_juice_fav_rl_trap_724]], [[project_all_sports_readiness_820]], [[project_dissent_audit_822]]
+- Resolved/archived: [[project_nfl_lr_shadow_gap_913]], [[project_ncaaf_ingest_duplicate_902]], [[project_nfl_prop_signal_gap_908]], [[project_ncaaf_lr_total_dead_914]], [[project_nhl_resolver_build_908]], [[project_nfl_read_enrichment_913]], [[project_nfl_k_pts_calibration_bug_912]]
+- [🚨 NCAAF dog bias 9/26](project_ncaaf_dog_bias_926.md) — dog picks 24.3% vs favs 57.9%; 78% of pick drift moved toward the dog
+- [🚨 SP+ backtests are leaky 9/26](project_sp_plus_backtests_are_leaky_926.md) — sp_overall is current STD; K=0.85 recalibration NOT justified; history starts 9/26
+- [🚨 Margin under-projection 9/26](project_margin_under_projection_926.md) — NFL 88% / NCAAF 76% of games project the fav below market; this IS the dog bias; 20 FCS teams had FBS ratings (fixed)
+- [🚨 Incoming sports readiness 9/26](project_incoming_sports_readiness_926.md) — NBA opens 10/3 with 76 picks and 0 current stats/SOS/Jerry/externals; NCAAB has nothing; NHL stats thin
+- [🚨 NFL has TWO Thursday locks 9/28](project_nfl_two_thursday_locks_928.md) — a gate in build_row is discarded; fix after the restore loop AND at the jerry_cache skip
+- [Grey situational records = SIT_MIN_N 9/28](project_situational_grey_is_sample_floor_928.md) — wk3: all 36 rows N<=2; check N before touching render code
+- [🚨 CHI 59 @ CAR 37 = 96 pts 9/28](project_chi_car_96_point_game_928.md) — +48.5 vs close; makes CHI #1 offense on 2 games; UNVERIFIED, no score sanity check exists
+- [🚨 Sport slot dead without ctx map 9/28](project_ctx_prop_chain_gap_928.md) — GameDetailV2 ctx comes from index.tsx per-sport map; wire 4 places or the screen renders blank
+- [🚨 MLB workflow hosts other sports' jobs 9/28](project_mlb_workflow_hosts_other_sports_928.md) — money-flow scrapers + situational/stats matview refresh ran only from baseball; MLB ends in a month
+- [SBD NHL splits via shadow DOM 9/28](reference_sportsbettingdime_nhl_splits_928.md) — 2nd NHL money-flow source; invisible to requests AND page.content(); needs playwright shadowRoot walk
+- [🚨 Situational matview lost 3 sports 9/28](project_situational_matview_drift_928.md) — full CREATE dropped NHL/NBA/NCAAB for 3 weeks; NBA/NCAAB season is TEXT so they still can't be restored
+- [🚨 SP+ compression IS the dog bias 9/27](project_sp_plus_compression_927.md) — sp_pred margin 1.7x too small; raw sp_overall is fine; rolling EPA not opponent-adjusted (r=0.79, schedule artifact)
+- [🚨 NFL v4 has no team features 9/27](project_nfl_v4_no_team_features_927.md) — constant +1.5 always-HOME (sd 0.197); weather/rest/week only; dead since 9/21; still counted as a lens
+- [🚨 NFL fav-ML loses on juice 9/27](project_nfl_fav_ml_price_discipline_927.md) — 65.2% but -4.9% ROI; PRIME -22.8%; picked -2800; zero dog MLs ever; no price cap on this path
+- [🚨 Season ATS nulled by enrich_team_trends 9/27](project_season_ats_null_overwrite_927.md) — Games-tab ATS badges were last-season L10; writer patched None over good values; misdiagnosed once as a step failure
+- [NHL buildout 9/27](project_nhl_buildout_927.md) — 5 models + 32 rated teams; 7 silent breakages (ML column split, MC gate dead outside MLB, prop L10 ESPN 404)
+- [NHL projection calibration 9/27](project_nhl_projection_calibration_927.md) — every constant derived from a league invariant (total 6.10 / OT 23% / home 54.5%)
+- [🚨 NHL 3 win probs, read quoted the hidden one 9/29](project_nhl_read_card_drift_929.md) — read argued against its own pick; NOT timing drift (that claim was wrong); anthropic_guard was imported by nothing
