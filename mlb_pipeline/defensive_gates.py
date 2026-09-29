@@ -1303,6 +1303,41 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             _edge, _phrase, _edge_reason = None, '', None
             _tier_after = pred['suggested_tier']
 
+        # ══ 2026-09-29 · lr_v1 MAY NOT ASSIGN PRIME IN NCAAF ══
+        # Andy: "have we fixed the ncaaf tier issue then?" It was not fixed by
+        # anything else shipped today, and this is where it actually lives.
+        #
+        # NCAAF's tier ladder is inverted and it is ENTIRELY these picks.
+        # Measured on the 2026 season:
+        #
+        #     lr_v1 PRIME   MLB    60-35   63.2%  n=95   z=+2.10   works
+        #                   NFL     7-5    58.3%  n=12   z=+0.41   fine
+        #                   NCAAF   5-10   33.3%  n=15   z=-1.48   broken
+        #
+        #     NCAAF ensemble_v2 tiers are healthy by comparison:
+        #       STRONG 57.1% (n=63) · LEAN 53.3% (n=92) · COVERAGE 53.7% (n=67)
+        #
+        # All 15 NCAAF lr_v1 PRIMEs are moneylines, 14 of them on FAVOURITES of
+        # 1.5-6.5 points — coin-flip road favourites wearing the top tier. And
+        # within lr_v1's own NCAAF picks, PRIME (33.3%) is worse than its STRONG
+        # (66.7%, n=9), so this is a ranking failure, not just a bad stretch.
+        #
+        # WHY CAP RATHER THAN DISABLE, and why NCAAF only: lr_v1 PRIME is
+        # significantly GOOD in MLB (z=+2.10 on n=95). Turning it off globally
+        # would break the thing that works. The claim here is narrow and
+        # evidence-shaped — lr_v1 has DEMONSTRATED PRIME-worthy discrimination in
+        # MLB and has not in NCAAF, so it keeps the tier where it earned it and
+        # loses it where it has not.
+        #
+        # n=15 / z=-1.48 does not clear 2 SE, and a suppression would not be
+        # justified on it. A CAP is a weaker action than suppression: the play
+        # still ships, with an honest label, one tier down — which is exactly
+        # what the surrounding comment says this gate is for ("it DEMOTES, never
+        # suppresses"). Revisit after NCAAF week 8; lift it if PRIME earns it.
+        if str(sport).upper() == 'NCAAF' and _tier_after == 'PRIME':
+            _tier_after = 'STRONG'
+            _edge_reason = ((_edge_reason + ' · ') if _edge_reason else '') +                            'lr_v1 PRIME unproven in NCAAF (5-10, n=15) — capped'
+
         _sub = (f'Model conviction on {team_short} · {conviction}%'
                 if not _phrase else f'{team_short} · {_phrase}')
 
