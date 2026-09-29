@@ -80,3 +80,29 @@ script was created, when it was presumably run locally where .env exists.
 Related: [[project_football_engine_audit_929]],
 [[project_signal_calibration_gap_929]], [[project_prop_l5_leak_922]],
 [[project_sp_plus_backtests_are_leaky_926]] — the same leak class, third time.
+
+## RESOLVED SAME DAY — the leak-free answer is NO EDGE
+
+The 2026-09-26 snapshot carries `captured_at = 2026-09-26T16:31:00Z` (12:31pm ET
+Saturday), which is strictly BEFORE 54 of that day's NCAAF kickoffs and all of
+Sunday's NFL. That makes a genuinely leak-free test possible, and it was run:
+
+    48 games with snapshot data on both sides (NCAAF 36, NFL 12)
+
+    NCAAF   19-17   52.8%   z=+0.05
+    NFL      7-5    58.3%   z=+0.41   (n=12)
+    ALL     26-22   54.2%   z=+0.25
+
+Quartile ranking is NOT monotonic — NCAAF runs 55.6 / 33.3 / 55.6 / 44.4, which
+is noise. Against the leaked version (70.4 / 64.8 / 45.1 / 38.0, z=+4.07) the
+same lens collapses from 67.8% to 52.8%.
+
+**The entire effect was the leak.** This independently confirms the 9/26
+study_stat_edge conclusion and extends it to EPA: rolling-stat EPA differential
+carries no ATS edge. n=48 is small, but the collapse from z=+4.07 to z=+0.05 is
+the finding, not the absolute number.
+
+DO NOT build a lens on rolling-stat EPA. If it is revisited, use
+team_stats_rolling_history with `captured_at < kickoff_utc` — not snapshot_date
+alone, since the 9/26 snapshot and the 9/26 games share a date and only the
+timestamp separates them.
