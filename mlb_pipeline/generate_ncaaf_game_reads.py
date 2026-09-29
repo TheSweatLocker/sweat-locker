@@ -148,14 +148,22 @@ def load_templates():
 
 
 def fetch_upcoming_games():
-    """Pull ncaaf_game_context rows for games in next 10 days.
+    """Pull ncaaf_game_context rows through the end of next play-week.
 
     2026-08-09 fix: dict-based query string collapsed both game_date filters
     to only the second (lte.horizon), pulling PAST games too. Build URL by
     hand so both filters land as separate query params.
+
+    2026-09-29: was `now + 10 days`. Replaced with season_calendar.read_horizon
+    so the window is the app's own display window by construction, not a
+    constant that has to be kept in sync by hand. NCAAF happened to be safe at
+    10 days (Wed→Tue play-week, games cluster Thu-Sat) but NFL was not — see
+    the play-week block in season_calendar.py for the measurement.
     """
     today = today_et()
-    horizon = (datetime.now(timezone.utc) + timedelta(days=10) - timedelta(hours=4)).strftime('%Y-%m-%d')
+    from season_calendar import read_horizon
+    _today_et = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    horizon = read_horizon('NCAAF', on=_today_et).strftime('%Y-%m-%d')
     # 2026-09-05: raised limit 50 → 200 to cover full Sat slate. Sat NCAAF has
     # 80+ games; prior cap left 30-40 games with "Analysis pending" stub placeholders
     # (Norfolk State @ Old Dominion class). Claude Haiku ~$0.001/call at ~600 tokens

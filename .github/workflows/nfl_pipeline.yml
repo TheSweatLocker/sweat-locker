@@ -910,6 +910,12 @@ jobs:
       # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
       # NFL prompt writes prose only; without sync, jerry_reads never fills.
       # See docs/JERRY_UNIFICATION.md.
+      # 2026-09-29: was `--window 8`. The app's "tomorrow" tab shows the whole
+      # next play-week, which on a WEDNESDAY reaches +13 days — next week's
+      # entire 14-game Sunday slate sat outside an 8-day sweep AND outside the
+      # generator's 10-day cutoff, so every one of those cards rendered with no
+      # read, every Wednesday, healing by Friday. `auto` derives the sweep from
+      # season_calendar.read_horizon, the same arithmetic app/index.tsx uses.
       - name: Sync NFL jerry_reads from ctx
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
@@ -919,7 +925,20 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "sync_jerry_reads_from_ctx.py (NFL)" \
-            python sync_jerry_reads_from_ctx.py --sport NFL --window 8
+            python sync_jerry_reads_from_ctx.py --sport NFL --window auto
+
+      # 2026-09-29: outcome check for the above — see the NCAAF twin. Derived
+      # windows stop the constants drifting; this catches everything else that
+      # produces the same user-visible symptom (a card with no read).
+      - name: Verify NFL read coverage vs app window
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "verify_read_coverage.py (NFL)" python verify_read_coverage.py --sport NFL
 
       # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and
       # was wired for MLB only, so no NFL read was ever checked before

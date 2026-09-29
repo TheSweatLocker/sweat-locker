@@ -297,23 +297,48 @@ def main():
     ap.add_argument('--sport', choices=['ALL'] + list(SPORT_CONFIG),
                     default='ALL')
     ap.add_argument('--date', help='YYYY-MM-DD (default: today ET). Use --window N to sweep N days ahead too.')
-    ap.add_argument('--window', type=int, default=1,
-                    help='Sweep from --date forward N days (default 1 = just that date)')
+    # 2026-09-29: default was a hardcoded 1 and the NCAAF workflow passed 7 —
+    # the FIFTH hand-written copy of "how far ahead does the app show games",
+    # and the narrowest, which made it the real binding constraint on NCAAF
+    # jerry_reads coverage rather than the generator's 10 days. On a Wednesday
+    # the app's tomorrow tab reaches +13, so a 7-day sweep left most of next
+    # play-week with a ctx row and no read. Default is now 'auto': weekly
+    # sports sweep to season_calendar.read_horizon (the app's own window),
+    # daily sports stay at 1. Pass an integer to override.
+    ap.add_argument('--window', default='auto',
+                    help="Days to sweep forward from --date. 'auto' (default) "
+                         "= through end of next play-week for weekly sports, "
+                         "1 day for daily sports. An integer forces that count.")
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
 
     base = args.date or (dt.datetime.utcnow() - dt.timedelta(hours=4)).date().isoformat()
     y,m,d = (int(x) for x in base.split('-'))
     base_d = dt.date(y,m,d)
-    dates = [(base_d + dt.timedelta(days=i)).isoformat() for i in range(args.window)]
     sports = list(SPORT_CONFIG) if args.sport == 'ALL' else [args.sport]
 
-    print(f'=== sync_jerry_reads_from_ctx · {sports} · {dates[0]}..{dates[-1]}{" [DRY]" if args.dry_run else ""} ===')
-    for gd in dates:
-        for sp in sports:
+    from season_calendar import read_horizon
+
+    def _dates_for(sport):
+        """Date sweep for one sport. Per-sport because 'auto' differs by sport."""
+        if str(args.window).lower() != 'auto':
+            n = max(1, int(args.window))
+            return [(base_d + dt.timedelta(days=i)).isoformat() for i in range(n)]
+        hz = read_horizon(sport, on=base_d)
+        if hz is None:            # daily sport — no play-week concept
+            return [base_d.isoformat()]
+        n = (hz - base_d).days + 1
+        return [(base_d + dt.timedelta(days=i)).isoformat() for i in range(max(1, n))]
+
+    print(f'=== sync_jerry_reads_from_ctx · {sports} · from {base_d} '
+          f'· window={args.window}{" [DRY]" if args.dry_run else ""} ===')
+    for sp in sports:
+        dates = _dates_for(sp)
+        print(f'  {sp}: {dates[0]}..{dates[-1]} ({len(dates)}d)')
+        for gd in dates:
             c, w, s = sync_sport(sp, gd, dry=args.dry_run)
             if c or w:
-                print(f'  {sp} {gd}: checked={c} wrote={w} skipped={s}')
+                print(f'    {sp} {gd}: checked={c} wrote={w} skipped={s}')
 
 
 if __name__ == '__main__':

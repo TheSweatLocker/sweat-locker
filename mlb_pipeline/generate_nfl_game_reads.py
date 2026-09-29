@@ -967,7 +967,12 @@ def fetch_nfl_contexts():
     # 2026-09-06: bumped 10→12 days. Week 1 MNF at 9/15 8pm ET fell just
     # past the 10-day-minus-4h horizon on Sat morning runs. 12 days safely
     # covers Thu opener → next-week's Thursday early lookahead.
-    horizon = (datetime.now(timezone.utc) + _td(days=12) - _td(hours=4)).strftime('%Y-%m-%d')
+    # 2026-09-29: third of four hand-tuned copies of the same window. Now
+    # derived — this one has to be >= the odds cutoff above or a game gets a
+    # read built with no context. Same source, so it always is.
+    from season_calendar import read_horizon
+    _today_et = (datetime.now(timezone.utc) - _td(hours=4)).date()
+    horizon = read_horizon('NFL', on=_today_et).strftime('%Y-%m-%d')
     url = (f"{SUPABASE_URL}/rest/v1/nfl_game_context"
            f"?game_date=gte.{today}&game_date=lte.{horizon}"
            f"&select=game_id,home_team,away_team,game_date,close_total,close_spread,"
@@ -2516,11 +2521,21 @@ def run():
     if not games:
         print("  No NFL games on the slate (offseason / no odds available).")
         return
-    # Filter to next 10 days only (regular season scope).
+    # Filter to the window the app can actually display.
     # 2026-09-06: bumped 8→10 to reach Week 1 MNF (game 9/15 8pm ET was
     # 9+ days out on Sat morning runs — the fetch_nfl_contexts horizon
     # already extends to 12 days, this cutoff matched them).
-    cutoff = datetime.now(timezone.utc) + timedelta(days=10)
+    # 2026-09-29: 10 days was NOT enough and this is the bug that bit.
+    # The app's "tomorrow" tab shows all of next play-week, which on a
+    # WEDNESDAY reaches +13 days — next week's entire Sunday slate (14
+    # games) sat past this cutoff with no read, every Wednesday, healing
+    # itself by Friday. Now derived from season_calendar.read_horizon.
+    from season_calendar import read_horizon
+    _today_et = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    _hz = read_horizon('NFL', on=_today_et)
+    # End of the horizon DATE in ET = (date + 1 day) 00:00 ET = +04:00 UTC.
+    cutoff = (datetime(_hz.year, _hz.month, _hz.day, tzinfo=timezone.utc)
+              + timedelta(days=1, hours=4))
     games = [g for g in games if g.get("commence_time") and g["commence_time"] <= cutoff.isoformat()]
     # Apply game_id filter for targeted regen
     if game_id_filter:

@@ -393,7 +393,16 @@ jobs:
       # CALL block) so parse_synthesis returns empty and dual-write to
       # jerry_reads never fires. This bridge script derives jerry_reads.call_*
       # from ctx.primary_play (mechanical truth) + narrative from jerry_cache.
-      # Deterministic — no LLM call. Runs today + next 7 days.
+      # Deterministic — no LLM call.
+      # 2026-09-29: was `--window 7`. This step is what actually writes NCAAF
+      # jerry_reads, so its window — not the generator's — was the binding
+      # constraint on read coverage, and 7 days was the narrowest of five
+      # hand-tuned copies of the same number. On a THURSDAY the app's tomorrow
+      # tab first shows the next play-week, whose Saturday is +9 to +10 days
+      # out; a 7-day sweep left that whole Saturday slate with a ctx row and no
+      # read (measured: USC@Penn State, Oklahoma@Texas, Georgia@Alabama,
+      # UCLA@Oregon on 10/10). `auto` derives the sweep from
+      # season_calendar.read_horizon — the app's own display window.
       - name: Sync NCAAF jerry_reads from ctx
         continue-on-error: true
         env:
@@ -401,7 +410,21 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NCAAF --window 7
+          python sync_jerry_reads_from_ctx.py --sport NCAAF --window auto
+
+      # 2026-09-29: the outcome check for the above. Deriving the window stops
+      # the five constants from disagreeing; it does not catch a generator that
+      # died on one game or a ctx row that landed after the read pass. Both
+      # look identical to a user — a card with no read. Fails the step so it
+      # lands in workflow_heartbeat instead of healing silently by Friday.
+      - name: Verify NCAAF read coverage vs app window
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "verify_read_coverage.py (NCAAF)" python verify_read_coverage.py --sport NCAAF
 
       # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but
       # was only ever called with --sport MLB, so college write-ups were
