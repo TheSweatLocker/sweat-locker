@@ -1913,7 +1913,16 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     prior_pp = ctx.get('primary_play')
     if isinstance(prior_pp, dict):
         prior_market = str(prior_pp.get('type', '')).lower()
-        if prior_market in ('ml', 'rl', 'total') and prior_market != top_market:
+        # 2026-09-29: must not restore a BARRED market. Caught by testing —
+        # NE @ BUF had ml (COVERAGE/61) and rl (LEAN/65) both picking, the bar
+        # correctly chose rl, and then this gate handed it straight back to
+        # 'total' because the row's PRIOR pick was Under 49.5. The stability
+        # gate is about not oscillating between two legitimate markets; a
+        # market we have measured at 33.3% is not one of them, and "it was the
+        # pick last run" is exactly how a suppressed market would persist
+        # forever.
+        if (prior_market in ('ml', 'rl', 'total') and prior_market != top_market
+                and prior_market not in _barred):
             prior_dec = {'ml': ml_dec, 'rl': rl_dec, 'total': total_dec}[prior_market]
             new_dec = {'ml': ml_dec, 'rl': rl_dec, 'total': total_dec}[top_market]
             if (prior_dec is not None and prior_dec.pick is not None
