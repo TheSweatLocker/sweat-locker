@@ -331,6 +331,14 @@ jobs:
         run: |
           cd mlb_pipeline
           python fadereport_scraper.py --sport NHL || echo "::warning::fadereport NHL failed"
+          # 2026-09-28 · second real money-flow source. Needs the chromium
+          # installed above: the data is in web-component SHADOW DOM, which
+          # neither requests nor page.content() can see, so this is the one
+          # scraper here that genuinely requires a browser. It exits non-zero
+          # when it matches no games, because a shadow-DOM parse breaks
+          # silently on any component rewrite and a quiet zero-row run is the
+          # failure mode this repo keeps getting bitten by.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "sbd_splits_scraper.py (NHL)"             python sbd_splits_scraper.py --league nhl
 
       - name: Splits v2 aggregator (NHL)
         continue-on-error: true

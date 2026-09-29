@@ -500,8 +500,48 @@ def process_sport(sport: str, game_date: str, dry: bool) -> tuple[int, int]:
     v2_written = upsert_v2_rows(all_rows, dry)
     print(f"  → v2 upserted: {v2_written}")
 
-    # Aggregate per game_id → write splits_summary
-    game_ids = sorted({row["game_id"] for row in all_rows})
+    # ══ 2026-09-28 · AGGREGATE EVERY GAME WITH v2 ROWS, NOT JUST THE ONES
+    #    THIS RUN NORMALIZED ══
+    # This was `{row["game_id"] for row in all_rows}` — the games normalized
+    # from the source tables in THIS invocation. Any source that writes
+    # public_splits_v2 DIRECTLY was therefore never summarized:
+    # pull_scoresandodds.py does ("→ v2 upserted: N"), and so does the new
+    # sbd_splits_scraper. Their rows landed in v2 and stopped there.
+    #
+    # That is why NHL showed 85 rows in public_splits_v2 while
+    # splits_summary was empty on all 40 games, and why the Money Flow card
+    # had nothing to render despite data existing two tables away. The
+    # summary is what the app reads; a row in v2 that never reaches it is
+    # invisible.
+    #
+    # Now: the union of what was just normalized and every game on this
+    # date that already has v2 rows. compute_splits_summary is per-game and
+    # idempotent, so the extra ids cost one read each and cannot double-count.
+    game_ids = set(row["game_id"] for row in all_rows)
+    try:
+        _tbl = SPORT_CTX_TABLE.get(sport.upper())
+        if _tbl:
+            _r = requests.get(f"{SB}/rest/v1/{_tbl}", headers=H_READ,
+                              params={"select": "game_id",
+                                      "game_date": f"eq.{game_date}",
+                                      "limit": "500"}, timeout=20)
+            if _r.status_code == 200:
+                _ids = [x["game_id"] for x in _r.json() if x.get("game_id")]
+                for i in range(0, len(_ids), 50):
+                    _chunk = ",".join(f'"{g}"' for g in _ids[i:i + 50])
+                    _v = requests.get(f"{SB}/rest/v1/public_splits_v2",
+                                      headers=H_READ,
+                                      params={"select": "game_id",
+                                              "sport": f"eq.{sport}",
+                                              "game_id": f"in.({_chunk})",
+                                              "limit": "2000"}, timeout=25)
+                    if _v.status_code == 200:
+                        game_ids.update(x["game_id"] for x in _v.json()
+                                        if x.get("game_id"))
+    except Exception as _e:
+        print(f"  ⚠ v2 game-id sweep failed ({_e}) — "
+              f"falling back to this run's rows only")
+    game_ids = sorted(game_ids)
     ctx_written = 0
     for gid in game_ids:
         summary = compute_splits_summary(sport, gid)
