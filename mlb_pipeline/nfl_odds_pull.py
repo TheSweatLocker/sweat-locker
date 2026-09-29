@@ -155,6 +155,23 @@ def event_to_game_row(event: dict, aliases: dict, sport_phase: str) -> Optional[
         'game_id': game_id,
         'game_date': date_str,
         'season': dt.year,
+        # ══ 2026-09-29 · week WAS NEVER SET HERE ══
+        # Measured: 241 of 242 nfl_game_results rows for 2026 had week NULL,
+        # and ALL 478 ncaaf rows. This function creates the overwhelming
+        # majority of those rows (one upsert per Odds-API event, ~272 a season),
+        # and ingest_nflverse — which DOES map week — only fills in the subset
+        # nflverse has published. So week was null on essentially everything.
+        #
+        # Consequence: no week-based grouping is possible from the results
+        # table. A "week 3 engine assessment" had to derive weeks from
+        # game_date instead, and any matview or cohort keyed on week sees null.
+        #
+        # Uses the CANONICAL anchor — 2026-09-09, Andy's authority, migration
+        # 20260913h, feedback_nfl_2026_week1_anchor — the same one
+        # nfl_game_context._season_week uses, so the two tables agree. NOT the
+        # real-world opener (9/10) and not first-Thursday arithmetic; both were
+        # tried and both were wrong.
+        'week': _season_week(et_dt, dt.year),
         'game_type': 'PRE' if sport_phase == 'preseason' else 'REG',
         'home_team': home_abbrev,
         'away_team': away_abbrev,
@@ -202,6 +219,23 @@ def event_to_game_row(event: dict, aliases: dict, sport_phase: str) -> Optional[
         row['open_total'] = row['close_total']
 
     return row
+
+
+def _season_week(et_dt, season: int):
+    """Canonical Sweat Shop NFL season week. None outside a known season.
+
+    Mirrors nfl_game_context._season_week exactly — 2026 Week 1 = 9/9-9/15,
+    anchored 2026-09-09 (Andy authority, migration 20260913h). Kept as a
+    separate copy rather than imported because nfl_game_context is a heavy
+    module and this is two lines; if a third caller appears, promote it.
+    """
+    from datetime import date as _date
+    if season != 2026:
+        return None
+    delta = (et_dt.date() - _date(2026, 9, 9)).days
+    if delta < 0:
+        return 0
+    return min(22, delta // 7 + 1)
 
 
 def upsert_games(rows: list, dry_run: bool = False) -> int:

@@ -37,6 +37,33 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports'
 
 
+# ══ 2026-09-29 · NCAAF WEEK WAS NEVER SET ANYWHERE ══
+# Measured: week is NULL on ALL 478 ncaaf_game_results rows AND all 421
+# ncaaf_game_context rows. ncaaf_odds_pull never set it, and
+# ncaaf_game_context line 1324 does `'week': g.get('week')` — passing through a
+# field the Odds API does not provide. So college football had no week data at
+# all and no week-based grouping was possible.
+#
+# ANCHOR DERIVED FROM THE SCHEDULE, NOT ASSUMED. College weeks are
+# Saturday-centred blocks running roughly Tue-Mon, and the 2026 Saturdays land
+# 9/05, 9/12, 9/19, 9/26 — exactly 7 days apart. Anchoring on the Tuesday
+# before the first of those (2026-09-01) maps all 15 played dates correctly,
+# including the 8/29 "Week 0" games college football really does schedule.
+# Verified against every date with a result before shipping.
+#
+# Deliberately NOT the NFL anchor (2026-09-09): the two sports open two weeks
+# apart and share no week numbering.
+def _season_week(et_dt, season: int):
+    """Canonical NCAAF season week. None outside a known season, 0 for Week 0."""
+    from datetime import date as _date
+    if season != 2026:
+        return None
+    delta = (et_dt.date() - _date(2026, 9, 1)).days
+    if delta < 0:
+        return 0
+    return min(20, delta // 7 + 1)
+
+
 def _et_now() -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=4)
 
@@ -178,6 +205,10 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
         'game_date': game_date,
         'season': dt.year,
         'season_type': 'regular',   # postseason handled separately (bowls)
+        # 2026-09-29: week was NULL on every NCAAF row in both tables. See the
+        # _season_week docstring for how the 2026-09-01 anchor was derived and
+        # verified against all 15 played dates.
+        'week': _season_week(et_dt, dt.year),
         'home_team': home,
         'away_team': away,
         'kickoff_utc': commence,
