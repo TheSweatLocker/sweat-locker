@@ -4,9 +4,20 @@
 -- WHY
 -- ---
 -- nfl_game_context.game_id is an Odds-API hex id. nfl_game_results.game_id is
--- '20260927_BAL_DAL'. Measured 2026-09-29: the two sets have ZERO intersection,
--- and the same split exists for NCAAF. This is project_nfl_game_id_mismatch_911,
--- still open since 09-11.
+-- '20260927_BAL_DAL'. Measured 2026-09-29: the two sets have ZERO intersection.
+-- This is project_nfl_game_id_mismatch_911, open since 09-11.
+--
+-- CORRECTION (added after applying): an earlier draft of this comment said "the
+-- same split exists for NCAAF". That was ASSUMED, not measured, and it is wrong.
+-- Measured directly: NCAAF ctx=421, results=478, game_id intersection=385 —
+-- ncaaf_game_context.game_id is ALREADY 'ncaaf_YYYYMMDD_away_home' and joins
+-- fine. The NFL intersection really is 0.
+--
+-- So the NCAAF column below is REDUNDANT: it reproduces that table's own
+-- game_id. Kept rather than dropped because it is harmless, indexed, and makes
+-- the join key explicit and identical in name across both sports — code that
+-- joins on results_game_id works for either without a per-sport branch. It is
+-- not load-bearing for NCAAF and dropping it would break nothing.
 --
 -- Consequence: nothing can join a PICK to its RESULT. compute_surface_records
 -- reports 35 graded NFL sides when the real number is 47, and the full football
@@ -21,9 +32,10 @@
 -- table's own id from columns the context table already holds. Verified against
 -- live data before writing this:
 --
---     nfl_game_context    242 of 242 result ids resolve (100%)
---     ncaaf_game_context  385 resolve; the 36 that do not are FCS opponents
---                         and games genuinely absent from results
+--     nfl_game_context    242 of 242 result ids resolve (100%) — the real fix
+--     ncaaf_game_context  385 resolve; same 385 its own game_id already
+--                         resolved. The 36 that do not are FCS opponents and
+--                         games genuinely absent from the results table.
 --
 -- GENERATED, not a plain column with a trigger or a backfill, because it then
 -- cannot drift: no writer has to remember it, and it is correct for rows that
