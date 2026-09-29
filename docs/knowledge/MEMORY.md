@@ -136,3 +136,4 @@
 - [NHL buildout 9/27](project_nhl_buildout_927.md) — 5 models + 32 rated teams; 7 silent breakages (ML column split, MC gate dead outside MLB, prop L10 ESPN 404)
 - [NHL projection calibration 9/27](project_nhl_projection_calibration_927.md) — every constant derived from a league invariant (total 6.10 / OT 23% / home 54.5%)
 - [🚨 NHL 3 win probs, read quoted the hidden one 9/29](project_nhl_read_card_drift_929.md) — read argued against its own pick; NOT timing drift (that claim was wrong); anthropic_guard was imported by nothing
+- [🚨 Football engine audit 9/29](project_football_engine_audit_929.md) — conviction INVERTED (80+ = 46.7% vs 50-59 = 64.7%, sides only); football totals 33.3% n=48, fading them goes 32-16; sides +30.4u
