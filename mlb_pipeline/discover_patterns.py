@@ -196,9 +196,15 @@ def _football_extractors(g: dict, sport: str = None) -> dict:
     if not isinstance(oc, dict): oc = {}
 
     if ct is not None:
+        # 2026-09-29: dropped ('sp_plus_total', 'sp_plus_pred_total'). For NCAAF
+        # that column is a byte-identical copy of projected_total (67/67), so
+        # the miner emitted sp_plus_total and proj_total as two features that
+        # could never disagree — every pattern combining them looked like
+        # two-model confluence built on one model. Monte Carlo (mined below
+        # from mc_mean_total) is the real independent total. Nothing is lost:
+        # the column is NCAAF-only and was always a duplicate there.
         for name, key in (('proj_total', 'projected_total'),
-                          ('panel_total', 'panel_pred_total'),   # NFL only, absent NCAAF
-                          ('sp_plus_total', 'sp_plus_pred_total')):  # NCAAF only
+                          ('panel_total', 'panel_pred_total')):  # NFL only, absent NCAAF
             v = _f(g.get(key))
             if v is not None and abs(v - ct) >= 0.5:
                 out[name] = 'over' if v > ct else 'under'
@@ -225,8 +231,13 @@ def _football_extractors(g: dict, sport: str = None) -> dict:
         # (positive = home wins by X). Compare against market_hm (also
         # normalized above). Positive delta → model thinks home wins by
         # MORE than market → HOME lean.
-        for name, key in (('proj_ml', 'projected_spread'),
-                          ('sp_plus_ml', 'sp_plus_pred_spread')):
+        # 2026-09-29: dropped ('sp_plus_ml', 'sp_plus_pred_spread') for the same
+        # reason as sp_plus_total above — measured 67/67 identical to
+        # projected_spread, so it was proj_ml under a second name. The real
+        # second spread opinion is epa_pred_spread (migration 20260929b), left
+        # out here on purpose: it is ungraded and visibly compressed, and the
+        # vault is a pick path.
+        for name, key in (('proj_ml', 'projected_spread'),):
             v = _f(g.get(key))
             if v is not None:
                 delta = v - market_hm

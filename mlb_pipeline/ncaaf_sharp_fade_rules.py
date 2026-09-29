@@ -125,16 +125,46 @@ def rule_models_oppose_sharp(ctx, pick_market, pick_side):
             'matchup': _t_side(ctx.get('projected_total'), line),
             'monte_carlo': _t_side(_mc_total, line),
         }
+        lens_values = [ctx.get('projected_total'), _mc_total]
     elif pick_market in ('ml', 'spread'):
+        # 2026-09-29: this branch had the SAME bug the total branch above had,
+        # and it survived the 09-20 fix because a comment in
+        # ncaaf_game_context.compute_projections asserted the spread columns
+        # were not aliases. They are: sp_plus_pred_spread is a byte-identical
+        # copy of projected_spread (67/67 measured 2026-09-29), because the
+        # primary projection already uses SP+ whenever both teams have it. So
+        # `len(filled) >= 2` was satisfied by one model counted twice and this
+        # rule emitted STRONG fades reasoned "Both matchup, sp_plus oppose
+        # sharp" on a single opinion.
+        #
+        # Monte Carlo is the same genuinely-independent lens the total branch
+        # switched to. epa_pred_spread (20260929b) is the other real second
+        # spread opinion but is ungraded and compressed, so it stays out of
+        # every pick path until measured.
+        _mc = ctx.get('mc_probabilities')
+        _mc = _mc if isinstance(_mc, dict) else {}
+        _mc_margin = _mc.get('mc_expected_margin')
         models = {
             'matchup': _s_side(ctx.get('projected_spread')),
-            'sp_plus': _s_side(ctx.get('sp_plus_pred_spread')),
+            'monte_carlo': _s_side(_mc_margin),
         }
+        lens_values = [ctx.get('projected_spread'), _mc_margin]
     else:
         return None
 
     filled = {m: s for m, s in models.items() if s}
     if not filled: return None
+
+    # 2026-09-29 STRUCTURAL GUARD so this class cannot come back in either
+    # market. Two lenses that return the same NUMBER are one lens, whatever
+    # they are called — corroboration requires two computations, not two column
+    # names. Deliberately checked on the raw values and not on the sides: two
+    # genuinely different numbers landing on the same side IS real
+    # corroboration and must still pass.
+    _nums = [float(v) for v in lens_values if isinstance(v, (int, float))]
+    if len(_nums) >= 2 and abs(_nums[0] - _nums[1]) < 0.011:
+        return None   # duplicate lens — no corroboration available
+
     if all(s != sharp_side for s in filled.values()) and len(filled) >= 2:
         rule = 'MODELS_OPPOSE_SHARP_' + ('TOTAL' if pick_market=='total' else pick_market.upper())
         return {'rule': rule, 'severity': 'STRONG',
@@ -309,7 +339,12 @@ if __name__ == '__main__':
         'oddscrowd_snapshot': {'ml': {'pick':'HOME','div':22,'money':92,'bets':70}},
         'close_home_ml': -3500, 'close_away_ml': +1400,
         'close_spread': +50.5,
-        'projected_spread': -35, 'sp_plus_pred_spread': -33,
+        # 2026-09-29: second spread lens is now mc_expected_margin, not
+        # sp_plus_pred_spread (which is a copy of projected_spread — see
+        # rule_models_oppose_sharp). sp_plus_pred_spread kept in the fixture
+        # to prove nothing reads it any more.
+        'projected_spread': -35, 'sp_plus_pred_spread': -35,
+        'mc_probabilities': {'mc_expected_margin': -28.4},
         'signal_confluence_net': -3,
     }
     print(json.dumps(compute_fade_context(demo, 'ml', 'HOME'), indent=2))

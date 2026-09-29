@@ -866,10 +866,19 @@ def compute_projections(home_stats: dict, away_stats: dict,
             # mc_probabilities.mc_expected_total (0/68 identical, mean
             # |diff| 1.13).
             #
-            # The SPREAD columns are NOT aliases — sp_plus_pred_spread is
-            # computed separately below and genuinely differs from
-            # projected_spread (mean |diff| ~7 pts). Only the TOTAL is a
-            # duplicate.
+            # ⚠ 2026-09-29 CORRECTION. This note used to read: "The SPREAD
+            # columns are NOT aliases — sp_plus_pred_spread is computed
+            # separately below and genuinely differs from projected_spread
+            # (mean |diff| ~7 pts). Only the TOTAL is a duplicate."
+            # That was WRONG and it cost nine days. The ~7 pts is the diff
+            # between the EPA spread and SP+ — a value the code computed and
+            # then discarded. What actually got written to
+            # sp_plus_pred_spread was projected_spread itself: 67/67
+            # identical, measured 2026-09-29. The SPREAD IS AN ALIAS TOO.
+            # Acting on this note, the 09-20 cleanup fixed only the total
+            # branch of ncaaf_sharp_fade_rules and left the spread branch
+            # building fake corroboration. See the second-lens block at the
+            # end of this function and migration 20260929b.
             out['sp_plus_pred_home_pts'] = round(h_pts, 1)
             out['sp_plus_pred_away_pts'] = round(a_pts, 1)
             out['sp_plus_pred_total']    = round(total, 2)
@@ -884,17 +893,43 @@ def compute_projections(home_stats: dict, away_stats: dict,
         out['model_pred_home_points'] = round(total * home_share, 1)
         out['model_pred_away_points'] = round(total * (1 - home_share), 1)
 
-    # 2026-08-09 Phase 2: SP+-only projected spread as second lens.
-    # Stored in sp_plus_pred_spread column (nflverse convention: pos = home fav).
-    # Since our primary projected_spread already uses SP+ when available,
-    # this makes the SECOND lens EPA-based (independent from primary).
+    # ── second spread lens ──────────────────────────────────────────────
+    # 2026-09-29 · THE SPREAD IS AN ALIAS TOO. Correcting the 09-20 note above.
+    #
+    # This block used to compute `epa_spread` and then never read it — the next
+    # line copied the PRIMARY projection into sp_plus_pred_spread, and two
+    # trailing comments described what the code was supposed to do instead of
+    # what it did ("Store EPA as second lens", "Cleaner: add explicit
+    # epa_pred_spread field"). So sp_plus_pred_spread was a byte-identical copy
+    # of projected_spread: measured 67/67 on 2026-09-29, exactly like
+    # sp_plus_pred_total.
+    #
+    # The 09-20 note's "mean |diff| ~7 pts" was not wrong, it was measuring the
+    # WRONG VALUE — the diff between the EPA spread and SP+ (re-measured today:
+    # mean 7.98, median 6.83, 0/67 identical). It described the intended write.
+    # Because that note said the spread columns were safe, the 09-20
+    # duplicate-lens cleanup fixed only the TOTAL branch of
+    # ncaaf_sharp_fade_rules.rule_models_oppose_sharp and left the SPREAD
+    # branch counting one model twice for nine more days. Both are fixed now.
+    #
+    # sp_plus_pred_spread stays a documented alias rather than being nulled:
+    # when SP+ drives the primary it genuinely IS the SP+ spread, and
+    # GameDetailV2's Model Consensus drops its SP+ tile only when the two
+    # values MATCH (`_spDupe`) — nulling it makes that guard fail open and
+    # renders an empty tile.
+    #
+    # epa_pred_spread is the real second lens, under a name that says so
+    # (migration 20260929b). It is written and graded ONLY. It is visibly
+    # compressed — Indiana@Rutgers EPA -0.18 against a market of 24.5 — which
+    # is project_sp_plus_compression_927 showing up again (rolling EPA is not
+    # opponent-adjusted). Nothing that selects or tiers a pick may read it
+    # until it has been graded against results.
+    out['projected_spread_source'] = 'sp_plus' if (h_sp is not None and a_sp is not None) else 'epa'
     if h_off_epa is not None and a_off_epa is not None:
         h_net_epa = h_off_epa - (h_def_epa or 0)
         a_net_epa = a_off_epa - (a_def_epa or 0)
-        epa_spread = round((h_net_epa - a_net_epa) * K_PTS_EPA + hfa, 2)
-        out['sp_plus_pred_spread'] = round(projected_spread, 2)  # SP+ version = primary
-        # Store EPA as second lens (called "sp_plus_pred_spread" but really EPA when both present)
-        # Cleaner: add explicit epa_pred_spread field, but keep for consistency w/ migration
+        out['epa_pred_spread'] = round((h_net_epa - a_net_epa) * K_PTS_EPA + hfa, 2)
+        out['sp_plus_pred_spread'] = round(projected_spread, 2)  # alias, see above
     return out
 
 
