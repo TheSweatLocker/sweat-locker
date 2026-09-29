@@ -1805,11 +1805,48 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
         except Exception:
             pass  # never break scoring if LR import/predict raises
 
+    # ══ 2026-09-29 · FOOTBALL TOTALS BARRED FROM THE TOP PICK ══
+    # Measured on every graded football pick of 2026 (NFL weeks 1-3, NCAAF
+    # through week 4):
+    #
+    #     all football totals   16-32   33.3%   n=48   -17.5u at -110
+    #       NCAAF               14-29   32.6%   n=43
+    #       NFL                  2-3    40.0%   n=5
+    #
+    # Bad at every conviction level (31.0% n=29, 37.5% n=16, 33.3% n=3) and bad
+    # in BOTH directions — NCAAF OVER 4-14 (22.2%), UNDER 10-15 (40.0%). A
+    # one-sided miss would be a bias to correct; losing on both sides means the
+    # total projection carries no usable information about which way to go.
+    # FADING every one of these picks would have gone 32-16 (66.7%).
+    #
+    # For scale: football SIDES over the same period went 182-135 (57.4%,
+    # +30.4u). Totals were eating 58% of what the side engine earned.
+    #
+    # BARRED, NOT UNSCORED. total_dec is still computed and still written, so
+    # the shadow record keeps accumulating and this can be lifted on evidence
+    # rather than on a hunch — the same discipline the repo applies to every
+    # other suppression. Removing 'total' from MARKETS_BY_SPORT would have
+    # thrown the measurement away along with the losses.
+    #
+    # MLB/NHL/NBA/NCAAB are untouched: this was measured on football only, and
+    # MLB totals are a different engine on a different sample.
+    _TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
+    _barred = _TOP_PICK_BARRED.get(str(sport or '').upper(), set())
+
     # Determine top market (highest conviction with a pick)
     picks = [(m, d) for m, d in [('ml', ml_dec), ('rl', rl_dec), ('total', total_dec)]
              if d.pick is not None]
-    if picks:
+    _eligible = [(m, d) for m, d in picks if m not in _barred]
+    if _eligible:
+        # Fall back to the full list only if EVERY eligible market passed, so a
+        # barred market never wins while a real side pick exists.
+        top_market = max(_eligible, key=lambda p: p[1].conviction)[0]
+    elif picks:
         top_market = max(picks, key=lambda p: p[1].conviction)[0]
+        if top_market in _barred:
+            print(f'    [totals-bar] {sport}: only a total scored; '
+                  f'publishing it as the top pick would be the measured -17.5u '
+                  f'path, but there is nothing else — keeping it visible')
     else:
         top_market = 'total'  # arbitrary default when all pass
 
