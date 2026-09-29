@@ -940,6 +940,21 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "verify_read_coverage.py (NFL)" python verify_read_coverage.py --sport NFL
 
+      # 2026-09-29 · Lock the slate on SCHEDULE, not on sight — see the NCAAF
+      # twin. 20260926b's backfill had frozen 208 of 224 upcoming NFL games,
+      # out to 2027-01-10, at their September 26th picks. NFL cadence is
+      # Thu 8am ET -> Mon, plus a kickoff-within-24h rule so the Wednesday
+      # opener still locks.
+      - name: Lock NFL slate (Thu 8am ET -> Mon)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL)" python lock_football_slate.py --sport NFL
+
       # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and
       # was wired for MLB only, so no NFL read was ever checked before
       # publication.

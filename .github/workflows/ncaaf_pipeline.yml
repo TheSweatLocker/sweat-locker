@@ -426,6 +426,24 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "verify_read_coverage.py (NCAAF)" python verify_read_coverage.py --sport NCAAF
 
+      # 2026-09-29 · Lock the slate on SCHEDULE, not on sight.
+      # 20260926b's trigger stamped pick_locked_at the instant a pick was first
+      # written, on any day, and its backfill stamped everything that already
+      # had one — 24 of 67 upcoming NCAAF games out to 10-17, and 208 of 224
+      # NFL games out to 2027-01-10. pick_lock.py's real cadence is Thu 8am ET
+      # -> Sun for NCAAF. 20260929c removes the auto-stamp; this step does the
+      # stamping while lock_active(sport) is true, so the schedule stays in ONE
+      # place. Runs every invocation on purpose: idempotent and cheap, so no
+      # single cron firing is a point of failure.
+      - name: Lock NCAAF slate (Thu 8am ET -> Sun)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NCAAF)" python lock_football_slate.py --sport NCAAF
+
       # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but
       # was only ever called with --sport MLB, so college write-ups were
       # never checked against the pick they sit under. Runs after the sync
