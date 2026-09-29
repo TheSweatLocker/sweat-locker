@@ -36,7 +36,75 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 
 # Calibration constants — CFB has larger score variance than NFL.
-K_PTS_SP = 0.85           # SP+ rating diff → spread points scaling
+# 2026-09-29 RECALIBRATED 0.85 → 0.94. This is the root-cause fix for the NCAAF
+# dog bias and the inverted conviction curve.
+#
+# Measured on 171 leak-free graded 2026 games (ctx rows whose updated_at is
+# strictly before kickoff_utc — 353 of 355 past rows qualify, so this is NOT
+# the leak that blocked the earlier attempt in
+# project_sp_plus_backtests_are_leaky_926: that one joined CURRENT sp_overall
+# to past games, this one reads the projection the row actually carried
+# pre-kickoff):
+#
+#   std(projected_spread) 14.85  vs  std(market) 16.54  vs  std(actual) 21.36
+#   mean|model| 11.59            vs  mean|market| 16.49  vs  mean|actual| 19.24
+#
+# The model projects ~30% less margin than the market and ~40% less than
+# reality. Compression is PROPORTIONAL, not saturating — the market/model
+# magnitude ratio is 1.17-1.30 in every bucket from 3 to 38 points, and the
+# model's range (-29 to +52) already spans the market's (-28 to +53). So a
+# single multiplier is the right shape of fix.
+#
+# WHY THIS IS THE DOG BIAS. Compression can only ever under-project the
+# FAVOURITE, so the model's disagreement with the market points at the dog
+# almost by construction: |model| < |market| on 78-79% of games in BOTH
+# directions. Dog-rate rises monotonically with disagreement size —
+# 67.2% / 86.0% / 94.1% / 100% / 100% — and at |disagreement| >= 10 it is
+# 100% dogs (n=43, going 21-22). Since sweat_score and conviction are driven
+# by that same disagreement, THE ENGINE'S CONFIDENCE WAS ITS SCALE ERROR:
+# conviction 70-80 ran 90.7% dogs and 48.8% ATS while conviction 0-60 ran
+# 76.4% dogs and 56.4%. That is the inversion in
+# project_football_engine_audit_929, explained.
+#
+# SIZING THE CORRECTION — and how uncertain it is.
+# k = std(market)/std(model) on the SP+ path, estimated chronologically by
+# game_date (NOT by season_week: that column is 0 on 62 of 181 rows, 34%
+# unpopulated, and a first pass that split on it produced a fake clean
+# convergence — the unlabeled rows are scattered across dates, not early ones):
+#
+#   through 09-07 (n=33)  k=1.090 → 0.93
+#   through 09-14 (n=77)  k=0.991 → 0.84
+#   through 09-21 (n=122) k=1.054 → 0.90
+#   through 09-26 (n=171) k=1.114 → 0.95     <- full sample, the value taken
+#
+# So k WANDERS 0.99-1.11 and straddles 1.0. Chronological walk-forward gains
+# are small and none is significant: 55.5%→57.9% (z +1.24→+1.78), 54.1%→54.7%,
+# 47.7%→50.0%. Dog-rate fell in all three but only slightly.
+#
+# Sliced by stats_source the estimates DISAGREE materially — current-source
+# rows give k=1.283 (K_PTS_SP 1.09, 1SE ±0.09) and prior_season_regressed give
+# k=1.139 (0.97). Since every future row is 'current' after today's freshness
+# fix, that slice is the forward-relevant one and argues for ~1.06-1.09. It is
+# deliberately NOT taken: the slice is confounded with date (current-source rows
+# cluster in specific weeks) and n=93.
+#
+# HONEST LIMIT. What is ROBUST is the DIRECTION and the mechanism: |model| <
+# |market| on 78-79% of games in both directions, the market/model magnitude
+# ratio is 1.17-1.30 in every bucket from 3 to 38 points, and dog-rate rises
+# monotonically with disagreement. What is NOT well determined is the
+# multiplier. No ATS result at any k clears the 2 SE bar. The justification for
+# moving is the calibration defect, not a win-rate claim.
+#
+# 0.94 is therefore a deliberate PARTIAL step toward the full-sample estimate
+# (0.95), chosen because it is small: on the live 67-game board it flips 3
+# sides, all in games within ~1 point of the market, and moves the dog lean
+# 61.2% → 56.7%. Re-measure after 2-3 weeks of de-compressed 'current'-source
+# data before going further toward 1.06.
+#
+# DO NOT retune sweat_score/conviction thresholds in the same change — the
+# deltas that feed them all shift here, so tiers must be re-measured against
+# the new scale first.
+K_PTS_SP = 0.94           # SP+ rating diff → spread points scaling
 K_PTS_EPA = 5.5           # EPA diff → spread points (fallback)
 HOME_FIELD_PTS = 2.8      # CFB HFA slightly higher than NFL
 BASE_TOTAL = 52.0         # CFB avg total higher than NFL
@@ -793,6 +861,33 @@ def compute_projections(home_stats: dict, away_stats: dict,
         projected_spread = round(sp_gap * K_PTS_SP + hfa, 2)
     elif h_off_epa is not None and a_off_epa is not None:
         # EPA fallback: net_epa = off_epa - def_epa (higher = better team)
+        #
+        # ⚠ 2026-09-29 THIS PATH IS BROKEN, NOT MERELY LESS ACCURATE, and it is
+        # the real hallucination risk in this file. Measured on the 10 leak-free
+        # graded 2026 games that used it:
+        #
+        #     std(projected_spread) = 1.35   vs  std(market) = 9.27
+        #
+        # It emits a near-CONSTANT projection — every game lands within a couple
+        # of points of the HFA. Variance matching would want K_PTS_EPA 5.5 →
+        # 37.8, which is not a calibration on n=10, it is a coin flip. The same
+        # compression shows up in epa_pred_spread below (Indiana@Rutgers -0.18
+        # against a market of 24.5) and is consistent with
+        # project_sp_plus_compression_927: rolling EPA is not opponent-adjusted.
+        #
+        # Live exposure TODAY is ZERO — after the stats-freshness fix, 0 of 67
+        # upcoming games hit this branch (62 of 67 teams are SP+-rated). It was
+        # 10 of 171 graded games, concentrated in weeks 1-3 and FCS opponents,
+        # so it comes back whenever an unrated team appears.
+        #
+        # DELIBERATELY NOT "fixed" here: multiplying by a factor fitted on n=10
+        # would be exactly the unmeasured adjustment this project keeps getting
+        # burned by. The right fix is that an unrated matchup should not yield a
+        # confident pick at all — a tier cap keyed on
+        # projected_spread_source == 'epa'. That is left for when the path is
+        # live again and can be measured, rather than shipping an untested cap
+        # on a dormant branch. projected_spread_source is written below so the
+        # cap has something to key on when it is built.
         h_net = h_off_epa - (h_def_epa or 0)
         a_net = a_off_epa - (a_def_epa or 0)
         projected_spread = round((h_net - a_net) * K_PTS_EPA + hfa, 2)

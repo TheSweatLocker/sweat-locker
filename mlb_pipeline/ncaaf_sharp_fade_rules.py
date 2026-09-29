@@ -137,18 +137,35 @@ def rule_models_oppose_sharp(ctx, pick_market, pick_side):
         # rule emitted STRONG fades reasoned "Both matchup, sp_plus oppose
         # sharp" on a single opinion.
         #
-        # Monte Carlo is the same genuinely-independent lens the total branch
-        # switched to. epa_pred_spread (20260929b) is the other real second
-        # spread opinion but is ungraded and compressed, so it stays out of
-        # every pick path until measured.
-        _mc = ctx.get('mc_probabilities')
-        _mc = _mc if isinstance(_mc, dict) else {}
-        _mc_margin = _mc.get('mc_expected_margin')
-        models = {
-            'matchup': _s_side(ctx.get('projected_spread')),
-            'monte_carlo': _s_side(_mc_margin),
-        }
-        lens_values = [ctx.get('projected_spread'), _mc_margin]
+        # 2026-09-29 SECOND PASS — my own first fix today was also wrong, and
+        # this is the corrected one. I re-pointed this branch at
+        # mc_expected_margin because the TOTAL branch used Monte Carlo. But
+        # ncaaf_mc_simulator.simulate_game takes `projected_spread` AS ITS
+        # INPUT, so mc_expected_margin is that same number with simulation
+        # noise on it: measured r=+0.9521, mean |diff| 2.97. It disagrees on
+        # side 35% of the time, and that disagreement is NOISE around the
+        # market line, not a second opinion — which is arguably worse than the
+        # byte-identical copy it replaced, because the rule would fire or not
+        # on simulation randomness.
+        #
+        # (The TOTAL branch survives this: mc totals come out of the scoring /
+        # OT distribution rather than straight from the input, r=+0.5220. That
+        # is real partial independence, so 09-20's fix there stands.)
+        #
+        # Every other candidate measured today, vs projected_spread:
+        #   mc_expected_margin  r=+0.952  derived from the input — disqualified
+        #   epa_pred_spread     r=+0.848  independent input, but UNGRADED and
+        #                                 compressed (20260929b)
+        #   lr_v1 p_home_win    r=+0.805  real separate model, 67 distinct
+        #                                 values, but 5-10 at PRIME in NCAAF
+        #                                 (n=15) per defensive_gates
+        #
+        # So NCAAF has no VALIDATED independent second spread lens. The honest
+        # move is to stop claiming corroboration on sides rather than keep
+        # hunting for a column that makes the rule fire. This branch is off
+        # until a second lens is graded. Re-enable by measuring one, not by
+        # picking whichever field correlates least.
+        return None
     else:
         return None
 
@@ -161,6 +178,14 @@ def rule_models_oppose_sharp(ctx, pick_market, pick_side):
     # names. Deliberately checked on the raw values and not on the sides: two
     # genuinely different numbers landing on the same side IS real
     # corroboration and must still pass.
+    #
+    # ⚠ THIS GUARD CATCHES IDENTITY, NOT CORRELATION, and that limit is exactly
+    # how the second mistake of the day got past it: mc_expected_margin is
+    # never byte-identical to projected_spread (0/54) yet correlates r=+0.95
+    # with it because the simulator TAKES IT AS INPUT. A lens is only a second
+    # lens if it consumes different inputs. Before adding one here, measure its
+    # correlation against the lens it is meant to corroborate AND read what it
+    # is computed from — a low identical-count proves nothing on its own.
     _nums = [float(v) for v in lens_values if isinstance(v, (int, float))]
     if len(_nums) >= 2 and abs(_nums[0] - _nums[1]) < 0.011:
         return None   # duplicate lens — no corroboration available
