@@ -2285,7 +2285,43 @@ function LensGrid({ctx, gamesSport}: any) {
     {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
     {name: 'v4', m: ctx?.v4_spread ?? ctx?.model_pred_spread,
                   t: ctx?.v4_total  ?? ctx?.model_pred_total},
-    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
+    // ══ 2026-09-29 · MC IS A SIMULATION OF v3, NOT A SECOND OPINION ══
+    // Andy: "MC and V3 both have CAR by .9 is that a bug?" Not a bug, but a
+    // real one to catch. nhl_projection.project_and_simulate does:
+    //
+    //   proj = project_goals(...)
+    //   mc   = monte_carlo(proj['home_goals'], proj['away_goals'])
+    //
+    // so the Monte Carlo draws from v3's OWN lambdas. Its expected margin
+    // converges to v3's margin by construction. Measured across all 65 NHL
+    // games on the board: mean |v3 − MC| of 0.023 goals, max 0.070, and 62
+    // of 65 inside 0.05. They cannot meaningfully disagree.
+    //
+    // That matters because this grid is labelled "each model's read" and the
+    // reader counts tiles to judge how many independent opinions back a pick.
+    // Two tiles reading CAR 0.9 look like corroboration; it is one model
+    // shown twice. Same defect Andy caught on NCAAF in September, recorded
+    // then as "sp_plus_pred_total == projected_total; not a lens".
+    //
+    // The tile is NOT dropped, because MC carries things a point estimate
+    // structurally cannot: a win probability and an overtime rate. So it now
+    // shows what only it knows — mirroring how the LR tile shows "H 72%"
+    // rather than inventing a spread. Margin still drives the border colour
+    // so the side stays consistent with the other tiles.
+    //
+    // Scoped to NHL: this redundancy was measured on NHL. MLB/NCAAF/NFL have
+    // their own MC paths and their own branches above; changing those needs
+    // the same measurement first.
+    {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total,
+     ...(String(gamesSport) === 'NHL' && mc.mc_p_home != null ? {
+       displayMargin: mc.mc_p_home >= 0.5
+         ? `H ${Math.round(mc.mc_p_home * 100)}%`
+         : `A ${Math.round((1 - mc.mc_p_home) * 100)}%`,
+       // Overtime is hockey-specific and load-bearing: it is the main way a
+       // -1.5 puck line loses, and it is not derivable from a point estimate.
+       displayTotal: mc.mc_ot_rate != null
+         ? `OT ${Math.round(mc.mc_ot_rate * 100)}%` : null,
+     } : {})},
     {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
   ];
 
@@ -2408,7 +2444,9 @@ function LensGrid({ctx, gamesSport}: any) {
               <Text style={[styles.lensTotal, {
                 color: totDir === 'O' ? C.accent : totDir === 'U' ? C.sharp : C.textMuted,
               }]}>
-                {r.t == null ? '—' : `${totDir ?? '='} ${f(r.t, 1)}`}
+                {(r as any).displayTotal
+                  ? (r as any).displayTotal
+                  : r.t == null ? '—' : `${totDir ?? '='} ${f(r.t, 1)}`}
               </Text>
             </TouchableOpacity>
           );
