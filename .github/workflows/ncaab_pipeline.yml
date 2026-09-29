@@ -98,6 +98,28 @@ jobs:
           # Debug probe (temporary — remove after first successful Monday cron confirms key)
           if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_pipeline.py" python ncaab_pipeline.py
+          # 2026-09-28: fills kenpom_cache for the APP. The client used to do
+          # this itself with the key bundled in the IPA; it now reads cache
+          # only. Weekly, alongside the existing ratings refresh, because the
+          # paid-API discipline above applies to exactly these two endpoints.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "kenpom_pull.py (ratings+FF)"             python kenpom_pull.py --season 2026 --no-fanmatch
+
+      # ══ 2026-09-28 · FANMATCH IS DAILY, RATINGS ARE WEEKLY ══
+      # Split deliberately. Ratings converge slowly and the step above keeps
+      # them weekly to halve paid-API usage. Fanmatch IS the day's slate, so
+      # it has to run daily or the app shows nothing — and it previously ran
+      # on EVERY USER'S DEVICE, with the key in the bundle and no shared
+      # cache, which is one subscription hit once per install per day.
+      - name: KenPom fanmatch (daily, app cache)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          KENPOM_KEY:   ${{ secrets.KENPOM_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "kenpom_pull.py (fanmatch)"             python kenpom_pull.py --no-ratings
 
       # 2026-08-23: Roster physicality — ESPN scraper for frontcourt height +
       # class year. Monday-only (kenpom_only mode) — rosters don't churn

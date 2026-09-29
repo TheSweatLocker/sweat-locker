@@ -26,13 +26,46 @@ import { withCache, invalidateCachePrefix } from './lib/cache';
 
 import { THEME, TIER_COLOR, OUTCOME_COLOR } from './theme';
 import StatusChip from './components/StatusChip';
-const ODDS_API_KEY = process.env.EXPO_PUBLIC_ODDS_API_KEY;
-const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY;  // DEPRECATED — see claudeFetch below
-// 2026-09-22: EXPO_PUBLIC_BDL_API_KEY removed. balldontlie is no longer
-// paid for or used. EXPO_PUBLIC_* values are compiled into the IPA and
-// extractable, so a retired key must not keep shipping in the binary.
-// Remove EXPO_PUBLIC_BDL_API_KEY from .env and EAS secrets too.
-const KENPOM_KEY = process.env.EXPO_PUBLIC_KENPOM_KEY;
+// ══ 2026-09-28 · THE THREE PROVIDER KEYS ARE GONE FROM THE CLIENT ══
+// A leaked ANTHROPIC key cost $548 in one day. It was set as
+// EXPO_PUBLIC_ANTHROPIC_API_KEY, and Expo INLINES every EXPO_PUBLIC_* value
+// into the JS bundle at build time — so the raw key shipped inside App Store
+// build 1.0.1 and anyone who downloaded the app could read it out. 99.1% of
+// that day's tokens were on Opus and Sonnet models this app cannot request;
+// our own traffic was the 0.9% Haiku line.
+//
+// The proxies that fix this shipped on 09-03 (claude-proxy) and alongside it
+// (odds-proxy), and BOTH are already the only paths the app uses — there are
+// zero direct api.anthropic.com or the-odds-api.com calls left. These three
+// declarations were dead: ODDS_API_KEY and KENPOM_KEY had one reference each
+// (their own definition) and ANTHROPIC_API_KEY was prop-drilled into
+// DailyDegen and never read. Dead code, but NOT harmless — the declaration
+// is what makes Expo bundle the value.
+//
+// The 09-22 note below said this exact thing about a retired balldontlie
+// key: "EXPO_PUBLIC_* values are compiled into the IPA and extractable, so a
+// retired key must not keep shipping in the binary." That was right, and
+// three live keys kept shipping anyway.
+//
+// Provider keys now live ONLY in Supabase edge-function secrets. If a new
+// surface needs one, add it to a proxy — never to .env.
+// A build-time guard in app.config.js fails the build if EXPO_PUBLIC_ANTHROPIC_*
+// or EXPO_PUBLIC_ODDS_* reappears, so those two cannot regress silently.
+//
+// ── KENPOM MOVED SERVER-SIDE 2026-09-28 ──
+// It used to be the exception here: five call sites sent KENPOM_KEY to
+// kenpom.com directly, so it shipped in the bundle like the Anthropic key. It
+// could not just be deleted, because nothing server-side filled kenpom_cache
+// — the client was its only writer, and a cache-only client would have
+// starved itself.
+//
+// mlb_pipeline/kenpom_pull.py is that missing writer. It pulls ratings,
+// four-factors and fanmatch, applies the exact field mapping this file used
+// to apply, and writes the same cache_keys the client already read. So the
+// client now reads cache only and there are ZERO direct kenpom.com calls
+// left. The key is gone from the client and lives in server secrets.
+//
+// Rotate it regardless — it shipped inside the compromised 1.0.1 bundle.
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabase = createClient(
   SUPABASE_URL,
@@ -1598,7 +1631,7 @@ const stripMascot = (teamName) => {
     });
     return result || teamName;
   };
-const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parlayLegs, setParlayLegs, setActiveTab, setMybetsTab, showToast, ANTHROPIC_API_KEY, supabase, isPlayoffMode, playoffSeries }) => {
+const DailyDegen = ({ mlbGameContext, nbaTeamData, gamesData, fanmatchData, parlayLegs, setParlayLegs, setActiveTab, setMybetsTab, showToast, supabase, isPlayoffMode, playoffSeries }) => {
   const [degenData, setDegenData] = React.useState(null);
   const [degenLoading, setDegenLoading] = React.useState(false);
   const [degenError, setDegenError] = React.useState('');
@@ -3155,77 +3188,19 @@ setEvData(evOpps.slice(0,20));
     }
   } catch(e) { console.log('Supabase cache read error:', e.message); }
 
-  // 3. Fetch fresh from KenPom (last resort)
-  try {
-    const [ratingsResp, fourFactorsResp] = await Promise.all([
-      axios.get('https://kenpom.com/api.php', {
-        params: {endpoint: 'ratings', y: 2026},
-        headers: {Authorization: `Bearer ${KENPOM_KEY}`}
-      }),
-      axios.get('https://kenpom.com/api.php', {
-        params: {endpoint: 'four-factors', y: 2026},
-        headers: {Authorization: `Bearer ${KENPOM_KEY}`}
-      }),
-    ]);
-
-    const ratingsData = Array.isArray(ratingsResp.data) ? ratingsResp.data : [];
-    const ffData = Array.isArray(fourFactorsResp.data) ? fourFactorsResp.data : [];
-    const ffMap = {};
-    ffData.forEach(t => { ffMap[t.TeamName] = t; });
-
-    const mapped = ratingsData.map(t => {
-      const ff = ffMap[t.TeamName] || {};
-      return {
-        team: t.TeamName,
-        adjOE: parseFloat(t.AdjOE) || 109.4,
-        adjDE: parseFloat(t.AdjDE) || 109.4,
-        adjEM: (parseFloat(t.AdjOE) || 0) - (parseFloat(t.AdjDE) || 0),
-        adjOERank: parseInt(t.RankAdjOE) || 0,
-        adjDERank: parseInt(t.RankAdjDE) || 0,
-        tempo: parseFloat(t.AdjTempo) || 68.0,
-        tempoRank: parseInt(t.RankAdjTempo) || 0,
-        eFG_O: parseFloat(ff.eFG_Pct) || 0,
-        eFG_O_rank: parseInt(ff.RankeFG_Pct) || 0,
-        to_O: parseFloat(ff.TO_Pct) || 0,
-        to_O_rank: parseInt(ff.RankTO_Pct) || 0,
-        or_O: parseFloat(ff.OR_Pct) || 0,
-        or_O_rank: parseInt(ff.RankOR_Pct) || 0,
-        ftr_O: parseFloat(ff.FT_Rate) || 0,
-        ftr_O_rank: parseInt(ff.RankFT_Rate) || 0,
-        eFG_D: parseFloat(ff.DeFG_Pct) || 0,
-        eFG_D_rank: parseInt(ff.RankDeFG_Pct) || 0,
-        to_D: parseFloat(ff.DTO_Pct) || 0,
-        to_D_rank: parseInt(ff.RankDTO_Pct) || 0,
-        or_D: parseFloat(ff.DOR_Pct) || 0,
-        or_D_rank: parseInt(ff.RankDOR_Pct) || 0,
-        ftr_D: parseFloat(ff.DFT_Rate) || 0,
-        ftr_D_rank: parseInt(ff.RankDFT_Rate) || 0,
-        wins: parseInt(t.Wins) || 0,
-        losses: parseInt(t.Losses) || 0,
-        conf: t.ConfShort || '',
-        seed: t.Seed || null,
-        luck: parseFloat(t.Luck) || 0,
-        sos: parseFloat(t.SOS) || 0,
-        coach: t.Coach || '',
-      };
-    });
-
-    setBartData(mapped);
-
-    // Save to AsyncStorage
-    await AsyncStorage.setItem(BART_CACHE_KEY, JSON.stringify({data: mapped, timestamp: Date.now()}));
-
-    // Save to Supabase cache
-    try {
-      await supabase.from('kenpom_cache').upsert({
-        cache_key: SUPABASE_KEY,
-        data: mapped,
-        fetched_at: new Date().toISOString(),
-      }, { onConflict: 'cache_key' });
-      console.log('BartData saved to Supabase cache');
-    } catch(e) { console.log('Supabase cache write error:', e.message); }
-
-  } catch(e) { console.log('KenPom fetch error:', e.message); }
+  // ══ 2026-09-28 · NO CLIENT-SIDE KENPOM FETCH ══
+  // This was a "last resort" direct call to kenpom.com carrying KENPOM_KEY in
+  // an Authorization header. Expo inlines EXPO_PUBLIC_* into the bundle, so
+  // that key shipped inside the IPA exactly like the Anthropic key that cost
+  // $548 in a day. It is now pulled server-side by mlb_pipeline/kenpom_pull.py,
+  // which writes the SAME rows under the SAME cache_key this function already
+  // reads, so nothing below the cache read had to change.
+  //
+  // The staleness gate above was relaxed from "under 20h" to "prefer under
+  // 20h, accept anything" for the same reason: with no fallback left, a
+  // strict gate turns a late pipeline run into a blank card. Stale KenPom
+  // ratings are still the right ratings — they move slowly — and a card with
+  // yesterday's numbers beats a card with none.
 };
 
  const FANMATCH_CACHE_KEY = 'sweatlocker_fanmatch_cache';
@@ -3251,29 +3226,34 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
     } catch(e) {}
 
     let r;
-    try {
-  r = await axios.get('https://kenpom.com/api.php', {
-    params: {endpoint:'fanmatch', d:today},
-    headers: {Authorization:`Bearer ${KENPOM_KEY}`},
-    timeout: 15000,
-  });
-  if(!Array.isArray(r.data)||r.data.length===0) throw new Error('empty');
-} catch(e) {
-  try {
-    r = await axios.get('https://kenpom.com/api.php', {
-      params: {endpoint:'fanmatch', d:tomorrow},
-      headers: {Authorization:`Bearer ${KENPOM_KEY}`},
-      timeout: 15000,
-    });
-    if(!Array.isArray(r.data)||r.data.length===0) throw new Error('empty');
-  } catch(e2) {
-    r = await axios.get('https://kenpom.com/api.php', {
-      params: {endpoint:'fanmatch', d:yesterday},
-      headers: {Authorization:`Bearer ${KENPOM_KEY}`},
-      timeout: 15000,
-    });
-  }
-}
+    // ══ 2026-09-28 · FANMATCH READS THE SERVER CACHE, NOT KENPOM ══
+    // This was three chained direct calls to kenpom.com (today, then
+    // tomorrow, then yesterday) each carrying KENPOM_KEY in a header — and
+    // unlike the ratings call above it had NO shared cache, only
+    // AsyncStorage, which is per device. So every user's phone called KenPom
+    // directly with the bundled key on every cold start. That was both the
+    // credential exposure and a quota problem: one subscription hit once per
+    // install per day.
+    //
+    // mlb_pipeline/kenpom_pull.py now writes fanmatch to kenpom_cache under
+    // 'kenpom_fanmatch_<YYYY-MM-DD>'. Today first, yesterday as the fallback
+    // for a late-night session after the slate has turned over. Tomorrow is
+    // gone deliberately: KenPom refuses future dates outright ("d (date)
+    // parameter cannot be beyond <today>"), so that call could only ever 400.
+    let r = {data: []};
+    for (const d of [today, yesterday]) {
+      try {
+        const {data: row} = await supabase
+          .from('kenpom_cache')
+          .select('data')
+          .eq('cache_key', `kenpom_fanmatch_${d}`)
+          .single();
+        if (row?.data && Array.isArray(row.data) && row.data.length) {
+          r = {data: row.data};
+          break;
+        }
+      } catch (e) { /* miss — try the next date */ }
+    }
     const games = Array.isArray(r.data) ? r.data : [];
     const mapped = {};
     games.forEach(g => {
@@ -16312,7 +16292,6 @@ setJerryHistory(prev => {
     setActiveTab={setActiveTab}
     setMybetsTab={setMybetsTab}
     showToast={showToast}
-    ANTHROPIC_API_KEY={ANTHROPIC_API_KEY}
     supabase={supabase}
     isPlayoffMode={isPlayoffMode}
     playoffSeries={playoffSeries}
