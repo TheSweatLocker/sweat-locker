@@ -1607,7 +1607,26 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # broad multi-source confluence, not just single-source magnitude.
     # This is the "solid pick with solid foundation of data" upgrade —
     # user asked ensemble to signal high conviction when it's earned.
-    if tier == 'STRONG' and win_score >= 1.2 and win_classes >= 5 and margin >= 0.7:
+    # ══ 2026-09-29 · THIS LANE PROMOTED THE WORST BUCKET ══
+    # Measured on all 317 graded football side picks of 2026, ATS by distinct
+    # source-class count — the exact knob this lane and classes_boost use:
+    #
+    #     <=2 classes (no boost)          87-56   60.8%   n=143
+    #      3-4 classes (+2..+4)           60-48   55.6%   n=108
+    #      5+  classes (+6..+10, PRIME)   35-31   53.0%   n=66
+    #
+    # Monotonically INVERSE. The picks that receive the largest confidence
+    # bonus are the least accurate, and this lane promotes that same 53% bucket
+    # to the top tier. "Broad multi-source confluence" turns out to be
+    # overfitting: each additional cohort is a narrower pattern that does not
+    # generalise, and the ensemble counted agreement between them as
+    # corroboration.
+    #
+    # Disabled rather than deleted so the intent and the measurement stay
+    # together. Re-enable only if class count ever measures positive.
+    _CLASS_CONFLUENCE_PROMOTION = False   # measured inverse 2026-09-29
+    if (_CLASS_CONFLUENCE_PROMOTION and tier == 'STRONG'
+            and win_score >= 1.2 and win_classes >= 5 and margin >= 0.7):
         tier = 'PRIME'
 
     # 2026-08-19: conviction rewritten to widen distribution + weight
@@ -1623,7 +1642,25 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     #   classes_boost: how many source classes →  +0-10
     base = 50 + min(win_score * 10, 30)
     margin_boost = min(max(margin, 0) * 20, 15)
-    classes_boost = min(max(0, win_classes - 2) * 2, 10)
+    # ══ 2026-09-29 · classes_boost ZEROED — it was inversely calibrated ══
+    # See the table in the promotion comment above. The <=2-class bucket, which
+    # receives NO boost, is the best performer at 60.8% (n=143); the 5+ bucket,
+    # which receives the maximum +10, is the worst at 53.0% (n=66). This term
+    # was adding up to 10 points of displayed confidence in inverse proportion
+    # to accuracy.
+    #
+    # Zeroed, not inverted. Inverting would fit a 66-pick bucket, which is the
+    # mistake this repo has already made twice (SP+ K=0.85, the retracted NFL
+    # prop edge). Removing an unearned bonus needs no new claim; paying a bonus
+    # for being wrong does.
+    #
+    # NOT A FULL RECALIBRATION. win_score, which drives `base` (the 50-80 term),
+    # is ALSO non-monotonic on the same sample: 0.0-0.3 -> 64.2% (n=95),
+    # 1.0-1.5 -> 46.0% (n=50). So conviction still does not rank pick quality
+    # and must not be trusted for stake sizing until `base` has its own study.
+    # This change removes the one term measured cleanly inverse; it does not
+    # make the number meaningful.
+    classes_boost = 0
     conviction = int(round(base + margin_boost + classes_boost))
     conviction = max(45, min(97, conviction))
 
