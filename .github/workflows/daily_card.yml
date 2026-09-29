@@ -116,7 +116,30 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dateutil pytz
+          # 2026-09-29 · python-dotenv ADDED. Its absence failed three steps
+          # instantly on the first real run:
+          #
+          #   settle_prop_receipts.py — exit 1 after 0s
+          #   jerry_anchor_potd.py    — exit 1 after 0s
+          #   generate_sweat_card.py  — exit 1 after 0s
+          #
+          # "after 0s" was the whole diagnosis: they died before doing any
+          # work, i.e. at import. Each calls load_dotenv, and this workflow —
+          # split out of mlb_pipeline.yml on 09-28 — inherited the scripts but
+          # not their dependency list. mlb_pipeline.yml installs python-dotenv;
+          # this did not.
+          #
+          # compute_surface_records.py runs in the SAME step and passed, which
+          # ruled out env vars and working-directory as causes and pointed
+          # straight at a per-script import.
+          #
+          # Resolved by walking the imports of all eight scripts AND the local
+          # modules they import (19 files), rather than fixing the three that
+          # happened to fail: dotenv and requests are the only third-party
+          # needs. Deliberately NOT copying mlb_pipeline's full list —
+          # scikit-learn, xgboost and playwright would add minutes to a job
+          # that needs none of them.
+          pip install requests python-dotenv python-dateutil pytz
 
       # Settle anything gradeable BEFORE composing, so today's surfaces
       # carry yesterday's results rather than a page of "Pending" — which
