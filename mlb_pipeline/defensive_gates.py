@@ -1493,6 +1493,138 @@ def apply_ncaaf_high_conviction_dog_cap(pp: dict | None, ctx: dict) -> dict | No
     return pp
 
 
+def apply_ncaaf_prime_ml_cap(pp: dict | None, ctx: dict) -> dict | None:
+    """Cap NCAAF moneyline picks out of PRIME.
+
+    Andy 2026-09-30, approving this specific cap before the Wednesday lock.
+
+    MEASURED on 248 leak-free graded NCAAF sides (ctx updated_at strictly before
+    kickoff_utc, joined via results_game_id, pushes excluded), priced at the
+    CLOSE — close_home_ml / close_away_ml for moneylines, flat -110 for
+    spread/RL. Price matters here more than anywhere else in the engine:
+
+        SPREAD / RL   109-84   56.5%   n=193   +15.09u   ROI  +7.8%
+        MONEYLINE      30-25   54.5%   n=55    -12.73u   ROI -23.1%  (z=-2.37)
+        COMBINED      139-109  56.0%   n=248    +2.36u   ROI  +1.0%
+
+    The moneyline book eats essentially the whole spread book. Note the hit
+    rates are nearly identical (56.5% vs 54.5%) — this is invisible to any
+    hit-rate report and only shows up in units.
+
+    The loss concentrates in PRIME, which is the only losing tier:
+
+        PRIME      2-11  15.4%  n=13   ROI -74.7%   z=-2.50
+        STRONG    47-31  60.3%  n=78   ROI  +8.2%
+        LEAN      51-41  55.4%  n=92   ROI  +3.4%
+        COVERAGE  26-17  60.5%  n=43   ROI  -0.6%
+        PASS      13-9   59.1%  n=22   ROI +12.8%
+
+    and 12 of those 13 PRIMEs are moneylines: PRIME ML alone is 2-10, ROI
+    -72.6%, z=-2.31, median price -146. So one cell — NCAAF PRIME ML — is
+    carrying the sport's entire loss, at the position of maximum user
+    visibility and 2u Sharp Card stake sizing.
+
+    WHY NOT REROUTE TO THE SPREAD. That was the obvious fix and it is wrong.
+    Taking the SAME SIDE on the spread instead of the ML in those games:
+
+        25-38   39.7%   n=63   ROI -24.2%
+
+    Equally bad. The engine is not mispricing a market, it is picking the wrong
+    TEAM in these games, and both markets lose on them. This retires the queued
+    project_jerry_spread_preference_917 item for NCAAF — its premise was that
+    the side was sound and only the price was wrong.
+
+    MECHANISM, consistent with project_sp_plus_compression_927: the ML gets
+    chosen as top market when the model's margin edge is large relative to the
+    spread, i.e. exactly when the model most disagrees with the market. Those
+    large disagreements are where a compressed margin model is least reliable.
+    Same root cause as the dog bias, surfacing through market choice instead.
+
+    THE CAP TARGET IS LEAN, NOT STRONG, AND THAT IS THE WHOLE POINT.
+    The first version of this gate demoted PRIME -> STRONG. Measured against the
+    Sharp Card stake ladder (PRIME/STRONG 2u, LEAN/COVERAGE 1u, PASS 0u), that
+    is a LITERAL NO-OP — PRIME and STRONG carry the same 2u, so the staked book
+    is identical to -0.01u:
+
+        as published today                   -3.76u   on 317u staked   -1.2%
+        cap PRIME ml -> STRONG               -3.76u   on 317u staked   -1.2%   <- no-op
+        cap PRIME ml -> LEAN                 +4.96u   on 305u staked   +1.6%
+        cap PRIME ml -> PASS  (0u)          +13.67u   on 293u staked   +4.7%
+        suppress all NCAAF ml entirely      +17.91u   on 236u staked   +7.6%
+
+    Worse than useless: demoting to STRONG moves 12 losing picks INTO the one
+    tier with a defensible edge, dragging STRONG from +8.2% to -2.6% ROI and
+    making the engine's best label look broken. A tier demotion only does
+    something if it crosses a STAKE boundary. PRIME -> STRONG does not.
+
+    So this caps to LEAN, which is the real cap: the pick stays published and
+    stays in the record (('PRIME','STRONG','LEAN') is the publishable set in
+    compute_surface_records, generate_ledger, aggregate_daily_records), the
+    receipts stay honest, and the stake halves.
+
+    NOT PASS, and not full suppression, even though both score better above.
+    COVERAGE and PASS are OUTSIDE the publishable set, so routing there is
+    suppression wearing a tier label — the pick vanishes from the card and from
+    the record. That is the stronger claim, it needs the shadow week per
+    feedback_suppression_gate_needs_shadow, and full ML suppression would pull
+    55 of 248 picks (22% of the board). Shadow it, do not ship it blind.
+
+    DO NOT judge this gate by hit rate afterwards. NCAAF hit rates rank
+    COVERAGE (60.5%) above STRONG, but COVERAGE is where the price gate dumps
+    unbettable chalk — MLs at -3200 to -10000, whose conv-100 rows carry
+    _pre_lr_tier PRIME plus _reroute_refused — and at closing prices COVERAGE
+    is -0.6%. Capping a tier that cannot be bet looks like an improvement on
+    every hit-rate report and changes nothing real.
+
+    MUST RUN AFTER apply_ml_lr_override. That override REPLACES the pick and
+    can hand back a fresh PRIME ML, so a cap placed with the other NCAAF gates
+    would be silently undone. Same reasoning as the 09-27 MC re-check above it.
+
+    Re-measure after NCAAF week 8, alongside the K_PTS_SP 0.85 -> 0.94
+    de-compression, which attacks this at source and has not been measured yet.
+    If the margin model stops over-disagreeing, this cap stops firing on its own.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)):
+            return pp
+        if str(pp.get('type', '')).lower() != 'ml':
+            return pp
+        tier = str(pp.get('tier') or '').upper()
+        # Fire on PRIME, and also on a pick some EARLIER cap already walked down
+        # from PRIME to STRONG — otherwise a high-conviction dog ML escapes this
+        # gate entirely by having been demoted once already, and lands in STRONG
+        # at the same 2u stake it would have had at PRIME. apply_ncaaf_high_
+        # conviction_dog_cap does exactly that, so the hole is real, not
+        # hypothetical.
+        was_prime = tier == 'PRIME' or (
+            tier == 'STRONG'
+            and str((pp.get('_ncaaf_hi_conv_dog_cap') or {}).get('tier_before',
+                                                                 '')).upper()
+            == 'PRIME')
+        if not was_prime:
+            return pp
+        pp['tier'] = 'LEAN'
+        pp['_ncaaf_prime_ml_cap'] = {
+            'tier_before': tier, 'tier_after': 'LEAN',
+            'conviction': pp.get('conviction'),
+            'basis': 'NCAAF PRIME ML 2-10 (ROI -72.6%, z=-2.31); sport ML book '
+                     'ROI -23.1% n=55 z=-2.37 vs spread/RL +7.8% n=193; '
+                     'same-side spread reroute also loses (39.7%, n=63). '
+                     'LEAN not STRONG: PRIME->STRONG is stake-neutral (both '
+                     '2u) and measured as an exact no-op on the staked book',
+        }
+        _r = pp.get('edge_reason') or ''
+        pp['edge_reason'] = ((_r + ' · ') if _r else '') + (
+            'NCAAF moneyline capped to LEAN '
+            '(ML book -23.1% ROI vs spread +7.8%, n=248)')
+        _n = pp.get('audit_note') or ''
+        pp['audit_note'] = ((_n + ' · ') if _n else '') + \
+            f'ncaaf_prime_ml_cap: {tier}->LEAN'
+    except Exception:
+        return pp
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -1596,6 +1728,18 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # to survive the sim. This is the "engine output soundness" check —
     # the final pick, not an intermediate one, is what gets tested.
     pp = apply_mc_dissent_gate(pp, ctx)
+
+    # ══ 2026-09-30 · NCAAF PRIME MONEYLINE CAP ══
+    # Placed HERE, not with the other NCAAF gates above, for the same reason the
+    # MC re-check is here: apply_ml_lr_override replaces the pick further down
+    # the chain and can hand back a fresh PRIME ML, which would silently undo a
+    # cap applied earlier. NCAAF PRIME ML is 2-10 at ROI -72.6% and carries the
+    # sport's entire loss — see the gate's docstring for the 248-game breakdown.
+    # Caps to LEAN, not STRONG: PRIME and STRONG share the 2u stake, so a
+    # PRIME->STRONG demotion measured as an exact no-op (-3.76u either way) and
+    # only served to drag STRONG from +8.2% to -2.6% ROI.
+    if sport == 'NCAAF':
+        pp = apply_ncaaf_prime_ml_cap(pp, ctx)
 
     # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
     # Silent contradictions between chips on the same game card.
