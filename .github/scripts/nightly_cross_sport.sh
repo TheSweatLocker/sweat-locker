@@ -133,8 +133,24 @@ echo ""
 echo "── graders ──"
 bash "$RUN_STEP" --label "grade_ledger_snapshots.py (nightly)" \
   python grade_ledger_snapshots.py
+# --backfill 7 rather than one date: a game that resolves late, or a night this
+# workflow misses, then self-heals instead of leaving a permanent Pending cell
+# on the Receipts calendar. Safe to repeat now that a parse failure cannot
+# overwrite an existing grade (the 08-16 / 08-21 regression) — verified
+# idempotent: two consecutive runs both left the record at 74-55-4.
 bash "$RUN_STEP" --label "grade_potd.py (nightly)" \
-  python grade_potd.py
+  python grade_potd.py --backfill 7
+# 2026-09-29 POTD VERIFICATION, ALL SPORTS. Andy: "queue up POTD verification
+# for all sports and ensure Receipts tab calendar is and record up to date".
+# POTD lives on three surfaces that can disagree — jerry_cache, 
+# daily_best_bet_history (what the Receipts calendar renders and the published
+# record counts), and the record itself. Measured 2026-09-29: 33 POTDs existed
+# in jerry_cache with NO calendar row, so they were invisible to users and
+# absent from the record denominator, and no single query would have said so.
+# Runs AFTER grade_potd so it checks the post-grading state. Read-only; exits 1
+# on anything actionable so the gate turns the run red.
+bash "$RUN_STEP" --label "verify_potd_coverage.py (all sports)" \
+  python verify_potd_coverage.py --days 45
 bash "$RUN_STEP" --label "grade_public_receipts.py (nightly)" \
   python grade_public_receipts.py
 

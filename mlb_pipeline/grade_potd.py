@@ -383,6 +383,26 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
     }
 
 
+def _existing_calendar_result(date_str: str):
+    """Result already on the Receipts calendar for this date, or None.
+
+    Added 2026-09-29 so a parse failure can check whether it is about to
+    overwrite a real grade. Reads daily_best_bet_history because THAT is what
+    the calendar renders and what the published record counts — jerry_cache
+    disagreed with it on both dates they differed (08-22, 09-19) and was wrong
+    both times.
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/daily_best_bet_history', headers=H_R,
+                         params={'select': 'result',
+                                 'bet_date': f'eq.{date_str}'}, timeout=15)
+        if r.status_code == 200 and isinstance(r.json(), list) and r.json():
+            return r.json()[0].get('result')
+    except Exception:
+        pass
+    return None
+
+
 def grade_potd(date_str: str, dry_run: bool = False) -> str:
     row = _fetch_potd(date_str)
     if not row:
@@ -424,6 +444,33 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
         print(f'  {date_str}: already graded ({data.get("result")})'); return 'already'
     pick = _extract_pick_from_potd(data, date_str)
     if not pick['game_id'] or not pick['call_market']:
+        # 2026-09-29 GUARD: a PARSE FAILURE MUST NOT OVERWRITE A GOOD GRADE.
+        #
+        # This branch used to write 'no-pick' unconditionally, and a --backfill
+        # run over dates the parser cannot read destroyed two correct results
+        # on the Receipts calendar:
+        #
+        #   08-16  "Under 10.5"          Win -> no-pick
+        #          (TEX 2 @ ATH 5 = 7 total: a clear Under win)
+        #   08-21  "Pittsburgh Pirates RL 1.5"  Win -> Void
+        #          (PIT 4 @ LAD 5, lost by 1, RL +1.5 covers)
+        #
+        # Both had a real `lean` on the calendar — the pick existed, only the
+        # parser could not extract a game_id from the cached blob. The published
+        # record went 74-55-4 -> 72-55-4 on a run whose whole purpose was to
+        # make it MORE complete. Andy's standing rule, and the right one: do not
+        # mess with records.
+        #
+        # 'no-pick' is only honest for a date that has NO pick. If the calendar
+        # already holds a terminal result, or the row carries a lean, the
+        # parser's inability to read it is a parser problem and the existing
+        # grade stands. Reported so it can be fixed, never silently overwritten.
+        _prior = _existing_calendar_result(date_str)
+        if _prior in ('Win', 'Loss', 'Push', 'Void'):
+            print(f'  {date_str}: cannot extract pick (game_id={pick["game_id"]!r}, '
+                  f'market={pick["call_market"]!r}) — KEEPING existing grade '
+                  f'{_prior!r}, not overwriting')
+            return 'unparseable-kept'
         print(f'  {date_str}: cannot extract pick (game_id={pick["game_id"]!r}, '
               f'market={pick["call_market"]!r}) - marking as no-pick')
         result_payload = {'result': 'no-pick', 'graded_at': dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -499,16 +546,51 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
     # Fix: mirror the grade into daily_best_bet_history so the calendar
     # source of truth stays in sync. Non-fatal — jerry_cache patch above
     # is authoritative; the history patch is calendar convenience.
+    # 2026-09-29 PATCH -> UPSERT. The mirror above was a PATCH on
+    # bet_date=eq.<date>. When no calendar row existed for that date it matched
+    # NOTHING, returned 204, and did nothing — so the grader could never create
+    # a missing row, only update one that was already there. Measured
+    # 2026-09-29: 5 POTDs in the 45-day window (08-15, 08-17, 08-18, 08-19,
+    # 09-28) existed in jerry_cache and had NO calendar row at all, which means
+    # they were invisible on the Receipts tab AND absent from the published
+    # record's denominator. Same silent-success class as the pick-lock stamp
+    # that could not be cleared: a 2xx on a write that matched no row.
+    #
+    # bet_date is unique (140 rows / 140 distinct, verified) so on_conflict
+    # upsert is safe and idempotent. A created row carries the full pick, not a
+    # result-only stub, so the calendar cell renders properly rather than
+    # showing a graded outcome with no pick attached.
+    #
+    # NOTE on which surface is authoritative. The older comment above called
+    # jerry_cache authoritative and the calendar "convenience". Measured today,
+    # that is backwards where it matters: on both dates the two disagreed
+    # (08-22, 09-19) the CALENDAR was right and jerry_cache was wrong — 09-19
+    # was SEA 3 @ COL 5 = 8 against a close_total of 10.5, a clear Loss on an
+    # Over, which jerry_cache had recorded as Void. The calendar is what feeds
+    # the public record, so it is the one that has to be correct.
     try:
         result_val = result_payload.get('result')  # 'Win' | 'Loss' | 'Push' | 'Void'
         if result_val:
-            hr = requests.patch(f'{SB}/rest/v1/daily_best_bet_history',
-                                headers=H_W,
-                                params={'bet_date': f'eq.{date_str}'},
-                                json={'result': result_val,
-                                      'resolved_at': result_payload.get('graded_at')},
-                                timeout=15)
-            if hr.status_code not in (200, 204):
+            _g = (data.get('game') or {}) if isinstance(data.get('game'), dict) else {}
+            _score = (data.get('score') or {}) if isinstance(data.get('score'), dict) else {}
+            mirror = {
+                'bet_date': date_str,
+                'result': result_val,
+                'resolved_at': result_payload.get('graded_at'),
+                'sport': data.get('sport') or row.get('sport'),
+                'game': _g.get('matchup') or data.get('matchup'),
+                'lean': data.get('leanDisplay'),
+                'sweat_score': _score.get('total') or data.get('confidence'),
+                'narrative': data.get('narrative'),
+            }
+            # Never overwrite a good existing value with None.
+            mirror = {k: v for k, v in mirror.items() if v is not None}
+            hr = requests.post(
+                f'{SB}/rest/v1/daily_best_bet_history?on_conflict=bet_date',
+                headers=dict(H_W, **{'Prefer': 'resolution=merge-duplicates,'
+                                               'return=minimal'}),
+                json=[mirror], timeout=15)
+            if hr.status_code not in (200, 201, 204):
                 print(f'  {date_str}: history mirror failed {hr.status_code}: {hr.text[:120]}')
     except Exception as _e:
         print(f'  {date_str}: history mirror exception {_e}')
