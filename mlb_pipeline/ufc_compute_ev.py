@@ -98,13 +98,35 @@ def load_picks(event_date: str) -> list:
         f'{SB}/rest/v1/ufc_picks',
         params={
             'event_date': f'eq.{event_date}',
+            # 2026-09-29: ev_recommended_side + ev_tier added because the pick
+            # lock below reads them off this row. Without them PostgREST returns
+            # the row WITHOUT those keys — no error — so pick.get() is always
+            # None, the lock never fires, and it looks like it works.
+            # feedback_explicit_select_silent_blanks, caught before shipping.
             'select': 'id,fight_order,fighter_a,fighter_b,p_winner_a,'
                       'conviction_winner,odds_a_median,odds_b_median,'
-                      'odds_a_best,odds_b_best,odds_book_count',
+                      'odds_a_best,odds_b_best,odds_book_count,'
+                      'ev_recommended_side,ev_tier',
         },
         headers=H_READ, timeout=15,
     )
     return r.json() if r.status_code == 200 else []
+
+
+def _lock_active_ufc() -> bool:
+    """True while the published UFC slate must not be re-sided.
+
+    Delegates to pick_lock so the Thu 2pm -> Sun window lives in ONE place;
+    an hour check copied here would be a second chance to drift, which is the
+    reason pick_lock exists at all. Import failure returns False — a missing
+    lock must never block a legitimate write, only a present one can freeze.
+    """
+    try:
+        from pick_lock import lock_active
+        return bool(lock_active('UFC'))
+    except Exception as _e:
+        print(f'    ⚠ pick_lock unavailable ({type(_e).__name__}) — not locking')
+        return False
 
 
 def update_pick(pick_id: int, payload: dict) -> bool:
@@ -199,6 +221,33 @@ def run(event_date: str | None = None, dry_run: bool = False):
         }
         if experiment_flag:
             payload['experiment_flag'] = experiment_flag
+
+        # 2026-09-29 PICK LOCK FOR UFC. Andy: "UFC once a week on Thursday to
+        # have weekend picks and stats good to go", and "Fix UFC though".
+        #
+        # UFC had no lock of any kind — pick_lock.lock_active('UFC') fell
+        # through to the unknown-sport branch and returned False, and nothing
+        # called it. This function is why that mattered: it writes
+        # ev_recommended_side and ev_tier, and it runs on the Fri 10am
+        # line-move cron as well as the Thursday primary one. So a UFC pick
+        # published Thursday could silently flip sides on Friday, the day
+        # before the card, with no record.
+        #
+        # Freezes the PICK (side + tier) and lets the DATA refresh (ev_side_a /
+        # ev_side_b keep updating), which is the same rule every other sport
+        # follows — "picks freeze; data does not". The EV numbers moving while
+        # the side holds is honest: it shows the market moved after we called it.
+        #
+        # A fight with no published side yet is still writable, because a gap is
+        # not a change — late additions to the card still get a pick.
+        if _lock_active_ufc() and pick.get('ev_recommended_side') in ('a', 'b'):
+            _kept = pick.get('ev_recommended_side')
+            if _kept != rec_side or pick.get('ev_tier') != tier:
+                print(f'    🔒 locked — keeping {_kept}/{pick.get("ev_tier")} '
+                      f'(rebuild wanted {rec_side}/{tier})')
+            payload.pop('ev_recommended_side', None)
+            payload.pop('ev_tier', None)
+            payload.pop('experiment_flag', None)
         fname = pick['fighter_a'] if rec_side == 'a' else (pick['fighter_b'] if rec_side == 'b' else '-')
         odds_pick = odds_a if rec_side == 'a' else (odds_b if rec_side == 'b' else '-')
         print(f'  {tier:6s} {ev_a!s:>7} / {ev_b!s:>7}  '

@@ -1,8 +1,11 @@
 name: UFC Pipeline Weekly
 
 # UFC cadence: fight cards Saturday nights.
-#   Wed 6pm ET  — scrape card + score model + pull odds + compute EV
+#   Thu 10am ET — scrape card + score model + pull odds + compute EV  [PICKS MADE]
+#   Thu  2pm ET — pick_lock('UFC') closes; side + tier frozen through Sunday
 #   Fri 10am ET — refresh odds (line-move settle) + rebuild card
+#                 EV numbers refresh; the PICK does not (picks freeze, data does not)
+#   Sat 10am ET — early grader (Fri-night prelims + Contender Series)
 #   Sun 10am ET — resolve completed card (grade all fights)
 #
 # Times are 30-60 min earlier than user-facing "ready by" to absorb
@@ -10,7 +13,12 @@ name: UFC Pipeline Weekly
 
 on:
   schedule:
-    - cron: '0 22 * * 3'   # Wed 6pm ET  — primary pull (score + odds + EV)
+    # 2026-09-29: primary moved Wed 6pm ET -> Thu 10am ET. Andy: "UFC once a
+    # week on Thursday to have weekend picks and stats good to go". DOW=4 at
+    # HOUR=14 UTC hits no elif in "Detect run mode", so it still resolves to
+    # `full` — no mode logic change needed. pick_lock UFC opens Thu 2pm ET, so
+    # a slow run still finishes inside the free window.
+    - cron: '0 14 * * 4'   # Thu 10am ET — primary pull (score + odds + EV)
     - cron: '0 14 * * 5'   # Fri 10am ET — line-move refresh + weekly card
     - cron: '0 14 * * 6'   # Sat 10am ET — early grader (catches Fri-night prelim card + Contender Series)
     - cron: '0 14 * * 0'   # Sun 10am ET — resolver (grade main Saturday card)

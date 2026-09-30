@@ -11,6 +11,8 @@ implemented, separately, and nothing else was:
     NHL     none
     NBA     none
     NCAAB   none
+    UFC     none          <- and it stayed none until 2026-09-29, because UFC
+                             was not even in the list above. See _WEEKLY_LOCK.
 
 So on four sports — including NCAAF, in season right now — any later cron
 run silently rewrites a pick that has already been published. That is
@@ -58,9 +60,24 @@ _DAILY_LOCK_HOUR = {
 # NFL: Thu 8am ET -> Mon night. Tue/Wed are the free generation window.
 # NCAAF: plays Thu/Fri/Sat, so the freeze has to begin before Thursday
 # kickoff — Thu 8am ET through Sunday, leaving Mon-Wed to build the week.
+#
+# UFC: Andy 2026-09-29, "UFC once a week on Thursday to have weekend picks
+# and stats good to go". Events are Saturday, so the shape matches NCAAF.
+# Generation moved to Thu 10am ET (ufc_pipeline primary cron), and the lock
+# opens at Thu 2pm ET so a slow run still finishes inside the free window.
+#
+# UFC had NO lock of any kind before this — lock_active('UFC') fell through
+# to the unknown-sport branch and returned False, and nothing called it.
+# That was not harmless: ufc_compute_ev.py writes ev_recommended_side and
+# ev_tier, and it runs on the Fri 10am line-move cron as well as the primary
+# one, so a published UFC pick could silently flip sides the day before the
+# card. Hooked in ufc_compute_ev for real, not just declared here — this
+# file previously listed four sports as having "none" and the fix was to
+# wire them, not to add config.
 _WEEKLY_LOCK = {
-    'NFL':   (3, 8, 0),   # Thu 8am -> Mon
-    'NCAAF': (3, 8, 6),   # Thu 8am -> Sun
+    'NFL':   (3, 8, 0),    # Thu 8am -> Mon
+    'NCAAF': (3, 8, 6),    # Thu 8am -> Sun
+    'UFC':   (3, 14, 6),   # Thu 2pm -> Sun
 }
 
 
