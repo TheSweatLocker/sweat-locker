@@ -24,7 +24,7 @@ import argparse
 import os
 import sys
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as _date, timedelta as _timedelta
 from typing import Optional
 import requests
 from dotenv import load_dotenv
@@ -178,6 +178,15 @@ def _fold_name(name: str) -> str:
     n = _u.normalize('NFKD', name)
     n = ''.join(c for c in n if not _u.combining(c))
     n = n.lower().replace("'", '').replace('-', ' ')
+    # 2026-09-30: '&' vs the word 'and'. Non-alphanumerics are stripped further
+    # down, so '&' VANISHES while 'and' survives as letters:
+    #     'William & Mary'          -> williammary
+    #     'William and Mary Tribe'  -> williamandmarytribe
+    # Those can never match, which is why William & Mary @ Duke stayed unscored
+    # while every other 09-26 game resolved. Normalising '&' to ' and ' first
+    # makes both sides agree, and leaves the existing Texas A&M matches intact
+    # (both spellings fold to 'texasandm').
+    n = n.replace('&', ' and ')
 
     # ══ 2026-09-27 · CONSULT THE ALIAS TABLE, NOT JUST THIS FILE ══
     # Andy: "is the ncaaf issue correlated to issue with fuzzmatch and
@@ -229,7 +238,7 @@ def _fold_name(name: str) -> str:
     # game's mascot suffix now maps here. Multi-word entries MUST be
     # listed before their single-word tails so the loop matches longest
     # first (e.g. "ragin cajuns" before "cajuns").
-    _MASCOTS = ['ragin cajuns', 'delta devils', 'red raiders', 'red wolves',
+    _MASCOTS = ['tribe', 'ragin cajuns', 'delta devils', 'red raiders', 'red wolves',
                 'blue devils', 'blue raiders', 'golden bears', 'golden eagles',
                 'golden hurricane', 'golden flashes', 'golden lions',
                 'crimson tide', 'green wave', 'yellow jackets',
@@ -672,19 +681,48 @@ def run(season: Optional[int] = None, dry_run: bool = False,
         if not ymd: return keys
         away_raw = (g.get('away_team') or g.get('awayTeam') or '')
         home_raw = (g.get('home_team') or g.get('homeTeam') or '')
-        # Variant A: slugified (legacy)
-        keys.append(f'ncaaf_{ymd}_{_slugify(away_raw)}_{_slugify(home_raw)}')
-        # Variant B: raw team names (matches ncaaf_odds_pull today —
-        # canonical names from team_resolver preserve spaces)
-        if away_raw and home_raw:
-            keys.append(f'ncaaf_{ymd}_{away_raw}_{home_raw}')
-        # Variant C: RESOLVER-CANONICAL names (covers cases where CFBD's
-        # school field differs from our canonical, e.g. "Miami" vs "Miami (FL)")
-        if resolve_ncaaf_team:
-            can_a = resolve_ncaaf_team(away_raw) or away_raw
-            can_h = resolve_ncaaf_team(home_raw) or home_raw
-            if (can_a != away_raw) or (can_h != home_raw):
-                keys.append(f'ncaaf_{ymd}_{can_a}_{can_h}')
+
+        # ════════════════════════════════════════════════════════════════
+        # 2026-09-30 · THE DATE BOUNDARY, not the team names.
+        #
+        # CFBD's startDate is UTC. Our game_date is ET. A 7pm-or-later ET
+        # kickoff is already past midnight UTC, so CFBD files it on the NEXT
+        # calendar day and an exact-date key can never match. That is why the
+        # misses were always ~12-18% of a slate: the night games.
+        #
+        # Measured over the 31 unscored NCAAF rows on 09-12/18/19/25/26:
+        # matching the same team names within +/-1 day resolved 23 of them,
+        # and EVERY offset was exactly +1. Only 7 were genuine name problems.
+        # So this was never primarily an alias gap, and adding aliases would
+        # have fixed a quarter of it at best.
+        #
+        # Emitting the prior day as well is safe: the away/home names still
+        # have to match exactly, and two college teams do not play each other
+        # on consecutive days. Concrete cases this recovers include
+        # SMU -32.5 (conviction 91, our highest NCAAF call of 09-26) and
+        # Houston @ Texas Tech.
+        # ════════════════════════════════════════════════════════════════
+        _ymds = [ymd]
+        try:
+            _d = _date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:8]))
+            _ymds.append((_d - _timedelta(days=1)).strftime('%Y%m%d'))
+        except Exception:
+            pass
+
+        for _y in _ymds:
+            # Variant A: slugified (legacy)
+            keys.append(f'ncaaf_{_y}_{_slugify(away_raw)}_{_slugify(home_raw)}')
+            # Variant B: raw team names (matches ncaaf_odds_pull today —
+            # canonical names from team_resolver preserve spaces)
+            if away_raw and home_raw:
+                keys.append(f'ncaaf_{_y}_{away_raw}_{home_raw}')
+            # Variant C: RESOLVER-CANONICAL names (covers cases where CFBD's
+            # school field differs from ours, e.g. "Miami" vs "Miami (FL)")
+            if resolve_ncaaf_team:
+                can_a = resolve_ncaaf_team(away_raw) or away_raw
+                can_h = resolve_ncaaf_team(home_raw) or home_raw
+                if (can_a != away_raw) or (can_h != home_raw):
+                    keys.append(f'ncaaf_{_y}_{can_a}_{can_h}')
         return keys
 
     key_variants = {}
