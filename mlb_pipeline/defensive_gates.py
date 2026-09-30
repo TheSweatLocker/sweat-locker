@@ -1625,6 +1625,102 @@ def apply_ncaaf_prime_ml_cap(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+def apply_ncaaf_total_suppression(pp: dict | None, ctx: dict) -> dict | None:
+    """Stop publishing NCAAF total picks. The model is worse than the close.
+
+    Andy 2026-09-30, approving this before the Wednesday lock.
+
+    THE RECORD, leak-free (ctx updated_at strictly before kickoff_utc), graded
+    off ncaaf_game_results.total_result, pushes excluded:
+
+        STRONG     2-3   40.0%  n=5    ROI  -23.6%
+        LEAN       3-7   30.0%  n=10   ROI  -42.7%
+        COVERAGE   7-14  33.3%  n=21   ROI  -36.4%
+        PASS       0-3    0.0%  n=3    ROI -100.0%
+        ALL       12-27  30.8%  n=39   ROI  -41.3%   z=-2.40
+
+    -16.09u on 39 picks — a bigger loss than the entire NCAAF moneyline book
+    (-12.73u on 55) at a third the volume. It loses at EVERY tier, so unlike
+    apply_ncaaf_prime_ml_cap there is no concentrated cell to cap: no tier
+    demotion helps when the whole population is the problem.
+
+    NOT A DIRECTIONAL BIAS RIDING THE SEASON. That was the obvious confound and
+    it is ruled out. The engine loses on BOTH sides:
+
+        picks OVER    4-14   22.2%   n=18   z=-2.36
+        picks UNDER   8-13   38.1%   n=21   z=-1.09
+
+    against a 2026 NCAAF base rate of OVER 161-141 (53.3%, n=302) — i.e. a mild
+    OVER season. If this were just "UNDER is good in 2026", its UNDER picks
+    would win. They lose too. Wrong in both directions.
+
+    THE MECHANISM, which is why this is a suppression and not a shadow item:
+    projected_total is measurably worse than the closing line.
+
+        MAE vs actual score:   model 12.81   market 11.82   (n=199)
+        bias vs close:         mean +0.95, median +0.96
+        projects OVER the close 58.3% of the time
+
+    A model with a larger error than the number it is betting against has no
+    information to sell, and its +0.95 high bias is exactly why it says OVER too
+    often and why OVER is its worst side. That is a structural reason not to
+    publish, independent of the 39-game record — which is what separates this
+    from the ML case, where I deliberately capped instead of suppressing because
+    the evidence there was a record without a mechanism.
+
+    Nothing else was gating these. apply_ncaaf_total_lr_override went
+    SHADOW-ONLY on 2026-09-15 (project_ncaaf_lr_total_dead_914: p_over spans
+    only [0.4578, 0.5500] across a whole slate, the model is inert), so from
+    09-15 to today NCAAF totals published with no gate in front of them at all.
+
+    ROUTES TO PASS, NOT COVERAGE. COVERAGE is not actually outside the record:
+    aggregate_daily_records.py:847 rolls up ('PRIME','STRONG','LEAN',
+    'COVERAGE') and jerry_pre_publish_audit reads it too. PASS is rank 0 in
+    _DG_TIER_RANK beside SKIP and is excluded from every publishable set, so it
+    is the only unambiguous "visible in game detail, absent from the card and
+    the record" target.
+
+    WHY NOT FADE, given feedback_fade_not_suppress_803 says <45% buckets should
+    fade the other side. Fading all 48 would have gone 27-12 (+12.55u), which is
+    tempting and not what I would ship yet. Per side the fade evidence is thin —
+    fading its UNDER picks is 13-8 (61.9%, z=+1.09), which does not clear 2 SE —
+    and the mechanism argues against durability: a model whose MAE is worse than
+    the market is NOISE, and noise regresses to ~50% rather than staying
+    invertible. Publishing a fade also means telling subscribers to bet against
+    our own engine, which deserves its own shadow record first. So: suppress
+    now, and ncaaf_shadow_total_fade.py records what the fade would have done.
+
+    Re-measure after NCAAF week 8. If projected_total's MAE ever beats the
+    market's, revisit — that is the condition that would earn these picks back.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)):
+            return pp
+        if str(pp.get('type', '')).lower() != 'total':
+            return pp
+        before = str(pp.get('tier') or '').upper()
+        if before == 'PASS':
+            return pp
+        pp['tier'] = 'PASS'
+        pp['_ncaaf_total_suppressed'] = {
+            'tier_before': before, 'tier_after': 'PASS',
+            'side': pp.get('side'), 'conviction': pp.get('conviction'),
+            'basis': 'NCAAF totals 12-27 (30.8%, n=39, z=-2.40, ROI -41.3%); '
+                     'loses on BOTH sides (OVER 22.2% n=18 / UNDER 38.1% n=21) '
+                     'vs a 53.3% OVER base rate; projected_total MAE 12.81 '
+                     'beaten by market 11.82',
+        }
+        _r = pp.get('edge_reason') or ''
+        pp['edge_reason'] = ((_r + ' · ') if _r else '') + (
+            'NCAAF total unpublished — model MAE 12.81 vs market 11.82, '
+            'picks 30.8% (n=39)')
+        _n = pp.get('audit_note') or ''
+        pp['audit_note'] = ((_n + ' · ') if _n else '') +             f'ncaaf_total_suppression: {before}->PASS'
+    except Exception:
+        return pp
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -1740,6 +1836,16 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # only served to drag STRONG from +8.2% to -2.6% ROI.
     if sport == 'NCAAF':
         pp = apply_ncaaf_prime_ml_cap(pp, ctx)
+
+    # ══ 2026-09-30 · NCAAF TOTALS UNPUBLISHED ══
+    # 12-27 (30.8%, n=39, z=-2.40, -16.09u) and losing on BOTH sides, while
+    # projected_total's MAE (12.81) is WORSE than the closing line's (11.82).
+    # No tier concentration to cap — it loses at every tier — and no gate has
+    # stood in front of these since apply_ncaaf_total_lr_override went
+    # shadow-only on 09-15. Routes to PASS, the only tier truly outside the
+    # record. See the gate's docstring.
+    if sport == 'NCAAF':
+        pp = apply_ncaaf_total_suppression(pp, ctx)
 
     # 2026-09-03 BADGE-CONFLICT GATES (badge audit fixes #1 + #2):
     # Silent contradictions between chips on the same game card.
