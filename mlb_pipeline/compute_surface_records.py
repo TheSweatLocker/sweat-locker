@@ -588,14 +588,19 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
     res_url = (f'{SB}/rest/v1/{res_table}'
                f'?select=game_id,game_date,away_team,home_team,'
                f'{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]}')
+    # 2026-09-30: these two used to `return []` on a fetch failure, which made
+    # a broken query indistinguishable from a sport that genuinely has no graded
+    # picks. That ambiguity is why the stale-row prune below could not be
+    # written safely — clearing on empty would have destroyed good records every
+    # time a query hiccupped. Raising lets build_rows tell the two apart.
     try:
         ctx_rows = list(_paged(ctx_url))
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f'{sport} ctx fetch failed: {e}') from e
     try:
         res_rows = list(_paged(res_url))
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f'{sport} results fetch failed: {e}') from e
 
     def _week_bucket(dstr):
         try:
@@ -946,11 +951,29 @@ def _aggregate(rows: Iterable[dict], sport: str, window: tuple[dt.date, dt.date]
 
 
 def build_rows():
+    """Returns (rows, computed_ok, run_started_at).
+
+    computed_ok is the set of surfaces whose picker ran WITHOUT error — only
+    those are safe to prune stale rows from. A surface whose picker raised is
+    left completely alone, because an empty result there means "the query
+    broke", not "there are no picks".
+
+    run_started_at stamps every row from this run with ONE timestamp, so the
+    prune can delete exactly the rows this run did not refresh.
+    """
     today = dt.date.today()
     windows = _windows_today(today)
+    run_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     out_rows = []
+    computed_ok = set()
     for surface_name, picker in SURFACES.items():
-        rows = picker()
+        try:
+            rows = picker()
+        except Exception as e:
+            print(f'  {surface_name}: PICKER FAILED ({e}) — leaving existing '
+                  f'rows untouched', file=sys.stderr)
+            continue
+        computed_ok.add(surface_name)
         print(f'  {surface_name}: {len(rows)} graded picks', file=sys.stderr)
         for sport in SPORTS + ['ALL']:
             for wname, wrange in windows.items():
@@ -959,9 +982,9 @@ def build_rows():
                 out_rows.append({
                     'sport': sport, 'surface': surface_name, 'window_key': wname,
                     **agg,
-                    'last_computed_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                    'last_computed_at': run_started_at,
                 })
-    return out_rows
+    return out_rows, computed_ok, run_started_at
 
 
 def upsert(rows: list[dict]):
@@ -978,6 +1001,73 @@ def upsert(rows: list[dict]):
         r.raise_for_status()
 
 
+def prune_stale(computed_ok: set, run_started_at: str, dry_run: bool = False,
+                would_write: list = None):
+    """Delete rows this run did NOT refresh, for surfaces that computed cleanly.
+
+    2026-09-30. WHY: upsert() returns early on an empty list and _aggregate()
+    returns None for a window with no picks, so a surface or window that stops
+    producing rows keeps publishing its last known record FOREVER. Measured that
+    day, before this existed:
+
+        NHL  nhl_sides        33-18 +12.0u "lifetime" — 100% preseason, and it
+                              SURVIVED being excluded because the recompute
+                              produced 0 rows and the old ones just stayed
+        MLB  sharp_card_*     frozen at 09-24 for six days (separate cause —
+                              its writer was never scheduled)
+        NCAAF ledger d7       frozen 09-17
+        NFL   potd   d7       frozen 09-19
+
+    A frozen record is indistinguishable from a correct one on the surface that
+    renders it, which is what makes it dangerous.
+
+    SAFETY: only surfaces in computed_ok are pruned. A picker that raised is
+    skipped entirely — otherwise a transient query failure would delete a real
+    record, which is a far worse outcome than a stale one.
+    """
+    if not computed_ok:
+        return
+    # NOTE: the filter goes through requests' params, NOT f-stringed into the
+    # URL. An ISO timestamp ends in '+00:00' and a raw '+' in a query string is
+    # decoded as a SPACE, so the embedded version silently matched nothing and
+    # the dry run printed an empty list that read like "nothing to prune".
+    for surface in sorted(computed_ok):
+        base = f'{SB}/rest/v1/surface_records'
+        filt = {'surface': f'eq.{surface}',
+                'last_computed_at': f'lt.{run_started_at}'}
+        if dry_run:
+            # A dry run writes nothing, so filtering on last_computed_at would
+            # flag EVERY existing row as stale — an alarming and useless
+            # preview. Compare against the keys this run WOULD write instead:
+            # anything present for this surface but absent from that set is what
+            # the live prune would actually remove.
+            keep = {(r['sport'], r['surface'], r['window_key'])
+                    for r in (would_write or []) if r['surface'] == surface}
+            r = requests.get(base, headers=H,
+                             params={'surface': f'eq.{surface}',
+                                     'select': 'sport,surface,window_key'},
+                             timeout=30)
+            existing = r.json() if r.ok and isinstance(r.json(), list) else []
+            for x in existing:
+                if (x['sport'], x['surface'], x['window_key']) in keep:
+                    continue
+                print(f'  [DRY] would prune {x["sport"]:5s} {x["surface"]:18s} '
+                      f'{x["window_key"]}', file=sys.stderr)
+            continue
+        r = requests.delete(base, headers={**H, 'Prefer': 'return=representation'},
+                            params=filt, timeout=30)
+        if r.ok:
+            try:
+                n = len(r.json()) if isinstance(r.json(), list) else 0
+            except Exception:
+                n = 0
+            if n:
+                print(f'  pruned {n} stale row(s) from {surface}', file=sys.stderr)
+        else:
+            print(f'  prune failed for {surface}: {r.status_code} '
+                  f'{r.text[:160]}', file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
@@ -985,7 +1075,7 @@ def main():
     args = ap.parse_args()
 
     print(f'compute_surface_records @ {dt.date.today()}', file=sys.stderr)
-    rows = build_rows()
+    rows, computed_ok, run_started_at = build_rows()
     print(f'built {len(rows)} rows', file=sys.stderr)
 
     if args.json:
@@ -998,10 +1088,15 @@ def main():
             print(f'  {r["sport"]:6s} {r["surface"]:6s} {r["window_key"]:8s}  '
                   f'{r["wins"]}-{r["losses"]}-{r["pushes"]}  '
                   f'{r["units_net"]:+.2f}u  hit={r["hit_rate"]}', file=sys.stderr)
+        prune_stale(computed_ok, run_started_at, dry_run=True,
+                    would_write=rows)
         return
 
     upsert(rows)
     print('surface_records upserted', file=sys.stderr)
+    # Prune AFTER the upsert, so a row this run refreshed is never a prune
+    # candidate. Ordering matters: pruning first would briefly empty a surface.
+    prune_stale(computed_ok, run_started_at)
 
 
 if __name__ == '__main__':
