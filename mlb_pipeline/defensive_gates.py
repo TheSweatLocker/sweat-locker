@@ -1407,6 +1407,92 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         return pp  # never break the pipeline
 
 
+def apply_ncaaf_high_conviction_dog_cap(pp: dict | None, ctx: dict) -> dict | None:
+    """Cap the tier on an NCAAF DOG pick carrying high conviction.
+
+    Andy 2026-09-30: "we cant just leave them inverted."
+
+    MEASURED, leak-free, on 256 graded NCAAF sides (ctx rows whose updated_at is
+    strictly before kickoff_utc, joined via results_game_id, pushes excluded).
+    This became measurable only after the 09-30 grading repair — the UTC/ET date
+    boundary had left ~31 games unscored, disproportionately the night games.
+
+    The dominant effect is NOT the conviction curve, it is which side is backed:
+
+        FAV  112-69   61.9%   n=181   z=+3.20
+        DOG   35-40   46.7%   n=75    z=-0.58
+
+    A 15.2pp gap, and conviction is not a proxy for it (dog-rate by conviction
+    band runs 35 / 26 / 22 / 31 — no pattern). The damage is in the INTERACTION:
+
+        DOG + conv >= 70   12-19   38.7%   n=31   <- below any breakeven
+        FAV + conv >= 70   52-35   59.8%   n=87
+        FAV + conv <  70   60-34   63.8%   n=94   z=+2.68
+
+    So high conviction is fine on a favourite and poison on a dog. That is
+    exactly what project_sp_plus_compression_927 predicts: the model
+    under-projects favourites, so model-vs-market disagreement points at the dog
+    almost by construction, and the biggest disagreements — which earn the
+    highest conviction — are the most compressed, least real.
+
+    WHY A CAP AND NOT A SUPPRESSION. The parent DOG/FAV split is solid
+    (z=+3.20, n=256) but the specific cell is n=31 at z=-1.26, which does not
+    clear 2 SE. A cap demotes and keeps the play visible with an honest label;
+    suppression would be a stronger claim than the cell supports. Same reasoning
+    as the lr_v1 NCAAF PRIME cap above.
+
+    NOT A PERMANENT FIX. K_PTS_SP moved 0.85 -> 0.94 on 09-29 to attack the
+    compression at source, and that has NOT been measured yet — it needs a ctx
+    rebuild plus new games. If de-compression works, the high-conviction dog
+    population shrinks on its own and this cap stops firing. Re-measure after
+    NCAAF week 8 and lift it if dogs earn the tier back.
+
+    Sport-scoped, sides only. Preserves an audit trail.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)):
+            return pp
+        if str(pp.get('type', '')).lower() not in ('ml', 'rl', 'spread'):
+            return pp
+        conv = pp.get('conviction')
+        tier = str(pp.get('tier') or '').upper()
+        if conv is None or tier not in ('PRIME', 'STRONG'):
+            return pp
+        try:
+            conv = float(conv)
+        except (TypeError, ValueError):
+            return pp
+        if conv < 70:
+            return pp
+        # Is the backed side the underdog? NCAAF close_spread is stored with
+        # POSITIVE = home is the DOG, so home margin = -close_spread.
+        try:
+            cs = float(ctx.get('close_spread'))
+        except (TypeError, ValueError):
+            return pp          # no line, no judgement
+        mkt_home_margin = -cs
+        side = str(pp.get('side') or '').upper()
+        if side not in ('HOME', 'AWAY'):
+            return pp
+        is_dog = ((side == 'HOME' and mkt_home_margin < 0)
+                  or (side == 'AWAY' and mkt_home_margin > 0))
+        if not is_dog:
+            return pp
+        before = tier
+        pp['tier'] = 'STRONG' if tier == 'PRIME' else 'LEAN'
+        pp['_ncaaf_hi_conv_dog_cap'] = {
+            'tier_before': before, 'tier_after': pp['tier'],
+            'conviction': conv, 'close_spread': cs,
+            'basis': 'NCAAF dog + conv>=70 measured 12-19 (38.7%, n=31); '
+                     'FAV 61.9% vs DOG 46.7% on n=256, z=+3.20',
+        }
+        _r = pp.get('edge_reason') or ''
+        pp['edge_reason'] = ((_r + ' · ') if _r else '') +             'high-conviction NCAAF dog capped (dogs 46.7% vs favs 61.9%, n=256)'
+    except Exception:
+        return pp
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -1426,6 +1512,9 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
     if sport == 'NCAAF':
         pp = apply_ncaaf_large_spread_gate(pp, ctx)
+        # 2026-09-30: measured dog/fav split on 256 graded sides — see the
+        # gate's docstring. Runs after large-spread so both can demote.
+        pp = apply_ncaaf_high_conviction_dog_cap(pp, ctx)
     # 2026-09-03 LR ML OVERRIDE — supervised models replace legacy ML
     # picks per sport. Runs AFTER other gates so juice-trap/MC-dissent
     # output still gets a chance; LR fires as a final override for ML.
