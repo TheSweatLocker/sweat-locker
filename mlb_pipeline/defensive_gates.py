@@ -1580,6 +1580,30 @@ def apply_ncaaf_prime_ml_cap(pp: dict | None, ctx: dict) -> dict | None:
     can hand back a fresh PRIME ML, so a cap placed with the other NCAAF gates
     would be silently undone. Same reasoning as the 09-27 MC re-check above it.
 
+    WHAT LOOKS LIKE A HOLE HERE AND IS NOT — DO NOT "FIX" THIS.
+    Verified on the real board 2026-09-30: 8 of this weekend's 27 ML picks
+    leave the chain at STRONG carrying `_edge_cap: {from: PRIME, reason:
+    "lr_v1 PRIME unproven in NCAAF (5-10, n=15) — capped"}`. They were PRIME,
+    something demoted them one step, and STRONG carries the SAME 2u stake — so
+    they appear to walk straight through this gate with full exposure. The
+    obvious move is to catch them the way the `_ncaaf_hi_conv_dog_cap` branch
+    above is caught. Measured, that would be wrong:
+
+        ALL ml                            30-25  54.5%  n=55  ROI -23.1%
+        STRONG ml, LR-capped FROM PRIME    3-0  100.0%  n=3   ROI +45.3%
+        STRONG ml, not LR-capped           7-4   63.6%  n=11  ROI -14.4%
+
+    The LR-capped cell is the BEST-performing moneyline cell we have, not a
+    losing one. n=3 is far too thin to promote on, and equally too thin to
+    suppress on — the point is only that there is no evidence of harm, so
+    capping it would be acting against what little data exists.
+
+    The asymmetry with the dog cap is deliberate and evidence-based: a
+    dog-capped ex-PRIME came out of a cell measured 12-19 (38.7%, n=31), so it
+    belongs to the poisoned population this gate exists for. An LR-capped
+    ex-PRIME does not. Re-measure after week 8; if that cell turns negative
+    with real sample, add `_edge_cap` to the was_prime test then.
+
     Re-measure after NCAAF week 8, alongside the K_PTS_SP 0.85 -> 0.94
     de-compression, which attacks this at source and has not been measured yet.
     If the margin model stops over-disagreeing, this cap stops firing on its own.

@@ -103,24 +103,40 @@ done
 [ -n "$LABEL" ] || LABEL="$*"
 
 start=$(date +%s)
-_out="$(mktemp)"
-"$@" 2>&1 | tee "$_out"
-rc=${PIPESTATUS[0]}
-dur=$(( $(date +%s) - start ))
 
-# A detector's exit 1 is a FINDING unless it actually crashed. Anything >= 2,
-# or a traceback in the output, is a real failure whatever the flag says.
-if [ "$DETECTOR" = "1" ] && [ "$rc" -eq 1 ] &&
-   ! grep -q 'Traceback (most recent call last)' "$_out"; then
-  msg="${LABEL} — findings (exit 1 after ${dur}s)"
-  echo "::notice::DETECTOR FINDING: ${msg}"
-  mkdir -p "$(dirname "$FINDINGS")"
-  printf '%s\n' "$msg" >> "$FINDINGS"
-  _summary "- 🔎 \`${LABEL}\` findings (${dur}s)"
+# ══ 2026-09-30 · WHY THE TWO BRANCHES ══
+# Only a --detector step needs its output captured, because only a detector
+# needs the traceback test below. Capturing costs something real, so the ~100
+# existing steps must NOT pay it: piping through `tee` replaces the child's
+# stdout with a pipe, which makes Python switch from line to BLOCK buffering
+# (output stops streaming and arrives in one lump at the end) and merges
+# stderr into stdout, changing interleaving in every workflow log.
+#
+# So the default path runs "$@" exactly as it did before this flag existed —
+# byte-identical behaviour for every step that does not opt in.
+if [ "$DETECTOR" = "1" ]; then
+  _out="$(mktemp)"
+  "$@" 2>&1 | tee "$_out"
+  rc=${PIPESTATUS[0]}
+  dur=$(( $(date +%s) - start ))
+  # A detector's exit 1 is a FINDING unless it actually crashed. Anything >= 2,
+  # or a traceback in the output, is a real failure whatever the flag says.
+  if [ "$rc" -eq 1 ] &&
+     ! grep -q 'Traceback (most recent call last)' "$_out"; then
+    msg="${LABEL} — findings (exit 1 after ${dur}s)"
+    echo "::notice::DETECTOR FINDING: ${msg}"
+    mkdir -p "$(dirname "$FINDINGS")"
+    printf '%s\n' "$msg" >> "$FINDINGS"
+    _summary "- 🔎 \`${LABEL}\` findings (${dur}s)"
+    rm -f "$_out"
+    exit 0
+  fi
   rm -f "$_out"
-  exit 0
+else
+  "$@"
+  rc=$?
+  dur=$(( $(date +%s) - start ))
 fi
-rm -f "$_out"
 
 if [ "$rc" -ne 0 ]; then
   msg="${LABEL} — exit ${rc} after ${dur}s"
