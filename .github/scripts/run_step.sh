@@ -38,6 +38,7 @@
 set -uo pipefail
 
 TALLY="${STEP_FAILURE_TALLY:-${RUNNER_TEMP:-/tmp}/pipeline_step_failures}"
+FINDINGS="${TALLY}_findings"
 
 _summary() {
   # GITHUB_STEP_SUMMARY is absent when running locally; fall back to stdout.
@@ -47,6 +48,25 @@ _summary() {
 }
 
 if [ "${1:-}" = "--gate" ]; then
+  # Findings first: reported, never fatal. A nightly that finds things is a
+  # nightly that is working.
+  if [ -s "$FINDINGS" ]; then
+    fcount=$(wc -l < "$FINDINGS" | tr -d ' ')
+    echo "::notice::${fcount} detector finding(s) — reported, not failures:"
+    # shellcheck disable=SC2162
+    while IFS= read line; do
+      echo "::notice::  - ${line}"
+    done < "$FINDINGS"
+    _summary ""
+    _summary "### 🔎 ${fcount} detector finding(s)"
+    _summary ""
+    _summary "Detectors exited non-zero because they found something. This is"
+    _summary "normal operation, not a failed run — see each step's log."
+    _summary ""
+    _summary '```'
+    cat "$FINDINGS" >> "${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
+    _summary '```'
+  fi
   if [ -s "$TALLY" ]; then
     count=$(wc -l < "$TALLY" | tr -d ' ')
     echo "::error::${count} pipeline step(s) failed. This run did real work but"
@@ -63,21 +83,44 @@ if [ "${1:-}" = "--gate" ]; then
     _summary '```'
     exit 1
   fi
-  echo "all steps reported success"
+  if [ -s "$FINDINGS" ]; then
+    echo "no step failed (detector findings above are informational)"
+  else
+    echo "all steps reported success"
+  fi
   exit 0
 fi
 
+DETECTOR=0
 LABEL=""
-if [ "${1:-}" = "--label" ]; then
-  LABEL="$2"
-  shift 2
-fi
+while true; do
+  case "${1:-}" in
+    --detector) DETECTOR=1; shift ;;
+    --label)    LABEL="$2"; shift 2 ;;
+    *)          break ;;
+  esac
+done
 [ -n "$LABEL" ] || LABEL="$*"
 
 start=$(date +%s)
-"$@"
-rc=$?
+_out="$(mktemp)"
+"$@" 2>&1 | tee "$_out"
+rc=${PIPESTATUS[0]}
 dur=$(( $(date +%s) - start ))
+
+# A detector's exit 1 is a FINDING unless it actually crashed. Anything >= 2,
+# or a traceback in the output, is a real failure whatever the flag says.
+if [ "$DETECTOR" = "1" ] && [ "$rc" -eq 1 ] &&
+   ! grep -q 'Traceback (most recent call last)' "$_out"; then
+  msg="${LABEL} — findings (exit 1 after ${dur}s)"
+  echo "::notice::DETECTOR FINDING: ${msg}"
+  mkdir -p "$(dirname "$FINDINGS")"
+  printf '%s\n' "$msg" >> "$FINDINGS"
+  _summary "- 🔎 \`${LABEL}\` findings (${dur}s)"
+  rm -f "$_out"
+  exit 0
+fi
+rm -f "$_out"
 
 if [ "$rc" -ne 0 ]; then
   msg="${LABEL} — exit ${rc} after ${dur}s"

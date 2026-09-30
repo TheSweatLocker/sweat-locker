@@ -149,7 +149,7 @@ bash "$RUN_STEP" --label "grade_potd.py (nightly)" \
 # absent from the record denominator, and no single query would have said so.
 # Runs AFTER grade_potd so it checks the post-grading state. Read-only; exits 1
 # on anything actionable so the gate turns the run red.
-bash "$RUN_STEP" --label "verify_potd_coverage.py (all sports)" \
+bash "$RUN_STEP" --detector --label "verify_potd_coverage.py (all sports)" \
   python verify_potd_coverage.py --days 45
 bash "$RUN_STEP" --label "grade_public_receipts.py (nightly)" \
   python grade_public_receipts.py
@@ -184,17 +184,17 @@ bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
 # --fix re-runs graders + aggregators, so it must come AFTER the graders and
 # records above and BEFORE the audits below — that way the audits see the
 # repaired state rather than the gap it just healed.
-bash "$RUN_STEP" --label "morning_brief.py --fix (nightly)" \
+bash "$RUN_STEP" --detector --label "morning_brief.py --fix (nightly)" \
   python "${GITHUB_WORKSPACE:-..}/docs/scripts/morning_brief.py" --fix
 
 # ── 6. AUDITS — read-mostly detectors, last so they see final state ─────
 echo ""
 echo "── audits ──"
-bash "$RUN_STEP" --label "audit_team_alias_gaps.py (nightly)" \
+bash "$RUN_STEP" --detector --label "audit_team_alias_gaps.py (nightly)" \
   python audit_team_alias_gaps.py
-bash "$RUN_STEP" --label "audit_data_quality.py (nightly)" \
+bash "$RUN_STEP" --detector --label "audit_data_quality.py (nightly)" \
   python audit_data_quality.py
-bash "$RUN_STEP" --label "reconcile_resolution.py (nightly)" \
+bash "$RUN_STEP" --detector --label "reconcile_resolution.py (nightly)" \
   python reconcile_resolution.py --days 7
 
 
