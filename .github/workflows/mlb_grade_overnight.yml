@@ -143,13 +143,27 @@ jobs:
       # idempotent, so the overlap is a safety net, not double work that
       # matters. When this workflow retires, nightly_cross_sport.yml carries on.
       # ══════════════════════════════════════════════════════════════════
-      - name: Cross-sport nightly sequence
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
-          PYTHONIOENCODING: utf-8
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/nightly_cross_sport.sh"
+      # ══════════════════════════════════════════════════════════════════
+      # THIS WORKFLOW IS NOW MLB ONLY — 2026-09-29
+      #
+      # Andy: "Can we diligently split the mlb overnight from other sports?"
+      #
+      # It used to run sixteen cross-sport steps plus morning_brief and the
+      # heartbeat watchdog. All of that now lives in
+      #   .github/scripts/nightly_cross_sport.sh
+      # run by nightly_cross_sport.yml at 10:30 + 12:30 UTC.
+      #
+      # The 10:30 slot is deliberately AFTER this workflow's last attempt
+      # (09:30), so POTD grading, records and receipts still see freshly
+      # resolved MLB results. Nothing was lost by removing the overlap.
+      #
+      # WHY THE SPLIT MATTERS: baseball goes offline after the playoffs. Every
+      # step left below is MLB-specific and SHOULD stop with the season. Adding
+      # anything cross-sport back here would re-create the dependency that put
+      # NCAAF's only daily resolver and all six sports' stat history inside a
+      # workflow with an expiry date.
+      # ══════════════════════════════════════════════════════════════════
+
 
 
       # 2. Grade ledger snapshots (chalk_parlays, teasers, hits_parlays)
@@ -182,14 +196,6 @@ jobs:
       # by re-running graders + aggregators. Idempotent; safe unattended.
       # continue-on-error kept so the workflow itself never breaks on this
       # step. Auto-repair runs first, THEN morning brief re-verifies clean.
-      - name: Morning brief verification + auto-repair
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          PYTHONIOENCODING: utf-8
-        run: |
-          python docs/scripts/morning_brief.py --fix
 
       # 4. Recompute surface_records (mtd / d7 / d30 / epoch / lifetime rollups)
       #    so the record chips + hero P/L update overnight.
@@ -319,16 +325,6 @@ jobs:
       # nominal cron time — the '0 10' trigger has historically started
       # 13:20-16:22 UTC, so a cron-time comparison would flag every day and
       # train everyone to ignore it.
-      - name: Watchdog — scheduled runs that never started
-        if: always()
-        working-directory: mlb_pipeline
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
-            --label "watchdog_workflow_heartbeat.py" \
-            python watchdog_workflow_heartbeat.py
 
       # if: always() so a failed grade step doesn't skip the heartbeat.
       - name: Heartbeat — end

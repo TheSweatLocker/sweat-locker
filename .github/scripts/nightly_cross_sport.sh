@@ -148,6 +148,14 @@ bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
 bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
   python backfill_public_receipts.py
 
+# 2026-09-29: morning_brief moved here from mlb_grade_overnight as part of the
+# clean MLB split. It is cross-sport (references all seven sports) and its
+# --fix re-runs graders + aggregators, so it must come AFTER the graders and
+# records above and BEFORE the audits below — that way the audits see the
+# repaired state rather than the gap it just healed.
+bash "$RUN_STEP" --label "morning_brief.py --fix (nightly)" \
+  python "${GITHUB_WORKSPACE:-..}/docs/scripts/morning_brief.py" --fix
+
 # ── 6. AUDITS — read-mostly detectors, last so they see final state ─────
 echo ""
 echo "── audits ──"
