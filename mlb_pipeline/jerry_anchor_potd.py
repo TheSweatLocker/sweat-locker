@@ -548,8 +548,35 @@ def run(game_date: str | None = None, threshold: int = 70,
     # Pull Jerry reads across all eligible sports (POTD_SPORTS below).
     # UFC intentionally excluded per user 2026-07-31 — UFC stays a
     # standalone tab destination, not a cross-sport POTD candidate.
-    # Add sports to POTD_SPORTS as their synthesizers ship.
-    POTD_SPORTS = ["MLB", "NBA", "NFL", "NCAAF", "NCAAB"]
+    #
+    # 2026-09-30 NBA + NCAAB REMOVED. Andy: "Concur with redacting nba".
+    #
+    # POTD is the single most prominent pick in the product — one a day, shown
+    # free on the home screen, and graded onto the Receipts calendar. A sport
+    # should not be able to supply it before it has ANY graded track record.
+    # Measured 2026-09-30, graded jerry_reads per sport:
+    #
+    #     MLB    707 graded   420-287 (59.4%)  z=+5.00
+    #     NCAAF  228 graded   117-111 (51.3%)  z=+0.40
+    #     NFL     40 graded    25-15 (62.5%)   z=+1.58
+    #     NBA      0 graded    -- eligible anyway, and opens 2026-10-03
+    #     NCAAB    0 graded    -- eligible anyway, opens ~Nov 3
+    #
+    # NBA tips 10-03 with zero graded picks, no current team stats, no SOS and
+    # no externals (project_incoming_sports_readiness_926). Left in, it could
+    # have won Play of the Day on day one on an ungraded model.
+    #
+    # THE BAR TO RE-ADD: a real graded sample in that sport — order of 40+
+    # decided picks, which is roughly where NFL sits — and reads that are not
+    # drifting from the card. Re-add by putting the sport back in this list;
+    # nothing else needs changing.
+    #
+    # NHL is deliberately still absent: its 43 graded reads are 100% PRESEASON
+    # (game-id type 01), and its v3 + Monte Carlo projections only began on
+    # 2026-09-29, so the stack that would pick for it has never been graded.
+    # Andy 2026-09-30: "would like to give it a week before we add nhl to potd
+    # selection, see how we are, do some calibration."
+    POTD_SPORTS = ["MLB", "NFL", "NCAAF"]
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/jerry_reads",
         headers=H_READ,

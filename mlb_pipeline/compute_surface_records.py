@@ -518,8 +518,36 @@ def pick_ncaaf_sides() -> list[dict]:
     return out
 
 
+def _is_nhl_preseason(game_id) -> bool:
+    """True for an NHL PRESEASON game, read off the NHL game id.
+
+    2026-09-30. NHL ids are YYYY + TT + NNNN where TT is the game type:
+    01 preseason, 02 regular season, 03 playoffs. e.g. 2026010042 is
+    preseason; 2026020001 is the first regular-season game.
+
+    WHY THIS EXISTS. Measured 2026-09-30: every one of NHL's 43 graded
+    jerry_reads was type 01, and surface_records was publishing
+    'NHL 33-18, +12.0 units, lifetime' built ENTIRELY on preseason. NHL
+    preseason is played by prospects and AHL call-ups on partial starter
+    minutes with no game-planning — it is not a track record, and putting it
+    on Receipts under 'lifetime' tells a subscriber something untrue.
+
+    Excluding it makes the published NHL record look WORSE (it removes a
+    25-18 sample), which is the honest direction. The regular season began
+    2026-09-29, so it rebuilds on real games within weeks.
+
+    NOTE: only NHL is filtered here, because only NHL encodes the type in its
+    id. NBA (opens 10-03) and MLB spring training have the same exposure and
+    cannot be detected this way — they need a season_type column. Logged, not
+    silently assumed away.
+    """
+    s = str(game_id or '')
+    return len(s) >= 10 and s.isdigit() and s[4:6] == '01'
+
+
 def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
-                         result_key_map: dict = None) -> list[dict]:
+                         result_key_map: dict = None,
+                         skip_game=None) -> list[dict]:
     """2026-09-09 UNIFORM sides picker for all sports.
 
     Root fix for Receipts inconsistency — MLB had no {sport}_sides
@@ -592,7 +620,14 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
                                 and r.get(keys['home_win']) is not None):
             res_map[key] = r
     out = []
+    skipped_pre = 0
     for c in ctx_rows:
+        # 2026-09-30: sport-specific exclusion, currently NHL preseason. Applied
+        # BEFORE the tier filter so the count below reports every excluded game,
+        # not only the ones that would have graded.
+        if skip_game is not None and skip_game(c.get('game_id')):
+            skipped_pre += 1
+            continue
         pp = c.get('primary_play') or {}
         if not isinstance(pp, dict): continue
         tier = (pp.get('tier') or '').upper()
@@ -627,6 +662,9 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
         except Exception: continue
         out.append({'sport': sport, 'date': d, 'result': cls,
                     'stake': 1.0, 'payout': 0.909})
+    if skipped_pre:
+        print(f'  {sport} sides: excluded {skipped_pre} preseason game(s) '
+              f'from the published record')
     return out
 
 
@@ -645,7 +683,10 @@ def pick_nba_sides() -> list[dict]:
 
 
 def pick_nhl_sides() -> list[dict]:
-    return _pick_generic_sides('NHL', 'nhl_game_context', 'nhl_game_results')
+    # skip_game excludes PRESEASON — see _is_nhl_preseason. Without it the
+    # published NHL record was 100% preseason.
+    return _pick_generic_sides('NHL', 'nhl_game_context', 'nhl_game_results',
+                               skip_game=_is_nhl_preseason)
 
 
 def pick_ncaab_sides() -> list[dict]:
