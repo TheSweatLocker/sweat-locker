@@ -1373,27 +1373,19 @@ def call_claude(prompt):
         return None
     if not ANTHROPIC_API_KEY:
         return None
+    # 2026-09-29: routed through anthropic_guard for fatal-vs-transient handling
+    # and the provider seam. This path is DEAD today (the
+    # DISABLE_LEGACY_GAME_READS_LLM check above returns first and defaults to
+    # '1') so this is insurance for if it is re-enabled, not a live fix.
+    # max_tokens 1800: raised from 1100 on 2026-06-05 after Phase B added career
+    # SP + full-staff team pitching context; reads (NYM@SD, MIL@COL) were
+    # truncating mid-Play section at 1100.
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-            },
-            # max_tokens raised 1100 -> 1800 on 2026-06-05 after Phase B
-            # added career SP + full-staff team pitching context. Multiple
-            # reads (NYM@SD, MIL@COL) were truncating mid-Play section at
-            # 1100. 1800 absorbs the new density with headroom for varying
-            # game complexity.
-            json={"model": MODEL, "max_tokens": 1800, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code != 200:
-            print(f"  ⚠️ claude {r.status_code}: {str(data)[:300]}")
-            return None
-        return "".join(b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text").strip() or None
+        return _llm_call(prompt, model=MODEL, max_tokens=1800,
+                         timeout=30, label='mlb_game_reads')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f"  ⚠️ claude call failed: {e}")
         return None

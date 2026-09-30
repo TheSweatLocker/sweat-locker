@@ -66,27 +66,27 @@ def is_placeholder(narrative):
 
 
 def call_claude(prompt):
+    """Narrative text, or None on a transient failure.
+
+    2026-09-29: was a hand-rolled urllib POST with a bare `except Exception`
+    that turned EVERY failure into None, including a dead key and a $0 balance.
+    POTD is one pick a day, so a swallowed fatal meant the day's marquee play
+    shipped with no narrative and the run still exited 0.
+
+    Now routed through anthropic_guard, which separates fatal from transient,
+    retries the transient with the server's own Retry-After, and sits behind the
+    provider seam so a switch is an env var rather than an edit here.
+    FatalLLMError propagates on purpose.
+    """
     if not ANTHROPIC_KEY:
         print("  ⚠️  ANTHROPIC_API_KEY missing — skipping narrative generation")
         return None
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": 300,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-    )
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        data = json.loads(resp.read())
-        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+        return _llm_call(prompt, model=MODEL, max_tokens=300,
+                         timeout=30, label='potd_narrative')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f"  ⚠️  Claude call failed: {e}")
         return None

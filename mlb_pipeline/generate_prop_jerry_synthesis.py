@@ -275,18 +275,24 @@ def render_prompt(template: str, prop: dict, sport: str,
 
 
 def call_claude(prompt: str) -> str | None:
+    """Synthesis text, or None on a transient failure.
+
+    2026-09-29: routed through anthropic_guard. Before this, `if r.status_code
+    != 200: return None` treated a dead key exactly like a rate limit — so a
+    $0 balance produced None for every prop on the board, the caller skipped
+    each one, and the run exited 0 with an empty Prop Jerry surface.
+
+    Also replaces `r.json()['content'][0]['text']`, which assumed block 0 is
+    text; the guard joins every text block instead.
+    """
     if not ANTHROPIC_API_KEY:
         print('  ⚠ ANTHROPIC_API_KEY missing'); return None
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        r = requests.post('https://api.anthropic.com/v1/messages',
-            headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01',
-                     'content-type': 'application/json'},
-            json={'model': MODEL, 'max_tokens': 500,
-                  'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=45)
-        if r.status_code != 200:
-            print(f'  ⚠ claude {r.status_code}: {r.text[:200]}'); return None
-        return r.json()['content'][0]['text']
+        return _llm_call(prompt, model=MODEL, max_tokens=500,
+                         timeout=45, label='prop_jerry')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f'  ⚠ claude call failed: {e}'); return None
 

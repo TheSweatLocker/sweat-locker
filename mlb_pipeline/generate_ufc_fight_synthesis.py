@@ -247,18 +247,17 @@ CALL_TEXT: <human-readable e.g. "Rakic ML" or "Stirling by KO/TKO" or "Pass">
 def call_claude(prompt: str) -> str | None:
     if not ANTHROPIC_API_KEY:
         print('  ⚠ ANTHROPIC_API_KEY missing'); return None
+    # 2026-09-29: routed through anthropic_guard. This is the SOLE source of
+    # UFC jerry_reads, and `if r.status_code != 200: return None` treated a dead
+    # key the same as a rate limit — a $0 balance produced None for every fight
+    # on the card and the run exited 0 with no UFC analysis at all. Also drops
+    # the ['content'][0]['text'] assumption that block 0 is text.
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={'x-api-key': ANTHROPIC_API_KEY,
-                     'anthropic-version': '2023-06-01',
-                     'content-type': 'application/json'},
-            json={'model': MODEL, 'max_tokens': 1500,
-                  'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=45)
-        if r.status_code != 200:
-            print(f'  ⚠ claude {r.status_code}: {r.text[:200]}'); return None
-        return r.json()['content'][0]['text']
+        return _llm_call(prompt, model=MODEL, max_tokens=1500,
+                         timeout=45, label='ufc_fight_synthesis')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f'  ⚠ claude call failed: {e}'); return None
 

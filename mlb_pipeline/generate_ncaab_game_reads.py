@@ -263,22 +263,15 @@ def render_prompt(templates, struct):
 def call_claude(prompt: str) -> Optional[str]:
     if not ANTHROPIC_API_KEY:
         return None
+    # 2026-09-29: routed through anthropic_guard — fatal vs transient, and the
+    # provider seam. NCAAB season opens in November with zero graded history,
+    # so a silent LLM failure here would ship a brand-new sport with blank reads.
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={'Content-Type': 'application/json',
-                     'x-api-key': ANTHROPIC_API_KEY,
-                     'anthropic-version': '2023-06-01'},
-            json={'model': MODEL, 'max_tokens': 800,
-                  'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code != 200:
-            print(f'  ⚠ claude {r.status_code}: {str(data)[:200]}')
-            return None
-        return ''.join(b.get('text', '') for b in (data.get('content') or [])
-                       if b.get('type') == 'text').strip() or None
+        return _llm_call(prompt, model=MODEL, max_tokens=800,
+                         timeout=30, label='ncaab_game_reads')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f'  ⚠ claude call failed: {e}')
         return None

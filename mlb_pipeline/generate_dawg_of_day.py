@@ -835,27 +835,26 @@ Rules:
 - Never say "bet" or "must play" or "lock it in"
 - High energy but data-backed"""
 
+    # 2026-09-29: routed through anthropic_guard.call instead of a raw POST.
+    # Two reasons, in order of importance:
+    #   1. This had NO fatal detection. A dead key or a $0 balance returned a
+    #      400, the bare `except` below swallowed it, and every dog that day
+    #      shipped the canned fallback line while the run exited 0. That is the
+    #      exact silent failure the guard was written for on 09-28 — it just was
+    #      never rolled out past four of the twelve generators.
+    #   2. It puts this call behind the provider seam, so a provider switch is
+    #      an env var rather than an edit here.
+    # FatalLLMError is deliberately re-raised: if the key is dead, canned copy
+    # for the whole slate is worse than a red run somebody gets told about.
     try:
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={
-                'Content-Type': 'application/json',
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-            },
-            json={
-                'model': 'claude-haiku-4-5-20251001',
-                'max_tokens': 260,
-                'messages': [{'role': 'user', 'content': prompt}]
-            },
-            timeout=10
-        )
-        data = r.json()
-        text = ''.join(
-            b.get('text', '') for b in (data.get('content') or [])
-            if b.get('type') == 'text'
-        )
-        return text.strip() or f"Market's got {dawg['team'].split()[-1]} as a dog, but the model disagrees across multiple signals. This one's barking."
+        from anthropic_guard import call as _llm_call, FatalLLMError
+        text = _llm_call(prompt, model='claude-haiku-4-5-20251001',
+                         max_tokens=260, timeout=10, label='dawg_narrative')
+        if text:
+            return text
+        return f"Market's got {dawg['team'].split()[-1]} as a dog, but the model disagrees across multiple signals. This one's barking."
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f"  ⚠️ narrative failed: {e}")
         return f"Market's got {dawg['team'].split()[-1]} at {dawg.get('team_ml', 0):+d} ML, but Jerry sees this one closer to a coin flip — value's on the dog."

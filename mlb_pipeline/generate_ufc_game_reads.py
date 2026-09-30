@@ -236,18 +236,17 @@ def call_claude(prompt):
         return None
     if not ANTHROPIC_API_KEY:
         return None
+    # 2026-09-29: routed through anthropic_guard for consistency with the other
+    # eleven generators and so the provider seam covers it. This path is DEAD
+    # today (the DISABLE_LEGACY_GAME_READS_LLM check above returns first, and it
+    # defaults to '1'), so this is insurance for whenever it is re-enabled —
+    # not a live fix.
+    from anthropic_guard import call as _llm_call, FatalLLMError
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"},
-            json={"model": MODEL, "max_tokens": 900, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code != 200:
-            print(f"  ⚠️ claude {r.status_code}: {str(data)[:300]}")
-            return None
-        return "".join(b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text").strip() or None
+        return _llm_call(prompt, model=MODEL, max_tokens=900,
+                         timeout=30, label='ufc_game_reads')
+    except FatalLLMError:
+        raise
     except Exception as e:
         print(f"  ⚠️ claude failed: {e}")
         return None

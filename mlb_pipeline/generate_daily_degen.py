@@ -783,44 +783,29 @@ Write 2-3 sentences MAX. Reference specific data signals. Sound like a sharp fri
         'max_tokens': 240,
         'messages': [{'role': 'user', 'content': prompt}],
     }
-    headers = {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-    }
+    # (the hand-built headers dict that used to live here is gone — the guard
+    # owns auth now, and leaving a dead x-api-key block would read as live)
 
-    import time
-    last_err = None
-    for attempt in (1, 2):
-        try:
-            print(f"  Calling Haiku for narrative (25s timeout, attempt {attempt}/2)...")
-            r = requests.post(
-                'https://api.anthropic.com/v1/messages',
-                headers=headers, json=payload, timeout=25,
-            )
-            if r.status_code != 200:
-                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
-                print(f"  ⚠ narrative attempt {attempt} — {last_err}")
-                if attempt == 1: time.sleep(2)
-                continue
-            data = r.json()
-            text = ''.join(
-                b.get('text', '') for b in (data.get('content') or [])
-                if b.get('type') == 'text'
-            ).strip()
-            if text:
-                return text
-            last_err = 'empty response body'
-        except requests.exceptions.Timeout:
-            last_err = 'timeout (25s)'
-            print(f"  ⚠ narrative attempt {attempt} — {last_err}")
-            if attempt == 1: time.sleep(2)
-        except Exception as e:
-            last_err = f'{type(e).__name__}: {e}'
-            print(f"  ⚠ narrative attempt {attempt} — {last_err}")
-            if attempt == 1: time.sleep(2)
-
-    print(f"  ⚠ narrative generation failed after 2 attempts: {last_err}")
+    # 2026-09-29: the hand-rolled 2-attempt loop is replaced by
+    # anthropic_guard.call, which does 4 attempts with exponential backoff and
+    # honours the server's Retry-After. More importantly it separates FATAL from
+    # TRANSIENT: this loop retried a dead key twice and then returned the canned
+    # "Model found edges across the slate" line, so a $0 balance shipped
+    # boilerplate as the Degen Parlay narrative and the run exited 0.
+    # FatalLLMError is re-raised on purpose.
+    from anthropic_guard import call as _llm_call, FatalLLMError
+    print("  Calling LLM for narrative (25s timeout, guarded retries)...")
+    try:
+        text = _llm_call(prompt, model=payload['model'],
+                         max_tokens=payload['max_tokens'],
+                         timeout=25, label='daily_degen')
+        if text:
+            return text
+        print('  ⚠ narrative generation returned nothing — using fallback')
+    except FatalLLMError:
+        raise
+    except Exception as e:
+        print(f'  ⚠ narrative generation failed: {type(e).__name__}: {e}')
     return "Model found edges across the slate. That's the Degen Parlay."
 
 
