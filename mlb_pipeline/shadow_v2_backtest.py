@@ -11,6 +11,25 @@ Promotion gate (from Andy 9/17 directive):
     picks_count >= 50 AND (shadow_hit_rate - live_hit_rate) >= 0.03
     (≥3pp edge on ≥50 sample) sustained ≥4 weeks
 
+SCOPE LIMIT — READ BEFORE TRUSTING A ZERO (2026-09-30)
+This harness buckets by (sport, market, variant, week, tier, side) and compares
+shadow vs live WITHIN each bucket. That only means something if the variant
+changes the PICK. For a variant that keeps the live side and market and only
+relabels the tier, shadow and live inside a bucket are the SAME BET, so they
+grade identically and every bucket reports edge_pp=0.0 — which looks like "no
+effect" but is an artifact of the bucketing, not a measurement.
+(Observed exactly this on sweat_tier_v1: 7 buckets, all edge_pp=0.0.)
+
+A pure re-tiering variant has to be judged ACROSS populations instead: the hit
+rate of the games the shadow calls PRIME vs the hit rate of the games the live
+engine called PRIME — different sets of games, so no within-bucket comparison
+can see it. Do that query directly; don't read a 0.0 here as evidence.
+
+And judge sides on ROI, not hit rate. NCAAF tier hit rates put COVERAGE at
+60.5%, above STRONG — but COVERAGE is where the price gate dumps unbettable
+chalk (MLs at -3200 to -10000), and at closing prices it is -0.6% ROI. Hit rate
+ranks a tier that cannot be bet above one that can.
+
 Usage:
     # Grade this week's shadow picks vs live for a specific variant
     python shadow_v2_backtest.py --variant usage_v2 --sport NFL
@@ -39,7 +58,7 @@ Design:
         "generated_at": "..."          # optional
     }
 - Results grading uses same source of truth as live grading —
-  nfl_game_results.actual_home_score / actual_away_score for sides;
+  nfl_game_results.home_score / away_score for sides;
   nfl_pipeline_props.result for props.
 
 2026-09-17: Phase 0 scaffolding — enables shadow validation for
@@ -92,8 +111,20 @@ PROP_TABLE = {
 
 def _grade_side(pick: dict, result: dict) -> Optional[str]:
     """Grade a game-side pick against actual score. Returns 'W'/'L'/'P'/None."""
-    home_score = result.get('actual_home_score')
-    away_score = result.get('actual_away_score')
+    # 2026-09-30: this read 'actual_home_score' / 'actual_away_score', and
+    # NEITHER COLUMN EXISTS on nfl_game_results or ncaaf_game_results — both use
+    # home_score / away_score. So this harness could never grade a single row,
+    # for either sport, since it was written on 09-17. It was never run, so
+    # nobody found out: the first real invocation reported "311 games with
+    # shadow, 0 with resolved score".
+    #
+    # That matters more than a normal bug. This is the harness Andy's promotion
+    # gate depends on ("picks_count >= 50 AND shadow - live >= 0.03 sustained
+    # >= 4 weeks"), so every candidate model change was going to be judged by
+    # something that always answered "no data". Fallback order keeps the
+    # original names working if a table ever does use them.
+    home_score = result.get('home_score', result.get('actual_home_score'))
+    away_score = result.get('away_score', result.get('actual_away_score'))
     if home_score is None or away_score is None:
         return None
     ptype = (pick.get('type') or '').lower()
@@ -188,10 +219,21 @@ def run_side_backtest(sport: str, variant: str,
         return 0
 
     # Pull games with shadow set + result resolved
+    # 2026-09-30: join on results_game_id, NOT game_id. The context table's
+    # game_id and the results table's game_id both embed a DATE, and they
+    # disagree whenever a kickoff crosses midnight UTC (CFBD startDate is UTC,
+    # our game_date is ET). That is the same boundary that left ~31 NCAAF games
+    # unscored, and here it made the results join return nothing at all: the
+    # first real run of this harness reported "311 games with shadow, 0 with
+    # resolved score" even after the score-column names were fixed.
+    #
+    # results_game_id is the STORED GENERATED join key added by migration
+    # 20260929a for exactly this — it reproduces the results table's own id from
+    # the context row's columns, so it cannot drift.
     url = (f'{SB}/rest/v1/{ctx_tbl}?game_date=gte.{start}&game_date=lte.{end}'
            f'&primary_play_shadow_v2=not.is.null'
-           f'&select=game_id,game_date,away_team,home_team,primary_play,'
-           f'primary_play_shadow_v2')
+           f'&select=game_id,results_game_id,game_date,away_team,home_team,'
+           f'primary_play,primary_play_shadow_v2')
     r = requests.get(url, headers=H_READ, timeout=30).json()
     if not isinstance(r, list):
         print(f'  fetch ctx failed: {r}')
@@ -202,13 +244,56 @@ def run_side_backtest(sport: str, variant: str,
         return 0
 
     # Pull results for those games
-    game_ids = ','.join(f'"{g["game_id"]}"' for g in r)
-    rr = requests.get(
-        f'{SB}/rest/v1/{res_tbl}?game_id=in.({game_ids})'
-        f'&select=game_id,actual_home_score,actual_away_score',
-        headers=H_READ, timeout=30,
-    ).json()
-    results_by_gid = {row['game_id']: row for row in rr if isinstance(row, dict)}
+    # 2026-09-30: this built ONE in.() containing every game_id. At 311 ids of
+    # ~45 chars that is a ~15KB query string; the request fails, .json() returns
+    # an error DICT, and the comprehension below silently iterates its KEYS —
+    # strings, all rejected by isinstance(row, dict) — producing {} and the
+    # message "0 with resolved score". A swallowed HTTP error dressed up as an
+    # empty result, which is how this harness looked broken for three different
+    # reasons in a row. Chunked, and the response is now checked.
+    # 2026-09-30: fetch by DATE RANGE, not by an id list.
+    #
+    # The original built ONE in.() holding every game_id — at 311 ids that is a
+    # ~15KB query string — and then did
+    #     {row['game_id']: row for row in rr if isinstance(row, dict)}
+    # so when the request failed, .json() returned an error DICT, the
+    # comprehension iterated its KEYS (strings, all rejected), and the result was
+    # {} reported as "0 with resolved score". A swallowed HTTP error dressed as an
+    # empty result.
+    #
+    # Chunking fixed most of it and exposed the next layer: NCAAF ids contain
+    # PARENTHESES ("ncaaf_20260926_Connecticut_Miami (OH)"), and in.() uses parens
+    # as its own delimiters, so those ids close the list early and PostgREST
+    # returns PGRST100. Quoting does not save it.
+    #
+    # A date-range fetch has neither problem: no id escaping, one bounded
+    # request, paginated. The window is already known.
+    results_by_gid = {}
+    _off = 0
+    while True:
+        resp = requests.get(
+            f'{SB}/rest/v1/{res_tbl}', headers=H_READ,
+            params={'select': 'game_id,home_score,away_score',
+                    'game_date': f'gte.{start}',
+                    'and': f'(game_date.lte.{end})',
+                    'limit': '1000', 'offset': str(_off)},
+            timeout=45)
+        if resp.status_code != 200:
+            print(f'  ! results fetch failed {resp.status_code}: '
+                  f'{(resp.text or "")[:160]}')
+            break
+        body = resp.json()
+        if not isinstance(body, list):
+            print(f'  ! results fetch returned non-list: {str(body)[:160]}')
+            break
+        if not body:
+            break
+        for row in body:
+            if isinstance(row, dict) and row.get('game_id'):
+                results_by_gid[row['game_id']] = row
+        if len(body) < 1000:
+            break
+        _off += 1000
 
     print(f'  {sport} {variant}: {len(r)} games with shadow, '
           f'{len(results_by_gid)} with resolved score')
@@ -222,7 +307,7 @@ def run_side_backtest(sport: str, variant: str,
     })
 
     for g in r:
-        result = results_by_gid.get(g['game_id'])
+        result = results_by_gid.get(g.get('results_game_id') or g['game_id'])
         if not result:
             continue
         shadow = g.get('primary_play_shadow_v2') or {}
