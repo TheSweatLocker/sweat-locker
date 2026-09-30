@@ -1,4 +1,24 @@
-name: MLB Prop close-line freezer (fast cron)
+name: Prop close-line freezer (fast cron, all sports)
+
+# ══ 2026-09-30 · DELIBERATELY NOT NAMED mlb_* ══
+# This was mlb_prop_close_freeze.yml and it never was MLB-only: the step runs
+# freeze_prop_closing_lines.py --sport ALL, and that script's SPORT_CONFIG
+# covers baseball_mlb AND americanfootball_nfl. So NFL prop closing lines were
+# being captured by a workflow filed under baseball.
+#
+# That is the same defect as project_mlb_workflow_hosts_other_sports_928, where
+# money-flow scrapers and matview refreshes ran only from the MLB overnight job
+# and would have died with the season. The overnight job was split on 09-29;
+# this one was missed because the coupling is in the FILENAME, not the steps.
+#
+# Baseball ends in weeks. When the MLB workflows get an offseason guard or are
+# disabled, anything still named mlb_* goes quiet with them — and NFL props
+# would silently stop getting closing lines, which is what every prop ROI
+# number is measured against.
+#
+# Kept at the 10-minute cadence rather than folded into multisport_line_poller
+# (every 30 min): a CLOSING line has to be captured in the last minutes before
+# lock, and a 3x coarser sweep would systematically miss the real close.
 
 # 2026-09-15 — closes the "close_over_odds / close_under_odds all NULL"
 # gap. freeze_prop_closing_lines.py only fires when a game is within
@@ -26,7 +46,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: mlb-prop-close-freeze
+  group: prop-close-freeze
   cancel-in-progress: false
 
 jobs:

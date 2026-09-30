@@ -57,19 +57,18 @@ jobs:
           cd mlb_pipeline
           python recompute_primary_play.py
 
-      # 2026-08-20: classify line moves every 30 min. Prior state — Split
-      # classifier only ran once in AM main pipeline. New sharp signals
-      # landing via oddscrowd_refresh (which runs 6x/day) sat unclassified
-      # until next morning. Audit caught today's Split showing zero fresh
-      # flags at 4pm ET even though OC pulled 5 hrs earlier. This step
-      # keeps The Split up-to-date throughout gameday.
-      - name: Classify fresh line moves (Split refresh)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "classify_line_moves.py" python classify_line_moves.py --sport ALL
+      # 2026-09-30: "Classify fresh line moves (Split refresh)" MOVED OUT of
+      # this workflow to multisport_line_poller.yml. It ran
+      # classify_line_moves.py --sport ALL — cross-sport work hosted by a
+      # baseball workflow, the same defect as
+      # project_mlb_workflow_hosts_other_sports_928. Every other sport's Split
+      # would have gone stale the day MLB was turned off. It now runs 37x/day
+      # from the multi-sport poller instead of 22x/day from here.
+      #
+      # The remaining steps in this workflow ARE MLB-only and belong here:
+      # refresh_imminent_games.py and apply_prop_refit.py are hardcoded to
+      # mlb_game_context / mlb_pipeline_props, and recompute_primary_play.py is
+      # the MLB one (NFL and NCAAF have their own recompute_* scripts).
 
       # 2026-08-20: also re-apply prop refit each cycle. Today's audit
       # found every prop with refit_conviction=NULL — main pipeline runs

@@ -159,6 +159,25 @@ jobs:
       # the app's Split view 24-48h), so 14 days is already generous.
       # Runs on every poll — the script is batched and idempotent, and a
       # no-op once the tail is already trimmed.
+      # ══ 2026-09-30 · MOVED HERE FROM mlb_imminent_refresh.yml ══
+      # classify_line_moves.py --sport ALL feeds The Split for EVERY sport, and
+      # it was running from the MLB imminent-refresh workflow. Cross-sport work
+      # hosted by a baseball workflow -- project_mlb_workflow_hosts_other_
+      # sports_928 all over again -- so every sport's Split would have frozen
+      # the day baseball was switched off.
+      #
+      # This poller is the right host: it is already the cross-sport line job,
+      # it runs 37x/day against the old 22x, and it sits immediately after the
+      # movement detection whose output this classifies.
+      - name: Classify fresh line moves (Split refresh, all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "classify_line_moves.py (all sports)" python classify_line_moves.py --sport ALL
+
       - name: Prune line_history (14d retention)
         if: ${{ github.event.inputs.sport == '' }}
         continue-on-error: true
