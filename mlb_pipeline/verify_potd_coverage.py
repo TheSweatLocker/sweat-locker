@@ -36,12 +36,12 @@ TWO SEPARATE DEFECTS THIS CHECKS FOR
    POTDs are graded) but never backfilled Apr-Aug, which is why 109 of the
    ungraded jerry_cache rows predate it.
 
-Plus a KEY-FORMAT trap worth its own flag: 7 rows are
-'best_bet_<date>_mlb' rather than 'best_bet_<date>'. grade_potd matches
-`game_id = eq.best_bet_<date>` exactly, so every suffixed row is invisible to
-it — graded=0 of 7. A second key format that silently bypasses the grader is
-the same class as the five-copies-of-one-window bug: two spellings of one thing,
-and only one of them is wired.
+A note on 'best_bet_<date>_<sport>' rows, because the first version of this
+checker got them WRONG and counted them as ungraded gaps. They are deliberate
+AUDIT ARCHIVES of a superseded pick, written by play_of_day_multi_sport.py just
+before it overwrites the live key. A pick that was replaced was never published,
+so grading it would push an overridden pick into the public record. They are
+reported informationally and never counted as problems.
 
 ALL SPORTS, deliberately. POTD is a universal pool but has been MLB on 137 of
 140 calendar rows (NBA 2, NFL 1). Baseball ends in weeks, so the day POTD has to
@@ -181,17 +181,25 @@ def main():
             print(f'      {d}  sport={row.get("sport")}  '
                   f'result={row.get("result")}  {str(row.get("lean"))[:34]}')
 
-    # ── 3. KEY FORMAT: suffixed rows grade_potd cannot see ──
+    # ── 3. SUPERSEDED ARCHIVES — informational, NOT a gap ───────────────
+    # CORRECTION 2026-09-29: the first version of this check counted these as
+    # actionable and reported "7 ungraded". That was WRONG, and grading them
+    # would have been actively harmful.
+    #
+    # best_bet_<date>_<sport> is written by play_of_day_multi_sport.py (line
+    # ~251) as a deliberate AUDIT ARCHIVE of the OUTGOING pick, immediately
+    # before it overwrites the live key — its docstring: "The MLB POTD write is
+    # preserved in best_bet_{today}_mlb for audit/rollback." A superseded pick
+    # was never published to users, so it must NOT be graded and must NOT reach
+    # the Receipts calendar. grade_potd ignoring them is correct behaviour, not
+    # a bug, and the lesson is the one from earlier the same day: verify what a
+    # thing IS before reporting it broken.
     if suffixed:
-        ungraded_sfx = [(d, r) for d, r in suffixed if not _result_of(r)]
-        print(f'\n  ⚠ {len(suffixed)} suffixed best_bet_<date>_<sport> row(s); '
-              f'{len(ungraded_sfx)} ungraded')
-        print('      grade_potd matches game_id = best_bet_<date> EXACTLY, so '
-              'these bypass it entirely.')
-        for d, r in ungraded_sfx[:8]:
-            print(f'      {r.get("cache_key")}  sport={r.get("sport")}')
-        if ungraded_sfx:
-            problems += len(ungraded_sfx)
+        print(f'\n  ℹ {len(suffixed)} superseded archive row(s) '
+              f'(best_bet_<date>_<sport>) — correctly ungraded, by design.')
+        print('      These are outgoing picks preserved by '
+              'play_of_day_multi_sport before an override. Never published, so '
+              'never graded. NOT counted as a problem.')
 
     # ── 4. DRIFT: jerry_cache and the calendar disagreeing on an outcome ──
     drift = []
