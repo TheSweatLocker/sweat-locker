@@ -115,10 +115,22 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
     """Load game_results rows for one sport → matchup-keyed dict for
     downstream Sharp Card grading. Normalizes spread column so grading
     is sport-agnostic downstream."""
+    # 2026-09-30: NHL ADDED. It was missing from this map, and `if not table:
+    # return {}` below meant every NHL side on the Sharp Card graded as PENDING
+    # FOREVER, no matter what was in nhl_game_results. Symptom Andy saw on the
+    # morning of 09-30: The Sharp showed 8-0 for 09-29 while nine items shipped,
+    # and daily_surface_records held NHL 0-0-0 n=1 — the leg was counted as
+    # shipped and never gradeable. NHL went live 09-29, so this was wrong from
+    # the sport's first night.
+    #
+    # The 2026-09-07 multi-sport extension added NFL/NCAAF/NCAAB/NBA here and
+    # NHL was simply left out. Same shape as the POTD_SPORTS and PROP_SPORT
+    # registries: a per-sport map that has to be edited in lockstep every time a
+    # sport ships, with nothing failing loudly when it is not.
     _RESULTS_TABLE = {
         'MLB': 'mlb_game_results', 'NFL': 'nfl_game_results',
         'NCAAF': 'ncaaf_game_results', 'NCAAB': 'ncaab_game_results',
-        'NBA': 'nba_game_results',
+        'NBA': 'nba_game_results', 'NHL': 'nhl_game_results',
     }
     _SPREAD_COL = {
         'MLB': 'run_line_result,total_result,spread_result',
@@ -126,10 +138,17 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
         'NCAAF': 'spread_result,total_result',
         'NCAAB': 'spread_result,total_result',
         'NBA': 'spread_result,total_result',
+        'NHL': 'spread_result,total_result',
     }
+    # The closing spread column is NOT named the same in every sport: hockey
+    # calls it close_puckline. Selecting close_spread against nhl_game_results
+    # returns 42703 and the whole fetch fails, so adding the table alone would
+    # not have been enough.
+    _SPREAD_LINE_COL = {'NHL': 'close_puckline'}
     table = _RESULTS_TABLE.get(sport)
     if not table: return {}
     cols = _SPREAD_COL.get(sport, 'spread_result,total_result')
+    line_col = _SPREAD_LINE_COL.get(sport, 'close_spread')
     r = requests.get(f'{SB}/rest/v1/{table}',
         headers=H_READ,
         params={'game_date': f'eq.{date}',
@@ -138,7 +157,7 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
                 # spread_result/run_line_result NULL, instead of defaulting
                 # a real cover to a Loss.
                 'select': f'game_id,home_team,away_team,home_score,away_score,'
-                          f'home_win,close_spread,{cols}'},
+                          f'home_win,{line_col},{cols}'},
         timeout=15)
     if r.status_code != 200:
         print(f'  [agg_sharp_card] {sport} results fetch failed: {r.status_code} {str(r.text)[:120]}')
@@ -152,8 +171,28 @@ def _load_game_results_by_sport(date: str, sport: str) -> dict:
             if 'home' in sp and 'covered' in sp:  g['run_line_result'] = 'home'
             elif 'away' in sp and 'covered' in sp: g['run_line_result'] = 'away'
             elif 'push' in sp: g['run_line_result'] = 'push'
+        # Alias the sport's spread-line column to close_spread so _grade_side
+        # (which derives an rl verdict from score + line when spread_result is
+        # NULL) works unchanged for hockey.
+        if line_col != 'close_spread' and g.get(line_col) is not None:
+            g['close_spread'] = g[line_col]
         key = f"{(g.get('away_team') or '').lower()} @ {(g.get('home_team') or '').lower()}"
-        by_matchup[key] = g
+        # 2026-09-30: PREFER THE SCORED ROW. This was a bare `by_matchup[key] = g`
+        # — last write wins — and nhl_game_results carries DUPLICATE rows for the
+        # same game under two id schemes: the numeric NHL id (2026020001, scored)
+        # and an 'nhl_YYYYMMDD_Away_Home' slug (home_win NULL). Whichever came
+        # last won, so a scored row was being overwritten by an empty skeleton
+        # and every NHL side graded PENDING even after nhl_resolve_results had
+        # written 5/5 finals.
+        #
+        # Logged the night before as "inert because _pick_generic_sides already
+        # prefers the scored row when deduping" — true there, and wrong here:
+        # this loader had no such preference. A duplicate is only harmless in the
+        # readers that defend against it.
+        existing = by_matchup.get(key)
+        if existing is None or (existing.get('home_win') is None
+                                and g.get('home_win') is not None):
+            by_matchup[key] = g
     return by_matchup
 
 
@@ -171,8 +210,12 @@ def _load_props_by_sport(date: str, sport: str) -> dict:
     Same class of bug as grade_props (fixed 77f138eb). Paginate via
     Range header in 1000-row chunks.
     """
+    # 2026-09-30: nhl_pipeline_props added for the same reason NHL was added to
+    # _RESULTS_TABLE above — a shipped NHL prop would otherwise be permanently
+    # PENDING. Harmless if the table is empty.
     _PROPS_TABLE = {
         'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
+        'NHL': 'nhl_pipeline_props',
     }
     table = _PROPS_TABLE.get(sport)
     if not table: return {}
