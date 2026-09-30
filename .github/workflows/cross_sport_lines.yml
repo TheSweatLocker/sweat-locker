@@ -1,0 +1,225 @@
+name: Cross-Sport Line Movement + Money Flow
+
+# ══ 2026-09-30 · WHY THIS WORKFLOW EXISTS ══
+#
+# This is the line-movement and money-flow chain, lifted out of
+# mlb_pipeline.yml where it had been running as a baseball job. It never was
+# one. Measured 2026-09-30, NCAAF is the LARGEST consumer of two of its
+# output tables:
+#
+#     line_history           NCAAF 84,096   MLB 71,084   NFL 55,704
+#                            NHL   20,494   NBA   8,856     (all fresh today)
+#     public_splits_archive  NCAAF 49,464   MLB 41,708   NFL 15,108
+#                            NHL      216                   (all fresh today)
+#
+# So the day baseball is switched off, college football loses its two biggest
+# data feeds. That is the same defect as
+# project_mlb_workflow_hosts_other_sports_928 (money-flow scrapers and matview
+# refreshes hosted by the MLB overnight job) and it is the blocker on giving
+# MLB an offseason guard at all: gate the MLB workflows today and this chain
+# goes with them.
+#
+# ── THIS IS A PURE RELOCATION ──
+# Same scripts, same flags, same order, same env, same continue-on-error
+# semantics as mlb_pipeline.yml lines 2475-2646. Nothing here is a behaviour
+# change, deliberately — mixing a move with a fix is how a move goes wrong.
+#
+# Two things preserved that are WRONG and should be fixed separately:
+#
+#   1. classify_line_moves runs BEFORE the three scrapers that feed it. Its
+#      own comment says it cross-references "oddscrowd money%/bets% +
+#      fadereport bettors%/handle%", but fadereport_scraper runs after it, so
+#      it classifies against the PREVIOUS run's splits. Fixing the order is a
+#      real improvement and a real behaviour change; not bundled here.
+#   2. Every step carries continue-on-error semantics via run_step.sh, so a
+#      failure records but does not abort the chain. That is right for a
+#      flaky web scraper and wrong for write_line_history, whose failure
+#      makes everything downstream operate on stale data.
+#
+# ── WHAT WAS LEFT BEHIND IN mlb_pipeline.yml, ON PURPOSE ──
+#   pull_scoresandodds.py --sport MLB   genuinely MLB-only
+#   splits_v2_pipeline.py  --sport MLB  genuinely MLB-only
+#   compute_rule_fire_stats --sport ALL rule_fire_stats has 2,383 rows and
+#                                       ZERO non-MLB, so ALL is a no-op flag
+#   pull_alt_lines.py                   its gate is
+#                                       `if: github.event.schedule == '0 10 * * *'`
+#                                       and mlb_pipeline has no 0 10 cron, so it
+#                                       has never run on a schedule. Excluded
+#                                       rather than silently revived, because it
+#                                       spends ODDS_API credits and whether we
+#                                       want it at all is Andy's call.
+#
+# Same dead-gate bug also disables, in mlb_pipeline.yml:
+#   line  663  if ... == '0 10 * * *'    (no such cron)
+#   lines 2116/2131 if ... == '0 18 * * 0'  (only '0 18 * * *' exists, and
+#                   github.event.schedule carries the literal cron string, so
+#                   the Sunday gate never matches) -> clv_weekly_rollup has
+#                   never fired on a schedule.
+#
+# ── NO CRON YET, BY DESIGN ──
+# workflow_dispatch only. Two of these steps are actively unsafe to run twice
+# at different times: freeze_closing_lines stamps the TRUE close and a second
+# later pass could overwrite it with a post-kickoff number, and
+# write_line_history / archive_public_splits append. So this must never run on
+# a schedule while mlb_pipeline still runs the same steps. Verify by hand
+# first; the follow-up commit adds the crons AND removes the steps from
+# mlb_pipeline.yml together, so there is never a window with both or neither.
+
+on:
+  workflow_dispatch:
+
+# ══ TRANSITIONAL CONCURRENCY — CHANGE THIS IN THE FOLLOW-UP COMMIT ══
+# Deliberately sharing mlb_pipeline's group while BOTH workflows still run
+# these steps. With cancel-in-progress: false, a dispatch here QUEUES behind a
+# running mlb_pipeline instead of overlapping it, which is what stops
+# freeze_closing_lines from stamping the true close twice at different times.
+#
+# Once the steps are removed from mlb_pipeline.yml, this MUST become
+# `group: cross-sport-lines`. Leaving it shared would make the closing-line
+# freeze wait on the full MLB pipeline and miss the actual close.
+concurrency:
+  group: mlb-pipeline
+  cancel-in-progress: false
+
+jobs:
+  lines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Mirrors mlb_pipeline.yml's install exactly, minus pybaseball (MLB
+      # only). playwright + the chromium binary are NOT optional: three of the
+      # steps below are Playwright scrapers, they run under
+      # continue-on-error, and without a browser they would fail SILENTLY and
+      # take all cross-sport money flow with them.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost playwright
+          # Chromium binary for Playwright-rendered external scrapers
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "playwright install" python -m playwright install --with-deps chromium
+
+      # ── 1. RAW LINE CAPTURE ────────────────────────────────────────────
+      - name: Steam Room - per-book line snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "write_line_history.py (all sports)" python write_line_history.py --sport ALL
+
+      - name: Steam Room - detect line movement patterns
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "detect_line_movement.py (all sports)" python detect_line_movement.py --sport ALL --lookback-hours 6
+
+      # ── 2. CLASSIFY ────────────────────────────────────────────────────
+      # Position preserved from mlb_pipeline: this runs BEFORE the scrapers
+      # below even though it consumes their output. See header note 1.
+      - name: Line movement - classify sharp vs public
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "classify_line_moves.py (all sports)" python classify_line_moves.py --sport ALL
+
+      # ── 3. MONEY-FLOW SCRAPERS (Playwright) ────────────────────────────
+      # None of these take a --sport flag, which is why a grep for
+      # "--sport ALL" missed them in the first audit. All three are
+      # all-sports by default.
+      - name: Fadereport - scrape sharp signals (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "fadereport_scraper.py" python fadereport_scraper.py
+
+      - name: Fade The Public - scrape money-flow splits (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "fadethepublic_scraper.py" python fadethepublic_scraper.py
+
+      - name: Cleatz - scrape full-slate public splits (MLB/NFL/CFB)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "cleatz_scraper.py" python cleatz_scraper.py
+
+      # ── 4. ARCHIVE + PATTERN MINING ────────────────────────────────────
+      - name: Line movement - archive public splits
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "archive_public_splits.py (all sports)" python archive_public_splits.py --sport ALL
+
+      - name: Line movement - mine patterns (refresh + discover)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mine_line_patterns.py --refresh" python mine_line_patterns.py --refresh --sport ALL
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "mine_line_patterns.py --discover" python mine_line_patterns.py --discover --sport ALL
+
+      # ── 5. CLOSING-LINE FREEZE ─────────────────────────────────────────
+      # THE ONE STEP THAT MUST NEVER RUN TWICE AT DIFFERENT TIMES.
+      # It stamps the true close on <sport>_game_context.close_locked_at; a
+      # second, later pass can overwrite a real close with a post-kickoff
+      # number, and every CLV figure is measured against it.
+      - name: Line movement - freeze true closing lines
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "freeze_closing_lines.py (all sports)" python freeze_closing_lines.py --sport ALL
+
+      - name: Line movement - freeze prop closing lines
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "freeze_prop_closing_lines.py (all sports)" python freeze_prop_closing_lines.py --sport ALL
+
+      # ── 6. LADDER ──────────────────────────────────────────────────────
+      # Cross-sport: scans every sport with sport_registry.ladder_eligible.
+      # resolve_ladder_results.py is deliberately NOT here — it already runs
+      # from nightly_cross_sport.sh.
+      - name: Steam Room - ladder qualifier check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "steam_room_ladder.py" python steam_room_ladder.py
+
+      # Turn a green-but-broken run red. Detector findings are reported
+      # separately and do not fail the run (run_step.sh --detector).
+      - name: Fail the run if any step failed
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
