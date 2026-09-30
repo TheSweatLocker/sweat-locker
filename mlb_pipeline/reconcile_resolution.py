@@ -56,6 +56,17 @@ SPORTS = {
     'NHL':   ('nhl_game_context',   None),
 }
 
+# sport -> results table, used ONLY to tell two real games apart from one game
+# written twice. See _played_separately.
+RESULTS_TABLE = {
+    'MLB':   'mlb_game_results',
+    'NFL':   'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'NCAAB': 'ncaab_game_results',
+    'NBA':   'nba_game_results',
+    'NHL':   'nhl_game_results',
+}
+
 UNGRADED = (None, '', 'Pending', 'PENDING')
 
 # Views that represent "what a user could actually see". Grading noise on
@@ -111,6 +122,86 @@ class Report:
     @property
     def critical(self) -> int:
         return sum(1 for f in self.findings if f[0] == 'CRITICAL')
+
+
+def _played_separately(sport: str, rows: list) -> bool:
+    """True when a same-day same-teams group is two REAL games, not one twice.
+
+    2026-09-30. The DUPCTX check groups by (game_date, {home, away}) and
+    deliberately ignores game_id, because the defect it was built for gave ONE
+    real game TWO ids (the NCAAF ET/UTC date split). That choice also makes it
+    blind to two legitimately distinct games between the same clubs on the same
+    date, and it reported four of them as CRITICAL on the first nightly run:
+
+        2026010035  OTT 1 @ TOR 6      2026010036  TOR 4 @ OTT 2   (09-23)
+        2026010064  MTL 3 @ OTT 4      2026010065  OTT 2 @ MTL 4   (09-26)
+
+    Those are NHL preseason split-squad home-and-homes — two games, same two
+    clubs, same day, one at each arena, split rosters. Both were played, with
+    different scores, and each ctx row's pick label matched its OWN home team.
+    Nothing was inverted. MLB doubleheaders have the same shape, and there the
+    two games can legitimately carry DIFFERENT picks (different starters), so
+    'distinct_picks > 1' is not evidence of a defect either.
+
+    THE DISCRIMINATOR. A flipped orientation is ambiguous on its own — it is
+    also the signature of odds attached by POSITION rather than by team, which
+    is a real and serious defect. What separates the two is the results table:
+
+      * two real games  -> each game_id has its OWN scored result row, and
+                           those results disagree on the venue
+      * one game twice  -> only one id ever gets a score (exactly what
+                           dedupe_ncaaf_results.py finds: one canonical
+                           unscored row plus one scored copy)
+
+    So this returns True only when EVERY row in the group has its own distinct
+    game_id, every one of those ids carries a non-null score, and those results
+    differ from each other in a way one game cannot: either a different VENUE
+    (an NHL home-and-home) or a different SCORE (an MLB doubleheader, where
+    both games are at the same park so the orientation is identical).
+
+    Requiring the orientation alone was not enough and produced the wrong
+    answer on MLB, which is why the score test is here. On 2026-09-25
+    Baltimore @ New York had two ids scoring 3-6 and 10-2 — two real games —
+    while Chicago @ Boston had two ids BOTH scoring 3-4, which is one game
+    written twice, and it had published 'Over 6.5 PRIME' on one row and
+    'Under 6.5 PRIME' on the other.
+
+    Anything short of that — shared ids, a missing result, an unplayed game, a
+    results table we cannot read — returns False and the check stays loud.
+    Being unable to confirm is not the same as confirming it is fine.
+
+    Deliberately asymmetric in our favour: NCAAF ctx joins results via
+    results_game_id, not game_id, so the NCAAF duplicates this function is
+    asked about will not match here and will keep reporting CRITICAL. That is
+    the correct outcome — those are a genuine defect.
+    """
+    tbl = RESULTS_TABLE.get(sport)
+    if not tbl or len(rows) < 2:
+        return False
+    ids = [str(x.get('game_id')) for x in rows if x.get('game_id')]
+    if len(ids) != len(rows) or len(set(ids)) != len(rows):
+        return False          # rows share an id -> genuinely duplicated
+    # in.() cannot safely express ids containing these; NCAAF's 'Miami (OH)'
+    # is the documented case.
+    if any(ch in i for i in ids for ch in '(),'):
+        return False
+    try:
+        res = page(tbl, 'game_id,home_team,away_team,home_score,away_score',
+                   '&game_id=in.(%s)' % ','.join(ids))
+    except Exception:
+        return False          # cannot confirm -> stay loud
+    scored = {str(r.get('game_id')): r for r in res
+              if r.get('home_score') is not None
+              and r.get('away_score') is not None}
+    if len(scored) != len(rows):
+        return False          # a real pair would have two scored results
+    orients = {((r.get('away_team') or '').strip(),
+                (r.get('home_team') or '').strip()) for r in scored.values()}
+    scores = {(r.get('away_score'), r.get('home_score'))
+              for r in scored.values()}
+    # Different venue => home-and-home. Different score => doubleheader.
+    # Identical on both => the same game resolved twice.
+    return len(orients) > 1 or len(scores) > 1
 
 
 def check_stale(rep: Report, days: int, sport_filter: str | None):
@@ -381,21 +472,32 @@ def check_dupctx(rep: Report, days: int, sport_filter: str | None):
                 if isinstance(pp, dict):
                     sides.add((pp.get('type'), pp.get('side'), pp.get('tier')))
             flipped = len(orients) > 1
+            separate = _played_separately(sport, v)
             conflicting.append({
                 'matchup': ' / '.join(f'{a} @ {h}' for a, h in sorted(orients)),
                 'date': k[0], 'rows': len(v),
                 'orientation_flipped': flipped,
                 'distinct_picks': len(sides),
+                'separate_games': separate,
                 'picks': sorted(str(s) for s in sides)})
-        worst = [c for c in conflicting if c['distinct_picks'] > 1]
-        flips = [c for c in conflicting if c['orientation_flipped']]
-        # A flip is always critical: one of the two rows has the teams —
-        # and therefore the line, the ML and home-field — backwards.
+        # Groups confirmed to be two REAL games are not defects at all, and
+        # must not count toward either severity bucket — see
+        # _played_separately for what "confirmed" requires.
+        real = [c for c in conflicting if c['separate_games']]
+        susp = [c for c in conflicting if not c['separate_games']]
+        worst = [c for c in susp if c['distinct_picks'] > 1]
+        flips = [c for c in susp if c['orientation_flipped']]
+        if not susp:
+            continue          # every group was a legitimate same-day pair
+        # A flip is critical: one of the two rows has the teams — and
+        # therefore the line, the ML and home-field — backwards.
         sev = 'CRITICAL' if (worst or flips) else 'WARN'
+        extra = (f'; {len(real)} confirmed separate same-day game(s) ignored'
+                 if real else '')
         rep.add(sev, 'DUPCTX',
-                f'{sport}: {len(dups)} matchup(s) with duplicate context rows, '
+                f'{sport}: {len(susp)} matchup(s) with duplicate context rows, '
                 f'{len(worst)} disagree on the pick, {len(flips)} have home/away '
-                f'REVERSED between rows', conflicting)
+                f'REVERSED between rows{extra}', susp)
 
 
 def main() -> int:
