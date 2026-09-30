@@ -72,6 +72,12 @@ EXPECTED = {
     ('mlb_pipeline', '18'): None,
     ('nhl_pipeline', None): None,       # any slot; NHL runs daily in season
     ('mlb_grade_overnight', None): None,
+    # 2026-09-29: the cross-sport nightly. It owns NCAAF's only daily resolver
+    # and the only writer of team_stats_rolling_history, so a dropped cron here
+    # costs a permanently missing day of history for all six sports — exactly
+    # what happened on 09-27/09-28. Watched from the day it exists rather than
+    # after it first fails.
+    ('nightly_cross_sport', None): None,
 }
 
 LOOKBACK_DAYS = 14

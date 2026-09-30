@@ -1,0 +1,102 @@
+name: Nightly Cross-Sport
+
+# The nightly work that belongs to no single sport — resolvers, matview
+# refreshes, history snapshots, graders, records and audits.
+#
+# WHY IT EXISTS
+# Andy 2026-09-29, laying out the cadence model: "MLB daily goes offline when
+# baseball ends probably saving in LLM costs". True — and it would have taken
+# five other sports with it. Every one of these steps lived inside
+# mlb_grade_overnight.yml, including NCAAF's only daily resolver and the only
+# writer of team_stats_rolling_history for all six sports. MLB's regular season
+# ends in days; the playoffs finish around Nov 1. On that day NCAAF would have
+# silently lost daily grading and every sport would have stopped accumulating
+# stat and pace history, right as NBA opens and NCAAB ramps. Nothing would have
+# gone red.
+#
+# The sequence itself lives in ONE place — .github/scripts/nightly_cross_sport.sh
+# — and mlb_grade_overnight calls the same file. Copying thirteen steps into a
+# second workflow is how you get the five-copies-of-one-window bug
+# (project_read_window_five_constants_929), on the same day it was found.
+#
+# TIMING. mlb_grade_overnight fires at 06:30, 08:30 AND 09:30 UTC (three
+# attempts to beat cron delay). Several steps here need MLB results already
+# resolved — grade_potd, grade_public_receipts, aggregate_daily_records — so this
+# runs AFTER all three, at 10:30 UTC (6:30am ET), still ahead of daily_card's
+# 11:00 UTC slot which consumes the records. The 12:30 UTC second slot is the
+# same safety-net pattern the MLB grader uses: GH Actions cron is routinely
+# 1-4 hours late, and every step here is idempotent, so a double run costs
+# nothing and a dropped cron does not lose a day of history.
+#
+# concurrency: prevents the two slots (or a slot and a manual dispatch) from
+# overlapping and writing the same rows twice. Queued rather than cancelled, so
+# a late first run still finishes instead of being killed mid-history-write.
+
+on:
+  schedule:
+    - cron: '30 10 * * *'   # 6:30am ET — after mlb_grade_overnight's last slot
+    - cron: '30 12 * * *'   # 8:30am ET — safety net for cron delay
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-cross-sport
+  cancel-in-progress: false
+
+jobs:
+  cross-sport:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv beautifulsoup4
+
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"workflow\":\"nightly_cross_sport\",\"event\":\"start\",\"sport\":\"ALL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+            > /dev/null || true
+
+      - name: Run cross-sport nightly sequence
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/nightly_cross_sport.sh"
+
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"workflow\":\"nightly_cross_sport\",\"event\":\"end\",\"sport\":\"ALL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule }}\"}" \
+            > /dev/null || true
+
+      # Every step above runs through run_step.sh, which records failures to a
+      # tally instead of aborting the job. This reads that tally and fails the
+      # run, so a night where the NCAAF resolver died is never a green check.
+      - name: Fail the run if any step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
