@@ -161,6 +161,21 @@ bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
   python aggregate_daily_records.py
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
+# 2026-09-30 · Sharp Card headline/breakdown reconciliation.
+# split_sharp_card_record.py was written 09-24 for Andy: "the record overall
+# and the props in small letters below it dont really match ... its deceiving
+# to users". It writes sharp_card_sides + sharp_card_props so the headline
+# equals sides + props instead of stacking three unrelated populations.
+#
+# It was NEVER WIRED INTO A WORKFLOW. Run once by hand on 09-24 and never
+# again, while app/index.tsx:10146 reads both surfaces every session — so the
+# breakdown users saw froze at its 09-24 values for six days (sides 133-106
+# vs an actual 155-115-9). The fix decayed from the day it shipped.
+#
+# MUST run AFTER compute_surface_records: it reads the sharp_card rows that
+# step writes and derives the two split surfaces from them.
+bash "$RUN_STEP" --label "split_sharp_card_record.py (nightly)" \
+  python split_sharp_card_record.py --write
 bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
   python backfill_public_receipts.py
 
