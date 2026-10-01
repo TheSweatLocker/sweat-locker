@@ -674,6 +674,55 @@ def tier_from_edge_pct(edge_pct: float) -> Optional[str]:
     return None
 
 
+# ══ 2026-10-01 · FAMILY-AWARE TIER SHADOW (measured, not guessed) ══
+# Priced measurement over 1,929 graded NFL props since 09-01 — every row had a
+# real price, so none were assumed at -110. The headline is that the breakeven
+# implied by the prices we ACTUALLY take is 54-55%, not the 52.4% a flat -110
+# implies: median published price is -114 to -117. The whole tier ladder was
+# being judged against a bar about 2pp too low.
+#
+#   tier      hit     own BE    ROI      n     z
+#   PRIME    54.2%    55.1%    -1.7%    59   -0.13   not established
+#   LEAN     52.6%    54.0%    -2.0%   667   -0.71   not established
+#   STRONG   51.3%    54.3%    -5.3%   526   -1.37   not established
+#   LIGHT    48.0%    53.3%   -10.2%   450   -2.25   REAL loss (does not publish)
+#   SKIP     44.9%    55.3%   -18.6%   227   -3.14   REAL loss (does not publish)
+#
+# NOTHING is established profitable. The striking part is by FAMILY within one
+# tier — the same label means opposite things:
+#
+#   STRONG/pass  61.5% vs 54.0% BE  +13.9% ROI  n=109  z=+1.56  suggestive only
+#   STRONG/rush  40.0% vs 53.1% BE  -24.5% ROI  n=100  z=-2.63  REAL loss
+#   recv (all)   50.7% vs 54.3% BE   -6.4% ROI n=1184  z=-2.50  REAL loss
+#   rush (all)   46.2% vs 53.2% BE  -13.0% ROI  n=290  z=-2.39  REAL loss
+#
+# A 38pp ROI swing between pass and rush inside the same tier means the threshold
+# is not the main problem — the tier is applied uniformly across families whose
+# profitability differs wildly. That redirects the fix away from rescaling
+# edge_pct and toward family-aware tiering.
+#
+# SHADOWED, NOT APPLIED. STRONG/rush clears |z|>=2 and is published today, so it
+# is the one cell the evidence would support acting on — but
+# feedback_suppression_gate_needs_shadow exists because a gate that looks
+# obviously right still has to earn it, and tier changes move every published
+# prop at once. STRONG/pass is explicitly NOT acted on: +13.9% is seductive and
+# z=+1.56 on n=109 does not clear the bar.
+#
+# Re-measure with _calib_priced.py before promoting any of this to live.
+FAMILY_TIER_SHADOW = {
+    # (family, tier) -> shadow tier. Only cells established at |z| >= 2.
+    ('rush', 'STRONG'): 'LEAN',     # -24.5% ROI, z=-2.63, n=100
+    ('rush', 'PRIME'):  'STRONG',   # family-level z=-2.39; PRIME/rush n too small alone
+}
+
+
+def family_tier_shadow(family: str, tier: Optional[str]) -> Optional[str]:
+    """What a family-aware ladder WOULD have assigned. None when unchanged."""
+    if not tier:
+        return None
+    return FAMILY_TIER_SHADOW.get((family, tier))
+
+
 def conviction_from_edge_pct(edge_pct: float) -> int:
     a = abs(edge_pct)
     return min(100, max(30, int(50 + a * 300)))
@@ -1473,6 +1522,16 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         return None
 
     tier = tier_from_edge_pct(directional_edge)
+    # Family-aware tier SHADOW — recorded, never applied. See
+    # FAMILY_TIER_SHADOW for the measurement behind it.
+    _fam = {'pass': 'pass', 'rush': 'rush', 'reception': 'recv',
+            'receptions': 'recv', 'anytime': 'td'}.get(
+        str(cfg['col']).split('_')[0] if cfg.get('col') else '', None)
+    if _fam is None:
+        _pt0 = str(market_key or '').replace('player_', '').split('_')[0]
+        _fam = {'pass': 'pass', 'rush': 'rush', 'reception': 'recv',
+                'receptions': 'recv', 'anytime': 'td'}.get(_pt0, _pt0)
+    _tier_shadow_family = family_tier_shadow(_fam, tier)
     if not tier: return None
     conv = conviction_from_edge_pct(directional_edge)
 
@@ -1621,6 +1680,12 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         'opp_adj_live': _adj_live,
         'opp_adj_shadow': _adj_shadow,
         'proj_shadow': _proj_shadow,
+        # Family-aware tier shadow. `prop_family` is recorded unconditionally so
+        # the next calibration pass can cut by family without re-deriving it
+        # from prop_type strings; tier_shadow_family is set only where a
+        # measured cell would have changed the tier.
+        'prop_family': _fam,
+        'tier_shadow_family': _tier_shadow_family,
         'edge_pct': round(directional_edge * 100, 1),
         'games_used': gp,
         'label': cfg['label'],
