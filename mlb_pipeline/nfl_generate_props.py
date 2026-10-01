@@ -464,10 +464,15 @@ def load_positional_defense(season: int) -> dict:
         r = _retry_session.get(
             f'{SB}/rest/v1/nfl_positional_defense',
             headers=H_READ,
+            # select=* on purpose. Naming the metric columns explicitly created
+            # a deploy-ordering dependency: adding the passing markets to
+            # POSDEF_METRIC made this request reference columns that migration
+            # 20261001c had not yet added, PostgREST answered 400, and the
+            # fail-open then disabled the positional lens for EVERY market —
+            # strictly worse than before the passing change. A missing column
+            # should cost us that one metric, not the whole table.
             params={'season': f'eq.{season}', 'season_type': 'eq.REG',
-                    'select': 'team,position,games,' + ','.join(
-                        sorted(set(POSDEF_METRIC.values()))),
-                    'limit': 500},
+                    'select': '*', 'limit': 500},
             timeout=20)
         if r.status_code != 200:
             print(f'  [posdef] load failed {r.status_code} — using EPA ranks')
@@ -483,6 +488,63 @@ def load_positional_defense(season: int) -> dict:
             out[(t, p)] = x
     print(f'  [posdef] loaded {len(out)} (team, position) rows for {season}')
     return out
+
+
+# ══ 2026-10-01 · OPPONENT MAGNITUDE — SHADOW ONLY, NOT LIVE ══
+# project() does base *= 1 + (opp_rank_pct - 0.5) * 0.15, so the softest matchup
+# in the league gets +7.5%. That ceiling was correct when the input was a RANK —
+# a rank carries no magnitude, so a small fixed swing was the only defensible
+# choice. Now the input is an allowed RATE, so the standard opponent adjustment
+# (scale by distance from the league mean) becomes available.
+#
+# Measured, blended, 2026: RB rushing yards range 0.68x..1.32x the positional
+# mean, WR receiving yards 0.73..1.22, TE receiving yards 0.56..1.72, RB rushing
+# TDs 0.26..1.96. A RAW ratio would therefore be 4-13x the current adjustment.
+#
+# THREE REASONS NOT TO JUST TURN THAT ON:
+#  1. The opponent explains only part of a projection. L4 and season already
+#     reflect the defences the player happened to face, so multiplying by the
+#     full team-level ratio double-counts.
+#  2. Three games of sample. Blending shrinks the RATE, but a ratio of shrunk
+#     rates still swings further than three games can support.
+#  3. It would move every published pick at once.
+#
+# So: half-credit (LAMBDA 0.5), capped +/-12%, and recorded as a SHADOW on every
+# row rather than applied. Grade the shadow against results, then decide —
+# feedback_suppression_gate_needs_shadow, which exists precisely because a gate
+# that looks obviously right still has to earn it.
+OPP_SHADOW_LAMBDA = 0.5
+OPP_SHADOW_CAP = 0.12
+
+
+def positional_league_mean(posdef: dict, position: str,
+                           metric: str) -> Optional[float]:
+    """Mean of `metric` across every defence with a value for `position`."""
+    vals = [row.get(metric) for (t, p), row in posdef.items()
+            if p == (position or '').upper() and row.get(metric) is not None]
+    if len(vals) < 8:
+        return None
+    return sum(float(v) for v in vals) / len(vals)
+
+
+def opp_shadow_adj(posdef: dict, opp_team: str, position: str,
+                   metric: str) -> tuple[Optional[float], Optional[float]]:
+    """-> (ratio_vs_league_mean, shadow_multiplier). (None, None) if unusable.
+
+    shadow = 1 + LAMBDA*(ratio - 1), clamped to +/-OPP_SHADOW_CAP.
+    """
+    if not posdef or not opp_team or not position or not metric:
+        return None, None
+    row = posdef.get((opp_team, (position or '').upper()))
+    if not row or row.get(metric) is None:
+        return None, None
+    mean = positional_league_mean(posdef, position, metric)
+    if not mean:
+        return None, None
+    ratio = float(row[metric]) / mean
+    adj = 1.0 + OPP_SHADOW_LAMBDA * (ratio - 1.0)
+    adj = max(1.0 - OPP_SHADOW_CAP, min(1.0 + OPP_SHADOW_CAP, adj))
+    return round(ratio, 4), round(adj, 4)
 
 
 def positional_opp_pct(posdef: dict, opp_team: str, position: str,
@@ -1386,6 +1448,22 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
                     fantasy_proj_stat=fantasy_proj_stat)
     if proj is None: return None
 
+    # Shadow projection under the ratio-based magnitude. project() applies
+    # 1 + (pct - 0.5)*0.15, so we invert that to find the pct which would yield
+    # the shadow multiplier and reproject — no change to project() itself, and
+    # nothing here touches `proj`.
+    _opp_ratio = _adj_shadow = _proj_shadow = None
+    _adj_live = (round(1.0 + (opp_pct - 0.5) * 0.15, 4)
+                 if opp_pct is not None else None)
+    if _metric and position:
+        _opp_ratio, _adj_shadow = opp_shadow_adj(posdef_for(season), opp_team,
+                                                 position, _metric)
+        if _adj_shadow is not None:
+            _pct_equiv = 0.5 + (_adj_shadow - 1.0) / 0.15
+            _proj_shadow = project(l4, season_avg, cfg['league_baseline'],
+                                   _pct_equiv,
+                                   fantasy_proj_stat=fantasy_proj_stat)
+
     edge = round(proj - line, 2)
     edge_pct = edge / line if line > 0 else 0
     # For UNDER picks: flip sign — model says lower → UNDER edge
@@ -1535,6 +1613,14 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         # market is getting the better signal or silently falling back.
         'opp_src': _opp_src,
         'opp_metric': _metric,
+        # Shadow of the ratio-based opponent magnitude — recorded, never
+        # applied. See OPP_SHADOW_LAMBDA. proj_shadow is what the projection
+        # WOULD have been, so edge/tier can be regraded later without a
+        # backtest against a current-state table (which would leak).
+        'opp_ratio': _opp_ratio,
+        'opp_adj_live': _adj_live,
+        'opp_adj_shadow': _adj_shadow,
+        'proj_shadow': _proj_shadow,
         'edge_pct': round(directional_edge * 100, 1),
         'games_used': gp,
         'label': cfg['label'],
