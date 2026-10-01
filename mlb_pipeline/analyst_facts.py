@@ -87,6 +87,40 @@ def _notable_injuries(team: str, season: int, week: Optional[int]) -> list:
             for x in rows if x.get('injury_status')]
 
 
+def _f(v):
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pitcher_role_note(projected_outs):
+    """'opener' vs 'starter' in words the model cannot misread. 12 outs
+    (4 innings) is the boundary. Shared wording with
+    generate_mlb_game_reads._pitcher_role_note so both prompt paths say the
+    same thing."""
+    po = _f(projected_outs)
+    if po is None:
+        return None
+    if po <= 12:
+        return (f'OPENER / short start — projected only {po:.0f} outs '
+                f'(~{po / 3:.1f} innings). Do NOT frame this as a starter duel '
+                f'or build the read on his career splits; the BULLPEN is the '
+                f'real unit here.')
+    return f'conventional start — projected {po:.0f} outs (~{po / 3:.1f} innings).'
+
+
+def _vs_team_sample_note(vs_team_ip):
+    """Label a vs-opponent split as established or noise. 25 IP floor."""
+    ip = _f(vs_team_ip)
+    if ip is None:
+        return None
+    if ip < 25:
+        return (f'SMALL SAMPLE — only {ip:.1f} IP against this club. Mention '
+                f'in passing at most; do NOT make it a pillar of the read.')
+    return f'usable sample — {ip:.1f} IP against this club.'
+
+
 def build_provided_facts_mlb(ctx: dict) -> dict:
     """Assemble PROVIDED_FACTS for an MLB game.
 
@@ -147,6 +181,22 @@ def build_provided_facts_mlb(ctx: dict) -> dict:
             'projected_outs': ctx.get(f'{side}_pitcher_projected_outs'),
             'home_era': ctx.get(f'{side}_pitcher_home_era'),
             'away_era': ctx.get(f'{side}_pitcher_away_era'),
+            # ══ 2026-10-01 · ROLE AND SAMPLE, IN WORDS ══
+            # projected_outs and vs_opp_team_ip_career were already here, and
+            # the model still built its thesis on "Kerr's 0.96 ERA over 9.3 IP"
+            # for a pitcher projected 6 outs. Raw numbers do not tell it that
+            # 9.3 innings is noise or that 2 innings is not a starter duel.
+            #
+            # I first added these qualifiers to generate_mlb_game_reads'
+            # struct — the WRONG PATH. The active MLB template is
+            # jerry_synthesis_analyst_v1, which has no {STRUCT} at all and is
+            # fed by this file through {FACTS_JSON}. The fields showed up in
+            # input_snapshot (which records the struct) and never reached the
+            # prompt, so the read came back unchanged and looked like the
+            # model ignoring an instruction it was never given.
+            'role': _pitcher_role_note(ctx.get(f'{side}_pitcher_projected_outs')),
+            'vs_opp_team_sample': _vs_team_sample_note(
+                ctx.get(f'{side}_pitcher_vs_team_ip')),
         }
 
     def _lineup_block(side: str) -> dict:
