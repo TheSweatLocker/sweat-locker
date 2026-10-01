@@ -59,7 +59,20 @@ SB_WRITE = {**SB_READ, "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates,return=minimal"}
 
 MODEL = "claude-haiku-4-5-20251001"
-PROMPT_VERSION = "synthesis_v1"
+# ══ 2026-10-01 · BUMPED v1 -> v2 TO INVALIDATE READS BUILT ON THE OLD PROMPT ══
+# The skip gate in run() queries jerry_reads with prompt_version=eq.PROMPT_VERSION,
+# so bumping this is the one mechanism that reliably invalidates every stored
+# read after the prompt or its facts change. Use it instead of hand-rolled
+# staleness checks.
+#
+# Why that lesson cost three dispatches tonight. I wrote a bespoke gate that
+# looked for a `role` key in input_snapshot. The second run added `role` to the
+# STRUCT (and therefore to input_snapshot) while the active analyst prompt is
+# fed by analyst_facts — a different path, fixed later. So the gate saw a
+# "current" snapshot and skipped, and the third dispatch did nothing. A
+# content sniff on one artefact cannot know whether a different artefact
+# changed; a version does, because it is declared rather than inferred.
+PROMPT_VERSION = "synthesis_v2"
 
 # Sport-universal registry (2026-07-31 · Tabletop C).
 # Adding a new sport = 1 line + confirming that sport's game_context table
