@@ -506,6 +506,37 @@ def _l5_block_for_side(game_date, game_id, side):
     return l5.get(side)
 
 
+def _pitcher_role_note(projected_outs):
+    """'opener' vs 'starter', stated in words the prompt cannot misread.
+
+    2026-10-01. Postseason bullpen games broke the read: handed only a name
+    and an xERA, the model wrote about an opener's "last three starts" and
+    made his career-vs-team line the thesis. 12 outs = 4 innings is the
+    opener/short-start boundary.
+    """
+    if projected_outs is None:
+        return None
+    if projected_outs <= 12:
+        return (f'OPENER / short start — projected only {projected_outs:.0f} outs '
+                f'(~{projected_outs / 3:.1f} innings). Do NOT frame this as a '
+                f'starter duel or lean on his career splits; the BULLPEN is the '
+                f'real unit and bullpen ERA/availability should carry the read.')
+    return (f'conventional start — projected {projected_outs:.0f} outs '
+            f'(~{projected_outs / 3:.1f} innings).')
+
+
+def _vs_team_sample_note(vs_team_ip):
+    """Label a vs-team split as established or noise, so the prompt can't
+    present 9 innings as a career verdict. 25 IP floor matches the
+    small-sample vs-team rule applied elsewhere."""
+    if vs_team_ip is None:
+        return None
+    if vs_team_ip < 25:
+        return (f'SMALL SAMPLE — only {vs_team_ip:.1f} IP against this club. '
+                f'Mention in passing at most; it must NOT be a pillar of the pick.')
+    return f'usable sample — {vs_team_ip:.1f} IP against this club.'
+
+
 def _pitcher_block(g, side):
     """Build per-pitcher block with EXPLICIT opp-lineup attribution baked in.
 
@@ -560,6 +591,27 @@ def _pitcher_block(g, side):
         "first_inning_era": fi,
         "vs_team_era": _f(g.get(f"{side}_pitcher_vs_team_era")),
         "vs_team_avg": _f(g.get(f"{side}_pitcher_vs_team_avg")),
+        # ══ 2026-10-01 · SAY WHAT KIND OF OUTING THIS IS ══
+        # The struct handed over a name, an xERA and a vs-team ERA with no
+        # indication of ROLE or SAMPLE, and the model filled both gaps badly.
+        # Tonight's wildcard read called Ray Kerr's "career excellence vs this
+        # offense" a pillar of the pick and referred to "his last three
+        # starts". Kerr is an OPENER — projected_outs 6.3 (2.1 innings), and
+        # the book has him at outs_under 3.5 — so his career split barely
+        # bears on the result; Atlanta's bullpen decides the game. It also
+        # leaned on a 0.96 ERA built over 9.3 INNINGS as though it were
+        # established.
+        #
+        # Both facts were already in the row. Deriving them here is cheaper
+        # and far more reliable than hoping the prompt infers role from an
+        # outs projection, and it keeps the judgement in code where it can be
+        # reviewed. ~12 outs is the opener/short-start line (4 innings);
+        # 25 IP is the floor below which a vs-team split is noise, consistent
+        # with the small-sample vs-team rule we already apply elsewhere.
+        "vs_team_ip": _f(g.get(f"{side}_pitcher_vs_team_ip")),
+        "vs_team_sample": _vs_team_sample_note(
+            _f(g.get(f"{side}_pitcher_vs_team_ip"))),
+        "role": _pitcher_role_note(_f(g.get(f"{side}_pitcher_projected_outs"))),
         "projected_ks":    _f(g.get(f"{side}_pitcher_projected_ks")),
         "projected_bb":    _f(g.get(f"{side}_pitcher_projected_bb")),
         "projected_hits":  _f(g.get(f"{side}_pitcher_projected_hits")),

@@ -943,13 +943,31 @@ def run(force: bool = False, game_date: str | None = None,
                     _snap_p = (_snap or {}).get("pitchers") or {}
                     for _sidekey, _ctxcol in (("home", "home_pitcher"),
                                               ("away", "away_pitcher")):
-                        _had = ((_snap_p.get(_sidekey) or {}).get("name"))
+                        _blk = _snap_p.get(_sidekey) or {}
+                        _had = _blk.get("name")
                         _now = g.get(_ctxcol)
                         if not _had and _now:
                             _stale_blind = True
                             print(f"  ↻ {away} @ {home}: stored read was written "
                                   f"with no {_sidekey} starter; {_ctxcol}={_now} "
                                   f"now known — regenerating")
+                            break
+                        # 2026-10-01b: a read can name the starter and still be
+                        # built blind to WHAT KIND of outing it is. The 20:06
+                        # regen knew "Ray Kerr" but, with no role field, called
+                        # an opener's career-vs-team line the thesis. `role` and
+                        # `vs_team_sample` were added to the pitcher block the
+                        # same hour, so a snapshot missing `role` while the
+                        # context can produce one predates that fix and is worth
+                        # one regeneration. Self-limiting: once a snapshot
+                        # carries `role`, this never fires again — no loop.
+                        if (_now and "role" not in _blk
+                                and g.get(f"{_sidekey}_pitcher_projected_outs")
+                                is not None):
+                            _stale_blind = True
+                            print(f"  ↻ {away} @ {home}: stored read predates "
+                                  f"pitcher-role awareness ({_sidekey} has no "
+                                  f"role/sample qualifier) — regenerating")
                             break
                 except Exception as _e:
                     print(f"  ! staleness check failed ({_e}) — keeping skip")
