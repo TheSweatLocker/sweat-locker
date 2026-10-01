@@ -35,6 +35,18 @@ PULLER = OddsPuller(
     # a key. Without it the two tables had 0 id overlap — the same split
     # that left NFL Vault Match with zero graded games since launch.
     schedule_fn=_nhl_schedule,
+    # 2026-10-01: store the puck-line and total PRICES, not just the lines.
+    # The Odds API already returned them; _consensus discarded them, so every
+    # NHL rl/total pick was graded at a flat -110 — meaningless on a +/-1.5
+    # puck line that trades near -250/+190. See
+    # 20261001a_nhl_puckline_total_prices.sql and
+    # project_nhl_engine_one_sided_1001.
+    price_cols={
+        'spread_home_price': 'close_puckline_home_price',
+        'spread_away_price': 'close_puckline_away_price',
+        'total_over_price':  'close_total_over_price',
+        'total_under_price': 'close_total_under_price',
+    },
 )
 
 

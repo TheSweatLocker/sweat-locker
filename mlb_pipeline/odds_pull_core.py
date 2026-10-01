@@ -158,7 +158,29 @@ def _consensus(event: dict, home: str, away: str) -> dict:
     the consensus, and with ~9 books a single bad quote is exactly the
     kind of thing that moves a mean.
     """
+    # ══ 2026-10-01 · CAPTURE THE PRICE, NOT JUST THE LINE ══
+    # This function already received `price` on every outcome (the request at
+    # fetch() asks for h2h,spreads,totals) and kept it only for h2h, dropping
+    # it for spreads and totals. No results table anywhere stored a spread or
+    # total price as a result, so compute_surface_records graded every rl and
+    # total pick at a flat -110.
+    #
+    # That approximation is roughly fine for a football spread, which really
+    # is near -110. It is badly wrong for an NHL puck line: +/-1.5 is a huge
+    # cushion in a 6-goal game, so it trades around -250 on the favourite and
+    # +190 on the dog. That is exactly why four NHL rl signals look like
+    # 70-72% winners (project_nhl_engine_one_sided_1001) against a 65.2%
+    # baseline and still cannot be shown to be profitable.
+    #
+    # A PRICE IS ONLY MEANINGFUL AT A GIVEN LINE, so we cannot median prices
+    # across books posting different lines — one book on -1.0 and another on
+    # -1.5 are quoting different bets. Take the median LINE first, then median
+    # only the prices quoted AT that line. NHL is almost always +/-1.5 so this
+    # matches cleanly; the `or` fallback keeps a price when no book sits
+    # exactly on the median (possible on a half-point split) rather than
+    # silently returning None.
     spreads, totals, home_ml, away_ml = [], [], [], []
+    sp_home, sp_away, tot_over, tot_under = [], [], [], []   # (point, price)
     for bk in event.get('bookmakers') or []:
         for mk in bk.get('markets') or []:
             key = mk.get('key')
@@ -169,15 +191,43 @@ def _consensus(event: dict, home: str, away: str) -> dict:
                         home_ml.append(_f(price))
                     elif nm == away:
                         away_ml.append(_f(price))
-                elif key == 'spreads' and nm == home:
-                    spreads.append(_f(point))
-                elif key == 'totals' and str(nm).lower() == 'over':
-                    totals.append(_f(point))
+                elif key == 'spreads':
+                    if nm == home:
+                        spreads.append(_f(point))
+                        sp_home.append((_f(point), _f(price)))
+                    elif nm == away:
+                        sp_away.append((_f(point), _f(price)))
+                elif key == 'totals':
+                    side = str(nm).lower()
+                    if side == 'over':
+                        totals.append(_f(point))
+                        tot_over.append((_f(point), _f(price)))
+                    elif side == 'under':
+                        tot_under.append((_f(point), _f(price)))
+
+    def _price_at(pairs, line):
+        """Median price among books quoting exactly `line`; else across all."""
+        if line is None or not pairs:
+            return None
+        at = [p for pt, p in pairs if pt is not None and p is not None
+              and abs(pt - line) < 0.01]
+        if not at:
+            at = [p for _pt, p in pairs if p is not None]
+        m = _median(at)
+        return int(m) if m is not None else None
+
+    sp_line = _median(spreads)        # home perspective, negative = home fav
+    tot_line = _median(totals)
     return {
-        'spread': _median(spreads),      # home perspective, negative = home fav
-        'total': _median(totals),
+        'spread': sp_line,
+        'total': tot_line,
         'home_ml': int(_median(home_ml)) if _median(home_ml) is not None else None,
         'away_ml': int(_median(away_ml)) if _median(away_ml) is not None else None,
+        # Away spread is the negation of the home line, so price it there.
+        'spread_home_price': _price_at(sp_home, sp_line),
+        'spread_away_price': _price_at(sp_away, -sp_line if sp_line is not None else None),
+        'total_over_price': _price_at(tot_over, tot_line),
+        'total_under_price': _price_at(tot_under, tot_line),
         'books': len(event.get('bookmakers') or []),
     }
 
@@ -185,7 +235,7 @@ def _consensus(event: dict, home: str, away: str) -> dict:
 class OddsPuller:
     def __init__(self, sport_code, odds_sport, results_table, id_prefix,
                  spread_col, total_col, season, team_map=None,
-                 write_abbrev=False, schedule_fn=None):
+                 write_abbrev=False, schedule_fn=None, price_cols=None):
         self.sport_code = sport_code
         self.odds_sport = odds_sport
         self.results_table = results_table
@@ -195,6 +245,15 @@ class OddsPuller:
         self.season = season
         self.team_map = team_map
         self.write_abbrev = write_abbrev
+        # ══ 2026-10-01 · OPT-IN SPREAD/TOTAL PRICE COLUMNS ══
+        # Maps the four logical price keys produced by _consensus to this
+        # sport's column names:
+        #   {'spread_home_price': 'close_puckline_home_price', ...}
+        # Opt-in and defaults to {} because a results table that lacks the
+        # column would 400 the whole upsert — per
+        # feedback_explicit_select_silent_blanks, a column that isn't there is
+        # not a soft failure. Only sports whose migration has landed pass it.
+        self.price_cols = price_cols or {}
         # schedule_fn(date_iso) -> [{game_id, home_team, away_team}, ...]
         # Lets the pull adopt the league's CANONICAL game id instead of
         # minting its own. See _canonical_id.
@@ -296,6 +355,11 @@ class OddsPuller:
                 'close_home_ml': c['home_ml'],
                 'close_away_ml': c['away_ml'],
             }
+            # Spread/total prices, for sports whose columns exist. Written
+            # even when None so a book that stops quoting a side clears the
+            # stale value instead of leaving yesterday's price in place.
+            for _logical, _col in self.price_cols.items():
+                row[_col] = c.get(_logical)
             if self.season:
                 row['season'] = self.season
             if self.write_abbrev and h_ab:

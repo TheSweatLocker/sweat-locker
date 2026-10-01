@@ -545,6 +545,59 @@ def _is_nhl_preseason(game_id) -> bool:
     return len(s) >= 10 and s.isdigit() and s[4:6] == '01'
 
 
+_COLCHECK: dict = {}
+
+
+def _mkt(sport: str) -> str:
+    """The sport's word for the spread market in its column names."""
+    return 'puckline' if sport == 'NHL' else 'spread'
+
+
+def _column_exists(table: str, col: str) -> bool:
+    """One cached probe per (table, col). Fails CLOSED: on any error we
+    report absent, so grading falls back to -110 rather than raising and
+    blanking the surface.
+
+    2026-10-01: wrote this against `H_READ`, which does not exist in this
+    module (the header here is `H`). The broad `except Exception` swallowed
+    the NameError and returned False for EVERY column, so the probe would
+    have reported the price columns missing forever — including after the
+    migration landed — and the -110 fallback would have looked like correct
+    behaviour. Caught only by probing a column known to exist
+    (`close_total`) and getting False. Any fail-closed guard needs a
+    positive control, or it cannot be distinguished from a broken one.
+    """
+    ck = (table, col)
+    if ck in _COLCHECK:
+        return _COLCHECK[ck]
+    try:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
+                         params={'select': col, 'limit': 1}, timeout=15)
+        ok = r.status_code == 200
+    except Exception as e:
+        print(f'  ⚠ column probe failed for {table}.{col}: {e}')
+        ok = False
+    _COLCHECK[ck] = ok
+    return ok
+
+
+def _side_price(res: dict, keys: dict, side: str, market: str):
+    """American price for the picked side of an rl/total bet, or None.
+
+    2026-10-01. Returns None (caller falls back to -110) whenever the sport's
+    migration hasn't landed — keys carries no entry — or the book didn't quote
+    that side. None means UNKNOWN, never "it was -110".
+    """
+    which = {
+        ('spread', 'HOME'):  'spread_home_price',
+        ('spread', 'AWAY'):  'spread_away_price',
+        ('total',  'OVER'):  'total_over_price',
+        ('total',  'UNDER'): 'total_under_price',
+    }.get((market, side))
+    col = keys.get(which) if which else None
+    return res.get(col) if col else None
+
+
 def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
                          result_key_map: dict = None,
                          skip_game=None) -> list[dict]:
@@ -606,10 +659,27 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
     # the tuple is unique per matchup+week regardless.
     ctx_url = (f'{SB}/rest/v1/{ctx_table}'
                f'?select=game_id,game_date,away_team,home_team,primary_play&primary_play=not.is.null')
+    # ══ 2026-10-01 · PROBE, DON'T ASSUME, THE PRICE COLUMNS ══
+    # Only NHL has spread/total price columns today (20261001a). Hardcoding
+    # them into the select would 400 for every other sport, and because the
+    # fetch now RAISES on failure that would blank each sport's sides record
+    # until its own migration landed — an ordering dependency between a SQL
+    # paste and a deploy. Probing removes it: each sport picks the columns up
+    # by itself the moment they exist, in either order.
+    _price_cols = {
+        'spread_home_price': f'close_{_mkt(sport)}_home_price',
+        'spread_away_price': f'close_{_mkt(sport)}_away_price',
+        'total_over_price':  'close_total_over_price',
+        'total_under_price': 'close_total_under_price',
+    }
+    for _logical, _col in _price_cols.items():
+        if _col not in keys and _column_exists(res_table, _col):
+            keys[_logical] = _col
+    _price_sel = ''.join(f',{keys[k]}' for k in _price_cols if k in keys)
     res_url = (f'{SB}/rest/v1/{res_table}'
                f'?select=game_id,game_date,away_team,home_team,'
                f'{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]},'
-               f'{keys["home_ml"]},{keys["away_ml"]}')
+               f'{keys["home_ml"]},{keys["away_ml"]}{_price_sel}')
     # 2026-09-30: these two used to `return []` on a fetch failure, which made
     # a broken query indistinguishable from a sport that genuinely has no graded
     # picks. That ambiguity is why the stale-row prune below could not be
@@ -650,6 +720,8 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
     skipped_pre = 0
     ml_priced = 0        # graded off a real moneyline price
     ml_flat = 0          # fell back to -110 because no price was available
+    nonml_priced = 0     # rl/total graded off a real price
+    nonml_flat = 0       # rl/total fell back to -110
     for c in ctx_rows:
         # 2026-09-30: sport-specific exclusion, currently NHL preseason. Applied
         # BEFORE the tier filter so the count below reports every excluded game,
@@ -694,12 +766,34 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
             elif sr == 'home_covered': cls = 'win' if side == 'HOME' else 'loss'
             elif sr == 'away_covered': cls = 'win' if side == 'AWAY' else 'loss'
             else: continue
+            # ══ 2026-10-01 · AN NHL PUCK LINE IS NOT -110 ══
+            # -110 is close enough for a football spread. It is nowhere near an
+            # NHL puck line: measured off 27 live boards this date, taking +1.5
+            # ran a MEDIAN of -216 (range -276..-126, breakeven 68.4%) while
+            # laying -1.5 paid +177 (breakeven 36.1%). Grading both at -110
+            # makes a 72% +1.5 winner look like a monster and a 36% -1.5 bet
+            # look like a disaster, when the two are nearly the same edge.
+            # Priced only where the column exists (NHL today), else -110.
+            px = _side_price(res, keys, side, 'spread')
+            if px is None:
+                nonml_flat += 1
+            else:
+                nonml_priced += 1
+                payout = _american_win_payout(px)
         elif ptype == 'total':
             tr = (res.get(keys['total_result']) or '').lower()
             if tr == 'push': cls = 'push'
             elif tr == 'over':  cls = 'win' if side == 'OVER' else 'loss'
             elif tr == 'under': cls = 'win' if side == 'UNDER' else 'loss'
             else: continue
+            # Totals DO sit near -110 (measured -110 both ways, breakeven
+            # 52.4%), so this changes little — but it removes the assumption.
+            px = _side_price(res, keys, side, 'total')
+            if px is None:
+                nonml_flat += 1
+            else:
+                nonml_priced += 1
+                payout = _american_win_payout(px)
         else:
             continue
         try: d = dt.date.fromisoformat(c['game_date'])
@@ -712,6 +806,9 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
     if ml_priced or ml_flat:
         print(f'  {sport} sides: {ml_priced} ML graded on a real price, '
               f'{ml_flat} fell back to -110')
+    if nonml_priced or nonml_flat:
+        print(f'  {sport} sides: {nonml_priced} rl/total graded on a real '
+              f'price, {nonml_flat} fell back to -110')
     return out
 
 
