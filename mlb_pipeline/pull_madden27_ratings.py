@@ -26,6 +26,7 @@ Runs from nfl_pipeline.yml weekly (Tue morning after MNF grades).
 """
 from __future__ import annotations
 import argparse, os, sys, re, io
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -300,6 +301,118 @@ def upsert_team_ratings(teams: list[dict], season: int, week: int, dry_run: bool
     return len(payload)
 
 
+def prune_stale_player_rows(season: int, week: int, kept: set,
+                            sources: tuple, dry_run: bool) -> int:
+    """Delete rows this puller owns that it did NOT write this run.
+
+    ══ 2026-10-01 · AN UPSERT KEYED ON THE NAME CANNOT FIX A BAD NAME ══
+    The unique key is (player_name, team, season, week_snapshot), so a row
+    written under a wrong name is immortal: re-running inserts the correct row
+    beside it and the bad one is never touched. Measured this date — 100 of 275
+    rows were initials badges scraped on 09-06, e.g. ('CHI','QB',90) existing
+    as BOTH 'Caleb Williams' and 'CW', and ('KC','QB',93) as both 'Patrick
+    Mahomes' and 'PM'. The parser was fixed to prefer the full-name span and
+    has emitted none since; every alias still carried fetched_at 2026-09-06
+    and every real name carried today's. The scrape was already right. The
+    rows just never went away.
+
+    They are not cosmetic. nfl_injuries has no row for 'CW', so a QB
+    availability check that correctly skipped a Doubtful Caleb Williams fell
+    straight through to his alias at the same 90 OVR — the alias defeated the
+    gate. Same immortal-orphan shape as the FCS rows in
+    compute_schedule_strength, and the same fix.
+
+    SCOPED BY SOURCE, deliberately. nfl_madden_player_ratings also holds 51
+    rows written by seed_nfl_madden_launch (source 'ea_launch_snapshot', and
+    they spell teams out in full). Pruning everything for the season/week
+    would delete another script's data, so we only ever remove rows carrying
+    OUR source values.
+
+    REFUSES TO PRUNE ON A THIN RUN. A partial scrape that wrote 3 rows must
+    not delete the other 200; the floor makes a bad scrape a no-op instead of
+    a wipe.
+    """
+    if not kept:
+        print('  prune: nothing written this run — skipped')
+        return 0
+    MIN_KEPT = 40
+    if len(kept) < MIN_KEPT:
+        print(f'  prune: only {len(kept)} rows written (<{MIN_KEPT}) — '
+              f'refusing to prune on a thin run')
+        return 0
+    src_csv = ','.join(f'"{s}"' for s in sources)
+    url = (f'{SB}/rest/v1/nfl_madden_player_ratings'
+           f'?season=eq.{season}&week_snapshot=eq.{week}'
+           f'&source=in.({src_csv})'
+           f'&select=player_name,team,source')
+    try:
+        existing = requests.get(url, headers=H_READ, timeout=30).json()
+    except Exception as e:
+        print(f'  prune: read failed ({e}) — skipped')
+        return 0
+    if not isinstance(existing, list):
+        print(f'  prune: unexpected read response — skipped')
+        return 0
+    # ══ PRUNE ALIASES, NOT MERELY "NOT SEEN THIS RUN" ══
+    # A blanket not-seen-this-run prune is too blunt here. scrape_starter_qbs
+    # returns ONE QB per team, so everything else would be deleted — including
+    # real rated depth. Caught on the dry run: it wanted to remove
+    # ('LV','Fernando Mendoza',QB,74), a genuine player and exactly the sort of
+    # fallback available_qb needs when a starter is ruled out. Deleting him to
+    # kill 'PM' would trade one bug for another.
+    #
+    # So the target is precisely the defect: an alias-shaped name that
+    # DUPLICATES a longer name at the same (team, position, ovr). Everything
+    # else stays, whether or not this run happened to see it.
+    longest = {}
+    for x in existing:
+        k = (x.get('team'), x.get('position'), x.get('ovr'))
+        nm = x.get('player_name') or ''
+        if k not in longest or len(nm) > len(longest[k]):
+            longest[k] = nm
+
+    def _is_alias_dup(x):
+        nm = x.get('player_name') or ''
+        if not nm or (' ' in nm and len(nm) > 4):
+            return False          # looks like a real name
+        k = (x.get('team'), x.get('position'), x.get('ovr'))
+        best = longest.get(k) or ''
+        return len(best) > len(nm)   # a fuller name exists for the same slot
+
+    stale = [x for x in existing if _is_alias_dup(x)]
+    survivors = [x for x in existing
+                 if (x.get('player_name'), x.get('team')) not in kept
+                 and not _is_alias_dup(x)]
+    if survivors:
+        print(f'  prune: keeping {len(survivors)} real-name row(s) not in this '
+              f'scrape (roster depth, e.g. '
+              f'{[(x["team"], x["player_name"]) for x in survivors[:3]]})')
+    if not stale:
+        print('  prune: no alias duplicates')
+        return 0
+    print(f'  prune: {len(stale)} stale row(s) to remove '
+          f'(e.g. {[(x["team"], x["player_name"]) for x in stale[:4]]})')
+    if dry_run:
+        print('  [DRY] no delete')
+        return len(stale)
+    removed = 0
+    for x in stale:
+        # One at a time: player names carry periods, apostrophes and commas
+        # (T.J. Watt, Derwin James Jr), and in.() cannot be trusted to quote
+        # them — the same reason the SOS/SOR prune deletes row by row.
+        qn = urllib.parse.quote(str(x['player_name']), safe='')
+        qt = urllib.parse.quote(str(x['team']), safe='')
+        d = requests.delete(
+            f'{SB}/rest/v1/nfl_madden_player_ratings'
+            f'?season=eq.{season}&week_snapshot=eq.{week}'
+            f'&player_name=eq.{qn}&team=eq.{qt}',
+            headers=H_WRITE, timeout=30)
+        if d.status_code in (200, 204):
+            removed += 1
+    print(f'  prune: removed {removed}/{len(stale)}')
+    return removed
+
+
 def upsert_players(players: list[dict], season: int, week: int, dry_run: bool) -> int:
     """Upsert into nfl_madden_player_ratings for the top-100 subset."""
     if not players: return 0
@@ -386,6 +499,18 @@ def main():
     qbs = scrape_starter_qbs()
     n_qbs = upsert_starter_qbs(qbs, args.season, args.week, args.dry_run)
     print(f'✓ wrote {n_teams} team ratings, {n_players} player ratings, {n_top100} top-100 rows, {n_qbs} starter QBs')
+
+    # Remove rows we own but did not write this run — see
+    # prune_stale_player_rows. Built from the same two upsert payloads so a
+    # name the parser no longer produces (an initials alias, a traded player)
+    # cannot outlive the scrape that created it.
+    kept = {(p['player_name'], p['team_code'])
+            for p in top100 if p.get('team_code') and p.get('ovr') is not None}
+    kept |= {(q['player_name'], q['team_code'])
+             for q in qbs if q.get('team_code') and q.get('ovr') is not None}
+    prune_stale_player_rows(args.season, args.week, kept,
+                            ('madden27.wiki', 'madden27.wiki:team_page'),
+                            args.dry_run)
     return 0
 
 
