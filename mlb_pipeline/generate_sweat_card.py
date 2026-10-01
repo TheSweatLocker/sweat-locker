@@ -314,6 +314,40 @@ def fetch_yesterday_recap():
                      (p.get("prop_type") or "").lower())
                 prop_lookup[k] = p.get("result")
 
+            # ══ 2026-10-01 · FALL BACK TO public_receipts ══
+            # The overlay above can only resolve a pick that still has a row in
+            # a prop table. A published pick whose SOURCE row was later
+            # regenerated has no such row, so the stored "Pending" survives
+            # forever and the home-page recap shows it indefinitely.
+            #
+            # Measured today: the 9/30 card published 'J.T. Realmuto Under 0.5
+            # Hits' and 'Ha-Seong Kim Under 0.5 Hits' as PRIME. Their
+            # prop_jerry_reads source rows (124044/124045) were regenerated as
+            # 1243xx — which contain neither player — and mlb_pipeline_props has
+            # no 9/30 hits_under row for either, so BOTH sat Pending while every
+            # other pick on the card had graded. Andy reported it twice.
+            #
+            # public_receipts is the canonical ledger of what was actually
+            # published (project_public_receipts_integrity_918), so it is the
+            # right backstop. Added only where the prop tables have nothing, so
+            # live prop grading still wins. Case differs between the two
+            # surfaces — receipts store WIN/LOSS, prop tables Win/Loss — so
+            # normalise, or the app renders two spellings of the same outcome
+            # (feedback_result_column_is_title_case).
+            receipts = sb_get("public_receipts", {
+                "game_date": f"eq.{yesterday}",
+                "result": "not.is.null",
+                "prop_type": "not.is.null",
+                "select": "player_name,prop_type,result",
+            }) or []
+            for p in receipts:
+                k = ((p.get("player_name") or "").lower(),
+                     (p.get("prop_type") or "").lower())
+                if k in prop_lookup and prop_lookup[k]:
+                    continue
+                res = str(p.get("result") or "").strip()
+                prop_lookup[k] = res.title() if res else None
+
             def _resolved_result(pick):
                 """Return the live-graded result if we can match this top_8
                 pick back to mlb_pipeline_props; else fall through to stored."""
@@ -344,6 +378,31 @@ def fetch_yesterday_recap():
                     ("bb_over", "bb over"), ("bb_under", "bb under"),
                     ("outs_over", "outs over"), ("outs_under", "outs under"),
                     ("hits_over", "hits over"), ("hits_under", "hits under"),
+                    # ══ 2026-10-01 · MLB LABELS ALSO COME IN HUMAN FORM ══
+                    # Every MLB spec above assumes the label ENDS with the
+                    # underscore-ish suffix ("... Under 1.5 er under"). The card
+                    # also writes the NFL-style human form — "J.T. Realmuto
+                    # Under 0.5 Hits" — which ends with "hits", matching none of
+                    # them. So those picks never resolved: both 9/30 hits_under
+                    # PRIMEs sat Pending on the home page while every other pick
+                    # graded, and no amount of fixing the LOOKUP helped because
+                    # the label never produced a prop_type to look up.
+                    #
+                    # ORDER IS LOAD-BEARING: the loop breaks on the first
+                    # direction-valid endswith match, and "earned runs" itself
+                    # ends with "runs". Specific suffixes MUST precede the bare
+                    # ones or an ER prop resolves as a runs prop.
+                    ("er_over", "earned runs"), ("er_under", "earned runs"),
+                    ("ha_over", "hits allowed"), ("ha_under", "hits allowed"),
+                    ("total_bases_over", "total bases"),
+                    ("total_bases_under", "total bases"),
+                    ("runs_over", "runs scored"), ("runs_under", "runs scored"),
+                    ("hits_over", "hits"), ("hits_under", "hits"),
+                    ("ks_over", "strikeouts"), ("ks_under", "strikeouts"),
+                    ("outs_over", "outs"), ("outs_under", "outs"),
+                    ("bb_over", "walks"), ("bb_under", "walks"),
+                    ("rbis_over", "rbis"), ("rbis_under", "rbis"),
+                    ("runs_over", "runs"), ("runs_under", "runs"),
                     # NFL — label ends with the human stat name only
                     # (direction "Over/Under" comes before). Match on the
                     # human suffix like "pass attempts".

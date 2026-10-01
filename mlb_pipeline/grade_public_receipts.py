@@ -108,6 +108,16 @@ HOME_FAV_IS_NEGATIVE = {'MLB': True, 'NCAAF': True, 'NCAAB': True,
 
 GAME_MARKETS = {'ml', 'rl', 'spread', 'total'}
 
+# 2026-10-01: vocabulary that means "this label describes a PLAYER prop", used
+# to refuse grading such a receipt as a game market. Kept deliberately broad
+# and cross-sport — a false refusal leaves a row ungraded and visible, while a
+# false grade enters the published record and is invisible.
+_PROP_LABEL_RE = re.compile(
+    r'\b(outs?|strikeouts?|ks|hits?|total\s+bases|rbis?|runs\s+scored|walks?|'
+    r'earned\s+runs?|saves?|points?|rebounds?|assists?|pass(?:ing)?\s+yds?|'
+    r'rush(?:ing)?\s+yds?|rec(?:eiving)?\s+yds?|receptions?|shots?|goals?|'
+    r'sog|saves|blocks|steals|threes|3pt)\b', re.I)
+
 # 2026-09-26: POTD / Dawg receipts store a SURFACE code in `market` rather
 # than a real market -- deliberately, so rows already counted under those
 # codes stay countable (see public_receipt._bet_market). The consequence was
@@ -279,6 +289,28 @@ def grade_one(rec: dict, res: dict, sport: str) -> tuple[str | None, str]:
         return ('WIN' if won else 'LOSS'), f'{side} vs close'
 
     if market == 'total':
+        # ══ 2026-10-01 · A PLAYER PROP IS NOT A GAME TOTAL ══
+        # `line = pick_line or res.close_total` silently substituted the GAME's
+        # closing run total whenever the receipt had no line of its own. POTD
+        # receipts written by jerry_anchor_potd carry bet_market='total' with
+        # player_name / prop_type / pick_line ALL NULL, so a pitcher-outs POTD
+        # was graded against runs scored.
+        #
+        # Two published POTDs were FALSE WINS because of it, both verified
+        # against the box score:
+        #   9/22 JR Ritchie Under 14.5 Outs  -> threw 15 outs = LOSS, read WIN
+        #   9/30 Hunter Brown Over 14.5 Outs -> threw  2 outs = LOSS, read WIN
+        # Two others graded correctly only by coincidence, because the game
+        # total happened to agree with the prop outcome.
+        #
+        # Substituting the line is not recoverable by picking a better number:
+        # outs and runs are different units, so NO line makes this comparison
+        # valid. Refuse instead. These rows then stay ungraded, which is
+        # honest and visible, rather than graded wrong, which is neither.
+        # Real fix belongs upstream in jerry_anchor_potd, which should record
+        # the prop's market, player, type and line (feedback_fix_at_root).
+        if _PROP_LABEL_RE.search(str(label or '')):
+            return None, 'prop label on a game market — refusing to grade as a total'
         line = _f(rec.get('pick_line')) or _f(res.get('close_total'))
         if line is None:
             return None, 'no total line'
