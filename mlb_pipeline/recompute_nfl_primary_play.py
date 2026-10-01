@@ -270,11 +270,33 @@ def _pp_locked(game_id, new_pp):
     return True
 
 def patch_pp(game_id: str, pp: dict) -> bool:
-    # nfl_game_context has no primary_play_computed_at col (same as
-    # ncaaf_game_context). Skip the stamp.
+    # ══ 2026-09-30 · STAMP updated_at ══
+    # There is no primary_play_computed_at column, and the previous comment
+    # here said to "skip the stamp" because timing was inferable from the
+    # row's updated_at. It was not: nothing sets updated_at on
+    # nfl_game_context — no writer and no trigger (verified by patching 374
+    # NCAAF rows with no timestamp movement). So updated_at sat at the row's
+    # INSERT time, which for 239 of 284 NFL rows is July 2026.
+    #
+    # That silently destroyed the leak guard. Every backtest in this codebase
+    # proves a pick predated its game with `updated_at < kickoff_utc`. On NFL
+    # that test passes 100% of rows trivially — July is before every kickoff —
+    # so a backtest would quietly include picks recomputed AFTER the game
+    # finished and report the result as leak-free. That is the same class of
+    # error as the fake NCAAF 67.8% z=+4.07 on 09-29
+    # (project_rolling_stats_leak_trap_929), except undetectable, because the
+    # guard returns true rather than returning nothing.
+    #
+    # The only trustworthy NFL timestamp was primary_play._goat_shadow
+    # .computed_at, present on 65 of 284 rows. So 77% of NFL was unmeasurable.
+    #
+    # Stamping it here makes the column mean what every reader already assumes:
+    # when the PICK was last written. Same change applied to
+    # recompute_ncaaf_primary_play.py so the two sports agree.
     if _pp_locked(game_id, pp):
         return False
-    payload = {'primary_play': pp}
+    payload = {'primary_play': pp,
+               'updated_at': datetime.now(timezone.utc).isoformat()}
     for attempt in range(3):
         try:
             r = requests.patch(f'{SB}/rest/v1/nfl_game_context?game_id=eq.{game_id}',

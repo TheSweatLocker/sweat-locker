@@ -114,12 +114,34 @@ def _pp_locked(game_id, new_pp):
     return True
 
 def patch_pp(game_id: str, pp: dict) -> bool:
-    # 2026-08-28: ncaaf_game_context has no `primary_play_computed_at`
-    # column (unlike mlb_game_context). Skip the stamp — recompute
-    # timing is inferable from pp.audit_note or the row's updated_at.
+    # 2026-08-28 said: no `primary_play_computed_at` column, so "skip the
+    # stamp — recompute timing is inferable from ... the row's updated_at."
+    #
+    # ══ 2026-09-30 CORRECTION ══
+    # It was not inferable, because THIS FUNCTION never set updated_at and
+    # neither does any trigger — verified by patching 374 NCAAF rows today
+    # and seeing zero timestamp movement. A comment asserting a property the
+    # code does not provide, which is the same trap as the 09-20 note that
+    # blocked a fix for nine days (feedback_comment_asserting_a_measurement).
+    #
+    # NCAAF got away with it only by accident: ncaaf_game_context.py rebuilds
+    # the row minutes before this recompute runs in the same pipeline pass, so
+    # updated_at landed close enough to pick time for the leak guard to work.
+    # NFL has no such luck — 239 of 284 rows sat at their July INSERT time, so
+    # `updated_at < kickoff_utc` passed every row trivially and 77% of NFL was
+    # unmeasurable.
+    #
+    # Stamping it here makes the column mean what every backtest assumes: when
+    # the PICK was last written, not when the stats around it were.
+    #
+    # NOTE this will legitimately SHRINK leak-free NCAAF samples: a pick
+    # recomputed inside the lookback window after kickoff now stamps a
+    # post-kickoff time and gets excluded, where before it slipped through.
+    # That is the guard becoming honest, not a regression.
     if _pp_locked(game_id, pp):
         return False
-    payload = {'primary_play': pp}
+    payload = {'primary_play': pp,
+               'updated_at': datetime.now(timezone.utc).isoformat()}
     for attempt in range(3):
         try:
             r = requests.patch(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
