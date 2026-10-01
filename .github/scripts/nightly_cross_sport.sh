@@ -102,6 +102,29 @@ bash "$RUN_STEP" --label "resolve_ncaaf_results.py (nightly)" \
 bash "$RUN_STEP" --label "resolve_nfl_results.py (nightly)" \
   python resolve_nfl_results.py
 
+# ══ 2026-10-01 · NHL — THE SPORT THE 09-29 COMMENT ABOVE NAMED ══
+# Read the quote three lines up: "NHL has to be daily like MLB, grades and
+# resolves games and props overnight or in morning run". That commit added the
+# NFL resolver and never added NHL — the sport Andy actually named.
+#
+# The consequence is an ORDERING INVERSION ACROSS WORKFLOWS, which is worse
+# than a missing step and much harder to see. nhl_resolve_results.py existed
+# and worked, but lived ONLY in nhl_pipeline.yml, whose earliest cron is
+# '5 12 * * *' and which that file documents as a measured median +4.7h late —
+# so it actually lands ~16:45 UTC. Every grader that consumes NHL results
+# (grade_public_receipts, aggregate_daily_records, compute_surface_records) is
+# BELOW this line and runs at 10:30/12:30 UTC. The grader therefore ran four to
+# six hours BEFORE the resolver, every single day.
+#
+# Measured 2026-10-01 at 14:59 UTC, which is what exposed it: all three 9/30
+# games still had NULL scores, nhl_sides read n=2 / last_pick 2026-09-29, and
+# Andy saw unresolved picks in the app at 11:27am ET. Running the resolver by
+# hand took nhl_sides to n=4 immediately — nothing was broken except the order.
+#
+# Nothing downstream needed changing; the resolver only had to run first.
+bash "$RUN_STEP" --label "nhl_resolve_results.py (nightly)" \
+  python nhl_resolve_results.py
+
 bash "$RUN_STEP" --label "resolve_ladder_results.py (nightly)" \
   python resolve_ladder_results.py
 

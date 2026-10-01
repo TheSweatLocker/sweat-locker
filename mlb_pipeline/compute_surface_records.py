@@ -568,10 +568,31 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
     Filters: tier in PRIME/STRONG/LEAN. Skips COVERAGE/PASS/SKIP.
     Payout: flat -110 unless res table has close ML odds (future work).
     """
+    # ══ 2026-10-01 · ML MUST NOT BE PRICED AT -110 ══
+    # The docstring below still says "flat -110 unless res table has close ML
+    # odds (future work)". Every results table HAS carried close ML the whole
+    # time; nothing was blocking this but the lookup.
+    #
+    # It is not a rounding issue. NHL's published sides record is 100% moneyline
+    # (88 of 88 publishable picks), and 9/30's two LEAN plays were COL -180 and
+    # PHI -130. Priced flat they read 1-1 / -0.09u; priced honestly COL returns
+    # +0.556 on a win, so the same 1-1 is -0.444u. A heavy favourite that wins
+    # half its games LOSES money, and flat -110 reports that as break-even —
+    # the exact artifact that made NCAAF COVERAGE look like a 60% winner
+    # (project_ncaaf_ml_path_is_the_leak_930) and the reason
+    # project_sharp_money_football_opposite_930 says never grade ML at -110.
+    #
+    # COLUMN NAMES DIVERGE AND THAT IS THE TRAP: MLB and NCAAB spell it
+    # home_ml_close / away_ml_close; NFL, NCAAF, NHL and NBA spell it
+    # close_home_ml / close_away_ml. NCAAB carries BOTH. Defaulting to the
+    # majority spelling and overriding MLB through the existing result_key_map
+    # keeps this in one place instead of per-sport branching.
     keys = {
         'home_win': 'home_win',
         'spread_result': 'spread_result',
         'total_result': 'total_result',
+        'home_ml': 'close_home_ml',
+        'away_ml': 'close_away_ml',
         **(result_key_map or {}),
     }
     # 2026-09-11 game_id-mismatch fix. NFL (and any sport with divergent
@@ -587,7 +608,8 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
                f'?select=game_id,game_date,away_team,home_team,primary_play&primary_play=not.is.null')
     res_url = (f'{SB}/rest/v1/{res_table}'
                f'?select=game_id,game_date,away_team,home_team,'
-               f'{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]}')
+               f'{keys["home_win"]},{keys["spread_result"]},{keys["total_result"]},'
+               f'{keys["home_ml"]},{keys["away_ml"]}')
     # 2026-09-30: these two used to `return []` on a fetch failure, which made
     # a broken query indistinguishable from a sport that genuinely has no graded
     # picks. That ambiguity is why the stale-row prune below could not be
@@ -626,6 +648,8 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
             res_map[key] = r
     out = []
     skipped_pre = 0
+    ml_priced = 0        # graded off a real moneyline price
+    ml_flat = 0          # fell back to -110 because no price was available
     for c in ctx_rows:
         # 2026-09-30: sport-specific exclusion, currently NHL preseason. Applied
         # BEFORE the tier filter so the count below reports every excluded game,
@@ -645,10 +669,25 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
         ptype = (pp.get('type') or '').lower()
         side  = (pp.get('side') or '').upper()
         cls = None
+        payout = 0.909            # -110, correct for rl/spread/total
         if ptype == 'ml':
             hw = res.get(keys['home_win'])
             if hw is None: continue
             cls = 'win' if ((side == 'HOME' and hw) or (side == 'AWAY' and not hw)) else 'loss'
+            # Prefer the price AT PICK TIME — that is the price we actually
+            # published and carries no look-ahead. Fall back to the close,
+            # which is the standard benchmark, and only then to -110.
+            # _ml_price_at_pick coverage measured 2026-10-01: MLB 0/72,
+            # NFL 8/95, NCAAF 29/63, NHL 12/88 — so the close carries most of
+            # this and the at-pick price is the exception, not the rule.
+            px = pp.get('_ml_price_at_pick')
+            if px is None:
+                px = res.get(keys['home_ml'] if side == 'HOME' else keys['away_ml'])
+            if px is None:
+                ml_flat += 1
+            else:
+                ml_priced += 1
+                payout = _american_win_payout(px)
         elif ptype in ('rl', 'spread'):
             sr = (res.get(keys['spread_result']) or '').lower()
             if sr == 'push': cls = 'push'
@@ -666,17 +705,25 @@ def _pick_generic_sides(sport: str, ctx_table: str, res_table: str,
         try: d = dt.date.fromisoformat(c['game_date'])
         except Exception: continue
         out.append({'sport': sport, 'date': d, 'result': cls,
-                    'stake': 1.0, 'payout': 0.909})
+                    'stake': 1.0, 'payout': payout})
     if skipped_pre:
         print(f'  {sport} sides: excluded {skipped_pre} preseason game(s) '
               f'from the published record')
+    if ml_priced or ml_flat:
+        print(f'  {sport} sides: {ml_priced} ML graded on a real price, '
+              f'{ml_flat} fell back to -110')
     return out
 
 
 def pick_mlb_sides() -> list[dict]:
     """MLB full engine sides record — every graded primary_play, all tiers.
     Complements 'sharp' (PRIME/STRONG only) and 'sharp_card' (curated slice)."""
-    return _pick_generic_sides('MLB', 'mlb_game_context', 'mlb_game_results')
+    # MLB spells the closing moneyline home_ml_close / away_ml_close, where
+    # every other sport uses close_home_ml / close_away_ml. Without this
+    # override the select 400s and the whole surface raises.
+    return _pick_generic_sides('MLB', 'mlb_game_context', 'mlb_game_results',
+                               result_key_map={'home_ml': 'home_ml_close',
+                                               'away_ml': 'away_ml_close'})
 
 
 def pick_nfl_sides() -> list[dict]:
