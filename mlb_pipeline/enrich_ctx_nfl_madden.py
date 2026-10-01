@@ -80,7 +80,28 @@ def load_team_ratings(season: int, week: int) -> dict:
 
 
 def load_qb_ratings(season: int, week: int) -> dict:
-    """Return {team: qb_ovr} — takes the highest-OVR QB per team as starter."""
+    """Return {team: [{name, ovr}, ...]} ordered best-rated first.
+
+    ══ 2026-10-01 · "HIGHEST OVR = STARTER" IS WRONG WHEN IT MATTERS ══
+    This used to keep only the top-rated QB per team and call him the starter.
+    That definition fails in exactly the situation it most needs to be right,
+    because the injured star IS the highest-rated QB: with Caleb Williams
+    listed Doubtful, it still returned Williams at 90, so
+    madden_qb_delta_home credited Chicago an eight-point quarterback edge
+    belonging to a player who was not dressing. nfl_qb_injury_gate already
+    named this leak in its docstring on 09-28; it capped the TIER and left
+    the INPUT alone.
+
+    It matters because these ratings are written at nfl_pipeline step 304 —
+    AFTER the injury gate at step 243 — and are then consumed by
+    nfl_goat_composite (792) and recompute_nfl_primary_play (834). The cap
+    lands before the contaminated number is even written, so the cap cannot
+    protect the lenses downstream of it.
+
+    Keeping every QB lets the caller walk down the list to the best one who
+    is actually available. Caller must do the availability check — this
+    function stays a pure ratings load.
+    """
     r = urllib.request.Request(
         f'{SB}/rest/v1/nfl_madden_player_ratings'
         f'?season=eq.{season}&week_snapshot=eq.{week}&position=eq.QB'
@@ -91,13 +112,91 @@ def load_qb_ratings(season: int, week: int) -> dict:
     except Exception as e:
         print(f'[err] qb load: {e}', flush=True)
         return {}
-    qbs = {}
+    # ══ DROP INITIALS ALIASES — THEY BYPASS THE AVAILABILITY CHECK ══
+    # nfl_madden_player_ratings carries an initials row beside many real
+    # players: ('CHI','QB',90) is BOTH 'Caleb Williams' and 'CW'. Measured
+    # 2026-10-01: 100 of 275 rows (36%) are such duplicates, e.g.
+    # ('KC','QB',93) -> ['PM','Patrick Mahomes'], ('NE','QB',92) ->
+    # ['DM','Drake Maye'].
+    #
+    # They defeat any name-keyed gate: nfl_injuries has Caleb Williams
+    # Doubtful but nothing for 'CW', so after correctly skipping Williams the
+    # alias sailed through as an available QB at the same 90 rating and CHI
+    # kept its contaminated delta. Verified: NYG and TB nulled correctly while
+    # CHI did not, and this was the only difference.
+    #
+    # Rule is deliberately narrow — drop a no-space name ONLY when a longer
+    # name exists for the same (team, position, ovr). A genuine one-word name
+    # therefore survives, and nothing is dropped on the strength of its shape
+    # alone. Fixing the table itself is the real cure; this stops the bypass
+    # at the point of use.
+    best: dict = {}
     for row in rows:
+        k = (row.get('team'), row.get('position'), row.get('ovr'))
+        nm = row.get('player_name') or ''
+        prev = best.get(k)
+        if prev is None or len(nm) > len(prev.get('player_name') or ''):
+            best[k] = row
+    kept = list(best.values())
+    if len(kept) < len(rows):
+        print(f'[qb] dropped {len(rows) - len(kept)} alias/duplicate QB row(s)',
+              flush=True)
+
+    qbs: dict = {}
+    for row in sorted(kept, key=lambda r: -(r.get('ovr') or 0)):
         t = row['team']
-        # Highest OVR wins (rows already sorted desc)
-        if t not in qbs:
-            qbs[t] = {'name': row['player_name'], 'ovr': float(row['ovr']) if row.get('ovr') is not None else None}
+        qbs.setdefault(t, []).append({
+            'name': row['player_name'],
+            'ovr': float(row['ovr']) if row.get('ovr') is not None else None,
+        })
     return qbs
+
+
+def available_qb(team, qb_list, max_week=None, as_of=None):
+    """Best-rated QB on `team` who is not ruled out, or None.
+
+    Returns (qb_dict, note). qb_dict is None when every rated QB on the roster
+    is ruled out or the roster has no rated QB — and None is the RIGHT answer
+    there, because the caller then writes no QB rating at all. Measured
+    2026-10-01: Tyson Bagent and Jalon Daniels, the men actually starting for
+    CHI and TB, have NO Madden rating, so "substitute the backup's number" is
+    frequently impossible. A missing feature is honest; a feature that credits
+    an absent player is a wrong number the models will act on.
+
+    'Questionable' is NOT treated as out — questionable QBs usually play, and
+    the gate already handles that case as a softer caveat. Only the hard
+    statuses (out / doubtful / IR / PUP / suspended) demote a QB here, so this
+    stays consistent with nfl_qb_injury_gate rather than inventing a second,
+    stricter rule.
+
+    Leak guards are passed straight through to latest_status: without
+    max_week / as_of a backtest reads injury news from after kickoff, which is
+    the defect that file documents catching on its first regression run.
+    """
+    if not qb_list:
+        return None, 'no rated QB on roster'
+    try:
+        from nfl_qb_injury_gate import OUT_STATUSES, latest_status
+    except ImportError:
+        # Gate unavailable — fail OPEN to the old behaviour rather than
+        # silently stripping every QB rating in the league.
+        return qb_list[0], 'injury check unavailable — using top-rated QB'
+    skipped = []
+    for qb in qb_list:
+        st = None
+        try:
+            st = latest_status(SB, H_READ, qb['name'], team=team,
+                               max_week=max_week, as_of=as_of)
+        except Exception:
+            st = None            # lookup failure => treat as playing
+        status = str((st or {}).get('injury_status') or '').strip().lower()
+        if status in OUT_STATUSES:
+            skipped.append(f"{qb['name']} ({status})")
+            continue
+        note = (f"using {qb['name']}; ruled out: {', '.join(skipped)}"
+                if skipped else None)
+        return qb, note
+    return None, f"every rated QB ruled out: {', '.join(skipped)}"
 
 
 def load_top100(season: int) -> dict:
@@ -135,8 +234,15 @@ def load_upcoming(days_ahead: int) -> list[dict]:
 
 def compute_fields(home: str, away: str,
                    team_ratings: dict, qb_ratings: dict,
-                   top100_by_team: dict) -> dict:
-    """Compute all ctx fields for one game. Returns dict of only non-None values."""
+                   top100_by_team: dict,
+                   max_week: int | None = None,
+                   as_of: str | None = None) -> dict:
+    """Compute all ctx fields for one game. Returns dict of only non-None values.
+
+    max_week / as_of are the injury leak guards, passed to available_qb so a
+    backtest cannot resolve a QB using news published after kickoff. Both
+    default to None for callers that genuinely want "now".
+    """
     h = team_ratings.get(home) or {}
     a = team_ratings.get(away) or {}
     h_ovr = h.get('ovr'); a_ovr = a.get('ovr')
@@ -157,14 +263,36 @@ def compute_fields(home: str, away: str,
     if a_off is not None and h_def is not None:
         out['madden_off_gap_away'] = float(a_off) - float(h_def)
 
-    # QB
-    h_qb = qb_ratings.get(home) or {}
-    a_qb = qb_ratings.get(away) or {}
-    h_qb_ovr = h_qb.get('ovr'); a_qb_ovr = a_qb.get('ovr')
-    if h_qb_ovr is not None: out['home_qb_madden_ovr'] = h_qb_ovr
-    if a_qb_ovr is not None: out['away_qb_madden_ovr'] = a_qb_ovr
-    if h_qb_ovr is not None and a_qb_ovr is not None:
-        out['madden_qb_delta_home'] = h_qb_ovr - a_qb_ovr
+    # QB — best-rated AVAILABLE arm, not simply best-rated. See
+    # load_qb_ratings / available_qb. When nobody rated is available we write
+    # NOTHING rather than the injured star's number: downstream
+    # (nfl_goat_composite, recompute_nfl_primary_play) treats a missing OVR as
+    # "no QB signal", which is correct, whereas a stale OVR is a wrong number
+    # it will act on.
+    h_qb, h_note = available_qb(home, qb_ratings.get(home) or [],
+                                max_week=max_week, as_of=as_of)
+    a_qb, a_note = available_qb(away, qb_ratings.get(away) or [],
+                                max_week=max_week, as_of=as_of)
+    h_qb_ovr = (h_qb or {}).get('ovr')
+    a_qb_ovr = (a_qb or {}).get('ovr')
+    # ══ OMITTING A FIELD DOES NOT CLEAR IT ══
+    # This function's contract is "only non-None values" and patch_ctx sends a
+    # PATCH, so leaving these keys out preserves whatever is already in the
+    # row — which is the injured starter's rating. The first cut of this fix
+    # was therefore a no-op on precisely the games it existed for: NYG would
+    # have kept Dart's 77 and TB Mayfield's 83. Write an explicit None so the
+    # PATCH nulls them. Same family as the DEFAULT-now()-plus-upsert timestamp
+    # that lied: absence of a write is not a write of absence.
+    out['home_qb_madden_ovr'] = h_qb_ovr
+    out['away_qb_madden_ovr'] = a_qb_ovr
+    out['madden_qb_delta_home'] = (
+        h_qb_ovr - a_qb_ovr
+        if (h_qb_ovr is not None and a_qb_ovr is not None) else None)
+    # Say so in the log when a substitution or a blank happened, so a league
+    # that suddenly loses QB deltas is explainable instead of mysterious.
+    for _side, _nm, _note in (('home', home, h_note), ('away', away, a_note)):
+        if _note:
+            print(f'  [qb] {_nm} ({_side}): {_note}', flush=True)
 
     # Top 100
     h_t100 = top100_by_team.get(home) or []
@@ -221,7 +349,28 @@ def main():
 
     ok, no_data = 0, 0
     for g in upcoming:
-        fields = compute_fields(g['home_team'], g['away_team'], team, qbs, t100)
+        # ══ DO NOT PASS THE MADDEN WEEK AS THE INJURY WEEK ══
+        # First cut passed max_week=week here. `week` is the Madden
+        # week_snapshot — a ratings-RELEASE week — not the NFL game week, and
+        # latest_status bounds nfl_injuries by game week. Feeding one into the
+        # other produced BOTH failure modes at once, verified on this slate:
+        #   * NYG / CHI / TB week-5 'Out' rows fell outside the bound, so Dart,
+        #     Williams and Mayfield were all treated as playing and kept their
+        #     ratings — the fix silently did nothing for the only games it was
+        #     written for.
+        #   * ATL resolved to Tua's week-2 'Doubtful' instead of his week-4
+        #     'Full', inventing an injury for a healthy player and nulling a
+        #     good rating.
+        # Two week spaces that happen to share a name is a trap; the units
+        # have to match, not just the type.
+        #
+        # as_of alone is the right guard here. Per nfl_qb_injury_gate,
+        # report_date is authoritative wherever it exists and the week bound
+        # only covers the ~38 rows where it is NULL. And this script enriches
+        # FORWARD games only (load_upcoming spans today..+14d), so there is no
+        # leak to guard against — today's news is all anyone has.
+        fields = compute_fields(g['home_team'], g['away_team'], team, qbs, t100,
+                                max_week=None, as_of=g.get('game_date'))
         if not fields:
             no_data += 1
             continue
