@@ -8,13 +8,28 @@ home/away_ats_l*, etc.) directly from nhl_game_results walked chronologically
 per team + per matchup.
 
 Known data gaps (also called out in the offseason report):
-  * Historical NHL games have NO close_home_ml / close_puckline / close_total.
-    So ATS/puckline signals cannot be graded honestly — condition_expr fires
-    only for signals whose predicates don't require line data, and RL grading
-    is skipped when line is None.
-  * Totals use a total_goals cut at 6.0 as proxy for "OVER 6" (league avg
-    ≈ 6.15). Pushes at exactly 6 excluded. Documented as PROXY in registry
-    notes so live retrain (post-Oct with real close_total) can overwrite.
+  * ⚠ STALE AS OF 2026-10-01 — THE NEXT TWO BULLETS WERE TRUE ON 08-19 AND
+    ARE NOT TRUE NOW. Re-measured: nhl_game_results holds 2,936 scored games
+    (2,632 regular season), and close_puckline / close_total / close_home_ml
+    are present on 2,609 of them — 88.9%. The historical odds backfill landed
+    2026-08-20, ONE DAY after this file was written, and this script was never
+    re-run. That is the entire reason all ten rl-scope signals still sit
+    UNVALIDATED at weight 0.3 and the ensemble's rl lens returned None on
+    34 of 34 games — NHL has never published a puck line or a total.
+    A dry run now grades rl with real samples: away_ats_hot_on_road 71.9%
+    n=811, home_ats_cold_at_home 72.5% n=652, home_team_ats_cold 70.7% n=663.
+    See project_nhl_engine_one_sided_1001.
+  * BEFORE RE-RUNNING, READ THIS: those hit rates clear the baseline-relative
+    gate at line ~294 legitimately (+5.5 to +7.3pp over the correct rl_away
+    65.2 / rl_home 34.8 baselines), but a lift in hit-rate POINTS is not a
+    positive ROI. We store the puck LINE (close_puckline, ±1.5) and nowhere
+    store the puck-line PRICE — close_puckline_home is also the line, not
+    odds. A 72% hit on +1.5 at an unknown -250/-400 juice can still lose, the
+    same artifact that made NCAAF COVERAGE read 60.5% at negative ROI
+    (project_ncaaf_ml_path_is_the_leak_930). Ingest puck-line odds first.
+  * Totals used a total_goals cut at 6.0 as proxy for "OVER 6" (league avg
+    ≈ 6.15). Pushes at exactly 6 excluded. Real close_total now EXISTS
+    (88.9%), so a re-run should grade totals against it rather than the proxy.
   * Prop-scope + prop-class signals skipped — no historical player-prop
     candidate table.
 
