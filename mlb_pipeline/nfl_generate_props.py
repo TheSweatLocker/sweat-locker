@@ -400,6 +400,105 @@ def opp_rank(opp_map: dict, opp_team: str, opp_col: str,
     return None
 
 
+# ══ 2026-10-01 · POSITION-SPECIFIC OPPONENT VULNERABILITY ══
+# opp_rank above ranks a defence on ONE team-wide figure — def_pass_epa_allowed
+# or def_rush_epa_allowed — because nfl_team_defense_stats holds nothing else.
+# So a WR prop and a TE prop against the same defence got the identical
+# adjustment, and player_anytime_td borrowed pass-EPA as a red-zone proxy.
+#
+# nfl_positional_defense (built 2026-10-01 from nfl_player_stats grouped by
+# opponent_team + position) answers the real question: what does THIS defence
+# allow to THIS position. Measured spreads, blended: RB any-TD/g 0.30..1.51,
+# WR 0.34..1.43, TE 0.13..1.15, RB rushing yards 48..145/g.
+#
+# DELIBERATELY KEEPS THE SAME +/-7.5% MAGNITUDE. Only the INPUT changes here,
+# from a team-wide EPA rank to a position-specific one. The spreads argue the
+# magnitude is too small, but widening it moves every published pick, so that is
+# a calibration decision to measure rather than slip in alongside a data fix.
+POSDEF_METRIC = {
+    'player_rush_yds':       'rush_yds_pg_blended',
+    'player_rush_attempts':  'carries_pg',
+    'player_rush_tds':       'rush_td_pg_blended',
+    'player_reception_yds':  'rec_yds_pg_blended',
+    'player_receptions':     'receptions_pg',
+    'player_anytime_td':     'any_td_pg_blended',
+    # Passing markets are absent on purpose: the table aggregates rushing and
+    # receiving only, so there is no passing-yards-allowed column yet. Those
+    # markets keep the EPA rank until the aggregation is extended.
+}
+
+
+_POSDEF_CACHE: dict = {}
+
+
+def posdef_for(season: int) -> dict:
+    """Lazily load + cache nfl_positional_defense once per season per process.
+
+    build_prop_row has several callers and a hot path of ~270 events x ~12
+    markets, so this is a module cache rather than a new parameter — same
+    pattern as the other hot-path caches noted at the top of this file.
+    """
+    if season not in _POSDEF_CACHE:
+        _POSDEF_CACHE[season] = load_positional_defense(season)
+    return _POSDEF_CACHE[season]
+
+
+def load_positional_defense(season: int) -> dict:
+    """-> {(team, position): row} from nfl_positional_defense, or {}.
+
+    Fails OPEN: on any error the caller falls back to the team-wide EPA rank,
+    so a missing table degrades the signal rather than killing the run.
+    """
+    try:
+        r = _retry_session.get(
+            f'{SB}/rest/v1/nfl_positional_defense',
+            headers=H_READ,
+            params={'season': f'eq.{season}', 'season_type': 'eq.REG',
+                    'select': 'team,position,games,' + ','.join(
+                        sorted(set(POSDEF_METRIC.values()))),
+                    'limit': 500},
+            timeout=20)
+        if r.status_code != 200:
+            print(f'  [posdef] load failed {r.status_code} — using EPA ranks')
+            return {}
+        rows = r.json()
+    except Exception as e:
+        print(f'  [posdef] load error {str(e)[:80]} — using EPA ranks')
+        return {}
+    out = {}
+    for x in rows:
+        t, p = x.get('team'), (x.get('position') or '').upper()
+        if t and p:
+            out[(t, p)] = x
+    print(f'  [posdef] loaded {len(out)} (team, position) rows for {season}')
+    return out
+
+
+def positional_opp_pct(posdef: dict, opp_team: str, position: str,
+                       metric: str) -> Optional[float]:
+    """0.0 (stingiest to this position) → 1.0 (most generous), or None.
+
+    Same orientation as opp_rank so it is a drop-in for project()'s
+    opp_rank_pct: higher means a softer matchup. Ranked across every defence
+    that has a value for this position, computed here rather than read from the
+    stored rank columns so any metric works, not only the three we pre-ranked.
+    """
+    if not posdef or not opp_team or not position or not metric:
+        return None
+    pos = position.upper()
+    vals = [(t, row.get(metric)) for (t, p), row in posdef.items()
+            if p == pos and row.get(metric) is not None]
+    if len(vals) < 8:          # too few defences to rank meaningfully
+        return None
+    if opp_team not in {t for t, _ in vals}:
+        return None
+    ordered = sorted(vals, key=lambda x: float(x[1]))   # stingiest first
+    for i, (t, _v) in enumerate(ordered):
+        if t == opp_team:
+            return i / max(1, len(ordered) - 1)
+    return None
+
+
 def _emit_matchup_rank(opp_pct: Optional[float], opp_team: str,
                         family: str, side: str, label: str) -> tuple[dict, int]:
     """Explicit top/bot-10 defense signal — surfaces the matchup rank as a
@@ -1259,8 +1358,19 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         pass
     if l4 is None and season_avg is None and fantasy_proj_stat is None:
         return None
-    opp_pct = opp_rank(opp_map, opp_team, cfg['opp_col'],
-                       invert=cfg.get('opp_col_invert', False))
+    # Position-specific vulnerability first; the team-wide EPA rank is the
+    # fallback, so a market without a positional metric, a player without a
+    # resolved position, or a missing table all degrade to the old behaviour
+    # rather than losing the opponent adjustment entirely.
+    opp_pct = None
+    _metric = POSDEF_METRIC.get(market_key)
+    if _metric and position:
+        opp_pct = positional_opp_pct(posdef_for(season), opp_team, position,
+                                     _metric)
+    _opp_src = 'positional' if opp_pct is not None else 'team_epa'
+    if opp_pct is None:
+        opp_pct = opp_rank(opp_map, opp_team, cfg['opp_col'],
+                           invert=cfg.get('opp_col_invert', False))
     proj = project(l4, season_avg, cfg['league_baseline'], opp_pct,
                     fantasy_proj_stat=fantasy_proj_stat)
     if proj is None: return None
@@ -1407,6 +1517,13 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         'l4': l4, 'season_avg': season_avg,
         'league_baseline': cfg['league_baseline'],
         'opp_pct': opp_pct, 'opp_col': cfg['opp_col'],
+        # 2026-10-01: record WHICH opponent lens produced opp_pct —
+        # 'positional' (nfl_positional_defense, this position specifically) or
+        # 'team_epa' (the old single team-wide figure). Without this the two are
+        # indistinguishable after the fact, and we could not tell whether a
+        # market is getting the better signal or silently falling back.
+        'opp_src': _opp_src,
+        'opp_metric': _metric,
         'edge_pct': round(directional_edge * 100, 1),
         'games_used': gp,
         'label': cfg['label'],
