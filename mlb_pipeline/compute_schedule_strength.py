@@ -26,11 +26,29 @@ it beat you. First pass showed Charlotte at 0-2 with an SOS of 1.000 for
 exactly that reason. Opponent win% here drops all games against the team
 being rated, which is the standard correction.
 
-WHERE IT LANDS: team_stats_rolling, the table the Team Stats card already
-renders, as two ordinary stat_keys. No new component, no new fetch, no
-new workflow step — the existing card picks them up with its percentile
-chip, its head-to-head colouring and its ⓘ, because that card is generic
-over stat_key.
+WHERE IT LANDS: team_computed_stats, as two ordinary stat_keys, surfaced by
+the team_stats_rolling VIEW (migration 20260926d UNIONs the computed half).
+
+══ 2026-09-30 CORRECTION ══
+The original note here claimed "No new component, no new fetch, no new
+workflow step — the existing card picks them up ... because that card is
+generic over stat_key." All three clauses were false:
+
+  * NO WORKFLOW STEP existed. This script was run once by hand on 09-26 and
+    never scheduled, so every number froze that day. Now in
+    nightly_cross_sport.sh.
+  * NO GENERIC CARD exists. app/index.tsx has no stat_key-driven team-stats
+    component; team stats render from per-sport maps (ncaafTeamStatsMap from
+    ncaaf_team_stats, nflTeamStatsMap from nfl_team_stats, ...). The only
+    `sos` the app reads is ncaab_team_stats.sos — KenPom's own column, NCAAB
+    only.
+  * SO A FETCH IS REQUIRED. Nothing in the client reads team_stats_rolling at
+    all, which is why SOS/SOR have been computed and invisible since 09-26.
+
+Another comment asserting a property the code never provided — same trap as
+the one in the deleted ncaaf_sor_pull.py and the 09-20 note that blocked a fix
+for nine days (feedback_comment_asserting_a_measurement). The backend half is
+correct and fresh; the display half is still unbuilt.
 
     python compute_schedule_strength.py --dry-run
     python compute_schedule_strength.py
