@@ -422,9 +422,20 @@ POSDEF_METRIC = {
     'player_reception_yds':  'rec_yds_pg_blended',
     'player_receptions':     'receptions_pg',
     'player_anytime_td':     'any_td_pg_blended',
-    # Passing markets are absent on purpose: the table aggregates rushing and
-    # receiving only, so there is no passing-yards-allowed column yet. Those
-    # markets keep the EPA rank until the aggregation is extended.
+    # 2026-10-01c · passing added once nfl_positional_defense carried it, so QB
+    # markets no longer fall back to the team-wide EPA rank.
+    'player_pass_yds':          'pass_yds_pg_blended',
+    'player_pass_tds':          'pass_td_pg_blended',
+    'player_pass_attempts':     'pass_att_pg',
+    'player_pass_completions':  'pass_cmp_pg',
+    # NOTE THE ASYMMETRY. Every other metric here is something the defence
+    # CONCEDES, so a high percentile is a soft matchup. Interceptions are the
+    # one the defence FORCES — a high value means they take the ball away, which
+    # is good for an INT OVER and bad for the quarterback. positional_opp_pct
+    # still reads "more of this stat happened against them", so the direction is
+    # consistent for an OVER projection; it just means the opposite thing about
+    # defensive quality. Do not reason about this column as a weakness.
+    'player_pass_interceptions': 'pass_int_pg_blended',
 }
 
 

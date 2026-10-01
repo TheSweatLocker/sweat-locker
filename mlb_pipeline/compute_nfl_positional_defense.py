@@ -76,6 +76,14 @@ SUMS = {
     'carries': 'carries',
     'targets': 'targets',
     'receptions': 'receptions',
+    # 2026-10-01c · passing, so QB markets stop falling back to the team-wide
+    # EPA rank. Same pure aggregation as the rest; nfl_player_stats already
+    # carries these beside opponent_team.
+    'pass_yds': 'passing_yards',
+    'pass_td': 'passing_tds',
+    'pass_att': 'attempts',
+    'pass_cmp': 'completions',
+    'pass_int': 'interceptions',
 }
 
 
@@ -190,6 +198,17 @@ def build(season: int, season_type: str = 'REG') -> list[dict]:
             'carries_pg': _rate(a, 'carries'),
             'targets_pg': _rate(a, 'targets'),
             'receptions_pg': _rate(a, 'receptions'),
+            'pass_yds_pg': _rate(a, 'pass_yds'),
+            'pass_td_pg': _rate(a, 'pass_td'),
+            'pass_att_pg': _rate(a, 'pass_att'),
+            'pass_cmp_pg': _rate(a, 'pass_cmp'),
+            'pass_int_pg': _rate(a, 'pass_int'),
+            'pass_yds_pg_blended': _shrunk(a['pass_yds'], g,
+                                           pr.get('pass_yds'), None),
+            'pass_td_pg_blended': _shrunk(a['pass_td'], g,
+                                          pr.get('pass_td'), None),
+            'pass_int_pg_blended': _shrunk(a['pass_int'], g,
+                                           pr.get('pass_int'), None),
             'rush_td_pg_blended': _shrunk(a['rush_td'], g, pr.get('rush_td'),
                                           None),
             'rec_td_pg_blended': _shrunk(a['rec_td'], g, pr.get('rec_td'), None),

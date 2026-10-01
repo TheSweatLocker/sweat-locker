@@ -502,6 +502,44 @@ jobs:
           cd mlb_pipeline
           python nfl_team_defense_backfill.py
 
+      # ══ 2026-10-01 · POSITIONAL DEFENSIVE VULNERABILITY ══
+      # Andy: "ensure signal coverage includes defense performance against that
+      # position, does the secondary give up tds, does the defense give up a lot
+      # of rushing tds, qb or rb?"
+      #
+      # nfl_team_defense_stats (the step above) holds six team-wide numbers with
+      # no positional split and no TDs-allowed, so nfl_generate_props could only
+      # rank a defence on one EPA figure — a WR prop and a TE prop against the
+      # same defence got the identical adjustment. This derives what each
+      # defence allows to each position from nfl_player_stats.
+      #
+      # ORDER IS LOAD-BEARING. It reads nfl_player_stats (step above, line ~197)
+      # and nfl_generate_props (~line 574) consumes what it writes, so it must
+      # sit between the two. Placed here beside the other defence aggregation
+      # for that reason, not merely for tidiness.
+      #
+      # Wired on the SAME modes as the defence backfill above: props run on full
+      # and card_only, and a resolver_only pass should still refresh the
+      # allowed-rates after Sunday/MNF results land.
+      #
+      # Scheduling this in the same commit as the code on purpose. Seven things
+      # this session turned out to be written-but-never-scheduled —
+      # compute_schedule_strength sat frozen for four days that way — and a
+      # derived table nothing refreshes is worse than no table, because it goes
+      # quietly stale while still looking authoritative.
+      - name: NFL positional defense (allowed by position)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "compute_nfl_positional_defense.py" \
+            python compute_nfl_positional_defense.py
+
       # 2026-08-13 · 5-model coverage rollout: NFL MC simulator.
       # Runs AFTER game_context so it can read team stats + close_total,
       # then writes mc_probabilities blob back. compute_primary_play
