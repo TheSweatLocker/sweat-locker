@@ -800,19 +800,23 @@ jobs:
           cd mlb_pipeline
           python ncaaf_fcs_chalk_scorer.py
 
-      # 2026-09-02: NCAAF Strength of Record pull from CFBD. Populates
-      # home_sor + away_sor on ncaaf_game_context. Powers post-launch
-      # SoR-based signals (SoR gap > market spread → back SoR-favored side).
-      - name: Pull NCAAF Strength of Record (CFBD)
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python ncaaf_sor_pull.py
+      # 2026-09-30: "Pull NCAAF Strength of Record (CFBD)" REMOVED, and
+      # ncaaf_sor_pull.py deleted with it.
+      #
+      # It ran every week since 09-02 and never once worked. CFBD has no
+      # /ratings/sor endpoint -- it returns 404 "Cannot GET /ratings/sor" --
+      # and the script caught that, printed "no SoR data (may be too early in
+      # season — CFBD publishes after Week 3-4)" and exited 0. By week 5 the
+      # excuse was provably false, but exit 0 meant nothing ever flagged it,
+      # so ncaaf_game_context.home_sor/away_sor sat 100% NULL for a month
+      # while the logs read clean.
+      #
+      # SOS and SOR now come from compute_schedule_strength.py, which derives
+      # both from results for all six sports and writes team_computed_stats
+      # (surfaced by the team_stats_rolling view). It runs in
+      # nightly_cross_sport.sh. If per-game ctx columns are wanted later,
+      # CFBD /ratings/sp carries `sos` and `secondOrderWins` on an endpoint
+      # ncaaf_stats_pull.py ALREADY calls -- no extra request needed.
 
       # 2026-09-02: AP top-25 rankings pull. Populates home_ap_rank +
       # away_ap_rank on ncaaf_game_context. Powers ⭐ Ranked matchup badge.

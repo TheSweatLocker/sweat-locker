@@ -41,6 +41,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import requests
 
@@ -63,7 +64,56 @@ SPORTS = ['NCAAF', 'NFL', 'MLB', 'NBA', 'NHL', 'NCAAB']
 
 # A team needs this many decided games before its record means anything,
 # and before it is allowed to contribute to anyone else's SOS.
-MIN_GAMES = 2
+#
+# ══ 2026-09-30 · RAISED 2 -> 3, AND IT DOUBLES AS THE FBS FILTER ══
+# At MIN_GAMES=2 the NCAAF pool was 152 teams against 138 actual FBS teams, so
+# the rankings carried VMI, Duquesne, Towson, Portland State, Norfolk State and
+# Mercyhurst — FCS schools that appear in our data only because they played one
+# or two FBS opponents. Duquesne came out at SOR -1.000, bottom of college
+# football, on two games.
+#
+# A name-match against CFBD /teams/fbs was the obvious filter and is a trap:
+# CFBD spells them 'App State', 'UConn', "Hawai'i" while team_recent_games says
+# 'Appalachian State', 'Connecticut', 'Hawaii', so the match silently DROPS
+# real FBS teams. Verified: all three return False against the CFBD list.
+#
+# Games played is the honest discriminator and needs no alias table. An FBS
+# team plays a full 12-game FBS schedule; an FCS team never gets more than one
+# or two FBS games all year, and its FCS-vs-FCS games are not in our data at
+# all. Measured 2026-09-30 the distribution was {1:85, 2:22, 3:31, 4:94, 5:12},
+# so a floor of 3 yields 137 teams against 138 real FBS -- and it stays correct
+# as the season runs, because the gap widens rather than closes.
+MIN_GAMES = 3
+
+# ══ 2026-09-30 · SHRINKAGE — THE FIX FOR THE TIES AND THE 1.000s ══
+# Andy: "seeing a few ones that are the same is that because of the sample size
+# right now being small? Is it calculated correctly?"
+#
+# Half right, and the half that is not is the actual bug. The sample IS tiny,
+# but raw win% turns a tiny sample into a CERTAIN-looking extreme instead of an
+# uncertain middling one. Measured before this change:
+#
+#     NCAAF SOS  152 teams, only 21 distinct values, 15 teams at exactly 1.000
+#                ties: +0.500 x28, +0.750 x25, +0.667 x23
+#     NFL   SOS   32 teams, only  7 distinct values,  8 at 1.000, 7 at 0.000
+#     NCAAF SOR  range -1.000 .. +1.000
+#
+# The NFL case proves the mechanism outright: every team had played exactly 3
+# games, so after head-to-head removal each opponent had 2 games and a win% of
+# 0, 0.5 or 1. Averaging three of those can only land on 0, 1/3, 1/2, 2/3 or 1
+# -- which is precisely the 7 values observed. Nothing was miscomputed; the
+# estimator just had no humility.
+#
+# So each opponent's win% is shrunk toward 0.500 by its own game count:
+#     p_adj = (w + K/2) / (n + K)
+# With K=4 a 2-0 opponent reads 0.667 rather than 1.000 and an 0-2 reads 0.333
+# rather than 0.000. Ties break, the impossible extremes disappear, and the
+# correction fades on its own as n grows -- by week 12 a 9-3 team sits at 0.719
+# against a raw 0.750.
+#
+# K=4 is a deliberate round number, not a fit. Fitting a shrinkage constant on
+# 4 games of data would be the same mistake this file is correcting.
+SHRINK_K = 4.0
 
 
 def page(path: str, params: dict) -> list:
@@ -136,18 +186,25 @@ def compute(sport: str, season: int) -> list[dict]:
         opps[t].append(o)
 
     def winpct_excluding(opp: str, against: str):
-        """Opponent's win% with its games vs `against` removed.
+        """Opponent's win% with its games vs `against` removed, SHRUNK toward
+        0.500 by how many games that leaves.
 
-        Without this, every team that beats you inflates your SOS because
-        its record includes that win — which is how a 0-2 team ended up
-        with a perfect 1.000 strength of schedule.
+        Head-to-head removal matters because otherwise every team that beats
+        you inflates your SOS using that very win — which is how an 0-2 team
+        ended up with a perfect 1.000 strength of schedule.
+
+        The shrinkage matters just as much and was missing. After H2H removal
+        an opponent can be left with one or two games, and a raw 2-0 reads as
+        a flat 1.000 — a certainty the sample cannot support. See SHRINK_K.
         """
         w, l = rec[opp]
         ow, ol = vs[(opp, against)]
         w -= ow
         l -= ol
         n = w + l
-        return (w / n) if n > 0 else None
+        if n <= 0:
+            return None
+        return (w + SHRINK_K / 2.0) / (n + SHRINK_K)
 
     out = []
     for team, (w, l) in rec.items():
@@ -160,10 +217,30 @@ def compute(sport: str, season: int) -> list[dict]:
             continue
         sos = sum(ratios) / len(ratios)
         # Win rate a neutral team would expect against this exact slate.
+        #
+        # NOTE THE IDENTITY, because it is easy to over-read SOR:
+        #   expected = mean(1 - p) = 1 - mean(p) = 1 - sos
+        #   sor      = win% - expected = win% + sos - 1
+        # So SOR carries NO information beyond win% and SOS together. It is
+        # still the right number to show — it answers "how good is this record
+        # for this schedule" in one figure — but it must never be treated as an
+        # independent third signal, and a model given win%, SOS and SOR has
+        # been handed a perfectly collinear feature.
+        #
+        # The form is not arbitrary: 1 - p is exactly log5 for a .500 team
+        # against an opponent of strength p, so this is the standard
+        # expectation, not a heuristic. It is also why the pre-shrinkage values
+        # could reach +/-1.000 -- that requires win% and sos both pinned at an
+        # extreme, which raw small-sample win% happily produced.
+        #
+        # The team's own win% is shrunk on the same scale as its opponents',
+        # otherwise a 3-0 team is measured as 1.000 against opponents who have
+        # all been pulled toward 0.500, and SOR inherits the asymmetry.
+        own = (w + SHRINK_K / 2.0) / (n + SHRINK_K)
         expected = sum(1.0 - x for x in ratios) / len(ratios)
-        sor = (w / n) - expected
+        sor = own - expected
         out.append({'team': team, 'sos': round(sos, 4), 'sor': round(sor, 4),
-                    'games': n})
+                    'games': n, 'raw_win_pct': round(w / n, 4)})
     return out
 
 
@@ -210,12 +287,27 @@ def main():
     args = ap.parse_args()
     sports = [args.sport.upper()] if args.sport else SPORTS
 
+    # ══ 2026-09-30 · STAMP refreshed_at EXPLICITLY ══
+    # The column is `timestamptz DEFAULT now()`, and a DEFAULT only fires on
+    # INSERT. These writes are upserts, so every re-run took the UPDATE path
+    # and refreshed_at stayed pinned to the row's first insert. Verified: after
+    # a run that moved Florida's SOR from +1.000 to +0.464, every NCAAF row
+    # still read refreshed_at = 2026-09-26. Values fresh, timestamp four days
+    # stale -- so nothing could tell whether this job had ever run again, which
+    # is precisely how it sat unscheduled and unnoticed since 09-26.
+    #
+    # Third instance of this exact bug tonight, after both pick writers
+    # (recompute_{nfl,ncaaf}_primary_play). Worth treating as a pattern: a
+    # DEFAULT now() column plus an upsert equals a timestamp that lies.
+    _NOW = datetime.now(timezone.utc).isoformat()
+    produced: dict[str, set] = {}
     payload = []
     for sport in sports:
         vals = compute(sport, args.season)
         if not vals:
             print(f'  {sport}: no decided games for {args.season} — skipped')
             continue
+        produced[sport] = {v['team'] for v in vals}
         rk_sos = _ranked(vals, 'sos')
         rk_sor = _ranked(vals, 'sor')
         size = len(vals)
@@ -225,14 +317,14 @@ def main():
                 'stat_key': 'sos', 'raw_value': v['sos'],
                 'rank': rk_sos[v['team']], 'league_size': size,
                 'direction': 'higher', 'display_label': 'Strength of Sched',
-                'unit': '',
+                'unit': '', 'refreshed_at': _NOW,
             })
             payload.append({
                 'sport': sport, 'team': v['team'], 'season': args.season,
                 'stat_key': 'sor', 'raw_value': v['sor'],
                 'rank': rk_sor[v['team']], 'league_size': size,
                 'direction': 'higher', 'display_label': 'Strength of Record',
-                'unit': '',
+                'unit': '', 'refreshed_at': _NOW,
             })
         top = sorted(vals, key=lambda x: -x['sor'])[:3]
         print(f'  {sport}: {size} teams · best SOR ' +
@@ -264,6 +356,44 @@ def main():
                                'stat_key': 'in.(sos,sor)'}, timeout=60)
     landed = (chk.headers.get('content-range') or '').split('/')[-1]
     print(f'  wrote {written}/{len(payload)} · rows in table: {landed}')
+
+    # ══ 2026-09-30 · PRUNE TEAMS WE NO LONGER RATE ══
+    # An upsert writes; it never removes what it stopped producing. When
+    # MIN_GAMES rose 2 -> 3 the NCAAF pool went 152 -> 137, and the 16 dropped
+    # FCS rows STAYED in the table carrying their old values — Duquesne still
+    # sat at SOR -1.000, bottom of college football, from a two-game sample we
+    # had just decided not to rate at all. A reader cannot tell a live row from
+    # an abandoned one, and the view surfaces both identically.
+    #
+    # Only prunes sports that computed successfully THIS run (`produced`), so a
+    # sport skipped because its season has not started keeps whatever it had
+    # instead of being wiped. Same discipline as
+    # compute_surface_records.prune_stale.
+    pruned = 0
+    for sport, keep in produced.items():
+        cur = page(TARGET, {'sport': f'eq.{sport}',
+                            'season': f'eq.{args.season}',
+                            'stat_key': 'in.(sos,sor)', 'select': 'team'})
+        orphans = sorted({r['team'] for r in cur} - keep)
+        if not orphans:
+            continue
+        shown = ', '.join(orphans[:6]) + (' …' if len(orphans) > 6 else '')
+        print(f'  {sport}: pruning {len(orphans)} team(s) no longer rated ({shown})')
+        for t in orphans:
+            # Deleted one at a time on purpose: in.() cannot express names
+            # containing , ( ) — 'Miami (OH)' has already broken an in.()
+            # filter once in this codebase (shadow_v2_backtest).
+            d = requests.delete(f'{SB}/rest/v1/{TARGET}', headers=H_W,
+                                params={'sport': f'eq.{sport}',
+                                        'season': f'eq.{args.season}',
+                                        'stat_key': 'in.(sos,sor)',
+                                        'team': f'eq.{t}'}, timeout=60)
+            if d.status_code in (200, 204):
+                pruned += 1
+            else:
+                print(f'    ! delete {t} -> {d.status_code}')
+    if pruned:
+        print(f'  pruned {pruned} orphan row(s)')
 
 
 if __name__ == '__main__':

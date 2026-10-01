@@ -159,6 +159,17 @@ echo ""
 echo "── records ──"
 bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
   python aggregate_daily_records.py
+# 2026-09-30 · SOS + SOR, every sport.
+# compute_schedule_strength.py was written 09-26 for Andy ("SOS and SOR added
+# somewhere in game detail across all sports"), run ONCE by hand that day, and
+# NEVER SCHEDULED -- so the numbers froze on 09-26 and silently decayed, the
+# same way split_sharp_card_record.py did. Seventh instance of this pattern.
+#
+# Must run AFTER the resolvers above: it reads team_recent_games, so a night
+# whose results have not landed yet would recompute every team on a stale
+# record and stamp it as fresh.
+bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   python compute_schedule_strength.py
+
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
 # 2026-09-30 · Sharp Card headline/breakdown reconciliation.
