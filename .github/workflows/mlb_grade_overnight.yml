@@ -120,29 +120,49 @@ jobs:
       # Still runs in mlb_pipeline.yml too — idempotent, and that stays as
       # the backstop for a night the overnight grader misses entirely.
       # ══════════════════════════════════════════════════════════════════
-      # CROSS-SPORT NIGHTLY — 2026-09-29
+      # CROSS-SPORT NIGHTLY — second caller, added 2026-10-01
       #
-      # Sixteen steps that used to be inlined here now live in
-      # .github/scripts/nightly_cross_sport.sh, called by BOTH this workflow
-      # and nightly_cross_sport.yml.
+      # The block that used to sit here claimed the script was "called by BOTH
+      # this workflow and nightly_cross_sport.yml". It was not. Nothing in this
+      # file invoked it — the step below is the first time that sentence is
+      # true, and the MLB-ONLY block directly beneath contradicted it the whole
+      # time. Two comments describing opposite designs, neither matching the
+      # YAML, which is how this stayed invisible.
       #
-      # WHY THEY MOVED. None of them is about baseball: NCAAF's only daily
-      # resolver, the only writer of team_stats_rolling_history for all six
-      # sports, the cross-sport matview refreshes, the universal graders and
-      # record builders. Andy 2026-09-29: "MLB daily goes offline when baseball
-      # ends" — and it would have taken those with it, silently, right as NBA
-      # opens and NCAAB ramps.
+      # WHY IT MATTERS — measured off workflow_heartbeat, 21 days:
+      #   nightly_cross_sport  slot 30 10  median +376 min late -> ~16:46 UTC
+      #   mlb_grade_overnight  slot 630    median +330 min late -> ~12:00 UTC
+      #   mlb_grade_overnight  slot 830/930                     -> ~13:45/14:20
+      # GH Actions almost never DROPS an established daily slot (630/830/930 all
+      # fired 22 of 22 days, 0%), but it is routinely 2-6 HOURS late. So the
+      # cross-sport chain — grade_potd, grade_public_receipts,
+      # compute_surface_records, SOS/SOR, and NHL's only daily resolver — did
+      # not finish until mid-afternoon ET.
       #
-      # It is a shell script rather than duplicated YAML because the same day
-      # produced two bugs from one rule written down more than once. One
-      # definition, two callers.
+      # Andy 2026-10-01, 11:27am ET: "all picks from last night in app should be
+      # resolved". They were not, and could not be: the only caller had not run
+      # yet. Yesterday's POTD still read Pending, NHL 9/30 was unresolved, and
+      # every record was a day stale. Running the chain from this workflow's
+      # 06:30 slot lands it ~08:00 ET instead, before he looks.
       #
-      # Kept here as well as in the nightly workflow so the sequence still runs
-      # immediately after MLB resolution while baseball is live (best ordering
-      # for POTD + records, which want fresh MLB results). Every step is
-      # idempotent, so the overlap is a safety net, not double work that
-      # matters. When this workflow retires, nightly_cross_sport.yml carries on.
+      # Every step goes through run_step.sh and is idempotent, so the overlap is
+      # a safety net rather than double work. nightly_cross_sport.yml stays the
+      # PRIMARY caller and the one that survives — when baseball ends and this
+      # workflow retires, nothing needs reinstating there.
       # ══════════════════════════════════════════════════════════════════
+      - name: Cross-sport nightly (shared sequence)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        # Same env and same invocation as nightly_cross_sport.yml — the script
+        # does `cd "${GITHUB_WORKSPACE:-.}/mlb_pipeline"`, so pass the absolute
+        # path rather than a relative one. Deliberately NOT adding secrets the
+        # primary caller doesn't pass: if a step needs one, it should be added
+        # in both places at once, not discovered here.
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/nightly_cross_sport.sh"
       # ══════════════════════════════════════════════════════════════════
       # THIS WORKFLOW IS NOW MLB ONLY — 2026-09-29
       #
@@ -155,7 +175,14 @@ jobs:
       #
       # The 10:30 slot is deliberately AFTER this workflow's last attempt
       # (09:30), so POTD grading, records and receipts still see freshly
-      # resolved MLB results. Nothing was lost by removing the overlap.
+      # resolved MLB results.
+      #
+      # 2026-10-01 CORRECTION: this block used to end "Nothing was lost by
+      # removing the overlap." Something was. Nominal ordering is not real
+      # ordering — GH Actions runs this workflow 5-6h late and
+      # nightly_cross_sport 6.3h late, so "10:30 after 09:30" became "16:46
+      # after 14:20" and the cross-sport chain finished mid-afternoon ET with
+      # no second attempt behind it. The step above restores the overlap.
       #
       # WHY THE SPLIT MATTERS: baseball goes offline after the playoffs. Every
       # step left below is MLB-specific and SHOULD stop with the season. Adding
@@ -347,3 +374,15 @@ jobs:
                -H "Content-Type: application/json" \
                -H "Prefer: return=minimal" \
                -d "{\"workflow\":\"mlb_grade_overnight\",\"event\":\"end\",\"sport\":\"MLB\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"$SLOT\"}"
+
+      # 2026-10-01: the cross-sport step above is continue-on-error so a bad
+      # step never blocks MLB grading or the heartbeat — but without this gate
+      # it would also never be VISIBLE, which is the bare-`|| echo` mask this
+      # repo has been removing (project_bare_mask_review_920). run_step.sh
+      # --gate reads only THIS run's tally, so a red run here means a
+      # cross-sport step genuinely failed in this invocation. Deliberately
+      # LAST, after the heartbeat, so failing it cannot cost us the telemetry
+      # that told us about the lateness in the first place.
+      - name: Fail the run if any cross-sport step failed
+        if: always()
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
