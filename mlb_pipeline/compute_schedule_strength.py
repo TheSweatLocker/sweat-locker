@@ -29,26 +29,34 @@ being rated, which is the standard correction.
 WHERE IT LANDS: team_computed_stats, as two ordinary stat_keys, surfaced by
 the team_stats_rolling VIEW (migration 20260926d UNIONs the computed half).
 
-══ 2026-09-30 CORRECTION ══
-The original note here claimed "No new component, no new fetch, no new
-workflow step — the existing card picks them up ... because that card is
-generic over stat_key." All three clauses were false:
+══ 2026-09-30 ══
+Of the original note's three claims — "No new component, no new fetch, no new
+workflow step" — the first two were TRUE and the third was not:
 
-  * NO WORKFLOW STEP existed. This script was run once by hand on 09-26 and
-    never scheduled, so every number froze that day. Now in
-    nightly_cross_sport.sh.
-  * NO GENERIC CARD exists. app/index.tsx has no stat_key-driven team-stats
-    component; team stats render from per-sport maps (ncaafTeamStatsMap from
-    ncaaf_team_stats, nflTeamStatsMap from nfl_team_stats, ...). The only
-    `sos` the app reads is ncaab_team_stats.sos — KenPom's own column, NCAAB
-    only.
-  * SO A FETCH IS REQUIRED. Nothing in the client reads team_stats_rolling at
-    all, which is why SOS/SOR have been computed and invisible since 09-26.
+  * THE CARD IS REAL and is generic over stat_key:
+    app/components/GameDetailV2.tsx TeamStatsCard (~line 4153) selects '*'
+    from the team_stats_rolling view for each team, and 'sos','sor' sit at the
+    head of the OFFENSE group for all six sports (shipped e262952a, 09-26).
+    It even carries accommodations for these two keys specifically —
+    _LOW_RES_STATS forces 2 decimals because three decimals on a win-share
+    fraction over a handful of games advertises precision the metric does not
+    have.
+  * NO WORKFLOW STEP existed, and that was the whole problem. This script was
+    run ONCE by hand on 09-26 and never scheduled, so every value froze that
+    day and decayed silently. Now in nightly_cross_sport.sh, after the
+    resolvers.
 
-Another comment asserting a property the code never provided — same trap as
-the one in the deleted ncaaf_sor_pull.py and the 09-20 note that blocked a fix
-for nine days (feedback_comment_asserting_a_measurement). The backend half is
-correct and fresh; the display half is still unbuilt.
+An intermediate version of this comment claimed the opposite — that no generic
+card existed and the display half was unbuilt. That was wrong, and wrong in the
+most ironic way available: it came from grepping app/index.tsx only and never
+opening components/GameDetailV2.tsx, i.e. asserting a measurement that had not
+been taken, which is the exact failure this file's history is full of. Checked
+properly before writing this.
+
+So the display was never the gap. SOS/SOR looked broken because the NUMBERS
+were broken — no shrinkage, FCS teams in the pool, a refreshed_at that never
+moved and orphan rows that were never pruned. Those are fixed above; the card
+picks up the corrected values on its next fetch with no client change.
 
     python compute_schedule_strength.py --dry-run
     python compute_schedule_strength.py
