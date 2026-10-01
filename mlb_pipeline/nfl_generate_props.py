@@ -245,8 +245,26 @@ def load_fantasy_projections(season: int, week: int) -> dict:
         n = re.sub(r'[^a-z0-9\s]', '', n).strip()
         return re.sub(r'\s+', ' ', n)
     by_player = {}
+    # ══ 2026-10-01 · THE VOLUME FIELDS WERE NEVER AVERAGED ══
+    # Market configs ask for fantasy_col 'proj_pass_attempts',
+    # 'proj_rush_attempts' and 'proj_pass_ints', but none of the three were in
+    # this list, so pdata.get(fantasy_col) returned None and those markets fell
+    # back to the purely backward-looking 0.60*L4 + 0.35*season blend with no
+    # situational input at all.
+    #
+    # Those are the worst three to lose, because attempts/carries are exactly
+    # what MOVES when a team-mate is ruled out. Andy's case: RB1 out, RB2 about
+    # to see starter volume — rush_attempts is the market where that shows up
+    # first, and it was the market with no injury-aware lens.
+    #
+    # proj_targets is added too: stored by the puller, consumed by nothing.
+    # NOTE 'proj_pass_completions' is also referenced by a market config but
+    # does NOT exist as a column on nfl_player_projections, so that market
+    # cannot be fixed here — it needs the puller to populate it first.
     stat_fields = ['proj_pass_yds','proj_rush_yds','proj_rec_yds','proj_receptions',
-                    'proj_pass_tds','proj_rush_tds','proj_rec_tds']
+                    'proj_pass_tds','proj_rush_tds','proj_rec_tds',
+                    'proj_pass_attempts','proj_rush_attempts','proj_pass_ints',
+                    'proj_targets']
     for row in rows:
         k = (_key(row.get('player_name')), row.get('position'))
         if not k[0]: continue
