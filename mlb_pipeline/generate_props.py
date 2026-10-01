@@ -3544,8 +3544,22 @@ def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
     conviction. Live games still exempt from prune here.
     """
     from datetime import datetime, timezone, timedelta
+    from urllib.parse import quote
     gd = today_et()
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_stale_hours)).isoformat()
+    # ══ 2026-10-01 · A RAW '+' IN A QUERY STRING IS A SPACE ══
+    # datetime.isoformat() on an aware UTC datetime ends '+00:00'. Interpolated
+    # straight into a URL, that '+' is decoded as a literal space, so PostgREST
+    # received '2026-10-01T11:13:37.040347 00:00' and answered
+    #   400 22007 invalid input syntax for type timestamp with time zone
+    # on EVERY run. The delete therefore never happened: this function has been
+    # a silent no-op, printing one line that nothing read, while its whole job
+    # is removing props whose starter was scratched or whose market was pulled.
+    # Those rows stayed published.
+    # quote(safe='') rather than swapping in 'Z' so a future format change
+    # cannot reintroduce it.
+    cutoff = quote(
+        (datetime.now(timezone.utc) - timedelta(hours=max_stale_hours)).isoformat(),
+        safe='')
     # Build filter: game_date=today AND last_attached_at IS NULL or older than cutoff.
     # 2026-09-02 CRITICAL FIX: batter hits props (hits_over/hits_under)
     # are line-agnostic at 0.5, so `_BOOK_REQUIRED` exempts them from the
@@ -3558,10 +3572,30 @@ def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
     # returning conviction 57/59/61 on the 2026-09-02 Astros lineup).
     # Exempt them from the wipe — they're re-generated each cron anyway,
     # and the upsert dedup handles the merge.
+    # ══ 2026-10-01 · NULL last_attached_at DOES NOT MEAN STALE ══
+    # The old filter was `or=(last_attached_at.is.null, last_attached_at.lt.X)`
+    # — i.e. no timestamp was treated as proof of staleness. The comment above
+    # already caught that for hits props and exempted them BY PROP TYPE, but
+    # the premise is wrong for every type: measured this date, only 2 of 104
+    # props carried a non-null last_attached_at, because attach_book_lines
+    # stamps it only when the Odds API returns a matching player market.
+    #
+    # So the broken URL was load-bearing. Fixing only the '+' would have
+    # started deleting 83 of 97 rows on its first real run — including three
+    # brand-new PRIME pitcher props (Aaron Nola outs_over 85 / ha_over 81 /
+    # bb_over 79) generated minutes earlier, which are exactly what Andy was
+    # asking for. A no-op masking a destructive rule is two bugs, and fixing
+    # one without the other ships the damage.
+    #
+    # Age now falls back to created_at when last_attached_at is absent: a prop
+    # written five minutes ago is fresh whatever its attach state. A row is
+    # stale only if it was attached long ago, or was never attached AND was
+    # created long ago.
     base = (f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
             f"?game_date=eq.{gd}"
             f"&prop_type=not.in.(hits_over,hits_under)"
-            f"&or=(last_attached_at.is.null,last_attached_at.lt.{cutoff})")
+            f"&or=(last_attached_at.lt.{cutoff},"
+            f"and(last_attached_at.is.null,created_at.lt.{cutoff}))")
     if skip_live_game_ids:
         ids_csv = ','.join(f'"{gid}"' for gid in skip_live_game_ids)
         url = f"{base}&game_id=not.in.({ids_csv})"
