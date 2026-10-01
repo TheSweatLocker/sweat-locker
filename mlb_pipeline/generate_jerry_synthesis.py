@@ -912,12 +912,50 @@ def run(force: bool = False, game_date: str | None = None,
                 params={"sport": "eq.MLB", "game_id": f"eq.{gid}",
                         "game_date": f"eq.{gd}",
                         "prompt_version": f"eq.{PROMPT_VERSION}",
-                        "select": "game_id"},
+                        "select": "game_id,input_snapshot"},
                 timeout=10,
             )
             if r.status_code == 200 and r.json():
-                print(f"  • {away} @ {home}: real synthesis exists, skip (--force to regen)")
-                continue
+                # ══ 2026-10-01 · A READ WRITTEN BLIND MUST NOT STICK ══
+                # This gate only asked "does a synthesis row exist", never
+                # "was it built on the data we now have". Today's wildcard
+                # read was generated at 12:41 UTC, before MLB posted
+                # probables, and said so in its own text: "neither starter's
+                # name, xERA, nor L3 ERA populated... our starters are a
+                # black box." Pitchers landed at ~16:20 (Nola / Kerr) and
+                # every later run SKIPPED, so the blind write-up would have
+                # stayed up all day on a playoff game — Andy caught it.
+                #
+                # Same shape as the retry_missing_starters gap: the pipeline
+                # recovers the DATA when it arrives late but never revisits
+                # the PROSE built without it.
+                #
+                # input_snapshot records exactly what the model was shown, so
+                # the test is precise rather than time-based: if the stored
+                # snapshot had no starter name and the context now has one,
+                # regenerate. Fails CLOSED — any parse problem leaves the
+                # old skip behaviour rather than spending tokens in a loop.
+                _stale_blind = False
+                try:
+                    _snap = (r.json()[0] or {}).get("input_snapshot")
+                    if isinstance(_snap, str):
+                        _snap = json.loads(_snap)
+                    _snap_p = (_snap or {}).get("pitchers") or {}
+                    for _sidekey, _ctxcol in (("home", "home_pitcher"),
+                                              ("away", "away_pitcher")):
+                        _had = ((_snap_p.get(_sidekey) or {}).get("name"))
+                        _now = g.get(_ctxcol)
+                        if not _had and _now:
+                            _stale_blind = True
+                            print(f"  ↻ {away} @ {home}: stored read was written "
+                                  f"with no {_sidekey} starter; {_ctxcol}={_now} "
+                                  f"now known — regenerating")
+                            break
+                except Exception as _e:
+                    print(f"  ! staleness check failed ({_e}) — keeping skip")
+                if not _stale_blind:
+                    print(f"  • {away} @ {home}: real synthesis exists, skip (--force to regen)")
+                    continue
 
         props = next((v for k, v in props_by_game.items() if _matches(k, home, away)), [])
         base_struct = build_struct(g, props, potd)
