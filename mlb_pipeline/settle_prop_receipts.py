@@ -239,19 +239,32 @@ _LABEL_STAT_FAMILY = {
 }
 
 
-# ══ OFF BY DEFAULT — NOT YET VALIDATED ══
-# Enabling label parsing put card-surface receipts in scope for the first
-# time, and --validate --sport MLB --days 20 then came back at 61.8%
-# agreement (1,306/2,113) with 807 disagreements, against 97.8% for NFL and
-# 99.1% NO_ACTION reproduction on prop_jerry alone. I have NOT established
-# whether those 807 come from this parser or were always there on card
-# surfaces, because no full MLB Win/Loss validate was run before this change
-# — only the NO_ACTION safety check.
+# ══ OFF BY DEFAULT — VALIDATE REJECTED IT, AND NOW IT IS ATTRIBUTED ══
+# Enabling label parsing put card-surface receipts in scope for the first time
+# and MLB agreement collapsed:
 #
-# Until that is attributed, this stays behind a flag: a settler that
-# contradicts the published record is worse than none, and card-surface
-# receipts were previously REFUSED (no_line / side_unmapped), which is safe.
-# Turning them on would start writing results on a 38% disagreement rate.
+#   prop_jerry only, BEFORE this parser   4,100/4,171 = 98.3%   71 disagree
+#   + card surfaces, parser ON            1,306/2,113 = 61.8%  807 disagree
+#
+# The baseline run settles the attribution: the prop_jerry path is healthy at
+# 98.3%, so the 807 are introduced by the card-surface path, not pre-existing.
+# Something about how a card receipt records its pick does not survive this
+# parse — most likely the displayed side is not the side the card backed, the
+# same defect this module's own docstring documents for FADE receipts.
+#
+# So it stays behind a flag: a settler that contradicts the published record is
+# worse than none, and card receipts were previously REFUSED (no_line /
+# side_unmapped), which is the safe state. Turning them on would write results
+# at a 38% disagreement rate.
+#
+# It also buys almost nothing. With parsing ON only 5 of 95 card receipts
+# become settleable — the rest are blocked by fade_ambiguous_source_gone (45)
+# and no_line (22) regardless of the parser. Five receipts is not worth
+# touching 2,113 published results.
+#
+# To finish this properly: find why card-surface sides disagree, fix THAT, then
+# re-validate. The parser itself is correct on every label shape it was tested
+# against; the problem is upstream of it.
 LABEL_PARSE = os.environ.get('SETTLE_PARSE_LABELS') == '1'
 
 
