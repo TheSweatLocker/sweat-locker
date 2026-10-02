@@ -44,6 +44,7 @@ import os
 import re
 import statistics
 import sys
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -489,4 +490,72 @@ class OddsPuller:
             else:
                 print(f'  ⚠ write {resp.status_code}: {resp.text[:220]}')
         print(f'  ✓ upserted {w}/{len(rows)} games into {self.results_table}')
+        self._prune_composite_twins(rows)
         return w
+
+    def _prune_composite_twins(self, rows: list) -> int:
+        """Delete composite-id rows once the canonical id exists for the fixture.
+
+        ══ 2026-10-01 · WHY THESE ROWS ARE IMMORTAL WITHOUT THIS ══
+        _canonical_id falls back to f'{prefix}_{YYYYMMDD}_{away}_{home}' when the
+        league schedule has not published the fixture yet. That fallback is
+        correct and should stay — it is how a forward game gets stored at all.
+        The bug is that nothing ever removes it: once the canonical id appears,
+        the upsert writes a SECOND row keyed on game_id, and the composite twin
+        survives forever. nhl_resolve_results.py only ever fills the canonical
+        row, so the twin sits score-NULL permanently.
+
+        Measured on NHL before this existed: 10 composite rows, 9 duplicating a
+        canonical row for the same (date, away, home) and 1 a phantom — a
+        9/30 Chicago-at-Vegas for a fixture that actually played 9/29 under
+        2026020005. None carried a score. Grading was already defended (res_map
+        prefers the scored row) so nothing was mis-graded, but they inflate any
+        count of games played, which is part of how NHL's record looked deeper
+        than it was.
+
+        NEVER deletes a row carrying a score. If a composite row somehow holds a
+        real result, that is data to migrate, not discard — so it is reported and
+        kept.
+        """
+        canon = {}
+        for r in rows:
+            gid = str(r.get('game_id') or '')
+            if gid.startswith(f'{self.id_prefix}_'):
+                continue        # this run also minted a composite — nothing to pair
+            canon[(r.get('game_date'), r.get('away_team'), r.get('home_team'))] = gid
+        if not canon:
+            return 0
+        try:
+            got = requests.get(
+                f'{SB}/rest/v1/{self.results_table}',
+                headers=H_READ,
+                params={'game_id': f'like.{self.id_prefix}_*',
+                        'select': 'game_id,game_date,away_team,home_team,'
+                                  'home_score,away_score',
+                        'limit': 1000},
+                timeout=30).json()
+        except Exception as e:
+            print(f'  prune: read failed ({str(e)[:70]}) — skipped')
+            return 0
+        if not isinstance(got, list):
+            return 0
+        removed = kept = 0
+        for x in got:
+            key = (x.get('game_date'), x.get('away_team'), x.get('home_team'))
+            if key not in canon:
+                continue        # no canonical twin yet — this row is still load-bearing
+            if x.get('home_score') is not None or x.get('away_score') is not None:
+                print(f'  prune: KEEPING scored composite row {x["game_id"]} — '
+                      f'holds a result, migrate rather than delete')
+                kept += 1
+                continue
+            gid = urllib.parse.quote(str(x['game_id']), safe='')
+            d = requests.delete(
+                f'{SB}/rest/v1/{self.results_table}?game_id=eq.{gid}',
+                headers=H_WRITE, timeout=30)
+            if d.status_code in (200, 204):
+                removed += 1
+        if removed or kept:
+            print(f'  prune: removed {removed} composite-id row(s) superseded by '
+                  f'a canonical id' + (f', kept {kept} scored' if kept else ''))
+        return removed

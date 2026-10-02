@@ -1496,7 +1496,25 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     appear twice unless props are different players):
       1. POTD (always include if present, unless noPlay)
       2. DotD (always include if present)
-      3. PRIME confluence ML primary plays (sweat_tier == PRIME)
+      3. PRIME confluence ML primary plays — selected on the PLAY's
+         primary_play.tier (see the `tier not in ('PRIME','STRONG')` filter
+         below), NOT on sweat_tier.
+         ══ 2026-10-01 · THIS LINE USED TO SAY "(sweat_tier == PRIME)" ══
+         It never did. `sweat_tier` appears nowhere in this module's
+         executable code — only in that sentence. Corrected because the two
+         are different measurements that happen to share a vocabulary, so the
+         claim was not merely wrong, it was plausible:
+           sweat_tier        derived from sweat_score = how far our PROJECTION
+                             sits from the close (game-level disagreement).
+                             PRIME >= 80, STRONG >= 65, LIGHT_LEAN >= 50.
+           primary_play.tier the ENSEMBLE's confidence in a specific play,
+                             after the defensive gates have capped it.
+         They agree on 1% of NHL games, 6% of NFL and 8% of NCAAF — which is
+         expected for different scales, not a bug. But selecting on sweat_tier
+         WOULD be a bug: measured today, 11 of 12 NFL and 34 of 55 NCAAF
+         sweat_tier=PRIME games carry a primary_play that cannot publish, so a
+         card built on the documented rule would surface COVERAGE plays as
+         PRIME. The code is right and the comment was wrong; keep it that way.
       4. v4 total edges >= 1.5 OR STRONG total leans from primary_play
       5. CATEGORY LOCKS (2026-05-23): if a ks_over PRIME or outs_under
          STRONG candidate exists, reserve a slot for it. Both cohorts
