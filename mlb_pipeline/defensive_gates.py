@@ -29,6 +29,8 @@ Add new gates here as the same pattern: apply_<name>_gate(pp, ctx) -> pp.
 """
 from __future__ import annotations
 
+import os
+
 
 def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     """Demote ML PRIME/STRONG picks when Monte Carlo disagrees.
@@ -192,6 +194,15 @@ _JUICE_TRAP_HEAVY_FAV_BY_SPORT = {
     'NCAAB': -400,   # basketball tolerates deeper chalk before rerouting
     'NBA':   -400,
 }
+# 2026-10-02 · Price past which a moneyline read is expressed on the spread
+# instead. Distinct from _JUICE_TRAP_HEAVY_FAV_BY_SPORT above, which DEMOTES a
+# tier at a looser football threshold (-300); this REROUTES the market at the
+# -200 line that feedback_heavy_fav_ml_trap_803 and the queued
+# "route -200+ ML to spread" decision both name. Single value, every sport:
+# -200 is the documented rule and no sport-specific evidence contradicts it.
+# Override with HEAVY_ML_THRESHOLD env for a shadow run at another level.
+HEAVY_ML_THRESHOLD = int(os.environ.get('HEAVY_ML_THRESHOLD', '-200'))
+
 _JUICE_TRAP_LONG_DOG_BY_SPORT = {
     'MLB':   +250,
     'NCAAF': +400,   # football underdogs regularly +400+ in mismatches
@@ -1837,6 +1848,107 @@ def apply_unpriced_market_gate(pp: dict | None, ctx: dict,
     return out
 
 
+def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
+                                  sport: str = 'MLB') -> dict | None:
+    """Express a heavily-juiced ML pick on the spread instead.
+
+    ══ 2026-10-02 · THE JUICE GATE RUNS BEFORE THE THING THAT MAKES JUICE ══
+    apply_all_defensive_gates applies apply_juice_trap_gate THIRD and
+    apply_ml_lr_override SIXTH. The override builds a brand-new ML pick after
+    the juice gate has already run, so override moneylines were never price-
+    checked at all. Measured on live picks, 2026-10-02 forward:
+
+        NFL    44 of 73 ML picks worse than -200  (42 of them lr_v1)
+        NCAAF  16 of 34
+        NHL     2 of 48
+
+    including two PRIMEs (DET ML -225, PHI ML -238) and LSU ML -375,
+    Texas State ML -315, BUF ML -305, Liberty ML -275 at STRONG.
+
+    This implements a rule the project already holds and the engine was
+    violating: the -200+ heavy-favourite ML trap, the -250 POTD juice gate,
+    and the queued "route -200+ ML to spread" decision. It is independently
+    supported by two standing measurements — NCAAF ML -23.1% vs spread +7.8%,
+    and NFL favourite-ML 65.2% win rate at -4.9% ROI. A 65% winner at -200 is
+    a losing bet; the same read on the spread is not.
+
+    WHY THE SIGN CONVENTION CANNOT BREAK THIS. close_spread is HOME-relative
+    in NCAAF and AWAY-relative in NFL (verified this session: 99.7% n=331 and
+    100.0% n=284 against spread_result). Rather than branch on that minefield,
+    the line is rebuilt from MAGNITUDE: a team priced at -200 or worse IS the
+    favourite, so it is laying points and its line is -abs(close_spread).
+    True regardless of which side the stored column is written from.
+
+    TIER IS CAPPED AT STRONG. The conviction was earned as a probability of
+    WINNING THE GAME; it is not a cover probability. Carrying it onto a spread
+    at PRIME would assert rigor the number does not supply. The pick still
+    ships — this reroutes and demotes, it never suppresses.
+    """
+    if not isinstance(pp, dict):
+        return pp
+    if str(pp.get('type') or '').lower() != 'ml':
+        return pp
+    side = str(pp.get('side') or '').upper()
+    if side not in ('HOME', 'AWAY'):
+        return pp
+
+    # The pick's OWN price. Both column spellings — they differ by sport and
+    # that is exactly how this class of bug survives (see
+    # apply_unpriced_market_gate).
+    names = (('close_home_ml', 'home_ml_close') if side == 'HOME'
+             else ('close_away_ml', 'away_ml_close'))
+    price = None
+    for n in names:
+        if ctx.get(n) is not None:
+            price = ctx.get(n)
+            break
+    try:
+        price = int(price)
+    except (TypeError, ValueError):
+        return pp                      # unpriced → unpriced-market gate's job
+    if price > HEAVY_ML_THRESHOLD:
+        return pp                      # inside discipline, leave alone
+
+    # Need a spread to reroute ONTO. No line → nothing to do here; the pick
+    # keeps its ML and the juice gate below still demotes it.
+    line_mag = None
+    for n in ('close_spread', 'close_puckline'):
+        if ctx.get(n) is not None:
+            try:
+                line_mag = abs(float(ctx.get(n)))
+            except (TypeError, ValueError):
+                line_mag = None
+            if line_mag is not None:
+                break
+    if not line_mag:
+        return pp
+
+    team = ctx.get('home_team') if side == 'HOME' else ctx.get('away_team')
+    tier_before = str(pp.get('tier') or '').upper()
+    out = dict(pp)
+    out['type'] = 'rl'
+    out['line'] = -line_mag
+    out['label'] = f'{team} -{line_mag:g}'
+    if tier_before == 'PRIME':
+        out['tier'] = 'STRONG'
+    out['_heavy_ml_reroute'] = {
+        'from_market': 'ml',
+        'ml_price': price,
+        'threshold': HEAVY_ML_THRESHOLD,
+        'to_line': -line_mag,
+        'tier_before': tier_before,
+        'tier_after': out.get('tier'),
+    }
+    # The conviction travels, so say what it is a probability OF.
+    out['_conviction_basis'] = 'ml_win_probability'
+    note = (f'rerouted ML -> spread: {team} ML at {price:+d} is past the '
+            f'{HEAVY_ML_THRESHOLD:+d} heavy-favourite trap, so the same read '
+            f'is expressed as {out["label"]}; conviction is a win probability, '
+            f'not a cover probability')
+    out['audit_note'] = ((pp.get('audit_note') or '') + ' · ' + note).strip(' ·')
+    return out
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -1868,6 +1980,17 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # 2026-09-14: NHL + NBA added post-backfill (see project_v1_0_1 #12).
     if sport in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA'):
         pp = apply_ml_lr_override(pp, ctx, sport=sport)
+    # 2026-10-02 · MUST SIT AFTER THE OVERRIDE, WHICH IS THE WHOLE POINT.
+    # apply_juice_trap_gate above runs THIRD, but apply_ml_lr_override builds a
+    # fresh ML pick here at SIXTH — so override moneylines were never price-
+    # checked. 44 of 73 live NFL ML picks sat past -200, two of them PRIME.
+    # Rerouting here catches both the legacy and the override paths, because
+    # every ML pick that survives to this line passes through it.
+    pp = apply_heavy_ml_spread_reroute(pp, ctx, sport=sport)
+    # Re-run the juice trap on the post-override pick: a reroute may not have
+    # been possible (no spread stored), and in that case the ML must still be
+    # demoted rather than ship untouched at a trap price.
+    pp = apply_juice_trap_gate(pp, ctx, sport=sport)
     # 2026-09-03 MLB TOTAL LR OVERRIDE — supervised total model.
     # Test acc 59.8%, PRIME_OVER 69% n=71, PRIME_UNDER 62% n=111.
     if sport == 'MLB':
