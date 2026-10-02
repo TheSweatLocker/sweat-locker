@@ -213,12 +213,89 @@ def page(path: str, params: dict) -> list:
         off += 1000
 
 
+# ══ 2026-10-02 · CARD SURFACES PUT THE PICK IN THE LABEL, NOT THE COLUMNS ══
+# prop_jerry receipts arrive fully structured, but sweat_card and sharp_card
+# receipts carry the side, line, stat and player ONLY inside pick_label.
+# Measured over the 98 ungraded prop receipts: 59 have no pick_line, 80 no
+# pick_side, 81 no prop_type and 81 no player_name — so the settler rejected
+# them as no_line / side_unmapped before it ever reached a box score.
+#
+# The labels are regular enough to parse: "<player> <Over|Under> <line> <stat>"
+# with an optional " @ -105" price or " (Jerry 90/100)" suffix. The stat
+# vocabulary varies by surface for the same market — ER / Earned Runs, HA /
+# Hits Allowed, OUTS / Outs / outs_over, KS / Ks — so it is mapped explicitly
+# rather than guessed.
+_LABEL_RE = __import__('re').compile(
+    r'^(?P<name>.+?)\s+(?P<side>over|under)\s+(?P<line>\d+(?:\.\d+)?)\s+'
+    r'(?P<stat>[A-Za-z_ ]+?)\s*(?:@.*)?(?:\(.*\))?\s*$', __import__('re').I)
+
+_LABEL_STAT_FAMILY = {
+    'er': 'er', 'earned runs': 'er', 'earned run': 'er',
+    'bb': 'bb', 'walks': 'bb', 'walk': 'bb',
+    'ha': 'ha', 'hits allowed': 'ha', 'hit allowed': 'ha',
+    'outs': 'outs',
+    'ks': 'ks', 'k': 'ks', 'strikeouts': 'ks', 'strikeout': 'ks',
+    'hits': 'hits', 'hit': 'hits',
+}
+
+
+# ══ OFF BY DEFAULT — NOT YET VALIDATED ══
+# Enabling label parsing put card-surface receipts in scope for the first
+# time, and --validate --sport MLB --days 20 then came back at 61.8%
+# agreement (1,306/2,113) with 807 disagreements, against 97.8% for NFL and
+# 99.1% NO_ACTION reproduction on prop_jerry alone. I have NOT established
+# whether those 807 come from this parser or were always there on card
+# surfaces, because no full MLB Win/Loss validate was run before this change
+# — only the NO_ACTION safety check.
+#
+# Until that is attributed, this stays behind a flag: a settler that
+# contradicts the published record is worse than none, and card-surface
+# receipts were previously REFUSED (no_line / side_unmapped), which is safe.
+# Turning them on would start writing results on a 38% disagreement rate.
+LABEL_PARSE = os.environ.get('SETTLE_PARSE_LABELS') == '1'
+
+
+def from_label(rec: dict) -> dict:
+    """Fill missing pick_side / pick_line / prop_type / player_name from
+    pick_label. Returns a shallow copy; never overwrites a value that is
+    already present, so a structured receipt is untouched."""
+    if not LABEL_PARSE:
+        return rec
+    need = (rec.get('pick_side') is None or rec.get('pick_line') is None
+            or not rec.get('prop_type') or not rec.get('player_name'))
+    if not need:
+        return rec
+    m = _LABEL_RE.match(str(rec.get('pick_label') or '').strip())
+    if not m:
+        return rec
+    stat = m.group('stat').strip().lower()
+    # "outs_over" / "ha_under" already carry the side — strip it off.
+    if stat.endswith(('_over', '_under')):
+        stat = stat.rsplit('_', 1)[0]
+    fam = _LABEL_STAT_FAMILY.get(stat.replace('_', ' '))
+    if not fam:
+        return rec
+    side = m.group('side').lower()
+    out = dict(rec)
+    out.setdefault('_parsed_from_label', True)
+    if out.get('pick_side') is None:
+        out['pick_side'] = side.upper()
+    if out.get('pick_line') is None:
+        out['pick_line'] = float(m.group('line'))
+    if not out.get('prop_type'):
+        out['prop_type'] = f'{fam}_{side}'
+    if not out.get('player_name'):
+        out['player_name'] = m.group('name').strip()
+    return out
+
+
 def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     """Return (result, actual, reason). result is None when unsettleable.
 
     Settles the side we actually BACKED, which is pick_side except on a FADE,
     where the receipt recorded the prop's side and we bet the other one.
     """
+    rec = from_label(rec)
     pt = (rec.get('prop_type') or '').lower()
     side = (rec.get('pick_side') or '').strip().lower()
 
@@ -332,9 +409,18 @@ def main():
     # silently did nothing and 182 MLB receipts still came back
     # fade_ambiguous_source_gone. A missing column does not error here — it
     # just reads as absent, which is the whole shape of that trap.
+    # pick_label is required for the same reason as audit: from_label() reads
+    # the side/line/stat out of it for card-surface receipts that carry them
+    # nowhere else. Omit it and 80 of 98 receipts silently stay unsettleable.
     q = {'select': 'id,sport,game_date,player_name,prop_type,pick_side,'
-                   'pick_line,result,source_id,audit',
-         'surface': 'eq.prop_jerry', 'sport': f'eq.{args.sport}',
+                   'pick_line,result,source_id,audit,pick_label,surface',
+         # market=eq.prop is the real precondition (this settles player props)
+         # and admits every surface that publishes one. But card surfaces are
+         # only SETTLEABLE with LABEL_PARSE on, and that is unvalidated — so
+         # while it is off, keep the original prop_jerry scoping so a run
+         # cannot silently churn through 80 receipts it will only refuse.
+         'market': 'eq.prop', 'sport': f'eq.{args.sport}',
+         **({} if LABEL_PARSE else {'surface': 'eq.prop_jerry'}),
          'game_date': f'gte.{lo}', 'order': 'game_date.asc'}
     q['result'] = 'not.is.null' if args.validate else 'is.null'
     recs = [r for r in page('public_receipts', q)
