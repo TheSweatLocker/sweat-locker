@@ -291,7 +291,38 @@ def backfill_signal(source: dict, contexts: list[dict]) -> dict:
     # Baseline-adjusted tiering for NHL: without historical odds, RL grading is
     # dominated by the +1.5 base rate (~65% AWAY / ~30% HOME cover). We compare
     # against the market-specific naive baseline before promoting.
-    naive_baseline = {'ml': 54.5, 'rl_home': 34.8, 'rl_away': 65.2, 'total': 45.7}
+    # ══ 2026-10-01 · THE FLAT rl BASELINE WAS THE BUG, NOT THE SIGNALS ══
+    # rl_away 65.2 is a LEAGUE AVERAGE, and the +1.5 cover rate is not remotely
+    # flat — it is a function of the team's own strength. Measured over 2,609
+    # scored games with a de-viggable moneyline:
+    #
+    #   dog de-vigged p_win   covers +1.5   fair price   +4.3% vig   breakeven
+    #        0.30-0.40           59.6%         -147         -161       61.7%
+    #        0.40-0.45           66.1%         -195         -215       68.3%
+    #        0.45-0.50           68.7%         -219         -243       70.8%
+    #        0.50-0.55           70.2%         -236         -262       72.4%
+    #        0.55-0.60           75.8%         -314         -354       78.0%
+    #        0.60-0.70           82.1%         -459         -536       84.3%
+    #
+    # (vig measured at +4.3% overround from the 27 games where we now hold both
+    #  puck-line prices — the market is not unusually juiced here.)
+    #
+    # WHY THAT MATTERS. The four rl signals this file promotes —
+    # away_ats_hot_on_road 71.9% (n=811), away_team_ats_hot 72.3% (n=585),
+    # home_ats_cold_at_home 72.5% (n=652), home_team_ats_cold 70.7% (n=663) —
+    # looked like +5.5 to +7.3pp of lift over 65.2. Against the rate a
+    # 0.50-0.55 dog covers ANYWAY (70.2%) they are +0.5 to +2.3pp, and the price
+    # demands 72.4%. The edge is thinner than the vig. They are not plays.
+    #
+    # So rl stays unenabled, and the reason is now quantified rather than
+    # "blocked on prices" — see project_nhl_engine_one_sided_1001.
+    #
+    # rl_away raised to the even-strength cover rate so a signal can no longer
+    # false-validate against a league average. This is STILL a flat
+    # approximation and must not be treated as a real bar: a genuine evaluation
+    # needs each fire's own side and line, which this file does not record.
+    # Doing that properly is the prerequisite for ever enabling rl.
+    naive_baseline = {'ml': 54.5, 'rl_home': 34.8, 'rl_away': 70.2, 'total': 45.7}
     if scope == 'rl':
         # Guess which side dominates in results (either specifically HOME_RL or AWAY_RL)
         base = naive_baseline['rl_home'] if 'HOME_RL' in side_expr else naive_baseline['rl_away']
