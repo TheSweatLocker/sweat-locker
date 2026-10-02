@@ -22,6 +22,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
+import matchup_story
 from anthropic_guard import call as _guarded_call  # noqa: F401
 from dotenv import load_dotenv
 
@@ -1310,12 +1311,27 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
                 model_margin_for_fav = (hp_f - ap_f) if _fav_team == home else (ap_f - hp_f)
                 if mkt_margin is not None:
                     edge_pts = model_margin_for_fav - mkt_margin
+                    _edge_team = None
                     if edge_pts >= 0.5:
+                        _edge_team = _fav_team
                         facts["edge_side"] = f"{_fav_team} — model favors them by {abs(edge_pts):.1f} MORE points than market"
                     elif edge_pts <= -0.5:
+                        _edge_team = _dog_team
                         facts["edge_side"] = f"{_dog_team} — model has {_fav_team} winning by less than market ({abs(edge_pts):.1f} pt gap → take {_dog_team} with points)"
                     else:
                         facts["edge_side"] = f"none — model and market within {abs(edge_pts):.1f} pt"
+                    # 2026-10-02 · see matchup_story.reconcile_edge_side.
+                    # edge_side is model-vs-market SPREAD; the call can come
+                    # from an LR override or the signal ensemble. When they
+                    # name different teams, the "→ take X with points" text
+                    # — hoisted into the VERBATIM-quote contract ABOVE the
+                    # ENGINE PICK block — made the read argue the losing side
+                    # of its own pick. Measured 64.7% of comparable NCAAF
+                    # games (145/224); same code path here.
+                    _edge_fix = matchup_story.reconcile_edge_side(
+                        ctx, home, away, _edge_team, facts.get("edge_side"))
+                    if _edge_fix:
+                        facts["edge_side"] = _edge_fix
         elif ctx.get('projected_spread') is not None:
             # 2026-09-24. This branch used to hand over a bare
             # projected_spread plus a "DO NOT interpret" warning. A number

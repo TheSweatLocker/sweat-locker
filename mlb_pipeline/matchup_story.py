@@ -56,6 +56,59 @@ def _env():
         raise RuntimeError('SUPABASE_URL / key not in environment yet')
     return sb, {'apikey': key, 'Authorization': f'Bearer {key}'}
 
+def reconcile_edge_side(ctx: dict, home: str, away: str,
+                        edge_team: Optional[str],
+                        edge_fact: Optional[str]) -> Optional[str]:
+    """Restate edge_side when it names a different team than the call.
+
+    2026-10-02. edge_side is derived from model-vs-market SPREAD. The
+    published call can come from somewhere else entirely — on the 10-02
+    NCAAF slate an LR override (_engine=lr_v1) flipped a HOME/LEAN into an
+    AWAY ML on two of three games, moving the call and leaving edge_side
+    pointing the old way. Because edge_side sits inside the "quote these
+    VERBATIM" contract AHEAD of the ENGINE PICK block, the read obeyed the
+    first instruction it was given and argued against its own pick:
+
+      Pitt @ VT      published 'Virginia Tech -3', read closed with
+                     "Pittsburgh +2.5 has the edge in a low-conviction spot"
+      Liberty @ DEL  published 'Liberty ML', read said "the gap favors
+                     Delaware's plus-6.5 as the better value"
+
+    Returns None when there is nothing to change (no call, a totals call,
+    no directional edge, or the two already agree) so the caller keeps the
+    original string. Otherwise returns a replacement that states BOTH the
+    model's spread value and the published call, and explicitly forbids
+    recommending the side we are not on. Disclosing the tension is the
+    product ("we show the receipts"); arguing the other side is the bug.
+    """
+    if not edge_team or not edge_fact:
+        return None
+    pp = ctx.get('primary_play')
+    if not isinstance(pp, dict):
+        return None
+    market = str(pp.get('type') or '').lower()
+    side = str(pp.get('side') or '').upper()
+    # Totals carry no side team; ml/spread/rl do.
+    if market not in ('ml', 'spread', 'rl') or side not in ('HOME', 'AWAY'):
+        return None
+    call_team = home if side == 'HOME' else away
+    if call_team == edge_team:
+        return None
+    label = pp.get('label') or f'{call_team} {market}'
+    # Keep the measured gap from the original sentence; drop its
+    # "→ take X with points" instruction, which is the part that flipped
+    # the prose.
+    head = edge_fact.split(' → ')[0].rstrip(')')
+    return (
+        f'{head}). HOWEVER the published call is {label} '
+        f'({market}/{side}), which backs {call_team}, NOT {edge_team}. '
+        f'The spread model and the call point different ways on this game. '
+        f'Your prose must argue for {label} and may cite this disagreement '
+        f'as a reason conviction is limited — state it plainly. Do NOT tell '
+        f'the reader to take {edge_team}, and do NOT close by calling '
+        f'{edge_team} the better value.')
+
+
 # A unit of offense pointed at the unit of defense that has to stop it.
 # This is the "top rushing team facing bottom run defense" pairing, stated
 # once per sport. (attack_key, defend_key, phrase)

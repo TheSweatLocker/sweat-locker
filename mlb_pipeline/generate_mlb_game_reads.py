@@ -21,6 +21,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import requests
+import matchup_story
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -1185,12 +1186,23 @@ def build_struct(g, props, potd):
                 _mkt_mag = abs(float(g.get('close_spread')))
                 _model_margin_fav = _ms if _fav_team == home else -_ms
                 _edge = _model_margin_fav - _mkt_mag
+                _edge_team = None
                 if _edge >= 0.3:
+                    _edge_team = _fav_team
                     facts["edge_side"] = f"{_fav_team} — model favors them by {abs(_edge):.2f} more runs than market"
                 elif _edge <= -0.3:
+                    _edge_team = _dog_team
                     facts["edge_side"] = f"{_dog_team} — model likes them with the runline points ({abs(_edge):.2f} run gap)"
                 else:
                     facts["edge_side"] = f"none — model and market within {abs(_edge):.2f} runs"
+                # 2026-10-02 · see matchup_story.reconcile_edge_side. Same
+                # defect as NCAAF/NFL: edge_side is model-vs-market and the
+                # call may come from elsewhere, so the VERBATIM-quote fact
+                # could instruct the opposite side of the published pick.
+                _edge_fix = matchup_story.reconcile_edge_side(
+                    g, home, away, _edge_team, facts.get("edge_side"))
+                if _edge_fix:
+                    facts["edge_side"] = _edge_fix
         except (TypeError, ValueError): pass
     # Pick tier — if primary_play tier disagrees with LR-supervised conviction, flag
     pp = g.get('primary_play') or {}

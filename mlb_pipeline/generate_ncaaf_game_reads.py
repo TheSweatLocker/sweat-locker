@@ -360,11 +360,34 @@ def build_struct(ctx):
                 model_margin_fav = (hp - ap) if _fav_team == home else (ap - hp)
                 edge = model_margin_fav - mkt_mag
                 if edge >= 0.5:
+                    _edge_team = _fav_team
                     facts["edge_side"] = f"{_fav_team} — model favors them by {abs(edge):.1f} MORE points than market"
                 elif edge <= -0.5:
+                    _edge_team = _dog_team
                     facts["edge_side"] = f"{_dog_team} — model has {_fav_team} winning by less than market ({abs(edge):.1f} pt gap → take {_dog_team} with points)"
                 else:
+                    _edge_team = None
                     facts["edge_side"] = f"none — model and market within {abs(edge):.1f} pt"
+                # 2026-10-02 · edge_side MUST NOT CONTRADICT THE PUBLISHED CALL.
+                # Measured on the 10-02 slate: edge_side named the opposite
+                # team from primary_play.side on 2 of 3 games, and because it
+                # sits inside the "quote these VERBATIM" contract — ahead of
+                # the ENGINE PICK block — the read argued the losing side of
+                # its own pick. Pitt@VT published "Virginia Tech -3" and
+                # closed with "Pittsburgh +2.5 has the edge"; Liberty@Delaware
+                # published "Liberty ML" and said "the gap favors Delaware's
+                # plus-6.5 as the better value".
+                #
+                # Root cause: edge_side is derived from model-vs-market SPREAD
+                # while the call can come from an LR override (_engine=lr_v1
+                # flipped a HOME/LEAN into an AWAY ML on both games). The
+                # override moves the call and leaves edge_side pointing the
+                # old way. Reconcile here rather than hoping the prose layer
+                # resolves two contradictory instructions.
+                _edge_fix = matchup_story.reconcile_edge_side(
+                    ctx, home, away, _edge_team, facts.get("edge_side"))
+                if _edge_fix:
+                    facts["edge_side"] = _edge_fix
             except (TypeError, ValueError): pass
     elif ctx.get('projected_spread') is not None:
         try:
