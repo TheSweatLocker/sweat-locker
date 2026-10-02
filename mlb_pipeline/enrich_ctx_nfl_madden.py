@@ -199,6 +199,143 @@ def available_qb(team, qb_list, max_week=None, as_of=None):
     return None, f"every rated QB ruled out: {', '.join(skipped)}"
 
 
+def _norm_name(name: str) -> str:
+    """Lowercase, strip punctuation and suffixes, for cross-source name joins."""
+    s = ''.join(ch for ch in (name or '').lower() if ch.isalnum() or ch == ' ')
+    for suf in (' jr', ' sr', ' ii', ' iii', ' iv', ' v'):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return ' '.join(s.split())
+
+
+def load_starters(season: int) -> dict:
+    """{(team, week): player_name} — the QB nfl_starters says is starting.
+
+    ══ 2026-10-01 · WHO IS STARTING IS NOT A MADDEN QUESTION ══
+    This file used to answer "who starts" with "the highest-rated available QB
+    on the Madden roster". That is a talent ranking, not a depth chart, and the
+    team key it ranks within is unreliable in both Madden sources. Measured
+    today, the two failures it produced:
+
+      ATL  rated list held only Tua Tagovailoa 74, so ATL was credited 74 —
+           while Michael Penix Jr. (82) started every week 1-4. Penix exists
+           in nfl_madden_player_ratings but keyed 'Atlanta Falcons' instead of
+           'ATL', in a second key space this file never reads.
+      MIN  Kyler Murray 75 and J.J. McCarthy 80 are both nominally Vikings in
+           Madden, so "highest rated" picks McCarthy — who is now the NYG
+           starter. Normalizing the team key WITHOUT this change would have
+           made that worse, not better.
+
+    nfl_starters answers who; Madden answers how good. Keeping them separate is
+    what makes the unreliable team key stop mattering: the rating is looked up
+    by NAME (see load_qb_ratings_by_name), so a player filed under the wrong
+    franchise spelling is still found.
+
+    Keyed by week because starters change weekly — using one global map would
+    reintroduce the staleness this is meant to remove.
+    """
+    r = urllib.request.Request(
+        f'{SB}/rest/v1/nfl_starters'
+        f'?season=eq.{season}&position=eq.QB&is_starter=is.true'
+        f'&select=team,week,player_name,source',
+        headers=H_READ)
+    try:
+        rows = json.loads(urllib.request.urlopen(r, timeout=15).read())
+    except Exception as e:
+        print(f'[warn] starters load: {e} — falling back to Madden ranking',
+              flush=True)
+        return {}
+    # {team: [(week, name), ...]} newest first, so a game in a week the starter
+    # puller has not reached yet carries the most recent starter forward instead
+    # of falling back to the Madden talent ranking. The horizon is 14 days, so
+    # next week's games are always in it while nfl_starters only covers through
+    # the current week — without this, every one of those games silently reverts
+    # to the old behaviour and the fix appears to work while covering half the
+    # board.
+    by_team: dict = {}
+    for x in rows:
+        if not x.get('team') or x.get('week') is None:
+            continue
+        by_team.setdefault(x['team'], []).append((x['week'], x['player_name']))
+    for v in by_team.values():
+        v.sort(reverse=True)
+    return by_team
+
+
+def load_qb_ratings_by_name(season: int) -> dict:
+    """{normalized_name: {'name','ovr','team'}} across every team key and week.
+
+    Deliberately team-agnostic. A Madden rating is a property of the player, and
+    the team column is the one field in this table that cannot be trusted — it
+    carries two spellings for every franchise ('ATL' and 'Atlanta Falcons') and
+    the launch snapshot's rosters are two months stale. Looking up by name
+    sidesteps both problems.
+
+    Most recent snapshot wins (week_snapshot, then fetched_at).
+    """
+    r = urllib.request.Request(
+        f'{SB}/rest/v1/nfl_madden_player_ratings'
+        f'?season=eq.{season}&position=eq.QB&select=*',
+        headers=H_READ)
+    try:
+        rows = json.loads(urllib.request.urlopen(r, timeout=15).read())
+    except Exception as e:
+        print(f'[err] qb-by-name load: {e}', flush=True)
+        return {}
+    best: dict = {}
+    for row in rows:
+        nm = row.get('player_name') or ''
+        key = _norm_name(nm)
+        if not key or row.get('ovr') is None:
+            continue
+        rank = (row.get('week_snapshot') or 0, str(row.get('fetched_at') or ''))
+        prev = best.get(key)
+        if prev is None or rank > prev['_rank']:
+            best[key] = {'name': nm, 'ovr': float(row['ovr']),
+                         'team': row.get('team'), '_rank': rank}
+    return best
+
+
+def starter_qb(team: str, week, starters: dict, by_name: dict,
+               max_week=None, as_of=None):
+    """(qb_dict, note) for the listed starter, or (None, reason).
+
+    Honours the same injury gate as available_qb: a listed starter who has since
+    been ruled out is not used, and the caller falls back to the Madden ranking.
+    """
+    hist = starters.get(team) or []
+    name = None
+    for wk, nm in hist:                  # newest first
+        if week is None or wk <= week:
+            name = nm
+            carried = (week is not None and wk < week)
+            break
+    else:
+        carried = False
+    if not name:
+        return None, None
+    try:
+        from nfl_qb_injury_gate import OUT_STATUSES, latest_status
+        st = latest_status(SB, H_READ, name, team=team,
+                           max_week=max_week, as_of=as_of)
+        if str((st or {}).get('injury_status') or '').strip().lower() in OUT_STATUSES:
+            return None, f'listed starter {name} is ruled out'
+    except ImportError:
+        pass
+    except Exception:
+        pass                       # lookup failure => treat as playing
+    m = by_name.get(_norm_name(name))
+    if not m:
+        # Honest blank. Journeyman starters are routinely unrated: measured
+        # 2026-10-01, Case Keenum (CHI), Jameis Winston (NYG) and Marcus
+        # Mariota (WAS) have no Madden rating under any team key, so there is
+        # no number to write for them.
+        return None, f'starter {name} has no Madden rating'
+    return ({'name': m['name'], 'ovr': m['ovr']},
+            f"starter {m['name']} ({m['ovr']:.0f})"
+            + (' [carried forward]' if carried else ''))
+
+
 def load_top100(season: int) -> dict:
     """Return {team: [(rank, position), ...]} for aggregate counts + QB Top 10 check."""
     r = urllib.request.Request(
@@ -223,7 +360,7 @@ def load_upcoming(days_ahead: int) -> list[dict]:
     r = urllib.request.Request(
         f'{SB}/rest/v1/nfl_game_context'
         f'?game_date=gte.{start}&game_date=lte.{end}'
-        f'&select=game_id,home_team,away_team,game_date',
+        f'&select=game_id,home_team,away_team,game_date,week',
         headers=H_READ)
     try:
         return json.loads(urllib.request.urlopen(r, timeout=15).read())
@@ -236,13 +373,22 @@ def compute_fields(home: str, away: str,
                    team_ratings: dict, qb_ratings: dict,
                    top100_by_team: dict,
                    max_week: int | None = None,
-                   as_of: str | None = None) -> dict:
+                   as_of: str | None = None,
+                   week=None,
+                   starters: dict | None = None,
+                   qb_by_name: dict | None = None) -> dict:
     """Compute all ctx fields for one game. Returns dict of only non-None values.
 
     max_week / as_of are the injury leak guards, passed to available_qb so a
     backtest cannot resolve a QB using news published after kickoff. Both
     default to None for callers that genuinely want "now".
+
+    week / starters / qb_by_name drive the starter-list path. All three default
+    to None so existing callers keep the old Madden-ranking behaviour rather
+    than crashing — this function has several call sites.
     """
+    starters = starters or {}
+    qb_by_name = qb_by_name or {}
     h = team_ratings.get(home) or {}
     a = team_ratings.get(away) or {}
     h_ovr = h.get('ovr'); a_ovr = a.get('ovr')
@@ -269,10 +415,22 @@ def compute_fields(home: str, away: str,
     # (nfl_goat_composite, recompute_nfl_primary_play) treats a missing OVR as
     # "no QB signal", which is correct, whereas a stale OVR is a wrong number
     # it will act on.
-    h_qb, h_note = available_qb(home, qb_ratings.get(home) or [],
-                                max_week=max_week, as_of=as_of)
-    a_qb, a_note = available_qb(away, qb_ratings.get(away) or [],
-                                max_week=max_week, as_of=as_of)
+    #
+    # Starter list first (see load_starters): it answers who is playing, which
+    # a talent ranking cannot. Falls back to the Madden ranking only when
+    # nfl_starters has no row for this (team, week) — never when it has a row
+    # naming an unrated player, because "unrated" is a real answer there and
+    # silently substituting the backup's number would undo the whole point.
+    h_qb, h_note = starter_qb(home, week, starters, qb_by_name,
+                              max_week=max_week, as_of=as_of)
+    a_qb, a_note = starter_qb(away, week, starters, qb_by_name,
+                              max_week=max_week, as_of=as_of)
+    if h_qb is None and h_note is None:
+        h_qb, h_note = available_qb(home, qb_ratings.get(home) or [],
+                                    max_week=max_week, as_of=as_of)
+    if a_qb is None and a_note is None:
+        a_qb, a_note = available_qb(away, qb_ratings.get(away) or [],
+                                    max_week=max_week, as_of=as_of)
     h_qb_ovr = (h_qb or {}).get('ovr')
     a_qb_ovr = (a_qb or {}).get('ovr')
     # ══ OMITTING A FIELD DOES NOT CLEAR IT ══
@@ -337,6 +495,8 @@ def main():
     team = load_team_ratings(season, week)
     qbs = load_qb_ratings(season, week)
     t100 = load_top100(season)
+    starters = load_starters(season)
+    qb_by_name = load_qb_ratings_by_name(season)
     if not team:
         print(f'[abort] no team ratings for season {season} week {week}. '
               f'Run seed_nfl_madden_launch.py first.', flush=True)
@@ -370,7 +530,9 @@ def main():
         # FORWARD games only (load_upcoming spans today..+14d), so there is no
         # leak to guard against — today's news is all anyone has.
         fields = compute_fields(g['home_team'], g['away_team'], team, qbs, t100,
-                                max_week=None, as_of=g.get('game_date'))
+                                max_week=None, as_of=g.get('game_date'),
+                                week=g.get('week'), starters=starters,
+                                qb_by_name=qb_by_name)
         if not fields:
             no_data += 1
             continue
