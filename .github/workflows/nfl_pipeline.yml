@@ -292,7 +292,13 @@ jobs:
           cd mlb_pipeline
           pip install --quiet beautifulsoup4 || true
           SEASON=$(date +%Y)
-          python pull_madden27_ratings.py --season $SEASON --week 0
+          # 2026-10-01: was --week 0, which wrote the live scrape into the
+          # SAME bucket as seed_nfl_madden_launch's 7/31 baseline. The two
+          # vintages differ for real (Stroud 90->76, Maye 84->92), and only
+          # a spelling difference in the team key stopped them overwriting
+          # each other. The script now stamps the current NFL week, so week 0
+          # stays the baseline and _get_latest_week finds the live snapshot.
+          python pull_madden27_ratings.py --season $SEASON
 
       - name: Enrich NFL ctx with Madden ratings + Top 100
         continue-on-error: true

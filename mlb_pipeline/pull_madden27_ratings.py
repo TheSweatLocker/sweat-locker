@@ -27,7 +27,7 @@ Runs from nfl_pipeline.yml weekly (Tue morning after MNF grades).
 from __future__ import annotations
 import argparse, os, sys, re, io
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -466,14 +466,49 @@ def upsert_top100(players: list[dict], season: int, week: int, dry_run: bool) ->
     return len(payload)
 
 
+NFL_WEEK1_MONDAY = date(2026, 9, 9)      # see feedback_nfl_2026_week1_anchor
+
+
+def current_nfl_week(today: date | None = None) -> int:
+    """Current NFL week, 1-18, from the season anchor.
+
+    ══ 2026-10-01 · WHY THIS EXISTS: TWO VINTAGES IN ONE BUCKET ══
+    This script hardcoded --week 0, and so does seed_nfl_madden_launch. Both
+    therefore wrote into week_snapshot=0, so the 7/31 launch baseline and the
+    live weekly scrape sat on top of each other in the same bucket. They did
+    not overwrite each other only because the two writers happen to spell teams
+    differently ('ATL' vs 'Atlanta Falcons') and `team` is part of the primary
+    key — an accident of naming was the only thing versioning the data.
+
+    That matters because the two vintages genuinely differ. Measured across the
+    44 players present in both: 24 identical, 20 moved, mean -3.4 and a range of
+    -14 to +8 — C.J. Stroud 90->76, Jayden Daniels 93->80, Drake Maye 84->92.
+    Real in-season rating movement, which is exactly what the table's migration
+    header says the week key is for ("snapshots keyed on week for delta
+    tracking, biggest riser/faller becomes its own signal").
+
+    So the launch rows are a baseline worth keeping, not duplicates to delete,
+    and the fix is to stamp the live scrape with the week it describes. Week 0
+    stays the launch baseline; _get_latest_week in enrich_ctx_nfl_madden then
+    picks the real latest week instead of always reading the collision.
+    """
+    d = today or datetime.now(timezone.utc).date()
+    return max(1, min(18, (d - NFL_WEEK1_MONDAY).days // 7 + 1))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--season', type=int,
                     default=datetime.now(timezone.utc).year)
-    ap.add_argument('--week', type=int, default=0,
-                    help='0 = launch snapshot; increment weekly after EA refresh')
+    ap.add_argument('--week', type=int, default=None,
+                    help='week_snapshot to write. Default = current NFL week. '
+                         'Pass 0 only to overwrite the launch baseline.')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
+
+    if args.week is None:
+        args.week = current_nfl_week()
+        print(f'  week not given — using current NFL week {args.week}')
 
     print(f'=== Madden27.wiki pull · season {args.season} · week {args.week} ===')
 
