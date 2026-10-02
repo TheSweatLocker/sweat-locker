@@ -1745,6 +1745,77 @@ def apply_ncaaf_total_suppression(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+def apply_unpriced_market_gate(pp: dict | None, ctx: dict,
+                               sport: str = 'MLB') -> dict | None:
+    """Cap a pick to COVERAGE when ITS OWN market carries no price.
+
+    ══ 2026-10-02 · YOU CANNOT BEAT A LINE THAT DOES NOT EXIST ══
+    Measured across every sport's game_context:
+
+        NHL    27 of 65 regular-season picks (42%) on an unpriced market
+        NCAAF   9 of 433 (2%)
+        NBA     2 of 11  (18%)
+        NFL     2 of 281 (1%)
+
+    NHL is the outlier because books post NHL lines only 1-3 days out while the
+    pick horizon runs a week. Tonight's St. Louis @ Dallas carried
+    tier=STRONG conviction=77 with NO moneyline stored, and five more STRONG
+    picks sit on 10-08 games with no price. A tier asserts an edge against the
+    market; with no market there is nothing to have an edge over, so the number
+    is model-only and must not be published as STRONG.
+
+    NON-DESTRUCTIVE BY DESIGN. Most of these are FUTURE games whose odds simply
+    have not landed yet. Capping is re-evaluated on every context rebuild, so
+    the tier restores itself as soon as a price arrives. It withholds a claim
+    we cannot support today rather than deleting a pick.
+
+    COLUMN NAMING VARIES BY SPORT and that is exactly how this stays broken:
+        NHL, NFL   both close_home_ml AND home_ml_close
+        NCAAF      close_home_ml only
+        MLB, NBA   home_ml_close only
+        NCAAB      NO price columns at all
+    So both spellings are checked. A sport carrying none of the relevant
+    columns FAILS OPEN — never demote on an absence we cannot even measure.
+    """
+    if not isinstance(pp, dict):
+        return pp
+    ptype = str(pp.get('type') or '').lower()
+    if not ptype:
+        return pp
+
+    def _any(*names):
+        """True when at least one column EXISTS and is non-null."""
+        present = [n for n in names if n in ctx]
+        if not present:
+            return None          # cannot measure → caller fails open
+        return any(ctx.get(n) is not None for n in present)
+
+    if ptype == 'ml':
+        has = _any('close_home_ml', 'home_ml_close',
+                   'close_away_ml', 'away_ml_close')
+    elif ptype == 'total':
+        has = _any('close_total')
+    elif ptype in ('rl', 'spread', 'puckline'):
+        has = _any('close_puckline', 'close_spread')
+    else:
+        return pp                # prop/other — priced on the prop row, not here
+
+    if has is None or has:
+        return pp                # unmeasurable, or genuinely priced
+
+    tier = str(pp.get('tier') or '').upper()
+    if tier in ('', 'COVERAGE', 'PASS', 'SKIP'):
+        return pp                # already unpublished
+
+    out = dict(pp)
+    out['tier'] = 'COVERAGE'
+    out['_unpriced_market'] = True
+    note = (f'capped to COVERAGE from {tier}: no {ptype.upper()} price stored '
+            f'for this game, so the tier cannot assert an edge')
+    out['audit_note'] = ((pp.get('audit_note') or '') + ' · ' + note).strip(' ·')
+    return out
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -1762,6 +1833,9 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
+    # 2026-10-02: runs with the other demote gates, BEFORE the publish gate,
+    # so a pick with no market for its own type cannot reach a published tier.
+    pp = apply_unpriced_market_gate(pp, ctx, sport=sport)
     if sport == 'NCAAF':
         pp = apply_ncaaf_large_spread_gate(pp, ctx)
         # 2026-09-30: measured dog/fav split on 256 graded sides — see the
