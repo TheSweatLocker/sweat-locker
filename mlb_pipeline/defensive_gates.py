@@ -1288,7 +1288,28 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # 2026-09-06 second pass — user feedback: "Supervised model
         # backs X" reads too clinical, doesn't tell them WHY. Swapped
         # to "Model conviction on X · N%" — shorter, warmer, still honest.
-        team_short = team.split()[-1] if team else 'the pick'
+        # 2026-10-02 · LAST WORD IS THE WRONG WORD FOR A COLLEGE TEAM.
+        # `team.split()[-1]` is right for pro sports, where the field is
+        # "City Nickname" and the nickname identifies the team ("Buffalo
+        # Bills" -> "Bills"). College fields are school names whose LAST
+        # token is frequently the generic half, so it threw the identity
+        # away and kept the filler:
+        #
+        #     "Penn State"     -> "State"   (shipped on the 10-02 card as
+        #                                    "State · 85% vs 59% implied")
+        #     "Michigan State" -> "State"
+        #     "Virginia Tech"  -> "Tech"
+        #     "Texas A&M"      -> "A&M"
+        #
+        # Two different teams on the same slate both render as "State".
+        # College names are short enough to use whole, so do.
+        _COLLEGE = ('NCAAF', 'NCAAB')
+        if not team:
+            team_short = 'the pick'
+        elif str(sport).upper() in _COLLEGE:
+            team_short = team
+        else:
+            team_short = team.split()[-1]
 
         # 2026-09-27 · STATE THE EDGE, NOT JUST THE CONVICTION.
         #
