@@ -1364,7 +1364,33 @@ def _et_game_date(commence: str | None) -> str:
 # Env-overridable so the band can be loosened or tightened without a deploy.
 # These are selected on the same sample they are measured on, so the ceiling
 # is a judgement backed by 187 props and a mechanism, not a validated edge.
-NFL_PROP_ODDS_MIN = int(os.environ.get('NFL_PROP_ODDS_MIN', '-150'))
+# ══ 2026-10-01 · FLOOR -150 -> -120 ══
+# A -150 price needs a 60% hit rate. Measured over 1,929 priced graded props,
+# the published tiers hit 51.6% (n=585), so -150 was never a bar we could clear;
+# it was a band wide enough to admit anything.
+#
+# Priced ROI by bucket, published tiers only:
+#   worse than -140   60.6% hit vs 61.9% BE   -2.1%  n=109   (hits, cannot pay)
+#   -140..-121        52.8%     vs 56.6%      -6.8%  n= 72
+#   -120..-111        47.1%     vs 53.4%     -11.8%  n=240  z=-1.97  <- the bleed
+#   -110..-101        56.0%     vs 51.9%      +8.1%  n=109
+#   better than +100  46.7%     vs 46.8%      -0.5%  n= 60   (priced fair)
+#
+# -120 is chosen on ARITHMETIC, not on fitting the buckets: a -120 bet needs
+# 54.5% and our best-demonstrated published figure is PRIME at 54.2% (n=59),
+# with the whole published book at 51.6%. Anything beyond -120 is a bet we have
+# never shown we can win. It trims the worst tail while keeping ~85% of the
+# board, which matters because Andy's constraint is real — "we cant pull props
+# completely we need to ahve a take".
+#
+# WHAT THIS DOES NOT DO: make props profitable. A price filter cannot fix a
+# selection problem, and at 51.6% we have one. Going to -110 would show +5.0%
+# ROI (n=169, z=+0.67) but cuts today's board from 48 to 15 and is not
+# established. The actual fix is projection quality — the positional-defense
+# lens and the volume-projection repair both landed today and neither has
+# touched a graded sample yet. Re-measure with _calib_priced.py in 2-3 weeks
+# before cutting harder.
+NFL_PROP_ODDS_MIN = int(os.environ.get('NFL_PROP_ODDS_MIN', '-120'))
 NFL_PROP_ODDS_MAX = int(os.environ.get('NFL_PROP_ODDS_MAX', '150'))
 _PRICE_REJECTS: dict = defaultdict(int)
 
