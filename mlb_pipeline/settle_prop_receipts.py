@@ -87,6 +87,80 @@ from grade_prop_jerry_reads import (       # noqa: E402
 
 _BATTER_PROPS = {'hits_over', 'hits_under'}
 
+# ══ 2026-10-02 · NFL WAS NEVER SETTLEABLE HERE ══
+# settle() was MLB-only: every path ran through _MLB_STAT_MAP and the MLB
+# player-id lookup, so an NFL receipt was settled as if it were an MLB pitcher
+# prop and died at stat_unmapped / no_player_id / no_boxscore. Measured
+# 2026-10-02: 88 ungraded NFL prop receipts, all 16 of their prop types mapping
+# cleanly onto nfl_player_stats columns, all 88 carrying a line and a clean
+# OVER/UNDER side. They were unreachable purely because no NFL branch existed.
+#
+# nfl_player_stats is nflverse box-score data and is keyed by (season, week),
+# not game_date — so the date has to be resolved to a week first. That lookup
+# EXCLUDES anything before 2026-09-09 because nfl_game_context also holds
+# PRESEASON games reusing the same week numbers; without the filter, weeks 2-5
+# resolve to August dates. Same trap as the NHL preseason record.
+_NFL_STAT_MAP = {
+    'reception_yds': 'receiving_yards',
+    'receptions': 'receptions',
+    'targets': 'targets',
+    'reception_tds': 'receiving_tds',
+    'rush_yds': 'rushing_yards',
+    'rush_attempts': 'carries',
+    'rush_tds': 'rushing_tds',
+    'pass_yds': 'passing_yards',
+    'pass_attempts': 'attempts',
+    'pass_completions': 'completions',
+    'pass_tds': 'passing_tds',
+    'pass_interceptions': 'interceptions',
+}
+_NFL_SEASON_START = '2026-09-09'      # feedback_nfl_2026_week1_anchor
+_nfl_week_by_date: dict | None = None
+_nfl_stats_cache: dict = {}
+
+
+def _nfl_norm(name: str) -> str:
+    import re
+    import unicodedata as ud
+    n = ud.normalize('NFKD', name or '').encode('ascii', 'ignore').decode()
+    n = re.sub(r'\b(jr|sr|ii|iii|iv|v)\b\.?', '', n.lower())
+    n = re.sub(r'[^a-z0-9\s]', '', n)
+    return re.sub(r'\s+', ' ', n).strip()
+
+
+def _nfl_week_for_date(gd: str):
+    """(season, week) for an NFL game date, or (None, None)."""
+    global _nfl_week_by_date
+    if _nfl_week_by_date is None:
+        _nfl_week_by_date = {}
+        for row in page('nfl_game_context',
+                        {'select': 'game_date,week,season',
+                         'game_date': f'gte.{_NFL_SEASON_START}'}):
+            d = str(row.get('game_date') or '')[:10]
+            if d and row.get('week') is not None:
+                _nfl_week_by_date[d] = (row.get('season'), row['week'])
+    return _nfl_week_by_date.get(gd, (None, None))
+
+
+def _nfl_actual(name: str, gd: str, col: str):
+    """The player's actual value for `col` in the game on `gd`, or None."""
+    season, week = _nfl_week_for_date(gd)
+    if week is None:
+        return None
+    key = (season, week)
+    if key not in _nfl_stats_cache:
+        idx = {}
+        for row in page('nfl_player_stats',
+                        {'select': '*', 'season': f'eq.{season}',
+                         'week': f'eq.{week}'}):
+            idx.setdefault(_nfl_norm(row.get('player_name')), row)
+        _nfl_stats_cache[key] = idx
+    row = _nfl_stats_cache[key].get(_nfl_norm(name))
+    if not row:
+        return None
+    v = row.get(col)
+    return None if v is None else float(v)
+
 
 def fadeable_families(sport: str, since: str) -> set:
     """Prop families that have EVER carried a FADE verdict.
@@ -169,21 +243,36 @@ def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     if side not in ('over', 'under'):
         return None, None, f'side_unmapped:{side or "none"}'
 
-    if pt in _BATTER_PROPS:
-        stat, group, pitcher = 'hits', 'hitting', False
+    sport = str(rec.get('sport') or 'MLB').upper()
+    if sport == 'NFL':
+        # prop_type is <family>_<side>; the family carries the stat.
+        fam = pt.rsplit('_', 1)[0] if pt.endswith(('_over', '_under')) else pt
+        col = _NFL_STAT_MAP.get(fam)
+        if not col:
+            return None, None, f'stat_unmapped:{pt}'
+        actual = _nfl_actual(name, gd, col)
+        if actual is None:
+            # Absent from the week's box score — did not play, or the name does
+            # not normalise onto an nflverse row. Either way, not settleable.
+            return None, None, 'no_boxscore'
+    elif pt in _BATTER_PROPS:
+        pid = _lookup_pid(name, is_pitcher=False)
+        if not pid:
+            return None, None, 'no_player_id'
+        actual = _fetch_stat_for_date(pid, 'hits', gd, group='hitting')
+        if actual is None:
+            return None, None, 'no_boxscore'
     else:
         stat = _MLB_STAT_MAP.get(pt)
-        group, pitcher = 'pitching', True
         if not stat:
             return None, None, f'stat_unmapped:{pt}'
-
-    pid = _lookup_pid(name, is_pitcher=pitcher)
-    if not pid:
-        return None, None, 'no_player_id'
-    actual = _fetch_stat_for_date(pid, stat, gd, group=group)
-    if actual is None:
-        # Did not play / scratched / API had nothing for that date.
-        return None, None, 'no_boxscore'
+        pid = _lookup_pid(name, is_pitcher=True)
+        if not pid:
+            return None, None, 'no_player_id'
+        actual = _fetch_stat_for_date(pid, stat, gd, group='pitching')
+        if actual is None:
+            # Did not play / scratched / API had nothing for that date.
+            return None, None, 'no_boxscore'
 
     if actual == line:
         return 'Push', actual, 'ok'
