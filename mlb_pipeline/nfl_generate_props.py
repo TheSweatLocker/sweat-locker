@@ -230,10 +230,40 @@ def load_fantasy_projections(season: int, week: int) -> dict:
     key = (season, week)
     if key in _FANTASY_PROJ_CACHE:
         return _FANTASY_PROJ_CACHE[key]
-    r = _retry_session.get(f'{SB}/rest/v1/nfl_player_projections', headers=H_READ,
-        params={'season': f'eq.{season}', 'week': f'eq.{week}',
-                'select': '*'}, timeout=15)
-    rows = r.json() if isinstance(r.json(), list) else []
+    # ══ 2026-10-01 · THIS SELECT WAS SILENTLY CAPPED AT 1000 ══
+    # PostgREST returns at most 1000 rows and says so only in Content-Range,
+    # which this call never read. nfl_player_projections carries BOTH sources
+    # for a week: 1,494 rows for week 4 and 1,420 for week 5. So the projection
+    # lens saw two thirds of its own input and had no idea.
+    #
+    # Measured week 4: 152 of 1,070 players (14%) were missing from the lens
+    # entirely. Worse, the loss is not spread evenly across sources, because
+    # PostgREST orders by insertion when no order is given — 877 of 899 Sleeper
+    # rows survived the cut but only 123 of 595 ESPN rows did. So "ensemble
+    # averaged across Sleeper + ESPN" was really Sleeper-only for most players
+    # and blended for an arbitrary minority that shifted every time either
+    # puller wrote. Non-deterministic blending is worse than either source
+    # alone, because it cannot be calibrated.
+    #
+    # Passing a bigger limit does NOT help: the server-side max-rows cap
+    # ignores it (limit=5000 still returned exactly 1000 here). Offset paging
+    # is the only fix. Same family as project_postgrest_truncation_audit_912.
+    rows: list = []
+    _offset = 0
+    while True:
+        r = _retry_session.get(f'{SB}/rest/v1/nfl_player_projections',
+            headers=H_READ,
+            params={'season': f'eq.{season}', 'week': f'eq.{week}',
+                    'select': '*', 'order': 'id.asc',
+                    'limit': 1000, 'offset': _offset}, timeout=20)
+        try:
+            page = r.json() if isinstance(r.json(), list) else []
+        except Exception:
+            page = []
+        rows.extend(page)
+        if len(page) < 1000:
+            break
+        _offset += 1000
     if not rows:
         _FANTASY_PROJ_CACHE[key] = {}
         return {}
