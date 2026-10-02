@@ -222,15 +222,44 @@ def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     pt = (rec.get('prop_type') or '').lower()
     side = (rec.get('pick_side') or '').strip().lower()
 
-    # Resolve which side we really backed before touching any box score.
-    if pt in fadeable:
-        v = verdicts.get(str(rec.get('source_id')))
-        if v is None:
-            # Source deleted and this family can be faded — the backed side is
-            # genuinely unknowable. Refuse rather than settle a coin flip.
-            return None, None, 'fade_ambiguous_source_gone'
-        if v[0] == 'FADE':
-            side = 'over' if side == 'under' else 'under'
+    # ══ 2026-10-02 · THE VERDICT IS ON THE RECEIPT ══
+    # This used to resolve the verdict only from the source read, and refuse
+    # when that row was gone. But the receipt carries audit.call_verdict
+    # itself: measured today, ALL 184 ungraded fadeable-family MLB receipts
+    # have it, and they were being held pending as "unknowable" while the
+    # answer sat in their own audit blob. That is the same mistake the module
+    # was written to fix — depending on a mutable table for something the
+    # immutable record already holds.
+    #
+    # SOURCE first, receipt second — the opposite of my first cut, and the
+    # validator caught it. Of 21 NFL receipts stored NO_ACTION that a
+    # receipt-first rule would have graded Win/Loss, 14 had a receipt verdict
+    # of LEAN/STRONG while the source read said PASS. The receipt's audit blob
+    # is stamped at publish time and can predate the final verdict, so it is
+    # the weaker witness. It is still the ONLY witness once the source row is
+    # pruned, which is the case this whole function exists for.
+    v = verdicts.get(str(rec.get('source_id')))
+    verdict = v[0] if v and v[0] else None
+    if verdict is None:
+        _audit = rec.get('audit') if isinstance(rec.get('audit'), dict) else {}
+        verdict = str(_audit.get('call_verdict') or '').upper() or None
+
+    # PASS was never a bet. 153 of those 184 carry PASS, and grading them
+    # Win/Loss would invent a wagered position; NO_ACTION is what the graded
+    # rows for PASS reads already use.
+    if verdict == 'PASS':
+        return 'NO_ACTION', None, 'ok'
+
+    # A FADE flips the backed side whatever the family's history says. The
+    # `fadeable` set is derived from past verdicts, so it answers "could a
+    # missing verdict have been a FADE?" — it must NOT gate the flip itself,
+    # or a FADE in a family with no prior FADEs would settle the wrong side.
+    if verdict == 'FADE':
+        side = 'over' if side == 'under' else 'under'
+    elif verdict is None and pt in fadeable:
+        # Family can be faded and no verdict anywhere — the backed side is
+        # genuinely unknowable. Refuse rather than settle a coin flip.
+        return None, None, 'fade_ambiguous_source_gone'
     line = rec.get('pick_line')
     name = rec.get('player_name') or ''
     gd = str(rec.get('game_date') or '')[:10]
@@ -296,8 +325,15 @@ def main():
     # returns no error for a column simply left out of the select, so omitting
     # it made every receipt look like its source was deleted and skipped the
     # whole pitcher set as fade_ambiguous.
+    # `audit` is REQUIRED, not optional: settle() falls back to
+    # audit.call_verdict when the source read is pruned, which is the only way
+    # a fadeable-family receipt is settleable at all. Leaving it out of this
+    # select made rec.get('audit') return None for every row, so the fallback
+    # silently did nothing and 182 MLB receipts still came back
+    # fade_ambiguous_source_gone. A missing column does not error here — it
+    # just reads as absent, which is the whole shape of that trap.
     q = {'select': 'id,sport,game_date,player_name,prop_type,pick_side,'
-                   'pick_line,result,source_id',
+                   'pick_line,result,source_id,audit',
          'surface': 'eq.prop_jerry', 'sport': f'eq.{args.sport}',
          'game_date': f'gte.{lo}', 'order': 'game_date.asc'}
     q['result'] = 'not.is.null' if args.validate else 'is.null'
