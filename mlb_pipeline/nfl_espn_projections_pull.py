@@ -139,34 +139,61 @@ def normalize(raw: dict, season: int, week: int) -> dict:
     pos = POSITION_MAP.get(p.get('defaultPositionId'))
     if not pos: return None
     team = PRO_TEAM_MAP.get(p.get('proTeamId'))
-    # Find projected stats for this scoring period
-    # 2026-08-09: ESPN doesn't return per-scoringPeriod projections in the
-    # default view — instead we get:
-    #   statSplitTypeId=0: season total projection
-    #   statSplitTypeId=2: per-game average projection ← use this for weekly
-    # Take statSplit=2 as the "weekly projected" — stable per-game baseline.
-    # Sleeper covers week-specific variance; ESPN is the ensemble anchor.
-    # 2026-09-06: ESPN API stopped returning statSplitTypeId=2 (per-game avg).
-    # Now only ships statSplit=0 (season total). Accept both — if we get
-    # season total, divide by 17 games to approximate per-game. Sleeper
-    # remains the week-specific source; ESPN is the ensemble anchor.
-    proj_stats = None; fp_total = None; is_season_total = False
-    # Prefer per-game split; fall back to season total
-    for target_split in (2, 0):
+    # ══ 2026-10-01 · BOTH SPLITS ARE SEASON TOTALS — NEITHER IS PER-GAME ══
+    # The note below used to say statSplitTypeId=2 is a "per-game average
+    # projection" and that ESPN "stopped returning" it on 09-06. Both halves
+    # are wrong, and the first one put season totals into a weekly table.
+    #
+    # Measured against the live payload 2026-10-01 (split 2 is still shipping):
+    #
+    #   Josh Allen        split 2  3921.8 pass yds / 362.0 fpts
+    #                     split 0  3400.0 pass yds / 314.8 fpts
+    #   Ja'Marr Chase     split 2   115.0 rec / 1431 yds
+    #                     split 0   105.5 rec / 1216 yds
+    #   Christian McCaffrey split 2 220.2 rush att
+    #
+    # 3,900 passing yards and 115 receptions are unmistakably FULL-SEASON
+    # figures, and both splits carry scoringPeriodId=0 / externalId=2026, i.e.
+    # season scope. Split 2 is simply the HIGHER of two season projections — it
+    # is also the static one (Dyami Brown sat at 24.81 rec across weeks 3, 4 and
+    # 5 unchanged), so it reads as the original preseason projection rather than
+    # anything pace-aware.
+    #
+    # Because the old code set is_season_total only for split 0, and split 2 is
+    # always present, the /17 never ran. So every row written since 09-06 is a
+    # season total filed as a weekly projection — Dyami Brown stored at 24.81
+    # receptions and 336.9 yards FOR ONE GAME, fantasy 73.52. Worse, rows
+    # written before 09-06 were genuinely per-game, so the table holds TWO
+    # SCALES with nothing to distinguish them: espn proj_pass_yds has a median
+    # of 219 (old, per-game) while today's normalize emits 3921 for the same
+    # column. A consumer cannot tell which scale a row is on.
+    #
+    # Fix: treat every split as season scope and always divide by GAMES. Prefer
+    # split 0, ESPN's lower and non-static projection, over the inflated
+    # preseason one. ESPN therefore contributes a season-average BASELINE and
+    # carries no week-specific information at all — Sleeper is the only genuine
+    # weekly source (Josh Allen 251.2 in wk5 vs 227.3 in wk4, really moving).
+    # That is a calibration question for the blend, logged separately; what
+    # matters here is that the number is no longer 17x wrong.
+    GAMES = 17.0
+    proj_stats = None; fp_total = None; split_used = None
+    for target_split in (0, 2):          # prefer ESPN's current season number
         for s in p.get('stats') or []:
             if s.get('statSourceId') != 1: continue
             if s.get('seasonId') != season: continue
             if s.get('statSplitTypeId') != target_split: continue
             proj_stats = s.get('stats') or {}
             fp_total = s.get('appliedTotal')
-            is_season_total = target_split == 0
+            split_used = target_split
             break
         if proj_stats is not None: break
     if proj_stats is None: return None
-    if is_season_total and fp_total is not None:
-        fp_total = fp_total / 17.0  # avg per game across a regular-season schedule
-        proj_stats = {k: (v / 17.0) if isinstance(v, (int, float)) else v
-                      for k, v in proj_stats.items()}
+    # Unconditional — both splits are season totals, so there is no branch here
+    # that can be taken wrongly.
+    if fp_total is not None:
+        fp_total = fp_total / GAMES
+    proj_stats = {k: (v / GAMES) if isinstance(v, (int, float)) else v
+                  for k, v in proj_stats.items()}
     row = {
         'source': 'espn_fantasy',
         'season': season, 'week': week, 'season_type': 'reg',
