@@ -359,7 +359,19 @@ jobs:
           cd mlb_pipeline
           python nfl_injuries_espn_pull.py
 
-      - name: Pull NFL starters (ESPN scoreboard)
+      # 2026-10-01: two passes, because "who will start" and "who did start"
+      # are different questions and the app renders both.
+      #
+      # The retrospective pass runs FIRST and rewrites the previous week from
+      # that week's own box score, so a user opening a game already played sees
+      # the quarterback who actually played it. The forward pass then resolves
+      # the upcoming week, which may only read COMPLETED weeks — see the
+      # module docstring for why that ordering is a leak guard and not just
+      # tidiness.
+      #
+      # Both are non-fatal and independent: a failed retrospective pass leaves
+      # last week's projection in place rather than blanking it.
+      - name: Pull NFL starters (box score + ESPN)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
         env:
@@ -367,6 +379,12 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
+          WK=$(python -c "import datetime;print(max(1,(datetime.date.today()-datetime.date(2026,9,9)).days//7+1))")
+          if [ "$WK" -gt 1 ]; then
+            echo "--- retrospective: week $((WK-1)) (completed) ---"
+            python nfl_weekly_starters.py --week $((WK-1)) --retrospective || true
+          fi
+          echo "--- forward: week $WK ---"
           python nfl_weekly_starters.py
 
       # 2026-09-13: nflverse rosters refresh — authoritative player→team
