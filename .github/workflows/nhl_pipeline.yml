@@ -108,6 +108,30 @@ jobs:
           cd mlb_pipeline
           python nhl_resolve_results.py
 
+      # ══ 2026-10-02 · NHL PROPS WERE NEVER GRADED ══
+      # nhl_generate_props (step below) had written 7,587 rows since 09-29 and
+      # every one sat at result=NULL, because grade_props.SPORT_PROPS_TABLE had
+      # no NHL entry AND no step here ever called it. With no grades there are
+      # no hit rates, no tier calibration and no surface_records rows for NHL
+      # props — so no patterns could form. The props were infrastructure, not
+      # product.
+      #
+      # Runs AFTER the results resolver (needs final scores to know which games
+      # count) and BEFORE the jerry grader, which inherits from the prop row.
+      #
+      # Grades yesterday by default. Stats come from api-web.nhle.com per
+      # player; a resolved player with no game-log row that date is Voided as a
+      # DNP rather than graded against an implicit zero.
+      - name: Grade NHL props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_props.py --sport NHL
+
       # 2026-09-08 wired: grade NHL jerry_reads immediately after resolver.
       # Prior gap: NHL not in grade_jerry_reads RESULTS_TABLE map, so
       # jerry_reads for NHL games never got a result. Season starts Oct 8;

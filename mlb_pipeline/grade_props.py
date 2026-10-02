@@ -63,6 +63,10 @@ SPORT_PROPS_TABLE = {
     # no basis for an NBA ban policy. Stats come from ESPN via
     # nba_data_client.get_player_boxscores.
     'NBA': 'nba_pipeline_props',
+    # 2026-10-02: NHL enabled. 7,587 props had been written since 09-29 and
+    # every one sat ungraded because this map had no NHL entry and no workflow
+    # step called it — see the STAT_MAP_NHL note below.
+    'NHL': 'nhl_pipeline_props',
 }
 
 # NBA prop_type → boxscore stat key. Families from nba_generate_props
@@ -101,9 +105,34 @@ STAT_MAP_MLB = {
 }
 
 
+# ══ 2026-10-02 · NHL PROPS HAD NO GRADER AT ALL ══
+# nhl_generate_props has written 7,587 rows since 09-29 and every one of them
+# sat at result=NULL, tier='COVERAGE', because this file's SPORT_PROPS_TABLE
+# listed only MLB and NBA and no workflow step ever called it for NHL. No
+# grades means no hit rates, no tier calibration, no surface_records rows, and
+# therefore no patterns — the props existed as infrastructure, not product.
+#
+# Stats come from nhl_player_log, which hits the NHL's own api-web.nhle.com
+# game-log endpoint. It is IMPORTED rather than reimplemented: it already
+# solves player-id resolution (ESPN's athlete search 404s for NHL — that is
+# why the old L10 lookback silently produced nothing) and it already handles
+# the opening-night season fallback.
+#
+# The log carries shots / goals / assists / points. It does NOT carry blocks
+# or hits, so those prop families stay unmapped and ungraded rather than being
+# graded against a fabricated zero.
+STAT_MAP_NHL = {
+    'sog_over': 'shots', 'sog_under': 'shots',
+    'shots_over': 'shots', 'shots_under': 'shots',
+    'goals_over': 'goals', 'goals_under': 'goals',
+    'assists_over': 'assists', 'assists_under': 'assists',
+    'points_over': 'points', 'points_under': 'points',
+}
+
 STAT_MAP_BY_SPORT = {
     'MLB': STAT_MAP_MLB,
     'NBA': STAT_MAP_NBA,
+    'NHL': STAT_MAP_NHL,
 }
 
 
@@ -130,6 +159,84 @@ def fetch_nba_player_stats_for_date(date_str: str):
         finals = []
     stats = get_player_boxscores(date_str, finals_only=True)
     return stats, len(finals)
+
+
+def fetch_nhl_player_stats_for_date(date_str: str):
+    """(stats_map, n_final_games) for NHL, shaped like the MLB/NBA fetchers.
+
+    There is no by-date boxscore endpoint wired up for NHL, so the player set is
+    derived FROM THE PROPS for that date and each one's game log is read from
+    api-web.nhle.com through nhl_player_log — imported, not reimplemented,
+    because it already solves player-id resolution (ESPN's athlete search 404s
+    for NHL) and already guards the surname fallback to unique matches only.
+
+    n_final_games comes from nhl_game_results rather than being inferred from
+    the stat rows: grade_date aborts on 0, and "no games" must not look like
+    "games played but logs not posted yet".
+
+    A player who resolved but has NO game-log row for that date did not play,
+    and is marked played=False so grade_prop Voids rather than grading an
+    UNDER against an implicit zero — the same trap that produced the NFL C/ATT
+    misgrades and a 'Win' on final_value 0.
+    """
+    try:
+        from nhl_player_log import resolve_player, game_log
+    except ImportError:
+        print('  ⚠ nhl_player_log unavailable — cannot grade NHL')
+        return {}, 0
+
+    # Final games that day.
+    try:
+        gr = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=H_READ,
+                          params={'select': 'game_id,home_score',
+                                  'game_date': f'eq.{date_str}'}, timeout=20)
+        finals = [g for g in (gr.json() or []) if g.get('home_score') is not None]
+    except Exception:
+        finals = []
+    if not finals:
+        return {}, 0
+
+    # Which players do we actually need? Only those carrying a prop that day.
+    names: set = set()
+    try:
+        pr = requests.get(f'{SB}/rest/v1/nhl_pipeline_props', headers=H_READ,
+                          params={'select': 'player_name',
+                                  'game_date': f'eq.{date_str}',
+                                  'limit': '5000'}, timeout=25)
+        names = {r['player_name'] for r in (pr.json() or []) if r.get('player_name')}
+    except Exception as e:
+        print(f'  ⚠ could not list NHL prop players: {e}')
+        return {}, len(finals)
+
+    # NHL seasons span the new year: Oct-Dec belongs to that year's season,
+    # Jan-Jun to the previous year's.
+    y, m = int(date_str[:4]), int(date_str[5:7])
+    season_year = y if m >= 8 else y - 1
+
+    stats_map: dict = {}
+    unresolved = 0
+    for nm in sorted(names):
+        who = resolve_player(nm, season_year)
+        if not who:
+            unresolved += 1
+            continue                     # omit → prop stays ungraded, not wrong
+        rows = game_log(who[0], season_year) or []
+        hit = next((g for g in rows
+                    if str(g.get('gameDate') or '')[:10] == date_str), None)
+        if hit is None:
+            stats_map[_norm_name(nm)] = {'played': False}
+            continue
+        stats_map[_norm_name(nm)] = {
+            'played': True,
+            'shots': hit.get('shots'),
+            'goals': hit.get('goals'),
+            'assists': hit.get('assists'),
+            'points': hit.get('points'),
+        }
+    if unresolved:
+        print(f'  ⚠ {unresolved} NHL prop player(s) did not resolve to an '
+              f'nhle.com id — left ungraded rather than guessed')
+    return stats_map, len(finals)
 
 
 def _norm_name(name) -> str:
@@ -250,7 +357,7 @@ def grade_prop(prop: dict, stats_map: dict) -> tuple:
     # outs_under 16.5 "Win" on final_value 0. The ESPN boxscore states
     # participation directly (didNotPlay + minutes), so a DNP returns
     # 'Void' rather than being silently scored.
-    if sport == 'NBA' and stats.get('played') is False:
+    if sport in ('NBA', 'NHL') and stats.get('played') is False:
         return 'Void', None
 
     actual = stats.get(stat_key)
@@ -283,6 +390,12 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
     if sport.upper() == 'NBA':
         stats_map, n_games = fetch_nba_player_stats_for_date(date_str)
         postponed: set = set()
+        _dnp = sum(1 for v in stats_map.values() if v.get('played') is False)
+        print(f'  loaded {len(stats_map)} player stat rows from {n_games} '
+              f'final games  ({_dnp} DNP → Void, never graded as a low line)')
+    elif sport.upper() == 'NHL':
+        stats_map, n_games = fetch_nhl_player_stats_for_date(date_str)
+        postponed = set()
         _dnp = sum(1 for v in stats_map.values() if v.get('played') is False)
         print(f'  loaded {len(stats_map)} player stat rows from {n_games} '
               f'final games  ({_dnp} DNP → Void, never graded as a low line)')
