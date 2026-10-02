@@ -89,15 +89,43 @@ name: Cross-Sport Line Movement + Money Flow
 #      in prop_close_freeze.yml
 # plus concurrency -> cross-sport-lines, and removal from mlb_pipeline.yml.
 #
-# STILL BLOCKED ON VERIFICATION, and now that is checkable: this workflow had NO
-# workflow_heartbeat until today, so "verify by hand first" could never be
+# BLOCKED ON VERIFICATION, and now that is checkable: this workflow had NO
+# workflow_heartbeat until 09-30, so "verify by hand first" could never be
 # confirmed from the database — only claimed. Dispatch it once, confirm a
 # start/end pair plus a clean gate line, THEN do the three-way move. Doing the
 # swap unverified would hand twelve steps including closing-line freezes to a
 # workflow nobody has watched finish, during the MLB playoffs.
+#
+# That dispatch is now safe to do at any hour — see the `mode` input below.
 
+# ══ 2026-10-01 · VERIFICATION WAS BLOCKED ON A RISK THAT DIDN'T NEED TAKING ══
+# workflow_heartbeat confirms this workflow has NEVER run: zero rows for
+# 'cross_sport_lines' against 13 for mlb_pipeline and 12 for nfl_pipeline. So
+# "verify by hand first" was still outstanding, and the three-way move below
+# stayed blocked on it.
+#
+# The thing making a verification dispatch risky is exactly two of the eleven
+# steps. freeze_closing_lines stamps the TRUE close, so dispatching mid-slate
+# can overwrite a real close with a post-kickoff number — worse than a missing
+# one, because it looks valid — and freeze_prop_closing_lines is a duplicate of
+# a step prop_close_freeze.yml already runs every ten minutes. The other nine
+# only append or scrape: an extra line_history snapshot is just another point in
+# a time series, and those nine are precisely the ones moving to the crons.
+#
+# So `mode` defaults to `verify`, which skips those two and proves the rest —
+# checkout, Python, the Playwright browser, all three scrapers, the heartbeat
+# pair and the failure gate. That is the whole plumbing question, answered
+# without touching a closing line. Run `full` only inside the real close window,
+# and only after the move has removed these steps from mlb_pipeline.yml.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'verify = skip the two closing-line freezes (safe any time); full = every step'
+        type: choice
+        required: false
+        default: verify
+        options: [verify, full]
 
 # ══ TRANSITIONAL CONCURRENCY — CHANGE THIS IN THE FOLLOW-UP COMMIT ══
 # Deliberately sharing mlb_pipeline's group while BOTH workflows still run
@@ -242,6 +270,7 @@ jobs:
       # second, later pass can overwrite a real close with a post-kickoff
       # number, and every CLV figure is measured against it.
       - name: Line movement - freeze true closing lines
+        if: inputs.mode == 'full'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -250,6 +279,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "freeze_closing_lines.py (all sports)" python freeze_closing_lines.py --sport ALL
 
       - name: Line movement - freeze prop closing lines
+        if: inputs.mode == 'full'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
