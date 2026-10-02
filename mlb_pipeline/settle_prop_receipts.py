@@ -321,18 +321,31 @@ def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     # was written to fix — depending on a mutable table for something the
     # immutable record already holds.
     #
-    # SOURCE first, receipt second — the opposite of my first cut, and the
-    # validator caught it. Of 21 NFL receipts stored NO_ACTION that a
-    # receipt-first rule would have graded Win/Loss, 14 had a receipt verdict
-    # of LEAN/STRONG while the source read said PASS. The receipt's audit blob
-    # is stamped at publish time and can predate the final verdict, so it is
-    # the weaker witness. It is still the ONLY witness once the source row is
-    # pruned, which is the case this whole function exists for.
+    # ══ audit.call_verdict IS NOT A USABLE FALLBACK — MEASURED, REVERTED ══
+    # I added one: when the source read is pruned, read the verdict from the
+    # receipt's own audit blob. It looked safe (the verdict is right there on
+    # the immutable record) and a NO_ACTION spot-check agreed 99.1%. That check
+    # was measured on the wrong population. Across 7,627 graded MLB prop_jerry
+    # receipts since 09-01:
+    #
+    #   source PRESENT, audit=PASS   n=3,302   NO_ACTION 95.2%   trustworthy
+    #   source GONE,    audit=PASS   n=  933   NO_ACTION 27.3%   NOT
+    #                                          (316 Win, 359 Loss, 255 NO_ACTION)
+    #
+    # When the source exists the verdict matches the record. When it is GONE
+    # the receipt says PASS on rows graded as real bets — wrong ~73% of the
+    # time. Those receipts are capture_mode='reconstructed', so the audit
+    # verdict looks stamped by the reconstruction rather than carried from the
+    # read. And source-pruned is EXACTLY where a fallback fires, so the rule
+    # was wrong three times in four. It wrote 306 receipts (273 NO_ACTION +
+    # 33 Win/Loss, 18 of those with the side inverted by a bogus FADE) before
+    # a per-surface validate caught it; all 306 were reverted to NULL.
+    #
+    # So the verdict comes from the SOURCE READ ONLY. No fallback. A receipt
+    # whose source is gone AND whose family can be faded stays unsettleable —
+    # which is the honest answer, and what this function did before.
     v = verdicts.get(str(rec.get('source_id')))
     verdict = v[0] if v and v[0] else None
-    if verdict is None:
-        _audit = rec.get('audit') if isinstance(rec.get('audit'), dict) else {}
-        verdict = str(_audit.get('call_verdict') or '').upper() or None
 
     # PASS was never a bet. 153 of those 184 carry PASS, and grading them
     # Win/Loss would invent a wagered position; NO_ACTION is what the graded
