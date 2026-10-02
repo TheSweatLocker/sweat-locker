@@ -659,8 +659,28 @@ jobs:
       # rate after 30 days, and ANTI_VALIDATED fade signals get flipped by
       # the ensemble's sharp-fade branch. First live run 2026-08-21 caught
       # refit_conviction_strong at 46.97% on n=264 (real fade edge).
+      # ══ 2026-10-01 · DEAD GATE FIXED: '0 10 * * *' IS NOT A CRON HERE ══
+      # This workflow's crons are 0 6, 15 11, 30 12 and 0 18. github.event.schedule
+      # carries the literal cron string, so a gate on '0 10 * * *' could never
+      # match — and combined with `&& event_name == 'schedule'` this step ran
+      # NEVER, not even on dispatch. The 0 10 cron existed before 2026-09-28,
+      # when it moved to 0 6; the gate was not moved with it.
+      #
+      # Consequence: the weekly signal_registry refit has not run since. 134 of
+      # 1,087 registry rows are now older than MAX_REGISTRY_AGE_DAYS=14 and the
+      # ensemble drops them outright, so 12% of signal weights are dark. That
+      # feeds straight into the prop-tier calibration problem measured today.
+      #
+      # Gated on the real morning cron. The step body already does its own
+      # `DOW=$(date -u +%u); if [ "$DOW" = "7" ]` check, so Sunday-only is
+      # preserved by the body, not the cron — which is why pointing at a daily
+      # cron is correct here rather than a widening. Dispatch now allowed too:
+      # the DOW guard makes a weekday dispatch a no-op, so it is testable
+      # without waiting for Sunday. Same shape as "Refresh Jerry prompt
+      # performance context (weekly)" further down, which has always done it
+      # this way and has always worked.
       - name: Refit signal_registry from graded history (Sundays only)
-        if: github.event.schedule == '0 10 * * *' && github.event_name == 'schedule'
+        if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -2112,30 +2132,50 @@ jobs:
       # blind-fade P&L simulation. Stored in
       # jerry_cache['sharp_money_weekly_digest_YYYY-WW'].
       # Runs Sundays (day-of-week 0 in cron UTC).
+      # 2026-10-01 · DEAD GATE FIXED. '0 18 * * 0' is not one of this
+      # workflow's crons — only '0 18 * * *' exists — and github.event.schedule
+      # carries the literal string, so the Sunday gate never matched and this
+      # has only ever run on a manual dispatch. Point it at the real cron and
+      # move Sunday-only into the body, the pattern "Refresh Jerry prompt
+      # performance context" below has always used correctly.
       - name: Weekly sharp money digest
-        if: (github.event.schedule == '0 18 * * 0' || github.event_name == 'workflow_dispatch')
+        if: (github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch')
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python sharp_money_weekly_digest.py
+          # Sunday-only now lives HERE, not in the cron gate. Without this the
+          # daily cron would turn a weekly digest into a daily one.
+          if [ "$(date -u +%u)" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python sharp_money_weekly_digest.py
+          else
+            echo "not Sunday (DOW=$(date -u +%u)) — skipping weekly sharp digest"
+          fi
 
       # Weekly CLV rollup (Sundays only, 2026-08-15).
       # Aggregates clv_snapshots by sport × window (7d/30d/90d) with
       # per-market/tier/model breakdown. Appends to clv_weekly_rollup
       # so we retain the trajectory of model CLV performance over time.
       # CLV is the best proxy for pick quality independent of W/L variance.
+      # 2026-10-01 · DEAD GATE FIXED — same '0 18 * * 0' bug as the digest
+      # above. clv_weekly_rollup has never fired on a schedule, which is the
+      # worst one to lose: CLV is the best proxy for pick quality independent of
+      # W/L variance, and clv_weekly_rollup is what retains the trajectory.
       - name: Weekly CLV rollup
-        if: (github.event.schedule == '0 18 * * 0' || github.event_name == 'workflow_dispatch')
+        if: (github.event.schedule == '0 18 * * *' || github.event_name == 'workflow_dispatch')
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python clv_weekly_rollup.py --sport ALL
+          if [ "$(date -u +%u)" = "7" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python clv_weekly_rollup.py --sport ALL
+          else
+            echo "not Sunday (DOW=$(date -u +%u)) — skipping weekly CLV rollup"
+          fi
 
       # Weekly refresh of Jerry's prompt MODEL PERFORMANCE CONTEXT block.
       # Interim adaptive weighting (2026-08-02) — pulls current lifetime hit
@@ -2670,6 +2710,18 @@ jobs:
       # real book prices (Over 6.5 @ -280 actual) instead of teaser_price
       # estimator. Only runs on the morning cron (10 UTC = 6am ET) to
       # keep Odds API cost low — alt lines don't need per-cron refresh.
+      # ══ 2026-10-01 · DEAD GATE LEFT DEAD, ON PURPOSE ══
+      # '0 10 * * *' is not one of this workflow's crons (0 6 / 15 11 / 30 12 /
+      # 0 18), so this has never run on a schedule — dispatch only. The other
+      # three instances of this same bug were fixed today; this one is NOT,
+      # because reviving it is a spend decision rather than a repair:
+      # pull_alt_lines.py consumes ODDS_API credits on every sport, and whether
+      # we want alt-line prices at all is Andy's call. cross_sport_lines.yml
+      # excluded it from the relocation for exactly this reason.
+      #
+      # To enable: change the gate to '0 6 * * *' (the real morning cron).
+      # Leaving the broken gate in place is the honest state — it is dispatch-only
+      # and now says so, rather than looking scheduled.
       - name: Pull alt-line prices (morning only, all sports)
         if: github.event.schedule == '0 10 * * *' || github.event_name == 'workflow_dispatch'
         env:
