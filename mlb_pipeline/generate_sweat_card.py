@@ -1849,7 +1849,37 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     # Skip when POTD wrote a noPlay marker (no audit-qualified cohort + no
     # value fallback) — placeholder slots in top_8 produce a permanent
     # "rank #1 Pending" row that never resolves.
-    if potd and isinstance(potd.get("data"), dict) and not potd["data"].get("noPlay"):
+    # ══ 2026-10-02 · TWO SENTINELS FOR "NO POTD", GATE KNEW ONE ══
+    # This used to test only `noPlay`. The POTD writer also emits
+    # {"noGames": true} when the sport has no slate, and on a 0-MLB-game day
+    # that sentinel sailed straight through: `pick` came back {}, the label
+    # fell through to the literal string "POTD", conviction was None, and an
+    # empty placeholder was added as a STRONG candidate.
+    #
+    # Measured on today's card before the fix — the #1 unified top pick was
+    #   {'sport':'MLB','label':'POTD','tier':'STRONG','conviction':0}
+    # ranked ABOVE three real NCAAF STRONG picks at conviction 85/79/75, while
+    # the card's own potd field read {"noGames": true}. A user opening the app
+    # saw "POTD" in the top slot with no play behind it.
+    #
+    # Guarding both sentinels is necessary but not sufficient — a third one
+    # would reproduce this exactly. So there is also a POSITIVE content check:
+    # a POTD candidate must carry a real label, not the "POTD" placeholder the
+    # fallback chain below invents. Sentinel vocabularies drift; "has an actual
+    # pick in it" does not.
+    _potd_data = potd.get("data") if isinstance(potd, dict) else None
+    _potd_empty = (not isinstance(_potd_data, dict)
+                   or _potd_data.get("noPlay")
+                   or _potd_data.get("noGames"))
+    _potd_label = ''
+    if isinstance(_potd_data, dict):
+        _potd_label = str((_potd_data.get("pick") or {}).get("label")
+                          or _potd_data.get("leanDisplay") or '').strip()
+    if _potd_empty or not _potd_label:
+        if potd and not _potd_empty:
+            print('  ⚠ POTD present but carries no pick label — not adding a '
+                  'placeholder to the card')
+    if potd and not _potd_empty and _potd_label:
         pd = potd["data"]
         pick = pd.get("pick") or {}
         confidence = pd.get("confidence")
