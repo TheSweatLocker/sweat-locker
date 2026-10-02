@@ -127,6 +127,12 @@ STAT_MAP_NHL = {
     'goals_over': 'goals', 'goals_under': 'goals',
     'assists_over': 'assists', 'assists_under': 'assists',
     'points_over': 'points', 'points_under': 'points',
+    # saves is DERIVED, not a log field — see the fetcher. The goalie game log
+    # carries shotsAgainst / goalsAgainst / savePctg but no `saves`, so the
+    # most commonly priced goalie market has to be computed:
+    # saves = shotsAgainst - goalsAgainst. nhl_player_log.recent_form does the
+    # same thing for the L10 graph; this mirrors it rather than diverging.
+    'saves_over': 'saves', 'saves_under': 'saves',
 }
 
 STAT_MAP_BY_SPORT = {
@@ -226,12 +232,16 @@ def fetch_nhl_player_stats_for_date(date_str: str):
         if hit is None:
             stats_map[_norm_name(nm)] = {'played': False}
             continue
+        # Goalie rows carry shotsAgainst/goalsAgainst instead of shots/goals.
+        _sa, _ga = hit.get('shotsAgainst'), hit.get('goalsAgainst')
+        _saves = (int(_sa) - int(_ga)) if _sa is not None and _ga is not None else None
         stats_map[_norm_name(nm)] = {
             'played': True,
             'shots': hit.get('shots'),
             'goals': hit.get('goals'),
             'assists': hit.get('assists'),
             'points': hit.get('points'),
+            'saves': _saves,
         }
     if unresolved:
         print(f'  ⚠ {unresolved} NHL prop player(s) did not resolve to an '
