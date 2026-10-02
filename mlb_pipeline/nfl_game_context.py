@@ -206,8 +206,31 @@ def _nfl_blend_label(cur_games: int, current_season: int, prior_season: int) -> 
 
 # Minimum games/team avg before we trust current-season stats over prior year.
 # Under this threshold we fall back to prior season (regressed to league mean).
-# 4 games ≈ Week 5 — matches the point where cohort samples are meaningful.
-MIN_GAMES_PER_TEAM_AVG = 4.0
+#
+# ══ 2026-10-02 · WAS 4.0, AND BYES MEANT IT NEVER OPENED ══
+# The old comment read "4 games ≈ Week 5 — matches the point where cohort
+# samples are meaningful". That reasons about the WEEK NUMBER but the code
+# measures GAMES PLAYED, and those diverge the moment byes start. Measured
+# today, Week 5 of the 2026 season:
+#
+#     avg_games/team = 3.062   (30 teams on 3 games, 2 on 4)
+#
+# so `avg >= 4.0` failed and every NFL game fell back to 2025 stats regressed
+# to the mean. Confirmed live in the build log: "current season 2026 thin —
+# falling back to 2025 regressed to mean". That is last season's power ratings
+# picking this season's games in Week 5, and it is the root of the
+# heavy-favourite-ML bias on this path: 44 PRIME/STRONG picks, every PRIME a
+# favourite ML between -205 and -290.
+#
+# It also contradicted this file's OWN blend design directly above:
+# NFL_BLEND_UNTIL_GAMES = 3 means "weeks 1-3 blend, week 4+ pure current".
+# One constant said switch at 3 games, the other refused below 4.
+#
+# Set to 3.0 so the two agree. 2026 stats at this threshold are real and sane
+# (BUF 786 pass / 465 rush over 3 games; PHI pass_epa -6.48), and
+# _regress_to_mean plus _nfl_blend_pg already damp small-sample noise — the
+# fallback was never the only protection.
+MIN_GAMES_PER_TEAM_AVG = 3.0
 
 
 def _avg_games(stats_dict: dict) -> float:
