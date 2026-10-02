@@ -8222,22 +8222,31 @@ if(mkt.key === 'pitcher_props') {
                 return;
               }
             }
-            // 3. surname, ONLY if it resolves to one fighter, or the first
-            //    name also matches. Never take an arbitrary row.
-            const last = full.split(' ').pop() || '';
-            if (last.length >= 4) {
+            // 3. surname — but the FIRST NAME MUST MATCH TOO, even when the
+            //    surname returns a single row. "resolves to exactly one
+            //    fighter" is NOT the same as "is that fighter", and tomorrow's
+            //    card proves it twice:
+            //      Bruce Whitehead -> %Whitehead% returns 1 row: MIKE Whitehead
+            //      Lucas Armand    -> %Armand%    returns 1 row: ARMANDO Villarreal
+            //    (the second is a substring hit — "Armand" inside "Armando").
+            //    Accepting a lone surname row would have served Mike
+            //    Whitehead's 27-8-0 on Bruce Whitehead's card, which is the
+            //    same defect as the Kopylov one it was meant to fix.
+            const parts = full.split(' ').filter(Boolean);
+            const last = parts.length > 1 ? parts[parts.length - 1] : '';
+            const first = parts[0]?.toLowerCase() || '';
+            if (last.length >= 4 && first) {
               const byLast = await supabase.from('ufc_fighter_stats')
                 .select('*').ilike('fighter_name', `%${last}%`).limit(10);
-              const rows = byLast.data || [];
-              if (rows.length === 1) {
-                statsByName[full.toLowerCase()] = rows[0];
-              } else if (rows.length > 1) {
-                const first = full.split(' ')[0].toLowerCase();
-                const hit = rows.find((r: any) =>
-                  String(r.fighter_name || '').toLowerCase().includes(first));
-                if (hit) statsByName[full.toLowerCase()] = hit;
-                // else: leave UNSET. A blank card beats another fighter's record.
-              }
+              const hit = (byLast.data || []).find((r: any) => {
+                const rn = String(r.fighter_name || '').toLowerCase();
+                const rp = rn.split(' ').filter(Boolean);
+                // first token must match first token, and the surname must be
+                // a whole token rather than a substring of a longer name.
+                return rp[0] === first && rp.includes(last.toLowerCase());
+              });
+              if (hit) statsByName[full.toLowerCase()] = hit;
+              // else leave UNSET — a blank card beats another fighter's record.
             }
           } catch {}
         }));
