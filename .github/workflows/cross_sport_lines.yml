@@ -64,6 +64,37 @@ name: Cross-Sport Line Movement + Money Flow
 # a schedule while mlb_pipeline still runs the same steps. Verify by hand
 # first; the follow-up commit adds the crons AND removes the steps from
 # mlb_pipeline.yml together, so there is never a window with both or neither.
+#
+# ══ 2026-10-01 · CORRECTION TO THE FOLLOW-UP PLAN ══
+# The plan recorded elsewhere was "add mlb_pipeline's crons (0 6, 15 11, 30 12,
+# 0 18) and strip the steps out". That is right for ten of the twelve steps and
+# WRONG for the closing-line freezes, which would corrupt data if given this
+# cadence:
+#
+#   freeze_closing_lines      stamps the TRUE closing line. On a 0 6 UTC cron it
+#                             would stamp a "close" at 2am ET, hours before any
+#                             puck drop or kickoff — a fabricated close, which is
+#                             worse than a missing one because it looks valid.
+#   freeze_prop_closing_lines prop_close_freeze.yml ALREADY runs this on
+#                             '*/10 22-23 * * *' + '*/10 0-4 * * *' — every ten
+#                             minutes across the actual kickoff window. The copy
+#                             here is a duplicate of a step that already has the
+#                             right cadence.
+#
+# So the corrected follow-up is a THREE-way move, still one commit:
+#   1. ten steps here  -> mirror mlb_pipeline's four crons
+#   2. freeze_closing_lines -> prop_close_freeze.yml, which owns the 10-minute
+#      close window (it becomes the close-freeze workflow for lines AND props)
+#   3. freeze_prop_closing_lines -> DELETED here, not moved; it already lives
+#      in prop_close_freeze.yml
+# plus concurrency -> cross-sport-lines, and removal from mlb_pipeline.yml.
+#
+# STILL BLOCKED ON VERIFICATION, and now that is checkable: this workflow had NO
+# workflow_heartbeat until today, so "verify by hand first" could never be
+# confirmed from the database — only claimed. Dispatch it once, confirm a
+# start/end pair plus a clean gate line, THEN do the three-way move. Doing the
+# swap unverified would hand twelve steps including closing-line freezes to a
+# workflow nobody has watched finish, during the MLB playoffs.
 
 on:
   workflow_dispatch:
@@ -106,6 +137,30 @@ jobs:
           pip install requests python-dotenv beautifulsoup4 scikit-learn numpy xgboost playwright
           # Chromium binary for Playwright-rendered external scrapers
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "playwright install" python -m playwright install --with-deps chromium
+
+      # ══ 2026-10-01 · HEARTBEAT — THIS WORKFLOW WAS UNOBSERVABLE ══
+      # Every other workflow posts to workflow_heartbeat; this one did not, so
+      # there was no way to answer "has it ever run, and did it finish" from the
+      # database. That matters more here than anywhere else, because the header
+      # above makes manual verification a PRECONDITION of the follow-up commit
+      # that adds crons and strips these steps out of mlb_pipeline.yml — and
+      # without telemetry that verification cannot be confirmed, only asserted.
+      #
+      # workflow_heartbeat is also what measured the 2-6 hour cron lateness this
+      # pipeline's scheduling decisions depend on. A workflow absent from it is
+      # invisible to that analysis and to watchdog_workflow_heartbeat.
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"workflow\":\"cross_sport_lines\",\"event\":\"start\",\"sport\":\"ALL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule || 'manual' }}\"}" \
+            > /dev/null || true
 
       # ── 1. RAW LINE CAPTURE ────────────────────────────────────────────
       - name: Steam Room - per-book line snapshot
@@ -214,6 +269,23 @@ jobs:
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "steam_room_ladder.py" python steam_room_ladder.py
+
+      # Before the gate, so a red run still records that it finished — the
+      # start/end pair is how lateness and duration get measured, and a run
+      # that fails its gate is exactly the one we want timing data on.
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{\"workflow\":\"cross_sport_lines\",\"event\":\"end\",\"sport\":\"ALL\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule || 'manual' }}\"}" \
+            > /dev/null || true
 
       # Turn a green-but-broken run red. Detector findings are reported
       # separately and do not fail the run (run_step.sh --detector).
