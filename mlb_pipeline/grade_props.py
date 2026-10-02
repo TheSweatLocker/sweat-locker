@@ -396,6 +396,34 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         print(f'sport {sport} not supported yet'); return {}
     print(f'=== grade_props · {sport} · {date_str} ===')
 
+    # ══ 2026-10-02 · DO NOT GRADE PRESEASON INTO THE RECORD ══
+    # This file had NO season gate, and there are TWO competing definitions of
+    # "in season" in the codebase:
+    #
+    #   season_gate.is_sport_in_season('NBA')   -> True  (MONTH window; it is
+    #                                              October, so October passes)
+    #   sport_registry.season_start             -> 2026-10-21, state=preseason
+    #   sport_season_gate.assert_publishable()  -> False for 10-03..10-16
+    #
+    # nba_generate_props uses the month-based one, so NBA preseason props WILL
+    # be generated for the 10-03 slate. Without this gate they would then be
+    # graded here and — since compute_surface_records gained NBA an hour ago —
+    # rolled into surface_records. That is exactly how NHL ended up with 20-12
+    # across 32 PRESEASON receipts in the public record before anyone noticed.
+    #
+    # sport_season_gate is the authoritative per-GAME-DATE check and is what
+    # nba_game_context / nhl_game_context already use to withhold picks. Grading
+    # now agrees with publishing instead of contradicting it. Fails OPEN on
+    # import error so a missing module can never mute a live sport.
+    try:
+        from sport_season_gate import assert_publishable
+        if not assert_publishable(sport.upper(), date_str):
+            print(f'  {sport} {date_str} is before the declared season start — '
+                  f'not graded, so preseason cannot enter the record')
+            return {}
+    except ImportError:
+        pass
+
     # Fetch player stats first (single pass against that sport's source)
     if sport.upper() == 'NBA':
         stats_map, n_games = fetch_nba_player_stats_for_date(date_str)
