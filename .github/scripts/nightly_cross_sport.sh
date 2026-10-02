@@ -219,6 +219,29 @@ bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
 bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
   python recompute_nfl_epa_units.py
 
+# 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
+# never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
+# had price_american NULL — ungradeable for ROI, permanently — and the 15 that
+# carried a price were priced on 09-24, eight days stale:
+#
+#     Penn State ML   logged -278   actual market -135
+#     Virginia Tech -3 logged -205  actual market -115
+#
+# A win at -278 pays 0.36u; at -135 it pays 0.74u. So every ROI figure drawn
+# from this column understates returns, and a stale price is also what gets
+# shown to a subscriber as the number they can have.
+#
+# Runs AFTER the resolvers and records above, and re-prices every FORWARD game
+# each night — price_picks.py only freezes a price once a game has started, so
+# a repeat run cannot overwrite the historical record of what we published.
+#
+# NOTE this is the daily floor, not the ideal. A price belongs to a specific
+# (market, side, line), so the right place is also immediately after each
+# sport's read generation — when the juice-reroute moves a pick from spread to
+# moneyline, the price must move with it. Wiring that per-pipeline is queued.
+bash "$RUN_STEP" --label "price_picks.py (ROI prices, all sports)" \
+  python price_picks.py --write
+
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
 # 2026-09-30 · Sharp Card headline/breakdown reconciliation.
