@@ -396,31 +396,26 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         print(f'sport {sport} not supported yet'); return {}
     print(f'=== grade_props · {sport} · {date_str} ===')
 
-    # ══ 2026-10-02 · DO NOT GRADE PRESEASON INTO THE RECORD ══
-    # This file had NO season gate, and there are TWO competing definitions of
-    # "in season" in the codebase:
+    # ══ 2026-10-02 · PRESEASON IS GRADED ON PURPOSE, BUT NOT PUBLISHED ══
+    # My first cut here REFUSED to grade preseason at all. Andy's call, and the
+    # better one: collect and record it for modelling, just keep it out of the
+    # published record. Blocking the grade throws away the only outcome data
+    # these games will ever produce.
     #
-    #   season_gate.is_sport_in_season('NBA')   -> True  (MONTH window; it is
-    #                                              October, so October passes)
-    #   sport_registry.season_start             -> 2026-10-21, state=preseason
-    #   sport_season_gate.assert_publishable()  -> False for 10-03..10-16
+    # The exclusion therefore lives at the RECORDS layer, not here — see
+    # compute_surface_records._is_preseason, which filters by the authoritative
+    # sport_registry.season_start for every sport. Grading writes result and
+    # final_value; surface_records declines to count them.
     #
-    # nba_generate_props uses the month-based one, so NBA preseason props WILL
-    # be generated for the 10-03 slate. Without this gate they would then be
-    # graded here and — since compute_surface_records gained NBA an hour ago —
-    # rolled into surface_records. That is exactly how NHL ended up with 20-12
-    # across 32 PRESEASON receipts in the public record before anyone noticed.
-    #
-    # sport_season_gate is the authoritative per-GAME-DATE check and is what
-    # nba_game_context / nhl_game_context already use to withhold picks. Grading
-    # now agrees with publishing instead of contradicting it. Fails OPEN on
-    # import error so a missing module can never mute a live sport.
+    # This is only safe BECAUSE that filter exists. If it is ever removed,
+    # preseason walks straight into the published record — which is how NHL
+    # ended up publishing 20-12 across 32 preseason receipts.
     try:
         from sport_season_gate import assert_publishable
         if not assert_publishable(sport.upper(), date_str):
-            print(f'  {sport} {date_str} is before the declared season start — '
-                  f'not graded, so preseason cannot enter the record')
-            return {}
+            print(f'  NOTE {sport} {date_str} is PRESEASON (before the declared '
+                  f'season start) — grading anyway for modelling; '
+                  f'surface_records excludes it from the published record')
     except ImportError:
         pass
 

@@ -280,6 +280,9 @@ def pick_prop() -> list[dict]:
             for r in _paged(url):
                 cls = _classify(r.get('result'))
                 if cls is None: continue
+                # 2026-10-02: preseason is GRADED for modelling but must not
+                # be counted here — see _is_preseason.
+                if _is_preseason(sport, r.get('game_date')): continue
                 # Prefer publish-lock over live tier when the row was
                 # actually published to a user surface. Fallback for
                 # legacy/unpublished rows: use live tier (backward compat).
@@ -523,6 +526,51 @@ def pick_ncaaf_sides() -> list[dict]:
         out.append({'sport': 'NCAAF', 'date': d, 'result': cls,
                     'stake': 1.0, 'payout': 0.909})
     return out
+
+
+_SEASON_START_CACHE: dict | None = None
+
+
+def _is_preseason(sport: str, game_date) -> bool:
+    """True when `game_date` falls before that sport's declared season start.
+
+    ══ 2026-10-02 · THE SPORT-UNIVERSAL VERSION OF _is_nhl_preseason ══
+    _is_nhl_preseason below reads the game TYPE out of the NHL game id, which
+    only NHL encodes. Its own docstring flags the hole: "NBA (opens 10-03) and
+    MLB spring training have the same exposure and cannot be detected this way
+    — they need a season_type column."
+
+    sport_registry.season_start is that missing column, and it already exists:
+    NBA 2026-10-21 (state preseason), NCAAB 2026-11-03, NHL 2026-09-29. It is
+    the same source sport_season_gate uses to withhold PICKS, so records and
+    publishing now agree rather than contradicting each other.
+
+    WHY A DATE FILTER HERE RATHER THAN A GRADING BLOCK:
+    Andy wants preseason COLLECTED and RECORDED for modelling — it is the only
+    outcome data those games will ever produce. So grade_props grades it and
+    this declines to count it. Both halves are required; drop this one and
+    preseason walks into the published record.
+
+    Fails CLOSED toward counting (returns False) when the registry cannot be
+    read, so a registry outage can never silently empty a sport's record.
+    """
+    global _SEASON_START_CACHE
+    if _SEASON_START_CACHE is None:
+        _SEASON_START_CACHE = {}
+        try:
+            r = requests.get(f'{SB}/rest/v1/sport_registry', headers=H,
+                             params={'select': 'sport,season_start'}, timeout=20)
+            for row in (r.json() or []):
+                if row.get('season_start'):
+                    _SEASON_START_CACHE[str(row['sport']).upper()] = \
+                        str(row['season_start'])[:10]
+        except Exception as e:
+            print(f'  ⚠ sport_registry unreadable ({type(e).__name__}) — '
+                  f'preseason filter inactive this run')
+    start = _SEASON_START_CACHE.get((sport or '').upper())
+    if not start or not game_date:
+        return False
+    return str(game_date)[:10] < start
 
 
 def _is_nhl_preseason(game_id) -> bool:
@@ -972,6 +1020,8 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
             for r in _paged(url):
                 cls = _classify(r.get('result'))
                 if cls is None: continue
+                # 2026-10-02: preseason graded for modelling, not counted here.
+                if _is_preseason(sport, r.get('game_date')): continue
                 # 2026-09-17 apply prop-family ban policy so historical
                 # rollups match the pool users see today (see docstring).
                 if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), r.get('tier')):
