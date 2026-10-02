@@ -193,6 +193,32 @@ bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
 # record and stamp it as fresh.
 bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   python compute_schedule_strength.py
 
+# 2026-10-02 · THE EIGHTH AND NINTH INSTANCES OF THE SAME PATTERN.
+# recompute_ncaaf_per_game_stats.py and recompute_nfl_epa_units.py were both
+# written 09-26, run once by hand, and never scheduled. Their output is served
+# as AUTHORITATIVE: migration 20260926d makes a stat_key present in
+# team_computed_stats win over the matview half, and the team_stats_rolling
+# view is what matchup_story.py reads to build every Jerry read's
+# `stat_matchups` fact. So a frozen row is not a gap, it is a wrong number
+# published with a fresh-looking percentile beside it.
+#
+# Measured on the 10-02 NCAAF slate, against pass_yards/games from
+# ncaaf_team_stats (the card's own arithmetic):
+#     Penn State     truth 243.75   read published 287.0
+#     Northwestern   truth 269.0    read published 403.5  (rank 1 of 133)
+#     Pittsburgh     truth 347.25   read published 271.7
+#     Delaware       truth 262.0    read published 325.7
+# Wrong on 5 of 6 teams, six days and a full game-week stale. Northwestern
+# was rendered the best passing offence in the country off a 2-game divisor.
+#
+# Must run AFTER the per-sport stats pulls (they read ncaaf_team_stats /
+# nfl_team_stats cumulative totals) and after the resolvers above, for the
+# same reason compute_schedule_strength does.
+bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
+  python recompute_ncaaf_per_game_stats.py
+bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
+  python recompute_nfl_epa_units.py
+
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
 # 2026-09-30 · Sharp Card headline/breakdown reconciliation.

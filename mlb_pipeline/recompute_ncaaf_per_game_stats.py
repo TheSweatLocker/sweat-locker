@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 
 import requests
 
@@ -71,6 +72,8 @@ for _l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
 SB = os.environ['SUPABASE_URL']
 KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+
+_NOW = datetime.now(timezone.utc).isoformat()
 
 # A team's offensive snap count per game. Real college football sits near
 # 60-75; the bound is deliberately loose because its job is to catch a
@@ -189,6 +192,22 @@ def main() -> int:
                 'stat_key': stat_key, 'raw_value': v, 'rank': rk[team],
                 'league_size': size, 'direction': direction,
                 'display_label': label, 'unit': unit,
+                # 2026-10-02 · STAMP refreshed_at EXPLICITLY. The column is
+                # `timestamptz DEFAULT now()` and a DEFAULT only fires on
+                # INSERT; these writes are upserts, so every re-run took the
+                # UPDATE path and the timestamp stayed pinned to the row's
+                # first insert. Verified today: a run that corrected Penn
+                # State 287.0 -> 243.8 and Northwestern 403.5 -> 269.0 left
+                # all 133 pre-existing rows reading refreshed_at =
+                # 2026-09-26. Values fresh, timestamp six days stale.
+                #
+                # That is not cosmetic. matchup_story.load_team_stats now
+                # WITHHOLDS rows that are stale relative to the slate date,
+                # so an unstamped row gets dropped even when its value is
+                # correct — the guard would have silently emptied the NCAAF
+                # matchup story. Same fix compute_schedule_strength.py took
+                # on 09-30 for the same reason.
+                'refreshed_at': _NOW,
             })
         best = min(vals, key=lambda kv: rk[kv[0]])
         print(f'  {stat_key:<16} {size:3d} teams · best {best[0]} {best[1]}')

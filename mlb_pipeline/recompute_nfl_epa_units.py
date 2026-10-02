@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 
 import requests
 
@@ -50,6 +51,8 @@ for _l in (open(os.path.join(_HERE, '.env'), encoding='utf-8')
 SB = os.environ['SUPABASE_URL']
 KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+
+_NOW = datetime.now(timezone.utc).isoformat()
 
 # Minimum attempts before a per-play rate means anything. Two games of
 # dropbacks is ~60; below 25 one bad series dominates the number.
@@ -132,6 +135,14 @@ def main() -> int:
                 'stat_key': key, 'raw_value': v, 'rank': rk[team],
                 'league_size': size, 'direction': direction,
                 'display_label': label, 'unit': unit,
+                # 2026-10-02 · STAMP refreshed_at EXPLICITLY — the column is
+                # `timestamptz DEFAULT now()` and these writes are upserts,
+                # so without this every re-run leaves the timestamp pinned to
+                # the row's first insert. matchup_story.load_team_stats now
+                # withholds rows stale relative to the slate date, so an
+                # unstamped row is dropped even when its value is correct.
+                # Same fix compute_schedule_strength.py took on 09-30.
+                'refreshed_at': _NOW,
             })
         best = min(vals, key=lambda kv: rk[kv[0]])
         lo, hi = min(v for _, v in vals), max(v for _, v in vals)

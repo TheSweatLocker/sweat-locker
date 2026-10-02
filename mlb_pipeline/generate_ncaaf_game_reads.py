@@ -472,6 +472,11 @@ _TS_CACHE: dict = {}
 
 
 def _team_stats_cache(season):
+    # load_team_stats withholds rows whose refreshed_at has gone stale, so a
+    # frozen writer cannot publish a wrong per-game rate as a CONFIRMED FACT.
+    # Age is measured against NOW inside that function, not the slate date —
+    # see its docstring; reads run up to a month ahead and scoring against a
+    # future kickoff discards data that is genuinely the latest available.
     key = int(season)
     if key not in _TS_CACHE:
         _TS_CACHE[key] = matchup_story.load_team_stats('NCAAF', key)

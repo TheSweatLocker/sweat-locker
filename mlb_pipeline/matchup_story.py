@@ -37,6 +37,7 @@ generators import it.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -112,27 +113,52 @@ def reconcile_edge_side(ctx: dict, home: str, away: str,
 # A unit of offense pointed at the unit of defense that has to stop it.
 # This is the "top rushing team facing bottom run defense" pairing, stated
 # once per sport. (attack_key, defend_key, phrase)
+# 2026-10-02 · THESE KEYS ARE NOT INTERCHANGEABLE BETWEEN SPORTS.
+# The two sports were given identical pair tables on 09-26. NCAAF's keys
+# exist; NFL's did not — 7 of the 12 keys named here were absent from
+# team_stats_rolling for NFL, so stats.get() returned None, _pct() returned
+# None, the loop `continue`d, and the NFL unit-vs-unit story produced
+# **0 lines across 223 games** while reporting success. Only the solo keys
+# that happened to exist (sos/sor/points_allowed_pg) ever rendered.
+#
+# Verify with _probe_matchup_story.py after ANY edit here: it reports the
+# named-vs-present key diff and counts lines actually produced per sport.
+# A hand-written key table against a per-sport schema needs that check.
+#
+# NCAAF NAMING TRAP: `def_epa_per_play` carries display_label "Def Pass EPA"
+# and its values match ncaaf_game_context.def_pass_epa_allowed — the column
+# holds PASS EPA allowed, not overall. The label is right, the key name is
+# a lie. So it is correct for 'passing game' and WRONG for 'offense
+# overall', which is why Northwestern's "Def Pass EPA 0.385" appeared twice
+# in the 10-02 Penn State read as two different "clear edges" off one fact.
 MATCHUP_PAIRS = {
     'NCAAF': [
         ('rush_yds_pg',      'def_rush_epa_allowed',     'run game'),
+        # def_epa_per_play IS pass EPA allowed here — see trap note above.
         ('pass_yds_pg',      'def_epa_per_play',         'passing game'),
         ('off_success_rate', 'def_success_rate_allowed', 'staying on schedule'),
-        ('off_epa_per_play', 'def_epa_per_play',         'offense overall'),
+        # Overall offence against a genuinely overall defensive measure.
+        # Was def_epa_per_play (pass-only), double-counting one fact.
+        ('off_epa_per_play', 'points_allowed_pg',        'offense overall'),
     ],
     'NFL': [
-        ('rush_yds_pg',      'def_rush_epa_allowed',     'run game'),
-        ('pass_yds_pg',      'def_epa_per_play',         'passing game'),
-        ('off_success_rate', 'def_success_rate_allowed', 'staying on schedule'),
-        ('off_epa_per_play', 'def_epa_per_play',         'offense overall'),
+        ('rush_yds_pg',   'rush_yds_allowed_pg', 'run game'),
+        ('pass_yds_pg',   'pass_yds_allowed_pg', 'passing game'),
+        ('off_pass_epa',  'def_pass_epa',        'passing efficiency'),
+        ('off_rush_epa',  'def_rush_epa',        'rushing efficiency'),
+        ('total_yds_pg',  'yds_allowed_pg',      'offense overall'),
     ],
 }
 
 # Stats worth calling out on their own, as a straight head-to-head.
+# NFL carries no turnovers_pg / third_down_pct in team_stats_rolling (both
+# were named here and both were dead); ints_pg and sacks_suffered_pg are the
+# real equivalents it does carry.
 SOLO_KEYS = {
     'NCAAF': ['sp_overall', 'sor', 'sos', 'points_allowed_pg',
               'turnovers_pg', 'third_down_pct'],
-    'NFL':   ['sor', 'sos', 'points_allowed_pg', 'turnovers_pg',
-              'third_down_pct'],
+    'NFL':   ['sor', 'sos', 'points_allowed_pg', 'ints_pg',
+              'sacks_suffered_pg'],
 }
 
 # A mismatch has to be genuinely lopsided before it is worth a sentence.
@@ -162,13 +188,85 @@ def _page(path: str, params: dict) -> list:
         off += 1000
 
 
-def load_team_stats(sport: str, season: int) -> dict:
-    """-> {(team, stat_key): row}. One read for the whole slate."""
+# A derived stat older than this many days is DROPPED rather than narrated.
+# Football plays weekly, so a row this stale has missed a whole slate and its
+# per-game rate is arithmetic over the wrong divisor. 4 days leaves room for
+# one missed nightly run before anything disappears.
+MAX_STAT_AGE_DAYS = float(os.environ.get('MATCHUP_STORY_MAX_STAT_AGE_DAYS', '4'))
+
+
+def load_team_stats(sport: str, season: int,
+                    as_of: Optional[str] = None) -> dict:
+    """-> {(team, stat_key): row}. One read for the whole slate.
+
+    2026-10-02 · STALE ROWS ARE DROPPED, NOT NARRATED.
+    team_stats_rolling serves team_computed_stats as authoritative (migration
+    20260926d). Two of its writers — recompute_ncaaf_per_game_stats.py and
+    recompute_nfl_epa_units.py — were written 09-26, run once by hand and
+    never scheduled, so their rows froze while still being quoted as
+    CONFIRMED FACTS with a live-looking percentile beside them. On the 10-02
+    NCAAF slate that published Northwestern as the nation's #1 passing
+    offence at 403.5 yd/g (truth: 269.0, a 2-game divisor on 3 games) and was
+    wrong on 5 of 6 teams.
+
+    `refreshed_at` was NOT in the old explicit select, so the staleness was
+    invisible to this module by construction — the missing-column-is-a-silent-
+    blank trap. It is selected now and enforced here: a row older than
+    MAX_STAT_AGE_DAYS is withheld, so build_story omits the line instead of
+    asserting a wrong number. Matches the rule this module already follows
+    for untrustworthy teams: no row beats a fabricated one.
+
+    AGE IS MEASURED AGAINST NOW, NOT THE GAME DATE. The question this guard
+    answers is "has a writer frozen?", which is a fact about the pipeline at
+    generation time. Measuring against a future kickoff instead drops data
+    that is perfectly current: reads are generated up to a month ahead, so a
+    10-04 slate scored today made 09-29 rows look 5 days stale and withheld
+    NFL plays_pg that was the latest figure in existence. `as_of` therefore
+    exists only to make this deterministic in tests; leave it None in
+    production.
+
+    NOTE the companion defect this depends on: `refreshed_at` is
+    `timestamptz DEFAULT now()`, so it only populates on INSERT. Any writer
+    that upserts without stamping it explicitly leaves the timestamp pinned
+    to the row's first insert and WILL be dropped here despite holding
+    correct values. recompute_ncaaf_per_game_stats.py,
+    recompute_nfl_epa_units.py and compute_schedule_strength.py all stamp it;
+    a new writer must too.
+    """
     rows = _page('team_stats_rolling', {
         'sport': f'eq.{sport}', 'season': f'eq.{season}',
         'select': 'team,stat_key,raw_value,rank,league_size,direction,'
-                  'display_label,unit'})
-    return {(r['team'], r['stat_key']): r for r in rows}
+                  'display_label,unit,refreshed_at'})
+    ref = _parse_ts(as_of) or datetime.now(timezone.utc)
+    out, dropped = {}, {}
+    for r in rows:
+        ts = _parse_ts(r.get('refreshed_at'))
+        if ts is not None:
+            age = (ref - ts).total_seconds() / 86400.0
+            if age > MAX_STAT_AGE_DAYS:
+                dropped[r['stat_key']] = dropped.get(r['stat_key'], 0) + 1
+                continue
+        out[(r['team'], r['stat_key'])] = r
+    if dropped:
+        print(f'  ⚠ matchup_story: dropped {sum(dropped.values())} stat rows '
+              f'older than {MAX_STAT_AGE_DAYS}d — {dropped}')
+    return out
+
+
+def _parse_ts(v):
+    """Lenient ISO-8601 -> aware datetime, or None."""
+    if not v:
+        return None
+    s = str(v).strip().replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        # Bare date, e.g. a game_date passed as as_of.
+        try:
+            dt = datetime.fromisoformat(s[:10])
+        except ValueError:
+            return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _pct(row: Optional[dict]) -> Optional[float]:
