@@ -263,7 +263,14 @@ def pick_prop() -> list[dict]:
         ])
     except Exception:
         lock_map = {}
-    for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL')]:
+    # 2026-10-02: NHL and NBA added. Their prop tables were absent, so even
+    # once grade_props started writing NHL results (85439fd1) the rollup
+    # produced ZERO surface_records rows for them — grading without recording
+    # is still not a product. Verified all columns in the select below exist on
+    # both tables first; a missing column 400s and the bare `except` around
+    # this loop would have swallowed it silently.
+    for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL'),
+                       ('nhl_pipeline_props', 'NHL'), ('nba_pipeline_props', 'NBA')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=id,game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
                f'&result=not.is.null'
@@ -950,7 +957,12 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
         from prop_ban_policy import is_banned_mlb_prop
     except ImportError:
         is_banned_mlb_prop = lambda pt, tier=None: False
-    for tbl, sport in [('mlb_pipeline_props', 'MLB')]:
+    # 2026-10-02: NHL/NBA added here too. This is the picker that feeds the
+    # tier-specific surfaces, and prop_coverage is the ONLY one NHL can reach
+    # today — every nhl_pipeline_props row is tier='COVERAGE', so pick_prop()
+    # above (PRIME/STRONG only) correctly yields nothing for it.
+    for tbl, sport in [('mlb_pipeline_props', 'MLB'), ('nfl_pipeline_props', 'NFL'),
+                       ('nhl_pipeline_props', 'NHL'), ('nba_pipeline_props', 'NBA')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
                f'&result=not.is.null&tier=in.({tier_filter})'
