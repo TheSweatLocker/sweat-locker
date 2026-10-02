@@ -43,7 +43,48 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 DEFAULT_ELO = 1500.0
-HOME_ADVANTAGE = 60.0     # NHL — less than NBA (10 pts win prob boost)
+
+# ══ 2026-10-02 · WAS 60.0, WHICH MADE EVERY TAKE LEAN HOME ══
+# 60 Elo points implies a 58.5% home win rate on equal teams:
+#     1 / (1 + 10**(-60/400)) = 0.5855
+# The NHL's actual home win rate is ~54.5% — the same league invariant the
+# rest of this model's constants are derived from (total 6.10, OT 23%,
+# home 54.5%). Solving for the points that produce 0.545:
+#     -400 * log10(1/0.545 - 1) = 31.4
+# So 60 overstated home ice by +4.0 percentage points, and it was the one
+# constant in the NHL stack NOT taken from the invariant.
+#
+# The damage was bigger than 4pp because of what it was compared against.
+# Measured over 116 games in nhl_game_context:
+#
+#     median ABSOLUTE elo gap between the two teams   39.1 points
+#     HOME_ADVANTAGE                                  60.0 points
+#
+# Home ice was LARGER than the typical talent gap, so it decided the pick in
+# most games — the away team had to be more than 60 Elo better before the
+# model would take it. Result: the model favoured away in only 17% of games
+# against a market that favoured away in 34%, and its mean projected home win
+# probability was 0.583 against a market mean of 0.533.
+#
+#     HFA     equal-team home%   mean proj_home_wp   favours AWAY
+#     60.0         58.5%              0.583              17%
+#     31.4         54.5%              0.543              29%
+#     market         —                0.533              34%
+#
+# 31.4 lands between the market mean (0.533) and the league rate (0.545),
+# which is where a calibrated model should sit.
+#
+# This is used in BOTH train() and predict(), and train() rebuilds ratings
+# from nhl_game_results on every run — there is no stored ratings table — so
+# the change is self-consistent and needs no backfill. Ratings fitted under
+# the old constant do not survive to be mixed with new predictions.
+#
+# NOT changed here: HOME_ICE_GOALS in nhl_projection.py is 0.15 applied
+# symmetrically (+0.15 home / -0.15 away) for a +0.30 projected margin
+# against a real ~+0.25. That file's own comment already flags it. It is a
+# separate, smaller tilt on a different model and should be measured on its
+# own rather than bundled into this change.
+HOME_ADVANTAGE = 31.4     # = league 54.5% home win rate, see above
 K_FACTOR = 6              # Small — NHL variance is high (many 1-goal games)
 
 
