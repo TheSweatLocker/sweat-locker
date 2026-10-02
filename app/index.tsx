@@ -8178,24 +8178,70 @@ if(mkt.key === 'pitcher_props') {
         try {
           card = typeof evRow.fight_card === 'string' ? JSON.parse(evRow.fight_card) : (evRow.fight_card || []);
         } catch { card = []; }
-        // Collect unique last names across all fights
-        const lastNames = new Set<string>();
+        // ══ 2026-10-02 · THIS SHOWED THE WRONG FIGHTER'S RECORD ══
+        // Was: collect LAST names, query `ilike %lastname%` with .limit(1),
+        // and key the map by last name. Both halves are broken.
+        //
+        // Andy saw 6-11 on Roman Kopylov's card. ufc_fighter_stats holds two
+        // Kopylovs, and `ilike %kopylov%` returns them in this order:
+        //   data[0] = Andrei Kopylov  6-11-0  (b.1965, 265lb heavyweight)
+        //   data[1] = Roman Kopylov  15-5-0  (185lb middleweight)
+        // so .limit(1) deterministically returned ANDREI — not a coin flip.
+        // And keying by last name meant two same-surname fighters on one card
+        // could only ever share a single entry anyway.
+        //
+        // Now: resolve on the FULL name with the same guarded chain the
+        // lookupFighter helper above already uses, and key by full name.
+        // Surname is a last resort and only when it is UNAMBIGUOUS.
+        const fullNames = new Set<string>();
         for (const f of card) {
-          const f1last = String(f.fighter1 || '').split(' ').pop()?.toLowerCase();
-          const f2last = String(f.fighter2 || '').split(' ').pop()?.toLowerCase();
-          if (f1last) lastNames.add(f1last);
-          if (f2last) lastNames.add(f2last);
+          const a = String(f.fighter1 || '').trim();
+          const b = String(f.fighter2 || '').trim();
+          if (a) fullNames.add(a);
+          if (b) fullNames.add(b);
         }
-        // Fetch each in parallel — small N (10-14 fighters per card)
-        const statsByLast: Record<string, any> = {};
-        await Promise.all(Array.from(lastNames).map(async (last) => {
+        const statsByName: Record<string, any> = {};
+        await Promise.all(Array.from(fullNames).map(async (full) => {
           try {
-            const { data } = await supabase.from('ufc_fighter_stats')
-              .select('*').ilike('fighter_name', `%${last}%`).limit(1);
-            if (data && data[0]) statsByLast[last] = data[0];
+            // 1. exact (case-insensitive, no wildcards)
+            const exact = await supabase.from('ufc_fighter_stats')
+              .select('*').ilike('fighter_name', full).limit(1);
+            if (exact.data && exact.data[0]) {
+              statsByName[full.toLowerCase()] = exact.data[0];
+              return;
+            }
+            // 2. full-name wildcard — accept an exact CI hit, or a lone match
+            const wide = await supabase.from('ufc_fighter_stats')
+              .select('*').ilike('fighter_name', `%${full}%`).limit(5);
+            if (wide.data && wide.data.length) {
+              const ci = wide.data.find((r: any) =>
+                String(r.fighter_name || '').toLowerCase() === full.toLowerCase());
+              if (ci) { statsByName[full.toLowerCase()] = ci; return; }
+              if (wide.data.length === 1) {
+                statsByName[full.toLowerCase()] = wide.data[0];
+                return;
+              }
+            }
+            // 3. surname, ONLY if it resolves to one fighter, or the first
+            //    name also matches. Never take an arbitrary row.
+            const last = full.split(' ').pop() || '';
+            if (last.length >= 4) {
+              const byLast = await supabase.from('ufc_fighter_stats')
+                .select('*').ilike('fighter_name', `%${last}%`).limit(10);
+              const rows = byLast.data || [];
+              if (rows.length === 1) {
+                statsByName[full.toLowerCase()] = rows[0];
+              } else if (rows.length > 1) {
+                const first = full.split(' ')[0].toLowerCase();
+                const hit = rows.find((r: any) =>
+                  String(r.fighter_name || '').toLowerCase().includes(first));
+                if (hit) statsByName[full.toLowerCase()] = hit;
+                // else: leave UNSET. A blank card beats another fighter's record.
+              }
+            }
           } catch {}
         }));
-        setUfcFighterStats(statsByLast);
+        setUfcFighterStats(statsByName);
         // Externals: pull all UFC picks for the event date
         try {
           const { data: ext } = await supabase.from('external_picks')
@@ -9397,11 +9443,17 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                   if(sport === 'UFC') {
                     try {
                       const fighterName = prop.player;
+                      // 2026-10-02: was `ilike %surname%` + .single(). With two
+                      // Kopylovs in the table .single() THROWS on the duplicate
+                      // and the catch below swallowed it, so the prop context
+                      // silently came back empty. Exact name first; surname is
+                      // not a safe key. See the fight-card note above.
                       const { data: ufcCtx } = await supabase
                         .from('ufc_fighter_stats')
                         .select('*')
-                        .ilike('fighter_name', `%${fighterName.split(' ').pop()}%`)
-                        .single();
+                        .ilike('fighter_name', fighterName)
+                        .limit(1)
+                        .maybeSingle();
 
                       // Find opponent from the game matchup
                       const gameTeams = prop.game?.split(' @ ') || [];
@@ -9414,8 +9466,9 @@ if(prop.marketLabel === 'PITCHER STRIKEOUTS' && new Date() < new Date('2026-05-0
                           const { data: oppData } = await supabase
                             .from('ufc_fighter_stats')
                             .select('*')
-                            .ilike('fighter_name', `%${opponentName.split(' ').pop()}%`)
-                            .single();
+                            .ilike('fighter_name', opponentName)
+                            .limit(1)
+                            .maybeSingle();
                           oppCtx = oppData;
                         } catch(e) {}
                       }
@@ -14101,11 +14154,10 @@ setJerryHistory(prev => {
             const jerry = jerryKey ? (ufcJerryByGame as any)[jerryKey] : null;
             const tierColor = tier && TIER_COLOR ? (TIER_COLOR as any)[tier] : THEME.textMuted;
             const isExpanded = expandedUfcFight === cardOrder;
-            // Lookup fighter stats via last-name (matches bulk-fetch key)
-            const f1last = String(f.fighter1 || '').split(' ').pop()?.toLowerCase() || '';
-            const f2last = String(f.fighter2 || '').split(' ').pop()?.toLowerCase() || '';
-            const f1Stats = ufcFighterStats[f1last];
-            const f2Stats = ufcFighterStats[f2last];
+            // Keyed by FULL name — see the bulk-fetch note. Last-name keying
+            // served Andrei Kopylov's 6-11 record on Roman Kopylov's card.
+            const f1Stats = ufcFighterStats[String(f.fighter1 || '').trim().toLowerCase()];
+            const f2Stats = ufcFighterStats[String(f.fighter2 || '').trim().toLowerCase()];
             const fightExternals = pick?.game_id ? (ufcExternals[pick.game_id] || []) : [];
             return (
               <TouchableOpacity key={idx} activeOpacity={0.75}
