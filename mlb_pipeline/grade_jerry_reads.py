@@ -59,6 +59,53 @@ SPREAD_COL_BY_SPORT = {
     'NHL':   'spread_result',
 }
 
+# 2026-10-03 · the LINE the server's cover flag was computed at, per sport.
+# grade_rl needs this to tell "the book's number" from "the number we
+# published" — see the note in grade_rl. NHL has no close_spread at all
+# (it stores close_puckline), and selecting a missing column 400s the whole
+# results fetch, which is the exact failure SPREAD_COL_BY_SPORT above was
+# created to fix on 9/7 (189 NCAAF picks, 0 graded, silently). So this is a
+# registry, not a constant.
+SPREAD_LINE_COL_BY_SPORT = {
+    'MLB':   'close_spread',
+    'NFL':   'close_spread',
+    'NCAAF': 'close_spread',
+    'NCAAB': 'close_spread',
+    'NBA':   'close_spread',
+    'NHL':   'close_puckline',
+}
+
+# 🚨 NFL STORES THE AWAY PERSPECTIVE AND EVERY OTHER SPORT STORES THE HOME ONE
+# (project_close_spread_sign_bug_914). grade_rl needs the sign to decide
+# whether our pick is laying or taking points, so the sign has to mean ONE
+# thing by the time it gets there. Re-verified 2026-10-03 against actual
+# home margins, which is the only arbiter that cannot itself be mis-signed:
+#
+#   sport   n      mean home_margin   mean stored line   same sign?
+#   NFL     7325   +2.33              +2.25              YES -> away line
+#   NCAAF   6380   +6.96              -6.47              no  -> home line
+#   NBA     2390   +1.61              -1.91              no  -> home line
+#   NCAAB   5027   +5.32              -5.27              no  -> home line
+#   NHL     2540   +0.21              -0.41              no  -> home line
+#   MLB     2116   +0.01              -0.07              no  -> home line
+#
+# So flip NFL on the way in and let grade_rl assume home perspective
+# throughout. Normalising at the single alias point beats teaching every
+# consumer the exception -- that exception is what cost 2x-inflated NCAAF
+# edges on 9/16 and a mis-signed grading path on 9/14.
+SPREAD_LINE_IS_AWAY_PERSPECTIVE = {'NFL'}
+
+
+def _home_persp_line(sport, raw):
+    """Stored spread line normalised to HOME perspective (neg = home fav)."""
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return -v if sport in SPREAD_LINE_IS_AWAY_PERSPECTIVE else v
+
 
 def yesterday_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=28)).strftime('%Y-%m-%d')
@@ -79,7 +126,8 @@ def grade_total(side: str, line, hs: int, as_: int) -> str:
     return None
 
 
-def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None) -> str:
+def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None,
+             results_line=None) -> str:
     """Grade run-line (MLB ±1.5) or spread (NFL/NCAAF/etc).
 
     Server-computed *_result values use varying labels across sports:
@@ -87,8 +135,53 @@ def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None) ->
       NFL/NCAAF/NCAAB/NBA spread_result: 'home_covered' / 'away_covered' / 'push'
 
     Both flavors accepted here so the same function grades both markets.
+
+    2026-10-03 · GRADE AT THE LINE WE PUBLISHED, NOT THE BOOK'S CLOSE.
+    ------------------------------------------------------------------
+    `run_line_result` / `spread_result` is a cover flag the results table
+    computed against ITS OWN stored line. This function used to return on
+    that flag unconditionally, so `line` -- the number we actually put in
+    front of users -- was never read. When the two disagree the pick gets
+    graded at a line nobody could have bet.
+
+    Replayed old-logic vs new-logic over every graded rl read (the only
+    comparison that isolates this change -- comparing against the STORED
+    result conflates it with pre-existing grader drift, which is how I
+    first mis-read this as 10 MLB flips). Exactly 2 grades move, both
+    NCAAF, and they cancel:
+
+      Nebraska -24.5  won by 27  book line -27.5  Loss -> WIN
+      Illinois -39.5  won by 38  book line -35.5  Win  -> LOSS
+
+    MLB/NFL/NBA/NHL: zero change. MLB is structurally immune because the
+    run line is always ±1.5 on both sides, so the magnitudes always match.
+    22 of 182 NCAAF reads carried a line differing from the book's; most
+    land the same side of the result anyway.
+
+    So: trust the server flag only when it was computed at our magnitude;
+    otherwise grade from the margin.
+
+    The old fallback was also wrong on its own terms -- `margin_picked >
+    abs(line)` grades a DOG pick as if it were laying the points, so
+    "Buffalo +13.5" needed Buffalo to win by 14. It was dormant because the
+    cover flag is nearly always present; widening the fallback would have
+    activated it.
+
+    Direction comes from the MARKET (`results_line`, negative = home
+    favoured, verified 52/0 against the moneyline), magnitude from our own
+    `line`. That is deliberate: `call_line`'s SIGN is unreliable -- it
+    contradicts its own label on 16 of 299 rl reads, 12 of them dated
+    09-12 from the retired `ncaaf_game_read_v2_2026-08-25` generator (e.g.
+    call_line +23.5 on a row labelled "Oregon -23.5"). The magnitude is
+    right on 299 of 303, so use the half that is trustworthy.
     """
-    if run_line_result:
+    margin_picked = (hs - as_) if side == 'HOME' else (as_ - hs)
+
+    lines_match = (
+        line is None or results_line is None
+        or abs(abs(float(results_line)) - abs(float(line))) <= 0.01
+    )
+    if run_line_result and lines_match:
         rl = str(run_line_result).lower()
         if 'push' in rl: return 'Push'
         home_won = ('home' in rl and 'covered' in rl) or rl == 'home'
@@ -97,9 +190,16 @@ def grade_rl(side: str, line, hs: int, as_: int, run_line_result: str | None) ->
         if side == 'AWAY' and away_won: return 'Win'
         return 'Loss'
     if line is None: return None
-    # Standard: run line -1.5 means picked side must win by 2+
-    margin_picked = (hs - as_) if side == 'HOME' else (as_ - hs)
-    return 'Win' if margin_picked > abs(line) else 'Loss'
+
+    if results_line is not None:
+        # Who is favoured is a fact about the market, not about our sign.
+        home_is_fav = float(results_line) < 0
+        laying = (side == 'HOME') == home_is_fav
+    else:
+        laying = float(line) < 0
+    thresh = abs(float(line)) if laying else -abs(float(line))
+    if abs(margin_picked - thresh) < 1e-9: return 'Push'
+    return 'Win' if margin_picked > thresh else 'Loss'
 
 
 def _normalize_market(raw: str) -> str:
@@ -152,7 +252,11 @@ def grade_one(read: dict, results_by_gid: dict, prop_lookup: dict | None = None,
     if market == 'total':
         return grade_total(side, line, hs, as_)
     if market == 'rl':
-        return grade_rl(side, line, hs, as_, res.get('run_line_result'))
+        # `spread_line` is aliased in by run_for_sport from the sport's own
+        # line column (see SPREAD_LINE_COL_BY_SPORT) so grade_rl can tell
+        # our published number from the book's close.
+        return grade_rl(side, line, hs, as_, res.get('run_line_result'),
+                        results_line=res.get('spread_line'))
     if market == 'prop':
         # Jerry occasionally calls a prop inside a game read (rare).
         # If prop_lookup matches the same game_id, inherit its result.
@@ -189,6 +293,7 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
     gid_list = list({r['game_id'] for r in reads if r.get('game_id')})
     gid_in = ','.join(f'"{g}"' for g in gid_list)
     spread_col = SPREAD_COL_BY_SPORT.get(sport, 'spread_result')
+    line_col = SPREAD_LINE_COL_BY_SPORT.get(sport, 'close_spread')
 
     # 2026-09-11 game_id mismatch fix for NFL/NCAAF. jerry_reads uses the
     # Odds API event hash while nfl_game_results / ncaaf_game_results use
@@ -220,7 +325,7 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
                               params={'game_date': f'gte.{lo}',
                                       'and': f'(game_date.lte.{hi})',
                                       'select': f'game_id,game_date,away_team,home_team,'
-                                                f'home_score,away_score,{spread_col},total_result'},
+                                                f'home_score,away_score,{spread_col},{line_col},total_result'},
                               timeout=25)
             result_rows = rr.json() if rr.status_code == 200 else []
 
@@ -232,6 +337,7 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
             for row in result_rows:
                 if not isinstance(row, dict): continue
                 row['run_line_result'] = row.get(spread_col)
+                row['spread_line'] = _home_persp_line(sport, row.get(line_col))
                 key = (row.get('away_team'), row.get('home_team'),
                        _week_bucket(row.get('game_date') or dmin))
                 existing = by_tuple.get(key)
@@ -252,7 +358,7 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
         rr = requests.get(f'{SB}/rest/v1/{results_table}',
                           headers=H_READ,
                           params={'game_id': f'in.({gid_in})',
-                                  'select': f'game_id,home_score,away_score,{spread_col},total_result'},
+                                  'select': f'game_id,home_score,away_score,{spread_col},{line_col},total_result'},
                           timeout=15)
         raw_rows = rr.json() if rr.status_code == 200 else []
         if rr.status_code != 200:
@@ -263,6 +369,7 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
         for row in raw_rows:
             if isinstance(row, dict):
                 row['run_line_result'] = row.get(spread_col)
+                row['spread_line'] = _home_persp_line(sport, row.get(line_col))
                 results_by_gid[row['game_id']] = row
 
     # Postponement inference: game_date more than 4 days old + no result row
