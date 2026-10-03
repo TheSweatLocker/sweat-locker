@@ -172,6 +172,29 @@ def page(path: str, params: dict) -> list:
         off += 1000
 
 
+def _patch(params: dict, body: dict, tries: int = 4):
+    """PATCH with backoff. Returns the response, or None after `tries`.
+
+    2026-10-03: a bare requests.patch killed a full run partway through with
+    ConnectionResetError(10054) -- the same class that took out the overnight
+    prop grader, which is why grade_props.py grew _patch_row with backoff.
+    A 13k-row enrichment makes hundreds of calls; one reset should cost a
+    retry, not the slate.
+    """
+    import time
+    for i in range(tries):
+        try:
+            return requests.patch(f'{SB}/rest/v1/{TABLE}', headers=H_W,
+                                  params=params, json=body, timeout=30)
+        except requests.exceptions.RequestException as e:
+            if i == tries - 1:
+                print(f'    ⚠ PATCH gave up after {tries} tries '
+                      f'({type(e).__name__})')
+                return None
+            time.sleep(1.5 * (2 ** i))
+    return None
+
+
 def _sides(matchup: str):
     """'Away @ Home' -> (away_abbrev, home_abbrev), or (None, None)."""
     if not matchup or ' @ ' not in str(matchup):
@@ -203,7 +226,15 @@ def run_date(game_date: str, season_year: int, dry_run: bool) -> tuple:
     unresolved = sorted(n for n in names if not resolved.get(n))
     patched = skipped = 0
     bad_matchup = Counter()
-    updates = []
+    # ══ 2026-10-03 · WRITE PER PLAYER, NOT PER ROW ══
+    # Identity is a property of (date, player), not of an individual prop
+    # row: every sog/goals/points/assists line for one skater on one night
+    # carries the same player_id, team, opponent and position. A first pass
+    # PATCHed row-by-row -- 13,174 requests for 497 players' worth of facts,
+    # and slow enough that it was still running after thousands of rows.
+    # Grouping collapses it to one PATCH per (date, player), ~500 per slate,
+    # using the game_date + player_name filter the new index covers.
+    by_player: dict = {}
     for p in props:
         got = resolved.get(p.get('player_name'))
         away, home = _sides(p.get('matchup'))
@@ -229,9 +260,17 @@ def run_date(game_date: str, season_year: int, dry_run: bool) -> tuple:
         if not body:
             skipped += 1
             continue
-        if all(p.get(k) == v for k, v in body.items()):
-            continue            # already correct, no write
-        updates.append((p['id'], body))
+        nm = p.get('player_name')
+        prev = by_player.get(nm)
+        if prev is None:
+            by_player[nm] = {'body': body, 'stale': False}
+            prev = by_player[nm]
+        # Any row of this player's that disagrees with the resolved identity
+        # means the group needs writing. A group where every row already
+        # matches is skipped entirely.
+        if not all(p.get(k) == v for k, v in body.items()):
+            prev['stale'] = True
+    updates = [(nm, v['body']) for nm, v in by_player.items() if v['stale']]
 
     print(f'  {game_date}: {len(props)} props · {len(names)} distinct players '
           f'· resolved {len(names) - len(unresolved)} · unresolved '
@@ -245,11 +284,17 @@ def run_date(game_date: str, season_year: int, dry_run: bool) -> tuple:
     if dry_run:
         return 0, skipped, len(unresolved)
 
-    for pid, body in updates:
-        r = requests.patch(f'{SB}/rest/v1/{TABLE}', headers=H_W,
-                           params={'id': f'eq.{pid}'}, json=body, timeout=30)
+    for nm, body in updates:
+        # Filters go through params= so requests percent-encodes names with
+        # apostrophes, accents or spaces. Interpolating them into the URL is
+        # what made "Texas A&M" eat every write today
+        # (feedback_unencoded_url_filter_eats_writes).
+        r = _patch({'game_date': f'eq.{game_date}',
+                    'player_name': f'eq.{nm}'}, body)
+        if r is None:
+            continue
         if r.status_code not in (200, 204):
-            print(f'    ⚠ PATCH {pid} -> {r.status_code}: '
+            print(f'    ⚠ PATCH {nm!r} -> {r.status_code}: '
                   f'{(r.text or "")[:140]}')
             continue
         try:
@@ -260,9 +305,9 @@ def run_date(game_date: str, season_year: int, dry_run: bool) -> tuple:
         # is indistinguishable from success by status alone
         # (feedback_204_is_not_a_write).
         if rows:
-            patched += 1
+            patched += len(rows)
         else:
-            print(f'    ⚠ PATCH {pid} matched NO ROWS — write discarded')
+            print(f'    ⚠ PATCH {nm!r} matched NO ROWS — write discarded')
     return patched, skipped, len(unresolved)
 
 
