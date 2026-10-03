@@ -73,6 +73,63 @@ def W(msg):
     print(f'  ⚠ warn  {msg}')
 
 
+def _card_items(data) -> list:
+    """Normalise BOTH card shapes to one list of comparable picks.
+
+    ══ 2026-10-03 · THE SWEAT CARD IS NOT A LIST OF `items` ══
+    The first version read `data['items']`, which is the SHARP's shape. The
+    Sweat Card has no such key — it carries top_8 / unified_top_picks /
+    football_picks / top_props plus single potd / dawg / lock objects. So the
+    check reported "published with ZERO items" on two consecutive days and I
+    relayed that to Andy as an empty dashboard. It was not empty: 10-03 had
+    5 in top_8, 6 unified, 5 football, 3 props and a POTD.
+
+    A checker that misreads a surface is worse than no checker, because its
+    silence and its alarms are both untrustworthy. Field names differ too —
+    the Sharp uses `pick`/`reason`, the Sweat Card uses `label`/`sub` — so
+    they are normalised here rather than special-cased at every assertion.
+    """
+    if isinstance(data, list):
+        return list(data)
+    if not isinstance(data, dict):
+        return []
+    raw: list = []
+    if isinstance(data.get('items'), list):          # sharp_card
+        raw += data['items']
+    for k in ('top_8', 'unified_top_picks', 'football_picks', 'top_props'):
+        v = data.get(k)
+        if isinstance(v, list):
+            raw += [dict(x, _from=k) for x in v if isinstance(x, dict)]
+    for k in ('potd', 'dawg', 'lock', 'secondary_lock'):
+        v = data.get(k)
+        if isinstance(v, dict) and v:
+            raw.append(dict(v, _from=k))
+    # The same pick legitimately appears in more than one list (top_8 AND
+    # unified_top_picks, say), so dedupe on identity or every finding is
+    # reported two or three times — which on the first run made 3 real
+    # failures look like 3 duplicated ones.
+    out, seen = [], set()
+    for it in raw:
+        ident = (it.get('sport'), it.get('game_id'),
+                 it.get('pick') or it.get('label') or it.get('team'),
+                 it.get('type'))
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append({
+            'sport': it.get('sport') or it.get('_sport'),
+            'game_id': it.get('game_id'),
+            'pick': it.get('pick') or it.get('label') or it.get('team'),
+            'type': it.get('type'),
+            'tier': it.get('tier'),
+            'reason': it.get('reason') or it.get('sub'),
+            'odds': it.get('odds') or it.get('pick_odds'),
+            'line': it.get('line'),
+            '_from': it.get('_from', 'items'),
+        })
+    return out
+
+
 def paged(tbl, params):
     out, off = [], 0
     while True:
@@ -109,7 +166,7 @@ def check(date: str, surface: str) -> None:
         print(f'\n=== {key} === NOT PUBLISHED yet — nothing to check')
         return
     data = rows[0].get('data') or {}
-    items = data if isinstance(data, list) else (data.get('items') or [])
+    items = _card_items(data)
     print(f"\n=== {key} === {len(items)} items · generated "
           f"{str(data.get('generated_at') or rows[0].get('created_at'))[:16]}")
     if not items:
@@ -134,15 +191,23 @@ def check(date: str, surface: str) -> None:
 
     now = datetime.now(timezone.utc)
     by_sport = Counter()
+    no_ctx = 0
     for it in items:
         sp, gid = str(it.get('sport')), it.get('game_id')
         pick, typ = str(it.get('pick')), str(it.get('type') or '').lower()
         tier = str(it.get('tier') or '').upper()
         tag = f'{key} · {pick} ({sp})'
         by_sport[sp] += 1
+        # Props and MLB card entries carry no game_id (they key on
+        # source_key / player+prop), so there is no context row to compare
+        # against. That is the surface's design, not a defect — counting it
+        # quietly beats 21 identical warnings burying 3 real failures.
+        if not gid or sp not in CTX_TBL:
+            no_ctx += 1
+            continue
         ctx = (ctx_by_sport.get(sp) or {}).get(gid)
         if not ctx:
-            W(f'{tag}: no {sp} context row for game_id — cannot verify')
+            W(f'{tag}: {sp} game_id {gid} not in context for {date}')
             continue
         pp = ctx.get('primary_play') or {}
         side = str(pp.get('side') or '').upper()
@@ -217,16 +282,32 @@ def check(date: str, surface: str) -> None:
             if rd.get('price_american') is None:
                 W(f'{tag}: no price captured — ungradeable for ROI')
             # the 10-02 defect: prose arguing the other team
+            # ══ 2026-10-03 · RECOMMENDING vs DESCRIBING ══
+            # Bare "favors <other>" was in this list and had to come out. The
+            # edge_side reconciliation shipped 10-02 DELIBERATELY names the
+            # other side, because disclosing the tension is the product:
+            #
+            #   "the model actually favors TCU at plus money; however, the
+            #    engine still backs BYU -6 because ..."
+            #
+            # That is the fix working, and the checker called it a FAIL — so
+            # it would have fired on every correctly-reconciled read from now
+            # on. What was actually wrong on 10-02 was RECOMMENDING language
+            # at the close: "Delaware has value on the number", "Pittsburgh
+            # +2.5 has the edge", "the gap favors Delaware's plus-6.5 as the
+            # better value". Those tell the reader to take the other team.
+            # Only those phrasings are flagged.
             other = (ctx.get('away_team') if side == 'HOME'
                      else ctx.get('home_team'))
             txt = f"{rd.get('long_read') or ''} {rd.get('short_read') or ''}"
             if other and txt:
                 for ph in (f'{other} has value', f'{other} has the edge',
                            f'take {other}', f'{other} the better value',
-                           f'favors {other}', f'favours {other}'):
+                           f'{other} as the better value',
+                           f'value on {other}', f'back {other}'):
                     if ph.lower() in txt.lower():
-                        F(f'{tag}: write-up says "{ph}" — arguing against '
-                          f'its own pick')
+                        F(f'{tag}: write-up says "{ph}" — recommending '
+                          f'against its own pick')
                         break
 
         # 7 · never publish a game already under way
@@ -243,7 +324,9 @@ def check(date: str, surface: str) -> None:
             if dt <= now:
                 W(f'{tag}: game already started ({c}={str(v)[:16]})')
             break
-    print(f'  composition: {dict(by_sport)}')
+    print(f'  composition: {dict(by_sport)}'
+          + (f' · {no_ctx} item(s) have no game_id to verify (props/MLB)'
+             if no_ctx else ''))
 
 
 if __name__ == '__main__':
