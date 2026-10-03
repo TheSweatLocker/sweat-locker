@@ -242,6 +242,22 @@ bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
 bash "$RUN_STEP" --label "price_picks.py (ROI prices, all sports)" \
   python price_picks.py --write
 
+# 2026-10-02 · THE QB ON THE NFL CARD WAS A JULY SNAPSHOT.
+# Andy: "accounts for injured QB1s?" It did not. nfl_game_context does not read
+# nfl_starters -- it re-derives the starter from nfl_player_stats, and that
+# block never re-runs. IND @ WAS carried updated_at = computed_at = 2026-07-22
+# with home_qb_name = "Jayden Daniels" while nfl_starters wk4 said Marcus
+# Mariota, and team_form_enriched_at = 2026-10-02 made the row look fresh.
+# Only 16 of 223 forward games carried a QB name at all; 213 rows / 420 fields
+# were corrected on the first run.
+#
+# Points the context at the resolver that got the work: ESPN's roster endpoint
+# is ALPHABETICAL BY SURNAME, which had nfl_weekly_starters.py wrong on 72% of
+# teams until it was rebuilt on the box-score rule (26% -> 95%).
+# FORWARD ROWS ONLY -- a past game's QB is the record of who actually played.
+bash "$RUN_STEP" --label "refresh_nfl_context_qb.py (forward QB1s)" \
+  python refresh_nfl_context_qb.py --apply
+
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
 # 2026-09-30 · Sharp Card headline/breakdown reconciliation.

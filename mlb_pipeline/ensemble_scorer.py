@@ -1432,11 +1432,62 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         # Team-form recent (L10 ATS/OU)
         ('team_recent',  lambda k: any(t in k for t in ['ats_hot','ats_cold','over_trend','under_trend','ml_hot','ml_cold']) and 'season' not in k),
     ]
+    # ══ 2026-10-02 · A SIGNAL AND ITS OWN MIRROR ARE ONE OBSERVATION ══
+    # Measured on 35 NHL games: nhl_home_pp_vs_weak_pk (HOME_ML) and
+    # nhl_away_pp_vs_weak_pk__fade (HOME_ML) fire on the SAME games and BOTH
+    # push HOME, 35 of 35 — the two most frequent NHL signals, counted twice.
+    #
+    # The chain: nhl_away_pp_vs_weak_pk is ANTI_VALIDATED on AWAY_ML, so
+    # auto-fade flips it to HOME_ML. The result asserts that the AWAY team
+    # holding a power-play advantage is a reason to back HOME, stacked on top
+    # of the direct home signal. Same shape as the goalie pair,
+    # home_goalie_elite_gsaa 67.7% / away_goalie_elite_gsaa 33.3%, which sum
+    # to ~101% on near-identical samples because they are one fact read from
+    # both ends.
+    #
+    # These fell to 'unique_' + key, so two spellings of one comparison
+    # landed in two different families and both survived the dedupe below.
+    # Normalising the home/away token (and any fade suffix) puts them in ONE
+    # family, and the existing "keep the highest contribution per family"
+    # rule then collapses them with no new machinery.
+    #
+    # This can only ever fire within a SINGLE side — per_side is keyed by
+    # candidate — which is exactly the double-count condition. A genuine
+    # home/away pair that disagrees still contributes to both sides, as it
+    # should. Pairs with distinct venue suffixes (home_ats_cold_at_home vs
+    # away_ats_cold_on_road) normalise to different keys and are untouched.
+    def _mirror_norm(k: str) -> str:
+        for suf in ('__fade', '_fade'):
+            if k.endswith(suf):
+                k = k[: -len(suf)]
+                break
+        for a, b in (('_home_', '_SIDE_'), ('_away_', '_SIDE_')):
+            k = k.replace(a, b)
+        for pre in ('home_', 'away_'):
+            if k.startswith(pre):
+                k = 'SIDE_' + k[len(pre):]
+                break
+        # The side token is a SUFFIX as often as an infix —
+        # ncaaf_ol_weight_adv_home / ncaaf_ol_weight_adv_away__fade are the
+        # NCAAF instance of this bug (both HOME_RL on the 10-02 Pitt @ VT
+        # card) and infix handling alone left them in separate families.
+        for suf in ('_home', '_away'):
+            if k.endswith(suf):
+                k = k[: -len(suf)] + '_SIDE'
+                break
+        return k
+
     def _fam(sig_key: str) -> str:
         k = (sig_key or '').lower()
         for name, matcher in _FAMILY_PATTERNS:
             if matcher(k): return name
-        return 'unique_' + k  # unique family per non-matched signal
+        # Toggle exists so the mirror collapse can be A/B'd against itself in
+        # one process — comparing to the stored primary_play does NOT isolate
+        # it, because that value has been through every defensive gate and
+        # this function runs before them.
+        if os.environ.get('ENSEMBLE_MIRROR_DEDUPE', '1') == '0':
+            return 'unique_' + k
+        return 'mirror_' + _mirror_norm(k)
 
     for cand, chips in list(per_side.items()):
         by_fam: dict[str, list[Contribution]] = defaultdict(list)
