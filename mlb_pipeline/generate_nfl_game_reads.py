@@ -1230,6 +1230,15 @@ def build_struct(game, stats, contexts=None, injuries=None, key_players=None, te
         # for the LLM. Passed as struct.pre_parsed_facts + surfaced at the
         # top of the model_context block so it's the FIRST thing Jerry sees.
         facts = {}
+        # 2026-10-02 · sweat_score is PRICING DISTANCE, not confidence, and the
+        # prompt hands over a key literally called `tier` — so the 10-02 Penn
+        # State read wrote "Sweat Score of 60 reflects LIGHT_LEAN conviction"
+        # on a pick whose conviction was 85. State the meaning as a hoisted
+        # fact. See matchup_story.market_edge_fact.
+        _mef = matchup_story.market_edge_fact(ctx.get('sweat_score'),
+                                              ctx.get('sweat_tier'))
+        if _mef:
+            facts['market_edge_score'] = _mef
         # ── Starting-QB availability goes FIRST, ahead of the money line.
         # 2026-09-28, PHI @ CHI: nfl_injuries had carried 'Caleb Williams ·
         # Out · Hamstring (Strain)' since the 27th, and the read never
@@ -1741,6 +1750,7 @@ def render_prompt(templates, struct):
                    'model_favors', 'model_favors_ambiguous',
                    'edge_side',
                    'total_canonical', 'total_secondary_lens', 'total_market_delta',
+                   'market_edge_score',
                    'tier_note']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")

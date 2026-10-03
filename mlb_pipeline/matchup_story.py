@@ -57,6 +57,64 @@ def _env():
         raise RuntimeError('SUPABASE_URL / key not in environment yet')
     return sb, {'apikey': key, 'Authorization': f'Bearer {key}'}
 
+def market_edge_fact(score, band) -> Optional[str]:
+    """State what sweat_score MEASURES, so prose cannot call it conviction.
+
+    ══ 2026-10-02 · ONE VOCABULARY, TWO DIFFERENT QUANTITIES ══
+    Andy, on Temple @ South Florida: "why do we have that, why prime but
+    lean?" The row carried primary_play.tier = LEAN and sweat_tier = PRIME
+    at the same time, and nothing explained which was which.
+
+    They measure different things. app/index.tsx states it exactly:
+
+        sweat_score = 45 + f(|model spread - market|)
+                         + f(|confluence|) + f(|total edge|)
+
+    — i.e. HOW FAR OUR NUMBER SITS FROM THE BOOK'S. 45 means the model
+    agrees with the market. It is not a verdict on the play; conviction and
+    tier are. South Florida was both a LEAN pick AND 6.7 points off the
+    market, which is not a contradiction once the two are named apart.
+
+    The bug is that both use PRIME/STRONG/LEAN/PASS, so a reader maps them
+    onto one scale. A 2026-09-24 fix already renamed the bottom band from
+    "❌ PASS" to "⚖️ MARKET-ALIGNED" with the note "The label was the whole
+    bug" — but only that one band was fixed, and the top band still reads
+    "🔥 PRIME PLAY".
+
+    It also reaches subscribers in prose. The generators hand the LLM
+    `sweat: {score, tier}`, and the 10-02 Penn State read wrote "Sweat
+    Score of 60 reflects LIGHT_LEAN conviction" on a pick whose conviction
+    was 85. The model was told something called `tier` and used the word it
+    implies.
+
+    So the fact is stated in English and hoisted with the other CONFIRMED
+    FACTS, the same cure this codebase already applies to SP+ and the
+    moneyline.
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return None
+    if s >= 80:
+        shape = 'a LARGE gap between our number and the market'
+    elif s >= 65:
+        shape = 'a CLEAR gap between our number and the market'
+    elif s >= 50:
+        shape = 'a SLIGHT gap between our number and the market'
+    else:
+        shape = 'essentially NO gap — our number agrees with the market'
+    return (
+        f'Sweat Score {s:.0f}'
+        + (f' (band {band})' if band else '')
+        + f' measures {shape}. It is a measure of PRICING DISTANCE, NOT of '
+        'confidence in the pick — 45 would mean the model and the book agree. '
+        'Do NOT describe it as conviction, and do NOT present its band as the '
+        "pick's tier: the pick's own tier and conviction are given separately "
+        'in the ENGINE PICK block and those are the only confidence figures. '
+        'A low Sweat Score next to a strong pick is normal and means the '
+        'market is priced where we think it should be.')
+
+
 def reconcile_edge_side(ctx: dict, home: str, away: str,
                         edge_team: Optional[str],
                         edge_fact: Optional[str]) -> Optional[str]:

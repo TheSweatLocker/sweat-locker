@@ -3550,15 +3550,36 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
   // Fallback cutoffs match the server thresholds in play_of_day._sweat_tier
   // (PRIME ≥80 / STRONG ≥65 / LIGHT ≥50). Keep these in sync if you change
   // them — but prefer reading sweat_tier from mlb_game_context directly.
+  // 2026-10-02 · FINISHING THE 09-24 RELABEL. Andy, on Temple @ South
+  // Florida: "why do we have that, why prime but lean?" The row carried
+  // primary_play.tier = LEAN and sweat_tier = PRIME together, and the labels
+  // gave no way to tell them apart.
+  //
+  // The 09-24 note below is right and its reasoning applies to EVERY band,
+  // but only PASS got relabelled. So the bottom of this scale read
+  // "MARKET-ALIGNED" (a statement about pricing) while the top still read
+  // "PRIME PLAY" (a statement about a bet) — the same scale, two different
+  // kinds of claim, and the top one collides head-on with the pick's own
+  // tier badge.
+  //
+  // Measured 2026-10-02 across forward games: primary_play.tier and
+  // sweat_tier agree on 5 of 77 NCAAF rows (6.5%) and 2 of 207 NFL (1%),
+  // and sweat reads MORE bullish than the pick on 39% / 71%. Twelve NFL
+  // COVERAGE picks — ones the engine declines to publish — carried
+  // sweat_tier = PRIME.
+  //
+  // These now say what the score measures: distance from the book. The
+  // pick's confidence is the tier badge and conviction, and nothing here
+  // competes with it.
   const SWEAT_TIER_DISPLAY = {
-    PRIME:      {label:'🔥 PRIME PLAY',  color:THEME.loss},
-    STRONG:     {label:'✅ STRONG LEAN', color:THEME.accent},
-    LEAN:       {label:'📊 LEAN',        color:THEME.accentDeep},
+    PRIME:      {label:'🔥 BIG MODEL EDGE',   color:THEME.loss},
+    STRONG:     {label:'✅ CLEAR MODEL EDGE', color:THEME.accent},
+    LEAN:       {label:'📊 MODEST MODEL EDGE', color:THEME.accentDeep},
     // 2026-08-09: READ = analytical take, thin edge — Jerry has a directional
     // read but no strong tier signal. Non-actionable but shown for transparency.
     READ:       {label:'👁️ READ',        color:TIER_COLOR.READ},
-    LIGHT_LEAN: {label:'👀 LIGHT LEAN',  color:THEME.push},
-    LIGHT:      {label:'👀 LIGHT LEAN',  color:THEME.push},
+    LIGHT_LEAN: {label:'👀 SLIGHT MODEL EDGE', color:THEME.push},
+    LIGHT:      {label:'👀 SLIGHT MODEL EDGE', color:THEME.push},
     // 2026-09-24: "❌ PASS" was wrong, and it made the card look broken.
     //
     // sweat_score is NOT a verdict on the game. It is

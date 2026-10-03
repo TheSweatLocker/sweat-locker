@@ -431,6 +431,15 @@ def build_struct(ctx):
     # is done in Python against the same rows the card renders — the read
     # and the stats section then cannot contradict each other, which is
     # the failure mode that produced the 12-15 point gap above.
+    # 2026-10-02 · say what the Sweat Score IS before the model narrates it.
+    # The 10-02 Penn State read wrote "Sweat Score of 60 reflects LIGHT_LEAN
+    # conviction" on a pick whose conviction was 85, because the prompt hands
+    # over a key literally called `tier`. See matchup_story.market_edge_fact.
+    _mef = matchup_story.market_edge_fact(ctx.get('sweat_score'),
+                                          ctx.get('sweat_tier'))
+    if _mef:
+        facts['market_edge_score'] = _mef
+
     try:
         _stats = _team_stats_cache(ctx.get('season') or 2026)
         _story = matchup_story.build_story('NCAAF', home, away, _stats)
@@ -580,6 +589,7 @@ def render_prompt(templates, struct):
                    # so the market facts still lead, but inside the same
                    # verbatim-quote contract.
                    'sp_plus_verbatim', 'stat_sheet_verdict', 'stat_matchups',
+                   'market_edge_score',
                    'total_board_context', 'money_flow']:
             if _pf.get(_k):
                 _lines.append(f"  - {_k}: {_pf[_k]}")
