@@ -284,6 +284,31 @@ jobs:
           cd mlb_pipeline
           python nhl_generate_props.py
 
+      # 2026-10-03 · PROP IDENTITY. Prerequisite 1 of the scoring layer.
+      # nhl_generate_props above is a faithful mirror of the book and writes
+      # no identity, so team_abbrev / opp_abbrev / player_position sat NULL
+      # on all 13,174 rows and there was no player_id at all. The matchup
+      # layer the Prop Jerry vision needs lives in nhl_player_vs_team
+      # (24,450 rows, 1,094 players) keyed on player_id -- and 0 of 497 prop
+      # players on the 10-03 board joined to it.
+      #
+      # Resolves via nhl_player_log.resolve_player: one roster call per club,
+      # cached, exact-match then UNIQUE-surname only, and it refuses to pick
+      # between two players sharing a name (Vancouver has two Elias
+      # Petterssons) unless the book's birth-year hint settles it. An
+      # unresolved player is left NULL and counted, never guessed.
+      #
+      # Runs AFTER generation (needs the rows) and BEFORE the lookback and
+      # the scorer, so anything downstream can rely on identity being set.
+      - name: Enrich NHL prop identity (player_id / team / opponent)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_nhl_prop_identity.py
+
       # 2026-08-22 (silent-bug audit finding #8): NHL prop L10 backfill.
       # Fetches ESPN game logs per player, computes L5/L10/season hit rates.
       # Unblocks 4 NHL prop signals (l10_extreme, l5_hot, l5_cold,
