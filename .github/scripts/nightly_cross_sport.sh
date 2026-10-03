@@ -258,6 +258,27 @@ bash "$RUN_STEP" --label "price_picks.py (ROI prices, all sports)" \
 bash "$RUN_STEP" --label "refresh_nfl_context_qb.py (forward QB1s)" \
   python refresh_nfl_context_qb.py --apply
 
+# 2026-10-02 · GATES MUST BE RE-APPLIED AFTER THE BUILD, NOT ONLY DURING IT.
+# Every context builder calls apply_all_defensive_gates and the gates are
+# correct -- verified on the stored NE @ BUF row (BUF ML -305 => BUF -7,
+# COVERAGE). But the live row still read "BUF ML LEAN -305" after a full
+# rebuild, because gates run on the IN-FLIGHT row and the market columns are
+# not reliably populated at that moment; a price-dependent gate then finds
+# nothing to act on and returns the pick untouched.
+#
+# Measured before this step existed, on forward games:
+#     NFL    40 of 69 ML picks past -200 (incl. DET ML -225 PRIME)
+#     NCAAF  13 of 29 past -200          (incl. Michigan ML -225 STRONG)
+#     NHL    28 of 48 unpriced but at a published tier
+# After: 0 / 0 / 0, and the pass re-runs to CHANGED 0 -- a fixed point.
+#
+# Writes via the two-step unlock (clear pick_locked_at, write, re-stamp) and
+# READS BACK every row: enforce_pick_lock() refuses a label change on a
+# stamped game and returns 204 anyway, so trusting the status code reported
+# 103 patches the database had actually discarded.
+bash "$RUN_STEP" --label "apply_pick_gates_post_pass.py (re-gate stored picks)" \
+  python apply_pick_gates_post_pass.py --apply
+
 bash "$RUN_STEP" --label "compute_surface_records.py (nightly)" \
   python compute_surface_records.py
 # 2026-09-30 · Sharp Card headline/breakdown reconciliation.
