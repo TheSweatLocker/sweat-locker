@@ -3870,6 +3870,49 @@ def recalibrate_props_with_book_lines(props):
         # recalibration demoted, what would the hit rate have been at the
         # pre-recal tier?" If that number is high, multipliers are too
         # aggressive and we tune up.
+        # ══ 2026-10-03 · THE L5 SIGNAL IS STALE AFTER RE-LINING ══
+        # _apply_l5_signal scored the L5 average against the INTERNAL
+        # suggested line, back in the scorer. This function then replaces
+        # prop_line with the book line — and nothing re-evaluates L5, so the
+        # signal text and the conviction delta baked into old_conv can both
+        # be pointing the wrong way.
+        #
+        # Tarik Skubal today: projected 8.8 Ks -> internal line 7.5, where
+        # L5 avg 6.6 OPPOSES (a -8 conviction hit). Book line came back 6.5,
+        # where 6.6 CONFIRMS. The card still read
+        #     "L5 avg 6.6 opposes (going over 7.5, gap -0.9)"
+        # under a prop listed at 6.5, and his refit sat at 38.6 against a
+        # conviction of 97 — carrying a penalty the real line does not earn.
+        #
+        # The directional fact is restated here from _stat_avg_l5 against the
+        # new line. The SCORING rule is deliberately NOT duplicated — two
+        # implementations of one rule is how the read and the card came to
+        # disagree about Penn State's passing yards. So the stale conviction
+        # delta is flagged, not silently reversed: undoing it needs the real
+        # magnitude, which only _apply_l5_signal knows. Properly fixing that
+        # means running the L5 scorer AFTER re-lining, which is a flow change.
+        try:
+            _l5 = sigs.get('_stat_avg_l5')
+            _stale_key = next((k for k in ('l5_fade', 'l5_confirm')
+                               if sigs.get(k)), None)
+            if _l5 is not None and _stale_key and old_line is not None \
+                    and abs(float(old_line) - book_f) >= 0.01:
+                _l5f = float(_l5)
+                # Does L5 land on the bet's side of the NEW line?
+                _supports_now = (_l5f < book_f) if is_under else (_l5f > book_f)
+                _supported_before = ((_l5f < float(old_line)) if is_under
+                                     else (_l5f > float(old_line)))
+                if _supports_now != _supported_before:
+                    sigs.pop(_stale_key, None)
+                    sigs['l5_restated'] = (
+                        f'L5 avg {_l5f:g} {"supports" if _supports_now else "opposes"} '
+                        f'at the book line {book_f:g} '
+                        f'(was scored against {float(old_line):g}, where it '
+                        f'{"supported" if _supported_before else "opposed"})')
+                    sigs['_l5_conviction_stale'] = True
+        except (TypeError, ValueError):
+            pass
+
         sigs['_internal_suggested_line'] = old_line
         sigs['_book_line'] = book_f
         sigs['_edge_at_book'] = round(edge, 2)
