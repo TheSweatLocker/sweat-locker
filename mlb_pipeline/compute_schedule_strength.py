@@ -215,9 +215,17 @@ def strength_from_games(sport: str, rows: list[dict],
 
     Returns [{team, sos, sor, games, raw_win_pct}].
 
-    ⚠ sor = raw_win_pct + sos - 1 EXACTLY (see the derivation below), so
-    SOS and SOR are not independent features. A model handed win%, SOS and
-    SOR has been given a perfectly collinear set.
+    ⚠ sor = own_shrunk_win_pct + sos - 1 EXACTLY (see the derivation below),
+    so SOS and SOR are not independent features. A model handed win%, SOS
+    and SOR has been given a perfectly collinear set.
+
+    2026-10-03 wording fix: this said `raw_win_pct` and it has not been
+    raw since shrinkage landed 09-30 -- `own` is shrunk on the same scale
+    as the opponents. Verified on the live 137-team NCAAF slate: 105 of 137
+    teams violate the raw form, 0 violate the shrunk form. Correcting it
+    because the returned dict still exposes `raw_win_pct`, so anyone
+    checking the stated invariant against that field would find it broken
+    and go looking for a bug that is not there.
     """
     decided = [r for r in rows
                if r.get('won') is not None and r.get('opp')
@@ -249,14 +257,44 @@ def strength_from_games(sport: str, rows: list[dict],
         The shrinkage matters just as much and was missing. After H2H removal
         an opponent can be left with one or two games, and a raw 2-0 reads as
         a flat 1.000 — a certainty the sample cannot support. See SHRINK_K.
+
+        2026-10-03 · AND DELETING THE OPPONENT WAS WORTH FREE SOS.
+        Andy, spot-checking Miami (OH) at SOS rank 2 of 137: "how have they
+        played a relatively harder schedule than 99 percent of NCAAF?"
+
+        Partly earned -- they really did play Cincinnati (4-0) and
+        Pittsburgh (5-0). But their fourth game was Holy Cross, an FCS team
+        whose entire recorded season IS that game. Remove the head-to-head
+        and Holy Cross has 0 games left, this returned None, and the caller
+        dropped it from the average entirely. The cupcake did not weaken
+        their schedule -- it VANISHED from it.
+
+        That is backwards, and it is not rare: 78 of 137 NCAAF teams (56.9%)
+        have at least one opponent deleted this way, and the deleted one is
+        by construction the weakest -- a team whose only game is the
+        body-bag game against you. Scheduling an FCS opponent early was
+        free strength of schedule.
+
+        Returning 0.500 instead is not a new rule, it is the rule this
+        function already states. The shrinkage prior IS 0.500, and the
+        formula below at n=0 evaluates to exactly (0 + 2.0)/(0 + 4.0) =
+        0.500 on its own. The early return was skipping arithmetic that was
+        already correct.
+
+        Effect: 52 teams' SOS falls, mean 0.5441 -> 0.5364, and the two
+        games actually on today's card move
+        Miami (OH) rank 2 -> 5, Purdue 12 -> 23.
+
+        Still generous -- an FCS opponent is realistically well below 0.500,
+        so a fixed low rating for non-FBS would be stricter. 0.500 means
+        "unknown", which is honest and is strictly better than deletion.
+        Not shipping the harsher version without measuring it.
         """
         w, l = rec[opp]
         ow, ol = vs[(opp, against)]
         w -= ow
         l -= ol
         n = w + l
-        if n <= 0:
-            return None
         return (w + SHRINK_K / 2.0) / (n + SHRINK_K)
 
     out = []
