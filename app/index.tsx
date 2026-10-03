@@ -17795,13 +17795,34 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                         </View>
                         <View style={{gap:6}}>
                           {ladderRungs.slice(0, 10).map((r: any, i: number) => {
+                            // 2026-10-03 · VOID HAD NO BRANCH, SO IT READ AS PENDING.
+                            // Andy: "still seeing the play from two days ago, Kim
+                            // under hits, as pending — should say pushed due to
+                            // non-start". The grading was correct: ladder_rung 47
+                            // carried result='Void', resolved_at 10-02T14:37, and
+                            // public_receipts agreed. But 'Void' is not Win, Loss
+                            // or Push, so the ternary below fell through to
+                            // 'PENDING' and the strip stayed warn-coloured — a
+                            // settled play looked live for two days.
+                            //
+                            // Void is a returned stake (player never appeared), so
+                            // it renders neutral like a push, but labelled VOID
+                            // because that is what it is and what the receipt says.
+                            // Any FUTURE unrecognised value now shows itself rather
+                            // than masquerading as pending — the same silent-
+                            // fallthrough is how this hid in the first place.
                             const isWin = r.result === 'Win';
                             const isLoss = r.result === 'Loss';
                             const isPush = r.result === 'Push';
+                            const isVoid = r.result === 'Void';
                             const isPending = !r.result;
-                            const stripColor = isWin ? THEME.win : isLoss ? THEME.loss : isPush ? THEME.push : THEME.warn;
-                            const stripBg = isWin ? THEME.win + '10' : isLoss ? THEME.loss + '10' : isPush ? THEME.push + '10' : THEME.warn + '10';
-                            const resultLabel = isWin ? 'WIN' : isLoss ? 'LOSS' : isPush ? 'PUSH' : 'PENDING';
+                            const stripColor = isWin ? THEME.win : isLoss ? THEME.loss
+                              : (isPush || isVoid) ? THEME.push
+                              : isPending ? THEME.warn : THEME.textMuted;
+                            const stripBg = stripColor + '10';
+                            const resultLabel = isWin ? 'WIN' : isLoss ? 'LOSS'
+                              : isPush ? 'PUSH' : isVoid ? 'VOID'
+                              : isPending ? 'PENDING' : String(r.result).toUpperCase();
                             const odds = r.odds_american;
                             const oddsStr = (odds != null) ? (odds > 0 ? `+${odds}` : `${odds}`) : null;
                             return (
