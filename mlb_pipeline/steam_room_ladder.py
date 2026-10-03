@@ -361,8 +361,37 @@ def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
             try: odds = int(v); break
             except (TypeError, ValueError): pass
 
+    # ══ 2026-10-03 · LINEUP STATE IS A RANKING PREFERENCE, NOT A GATE ══
+    # Andy: "make ladder better", after Ha-Seong Kim Under 0.5 HITS sat on
+    # the Ladder for two days as a Void — he never played.
+    #
+    # lineup_state is the most predictive field on an MLB prop in our own
+    # data. Measured over every graded prop:
+    #
+    #     coverage_stub   12898-14386   47.3%   n=27284   void 7.3%
+    #     confirmed        3034-2311    56.8%   n= 5345   void 4.2%
+    #
+    # A 9.5pp gap at z~12.5 — not a small-sample artefact. Stub props sit
+    # BELOW breakeven; confirmed props clear it comfortably, and the void
+    # rate is nearly double, which on a one-play-per-day compounding surface
+    # means the ladder stalls rather than loses.
+    #
+    # First pass made this a HARD block. Andy: "i dont think the lineup will
+    # confirm by the time we get ladder pick out so i am okay with no lineup
+    # confirm gate." He is right about the cadence — the ladder publishes
+    # early and MLB lineups post later, so a hard gate would zero the ladder
+    # most days, and no play at all is worse than a stub play.
+    #
+    # So it is carried as a PREFERENCE instead: recorded on the candidate and
+    # used to BREAK TIES in _pick_best, ahead of tier and edge. Costs nothing
+    # on a day with no confirmed props, and takes the confirmed one whenever
+    # the choice exists. Today that is the whole difference between Hagen
+    # Smith Under 0.5 ER (coverage_stub, a 1.8-inning opener) and Tarik
+    # Skubal Over 6.5 Ks (confirmed, a starter with a known workload).
+    _lu = str(prop.get('lineup_state') or '').lower()
+
     gates_passed = 1  # tier
-    gate_notes = [f'tier={effective_tier}']
+    gate_notes = [f'tier={effective_tier}', f'lineup={_lu or "?"}']
 
     # Gate 2: odds range
     if odds is not None and -300 <= odds <= 150:
@@ -445,6 +474,9 @@ def check_prop_qualifier(prop: dict, sport: str = 'MLB') -> Optional[dict]:
         'consensus_lens': None,
         'edge_pp': None,
         'gates_passed': gates_passed,
+        # 2026-10-03 · carried for the ranking preference in the sorts below.
+        # Not written to ladder_rung (no such column); used only to break ties.
+        '_lineup_confirmed': (_lu == 'confirmed'),
         'qualification_notes': (
             f'PROP · {gates_passed}/5 gates · ' + ' · '.join(gate_notes)
         ),
@@ -469,7 +501,7 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
             # Join to mlb_pipeline_props to get book odds + refit_conviction
             legacy = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
                 params={'game_date': f'eq.{game_date}',
-                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id,signals'},
+                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id,signals,lineup_state'},
                 timeout=15).json()
             # 2026-09-09 snapshot lock overlay (shared helper).
             try:
@@ -515,9 +547,15 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
         # NFL+NCAAF: close_home_ml/close_away_ml. Coalesced downstream in
         # check_qualifier via .get() fallback chain.
         ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
+        # 2026-10-03 · consensus_fade_flag does NOT exist on
+        # nhl_game_context, so including it made the whole NHL query 400 and
+        # NHL never reached the ladder at all — a silent sport-wide exclusion
+        # visible only as "NHL query failed" in the log. Per-sport column
+        # dispatch, same shape as the ml_cols line above.
+        _fade_col = '' if sport == 'NHL' else 'consensus_fade_flag,'
         base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
                      'mc_probabilities,' + ml_cols + ','
-                     'consensus_fade_flag,signal_confluence_breakdown')
+                     + _fade_col + 'signal_confluence_breakdown')
         if sport == 'MLB':
             select_cols = base_cols + ',signal_confluence_support'
         else:
@@ -564,6 +602,20 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
         if e is None: return -999
         return e * SPORT_EDGE_MULTIPLIER.get(c.get('sport'), 1.0)
     candidates.sort(key=lambda c: (
+        # 2026-10-03 · CONFIRMED LINEUP RANKS FIRST, ahead of the gate count.
+        # Stub props grade 47.3% (n=27,284) against 56.8% for confirmed
+        # (n=5,345) — a 9.5pp gap at z~12.5, at double the void rate. One
+        # additional passed gate has no measurement behind it at all, so when
+        # the two disagree the lineup wins. Today that is the difference
+        # between Hagen Smith Under 0.5 ER (5/5 gates, coverage_stub, a
+        # 1.8-inning opener) and Tarik Skubal Over 6.5 Ks (4/5, confirmed, a
+        # starter with a known workload).
+        #
+        # Still only a PREFERENCE — it reorders qualifiers, it never rejects
+        # one. Andy: "the ladder should never go 2-3 days without firing."
+        # Nothing here can empty the board; the RELAXED scan after 2 dry days
+        # is untouched.
+        0 if c.get('_lineup_confirmed') else 1,
         -(c.get('gates_passed') or 0),
         tier_rank.get(c.get('tier'), 9),
         -_norm_edge(c),
@@ -625,8 +677,11 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
             if not ctx_tbl: continue
             # 2026-09-15: per-sport SELECT (same fix as scan_qualifiers).
             ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
+            # see the consensus_fade_flag note in scan_qualifiers — NHL
+            # lacks the column and its presence 400s the whole query.
+            _fade_col = '' if sport == 'NHL' else ',consensus_fade_flag'
             base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
-                         'mc_probabilities,' + ml_cols + ',consensus_fade_flag')
+                         'mc_probabilities,' + ml_cols + _fade_col)
             select_cols = (base_cols + ',signal_confluence_support'
                            if sport == 'MLB'
                            else base_cols + ',signal_confluence_net')
@@ -651,6 +706,7 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
         if not candidates: return None
         tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
         candidates.sort(key=lambda c: (
+            0 if c.get('_lineup_confirmed') else 1,   # see lineup_state note
             -(c.get('gates_passed') or 0),
             tier_rank.get(c.get('tier'), 9),
             -(c.get('edge_pp') or -999),
@@ -677,7 +733,11 @@ def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
     # Now: write gates_passed directly. Keep the qualification_notes
     # summary line for backward-compat with old consumers that still
     # parse it.
-    write_row = dict(rung)
+    # 2026-10-03 · drop internal-only keys. _lineup_confirmed is carried on
+    # the candidate purely to break ties in the sorts above; ladder_rung has
+    # no such column, and PostgREST 400s on an unknown one — which would
+    # take the whole rung write down.
+    write_row = {k: v for k, v in rung.items() if not k.startswith('_')}
     write_row['qualification_notes'] = (
         f"[gates={rung.get('gates_passed')}/5] " + (rung.get('qualification_notes') or '')
     )[:500]
