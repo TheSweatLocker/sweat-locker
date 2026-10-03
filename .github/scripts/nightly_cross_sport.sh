@@ -193,6 +193,30 @@ bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
 # record and stamp it as fresh.
 bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   python compute_schedule_strength.py
 
+# 2026-10-03 · EXTERNAL SOR BENCHMARK. Andy: "add as weekly benchmark for
+# data." Records strengthofrecord.com's published FBS Strength of Record
+# beside ours. A reference point ONLY -- never an input to a pick, and
+# deliberately written to its own sor_benchmark table rather than
+# team_computed_stats, because that table is UNIONed into
+# team_stats_rolling and GameDetailV2 selects '*' from it, so a stat_key
+# landing there reaches the app card on its own.
+#
+# Not adopted as our number: it carries no SOS at all, it is CFBD-derived
+# like ours, and its SOR correlates +0.970 with raw win% against our
+# +0.911 -- closer to being the record than ours, so less independent
+# schedule signal, not more. Kept because our SOS/SOR has no external
+# check of any kind: CFBD's own `sos` field is null on 0 of 808 rows
+# (2021-2026), and a deleted opponent inflated Miami (OH) to SOS rank 2 of
+# 137 with nothing to flag it until Andy eyeballed it.
+#
+# Runs AFTER compute_schedule_strength so it grades the fresh numbers.
+# Upserts on (sport, season, week, source), so a daily run refreshes the
+# live week's row rather than accumulating duplicates. Exits 0 when the
+# table is absent or the external API is down -- a benchmark must never
+# fail the nightly.
+bash "$RUN_STEP" --label "benchmark_external_sor.py (external SOR reference)" \
+  python benchmark_external_sor.py
+
 # 2026-10-02 · THE EIGHTH AND NINTH INSTANCES OF THE SAME PATTERN.
 # recompute_ncaaf_per_game_stats.py and recompute_nfl_epa_units.py were both
 # written 09-26, run once by hand, and never scheduled. Their output is served
