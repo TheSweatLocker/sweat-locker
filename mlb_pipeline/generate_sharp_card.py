@@ -952,8 +952,52 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
     return picks
 
 
+def _spread_prices(sport: str, dates: set) -> dict:
+    """game_id -> book price for the SPREAD, from jerry_reads.
+
+    ══ 2026-10-03 · 10 OF 11 SPREAD PICKS SHIPPED WITH NO PRICE ══
+    pick_odds was `side_ml if pick_type == 'ml' else None`, so every spread
+    play published with odds=null. Consequences, all of them real:
+      * units were sized off a tier default with no price in the maths
+      * the pick could not be graded for ROI — the same hole that left 145
+        of 160 reads ungradeable until price_picks was scheduled on 10-02
+      * the card showed a bet with no number next to it
+    The ML no-price gate right below this exists precisely because an
+    unpriced ML "is not a bet"; a spread with no price is no different.
+
+    price_picks.py now writes a real book price per read for the pick's own
+    market (verified: Tennessee -6.5 at -115 across 8 books), so the data
+    exists and the card simply was not reading it. Keyed on game_id, and
+    only used when the read's market matches the card's market — a price
+    belongs to a specific (market, side, line).
+    """
+    if not dates:
+        return {}
+    out: dict = {}
+    for d in sorted(dates):
+        rows = _get(f'{SB}/rest/v1/jerry_reads', {
+            'select': 'game_id,call_market,call_side,call_line,price_american',
+            'sport': f'eq.{sport}', 'game_date': f'eq.{d}', 'limit': '400'})
+        for r in (rows or []):
+            if r.get('price_american') is None:
+                continue
+            out[(r.get('game_id'), str(r.get('call_market') or '').lower())] = {
+                'price': r['price_american'], 'line': r.get('call_line'),
+                'side': r.get('call_side')}
+    return out
+
+
 def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     is_football = sport in ('NCAAF', 'NFL')
+    # Date comes from _today_et(), NOT from the rows. game_date is not in the
+    # context SELECT lists (none of the three variants include it), so
+    # g.get('game_date') is None on every row and deriving the date from them
+    # produced an empty set — _spread_prices returned {} and every spread
+    # stayed unpriced while the helper tested fine in isolation. Exactly the
+    # missing-column-is-a-silent-blank trap this file already documents for
+    # close_spread. The fetch is already scoped to eq.{today}, so the date is
+    # known without reading it back.
+    _px = _spread_prices(sport, {_today_et()})
     tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
     dropped_lean = dropped_chalk = dropped_pass = 0
     dropped_lr_conflict = 0
@@ -1044,6 +1088,29 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         pick_label = pp.get('label') or '—'
         pick_line  = pp.get('line')
         pick_odds  = side_ml if pick_type == 'ml' else None
+        # 2026-10-03 · price the spread, and say so when the line has moved.
+        # See _spread_prices. The line itself is NOT silently rewritten to the
+        # current market: the pick's edge was computed at pick_line, and moving
+        # it would publish a bet we never evaluated. But showing a number the
+        # book no longer offers is equally wrong, so the drift is surfaced and
+        # the render/reader can see it. Measured today: 5 of 11 spread picks
+        # had drifted a full point (Hawaii -2.5 vs market -3.5, James Madison
+        # -19.5 vs -18.5), three of them in our favour.
+        line_moved = None
+        if pick_type in ('rl', 'spread'):
+            _q = _px.get((g.get('game_id'), pick_type)) or \
+                 _px.get((g.get('game_id'), 'rl')) or \
+                 _px.get((g.get('game_id'), 'spread'))
+            if _q and pick_odds is None:
+                pick_odds = _q.get('price')
+            try:
+                _mkt = g.get('close_spread')
+                if _mkt is not None and pick_line is not None and \
+                        abs(abs(float(_mkt)) - abs(float(pick_line))) >= 0.25:
+                    line_moved = {'pick_line': float(pick_line),
+                                  'market_now': abs(float(_mkt))}
+            except (TypeError, ValueError):
+                pass
 
         # 2026-09-22 NO-PRICE GATE. An ML pick with no market moneyline
         # was published anyway, carrying odds=null — the shape the three
@@ -1105,6 +1172,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             'line': pick_line,
             'units': units,
             'juice_swapped': juice_swapped,
+            'line_moved': line_moved,
             # ══ 2026-09-26 · game_id + conviction, for EVERY sport ══
             # _compose_mlb_sides has carried these since 2026-09-17 with the
             # note "preserve conviction + game_id so publish_lock at

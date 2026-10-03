@@ -2259,15 +2259,31 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
 
         label = None
         if ptype in ("ks_over", "ks_under") and proj is not None:
-            import math as _m
             try:
                 pv = float(proj)
-                if direction == "over":
-                    suggested_line = max(0.5, _m.floor(pv) - 0.5)
-                    label = f"{player} Over {suggested_line} Ks  ·  proj {pv:.1f}"
-                else:
-                    suggested_line = _m.ceil(pv) + 0.5
-                    label = f"{player} Under {suggested_line} Ks  ·  proj {pv:.1f}"
+                # ══ 2026-10-03 · THE LABEL MUST BE THE LINE YOU CAN BET ══
+                # This block used to DERIVE the line from the projection:
+                #     suggested_line = max(0.5, floor(proj) - 0.5)
+                # so Tarik Skubal, projected 8.8 Ks, rendered as
+                #     "Tarik Skubal Over 7.5 Ks · proj 8.8"
+                # while the prop we actually hold, price, and GRADE is
+                # ks_over 6.5 at -139. The card's own source_key said
+                # "Tarik Skubal|ks_over|6.5" the whole time.
+                #
+                # A full strikeout of difference, on the dashboard, against a
+                # prop that does not exist at that number: a subscriber
+                # betting Over 7.5 takes a different bet at a different price
+                # from the one that lands in the record. That is the
+                # never-present-an-unverified-play rule broken at the card
+                # layer, and it has mislabelled every ks prop since the
+                # feature shipped (the 06-27 dedup comment preserves an
+                # example: "Dylan Cease Over 7.5 Ks · proj 8.6").
+                #
+                # The projection is the REASON the play is attractive, so it
+                # stays — as context beside the real line, not in place of it.
+                _line = prop.get('prop_line')
+                _dir = 'Over' if direction == 'over' else 'Under'
+                label = f"{player} {_dir} {_line} Ks  ·  proj {pv:.1f}"
             except (TypeError, ValueError):
                 label = _pretty_prop_label(prop)
         if label is None:
