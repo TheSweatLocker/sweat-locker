@@ -66,6 +66,7 @@ STAT_FIELD = {
 }
 
 _ROSTER_CACHE: dict = {}
+_AMBIG_CACHE: dict = {}
 _LOG_CACHE: dict = {}
 
 
@@ -75,7 +76,43 @@ def _season_str(year: int) -> str:
 
 
 def _norm(name: str) -> str:
-    return ' '.join(str(name or '').lower().replace('.', '').split())
+    """Normalise a player name for cross-source matching.
+
+    ══ 2026-10-03 · ACCENTS WERE 6 OF THE 7 MISSES ══
+    This lowercased and dropped periods only, so every diacritic in the NHL
+    was a miss. Measured against the 497 distinct players on the 10-03 prop
+    board: 490 resolved, 7 did not, and folding accents plus the book's
+    parenthetical disambiguator recovers 6 of those 7 —
+
+        Aatu Raty           -> roster "Aatu Räty"
+        Juraj Slafkovsky    -> roster "Juraj Slafkovský"
+        Martin Fehervary    -> roster "Martin Fehérváry"
+        Oskar Back          -> roster "Oskar Bäck"
+        Noah Östlund        -> prop carries the accent, roster does not
+        Elias Pettersson (2004)  -> the BOOK adds a birth year to separate
+                                    two Petterssons; the roster does not
+
+    The last one matters beyond the accent: stripping " (2004)" leaves
+    "elias pettersson", and the roster has both an Elias and a Marcus
+    Pettersson — so the EXACT index still resolves it correctly while the
+    surname fallback below would have refused. Dropping the suffix recovers
+    the player without weakening the no-guessing rule.
+
+    Charles-Alexis Legault remains unresolved and should: he is on no NHL
+    club roster, so NULL is the honest answer.
+
+    Both build_name_index and resolve_player route through here, so index
+    keys and lookups fold identically — there is no half-normalised state.
+    """
+    import unicodedata as _u
+    s = str(name or '')
+    # Drop a trailing parenthetical the book adds to disambiguate namesakes.
+    if '(' in s:
+        s = s.split('(')[0]
+    s = _u.normalize('NFKD', s)
+    s = ''.join(c for c in s if not _u.combining(c))
+    s = s.lower().replace('.', '').replace('-', ' ').replace("'", '')
+    return ' '.join(s.split())
 
 
 def build_name_index(season_year: int) -> dict:
@@ -84,11 +121,31 @@ def build_name_index(season_year: int) -> dict:
     One roster call per club, cached for the process. 32 requests once is
     far cheaper than a search call per player, and it is exact-match
     rather than a fuzzy search that can return the wrong athlete.
+
+    ══ 2026-10-03 · A COLLIDING NAME WAS SILENTLY DROPPING A PLAYER ══
+    This dict assignment overwrites, so when two players normalise to the
+    same name one of them vanished and the other answered for both. Vancouver
+    carries TWO Elias Petterssons -- 8480012 (C, born 1998) and 8483678
+    (D, born 2004) -- so 766 roster entries produced a 765-key index, and
+    resolve_player('Elias Pettersson') returned whichever club was walked
+    last. A coin flip, invisible on read.
+
+    It bit immediately: the books disambiguate with a birth year, writing
+    "Elias Pettersson (2004)", and the accent-folding change above strips
+    that suffix -- so the hint the book went out of its way to supply was
+    being thrown away right before a 50/50 guess. That is the Kopylov
+    failure shape (project_stat_integrity_audit_1002).
+
+    Collisions now go to _AMBIG_CACHE keyed by the same normalised name,
+    carrying birth years, and resolve_player uses the book's year hint to
+    pick -- refusing when it cannot. The primary index keeps its original
+    shape so existing callers (recent_form) are unaffected.
     """
     key = season_year
     if key in _ROSTER_CACHE:
         return _ROSTER_CACHE[key]
     idx: dict = {}
+    cand: dict = {}
     ss = _season_str(season_year)
     for team in TEAMS:
         try:
@@ -106,17 +163,49 @@ def build_name_index(season_year: int) -> dict:
                 ln = ln.get('default') if isinstance(ln, dict) else ln
                 if not fn or not ln or not p.get('id'):
                     continue
-                idx[_norm(f'{fn} {ln}')] = (
-                    int(p['id']), team,
-                    'G' if group == 'goalies' else p.get('positionCode') or '')
+                nk = _norm(f'{fn} {ln}')
+                pos = 'G' if group == 'goalies' else (p.get('positionCode') or '')
+                byear = None
+                bd = p.get('birthDate')
+                if bd and len(str(bd)) >= 4 and str(bd)[:4].isdigit():
+                    byear = int(str(bd)[:4])
+                idx[nk] = (int(p['id']), team, pos)
+                cand.setdefault(nk, []).append(
+                    (int(p['id']), team, pos, byear))
     _ROSTER_CACHE[key] = idx
+    _AMBIG_CACHE[key] = {k: v for k, v in cand.items() if len(v) > 1}
+    if _AMBIG_CACHE[key]:
+        for k, v in _AMBIG_CACHE[key].items():
+            print(f'  ℹ roster name collision {k!r}: '
+                  + ', '.join(f'{i} ({t} {po} b{by})' for i, t, po, by in v)
+                  + ' — resolve_player needs a year hint to pick')
     return idx
 
 
 def resolve_player(name: str, season_year: int) -> Optional[tuple]:
-    """-> (player_id, team, position) or None. Exact, then surname fallback."""
+    """-> (player_id, team, position) or None.
+
+    Order: ambiguous-name arbitration, exact match, unique-surname fallback.
+    Returns None rather than guessing at any step.
+    """
     idx = build_name_index(season_year)
     n = _norm(name)
+
+    # Two players share this normalised name. Use the birth year the book
+    # supplies ("Elias Pettersson (2004)") to pick, and refuse otherwise —
+    # an arbitrary pick here attaches a prop to the wrong athlete.
+    amb = _AMBIG_CACHE.get(season_year, {}).get(n)
+    if amb:
+        import re as _re
+        yrs = [int(y) for y in _re.findall(r'(19\d{2}|20\d{2})', str(name or ''))]
+        if yrs:
+            hits = [c for c in amb if c[3] in yrs]
+            if len(hits) == 1:
+                return hits[0][:3]
+        print(f'  ⚠ {name!r} is ambiguous across {len(amb)} rostered players '
+              f'and no usable year hint — refusing to guess')
+        return None
+
     if n in idx:
         return idx[n]
     # Books sometimes shorten or punctuate differently ("Alex" vs
