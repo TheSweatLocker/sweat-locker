@@ -184,6 +184,28 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "generate_sweat_card.py" python generate_sweat_card.py
 
+      # 2026-10-03 · CHECK THE CARD BEFORE ANYONE ACTS ON IT.
+      # The 10-02 Sharp shipped three defects at once, all of which this
+      # catches: Liberty ML at -300 (past the documented -200 trap),
+      # "State · 85% vs 59% implied" (team_short took the last word of
+      # "Penn State"), and a write-up that closed "Delaware has value" under
+      # a Liberty pick. Verified against that card: 3 FAIL, and it also
+      # found the Sweat Card had published with ZERO items.
+      #
+      # The Sweat Card HARD-LOCKS at noon ET, so a bad card published at
+      # 10:55 is awkward to retract — the check is worth more before the
+      # lock than after. continue-on-error so a check bug can never block
+      # the card itself; it reports, a human decides.
+      - name: Card integrity check
+        if: always()
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: python check_card_integrity.py
+
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline
         env:

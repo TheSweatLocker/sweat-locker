@@ -1,0 +1,253 @@
+"""Verify a published Sweat Card / Sharp before anyone acts on it.
+
+══ 2026-10-03 · WHY ══
+2026-10-02's Sharp carried three defects at once, all of which this would
+have caught before publish:
+
+    {"pick": "Liberty ML",     "odds": -300, "juice_swapped": false}
+    {"pick": "Penn State ML",  "reason": "State · 85% vs 59% implied ..."}
+    {"pick": "Virginia Tech -3"}  # read closed "Pittsburgh +2.5 has the edge"
+
+A -300 moneyline past the documented -200 trap; a team rendered as "State"
+because team_short took the last word of "Penn State"; and a write-up
+arguing the opposite side of its own pick.
+
+The cards are the LAST surface before a subscriber sees a play, and the
+Sweat Card HARD-LOCKS at noon ET — so a bad card published at 10:55 is
+awkward to retract. A check that runs right after generation is the cheapest
+insurance available, and all of its inputs are already in the database.
+
+Every check compares the CARD against the CURRENT engine state, so it also
+catches the card going stale relative to a later re-gate.
+
+Exit 1 on any FAIL so a workflow step can gate on it. WARNs do not fail.
+
+    python check_card_integrity.py                  # today, both surfaces
+    python check_card_integrity.py --date 2026-10-03
+    python check_card_integrity.py --surface sharp_card
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from collections import Counter
+from datetime import datetime, timezone
+
+import requests
+from dotenv import load_dotenv
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+load_dotenv('.env')
+SB = os.environ['SUPABASE_URL']
+KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
+H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+S = requests.Session()
+S.headers.update(H)
+
+CTX_TBL = {
+    'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
+    'NHL': 'nhl_game_context', 'NBA': 'nba_game_context',
+    'MLB': 'mlb_game_context', 'NCAAB': 'ncaab_game_context',
+}
+# The documented heavy-favourite trap (feedback_heavy_fav_ml_trap_803) and the
+# level defensive_gates.HEAVY_ML_THRESHOLD reroutes at. Kept in sync via that
+# import so there is one number, not a second opinion.
+try:
+    from defensive_gates import HEAVY_ML_THRESHOLD
+except Exception:
+    HEAVY_ML_THRESHOLD = -200
+
+START_COLS = ('kickoff_utc', 'game_time_utc', 'start_time_utc', 'commence_time')
+fails: list[str] = []
+warns: list[str] = []
+
+
+def F(msg):
+    fails.append(msg)
+    print(f'  ✖ FAIL  {msg}')
+
+
+def W(msg):
+    warns.append(msg)
+    print(f'  ⚠ warn  {msg}')
+
+
+def paged(tbl, params):
+    out, off = [], 0
+    while True:
+        r = S.get(f'{SB}/rest/v1/{tbl}',
+                  params=dict(params, limit='1000', offset=str(off)), timeout=120)
+        if r.status_code not in (200, 206):
+            return out
+        b = r.json()
+        if not isinstance(b, list):
+            return out
+        out += b
+        if len(b) < 1000:
+            return out
+        off += 1000
+
+
+def ml_price(ctx, side):
+    names = (('close_home_ml', 'home_ml_close') if side == 'HOME'
+             else ('close_away_ml', 'away_ml_close'))
+    for n in names:
+        if ctx.get(n) is not None:
+            try:
+                return int(ctx[n])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def check(date: str, surface: str) -> None:
+    key = f'{surface}_{date}'
+    rows = paged('jerry_cache', {'select': 'cache_key,data,created_at',
+                                 'cache_key': f'eq.{key}'})
+    if not rows:
+        print(f'\n=== {key} === NOT PUBLISHED yet — nothing to check')
+        return
+    data = rows[0].get('data') or {}
+    items = data if isinstance(data, list) else (data.get('items') or [])
+    print(f"\n=== {key} === {len(items)} items · generated "
+          f"{str(data.get('generated_at') or rows[0].get('created_at'))[:16]}")
+    if not items:
+        W(f'{key}: published with ZERO items')
+        return
+
+    # One context fetch per sport present on the card.
+    ctx_by_sport = {}
+    for sp in {str(i.get('sport')) for i in items}:
+        tbl = CTX_TBL.get(sp)
+        if tbl:
+            ctx_by_sport[sp] = {
+                c['game_id']: c for c in
+                paged(tbl, {'select': '*', 'game_date': f'eq.{date}'})}
+    reads = {}
+    for sp in ctx_by_sport:
+        for r in paged('jerry_reads', {
+                'select': 'game_id,call_market,call_side,call_line,'
+                          'price_american,long_read,short_read',
+                'sport': f'eq.{sp}', 'game_date': f'eq.{date}'}):
+            reads[r['game_id']] = r
+
+    now = datetime.now(timezone.utc)
+    by_sport = Counter()
+    for it in items:
+        sp, gid = str(it.get('sport')), it.get('game_id')
+        pick, typ = str(it.get('pick')), str(it.get('type') or '').lower()
+        tier = str(it.get('tier') or '').upper()
+        tag = f'{key} · {pick} ({sp})'
+        by_sport[sp] += 1
+        ctx = (ctx_by_sport.get(sp) or {}).get(gid)
+        if not ctx:
+            W(f'{tag}: no {sp} context row for game_id — cannot verify')
+            continue
+        pp = ctx.get('primary_play') or {}
+        side = str(pp.get('side') or '').upper()
+
+        # 1 · the card must agree with the engine as it stands NOW
+        if str(pp.get('type') or '').lower() != typ:
+            F(f'{tag}: card market {typ!r} != engine {pp.get("type")!r}')
+        if pp.get('label') and str(pp['label']).strip() != pick.strip():
+            F(f'{tag}: card pick != engine label {pp["label"]!r}')
+        if pp.get('tier') and str(pp['tier']).upper() != tier:
+            W(f'{tag}: card tier {tier} != engine {pp["tier"]}')
+
+        # 2 · heavy-juice moneyline — the Liberty -300 case
+        if typ == 'ml':
+            px = it.get('odds')
+            if px is None:
+                px = ml_price(ctx, side)
+            try:
+                px = int(px)
+            except (TypeError, ValueError):
+                px = None
+            if px is not None and px <= HEAVY_ML_THRESHOLD:
+                F(f'{tag}: ML at {px:+d}, past the {HEAVY_ML_THRESHOLD:+d} '
+                  f'heavy-favourite trap — should have rerouted to the spread')
+
+        # 3 · a published tier needs a market to have an edge over
+        if tier in ('PRIME', 'STRONG', 'LEAN'):
+            if typ == 'ml' and ml_price(ctx, side) is None:
+                F(f'{tag}: tier {tier} with NO moneyline price stored')
+            if typ in ('rl', 'spread') and ctx.get('close_spread') is None \
+                    and ctx.get('close_puckline') is None:
+                F(f'{tag}: tier {tier} with NO spread/puckline stored')
+
+        # 4 · the reason must not name a different market than the pick
+        rsn = it.get('reason')
+        if isinstance(rsn, str) and ':' in rsn:
+            pre = rsn.split(':', 1)[0].strip()
+            if pre.endswith(' ML') and not pick.endswith(' ML'):
+                F(f'{tag}: reason says {pre!r} but the pick is a spread')
+
+        # 5 · truncated team name — the "State · 85%" case
+        if isinstance(rsn, str):
+            head = rsn.split('·')[0].strip().split(':')[0].strip()
+            team = pick.rsplit(' ', 1)[0].strip()
+            if head and team and head != team and team.endswith(head) \
+                    and len(head) < len(team):
+                F(f'{tag}: reason opens with {head!r}, a truncation of '
+                  f'{team!r} — team_short dropped the identity')
+
+        # 6 · a line/price appropriate to the market
+        if typ in ('rl', 'spread') and it.get('line') is None:
+            W(f'{tag}: spread pick with no line on the card')
+        rd = reads.get(gid)
+        if rd:
+            if rd.get('call_market') and str(rd['call_market']).lower() != typ:
+                F(f'{tag}: jerry_read call_market {rd["call_market"]!r} != '
+                  f'card {typ!r} — the write-up is for another market')
+            if rd.get('call_side') and side and \
+                    str(rd['call_side']).upper() != side:
+                F(f'{tag}: jerry_read call_side {rd["call_side"]} != pick side {side}')
+            if rd.get('price_american') is None:
+                W(f'{tag}: no price captured — ungradeable for ROI')
+            # the 10-02 defect: prose arguing the other team
+            other = (ctx.get('away_team') if side == 'HOME'
+                     else ctx.get('home_team'))
+            txt = f"{rd.get('long_read') or ''} {rd.get('short_read') or ''}"
+            if other and txt:
+                for ph in (f'{other} has value', f'{other} has the edge',
+                           f'take {other}', f'{other} the better value',
+                           f'favors {other}', f'favours {other}'):
+                    if ph.lower() in txt.lower():
+                        F(f'{tag}: write-up says "{ph}" — arguing against '
+                          f'its own pick')
+                        break
+
+        # 7 · never publish a game already under way
+        for c in START_COLS:
+            v = ctx.get(c)
+            if not v:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+            except ValueError:
+                break
+            if not dt.tzinfo:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt <= now:
+                W(f'{tag}: game already started ({c}={str(v)[:16]})')
+            break
+    print(f'  composition: {dict(by_sport)}')
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--date', default=str(datetime.now(timezone.utc).date()))
+    ap.add_argument('--surface', choices=['sweat_card', 'sharp_card'])
+    a = ap.parse_args()
+    surfaces = [a.surface] if a.surface else ['sweat_card', 'sharp_card']
+    print(f'== card integrity · {a.date} == '
+          f'(heavy-ML threshold {HEAVY_ML_THRESHOLD:+d})')
+    for s in surfaces:
+        check(a.date, s)
+    print(f'\n{"=" * 60}\nFAIL {len(fails)} · warn {len(warns)}')
+    if fails:
+        print('\nFAILURES:')
+        for f in fails:
+            print(f'  - {f}')
+    raise SystemExit(1 if fails else 0)
