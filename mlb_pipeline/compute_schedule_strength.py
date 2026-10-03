@@ -331,7 +331,13 @@ def strength_from_games(sport: str, rows: list[dict],
         expected = sum(1.0 - x for x in ratios) / len(ratios)
         sor = own - expected
         out.append({'team': team, 'sos': round(sos, 4), 'sor': round(sor, 4),
-                    'games': n, 'raw_win_pct': round(w / n, 4)})
+                    'games': n, 'raw_win_pct': round(w / n, 4),
+                    # 2026-10-03: how many opponents actually entered the
+                    # average. Must equal `games`; anything less means an
+                    # opponent was silently dropped, which is exactly how a
+                    # body-bag game became free SOS. See the self-check in
+                    # main(). Not written to the table — a local invariant.
+                    'opponents_rated': len(ratios)})
     return out
 
 
@@ -392,6 +398,7 @@ def main():
     # DEFAULT now() column plus an upsert equals a timestamp that lies.
     _NOW = datetime.now(timezone.utc).isoformat()
     produced: dict[str, set] = {}
+    produced_vals: dict[str, list] = {}
     payload = []
     for sport in sports:
         vals = compute(sport, args.season)
@@ -399,6 +406,7 @@ def main():
             print(f'  {sport}: no decided games for {args.season} — skipped')
             continue
         produced[sport] = {v['team'] for v in vals}
+        produced_vals[sport] = vals
         rk_sos = _ranked(vals, 'sos')
         rk_sor = _ranked(vals, 'sor')
         size = len(vals)
@@ -422,6 +430,47 @@ def main():
               ', '.join(f"{t['team']} {t['sor']:+.3f}" for t in top))
 
     print(f'\n  rows to write: {len(payload)}')
+    # ══ 2026-10-03 · SELF-VERIFY, BECAUSE THERE IS NO EXTERNAL REFERENCE ══
+    # Andy asked whether we could field an ESPN/CFBD SOS instead of computing
+    # our own. For NCAAF the answer is no, and it is not a close call:
+    # /ratings/sor 404s, and /ratings/sp exposes `sos` + `secondOrderWins`
+    # keys that CFBD never populates — 0 of 808 rows across 2021-2026. So
+    # this number cannot be checked against anyone else's, which makes an
+    # internal invariant check the only verification available.
+    #
+    # Checks the two things that actually broke this file:
+    #   1. Every rated team's opponent count equals its game count. A dropped
+    #      opponent is how Miami (OH) reached SOS rank 2 of 137 on 10-03 —
+    #      an FCS opponent whose only game was against them returned None and
+    #      was filtered out of the average, making a body-bag game FREE SOS.
+    #      78 of 137 teams had one deleted that way.
+    #   2. sor == own_shrunk_win_pct + sos - 1 exactly. This identity is what
+    #      makes SOR carry no information beyond win% and SOS, and a drift in
+    #      it means the two halves were computed off different populations.
+    #
+    # Prints and does not raise: the write below is still the useful work, and
+    # a loud line in the nightly log is what the SOS column lacked for the
+    # four days it sat frozen.
+    for _sp, _vals in produced_vals.items():
+        _bad_n, _bad_id = [], []
+        for _v in _vals:
+            _own = ((_v['raw_win_pct'] * _v['games'] + SHRINK_K / 2.0)
+                    / (_v['games'] + SHRINK_K))
+            if abs(_v['sor'] - (_own + _v['sos'] - 1)) > 5e-4:
+                _bad_id.append(_v['team'])
+            if _v.get('opponents_rated') is not None and \
+                    _v['opponents_rated'] != _v['games']:
+                _bad_n.append((_v['team'], _v['games'],
+                               _v['opponents_rated']))
+        print(f'  [{_sp}] self-check: {len(_vals)} teams · '
+              f'identity violations {len(_bad_id)} · '
+              f'opponent-count mismatches {len(_bad_n)}')
+        if _bad_id:
+            print(f'     🚨 sor != own_win% + sos - 1 for {_bad_id[:6]}')
+        if _bad_n:
+            print(f'     🚨 opponents averaged != games played — a dropped '
+                  f'opponent is free SOS: {_bad_n[:6]}')
+
     if args.dry_run:
         print('  DRY RUN — no writes.')
         return

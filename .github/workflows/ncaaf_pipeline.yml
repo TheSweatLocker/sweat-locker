@@ -814,9 +814,34 @@ jobs:
       # SOS and SOR now come from compute_schedule_strength.py, which derives
       # both from results for all six sports and writes team_computed_stats
       # (surfaced by the team_stats_rolling view). It runs in
-      # nightly_cross_sport.sh. If per-game ctx columns are wanted later,
-      # CFBD /ratings/sp carries `sos` and `secondOrderWins` on an endpoint
-      # ncaaf_stats_pull.py ALREADY calls -- no extra request needed.
+      # nightly_cross_sport.sh.
+      #
+      # 2026-10-03 CORRECTION. This said "CFBD /ratings/sp carries `sos` and
+      # `secondOrderWins` on an endpoint ncaaf_stats_pull.py ALREADY calls --
+      # no extra request needed", offered as the easy way to fill the per-game
+      # ctx columns. The keys are in the response SHAPE but CFBD does not
+      # populate them. Measured every season the endpoint serves:
+      #
+      #   year  rows  sos populated  secondOrderWins
+      #   2021   131        0              0
+      #   2022   132        0              0
+      #   2023   134        0              0
+      #   2024   135        0              0
+      #   2025   137        0              0
+      #   2026   139        0              0
+      #
+      # Zero out of 808. So there is no external SOS to adopt and none to
+      # cross-check against -- ours is not a convenience, it is the only one
+      # that exists. Andy asked whether we could field an ESPN/CFBD number
+      # instead; for NCAAF the answer is no, and /ratings/sor returns 404
+      # (the gap this whole block documents). compute_schedule_strength.py
+      # self-verifies instead; see the checks at the end of its main().
+      #
+      # Left as a comment rather than deleted on purpose: an empty field that
+      # LOOKS available is exactly the kind of thing someone re-discovers and
+      # wires up, and this is the second time a confident comment in this
+      # repo pointed at a measurement that did not hold
+      # (feedback_comment_asserting_a_measurement).
 
       # 2026-09-02: AP top-25 rankings pull. Populates home_ap_rank +
       # away_ap_rank on ncaaf_game_context. Powers ⭐ Ranked matchup badge.
