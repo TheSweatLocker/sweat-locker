@@ -1327,14 +1327,43 @@ def backfill_nba_nhl(game_date: str, sport: str, dry_run: bool = False) -> int:
     sport_tuple = _NBA_ESPN_SPORT if sport == 'NBA' else _NHL_ESPN_SPORT
     stat_map = _NBA_STAT_KEY if sport == 'NBA' else _NHL_STAT_KEY
 
-    r = requests.get(f'{SB}/rest/v1/{table}',
-                     headers=H_READ,
-                     params={'game_date': f'eq.{game_date}',
-                             'select': 'id,player_name,prop_type,direction,prop_line',
-                             'limit': '500'}, timeout=30)
-    props = r.json() if r.status_code == 200 else []
+    # ══ 2026-10-03 · PAGINATE. A HARDCODED 500 CAPPED THE WHOLE JOB ══
+    # This read `limit: 500` with no offset, so on any slate bigger than 500
+    # props the tail silently never got L5/L10/season lookback. Measured on
+    # NHL: 491 / 495 / 579 / 589 rows carried lookback on days that generated
+    # 1,689 / 955 / 3,172 / 1,915 props — i.e. coverage pinned near 500
+    # regardless of slate size, 27.9% overall.
+    #
+    # That matters beyond the gap itself: player_l10_hit_count is the field a
+    # generation floor would key on, and l10_hit_count=0 props hit 14.0% at
+    # -49.3% ROI (n=622). A floor run against 28% coverage would gate 72% of
+    # the board for MISSING DATA rather than for failing the bar.
+    #
+    # backfill_mlb() right above took exactly this fix on 2026-09-02 ("was
+    # hardcoded limit=500 ... tail rows never got L5/L10 backfilled -> 30%
+    # coverage gap"). The NBA/NHL function 680 lines down never received it.
+    # Same bug, same file, same author note, one function apart.
+    #
+    # `signals` is deliberately NOT selected here: unlike the MLB path this
+    # function never writes signals back, so it cannot wipe them. Confirmed
+    # before widening the read -- the 2026-08-23 comment on the MLB SELECT
+    # records what happens when that assumption is wrong.
+    props = []
+    for _off in range(0, 20000, 500):
+        r = requests.get(f'{SB}/rest/v1/{table}',
+                         headers=H_READ,
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': 'id,player_name,prop_type,direction,prop_line',
+                                 'limit': '500', 'offset': str(_off)}, timeout=30)
+        chunk = r.json() if r.status_code == 200 else []
+        if not isinstance(chunk, list) or not chunk:
+            break
+        props.extend(chunk)
+        if len(chunk) < 500:
+            break
     if not props:
         print(f'  {sport}: no props on {game_date}'); return 0
+    print(f'  {sport}: {len(props)} props on {game_date} to look up')
 
     now_iso = datetime.now(timezone.utc).isoformat()
     recent_cache: dict = {}   # (pname, stat_field) → list[float]
