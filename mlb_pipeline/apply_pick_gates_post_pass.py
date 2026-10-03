@@ -130,6 +130,7 @@ def main() -> int:
             continue
         changed, skipped_started, nopick, same = [], 0, 0, 0
         refused_promo = 0
+        sub_fixed = 0
         for ctx in rows:
             pp = ctx.get('primary_play')
             if not isinstance(pp, dict) or not pp.get('type'):
@@ -150,7 +151,48 @@ def main() -> int:
                       pp.get('tier'))
             after = (new.get('type'), new.get('side'), new.get('label'),
                      new.get('tier'))
-            if before == after:
+            # 2026-10-02 · A STALE SUBTITLE IS A USER-VISIBLE DEFECT, so it
+            # has to count as a change. This tuple was (type, side, label,
+            # tier) only, which meant the pass reported CHANGED 0 on rows
+            # whose `sub` still named the old market: Auburn @ Tennessee read
+            # "Tennessee ML: Model projects 8.72-point edge" under a pick
+            # labelled Tennessee -6.5. Comparing the subtitle's leading label
+            # against the pick's own label catches exactly that, without
+            # treating ordinary prose differences as changes.
+            def _stale_ml_sub(d):
+                """True only for the ML->spread reroute artifact.
+
+                NARROW ON PURPOSE. A first attempt rewrote any subtitle whose
+                prefix differed from the label, which would have CORRUPTED two
+                live rows: PHI ML and Missouri ML carry
+                    "⚠ Downgraded to LEAN: MC sim at 42%"
+                — an intentional, user-facing gate disclosure that merely
+                happens to contain a colon. Rewriting it to "PHI ML: MC sim at
+                42%" would delete the warning.
+
+                So the test is the artifact's exact shape: the subtitle leads
+                with "<team> ML" while the pick is no longer a moneyline, and
+                the team still matches. Anything else is left alone.
+                """
+                s, lb = d.get('sub'), d.get('label')
+                if not isinstance(s, str) or not lb or ':' not in s:
+                    return False
+                pre, lb = s.split(':', 1)[0].strip(), str(lb).strip()
+                if not pre.endswith(' ML') or lb.endswith(' ML'):
+                    return False
+                return lb.startswith(pre[:-3].strip())
+
+            # REPAIR, don't just detect. apply_heavy_ml_spread_reroute fixes
+            # the subtitle when it reroutes, but a row rerouted on an earlier
+            # run returns early from that gate (already 'rl'), so its stale
+            # subtitle can only be repaired here.
+            if _stale_ml_sub(new):
+                _s = new['sub']
+                new = dict(new)
+                new['sub'] = f"{new['label']}:{_s.split(':', 1)[1]}"
+                sub_fixed += 1
+
+            if before == after and new.get('sub') == pp.get('sub'):
                 same += 1
                 continue
             # 2026-10-02 · DEMOTIONS AND REROUTES ONLY.
@@ -170,7 +212,8 @@ def main() -> int:
 
         print(f'\n=== {sport} === {len(rows)} forward rows · no pick {nopick} '
               f'· started/skipped {skipped_started} · unchanged {same} '
-              f'· refused promotions {refused_promo} · CHANGED {len(changed)}')
+              f'· refused promotions {refused_promo} · subtitle fixes {sub_fixed}'
+              f' · CHANGED {len(changed)}')
         for ctx, pp, new, b, a in changed[:12]:
             rr = ' [reroute]' if new.get('_heavy_ml_reroute') else ''
             up = ' [unpriced]' if new.get('_unpriced_market') else ''

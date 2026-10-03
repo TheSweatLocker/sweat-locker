@@ -1925,10 +1925,21 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
 
     team = ctx.get('home_team') if side == 'HOME' else ctx.get('away_team')
     tier_before = str(pp.get('tier') or '').upper()
+    old_label = pp.get('label')
     out = dict(pp)
     out['type'] = 'rl'
     out['line'] = -line_mag
     out['label'] = f'{team} -{line_mag:g}'
+    # 2026-10-02 · THE SUBTITLE HAS TO FOLLOW THE MARKET.
+    # The ensemble builds `sub` as "{label}: reason · reason", so a reroute
+    # left the old market in the user-visible text: Auburn @ Tennessee read
+    # "Tennessee ML: Model projects 8.72-point edge" under a pick labelled
+    # Tennessee -6.5. Found while composing a play list — a card that says
+    # ML beside a spread line is exactly the kind of mismatch that gets a
+    # subscriber on the wrong bet.
+    _sub = pp.get('sub')
+    if isinstance(_sub, str) and old_label and _sub.startswith(f'{old_label}:'):
+        out['sub'] = out['label'] + _sub[len(str(old_label)):]
     if tier_before == 'PRIME':
         out['tier'] = 'STRONG'
     out['_heavy_ml_reroute'] = {
