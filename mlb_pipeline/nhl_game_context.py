@@ -396,7 +396,13 @@ def enrich_market(rows: list[dict]) -> None:
         r = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=H_READ,
                          params={'select': 'game_date,home_team,away_team,'
                                            'close_home_ml,close_away_ml,'
-                                           'close_total,close_puckline',
+                                           'close_total,close_puckline,'
+                                           # 2026-10-03 · carry the PRICES
+                                           # across too. See the block below.
+                                           'close_puckline_home_price,'
+                                           'close_puckline_away_price,'
+                                           'close_total_over_price,'
+                                           'close_total_under_price',
                                  'game_date': f'gte.{dates[0]}',
                                  'limit': '2000'}, timeout=20)
         if r.status_code != 200:
@@ -449,6 +455,29 @@ def enrich_market(rows: list[dict]) -> None:
         if pl is not None:
             row['close_puckline'] = float(pl)
             row['close_puckline_home'] = float(pl)
+        # COPY THE PUCK-LINE AND TOTAL PRICES (2026-10-03).
+        # 20261001a stores these on nhl_game_results and nhl_odds_pull fills
+        # them — all 13 forward games on 10-03 carry a real puck-line price.
+        # But nothing reads nhl_game_results at pick time: the scorer, the
+        # defensive gates and both cards read THIS table, which had no price
+        # columns at all. A number we already fetch and store was invisible
+        # to every consumer that could act on it.
+        #
+        # That is the real blocker on the NHL rl market, and it was
+        # misdiagnosed twice as "we don't store puck-line prices" — both
+        # times by querying the context table and concluding the data did not
+        # exist. rl holds the only VALIDATED weight-1.0 signals in the stack
+        # (home_ats_cold_at_home 66.1% n=59, home_team_ats_cold 62.7% n=51)
+        # and has produced essentially no picks, because a signal set cannot
+        # be assessed against a price the scorer cannot see.
+        for _pxcol in ('close_puckline_home_price', 'close_puckline_away_price',
+                       'close_total_over_price', 'close_total_under_price'):
+            _v = m.get(_pxcol)
+            if _v is not None:
+                try:
+                    row[_pxcol] = int(_v)
+                except (TypeError, ValueError):
+                    pass
         if hml is not None or tot is not None:
             priced += 1
     print(f'  market: matched {hit}/{len(rows)} context rows to results, '
