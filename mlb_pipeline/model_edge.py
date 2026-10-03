@@ -63,6 +63,36 @@ NEG_EDGE_TIER_CAP = 'LEAN'
 BAD_EDGE_TIER_CAP = 'COVERAGE'
 BAD_EDGE_PP = -5.0
 
+# ══ 2026-10-03 · THE NEGATIVE-EDGE CAP COULD NOT TOUCH A LEAN PICK ══
+# Andy: "if its a known leak we need to fix, if we know the system is bias
+# we need to fix not just continue doing what we're doing."
+#
+# The leak was this: with NEG_EDGE_TIER_CAP = 'LEAN', any edge between
+# -5.0pp and +2.0pp "capped" to LEAN — and the picks landing there were
+# ALREADY LEAN, so cap_tier_for_edge hit its own
+#     if _rank[cap] >= _rank[t]: return t, None
+# guard and did nothing. Minnesota Wild at -182 with conviction 62 against
+# 64.5% implied is a -2.5pp pick, and it shipped at LEAN onto The Sharp at
+# 0.5u. Same shape as feedback_tier_demotion_needs_stake_boundary: a
+# demotion that lands on the tier you already hold is not a demotion.
+#
+# A tier asserts an edge over the market. A NON-POSITIVE edge asserts none
+# — our own number says the price is better than our opinion of it — so it
+# cannot support a bettable tier. That is the same reasoning
+# apply_unpriced_market_gate uses for a pick with no market at all, and it
+# does not depend on sample size: it is an internal contradiction, not a
+# hit-rate claim. (The NHL edge buckets are n=6-9 and do not even order
+# monotonically, so no gate here is justified by them.)
+#
+# Still a DEMOTION, not a suppression, per the directive above: COVERAGE
+# keeps the pick visible on the game card with the edge stated honestly, it
+# just stops the card surfaces treating it as a play.
+#
+# Measured blast radius on live forward picks: 16 — NHL 6, NFL 8, NBA 2;
+# NCAAF and MLB zero, their moneylines already carry positive edge.
+NO_EDGE_PP = 0.0
+NO_EDGE_TIER_CAP = 'COVERAGE'
+
 
 def implied_prob(american_price) -> Optional[float]:
     """American odds -> implied probability including the vig (0..1).
@@ -220,9 +250,12 @@ def cap_tier_for_edge(tier: str, conviction, american_price,
     if e is None or t not in ('PRIME', 'STRONG', 'LEAN'):
         return t, None
     _rank = {'COVERAGE': 1, 'LEAN': 2, 'STRONG': 3, 'PRIME': 4}
-    if e <= BAD_EDGE_PP:
-        cap = BAD_EDGE_TIER_CAP
+    if e <= NO_EDGE_PP:
+        # Non-positive edge: our own number does not beat the price. No
+        # bettable tier can be supported. See NO_EDGE_PP.
+        cap = NO_EDGE_TIER_CAP
     elif e < EDGE_MIN_PP:
+        # Positive but thin — real edge, not enough to claim confidence.
         cap = NEG_EDGE_TIER_CAP
     else:
         return t, None

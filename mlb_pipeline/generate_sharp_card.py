@@ -1126,6 +1126,39 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             dropped_no_price += 1
             continue
 
+        # ══ 2026-10-03 · NON-POSITIVE EDGE IS NOT A PLAY ══
+        # Andy: "if its a known leak we need to fix, if we know the system is
+        # bias we need to fix not just continue doing what we're doing."
+        #
+        # Measured on NHL: picks on the favourite 9-12 (42.9%, n=21) at
+        # -37.7% ROI, and 7 of 16 live ML picks carried ZERO or NEGATIVE edge
+        # against the price — Minnesota Wild -182 with conviction 62 against
+        # 64.5% implied is -2.5pp, and it shipped onto this card at 0.5u.
+        # A coin-flip hit rate times favourite juice is the whole leak.
+        #
+        # model_edge now caps a non-positive edge to COVERAGE, but that is
+        # not sufficient HERE for two reasons:
+        #   1. this composer gates NHL/NBA/NCAAB with _is_any_tier, so a
+        #      COVERAGE pick still reaches the card;
+        #   2. prop_publish_lock pins tier at first publish, so a pick
+        #      already published at LEAN cannot be demoted retroactively —
+        #      correct for record integrity, useless as a guard.
+        # So the card decides from the PRICE AND CONVICTION in front of it,
+        # which no lock can stale out.
+        #
+        # ML only: edge_pp is meaningless for a spread or total (it returns
+        # None), and conviction on a rerouted pick is a win probability, not
+        # a cover probability.
+        if pick_type == 'ml':
+            try:
+                from model_edge import edge_pp as _epp
+                _e = _epp(pp.get('conviction'), side_ml, 'ml')
+                if _e is not None and _e <= 0:
+                    dropped_no_edge += 1
+                    continue
+            except ImportError:
+                pass
+
         # (5) 2026-09-06 sole-pick juice cap. If the primary_play is an ML
         # juicier than SOLE_PICK_ML_JUICE_MAX, auto-swap to the spread
         # side of the same team so users don't stake 2u to win 0.5u.

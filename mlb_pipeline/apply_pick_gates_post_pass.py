@@ -141,6 +141,18 @@ def main() -> int:
                 continue
             try:
                 new = apply_all_defensive_gates(pp, ctx, sport=sport)
+                # 2026-10-03 · the edge check runs AFTER the gates in every
+                # context builder (see model_edge.apply_to_pick — it exists
+                # separately because the LR path covers only lr_v1, and
+                # ensemble_v2 produced 263 of 319 picks). This pass has to
+                # mirror that order or a stored row never receives the cap:
+                # the 10-03 non-positive-edge change would have been inert on
+                # all 16 affected live picks without it.
+                try:
+                    from model_edge import apply_to_pick as _edge_apply
+                    new = _edge_apply(new, ctx) or new
+                except ImportError:
+                    pass
             except Exception as e:
                 print(f'  ! gate raised on {ctx.get("game_id")}: '
                       f'{type(e).__name__}: {e}')
