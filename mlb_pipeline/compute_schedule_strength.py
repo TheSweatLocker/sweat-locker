@@ -191,12 +191,39 @@ def counts_competitively(sport: str, row: dict) -> bool:
 
 
 def compute(sport: str, season: int) -> list[dict]:
+    """Current-snapshot SOS/SOR. Fetches, then defers to strength_from_games."""
     rows = page('team_recent_games', {
         'sport': f'eq.{sport}', 'season': f'eq.{season}',
-        'select': 'team,opp,won,game_id'})
+        'select': 'team,opp,won,game_id,game_date'})
+    return strength_from_games(sport, rows)
+
+
+def strength_from_games(sport: str, rows: list[dict],
+                        before: str | None = None) -> list[dict]:
+    """SOS/SOR from a set of team_recent_games rows. THE ONLY DEFINITION.
+
+    2026-10-02 · Extracted from compute() so a point-in-time rebuild can
+    reuse it instead of restating the arithmetic. Two implementations of a
+    metric is how the read and the card came to disagree about Penn State's
+    passing yards by 43 a game, and SOS is about to be used for far more
+    than a card row.
+
+    `before` (YYYY-MM-DD, exclusive) keeps only games played strictly
+    before that date, which is what makes the result usable as a feature
+    for a game ON that date without leaking its own result or any later
+    one. Pass None for the live snapshot.
+
+    Returns [{team, sos, sor, games, raw_win_pct}].
+
+    ⚠ sor = raw_win_pct + sos - 1 EXACTLY (see the derivation below), so
+    SOS and SOR are not independent features. A model handed win%, SOS and
+    SOR has been given a perfectly collinear set.
+    """
     decided = [r for r in rows
                if r.get('won') is not None and r.get('opp')
-               and counts_competitively(sport, r)]
+               and counts_competitively(sport, r)
+               and (before is None
+                    or (r.get('game_date') and str(r['game_date']) < before))]
     if not decided:
         return []
 
