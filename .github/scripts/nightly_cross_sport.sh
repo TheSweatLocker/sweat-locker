@@ -252,6 +252,23 @@ bash "$RUN_STEP" --label "reconcile_ncaaf_stat_sources.py (aggregate vs per-game
 
 bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
   python recompute_ncaaf_per_game_stats.py
+
+# 2026-10-03 · DAILY FLOOR for pace (plays_pg, top_min_pg -> NCAAF + NFL).
+# collect_pace_stats.py IS scheduled, inside ncaaf_pipeline.yml and
+# nfl_pipeline.yml, but gated on `mode == full || resolver_only`. The NCAAF
+# mode map sends Fri 18:00 and Sat 12:00 to card_only, so pace is skipped on
+# both football days, and mode is derived from `date -u +%H` at RUN time while
+# this repo's crons routinely land 4-7h late -- so a delayed trigger silently
+# lands in a different bucket than the one it was scheduled for.
+# cross_sport_lines.yml documents that same run-time-vs-trigger confusion.
+#
+# No --sport, so one call covers every sport the script knows (NCAAF, NFL).
+# Idempotent upsert, and now that refreshed_at is stamped explicitly a repeat
+# run is visible rather than silent. Same "daily floor, not the ideal" shape as
+# price_picks.py below: the in-pipeline calls stay, because running right after
+# each sport's stats pull keeps the numerator and denominator together.
+bash "$RUN_STEP" --label "collect_pace_stats.py (pace floor, all sports)" \
+  python collect_pace_stats.py
 bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
   python recompute_nfl_epa_units.py
 

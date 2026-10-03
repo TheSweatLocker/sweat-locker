@@ -95,6 +95,7 @@ USAGE
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 
 import requests
 
@@ -183,6 +184,28 @@ def _ranked(pairs, higher_is_better):
     return out
 
 
+# ══ 2026-10-03 · STAMP refreshed_at EXPLICITLY ══
+# team_computed_stats.refreshed_at is `timestamptz DEFAULT now()`, and a
+# DEFAULT only fires on INSERT. These writes are upserts, so every re-run took
+# the UPDATE path and the stamp stayed pinned to the row's first insert.
+#
+# Verified today: a run that wrote 564 rows and read back 564 left every
+# plays_pg and top_min_pg row still reading refreshed_at = 2026-09-29, while a
+# fresh recomputation matched the stored values on 266 of 266 teams. Values
+# current, timestamp four days old.
+#
+# That is worse than a plain staleness bug, because the lie points the wrong
+# way: I read the frozen stamp and reported to Andy that pace was four days
+# stale when the data was correct. A freshness GATE reading this column would
+# suppress good data, and a freshness ALARM would cry wolf nightly.
+#
+# compute_schedule_strength.py — the sibling writing to this same table — hit
+# exactly this on 09-30 and fixed it; the fix was never ported here. Fourth
+# instance overall. The pattern, stated once more: a DEFAULT now() column plus
+# an upsert equals a timestamp that lies.
+_NOW = datetime.now(timezone.utc).isoformat()
+
+
 def run(sport, season, dry=False):
     cfg = SPORTS[sport]
     rows = _page(cfg['table'], {'select': cfg['select'], 'season': f'eq.{season}'})
@@ -240,6 +263,7 @@ def run(sport, season, dry=False):
                 'stat_key': stat_key, 'raw_value': v, 'rank': rk[team],
                 'league_size': len(vals), 'direction': direction,
                 'display_label': label, 'unit': unit,
+                'refreshed_at': _NOW,
             })
         srt = sorted(vals, key=lambda kv: kv[1])
         print(f'   {stat_key:<12} {len(vals):3d} teams · '
