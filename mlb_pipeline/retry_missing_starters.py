@@ -65,16 +65,56 @@ def _today_et() -> str:
 
 
 def fetch_context_gaps(game_date: str) -> list:
-    """Games with either pitcher NULL."""
+    """Games with either pitcher NULL, OR a named starter with no projection.
+
+    ══ 2026-10-03 · THE SAFETY NET WATCHED THE WRONG COLUMN ══
+    Andy, from the app: "for LAD and Braves game i see Dod[d] as starter for
+    braves but projection not in gamedetail and some models in model
+    consensus missing numbers".
+
+    This selected only `(home_pitcher.is.null, away_pitcher.is.null)` — a
+    missing NAME. But the user-visible damage is a missing PROJECTION, and
+    the two come apart: once the name lands by any other path (the 2pm ET
+    context build, or a separate starter feed), this query stops returning
+    the game and the net goes blind. Nothing else re-runs
+    patch_projected_ks.
+
+    Dylan Dodd was exactly that. `away_pitcher` = 'Dylan Dodd' was already
+    populated while all five away_pitcher_projected_* were NULL and
+    panel_implied_total was NULL. The 5pm ET and 8pm ET retries would both
+    have found zero gaps and exited "✓ no gaps". Running patch_projected_ks
+    by hand filled every one of them in a single pass off
+    `[season_fallback]`, so the data had been available the whole time —
+    nothing was ever going to ask for it.
+
+    Now a game qualifies if a name is missing OR a named starter has no
+    projected_ks. The name-patch loop in run() is unchanged and simply
+    finds nothing to do on a projection-only gap; the recompute trigger is
+    what those games need, and run() now fires it for them too.
+
+    projected_ks is the sentinel because patch_projected_ks writes all five
+    projections plus the panel in one pass, so any one of them standing in
+    for the set is equivalent — and ks is the one with a documented
+    incident behind it (the 5/27 DeGrom gap that created that script).
+    """
     qs = urllib.parse.urlencode({
         'game_date': f'eq.{game_date}',
-        'select': 'game_id,away_team,home_team,away_pitcher,home_pitcher',
-        'or': '(home_pitcher.is.null,away_pitcher.is.null)',
+        'select': 'game_id,away_team,home_team,away_pitcher,home_pitcher,'
+                  'away_pitcher_projected_ks,home_pitcher_projected_ks',
+        'or': '(home_pitcher.is.null,away_pitcher.is.null,'
+              'home_pitcher_projected_ks.is.null,'
+              'away_pitcher_projected_ks.is.null)',
     })
     req = urllib.request.Request(f'{SB}/rest/v1/mlb_game_context?{qs}', headers=H_READ)
     with urllib.request.urlopen(req, timeout=15) as r:
         rows = json.loads(r.read())
     return [g for g in rows if isinstance(g, dict)]
+
+
+def _needs_projection(g: dict) -> bool:
+    """A named starter whose projection never landed."""
+    return any(g.get(f'{s}_pitcher') and g.get(f'{s}_pitcher_projected_ks') is None
+               for s in ('home', 'away'))
 
 
 def fetch_api_pitchers(game_date: str) -> dict:
@@ -111,7 +151,7 @@ def patch_context_pitcher(game_id: str, field: str, value: str, dry_run: bool = 
         return False
 
 
-def trigger_projections_recompute() -> bool:
+def trigger_projections_recompute(game_date: str | None = None) -> bool:
     """Run patch_projected_ks.py to compute projected_er + panel for the
     patched games. patch_projected_ks handles all games on the slate
     so we don't need to target — it's idempotent + fast (~10s)."""
@@ -120,10 +160,14 @@ def trigger_projections_recompute() -> bool:
         print(f'  ⚠ patch_projected_ks.py not found — skip downstream trigger')
         return False
     try:
-        r = subprocess.run(
-            [sys.executable, script],
-            capture_output=True, text=True, timeout=120,
-        )
+        # 2026-10-03: pass the date through. This ran patch_projected_ks
+        # with no --date, so it always patched TODAY no matter which date
+        # the retry was invoked for -- a manual `--date 2026-09-23` backfill
+        # would silently repair the wrong slate and report success.
+        cmd = [sys.executable, script]
+        if game_date:
+            cmd += ['--date', game_date]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         # Print the "panel: margin=X total=Y" lines so we can see what
         # got backfilled by the retry
         if r.stdout:
@@ -142,7 +186,18 @@ def trigger_projections_recompute() -> bool:
 def run(date_str: str, dry_run: bool = False) -> None:
     print(f'=== retry_missing_starters · {date_str} ===')
     gaps = fetch_context_gaps(date_str)
-    print(f'  games w/ pitcher gap: {len(gaps)}')
+    proj_only = [g for g in gaps if _needs_projection(g)]
+    name_gaps = [g for g in gaps
+                 if g.get('home_pitcher') is None or g.get('away_pitcher') is None]
+    print(f'  games w/ a gap: {len(gaps)}  '
+          f'(missing name {len(name_gaps)} · named-but-unprojected '
+          f'{len(proj_only)})')
+    for g in proj_only:
+        _side = ('away' if (g.get('away_pitcher')
+                 and g.get('away_pitcher_projected_ks') is None) else 'home')
+        print(f"  ⚠ {str(g.get('away_team'))[:20]:<20} @ "
+              f"{str(g.get('home_team'))[:20]:<20}  {_side}="
+              f"{g.get(_side + '_pitcher')} named but NO projection")
     if not gaps:
         print('  ✓ no gaps — exiting')
         return
@@ -172,7 +227,7 @@ def run(date_str: str, dry_run: bool = False) -> None:
 
     if patched > 0 and not dry_run:
         print('\n  Triggering downstream recompute (patch_projected_ks) ...')
-        trigger_projections_recompute()
+        trigger_projections_recompute(date_str)
 
     if patched > 0:
         print('\n  Note: v4/MC probability recompute requires full game_context.py '
