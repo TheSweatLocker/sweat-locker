@@ -162,6 +162,45 @@ def teaser_price(sport: str, market: str, original_odds: int | float,
 # FETCH TODAY'S PICKS
 # ═══════════════════════════════════════════════════════════════════════
 
+_POTD_GIDS_CACHE: set | None = None
+
+
+def _potd_game_ids() -> set:
+    """game_ids featured as a Play of the Day today. Cached per run.
+
+    2026-10-03: the Ledger needs to know what the headline surface is
+    already on, so a chalk leg cannot be published against our own POTD.
+    A POTD's primary_play tier can sit at COVERAGE (the 10-03 White Sox
+    were COVERAGE/55) so tier alone does not identify it -- it has to be
+    asked for directly. Empty set on any failure: the guard then falls
+    back to the published-tier test and never blocks the whole build.
+    """
+    global _POTD_GIDS_CACHE
+    if _POTD_GIDS_CACHE is not None:
+        return _POTD_GIDS_CACHE
+    out: set = set()
+    try:
+        r = requests.post(f'{SB}/rest/v1/rpc/get_todays_potd',
+                          headers={**H_READ, 'Content-Type': 'application/json'},
+                          json={}, timeout=20)
+        if r.status_code == 200:
+            body = r.json()
+            for row in (body if isinstance(body, list) else [body]):
+                if not isinstance(row, dict):
+                    continue
+                dat = row.get('data') or {}
+                gm = dat.get('game') if isinstance(dat, dict) else None
+                # The rpc's own game_id is a cache key ("best_bet_<date>"),
+                # not a real game_id, so resolve by team names instead.
+                if isinstance(gm, dict) and gm.get('home_team'):
+                    out.add(('TEAMS', gm.get('away_team'), gm.get('home_team')))
+    except Exception as e:
+        print(f'  ⚠ POTD lookup failed ({type(e).__name__}) — chalk guard '
+              f'falls back to published-tier only')
+    _POTD_GIDS_CACHE = out
+    return out
+
+
 def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
     """Pull every game's chalk favorite ML (regardless of ensemble pick side).
     Feeds build_chalk_parlay so we can compose chalk trios even when the
@@ -219,6 +258,54 @@ def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
             pp_side = (pp.get('side') or '').upper() if isinstance(pp, dict) else ''
             pp_type = (pp.get('type') or '').lower() if isinstance(pp, dict) else ''
             aligned = pp_type == 'ml' and pp_side == chalk_side
+            # ══ 2026-10-03 · NEVER TAKE THE OTHER SIDE OF OUR OWN PICK ══
+            # Andy, from the app: "White Sox is our POTD but in game detail
+            # downgraded to lean low conviction, then in Ledger tab Guardians
+            # is one of the legs in chalk duo, seems off."
+            #
+            # It was. On 10-03 we published BOTH sides of one game:
+            #   POTD      "Play of the Day: Chicago White Sox ... ML"  (AWAY)
+            #   Ledger    chalk_parlay leg "Cleveland Guardians ML"    (HOME)
+            # same game_id 5d13b613a334, both live, both user-facing.
+            #
+            # Not an accident — the comment in build_chalk_parlay says
+            # CHALK_ONLY exists so a parlay "composes even on nights where
+            # ensemble backs the dog side of every game". That is exactly a
+            # licence to oppose ourselves, and nobody connected it to the two
+            # surfaces sitting a tab apart. `aligned` was already computed
+            # here; the not-aligned branch just relabelled and kept the leg.
+            #
+            # Only a DIRECT ML contradiction is excluded. Not-aligned also
+            # covers the harmless case where our pick is a spread or a total
+            # in the same game, and a chalk ML next to our own total is a
+            # different bet, not a hedge against ourselves.
+            #
+            # Deliberately NOT changing which side we like: Andy's call stands
+            # ("I dont want POTD changed"). The Ledger yields instead, because
+            # a chalk leg is a hit-rate filler and the POTD is the headline.
+            # PUBLISHED is the test, not merely "the engine leaned". A first
+            # pass excluded on any opposing ML side and over-shot: it dropped
+            # Brewers ML because primary_play held "San Diego Padres ML" at
+            # tier COVERAGE, conviction 0, whose own sub reads "⚠ Engine
+            # passed: MC sim has our side at 22%". A pick the engine passed on
+            # is not a position we hold, and treating it as one shrinks the
+            # chalk pool for nothing.
+            #
+            # So: a published TIER (LEAN or better), or being today's POTD —
+            # which is how the White Sox qualify. Their primary_play is
+            # COVERAGE/55 too, but it is the Play of the Day, which is as
+            # published as anything we ship.
+            _opp_ml = pp_type == 'ml' and pp_side and pp_side != chalk_side
+            if _opp_ml:
+                _pub_tier = str(pp.get('tier') or '').upper() in (
+                    'PRIME', 'STRONG', 'LEAN')
+                _is_potd = ('TEAMS', row.get('away_team'),
+                            row.get('home_team')) in _potd_game_ids()
+                if _pub_tier or _is_potd:
+                    _why = 'POTD' if _is_potd else f"tier {pp.get('tier')}"
+                    print(f'    ⊘ chalk skip {chalk_team} ML — we publish '
+                          f'{pp.get("label") or pp_side} in this game ({_why})')
+                    continue
             tier = pp.get('tier') if aligned else 'CHALK_ONLY'
             conviction = pp.get('conviction', 0) if aligned else 55  # neutral proxy
             out.append({
