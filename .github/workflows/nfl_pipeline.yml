@@ -913,7 +913,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nfl_ncaaf_signal_discipline.py --sport NFL
+          python nfl_ncaaf_signal_discipline.py --sport NFL --days 14
 
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'

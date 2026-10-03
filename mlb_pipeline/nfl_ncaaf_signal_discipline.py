@@ -51,7 +51,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as _date
 from typing import Optional
 
 import requests
@@ -162,6 +162,21 @@ def _record_cap(pp: dict, cap_tier: str, cap_conv: int, reason: str) -> None:
     if prev_tier and _TIER_RANK.get(prev_tier, 9) <= _TIER_RANK.get(cap_tier, 9):
         cap_tier = prev_tier
         cap_conv = min(int(prev.get('max_conviction') or cap_conv), cap_conv)
+    # ══ 2026-10-03 · A CAP MUST NEVER RAISE A TIER ══
+    # This compared only against a PREVIOUS cap, not against the tier the
+    # pick currently holds, so "cap at LEAN" PROMOTED anything below LEAN.
+    # Surfaced the moment the window widened: three locked NFL picks moved
+    # COVERAGE -> LEAN on the LR-warn gate — i.e. the gate for a cohort
+    # running 17-40 (29.8%) pushed three picks from unpublished into a
+    # published tier. The pre-existing one-day window hid it because the
+    # rows it touched were already LEAN or above.
+    #
+    # Same family as feedback_tier_demotion_needs_stake_boundary: a demotion
+    # that lands on the tier you already hold is a no-op, and one that lands
+    # ABOVE it is an upgrade wearing a demotion's name.
+    cur_tier = str(pp.get('tier') or '').upper()
+    if cur_tier and _TIER_RANK.get(cur_tier, 9) < _TIER_RANK.get(cap_tier, 9):
+        cap_tier = cur_tier
     reasons = list(prev.get('reasons') or [])
     if reason not in reasons:
         reasons.append(reason)
@@ -209,16 +224,53 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
-def _fetch_games(sport: str, game_date: str) -> list[dict]:
+def _fetch_games(sport: str, game_date: str, days: int = 0) -> list[dict]:
+    """Games from `game_date` through `game_date + days` inclusive.
+
+    ══ 2026-10-03 · THE PASS BRANCH WAS STRUCTURALLY UNREACHABLE ══
+    This filtered `game_date = eq.<one day>`, defaulting to TODAY. The
+    LR-warn gate below has two branches: an unlocked pick becomes PASS, a
+    locked one is only capped to LEAN because re-tiering a published pick
+    would rewrite a receipt. NCAAF's lock window is Thu 8am ET -> Sun
+    (lock_football_slate.py), so by the time a Saturday game's own date
+    arrived its pick was ALWAYS already stamped — and a one-day window
+    never looked at it any earlier.
+
+    Net effect measured across all history: the gate chose CAP 25 times and
+    PASS once. The fade it was built to apply in 09-26 has essentially never
+    been applied, and 14 picks on the 10-03 board shipped as playable LEANs
+    while sitting in a cohort that is 17-40, 29.8% (n=57) against 92-47,
+    66.2% (n=139) for picks the LR shadow agrees with.
+
+    The proof it was the window and not the lock: on 10-03 there were 8
+    future NCAAF picks already carrying a strong LR disagreement, 6 of them
+    still UNLOCKED, and every one had `_discipline_cap` absent entirely —
+    the pass had never evaluated them at all. The monotonic protection in
+    _record_cap works fine; nothing was overwriting a PASS, because no PASS
+    was ever produced.
+
+    So this is a read-window bug, the same shape as
+    project_read_window_five_constants_929 (NFL lost 14 Sunday reads every
+    Wednesday to a window that only looked at one day). Widening it lets the
+    gate decide while the pick is still unlocked, which is also the only
+    point at which PASS is the honest answer — the locked carve-out then
+    protects what it was written to protect instead of swallowing the slate.
+    """
     tbl = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
+    params = {
+        'select': 'game_id,game_date,home_team,away_team,primary_play,'
+                  'spread_anchor_weight,pick_locked_at',
+    }
+    if days and days > 0:
+        end = (_date.fromisoformat(game_date)
+               + timedelta(days=days)).isoformat()
+        params['game_date'] = f'gte.{game_date}'
+        params['and'] = f'(game_date.lte.{end})'
+    else:
+        params['game_date'] = f'eq.{game_date}'
     r = requests.get(f'{SB}/rest/v1/{tbl}',
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
-                     params={
-                         'game_date': f'eq.{game_date}',
-                         'select': 'game_id,home_team,away_team,primary_play,'
-                                   'spread_anchor_weight,pick_locked_at',
-                     },
-                     timeout=20)
+                     params=params, timeout=20)
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
 
@@ -343,26 +395,73 @@ def _apply_gates(pp: dict, spread_anchor_weight,
 
 
 def _patch(tbl: str, game_id: str, new_pp: dict) -> bool:
+    """PATCH primary_play, and PROVE the row was actually hit.
+
+    ══ 2026-10-03 · "Texas A&M" SILENTLY ATE EVERY WRITE ══
+    The filter was interpolated straight into the URL:
+
+        f'{SB}/rest/v1/{tbl}?game_id=eq.{game_id}'
+
+    NCAAF game ids are built from team names, so Arkansas @ Texas A&M is
+    `ncaaf_20261003_Arkansas_Texas A&M`. The bare `&` ENDS the query string:
+    PostgREST saw `game_id=eq.ncaaf_20261003_Arkansas_Texas A` plus a stray
+    `M` param, matched zero rows, and returned **200**. A PATCH that updates
+    nothing is a successful PATCH, so this returned True and the caller
+    counted it as applied.
+
+    Observed exactly that today: the run printed
+    `Arkansas +13.5  LEAN → PASS · gates: lr_warn_pass:p=0.76`
+    and the row came back LEAN on re-read, three times in a row. A
+    `Prefer: return=representation` probe returned 0 rows, which is what
+    finally gave it away — the status code never could.
+
+    Two fixes, both needed:
+      * pass the filter through `params=` so requests percent-encodes `&`
+        and the space;
+      * check that a row actually came back, because a no-op PATCH is
+        indistinguishable from a successful one by status alone
+        (feedback_204_is_not_a_write, same lesson, different table).
+
+    Any team with `&` or other URL-significant characters in its name hit
+    this. Texas A&M is the obvious one; the encoding fix covers the rest
+    rather than special-casing a name.
+    """
     r = requests.patch(
-        f'{SB}/rest/v1/{tbl}?game_id=eq.{game_id}',
-        headers=H_WRITE,
+        f'{SB}/rest/v1/{tbl}',
+        headers={**H_WRITE, 'Prefer': 'return=representation'},
+        params={'game_id': f'eq.{game_id}'},
         json={'primary_play': new_pp},
         timeout=10,
     )
-    return r.status_code in (200, 204)
+    if r.status_code not in (200, 204):
+        print(f'      ⚠ PATCH {r.status_code}: {(r.text or "")[:160]}')
+        return False
+    try:
+        rows = r.json() if (r.text or '').strip() else []
+    except ValueError:
+        rows = []
+    if not rows:
+        print(f'      ⚠ PATCH matched NO ROWS for game_id={game_id!r} '
+              f'— write discarded, status was {r.status_code}')
+        return False
+    return True
 
 
 def run(sport: Optional[str] = None,
         game_date: Optional[str] = None,
-        dry_run: bool = False) -> None:
+        dry_run: bool = False,
+        days: int = 0) -> None:
     gd = game_date or _today_et()
     sports = [sport] if sport else ['NFL', 'NCAAF']
-    print(f'=== nfl_ncaaf_signal_discipline · {gd} · sports={sports} '
+    span = f'{gd}..+{days}d' if days else gd
+    print(f'=== nfl_ncaaf_signal_discipline · {span} · sports={sports} '
           f'{"(DRY)" if dry_run else "(APPLY)"} ===')
     for sp in sports:
         tbl = 'nfl_game_context' if sp == 'NFL' else 'ncaaf_game_context'
-        games = _fetch_games(sp, gd)
-        print(f'  {sp}: {len(games)} games in ctx')
+        games = _fetch_games(sp, gd, days=days)
+        n_unlocked = sum(1 for g in games if not g.get('pick_locked_at'))
+        print(f'  {sp}: {len(games)} games in ctx '
+              f'({n_unlocked} still unlocked — only these can reach PASS)')
         capped = 0
         no_change = 0
         for g in games:
@@ -379,7 +478,9 @@ def run(sport: Optional[str] = None,
             label = pp.get('label', '?')
             old_tier = pp.get('tier', '?')
             new_tier = new_pp.get('tier', '?')
-            print(f'    {label:24s} {old_tier} → {new_tier}  · gates: {",".join(gates)}')
+            _lk = 'locked' if g.get('pick_locked_at') else 'unlocked'
+            print(f'    {str(g.get("game_date")):10s} {label:24s} '
+                  f'{old_tier} → {new_tier}  [{_lk}] · gates: {",".join(gates)}')
             if not dry_run and gid:
                 if _patch(tbl, gid, new_pp):
                     capped += 1
@@ -393,8 +494,17 @@ def main():
     p.add_argument('--sport', choices=['NFL', 'NCAAF'])
     p.add_argument('--date', dest='game_date')
     p.add_argument('--dry-run', action='store_true')
+    # 2026-10-03: a forward window, so the LR-warn gate can decide while the
+    # pick is still UNLOCKED. Default 0 keeps the historical single-day
+    # behaviour for any caller that wants exactly one date.
+    p.add_argument('--days', type=int, default=0,
+                   help='also process games up to N days ahead (0 = just the '
+                        'one date). Needed for PASS to be reachable: NCAAF '
+                        'locks Thu->Sun, so a weekend pick is already stamped '
+                        'by the time its own date arrives.')
     args = p.parse_args()
-    run(sport=args.sport, game_date=args.game_date, dry_run=args.dry_run)
+    run(sport=args.sport, game_date=args.game_date, dry_run=args.dry_run,
+        days=args.days)
 
 
 if __name__ == '__main__':
