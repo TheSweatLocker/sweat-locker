@@ -63,8 +63,17 @@ import requests
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-for _l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
-               encoding='utf-8'):
+# 2026-10-03 · GUARD THE .env READ. This open() was unconditional, so the
+# script raised FileNotFoundError the moment it ran in GitHub Actions, where
+# the env comes from secrets and no .env file exists. It had never mattered
+# because the script was only ever run by hand locally — until I scheduled it
+# in nightly_cross_sport.sh on 10-02, at which point it failed on its first
+# nightly and NCAAF pass_yds_pg stayed pinned at the previous day while its
+# sibling recompute_nfl_epa_units.py (same commit, adjacent line, guarded
+# open) updated fine. That asymmetry is what gave it away.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ENV = os.path.join(_HERE, '.env')
+for _l in (open(_ENV, encoding='utf-8') if os.path.exists(_ENV) else []):
     if '=' in _l and not _l.startswith('#'):
         _k, _v = _l.split('=', 1)
         os.environ.setdefault(_k.strip(), _v.strip())

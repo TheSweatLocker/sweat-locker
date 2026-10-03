@@ -183,14 +183,25 @@ def check(date: str, surface: str) -> None:
             if pre.endswith(' ML') and not pick.endswith(' ML'):
                 F(f'{tag}: reason says {pre!r} but the pick is a spread')
 
-        # 5 · truncated team name — the "State · 85%" case
-        if isinstance(rsn, str):
+        # 5 · truncated team name — the "State · 85%" case.
+        #
+        # COLLEGE ONLY, AND ONLY WHEN THE REMNANT IS GENERIC. A first version
+        # flagged "Wild · 56% vs 55% implied" for Minnesota Wild, which is a
+        # false positive: in pro sports the field is "City Nickname" and the
+        # nickname IS the identity ("Bruins", "Rangers", "Wild"). College
+        # fields are school names whose last token is often the generic half,
+        # so "Penn State" -> "State" loses the team while "Michigan State" ->
+        # "State" collides with it. A check that cries wolf gets ignored.
+        if isinstance(rsn, str) and sp in ('NCAAF', 'NCAAB'):
             head = rsn.split('·')[0].strip().split(':')[0].strip()
             team = pick.rsplit(' ', 1)[0].strip()
+            _GENERIC = {'state', 'tech', 'a&m', 'university', 'college',
+                        'st.', 'st', 'southern', 'northern', 'eastern',
+                        'western', 'central', 'international'}
             if head and team and head != team and team.endswith(head) \
-                    and len(head) < len(team):
-                F(f'{tag}: reason opens with {head!r}, a truncation of '
-                  f'{team!r} — team_short dropped the identity')
+                    and head.lower() in _GENERIC:
+                F(f'{tag}: reason opens with {head!r}, a generic truncation '
+                  f'of {team!r} — team_short dropped the identity')
 
         # 6 · a line/price appropriate to the market
         if typ in ('rl', 'spread') and it.get('line') is None:

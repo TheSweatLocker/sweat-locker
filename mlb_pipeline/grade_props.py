@@ -27,7 +27,7 @@ Usage:
     python grade_props.py --dry-run          # print, no writes
 """
 from __future__ import annotations
-import argparse, json, os, re, sys, unicodedata
+import argparse, json, os, re, sys, time, unicodedata
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -50,6 +50,43 @@ SB = os.environ['SUPABASE_URL']
 KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
+
+
+def _patch_row(url: str, body: dict, tries: int = 4) -> bool:
+    """PATCH one row, retrying transient network failures.
+
+    ══ 2026-10-03 · ONE RESET KILLED 1,915 GRADES ══
+    This grader writes one PATCH per prop, sequentially. NHL covers whole
+    rosters, so 2026-10-02 was 1,915 props in one run — and the bare
+    requests.patch() raised
+
+        ConnectionError('Connection aborted.', ConnectionResetError(10054))
+
+    partway through. The non-200 path was already handled (tally['errors']),
+    but a RAISED exception is not a status code: it propagated out of
+    grade_date and aborted the run, leaving every remaining prop ungraded.
+    All 1,915 NHL props for 10-02 were still NULL this morning, which is the
+    "grader failed overnight" Andy saw.
+
+    A long sequential write loop against a remote API will eat a reset
+    eventually; the only question is whether it costs one row or all of them.
+    Retries with backoff, and a terminal failure returns False so the caller
+    counts it and keeps going.
+    """
+    for i in range(tries):
+        try:
+            r = requests.patch(url, headers=H_WRITE, data=json.dumps(body),
+                               timeout=20)
+            if r.status_code in (200, 204):
+                return True
+            # 5xx is worth another try; 4xx is our own bad request.
+            if r.status_code < 500:
+                return False
+        except requests.exceptions.RequestException:
+            pass
+        if i < tries - 1:
+            time.sleep(1.5 * (i + 1))
+    return False
 
 # Set by --force flag in main()
 FORCE_REGRADE = False
@@ -505,12 +542,11 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
             # out on 09-22 and left 115 props in that state.
             if str(prop.get('matchup') or '') in postponed:
                 if not dry_run:
-                    requests.patch(
-                        f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
-                        headers=H_WRITE, timeout=10,
-                        data=json.dumps({
-                            'result': 'Void',
-                            'resolved_at': datetime.now(timezone.utc).isoformat()}))
+                    if not _patch_row(
+                            f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                            {'result': 'Void',
+                             'resolved_at': datetime.now(timezone.utc).isoformat()}):
+                        tally['errors'] += 1
                 tally['V'] += 1
                 continue
             if stats_map.get(_norm_name(prop.get('player_name'))) is None:
@@ -533,12 +569,11 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
                 tally['skipped_no_player'] += 1
                 if stats_map:
                     if not dry_run:
-                        requests.patch(
-                            f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
-                            headers=H_WRITE, timeout=10,
-                            data=json.dumps({
-                                'result': 'Void',
-                                'resolved_at': datetime.now(timezone.utc).isoformat()}))
+                        if not _patch_row(
+                                f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
+                                {'result': 'Void',
+                                 'resolved_at': datetime.now(timezone.utc).isoformat()}):
+                            tally['errors'] += 1
                     tally['V'] += 1
             else:
                 tally['skipped_no_stat'] += 1
@@ -550,11 +585,7 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
         # Patch the row
         patch = {'result': result, 'final_value': actual,
                  'resolved_at': datetime.now(timezone.utc).isoformat()}
-        r2 = requests.patch(
-            f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}',
-            headers=H_WRITE, data=json.dumps(patch), timeout=10,
-        )
-        if r2.status_code not in (200, 204):
+        if not _patch_row(f'{SB}/rest/v1/{table}?id=eq.{prop["id"]}', patch):
             tally['errors'] += 1
 
     print(f'  graded {tally["graded"]}: {tally["W"]}W {tally["L"]}L {tally["P"]}P'
