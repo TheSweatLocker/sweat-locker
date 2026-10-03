@@ -99,6 +99,70 @@ def _embedded_date(game_id):
     return m.group(1) if m else None
 
 
+def _fold(name):
+    """Normalise a team name for grouping. Mirrors resolve_ncaaf_results._fold_name
+    closely enough for duplicate detection, without needing the alias table."""
+    import unicodedata as _u
+    n = _u.normalize('NFKD', str(name or ''))
+    n = ''.join(c for c in n if not _u.combining(c))
+    n = n.lower().replace("'", '').replace('-', ' ').replace('&', ' and ')
+    for _m in ('golden lions', 'golden eagles', 'golden flashes', 'fighting irish',
+               'crimson tide', 'tar heels', 'blue devils', 'red raiders',
+               'green wave', 'demon deacons', 'hurricanes', 'wolverines',
+               'buckeyes', 'cornhuskers', 'mountaineers', 'volunteers',
+               'commodores', 'razorbacks', 'gamecocks', 'seminoles', 'hokies',
+               'cavaliers', 'terrapins', 'scarlet knights', 'nittany lions',
+               'boilermakers', 'wildcats', 'badgers', 'gophers', 'hawkeyes',
+               'cyclones', 'jayhawks', 'sooners', 'longhorns', 'aggies',
+               'bulldogs', 'tigers', 'braves', 'hornets', 'bison', 'rams',
+               'eagles', 'lions', 'bears', 'panthers', 'spartans', 'knights',
+               'owls', 'pirates', 'cougars', 'huskies', 'ducks', 'beavers',
+               'trojans', 'bruins', 'utes', 'buffaloes', 'cardinals',
+               'mustangs', 'broncos', 'rebels', 'wolf pack', 'aztecs',
+               'warriors', 'vandals', 'falcons', 'midshipmen', 'black knights'):
+        if n.endswith(' ' + _m):
+            n = n[: -(len(_m) + 1)]
+            break
+    # UMass / Massachusetts and friends: collapse the handful of spellings our
+    # ingest has used against CFBD's canonical school name.
+    _ALIAS = {'umass': 'massachusetts', 'uconn': 'connecticut',
+              'app state': 'appalachian state', 'southern mississippi': 'southern miss',
+              'ul monroe': 'louisiana monroe', 'fiu': 'florida international',
+              'miami fl': 'miami', 'miami oh': 'miami ohio'}
+    n = _ALIAS.get(n.strip(), n)
+    return ''.join(ch for ch in n if ch.isalnum())
+
+
+def _group_key(row):
+    """2026-10-03 · GROUP ACROSS BOTH AXES THAT CREATE DUPLICATES.
+
+    This grouped on (game_date, away_team, home_team) verbatim, which misses
+    every duplicate that differs on EITHER axis -- and both happen:
+
+      date      ncaaf_20260911_Mercyhurst_New Mexico   09-11  UNSCORED
+                ncaaf_20260912_Mercyhurst_New Mexico   09-12  7-70
+      spelling  ncaaf_20260903_UMass_Rutgers           09-03  UNSCORED
+                ncaaf_20260903_Massachusetts_Rutgers   09-03  37-21
+
+    Measured: 12 rows looked like missing finals and every one had a scored
+    sibling -- no score was ever actually absent. They were phantoms, and the
+    old key could not see them (4 groups found, 12 rows stranded).
+
+    Keyed on folded names + an unordered pair so an orientation flip groups
+    too, and the DATE IS DELIBERATELY EXCLUDED from the key -- callers bucket
+    by ISO week instead, so a +/-1 day split still collapses while two real
+    meetings in a season (a rematch weeks apart) stay separate.
+    """
+    import datetime as _dt
+    d = str(row.get('game_date'))[:10]
+    try:
+        iso = _dt.date.fromisoformat(d).isocalendar()
+        wk = (iso[0], iso[1])
+    except Exception:
+        wk = (d,)
+    return (wk, frozenset((_fold(row.get('away_team')), _fold(row.get('home_team')))))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--season', type=int, default=2026)
@@ -109,14 +173,19 @@ def main():
     rows = _page('ncaaf_game_results', cols, {'season': f'eq.{a.season}'})
     groups = collections.defaultdict(list)
     for x in rows:
-        groups[(str(x['game_date'])[:10], x['away_team'], x['home_team'])].append(x)
+        groups[_group_key(x)].append(x)
     dupes = {k: v for k, v in groups.items() if len(v) > 1}
 
     print(f'=== dedupe_ncaaf_results · season {a.season} ===')
     print(f'  rows {len(rows)} · duplicate groups {len(dupes)}')
 
     moved = deleted = skipped = 0
-    for (d, away, home), v in sorted(dupes.items()):
+    for _gk, v in sorted(dupes.items(), key=lambda kv: str(kv[0])):
+        # Representative identity for logging + canonical detection comes from
+        # the SCORED row where there is one, else the first.
+        _rep = next((x for x in v if x.get('home_score') is not None), v[0])
+        d = str(_rep['game_date'])[:10]
+        away, home = _rep['away_team'], _rep['home_team']
         ymd = d.replace('-', '')
         canon = [x for x in v if _embedded_date(x['game_id']) == ymd]
         scored = [x for x in v if x.get('home_score') is not None]
