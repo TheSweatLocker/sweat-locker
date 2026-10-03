@@ -751,6 +751,7 @@ def run(season: Optional[int] = None, dry_run: bool = False,
 
     # Fuzzy pass for any CFBD games not yet matched
     fuzzy_hits = 0
+    swap_fixes: list = []
     for g in cfbd_games:
         cid = g.get('id')
         if cid in seen_ids: continue
@@ -762,14 +763,112 @@ def run(season: Optional[int] = None, dry_run: bool = False,
         home_raw = (g.get('home_team') or g.get('homeTeam') or '')
         fuzzy_key = (d, _fold_name(away_raw), _fold_name(home_raw))
         ex = existing.get(fuzzy_key)
-        if not ex: continue
+        if not ex:
+            # ══ 2026-10-03 · AN ORIENTATION DISAGREEMENT WAS A PERMANENT NULL ══
+            # Every key here is an ORDERED (away, home) pair, so if our row
+            # has the sides the other way round from CFBD no key variant can
+            # ever match and the score never lands. Not a transient miss —
+            # the row stays NULL for the rest of the season.
+            #
+            # Andy asked why Arizona State was unrated for SOS/SOR. Because:
+            #   ours  2026-09-19  Kansas @ Arizona State      (no score, ever)
+            #   CFBD  2026-09-19  Arizona State 24 @ Kansas 17
+            # Reversed. The score could not attach, ASU stayed at 2 decided
+            # games against MIN_GAMES=3, and compute_schedule_strength
+            # dropped them -- which is how the external SOR benchmark came
+            # to rate 138 teams against our 137.
+            #
+            # Measured against CFBD over all 480 of our 2026 rows: 407 agree
+            # on orientation, 3 disagree, 70 have no CFBD pair at all (D2 /
+            # NAIA opponents CFBD does not carry). Of those 3, two are
+            # neutral-site rivalries where "home" is a convention rather than
+            # a fact -- Oklahoma/Texas at the Red River and Army/Navy -- so
+            # exactly ONE is a true error. Tiny, and it cost a team its
+            # rating for three weeks with nothing to flag it.
+            #
+            # CFBD's orientation wins when a swap matches, and that part is
+            # not cosmetic: home_pts/away_pts come from CFBD's own home/away
+            # fields, so writing them beside OUR reversed team names would
+            # record ASU's 24 as Kansas's score. A fix that silently inverts
+            # a result is worse than the gap it closes.
+            ex = existing.get((d, _fold_name(home_raw), _fold_name(away_raw)))
+            if not ex:
+                # ── and the DATE is the other strict axis ──────────────
+                # Same failure, different column. San Jose State's games sit
+                # in our table under dates CFBD disagrees with, twice over:
+                #   ours 2026-09-11 + 2026-09-12   CFBD 2026-09-13  (Cal Poly)
+                #   ours 2026-09-19 (x2)           CFBD 2026-09-20  (Fresno St)
+                # A late West Coast kickoff crosses UTC midnight, so our ET
+                # calendar day and CFBD's startDate legitimately differ by
+                # one -- the same UTC/ET split that produced
+                # dedupe_ncaaf_results.py. With an exact-date key those four
+                # rows could never be scored, which left SJSU at 2 decided
+                # games and unrated for SOS/SOR exactly like Arizona State.
+                #
+                # +/-1 day only, and only for the same team pair. A team does
+                # not play twice inside a day, so there is nothing else for
+                # this to collide with.
+                #
+                # Each CFBD game is still consumed once (`seen_ids`), so where
+                # we hold duplicate rows for one real game only ONE gets the
+                # score. That matters: scoring both would double-count the
+                # game in team_recent_games and inflate the very SOS this is
+                # meant to repair. The leftover duplicate stays NULL and
+                # contributes nothing -- dedupe_ncaaf_results.py is the place
+                # to collapse it, not here.
+                for _delta in (1, -1):
+                    try:
+                        _alt = (_date.fromisoformat(d)
+                                + _timedelta(days=_delta)).isoformat()
+                    except ValueError:
+                        continue
+                    for _k in ((_alt, _fold_name(away_raw), _fold_name(home_raw)),
+                               (_alt, _fold_name(home_raw), _fold_name(away_raw))):
+                        ex = existing.get(_k)
+                        if ex:
+                            break
+                    if ex:
+                        print(f'  ⇄ date fix {ex.get("game_id")}: stored '
+                              f'{ex.get("game_date")} · CFBD {d}')
+                        break
+            if not ex:
+                continue
+        # Decide orientation from the FOLDED names, not from which lookup
+        # happened to hit. The date fallback above tries both orderings, so
+        # "it matched on the second key" does not mean the sides are
+        # reversed -- San Jose State matched its swapped key only because
+        # _fold_name drops the accent in CFBD's "San José State".
+        _swapped = (_fold_name(ex.get('away_team') or '') == _fold_name(home_raw)
+                    and _fold_name(ex.get('home_team') or '') == _fold_name(away_raw)
+                    and _fold_name(away_raw) != _fold_name(home_raw))
+        if _swapped:
+            # Swap OUR OWN two values rather than importing CFBD's spelling.
+            # Writing CFBD's string would introduce a second name for the
+            # same team -- our other rows say "San Jose State" and CFBD says
+            # "San José State", so taking theirs would split one team into
+            # two across team_recent_games and break the very SOS this is
+            # repairing. Orientation comes from CFBD; spelling stays ours.
+            print(f'  ⇄ orientation fix {ex.get("game_id")}: stored '
+                  f'{ex.get("away_team")} @ {ex.get("home_team")} — CFBD has '
+                  f'the sides reversed, swapping ours')
+            ex = {**ex, 'away_team': ex.get('home_team'),
+                  'home_team': ex.get('away_team')}
+            swap_fixes.append(ex.get('game_id'))
         seen_ids.add(cid)
         fuzzy_hits += 1
         payload = compute_outcome_patch(g, ex)
         if payload:
+            # Carry the corrected orientation into the write, so the row's
+            # team columns agree with the scores beside them.
+            if _swapped:
+                payload = {**payload, 'away_team': ex.get('away_team'),
+                           'home_team': ex.get('home_team')}
             patches.append((ex['game_id'], payload, ex))
     if fuzzy_hits:
         print(f'  fuzzy-matched {fuzzy_hits} additional games via mascot-fold')
+    if swap_fixes:
+        print(f'  ⇄ repaired {len(swap_fixes)} row(s) whose home/away was '
+              f'reversed vs CFBD: {swap_fixes}')
 
     updated = apply_patches(patches, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
