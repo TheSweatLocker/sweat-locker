@@ -156,6 +156,36 @@ def _eff(v):
     return (None, None)
 
 
+def _pen_yards(v):
+    """'3-35' -> 35. CFBD sends totalPenaltiesYards as COUNT-YARDS.
+
+    2026-10-03 · this column was 0 of 1776 rows populated. The value was being
+    read with _int(), which returns None for '3-35' exactly as it would for a
+    genuinely absent stat — so a 100% parse failure was indistinguishable from
+    CFBD not supplying the field, and nothing flagged it.
+
+    It mattered because penalty_yds_pg is published for 266 teams WITH a
+    national rank and was cited as a pick reason on the 10-03 Florida Atlantic
+    card ("Penalty home undisciplined"), while the only table that could have
+    checked it held nothing. Same shape as thirdDownEff, which _eff() has
+    always handled correctly two lines below in the same dict literal.
+
+    Returns the YARDS half, matching the column name. The count half is
+    available in the same string if a penalties-per-game stat is ever wanted;
+    there is no column for it today.
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    if '-' in s:
+        parts = s.split('-')
+        if len(parts) >= 2:
+            return _int(parts[1])
+        return None
+    # A bare number means CFBD changed the shape; take it rather than drop it.
+    return _int(s)
+
+
 def _et_date(iso):
     """CFBD startDate is UTC. Our tables key on the ET calendar day, and the
     UTC/ET split has already produced duplicate NCAAF rows once
@@ -282,7 +312,7 @@ def build_rows(season, week, season_type='regular'):
                     'passes_intercepted': _int(s.get('passesIntercepted')),
                     'sacks': _num(s.get('sacks')),
                     'tackles_for_loss': _num(s.get('tacklesForLoss')),
-                    'penalties_yards': _int(s.get('totalPenaltiesYards')),
+                    'penalties_yards': _pen_yards(s.get('totalPenaltiesYards')),
                     'possession_seconds': _mmss(s.get('possessionTime')),
                     'third_down_conv': t3c, 'third_down_att': t3a,
                     'fourth_down_conv': t4c, 'fourth_down_att': t4a,

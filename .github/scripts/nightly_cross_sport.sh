@@ -214,6 +214,42 @@ bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   
 # Must run AFTER the per-sport stats pulls (they read ncaaf_team_stats /
 # nfl_team_stats cumulative totals) and after the resolvers above, for the
 # same reason compute_schedule_strength does.
+# 2026-10-03 · ELEVENTH INSTANCE, and this one removed our only way to CHECK
+# the others. ncaaf_team_game_stats_pull.py was written 09-30 and never
+# scheduled: last hand-run 10-01 00:29, so every week-5 game was absent and
+# the per-game log — the single source that can verify the season aggregates
+# published below — was itself the least trustworthy table we had.
+#
+# Andy: "first and foremost we need to ensure all data is accurate for teams."
+# Scheduling the pull is half of that. The other half is actually comparing
+# the two sources, which nothing did (project_stat_integrity_audit_1002,
+# "no verification exists").
+#
+# Runs the FULL current season, not just the latest week, deliberately: the
+# pull is idempotent on (cfbd_game_id, team) and a whole-season re-run
+# self-heals gaps. That matters because the log had holes, not just lag —
+# Northwestern held weeks 1, 3, 4 and no week 2 — and a missing row reads
+# exactly like a bye. ~17 weeks x 3 CFBD endpoints a night.
+bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (per-game log)" \
+  python ncaaf_team_game_stats_pull.py
+
+# Compares ncaaf_team_stats (cumulative, what we publish) against
+# ncaaf_team_game_stats (immutable per-game, what can check it) and FAILS the
+# step on a game-count gap, a week hole on a team also short a game, or a
+# wholly-empty column. Writes nothing — when the two disagree, which one is
+# stale is a judgement call, but it has to be a visible one.
+#
+# Caught on its first run: penalties_yards populated 0 of 1776 rows, because
+# CFBD sends totalPenaltiesYards as "3-35" (count-yards) and the pull read it
+# with _int(). A 100% parse failure looked identical to CFBD not sending the
+# field. penalty_yds_pg is published for 266 teams WITH a national rank and
+# was cited as a pick reason on the 10-03 FAU card. Now 672/672 on played
+# games, and pass/rush/turnover drift is 0 across all 139 rated teams.
+#
+# Must run AFTER the pull above so it grades the fresh log.
+bash "$RUN_STEP" --label "reconcile_ncaaf_stat_sources.py (aggregate vs per-game)" \
+  python reconcile_ncaaf_stat_sources.py
+
 bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
   python recompute_ncaaf_per_game_stats.py
 bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
