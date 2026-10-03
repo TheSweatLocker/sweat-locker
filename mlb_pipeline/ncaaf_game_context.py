@@ -109,6 +109,12 @@ K_PTS_EPA = 5.5           # EPA diff → spread points (fallback)
 HOME_FIELD_PTS = 2.8      # CFB HFA slightly higher than NFL
 BASE_TOTAL = 52.0         # CFB avg total higher than NFL
 
+# 2026-10-03 · sanity ceiling on |projected_spread + close_spread|. Above this
+# the model-edge side covered 47.7% (n=44) vs 58.8% below it (n=160) on 2026
+# graded games — a huge disagreement with the market means our projection is
+# uninformed, not that we found value. See compute_sweat_score.
+EDGE_SANITY_MAX_PTS = float(os.environ.get('EDGE_SANITY_MAX_PTS', '10'))
+
 
 def _et_now():
     return datetime.now(timezone.utc) - timedelta(hours=4)
@@ -1069,9 +1075,64 @@ def sweat_tier(score):
     return 'PASS'
 
 
-def compute_sweat_score(proj_spread, close_spread, conf_net, proj_total, close_total):
+def compute_sweat_score(proj_spread, close_spread, conf_net, proj_total, close_total,
+                        proj_spread_source=None):
     score = 45
-    if proj_spread is not None and close_spread is not None:
+    # ── 2026-10-03 · THE 'epa' EDGE BONUS IS NOT AN EDGE ──────────────────
+    # The deferred fix from the 2026-09-29 note on the EPA fallback above.
+    # That note said the path was dormant (0 of 67 games) and capped its own
+    # scope: "left for when the path is live again and can be measured."
+    # It went live again TODAY and nothing tripped — 3 of 54 games on 10-03
+    # used it, and all 3 landed STRONG or PRIME on the strength of the very
+    # compression the note documented:
+    #
+    #   McNeese @ LSU        market -53.5  proj +4.8  "edge" -48.6  ss=83 PRIME
+    #   Texas Southern @ FAU market -44.5  proj +2.9  "edge" -41.6  ss=78 STRONG
+    #   Samford @ UAB        market -30.5  proj +3.2  "edge" -27.3  ss=75 STRONG
+    #
+    # mean sweat_score 78.7 on those 3 vs 62.2 on the 51 sp_plus games.
+    #
+    # The projection is not wrong-signed, it is STARVED: rolling EPA is not
+    # opponent-adjusted and an FCS opponent has no data, so h_net - a_net
+    # collapses and the output is just the home-field constant (std 1.35 vs
+    # market 9.27). A near-constant projection against a real spread
+    # manufactures a huge "disagreement" on every unrated matchup, and the
+    # edge ladder below paid +25 for it.
+    #
+    # So: an unrated matchup earns NO edge bonus. Confluence and total still
+    # score normally — this removes a fabricated input, it does not suppress
+    # the game. Deliberately NOT a K_PTS_EPA recalibration: fitting a factor
+    # on n=10 is the unmeasured adjustment the 09-29 note refused, correctly.
+    #
+    # ── THE GENERAL GUARD: A HUGE EDGE IS MODEL ERROR, NOT OPPORTUNITY ────
+    # The 'epa' key alone is not enough. The two worst days on record carried
+    # projected_spread_source = NULL, so a source-keyed cap would have missed
+    # them entirely: 2026-09-12 max |edge| 74.8, 2026-09-26 max |edge| 49.9.
+    # Whatever produces an absurd projection next will have a different name.
+    #
+    # So gate on the MAGNITUDE, which is measurable regardless of source.
+    # Model-edge side cover rate on the 204 graded+modelled 2026 games:
+    #
+    #     |edge| <  10 pts  ->  58.8%  (n=160)
+    #     |edge| >= 10 pts  ->  47.7%  (n= 44)   below the 52.4% breakeven
+    #
+    # Large disagreements carry NEGATIVE information, and the ladder below
+    # paid its MAXIMUM +25 for them. The mechanism is the same starvation as
+    # the EPA note: the model disagrees violently with the market precisely
+    # when it lacks the data to rate a team, so magnitude is a proxy for
+    # "this projection is uninformed" rather than "the market is wrong".
+    #
+    # NOT retuning the rest of the ladder here, on purpose. The 0.0-1.5 pt
+    # bucket covers 71.1% (n=38) and is paid nothing, so the ladder looks
+    # close to inverted end-to-end — but the header warning at the top of
+    # this file is explicit: "DO NOT retune sweat_score/conviction thresholds
+    # in the same change." One guard now; the ladder shape is its own
+    # measured change with its own before/after.
+    _absurd_edge = (proj_spread is not None and close_spread is not None
+                    and abs(proj_spread + close_spread) >= EDGE_SANITY_MAX_PTS)
+    _epa_starved = (proj_spread_source == 'epa')
+    if (proj_spread is not None and close_spread is not None
+            and not _epa_starved and not _absurd_edge):
         # 2026-09-16 SIGN CONVENTION FIX (Andy MIA@WF audit).
         # NCAAF close_spread uses pos=away favored; projected_spread uses
         # pos=home favored. Prior code subtracted raw values, inflating
@@ -1550,6 +1611,7 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
     score = compute_sweat_score(
         row.get('projected_spread'), row.get('close_spread'), conf_net,
         row.get('projected_total'), row.get('close_total'),
+        proj_spread_source=row.get('projected_spread_source'),
     )
     row['sweat_score'] = score
     row['sweat_tier'] = sweat_tier(score)
