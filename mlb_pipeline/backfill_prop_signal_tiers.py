@@ -150,6 +150,19 @@ def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
 
     w = l = p = 0
     fires = 0
+    # ══ 2026-10-03 · THE DIRECTION-ONLY CONTROL ══
+    # Grade a free alternative on exactly the same fired rows: "BACK every
+    # under, FADE every over". Prop families are wildly asymmetric — graded NHL
+    # props run OVER 23.9% vs UNDER 69.3% — so a signal whose side_expr is
+    # keyed on direction inherits that base rate and validates on it alone.
+    #
+    #   nhl_prop_l5_cold   side_expr: "'BACK' if direction == 'under' else 'FADE'"
+    #                      hit 79.1% (n=1,216) · direction-only 79.1% · lift +0.0pp
+    #
+    # That signal was VALIDATED at weight 1.0 while carrying literally zero
+    # information beyond the direction already on the row. Measuring lift over
+    # this control is what separates a form signal from a relabelled coin.
+    dw = dl = 0
     for prop in props:
         if not _matches_market(source, prop): continue
         prop = _coerce_signals(prop)
@@ -163,20 +176,48 @@ def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
         result = grade_prop_signal(side, prop.get('result'))
         if result == 'W': w += 1
         elif result == 'L': l += 1
+        # control: direction alone, same row, same grading function
+        _d = str(prop.get('direction') or '').lower()
+        if _d in ('over', 'under'):
+            _ctl = grade_prop_signal('BACK' if _d == 'under' else 'FADE',
+                                     prop.get('result'))
+            if _ctl == 'W': dw += 1
+            elif _ctl == 'L': dl += 1
         elif result == 'P': p += 1
 
     n_dec = w + l
     hit_rate = round(100 * w / n_dec, 1) if n_dec else None
     edge_pp = round(hit_rate - 52.4, 1) if hit_rate is not None else None
 
-    # Tier assignment — same rules as game-level backfill for uniformity
+    # Direction-only control on the same fired rows (see the loop above).
+    n_ctl = dw + dl
+    base_hit = round(100 * dw / n_ctl, 1) if n_ctl else None
+    lift = (round(hit_rate - base_hit, 1)
+            if hit_rate is not None and base_hit is not None else None)
+
+    # Tier assignment — now requires LIFT over the direction-only control, not
+    # just a hit rate over a flat 52.4%. nhl_backfill_signal_tiers.py already
+    # took this lesson for the rl scope ("a signal can no longer false-validate
+    # against a league average"); the prop grader never received it.
+    #
+    # A signal that merely matches or trails the control is UNVALIDATED, NOT
+    # anti-validated: underperforming a baseline does not imply that inverting
+    # the signal is profitable. ANTI_VALIDATED flips direction_hint to FADE and
+    # is an assertion that the opposite side wins, so it stays reserved for a
+    # genuinely bad raw hit rate.
     if n_dec < 15:
         tier = 'UNVALIDATED'
-    elif hit_rate is not None and n_dec >= 25 and hit_rate <= 48.0:
+    elif (hit_rate is not None and n_dec >= 25 and hit_rate <= 48.0
+          and (lift is None or lift <= -5.0)):
         tier = 'ANTI_VALIDATED'
-    elif hit_rate is not None and n_dec >= 50 and hit_rate >= 55.0:
+    elif lift is not None and lift <= -2.0:
+        # No information beyond the direction already on the row.
+        tier = 'UNVALIDATED'
+    elif (hit_rate is not None and n_dec >= 50 and hit_rate >= 55.0
+          and lift is not None and lift >= 4.0):
         tier = 'VALIDATED'
-    elif hit_rate is not None and hit_rate >= 52.4:
+    elif (hit_rate is not None and hit_rate >= 52.4
+          and lift is not None and lift >= 2.0):
         tier = 'DISCOVERY'
     else:
         tier = 'UNVALIDATED'
@@ -188,6 +229,7 @@ def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
         'fires': fires, 'w': w, 'l': l, 'p': p, 'n_dec': n_dec,
         'hit_rate': hit_rate, 'edge_pp': edge_pp, 'tier': tier,
         'recommended_weight': weight,
+        'base_hit': base_hit, 'lift': lift, 'n_ctl': n_ctl,
     }
 
 
@@ -246,8 +288,15 @@ def run(days: int = 60, dry_run: bool = False,
         fires = stats['fires']; tier = stats['tier']; edge = stats['edge_pp']
         hr_str = f'{hr}%' if hr is not None else '--'
         edge_str = f'{edge:+.1f}pp' if edge is not None else ''
+        # Show the direction-only control and the lift over it. edge_pp alone
+        # (hit - 52.4) reads as +26.7pp next to a demotion and invites exactly
+        # the misreading this fix exists to stop.
+        base = stats.get('base_hit'); lift = stats.get('lift')
+        ctl_str = (f'dir={base}% lift={lift:+.1f}pp'
+                   if base is not None and lift is not None else '')
         print(f'  {key:<40} [{cls:<18}] fires={fires:>4} n={n:>3} '
-              f'{stats["w"]}-{stats["l"]}-{stats["p"]}  HR={hr_str:<7} {edge_str:<8} tier={tier}')
+              f'{stats["w"]}-{stats["l"]}-{stats["p"]}  HR={hr_str:<7} '
+              f'{edge_str:<8} {ctl_str:<26} tier={tier}')
         tier_counts[tier] += 1
         if write_registry(source, stats, dry_run=dry_run):
             written += 1
