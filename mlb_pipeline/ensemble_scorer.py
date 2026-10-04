@@ -946,8 +946,17 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
         if market in ('total', 'rl') and p.get('pick_line') is None:
             continue
 
-        # Fade flag on the source means we invert
-        invert = bool(p.get('fade_flag'))
+        # ══ 2026-10-03 · fade_flag IS A STRING, NOT A BOOLEAN ══
+        # This read `bool(p.get('fade_flag'))`. The column holds 'neutral',
+        # 'boost', 'trust' or 'fade' — and every non-empty string is truthy,
+        # so the side was inverted on 11,646 of 11,646 external picks. Only
+        # 17 rows in the whole table actually say 'fade'.
+        #
+        # That is why a card could read "The Volume is on this side" while the
+        # External Handicappers panel, which renders the raw pick, showed that
+        # same source on the OTHER side. The panel was right.
+        _ff = str(p.get('fade_flag') or '').strip().lower()
+        invert = (_ff == 'fade')
         cand = _flag_to_candidate(market, pick_side, invert)
         if not cand: continue
 
@@ -989,12 +998,18 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
         wins = int(rec.get('n_wins') or 0) if rec else 0
         losses = int(rec.get('n_losses') or 0) if rec else 0
         rec_str = f'{wins}-{losses}' if (wins or losses) else f'{n} picks'
+        # If the pick was inverted, the source is on the OPPOSITE side and
+        # saying "is on this side" is simply false. The hit-rate fade path
+        # below already words this correctly; this path did not.
+        _prose = (f'Fade {persona}: {rec_str} on {_market_label(market, sport)}'
+                  if invert else
+                  f'{persona} is on this side '
+                  f'({rec_str} on {_market_label(market, sport)})')
         out.append(Opinion(
-            signal_key=f'external:{src}',
+            signal_key=f'external:{src}' + ('__fadeflag' if invert else ''),
             signal_class='external_pick', side=cand, strength=0.5,
             hit_rate=hr, sample_n=n, tier=tier,
-            display_prose=f'{persona} is on this side '
-                         f'({rec_str} on {_market_label(market, sport)})',
+            display_prose=_prose,
         ))
     return out
 
@@ -1220,6 +1235,18 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
         return []
     # Enrich ctx with sport-specific derived fields (fighter stats for UFC etc.)
     ctx = _enrich_ctx_for_sport(sport, ctx)
+    # ══ 2026-10-03 · THE SPORT HAS TO REACH THE HANDLERS ══
+    # _handler_external read `ctx.get('sport') or 'MLB'`, and NO game_context
+    # table has a `sport` column — verified on all six. So every handler-based
+    # signal believed every game was MLB, in every sport. Consequences, all
+    # user-visible: external track records were looked up against the source's
+    # MLB record, _market_label printed "RL" on NFL/NCAAF cards, and the
+    # cold-source fade-flip was decided on an MLB hit rate.
+    #
+    # It also explains why the 2026-09-26 fix for "RL is the run line in an
+    # NCAAF read" never took: the label map was right, the sport fed into it
+    # was always 'MLB'. A correct lookup table cannot save a wrong key.
+    ctx = {**ctx, 'sport': sport}
     ctx_attr = AttrDict(ctx)
     out: list[Opinion] = []
 
