@@ -1972,6 +1972,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         add({
             "type": "POTD",
             "icon": "🏆",
+            # 2026-10-04: carry the POTD's own sport. Without it this entry hit
+            # the blanket 'MLB' default below, so today's NFL POTD (BUF -7)
+            # was written to public_receipts as sport=MLB while the `potd`
+            # surface row correctly said NFL — the same play, two sports, on
+            # one card. Both the jerry_cache row and its data payload carry it.
+            "sport": (pd.get("sport") or potd.get("sport") or None),
             "label": (pick.get("label") or pd.get("leanDisplay") or "POTD"),
             "game": _game_str,
             "conviction": pd.get("score", {}).get("total"),
@@ -2960,8 +2966,14 @@ def build_card():
 
     # Emit sport on the legacy top_8 too. The app fell back to an emoji
     # lookup when it was missing, which cannot distinguish NFL from NCAAF.
+    # 2026-10-04: this defaulted to 'MLB' SILENTLY, which is how an NFL POTD
+    # shipped as sport=MLB. A default that cannot be seen firing is a default
+    # that hides the bug it is covering for — say so when it fires, and name
+    # the pick, so the next one is found from the log rather than a screenshot.
     for _p in (top_8_curated or []):
         if not _p.get('sport'):
+            print(f"  ⚠ no sport on {_p.get('type')} pick "
+                  f"'{str(_p.get('label'))[:40]}' — defaulting to MLB")
             _p['sport'] = 'MLB'
 
     card = {

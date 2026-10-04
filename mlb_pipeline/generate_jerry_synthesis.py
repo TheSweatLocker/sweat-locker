@@ -32,6 +32,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 from anthropic_guard import call as _guarded_call  # noqa: F401
 from dotenv import load_dotenv
+# Single source of truth for market display text: rl -> RL in MLB, PL in NHL,
+# ATS in football. Imported rather than reimplemented so the two cannot drift.
+from ensemble_scorer import _market_label
 
 # Reuse the existing build_struct + helpers from the legacy generator
 # so Jerry v2 sees the same rich context — no data reassembly.
@@ -1409,7 +1412,17 @@ def run(force: bool = False, game_date: str | None = None,
             elif _mkt == 'ml' and _side:
                 parsed['call_text'] = f"{_side.title()} ML"
             elif _mkt == 'rl' and _side:
-                parsed['call_text'] = f"{_side.title()} RL {_line or ''}".strip()
+                # ══ 2026-10-04 · "RL" IS BASEBALL JARGON ON AN NFL CARD ══
+                # Andy, on today's POTD: it wrote "BUF RL -7". RL is the run
+                # line; an NFL spread is ATS and a hockey one is the puck line.
+                # This string is the SOURCE of the POTD label, so the wrong
+                # word rode all the way to the most prominent play on the app.
+                # ensemble_scorer._market_label already holds the per-sport
+                # mapping — import it rather than write a second one that can
+                # drift, which is how the 09-26 fix ended up inert.
+                parsed['call_text'] = (
+                    f"{_side.title()} {_market_label('rl', sport)} "
+                    f"{_line or ''}").strip()
             elif _mkt == 'fight' and _side:
                 parsed['call_text'] = f"Fighter {_side}"
 
@@ -1430,7 +1443,8 @@ def run(force: bool = False, game_date: str | None = None,
                 elif mkt == 'ml':
                     call_text = f"{side.title()} ML" if side else 'ML'
                 elif mkt == 'rl':
-                    call_text = f"{side.title()} RL {line or ''}".strip()
+                    call_text = (f"{side.title()} {_market_label('rl', sport)} "
+                                 f"{line or ''}").strip()
                 else:
                     call_text = f"{mkt.upper()} {side}".strip()
             call_str = f"{call_text} ({parsed.get('conviction') or '-'})"

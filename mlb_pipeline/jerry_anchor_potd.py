@@ -31,6 +31,9 @@ from typing import Optional
 
 import requests
 from dotenv import load_dotenv
+# Single source of truth for market display text: rl -> RL in MLB, PL in NHL,
+# ATS in football. Imported rather than reimplemented so the two cannot drift.
+from ensemble_scorer import _market_label
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -862,7 +865,13 @@ def run(game_date: str | None = None, threshold: int = 70,
             # Preserve line suffix if present in original call
             line = winner.get("call_line")
             line_str = f" {line:+g}" if line is not None else ""
-            call = f"{team} RL{line_str}"
+            # 2026-10-04 · "RL" IS THE RUN LINE. Andy, on today's POTD: it read
+            # "BUF RL -7" — baseball jargon on the most prominent play on the
+            # app, for an NFL spread. jerry_reads.call_text was already clean
+            # ('BUF -7'); the word was added right here. Three lines below,
+            # `sport` was itself hardcoded 'MLB' until 2026-09-09 — same
+            # function, same family of bug.
+            call = f"{team} {_market_label('rl', winner_sport)}{line_str}"
 
     payload_data = {
         "sport": winner_sport,  # 2026-09-09: was hardcoded 'MLB'
