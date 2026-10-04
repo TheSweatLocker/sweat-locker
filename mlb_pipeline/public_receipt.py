@@ -408,17 +408,48 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
                 anchor = anchor.split(':', 1)[1]
             if not anchor:
                 anchor = f'{it.get("game") or ""}|{label}'
+            # ══ 2026-10-04 · A PROP RECEIPT MUST CARRY ITS OWN IDENTITY ══
+            # These rows were written with player_name, prop_type, pick_line
+            # and pick_side ALL NULL, with everything packed into source_id as
+            # 'prop:Shohei Ohtani|hits_under|1.5'. grade_public_receipts
+            # matches on the structured columns, so every sweat_card prop was
+            # invisible to it — on 10-03 that stranded Ohtani and Kim, both of
+            # which had WON, while the prop_jerry receipts for the same players
+            # graded normally because that writer populates the columns.
+            # Same table, same day, different writer.
+            #
+            # The card already knows all of it: source_key is
+            # "{player}|{prop_type}|{prop_line}". Parse it rather than ask the
+            # grader to.
+            _player = _ptype = _pside = None
+            _pline = it.get('line')
+            if market == 'prop':
+                _sk = str(it.get('source_key') or '')
+                _parts = _sk.split('|')
+                if len(_parts) == 3:
+                    _player, _ptype, _raw_line = (p.strip() for p in _parts)
+                    try:
+                        _pline = float(_raw_line)
+                    except (TypeError, ValueError):
+                        pass
+                    # prop_type encodes the side: hits_under / ks_over.
+                    _tail = _ptype.rsplit('_', 1)[-1].lower()
+                    if _tail in ('over', 'under'):
+                        _pside = _tail.upper()
             out.append({
                 'sport': sp,
                 'surface': 'sweat_card',
                 'game_date': game_date,
                 'source_id': _sid(market, anchor),
+                'player_name': _player,
+                'prop_type': _ptype,
+                'pick_side': _pside,
                 'source_table': it.get('source_table') or 'jerry_cache.sweat_card',
                 'game_id': it.get('game_id'),
                 'matchup': it.get('game') or it.get('matchup'),
                 'market': market,
                 'pick_label': label,
-                'pick_line': it.get('line'),
+                'pick_line': _pline,
                 'pick_odds': it.get('odds'),
                 'tier': (it.get('tier') or None),
                 'conviction': it.get('conviction'),

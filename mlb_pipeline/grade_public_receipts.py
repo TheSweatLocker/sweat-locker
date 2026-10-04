@@ -506,6 +506,97 @@ def _grade_sharp_card_props(recs: list, patches: list, skipped: Counter) -> None
         patches.append((rec['id'], norm))
 
 
+def _grade_sweat_card_props(recs: list, patches: list, skipped: Counter) -> None:
+    """Grade Sweat card prop receipts by parsing their packed source_id.
+
+    2026-10-04. Andy: the Sweat Card recap never resolved Ohtani and Kim, and
+    both had WON — Ohtani hits UNDER 1.5 finished on 1, Kim UNDER 0.5 on 0.
+
+    These rows carry source_table='mlb_pipeline_props', so grade_props tries to
+    inherit by id — but their source_id is not an id, it is the packed string
+    'prop:Shohei Ohtani|hits_under|1.5'. The lookup misses and every one lands
+    in source_row_ungraded, silently. Their player_name / prop_type / pick_line
+    / pick_side are all NULL, so nothing else can match them either.
+
+    THE WRITER IS ALSO FIXED (public_receipt.sweat_card_rows now populates
+    those columns), but that only reaches NEW receipts: capture() upserts with
+    resolution=ignore-duplicates and the table REFUSES updates to claim
+    columns — verified, a PATCH returns 200 with the row unchanged. Both are
+    correct: a receipt is a claim and a re-run must not rewrite it. So the
+    already-written rows can only ever be graded by reading what they already
+    carry, which is what this does.
+
+    Same discipline as _grade_sharp_card_props: match the exact tuple the
+    resolver keys on and require a UNIQUE result, because a player can hold
+    two lines for one stat and grading the wrong one puts a fabricated result
+    on a published receipt.
+    """
+    by_sport_date: dict = {}
+    parsed = []
+    for rec in recs:
+        sid = str(rec.get('source_id') or '')
+        if not sid.startswith('prop:'):
+            skipped['sweat_sid_not_prop'] += 1
+            continue
+        parts = sid[len('prop:'):].split('|')
+        if len(parts) != 3:
+            skipped['sweat_sid_unparseable'] += 1
+            continue
+        player, prop_type, raw_line = (p.strip() for p in parts)
+        line = _f(raw_line)
+        if not player or not prop_type or line is None:
+            skipped['sweat_sid_incomplete'] += 1
+            continue
+        # ══ THE LABEL AND THE SOURCE MUST AGREE ON THE NUMBER ══
+        # 10-03 carried "Tarik Skubal Over 7.5 Ks" pointing at
+        # source_id prop:Tarik Skubal|ks_over|6.5. He threw 7 — a WIN at one
+        # line and a LOSS at the other. Grading from either side would assert
+        # something nobody can verify, on a PUBLISHED receipt, and would do it
+        # silently. The label is what the user saw; the source_id is what we
+        # linked. When they disagree the receipt itself is the defect, and a
+        # human has to say which number was actually published.
+        _m = re.search(r'(\d+(?:\.\d+)?)', str(rec.get('pick_label') or ''))
+        if _m:
+            _shown = _f(_m.group(1))
+            if _shown is not None and abs(_shown - line) > 1e-9:
+                skipped['sweat_label_line_mismatch'] += 1
+                print(f'    ⚠ {str(rec.get("pick_label"))[:44]!r}: label says '
+                      f'{_shown}, source_id says {line} — NOT graded')
+                continue
+        sport = str(rec.get('sport') or 'MLB').upper()
+        tbl = PROPS_TABLE.get(sport)
+        if not tbl:
+            skipped[f'no_props_table:{sport}'] += 1
+            continue
+        parsed.append((rec, sport, tbl, player, prop_type.lower(), line))
+        by_sport_date.setdefault((sport, tbl), set()).add(rec.get('game_date'))
+
+    index: dict = {}
+    for (sport, tbl), dates in by_sport_date.items():
+        for d in sorted(x for x in dates if x):
+            for row in paged(f'{SB}/rest/v1/{tbl}'
+                             f'?select=player_name,prop_type,prop_line,result'
+                             f'&game_date=eq.{d}'):
+                key = (sport, d, str(row.get('player_name') or '').strip().lower(),
+                       str(row.get('prop_type') or '').lower(), _f(row.get('prop_line')))
+                index.setdefault(key, []).append(row.get('result'))
+
+    for rec, sport, tbl, player, prop_type, line in parsed:
+        key = (sport, rec.get('game_date'), player.lower(), prop_type, line)
+        hits = [h for h in (index.get(key) or []) if h]
+        if not hits:
+            skipped['sweat_no_prop_row_or_ungraded'] += 1
+            continue
+        if len(set(hits)) > 1:
+            skipped['sweat_ambiguous_prop_match'] += 1
+            continue
+        norm = _RESULT_MAP.get(str(hits[0]).strip().lower())
+        if not norm:
+            skipped[f'unmapped:{str(hits[0])[:12]}'] += 1
+            continue
+        patches.append((rec['id'], norm))
+
+
 def grade_props(days: int, dry_run: bool) -> None:
     """Inherit prop receipt grades from the table they were captured from.
 
@@ -571,8 +662,20 @@ def grade_props(days: int, dry_run: bool) -> None:
     if sharp:
         _grade_sharp_card_props(sharp, patches, skipped)
 
-    other = [r for r in recs if str(r.get('source_table') or '') not in PROP_INHERIT
-             and str(r.get('source_table') or '') != 'jerry_cache.sharp_card']
+    # Sweat card props claim source_table='mlb_pipeline_props' but their
+    # source_id is the packed 'prop:player|type|line', not an id — so the
+    # inherit above silently misses every one. Recovered from that string.
+    _sw_done = {r['id'] for r in sharp}
+    sweat = [r for r in recs
+             if r['id'] not in _sw_done
+             and str(r.get('source_id') or '').startswith('prop:')]
+    if sweat:
+        _grade_sweat_card_props(sweat, patches, skipped)
+    _sw_done |= {r['id'] for r in sweat}
+
+    other = [r for r in recs
+             if r['id'] not in _sw_done
+             and str(r.get('source_table') or '') not in PROP_INHERIT]
     if other:
         skipped['no_inherit_path'] = len(other)
 

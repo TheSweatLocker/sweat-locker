@@ -23,9 +23,18 @@ tackle list). Running it twice is safe — it only touches result IS NULL.
 
 NEVER GUESSES. A receipt whose displayed line disagrees with its source row is
 reported and skipped, because the grade depends on which line was actually
-published and that is a receipts question, not a data question. Verified by
-reading the row back — a PATCH that matches nothing returns 200 with an empty
-body.
+published and that is a receipts question, not a data question.
+
+SUPERSEDED FOR ROUTINE USE by grade_public_receipts._grade_sweat_card_props,
+which now parses the same source_id inside the normal nightly grader. Keep
+this for one-off repair of a date the grader could not reach.
+
+public_receipts accepts the GRADING columns and silently refuses the CLAIM
+columns (player_name, prop_type, pick_line, pick_side, pick_label) — a PATCH
+returns 200 with the row unchanged. That is correct: a receipt is what we
+said, and we must not be able to rewrite it. So the read-back check verifies
+the RESULT specifically; checking only that a row came back reported five
+successful identity writes that never happened.
 
     python grade_stranded_receipts.py --date 2026-10-03
     python grade_stranded_receipts.py --date 2026-10-03 --apply
@@ -168,8 +177,23 @@ def main() -> int:
                 print(f'  x write failed for {player}: {pr2.status_code} '
                       f'{pr2.text[:120]}')
                 continue
+            # 2026-10-04 · CHECK THE VALUE, NOT JUST THAT A ROW CAME BACK.
+            # The first version stopped at `not body` and reported "verified by
+            # read-back" for all 5. It was wrong: public_receipts accepts the
+            # grading columns but SILENTLY REFUSES the claim columns
+            # (player_name, prop_type, pick_line, pick_side), returning 200
+            # with the row unchanged. The grades landed; the identity fields
+            # never did, and the run said otherwise.
+            got = body[0]
+            if str(got.get('result')) != str(verdict):
+                print(f'  x REFUSED for {player}: result came back '
+                      f'{got.get("result")!r}, expected {verdict!r}')
+                continue
+            if got.get('player_name') != player:
+                print(f'    note: identity columns refused for {player} '
+                      f'(claim is immutable) — grade applied')
             ok += 1
-        print(f'graded {ok} of {len(fixed)} receipts (each verified by read-back)')
+        print(f'graded {ok} of {len(fixed)} receipts (result verified by read-back)')
     elif fixed:
         print(f'\n{len(fixed)} gradable — re-run with --apply')
     return 0
