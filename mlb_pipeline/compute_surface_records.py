@@ -46,6 +46,73 @@ SPORTS = ['MLB', 'NFL', 'NCAAF', 'UFC', 'NBA', 'NHL', 'NCAAB']
 WINDOWS = ['mtd', 'd7', 'd30', 'lifetime']
 TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}
 
+# ─── prop L5 leak quarantine (2026-10-03) ─────────────────────────────────────
+# Until 2026-09-22, backfill_prop_lookback.fetch_mlb_player_recent had no upper
+# date bound, so a prop's own game sat inside its L5/L10 window — and those
+# counts feed the LR model that sets tier. Tier was therefore set partly by the
+# outcome it was predicting. See project_prop_l5_leak_922.
+#
+# This gated on the MECHANISM, not the calendar, deliberately. A date window
+# both over- and under-shoots: it left 16 contaminated August rows in and threw
+# out clean never-enriched rows. The enrichment timestamp identifies exactly the
+# rows whose features could see the answer.
+#
+# The gate proves itself on the leak's own fingerprint — PRIME rows where all 5
+# of the last 5 hit ("5 of 5 hit" ⇒ the predicted game hit ⇒ already won):
+#
+#     all PRIME, l5==5    n=401   92.8% win   +46.6% ROI   <- tautology
+#     clean PRIME, l5==5  n= 54   59.3% win   -13.2% ROI   <- gate applied
+#
+# and on the surface record it is here to fix:
+#
+#     PRIME all-time (ungated)   n=2,341  74.8%  +21.6% ROI  +505.0u
+#     PRIME contaminated         n=1,707  82.4%  +33.0% ROI  +564.1u
+#     PRIME clean (gated)        n=  634  54.3%   -9.3% ROI   -59.2u
+#
+# Do NOT relax this to a date constant. Do NOT remove it when the model is
+# retrained — retraining fixes future rows; these rows stay contaminated.
+#
+# 2026-10-03 ANDY'S CALL: measured, presented, and deliberately NOT applied.
+# The quarantine is OFF by default so the published record is unchanged:
+#
+#     prop_prime MLB lifetime   shown: 997-510-1  66.2%  +18.21%  +274.39u
+#                               gated: 493-384-1  56.2%   -0.17%    -1.45u
+#
+# The displayed prop record is therefore known-inflated by ~276u. This is a
+# conscious product decision, not an undetected defect — do not "fix" it as a
+# bug, and do not quote the ungated prop record as evidence of edge.
+# Flip with PROP_LEAK_QUARANTINE=on. See
+# feedback_split_the_leak_window_before_quoting.
+PROP_LOOKBACK_FIX_DATE = '2026-09-22'
+PROP_LEAK_QUARANTINE = os.environ.get('PROP_LEAK_QUARANTINE', 'off').lower() in ('on', '1', 'true')
+
+
+def _prop_lookback_leaked(row: dict) -> bool:
+    """True if this prop's L5/L10 features could see its own outcome.
+
+    Contaminated iff the lookback was written on/after game day while the
+    fetch was still unbounded. Rows never enriched are clean (no leaked
+    feature existed); rows enriched after the fix are clean (fetch bounded).
+    """
+    if not PROP_LEAK_QUARANTINE:
+        return False
+    # A .get() on an unselected column reads as NULL, which would silently
+    # turn this whole quarantine into a no-op and quietly restore the +21.6%
+    # headline. Absent key is a bug; present-and-NULL is legitimate data.
+    # See feedback_dict_get_on_a_guessed_column.
+    if 'player_lookback_updated_at' not in row:
+        raise RuntimeError(
+            'prop row is missing player_lookback_updated_at — the L5 leak '
+            'quarantine cannot be evaluated. Add the column back to the '
+            'select; do not drop the gate. See project_prop_l5_leak_922.')
+    ts = row.get('player_lookback_updated_at')
+    gd = row.get('game_date')
+    if not ts or not gd:
+        return False
+    if gd > PROP_LOOKBACK_FIX_DATE:
+        return False
+    return str(ts)[:10] >= str(gd)
+
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -273,6 +340,7 @@ def pick_prop() -> list[dict]:
                        ('nhl_pipeline_props', 'NHL'), ('nba_pipeline_props', 'NBA')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=id,game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
+               f',player_lookback_updated_at'
                f'&result=not.is.null'
                f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
@@ -283,6 +351,10 @@ def pick_prop() -> list[dict]:
                 # 2026-10-02: preseason is GRADED for modelling but must not
                 # be counted here — see _is_preseason.
                 if _is_preseason(sport, r.get('game_date')): continue
+                # 2026-10-03 L5 leak quarantine — see _prop_lookback_leaked.
+                # These rows' tier was set partly by the outcome; counting
+                # them inflates PRIME from -9.3% to +21.6% ROI.
+                if _prop_lookback_leaked(r): continue
                 # Prefer publish-lock over live tier when the row was
                 # actually published to a user surface. Fallback for
                 # legacy/unpublished rows: use live tier (backward compat).
@@ -1013,6 +1085,7 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
                        ('nhl_pipeline_props', 'NHL'), ('nba_pipeline_props', 'NBA')]:
         url = (f'{SB}/rest/v1/{tbl}'
                f'?select=game_date,result,tier,conviction,direction,prop_type,book_over_odds,book_under_odds'
+               f',player_lookback_updated_at'
                f'&result=not.is.null&tier=in.({tier_filter})'
                f'&game_date=gte.{_LIFETIME_LOWER}'
                f'&order=game_date.desc')
@@ -1022,6 +1095,8 @@ def _pick_prop_tier(tier_filter: str) -> list[dict]:
                 if cls is None: continue
                 # 2026-10-02: preseason graded for modelling, not counted here.
                 if _is_preseason(sport, r.get('game_date')): continue
+                # 2026-10-03 L5 leak quarantine — see _prop_lookback_leaked.
+                if _prop_lookback_leaked(r): continue
                 # 2026-09-17 apply prop-family ban policy so historical
                 # rollups match the pool users see today (see docstring).
                 if sport == 'MLB' and is_banned_mlb_prop(r.get('prop_type'), r.get('tier')):
