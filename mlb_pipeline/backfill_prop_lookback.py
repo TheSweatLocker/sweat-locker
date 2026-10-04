@@ -1414,7 +1414,15 @@ def backfill_nba_nhl(game_date: str, sport: str, dry_run: bool = False) -> int:
                 # Jan-Aug belongs to the season that opened the year before.
                 if int(str(game_date)[5:7]) < 9:
                     _season -= 1
-                _rf = _nhl_rf(pname, base, _season, n=10)
+                # 2026-10-03 before_date is the leak guard. Without it this
+                # returns the most recent 10 games INCLUDING game_date's, so
+                # player_l5_hit_count partly encodes its own outcome — the
+                # MLB leak (project_prop_l5_leak_922) in a second sport. The
+                # MLB path above requires this argument; this one never got
+                # it, and all 2,132 enriched NHL props were enriched on or
+                # after game day.
+                _rf = _nhl_rf(pname, base, _season, n=10,
+                              before_date=game_date)
                 recent_cache[cache_key] = (
                     [float(x['value']) for x in _rf['rows']] if _rf else [])
             if cache_key not in recent_cache:

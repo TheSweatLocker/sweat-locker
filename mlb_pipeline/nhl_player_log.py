@@ -238,12 +238,31 @@ def game_log(player_id: int, season_year: int, game_type: int = 2) -> list:
 
 
 def recent_form(player_name: str, prop_type: str, season_year: int,
-                n: int = 10) -> Optional[dict]:
+                n: int = 10, before_date: str | None = None) -> Optional[dict]:
     """-> {rows:[{value, opp, home, date}], season_used, field} or None.
 
     `rows` is most-recent-first; the chart reverses it. Falls back to the
     prior season when the current one has no games yet, and reports which
     season was used so the caller never captions old data as current.
+
+    ══ 2026-10-03 · before_date IS THE LEAK GUARD ══
+    `before_date` (YYYY-MM-DD) keeps ONLY games played strictly before it.
+    Without it this function returns the most recent n games INCLUDING the
+    one being predicted, so player_l5_hit_count partly encodes its own
+    outcome — the MLB prop L5 leak (project_prop_l5_leak_922), which inflated
+    PRIME from -9.3% to +21.6% ROI there. The MLB fetcher took this guard on
+    2026-09-22 and treats it as required; this path never received it, and
+    every one of the 2,132 enriched NHL props was enriched on/after game day.
+
+    Rows with no usable date are dropped when before_date is set: an undated
+    game cannot be proven to precede the one being predicted, and silently
+    keeping it is how the guard would leak anyway.
+
+    THE SLICE HAS TO COME AFTER THE FILTER. This loop used to read
+    `for g in log[:n]`, so filtering inside it would have shrunk the window
+    instead of shifting it — a player whose last 3 games were today's and two
+    future ones would return 7 games, not 10, and the hit counts would be
+    computed on a short window without saying so.
     """
     field = None
     pt = _norm(prop_type).replace(' ', '_')
@@ -262,8 +281,19 @@ def recent_form(player_name: str, prop_type: str, season_year: int,
         log = game_log(pid, year)
         if not log:
             continue
+        # Filter FIRST, then take n — see the docstring note on slice order.
+        if before_date:
+            _bd = str(before_date)[:10]
+            eligible = []
+            for g in log:
+                gd = str(g.get('gameDate') or '')[:10]
+                if not gd or gd >= _bd:
+                    continue
+                eligible.append(g)
+        else:
+            eligible = log
         rows = []
-        for g in log[:n]:
+        for g in eligible[:n]:
             # SAVES IS DERIVED. The goalie game log carries shotsAgainst,
             # goalsAgainst and savePctg but no `saves` field, so the most
             # commonly priced goalie market has to be computed rather than
