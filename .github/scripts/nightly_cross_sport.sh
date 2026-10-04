@@ -193,6 +193,20 @@ bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
 # record and stamp it as fresh.
 bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   python compute_schedule_strength.py
 
+# ══ 2026-10-04 · RE-RESOLVE PAST CARDS ══
+# jerry_cache.sweat_card_{date} stores top_8 results and a top_8_summary rollup
+# FROZEN AT BUILD TIME, and nothing ever went back to fix a pick that resolved
+# after its own card was built. 10-03 sat at "3-2 (2 pending)" on the home
+# screen while both pending props had WON.
+#
+# It is not one day: RecapStrip builds BOTH the yesterday figure and the
+# "CARD L30D" rollup by summing top_8_summary across the last 30 card rows, so
+# every late-resolving pick was missing from the 30-day number too. Found 7
+# such picks across 4 cards going back to 09-01.
+#
+# Runs AFTER grading so it sees the night's fresh results.
+bash "$RUN_STEP" --label "refresh_card_grades.py (re-resolve past cards)"   python refresh_card_grades.py --days 35 --apply || true
+
 # ══ 2026-10-04 · MARGIN-BASED SOS/SOR + THE SWEAT RATING ══
 # compute_schedule_strength above rates on WIN PERCENTAGE only. These rate on
 # opponent-adjusted MARGIN, which beat it out of sample on all six sports
