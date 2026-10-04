@@ -332,7 +332,11 @@ def agg_sharp_card_from_receipts(date: str) -> list[dict] | None:
         for k in ('w', 'l', 'p', 'pending', 'shipped'):
             t[k] += b[k]
         t['bet'] += b['bet']; t['won'] += b['won']; t['detail'] += b['detail']
-    if len(per_sport) > 1:
+    # ALWAYS emit ALL, even on a single-sport day. The app reads one row for
+    # the headline; if ALL only appears on multi-sport days then a one-sport
+    # day silently falls back to a per-sport slice and the headline changes
+    # meaning without anything looking broken.
+    if per_sport:
         out.append({
             'surface': 'sharp_card', 'sport': 'ALL', 'record_date': date,
             'wins': t['w'], 'losses': t['l'], 'pushes': t['p'],

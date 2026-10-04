@@ -302,6 +302,72 @@ def from_label(rec: dict) -> dict:
     return out
 
 
+_PROPS_TABLE_BY_SPORT = {
+    'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
+    'NHL': 'nhl_pipeline_props', 'NBA': 'nba_pipeline_props',
+}
+_FINAL_INDEX: dict = {}
+
+
+def _final_from_our_tables(sport: str, game_date: str, player: str,
+                           prop_type: str):
+    """final_value for (player, stat) on a date, from our own prop table.
+
+    Indexed by the stat STEM, not the full prop_type, so an UNDER receipt
+    settles off the OVER row and vice versa — the final value is one number
+    regardless of which side was taken.
+
+    Cached per (sport, date): the grader walks hundreds of receipts across a
+    handful of dates, and this is the hot path now that it runs first.
+    """
+    if not player or not prop_type or not game_date:
+        return None
+    tbl = _PROPS_TABLE_BY_SPORT.get(str(sport).upper())
+    if not tbl:
+        return None
+    key = (str(sport).upper(), game_date)
+    idx = _FINAL_INDEX.get(key)
+    if idx is None:
+        idx = {}
+        off = 0
+        while True:
+            try:
+                r = requests.get(f'{SB}/rest/v1/{tbl}', headers=H, timeout=45,
+                                 params={'select': 'player_name,prop_type,final_value',
+                                         'game_date': f'eq.{game_date}',
+                                         'limit': 1000, 'offset': off})
+            except Exception as _e:
+                # This swallowed a NameError on the headers dict and made every
+                # lookup return None silently — the exact failure mode the
+                # settle path exists to prevent. Say so.
+                print(f'  ⚠ final_value index read failed ({tbl} {game_date}): '
+                      f'{type(_e).__name__}: {_e}')
+                break
+            if r.status_code != 200:
+                print(f'  ⚠ final_value index {tbl} {game_date} -> '
+                      f'{r.status_code}')
+                break
+            chunk = r.json()
+            for row in chunk:
+                fv = row.get('final_value')
+                if fv is None:
+                    continue
+                stem = str(row.get('prop_type') or '').rsplit('_', 1)[0].lower()
+                nm = str(row.get('player_name') or '').strip().lower()
+                if nm and stem:
+                    idx.setdefault((nm, stem), fv)
+            if len(chunk) < 1000:
+                break
+            off += 1000
+        _FINAL_INDEX[key] = idx
+    stem = str(prop_type).rsplit('_', 1)[0].lower()
+    val = idx.get((str(player).strip().lower(), stem))
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     """Return (result, actual, reason). result is None when unsettleable.
 
@@ -376,6 +442,35 @@ def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
         return None, None, f'side_unmapped:{side or "none"}'
 
     sport = str(rec.get('sport') or 'MLB').upper()
+
+    # ══ 2026-10-04 · SETTLE FROM THE BOX SCORE WE ALREADY INGESTED ══
+    # Andy: "the overnight grading needs to tighten up, I can't just poke holes
+    # every day — it's just pulling box scores and looking at stats and
+    # comparing to see if they hit or not."
+    #
+    # It is, and that is exactly what was NOT happening. Every path below calls
+    # the live MLB gameLog API, and that API answers nothing for these dates:
+    # Shohei Ohtani returned None for hits on 10-03 even though he played and
+    # finished on 1. So EVERY receipt the inherit missed fell to
+    # 'no_boxscore' — the fallback designed to make a pruned source
+    # survivable could itself never fire.
+    #
+    # The number is already ours. mlb_pipeline_props.final_value is the
+    # ingested box score, reconciled against MLB box scores at 0 mismatches
+    # (project_prop_l5_leak_922), and on 10-03 it covers 404 of 407 rows across
+    # 88 players. Read that first; the API stays as the fallback it should
+    # always have been.
+    #
+    # Keyed on (player, stat STEM) so an UNDER receipt settles off the OVER
+    # row — the final value is the same number whichever side was taken, which
+    # is the same complement that left Ohtani and Kim Pending on the card.
+    _fv = _final_from_our_tables(sport, gd, name, pt)
+    if _fv is not None:
+        if _fv == line:
+            return 'Push', _fv, 'ok'
+        _hit = (_fv > line) if side == 'over' else (_fv < line)
+        return ('Win' if _hit else 'Loss'), _fv, 'ok'
+
     if sport == 'NFL':
         # prop_type is <family>_<side>; the family carries the stat.
         fam = pt.rsplit('_', 1)[0] if pt.endswith(('_over', '_under')) else pt

@@ -10186,9 +10186,15 @@ setJerryHistory(prev => {
       // when the row is missing (e.g. before grader runs).
       try {
         // Get yesterday's row from the authoritative daily aggregator
+        // 2026-10-04 · sport='MLB' -> 'ALL'. Andy: "only see yesterday record
+        // as 3-2 when there was like 17 plays." The Sharp ships every sport,
+        // but this read the MLB SLICE and rendered it as the headline. On
+        // 10-03 that showed MLB 5-2 while the card actually went 14-9 across
+        // 23 picks — NCAAF 7-6 and NHL 2-1 were simply not in the number.
+        // aggregate_daily_records emits an ALL row on every day with picks.
         const {data: yRows} = await supabase.from('daily_surface_records')
           .select('wins,losses,pushes,units_won,units_bet')
-          .eq('surface','sharp_card').eq('sport','MLB').eq('record_date', yesterdayET);
+          .eq('surface','sharp_card').eq('sport','ALL').eq('record_date', yesterdayET);
         if (yRows && yRows.length) {
           yW      = yRows[0].wins   || 0;
           yL      = yRows[0].losses || 0;
@@ -10198,9 +10204,12 @@ setJerryHistory(prev => {
         // Also read MTD from daily_surface_records so the MTD counter
         // matches yesterday's truth (was reading from surface_records
         // which uses a DIFFERENT tier-stake table — divergent totals).
+        // Same correction for MTD — it summed the MLB slice while the
+        // yesterday figure beside it now covers every sport, which would have
+        // made the two disagree by construction.
         const {data: mRows} = await supabase.from('daily_surface_records')
           .select('wins,losses,pushes,units_won,record_date')
-          .eq('surface','sharp_card').eq('sport','MLB')
+          .eq('surface','sharp_card').eq('sport','ALL')
           .gte('record_date', curMonthStart);
         if (mRows && mRows.length) {
           w = 0; l = 0; p = 0; unitsNet = 0;
