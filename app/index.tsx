@@ -1,4 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// ══ 2026-10-04 · RECORD SCOPE IS BACKEND-CONTROLLED ══
+// Andy: "anything truly surfaced to users should be able to change via
+// backend." Every record headline in this file was hardcoded to
+// .eq('sport','MLB') — the Sharp all-time, the prop record, the dawg record,
+// the ledger record — so a cross-sport product showed a baseball-only number
+// and the only way to change that was shipping a new build.
+//
+// Default 'ALL' (the true combined figure). Overridden at runtime from
+// jerry_cache.config_app_scopes, the same mechanism RecapStrip already uses,
+// so after this build the scope moves from the backend.
+let RECORD_SCOPE: string = 'ALL';
+async function loadRecordScope() {
+  try {
+    const {data} = await supabase.from('jerry_cache')
+      .select('data').eq('cache_key','config_app_scopes').limit(1);
+    const v = (data && (data[0] as any)?.data || {}).record_scope;
+    if (typeof v === 'string' && v.trim()) RECORD_SCOPE = v.trim().toUpperCase();
+  } catch {}
+}
+
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
 import { useRouter } from 'expo-router';
@@ -6249,7 +6270,7 @@ const fetchJerryRecord = async () => {
         supabase.from('v_prop_track_record_by_type').select('*'),
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes')
-          .eq('sport','MLB').eq('surface','prop'),
+          .eq('sport',RECORD_SCOPE).eq('surface','prop'),
         supabase.from('mlb_pipeline_props')
           .select('id', {count: 'exact', head: true})
           .eq('result', 'Pending'),
@@ -6308,7 +6329,7 @@ const fetchJerryRecord = async () => {
       const [{data: srRows}, {data: byTierRows}, {count: pendingCount}] = await Promise.all([
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes')
-          .eq('sport','MLB').eq('surface','dawg'),
+          .eq('sport',RECORD_SCOPE).eq('surface','dawg'),
         supabase.from('v_dawg_track_record_by_tier').select('*'),
         supabase.from('daily_dawg')
           .select('id', {count: 'exact', head: true})
@@ -10233,8 +10254,20 @@ setJerryHistory(prev => {
       // Fallback: if sharp_card row missing (backfill lag), fall back to
       // old sharp+prop split so display never breaks.
       try {
+        // 2026-10-04 · sport='MLB' -> RECORD_SCOPE. Andy: "anything truly
+        // surfaced to users should be able to change via backend." This was
+        // the Sharp's ALL-TIME headline and it was hardcoded to the MLB
+        // SLICE — 455-297-9, +110.73u, +14.7% — while the real all-sport
+        // record is 645-434-15, +117.73u, +10.9% over 1,094 picks. The
+        // displayed ROI was flattered by 3.8 points purely by excluding
+        // NFL (-74.2% ROI) and NHL (-41.6%).
+        //
+        // RECORD_SCOPE is read from jerry_cache.config_app_scopes at startup
+        // (same pattern RecapStrip already uses for config_recap_strip), so
+        // after THIS build the scope of every record surface is changeable
+        // from the backend without shipping an app again.
         const {data: srRows} = await supabase.from('surface_records')
-          .select('*').eq('sport','MLB')
+          .select('*').eq('sport', RECORD_SCOPE)
           .in('surface',['sharp','prop','sharp_card','sharp_card_sides','sharp_card_props'])
           .eq('window_key','epoch');
         if (srRows && srRows.length) {
@@ -10319,7 +10352,7 @@ setJerryHistory(prev => {
           .order('rank', {ascending: true}),
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes,units_net')
-          .eq('sport','MLB').eq('surface','ledger'),
+          .eq('sport',RECORD_SCOPE).eq('surface','ledger'),
         // Yesterday tally: raw ledger_snapshots filtered to MLB (matches the
         // MTD source-of-truth — surface_records.ledger MLB row is derived
         // from the same set). Sum W/L/P + unit_pnl for a one-line footer.
