@@ -271,8 +271,13 @@ bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (per-game log)" \
 # games, and pass/rush/turnover drift is 0 across all 139 rated teams.
 #
 # Must run AFTER the pull above so it grades the fresh log.
+# --report-only: this is a stats-freshness REPORT and it runs inside the
+# overnight GRADER. A stale NCAAF aggregate is not a grading failure, and a red
+# X on the grader for a stats lag is exactly how a real grading failure gets
+# ignored later. The verdict still prints in full; only the exit code is
+# suppressed. Run it without the flag to gate on it.
 bash "$RUN_STEP" --label "reconcile_ncaaf_stat_sources.py (aggregate vs per-game)" \
-  python reconcile_ncaaf_stat_sources.py
+  python reconcile_ncaaf_stat_sources.py --report-only
 
 bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
   python recompute_ncaaf_per_game_stats.py
