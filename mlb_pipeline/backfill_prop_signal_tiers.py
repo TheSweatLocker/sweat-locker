@@ -197,6 +197,33 @@ def grade_prop_signal(side: str, prop_result: str) -> str | None:
     return None
 
 
+_FAM_CACHE: dict = {}
+
+
+def _family_base_rates(props: list[dict]) -> dict:
+    """{(prop_type, direction): blind hit rate} over the whole window.
+
+    The denominator for "selection skill": what you would have hit backing
+    every prop in this cell without any signal at all. Cached per props list
+    so it is computed once per run, not once per signal.
+    """
+    key = id(props)
+    if key in _FAM_CACHE:
+        return _FAM_CACHE[key]
+    agg: dict = {}
+    for p in props:
+        if p.get('result') not in ('Win', 'Loss'):
+            continue
+        k = ((p.get('prop_type') or '?'), str(p.get('direction') or '?').lower())
+        a = agg.setdefault(k, [0, 0])
+        a[0] += 1
+        if p['result'] == 'Win':
+            a[1] += 1
+    out = {k: (100.0 * v[1] / v[0]) for k, v in agg.items() if v[0]}
+    _FAM_CACHE[key] = out
+    return out
+
+
 def _eval_condition(expr: str, env: dict):
     """-> (matched: bool, errored: bool).
 
@@ -241,6 +268,11 @@ def backfill_prop_signal(source: dict, props: list[dict],
     # this control is what separates a form signal from a relabelled coin.
     dw = dl = 0
     errored = ctx_miss = 0
+    # Running sum of the blind per-cell hit rate over the rows this signal
+    # fires on — the "selection" control. See the two-control note below.
+    sel_num = 0.0
+    sel_den = 0
+    fam = _family_base_rates(props)
     for prop in props:
         if not _matches_market(source, prop): continue
         prop = _coerce_signals(prop)
@@ -273,17 +305,47 @@ def backfill_prop_signal(source: dict, props: list[dict],
                                      prop.get('result'))
             if _ctl == 'W': dw += 1
             elif _ctl == 'L': dl += 1
+        # SELECTION control, side-aware. The alternative available to the
+        # ensemble is not "pick the other direction" — a prop row IS a
+        # direction. It is "take this same action on comparable props without
+        # the signal". So BACK is scored against the cell's base rate and
+        # FADE against its complement. Scoring a FADE against the BACK
+        # baseline credits the signal for the over/under asymmetry it did not
+        # discover.
+        _fb = fam.get(((prop.get('prop_type') or '?'), _d))
+        if _fb is not None and result in ('W', 'L'):
+            sel_num += _fb if side == 'BACK' else (100.0 - _fb)
+            sel_den += 1
         elif result == 'P': p += 1
 
     n_dec = w + l
     hit_rate = round(100 * w / n_dec, 1) if n_dec else None
     edge_pp = round(hit_rate - 52.4, 1) if hit_rate is not None else None
 
-    # Direction-only control on the same fired rows (see the loop above).
+    # ── two controls, because there are two ways to add nothing ──────────────
+    # (1) BEST CONSTANT SIDE on the fired rows. "Back every under" and "back
+    #     every over" are both free, so the floor is the better of them. Only
+    #     testing one of them made any signal backing the majority direction
+    #     look brilliant: lineup_spot_top scored 74.0% against a 26.0%
+    #     back-unders control and reported +48.0pp of lift, when "back every
+    #     over" on those same rows also scores 74.0%. A signal that cannot
+    #     beat a coin it did not have to flip has no side skill.
     n_ctl = dw + dl
-    base_hit = round(100 * dw / n_ctl, 1) if n_ctl else None
-    lift = (round(hit_rate - base_hit, 1)
-            if hit_rate is not None and base_hit is not None else None)
+    _dir_hit = (100.0 * dw / n_ctl) if n_ctl else None
+    best_const = (round(max(_dir_hit, 100.0 - _dir_hit), 1)
+                  if _dir_hit is not None else None)
+    lift = (round(hit_rate - best_const, 1)
+            if hit_rate is not None and best_const is not None else None)
+    # (2) SELECTION skill. A signal can legitimately add value by picking
+    #     WHICH props to back rather than which way — so compare against the
+    #     rate you would get backing this same mix of (prop_type, direction)
+    #     cells blind, measured over the whole window rather than over the
+    #     signal's own rows. Keeping both apart stops "it chose a good pool"
+    #     and "it chose the right side" from being credited as one thing.
+    # sel_num already accumulates PERCENTAGES, so this is a mean, not a rate.
+    base_hit = (round(sel_num / sel_den, 1) if sel_den else None)
+    lift_sel = (round(hit_rate - base_hit, 1)
+                if hit_rate is not None and base_hit is not None else None)
 
     # Tier assignment — now requires LIFT over the direction-only control, not
     # just a hit rate over a flat 52.4%. nhl_backfill_signal_tiers.py already
@@ -295,19 +357,24 @@ def backfill_prop_signal(source: dict, props: list[dict],
     # the signal is profitable. ANTI_VALIDATED flips direction_hint to FADE and
     # is an assertion that the opposite side wins, so it stays reserved for a
     # genuinely bad raw hit rate.
+    # A signal must clear BOTH controls: beat the best free constant side
+    # (`lift`) AND beat backing this same mix of cells blind (`lift_sel`).
+    # Failing either means it is repackaging something already on the row.
+    # lift_sel is the gate. `lift` (vs the best free constant side) stays as a
+    # printed diagnostic: it flags a signal whose recommendation is literally
+    # the direction rule, which lift_sel already scores at ~0 anyway.
+    _ok = lambda t: (lift_sel is not None and lift_sel >= t)
     if n_dec < 15:
         tier = 'UNVALIDATED'
     elif (hit_rate is not None and n_dec >= 25 and hit_rate <= 48.0
-          and (lift is None or lift <= -5.0)):
+          and (lift_sel is None or lift_sel <= -5.0)):
         tier = 'ANTI_VALIDATED'
-    elif lift is not None and lift <= -2.0:
-        # No information beyond the direction already on the row.
+    elif lift_sel is not None and lift_sel <= -2.0:
+        # No information beyond what the prop row already carries.
         tier = 'UNVALIDATED'
-    elif (hit_rate is not None and n_dec >= 50 and hit_rate >= 55.0
-          and lift is not None and lift >= 4.0):
+    elif hit_rate is not None and n_dec >= 50 and hit_rate >= 55.0 and _ok(4.0):
         tier = 'VALIDATED'
-    elif (hit_rate is not None and hit_rate >= 52.4
-          and lift is not None and lift >= 2.0):
+    elif hit_rate is not None and hit_rate >= 52.4 and _ok(2.0):
         tier = 'DISCOVERY'
     else:
         tier = 'UNVALIDATED'
@@ -320,6 +387,7 @@ def backfill_prop_signal(source: dict, props: list[dict],
         'hit_rate': hit_rate, 'edge_pp': edge_pp, 'tier': tier,
         'recommended_weight': weight,
         'base_hit': base_hit, 'lift': lift, 'n_ctl': n_ctl,
+        'best_const': best_const, 'lift_sel': lift_sel,
         'errored': errored, 'ctx_miss': ctx_miss,
     }
 
@@ -398,9 +466,13 @@ def run(days: int = 60, dry_run: bool = False,
         # Show the direction-only control and the lift over it. edge_pp alone
         # (hit - 52.4) reads as +26.7pp next to a demotion and invites exactly
         # the misreading this fix exists to stop.
-        base = stats.get('base_hit'); lift = stats.get('lift')
-        ctl_str = (f'dir={base}% lift={lift:+.1f}pp'
-                   if base is not None and lift is not None else '')
+        bc = stats.get('best_const'); lift = stats.get('lift')
+        base = stats.get('base_hit'); lsel = stats.get('lift_sel')
+        ctl_str = ''
+        if bc is not None and lift is not None:
+            ctl_str = f'side={bc}%/{lift:+.1f}'
+            if base is not None and lsel is not None:
+                ctl_str += f' sel={base}%/{lsel:+.1f}'
         # A signal that never fired because its condition RAISED is a plumbing
         # fact, not evidence about the sport. Say so on the line.
         _err = stats.get('errored') or 0
