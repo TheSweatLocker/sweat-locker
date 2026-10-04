@@ -106,11 +106,45 @@ def _f(v):
         return None
 
 
+def _season_start(sport: str, season: int) -> str:
+    """Season opener from sport_registry, so PRESEASON never rates a team.
+
+    NHL's results table has no `season` column, and a naive Aug-1 window swept
+    in the 09-19..09-26 preseason — games already excluded from every published
+    record by _is_preseason. Rating on them would contradict the records the
+    same teams are judged by. Falls back to Aug 1 only if the registry has no
+    row, which is worse but never silently wrong about which sport it is.
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/sport_registry', headers=H, timeout=30,
+                         params={'select': 'season_start', 'sport': f'eq.{sport}'})
+        if r.status_code == 200 and r.json():
+            ss = r.json()[0].get('season_start')
+            if ss and str(ss)[:4] == str(season):
+                return str(ss)[:10]
+    except Exception:
+        pass
+    return f'{season}-08-01'
+
+
 def load_games(sport: str, season=None) -> list[dict]:
     tbl = RESULTS[sport]
     params = {'select': '*'}
     if season is not None:
-        params['season'] = f'eq.{season}'
+        # nhl_game_results has no `season` column — filtering on it 400s and
+        # would take the whole run down. Fall back to a date window, which is
+        # what `season` encodes anyway.
+        try:
+            probe = requests.get(f'{SB}/rest/v1/{tbl}', headers=H, timeout=60,
+                                 params={'select': 'season', 'limit': 1})
+            has_season = probe.status_code == 200
+        except Exception:
+            has_season = False
+        if has_season:
+            params['season'] = f'eq.{season}'
+        else:
+            params['game_date'] = f'gte.{_season_start(sport, season)}'
+            params['and'] = f'(game_date.lte.{season + 1}-07-31)'
     rows = _pull(tbl, params)
     out = []
     for g in rows:
