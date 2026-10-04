@@ -152,9 +152,18 @@ def load_games(sport: str, season=None) -> list[dict]:
         h, a = g.get('home_team'), g.get('away_team')
         if hs is None or as_ is None or not h or not a:
             continue
+        # close_spread is the HOME handicap in every sport EXCEPT NFL, where it
+        # is the AWAY line — verified on n=7,325 (project_close_spread_sign_bug_914).
+        # Getting this backwards silently inverts every cover, so it is resolved
+        # here once rather than at each call site.
+        cs = _f(g.get('close_spread'))
+        home_line = None
+        if cs is not None:
+            home_line = -cs if sport == 'NFL' else cs
         out.append({'home': h, 'away': a, 'margin': hs - as_,
                     'date': g.get('game_date'), 'season': g.get('season'),
-                    'neutral': bool(g.get('neutral_site'))})
+                    'neutral': bool(g.get('neutral_site')),
+                    'home_line': home_line})
     return out
 
 
