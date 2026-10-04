@@ -57,6 +57,13 @@ SPORT_TABLE = {
 }
 
 # Field name mapping per sport (schemas differ slightly)
+# How far past kickoff a catch-up freeze is still worth doing. Inside this
+# window, freezing now beats leaving the line live; outside it the pregame
+# number is long gone and stamping close_locked_at would assert a guarantee we
+# cannot make. The first unbounded dry run wanted to freeze 455 games, some
+# 7.8 DAYS past kickoff — hence the bound.
+LATE_CATCHUP_HRS = 12
+
 SPORT_FIELDS = {
     'MLB':   {'commence_col': 'game_time_utc',
               'close_cols': ['close_total', 'close_spread', 'home_ml_close', 'away_ml_close']},
@@ -84,11 +91,37 @@ def fetch_upcoming_games(sport: str, window_hrs: int = 2) -> list:
     now_q = now.isoformat().replace('+', '%2B')
     select_cols = ','.join(['game_id', commence_col, 'close_locked_at'] + close_cols)
 
+    # ══ 2026-10-04 · A GAME THAT ALREADY STARTED COULD NEVER BE FROZEN ══
+    # Andy, on an IND@WAS "edge" of +23.3 points: "that was surely a live
+    # spread changing in game, we need to be able to differentiate that —
+    # locking just pregame movement is the real story."
+    #
+    # He is right, and this filter was the cause. The lower bound
+    # `commence >= now` meant only FUTURE games were candidates, so a game
+    # whose kickoff passed before a freeze run was permanently unfreezable —
+    # and close_spread kept absorbing LIVE in-game movement for as long as the
+    # odds poller ran.
+    #
+    # Measured today. IND@WAS kicked 13:32 UTC; at 17:12 it read
+    # open +1.5 -> "close" -16.5 with close_locked_at NULL, i.e. a live line on
+    # a blowout recorded as the closing number. The 17:05 games WERE locked at
+    # 17:00 — the mechanism works, it just skipped everything already underway.
+    # ARI@NYG showed the same signature (open 7.0 -> -2.5, unlocked).
+    #
+    # That corrupts the displayed line, the model's edge-vs-market, and CLV.
+    # Grading is unaffected because we grade at the line on the PICK, not this
+    # one (grade_jerry_reads trusts the stored call_line).
+    #
+    # The lower bound is now dropped so a started-but-unlocked game is frozen
+    # on the next run. Freezing late still records a contaminated number — the
+    # pregame close is gone once overwritten — but it stops the bleeding at
+    # minutes instead of hours, and such games are reported rather than
+    # silently stamped. The durable fix is running the freeze often enough that
+    # the catch-up never fires, which the count below makes visible.
     r = requests.get(
         f'{SB}/rest/v1/{tbl}?select={select_cols}'
         f'&close_locked_at=is.null'
-        f'&{commence_col}=lte.{window_end}'
-        f'&{commence_col}=gte.{now_q}',
+        f'&{commence_col}=lte.{window_end}',
         headers=H_READ, timeout=20)
     if r.status_code != 200:
         # Column might not exist on this sport yet — non-fatal
@@ -124,6 +157,8 @@ def run_sport(sport: str, dry_run: bool = False) -> tuple:
     games = fetch_upcoming_games(sport, window_hrs=2)
     frozen = 0
     considered = 0
+    stale: list = []      # games frozen AFTER kickoff — reported below
+    abandoned = 0         # too far past kickoff to bless; see LATE_CATCHUP_HRS
     for game in games:
         commence_str = game.get(commence_col)
         if not commence_str: continue
@@ -135,8 +170,33 @@ def run_sport(sport: str, dry_run: bool = False) -> tuple:
         mins_until = (commence - now).total_seconds() / 60.0
         if mins_until > close_offset_min:
             continue  # too early
-        if mins_until < -30:
-            continue  # game already started 30+ min ago, missed window
+        # 2026-10-04 · DO NOT ABANDON A STARTED GAME. This read
+        # `if mins_until < -30: continue  # missed window`, which together with
+        # the removed `commence >= now` filter meant a game that got past the
+        # freeze window was never frozen AT ALL — so close_spread went on
+        # absorbing live in-game movement indefinitely. IND@WAS sat at
+        # open +1.5 -> "close" -16.5, unlocked, 3.5 hours after kickoff.
+        #
+        # Freezing late cannot recover the pregame number, which is gone the
+        # moment the poller overwrites it. But leaving it unfrozen guarantees it
+        # keeps getting worse, so catch it up and SAY SO — a silent late freeze
+        # would hide the same problem one layer down.
+        # BUT BOUND THE CATCH-UP. Dropping the lower bound outright swept in
+        # 455 games on the first dry run, including NCAAF kickoffs 7.8 DAYS
+        # past. close_locked_at is a guarantee — downstream reads it as "this
+        # is the TRUE close" — and stamping it on hundreds of lines nobody
+        # verified is worse than the bug it fixes.
+        #
+        # So: catch up anything inside LATE_CATCHUP_HRS (a game from this
+        # slate, where freezing now still beats leaving it live), and refuse
+        # older ones. Those are permanently unverifiable and are counted
+        # separately rather than quietly blessed.
+        if mins_until < -(LATE_CATCHUP_HRS * 60):
+            abandoned += 1
+            continue
+        late = mins_until < -30
+        if late:
+            stale.append((game.get('game_id'), round(-mins_until)))
         considered += 1
         # Snapshot: leave existing close_* alone (they're set by latest odds pull);
         # just stamp close_locked_at so downstream knows this is the TRUE close.
@@ -146,6 +206,20 @@ def run_sport(sport: str, dry_run: bool = False) -> tuple:
                 print(f'    [DRY] {sport} {game["game_id"][:10]} · '
                       f'{mins_until:5.1f}min pre → freeze')
     print(f'  {sport}: {frozen}/{considered} in-window freezes')
+    if abandoned:
+        print(f'  ⓘ {sport}: {abandoned} unlocked game(s) older than '
+              f'{LATE_CATCHUP_HRS}h — left unfrozen; their close is '
+              f'unverifiable either way')
+    if stale:
+        # Loud on purpose. Every entry is a game whose stored "closing" line
+        # already absorbed live in-game movement, so its CLV and its
+        # model-vs-market edge are wrong for that game and cannot be repaired.
+        # A non-empty list means the freeze cron is not running often enough
+        # for the slate — that is the thing to fix, not this message.
+        print(f'  ⚠ {sport}: {len(stale)} game(s) frozen AFTER kickoff — '
+              f'close_* already contains live movement:')
+        for gid, mins in sorted(stale, key=lambda z: -z[1])[:10]:
+            print(f'      {str(gid)[:16]:16s} {mins:>5} min past kickoff')
     return (frozen, considered)
 
 
