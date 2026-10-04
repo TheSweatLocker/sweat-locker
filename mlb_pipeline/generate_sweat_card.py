@@ -309,10 +309,34 @@ def fetch_yesterday_recap():
             }) or []
             # Build lookup keyed by (player_name_lower, prop_type_lower)
             prop_lookup = {}
+            # ══ 2026-10-04 · REGISTER THE COMPLEMENT ══
+            # Andy: "Ohtani still not resolved on yesterday's sweat card, it
+            # won." It did — hits UNDER 1.5, he finished on 1. But the card
+            # published hits_under while mlb_pipeline_props only ever held the
+            # hits_OVER row, and this lookup demands an exact prop_type. So
+            # Ohtani and Kim both sat Pending while Hagen Smith and Robbie Ray
+            # resolved, purely because their exact rows happened to exist.
+            #
+            # At one line the two directions are exact opposites: over 1.5 LOST
+            # means under 1.5 WON. The table already carries the answer, so
+            # register both keys and invert. Push stays Push.
+            #
+            # The 10-01 receipts fallback below could not cover this either —
+            # it filters prop_type NOT NULL, and sweat_card receipts carry NULL
+            # there because public_receipts refuses writes to claim columns.
+            _FLIP = {'win': 'Loss', 'loss': 'Win', 'push': 'Push'}
             for p in list(live_props) + list(live_props_nfl):
-                k = ((p.get("player_name") or "").lower(),
-                     (p.get("prop_type") or "").lower())
-                prop_lookup[k] = p.get("result")
+                _pt = (p.get("player_name") or "").lower()
+                _ty = (p.get("prop_type") or "").lower()
+                _res = p.get("result")
+                prop_lookup[(_pt, _ty)] = _res
+                if '_' in _ty and _res:
+                    _stem, _dir = _ty.rsplit('_', 1)
+                    _opp = {'over': 'under', 'under': 'over'}.get(_dir)
+                    _inv = _FLIP.get(str(_res).strip().lower())
+                    # Never overwrite a real row with a derived one.
+                    if _opp and _inv and (_pt, f'{_stem}_{_opp}') not in prop_lookup:
+                        prop_lookup[(_pt, f'{_stem}_{_opp}')] = _inv
 
             # ══ 2026-10-01 · FALL BACK TO public_receipts ══
             # The overlay above can only resolve a pick that still has a row in

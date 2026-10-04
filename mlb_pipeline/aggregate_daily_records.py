@@ -245,6 +245,107 @@ def _load_props_by_sport(date: str, sport: str) -> dict:
     return by_key
 
 
+def agg_sharp_card_from_receipts(date: str) -> list[dict] | None:
+    """Sharp Card record counted from public_receipts, not re-graded.
+
+    ══ 2026-10-04 · AN IMMUTABLE RECORD CANNOT BE DERIVED FROM A MUTABLE ONE ══
+    Andy: "still not seeing all plays from the Sharp yesterday graded, only see
+    yesterday record as 3-2 when there was like 17 plays."
+
+    Both halves of that were real:
+
+      public_receipts 10-03   23 rows   NCAAF 13 (7-6) · MLB 7 (5-2) · NHL 3 (2-1)
+      daily_surface_records   18 picks  NCAAF 13 (7-6) · MLB 5 (3-2) · NHL ABSENT
+
+    agg_sharp_card re-grades `jerry_cache.sharp_card_{date}.items`. That cache
+    row is REGENERATED — by the time this ran, it held 18 items and no NHL at
+    all, while the receipts written when the card actually shipped held 23. The
+    aggregator was faithfully counting a document that had changed underneath
+    it. Nothing was broken in the grading; the SOURCE was wrong.
+
+    (The 3-2 the app showed is the MLB-only row. agg_sharp_card's own comment
+    admits this — "App reads MLB row today but can flip to ALL" — so the client
+    is reading a per-sport slice as if it were the headline. That part is a
+    client change and is NOT fixed here.)
+
+    So this counts receipts instead, and grades nothing. public_receipts is
+    append-only, is what the user was actually shown, and is graded by
+    grade_public_receipts — which already owns every recovery path including
+    the box-score settle. One grading path, one source of truth, and a pick
+    that is graded cannot fail to be counted.
+    """
+    rows, _off = [], 0
+    while True:
+        _r = requests.get(
+            f'{SB}/rest/v1/public_receipts', headers=H_READ, timeout=45,
+            params={'select': 'sport,market,pick_label,tier,result,pick_odds',
+                    'game_date': f'eq.{date}', 'surface': 'eq.sharp_card',
+                    'limit': 1000, 'offset': _off})
+        if _r.status_code != 200:
+            print(f'  ⚠ sharp_card receipts read {_r.status_code} — not aggregating')
+            return None
+        _chunk = _r.json()
+        rows += _chunk
+        if len(_chunk) < 1000:
+            break
+        _off += 1000
+    if not rows:
+        return None
+    per_sport: dict = {}
+    for rc in rows:
+        sport = str(rc.get('sport') or 'MLB').upper()
+        b = per_sport.setdefault(sport, {'w': 0, 'l': 0, 'p': 0, 'pending': 0,
+                                         'shipped': 0, 'bet': 0.0, 'won': 0.0,
+                                         'detail': []})
+        b['shipped'] += 1
+        res = str(rc.get('result') or '').strip().upper()
+        stake = 1.0
+        odds = rc.get('pick_odds')
+        if res in ('WIN', 'W'):
+            b['w'] += 1; b['bet'] += stake; b['won'] += stake * _american_payout(odds)
+        elif res in ('LOSS', 'L'):
+            b['l'] += 1; b['bet'] += stake; b['won'] -= stake
+        elif res in ('PUSH', 'P'):
+            b['p'] += 1; b['bet'] += stake
+        else:
+            # NO_ACTION and ungraded both land here: counted as shipped so the
+            # denominator is honest, excluded from W/L so the record is not.
+            b['pending'] += 1
+        b['detail'].append({'pick': str(rc.get('pick_label'))[:80],
+                            'verdict': res or 'PENDING', 'stake': stake,
+                            'odds': odds, 'sport': sport,
+                            'type': rc.get('market')})
+    out = []
+    t = {'w': 0, 'l': 0, 'p': 0, 'pending': 0, 'shipped': 0, 'bet': 0.0,
+         'won': 0.0, 'detail': []}
+    for sport, b in sorted(per_sport.items()):
+        out.append({
+            'surface': 'sharp_card', 'sport': sport, 'record_date': date,
+            'wins': b['w'], 'losses': b['l'], 'pushes': b['p'],
+            'units_bet': round(b['bet'], 2), 'units_won': round(b['won'], 2),
+            'pick_count': b['shipped'],
+            'detail': {'legs': b['detail'][:400], 'source': 'public_receipts',
+                       'pending': b['pending'],
+                       'graded': b['w'] + b['l'] + b['p'],
+                       'shipped': b['shipped']},
+        })
+        for k in ('w', 'l', 'p', 'pending', 'shipped'):
+            t[k] += b[k]
+        t['bet'] += b['bet']; t['won'] += b['won']; t['detail'] += b['detail']
+    if len(per_sport) > 1:
+        out.append({
+            'surface': 'sharp_card', 'sport': 'ALL', 'record_date': date,
+            'wins': t['w'], 'losses': t['l'], 'pushes': t['p'],
+            'units_bet': round(t['bet'], 2), 'units_won': round(t['won'], 2),
+            'pick_count': t['shipped'],
+            'detail': {'legs': t['detail'][:400], 'source': 'public_receipts',
+                       'pending': t['pending'],
+                       'graded': t['w'] + t['l'] + t['p'],
+                       'shipped': t['shipped']},
+        })
+    return out or None
+
+
 def agg_sharp_card(date: str) -> list[dict] | None:
     """Sharp Card = items that SHIPPED to users on jerry_cache.sharp_card_YYYY-MM-DD.
 
@@ -1080,7 +1181,12 @@ def _grade_side_by_market(market: str, sharp_side: str, hs: int, as_: int,
 
 
 AGGREGATORS = [
-    ('sharp_card', agg_sharp_card),
+    # 2026-10-04: counted from public_receipts, not re-graded from the
+    # jerry_cache row — that cache is regenerated, and on 10-03 it had shrunk
+    # to 18 items with no NHL while the receipts written when the card shipped
+    # held 23. agg_sharp_card is kept below for reference and rollback; it is
+    # no longer the source of the record.
+    ('sharp_card', agg_sharp_card_from_receipts),
     ('ledger', agg_ledger),        # returns LIST
     ('ladder', agg_ladder),
     ('potd', agg_potd),
