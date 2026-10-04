@@ -33,6 +33,13 @@ from collections import defaultdict
 
 import requests
 
+# Same ctx access semantics as live scoring — the module docstring commits to
+# "evaluation semantics are identical between live scoring and backfill
+# grading", so import the proxy rather than reimplement it and let the two
+# drift.
+from prop_ensemble_scorer import _CtxProxy
+from prop_ctx_resolve import build_ctx_index, resolve_ctx, derive_side_fields
+
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
@@ -87,6 +94,48 @@ def fetch_resolved_props(sport: str, days: int) -> list[dict]:
     return rows
 
 
+CTX_TABLES = {
+    'MLB': 'mlb_game_context',
+    'NFL': 'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'NHL': 'nhl_game_context',
+    'NBA': 'nba_game_context',
+}
+
+
+def fetch_context_window(sport: str, days: int) -> list[dict]:
+    """Game-context rows covering the grading window.
+
+    Returns [] on any failure rather than raising: a missing context table
+    must degrade grading to "ctx-scoped signals ungradable", never kill the
+    whole run for the form/model signals that need no context.
+    """
+    table = CTX_TABLES.get(sport)
+    if not table:
+        return []
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    rows = []
+    for off in range(0, 50000, 1000):
+        try:
+            r = requests.get(
+                f'{SB}/rest/v1/{table}'
+                f'?game_date=gte.{cutoff}&select=*&limit=1000&offset={off}',
+                headers=H_READ, timeout=45)
+        except Exception:
+            break
+        if r.status_code != 200:
+            print(f'    ! {table} read {r.status_code} — ctx-scoped signals '
+                  f'will be ungradable')
+            break
+        chunk = r.json()
+        if not isinstance(chunk, list) or not chunk:
+            break
+        rows += chunk
+        if len(chunk) < 1000:
+            break
+    return rows
+
+
 def _coerce_signals(p: dict) -> dict:
     """PostgREST may return jsonb as string on some paths — parse it once."""
     s = p.get('signals')
@@ -121,8 +170,14 @@ def _safe_eval(expr: str, env: dict):
     """Same sandbox as prop_ensemble_scorer._safe_eval so evaluation semantics
     are identical between live scoring and backfill grading."""
     if not expr: return None
-    globs = {'__builtins__': {}}
     locs = {**_SAFE_BUILTINS, **env}
+    # Env goes into GLOBALS as well as locals. In eval(code, globs, locs) a
+    # generator expression's body executes in its own frame that can see globs
+    # but NOT locs, so `any(w in str(p['x']) for w in (...))` raises
+    # NameError on `str` and `p` while the same expression without a genexp
+    # works. That silently broke every ctx/matchup signal written with `any(`
+    # — they reported "did not fire" on 5,889 NHL props.
+    globs = {'__builtins__': {}, **locs}
     try:
         return eval(compile(expr, '<prop_signal_expr>', 'eval'), globs, locs)
     except Exception:
@@ -142,7 +197,29 @@ def grade_prop_signal(side: str, prop_result: str) -> str | None:
     return None
 
 
-def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
+def _eval_condition(expr: str, env: dict):
+    """-> (matched: bool, errored: bool).
+
+    `_safe_eval` returns None both when a condition is FALSE and when it
+    RAISED. For a ctx-dependent condition against an empty context,
+    `ctx.away_goalie_sv_pct` is None and `float(None)` raises — which then
+    reads as "the signal did not fire". That is how four NHL prop signals came
+    to sit at sample_n=0 on 5,889 graded props and be mistaken for evidence.
+    Separating the two is the whole point.
+    """
+    if not expr:
+        return (False, False)
+    locs = {**_SAFE_BUILTINS, **env}
+    globs = {'__builtins__': {}, **locs}   # genexp scoping — see _safe_eval
+    try:
+        return (bool(eval(compile(expr, '<prop_signal_expr>', 'eval'), globs, locs)),
+                False)
+    except Exception:
+        return (False, True)
+
+
+def backfill_prop_signal(source: dict, props: list[dict],
+                         ctx_index: dict | None = None) -> dict:
     condition = source.get('condition_expr') or ''
     side_expr = source.get('side_expr') or ''
     if not condition or not side_expr:
@@ -163,11 +240,24 @@ def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
     # information beyond the direction already on the row. Measuring lift over
     # this control is what separates a form signal from a relabelled coin.
     dw = dl = 0
+    errored = ctx_miss = 0
     for prop in props:
         if not _matches_market(source, prop): continue
         prop = _coerce_signals(prop)
-        env = {'ctx': None, 'p': prop}
-        matched = _safe_eval(condition, env)
+        # Pass a REAL context. This used to be `{'ctx': None}` literally, so
+        # any ctx-dependent condition raised and was counted as "did not fire".
+        ctx_row, how = (resolve_ctx(ctx_index, prop) if ctx_index else ({}, 'miss'))
+        if how == 'miss':
+            ctx_miss += 1
+        # own_*/opp_* so a condition never has to re-derive the player's side
+        # from mismatched team vocabularies. Does not overwrite real prop
+        # fields — the prop row wins on any key collision.
+        _p = {**derive_side_fields(ctx_row, prop), **prop}
+        env = {'ctx': _CtxProxy(ctx_row), 'p': _p}
+        matched, err = _eval_condition(condition, env)
+        if err:
+            errored += 1
+            continue
         if not matched: continue
         fires += 1
         side_raw = _safe_eval(side_expr, env)
@@ -230,6 +320,7 @@ def backfill_prop_signal(source: dict, props: list[dict]) -> dict:
         'hit_rate': hit_rate, 'edge_pp': edge_pp, 'tier': tier,
         'recommended_weight': weight,
         'base_hit': base_hit, 'lift': lift, 'n_ctl': n_ctl,
+        'errored': errored, 'ctx_miss': ctx_miss,
     }
 
 
@@ -275,12 +366,28 @@ def run(days: int = 60, dry_run: bool = False,
         print('  no resolved props — abort')
         return
 
+    # Load the context window so ctx-dependent conditions can actually be
+    # evaluated. Context is a working set, not an archive, so coverage over a
+    # 60-day grading window is partial by nature — report it rather than let a
+    # thin join masquerade as a thin signal.
+    ctx_index = build_ctx_index(fetch_context_window(sport, days))
+    _n_ctx = len(ctx_index.get('by_id') or {})
+    _resolved = sum(1 for p in props if resolve_ctx(ctx_index, p)[1] != 'miss')
+    print(f'  {_n_ctx} context rows loaded · '
+          f'{_resolved}/{len(props)} props resolve to a context row '
+          f'({100.0 * _resolved / max(1, len(props)):.1f}%)')
+    if _resolved < len(props):
+        print(f'  NOTE: {len(props) - _resolved} props have no context in this '
+              f'window — ctx-scoped signals cannot be graded on those rows.\n')
+    else:
+        print()
+
     tier_counts = defaultdict(int)
     written = 0
     for source in signals:
         cls = source.get('class', '')
         key = source['signal_key']
-        stats = backfill_prop_signal(source, props)
+        stats = backfill_prop_signal(source, props, ctx_index=ctx_index)
         if stats.get('skipped'):
             print(f'  {key:<40} [{cls:<18}] SKIP ({stats["reason"]})')
             continue
@@ -294,6 +401,13 @@ def run(days: int = 60, dry_run: bool = False,
         base = stats.get('base_hit'); lift = stats.get('lift')
         ctl_str = (f'dir={base}% lift={lift:+.1f}pp'
                    if base is not None and lift is not None else '')
+        # A signal that never fired because its condition RAISED is a plumbing
+        # fact, not evidence about the sport. Say so on the line.
+        _err = stats.get('errored') or 0
+        if _err and fires == 0:
+            ctl_str = f'UNGRADABLE: {_err} rows raised'
+        elif _err:
+            ctl_str = (ctl_str + f' ({_err} raised)').strip()
         print(f'  {key:<40} [{cls:<18}] fires={fires:>4} n={n:>3} '
               f'{stats["w"]}-{stats["l"]}-{stats["p"]}  HR={hr_str:<7} '
               f'{edge_str:<8} {ctl_str:<26} tier={tier}')

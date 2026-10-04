@@ -50,6 +50,7 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 
 # Reuse game ensemble's edge weighting + class-balance rule
 from ensemble_scorer import MAX_CLASS_SHARE, edge_weight, fetch_all_rows
+from prop_ctx_resolve import build_ctx_index, resolve_ctx, derive_side_fields
 
 # Prop-specific tier thresholds (2026-08-17). Game ensemble aggregates
 # across ML/RL/Total candidates so top scores frequently hit 1.0-3.0.
@@ -245,12 +246,19 @@ def _safe_eval(expr: str, env: dict):
     """Evaluate condition/side/strength expressions in a restricted namespace.
     Same pattern as the game ensemble — no imports, only builtins."""
     if not expr: return None
-    return eval(expr, {'__builtins__': __builtins__, 'min': min, 'max': max,
-                       'abs': abs, 'int': int, 'float': float, 'str': str,
-                       'sum': sum, 'len': len, 'any': any, 'all': all,
-                       'round': round, 'None': None, 'True': True, 'False': False,
-                       'isinstance': isinstance, 'dict': dict, 'list': list, 'bool': bool},
-                env)
+    # `env` must go into GLOBALS as well as locals. In eval(code, globs, locs)
+    # a generator expression's body runs in its own frame that can see globs
+    # but NOT locs, so `any(w in str(p['x']) for w in (...))` raises NameError
+    # on `p` while the same test without a genexp evaluates fine. That broke
+    # every matchup signal written with `any(` — silently, because the caller
+    # cannot tell a raised condition from a false one.
+    _g = {'__builtins__': __builtins__, 'min': min, 'max': max,
+          'abs': abs, 'int': int, 'float': float, 'str': str,
+          'sum': sum, 'len': len, 'any': any, 'all': all,
+          'round': round, 'None': None, 'True': True, 'False': False,
+          'isinstance': isinstance, 'dict': dict, 'list': list, 'bool': bool,
+          **(env or {})}
+    return eval(expr, _g, env)
 
 
 def _coerce_prop(p: dict) -> dict:
@@ -958,10 +966,14 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
         print(f'  [{sport}] no props/ctx table registered — skip')
         return {'scored': 0, 'passed': 0, 'ranked': {}}
 
-    # Load ctx bundle per game_id
+    # Load ctx bundle. Indexed by game_id AND by (game_date, team) because
+    # prop game_ids are odds-API hashes while NHL/NBA/NFL context and results
+    # key on their own upstream ids — a game_id join matched 0 of 2,132 NHL
+    # props. See prop_ctx_resolve for the measurement and the fallback key.
     r = requests.get(f'{SB}/rest/v1/{ctx_table}?game_date=eq.{game_date}&select=*',
                      headers=H_READ, timeout=15)
-    ctxs = {c.get('game_id'): c for c in (r.json() if r.status_code == 200 else [])}
+    ctx_rows = r.json() if r.status_code == 200 else []
+    ctx_index = build_ctx_index(ctx_rows)
 
     # Load props — from live table + (optionally) union with existing decisions
     r = requests.get(f'{SB}/rest/v1/{table}',
@@ -997,8 +1009,12 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
 
     scored = 0; passed = 0
     ranked = defaultdict(int)
+    _ctx_how = defaultdict(int)
     for prop in props:
-        ctx = ctxs.get(prop.get('game_id')) or {}
+        ctx, _how = resolve_ctx(ctx_index, prop)
+        _ctx_how[_how] += 1
+        # own_*/opp_* side-aware context fields; the prop row wins collisions.
+        prop = {**derive_side_fields(ctx, prop), **prop}
         try:
             d = score_prop(sport, ctx, prop)
         except Exception as e:
@@ -1023,6 +1039,15 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
             top_signals = ' | '.join(c.signal_key for c in d.contributions[:3])
             print(f'    {d.tier:<6} {d.side:<4} {d.player_name[:22]:<22} {d.prop_type:<10} '
                   f'{d.direction:<5} conv={d.conviction} score={d.score}  {legacy}  [{top_signals}]')
+    # Say out loud how context resolved. A ctx miss makes every ctx-dependent
+    # signal evaluate false, which is indistinguishable from "the signal did
+    # not fire" unless it is reported — that silence is what left four NHL
+    # prop signals at sample_n=0 on 5,889 graded props.
+    if _ctx_how:
+        _miss = _ctx_how.get('miss', 0)
+        print(f'  [{sport}] ctx resolved: by id={_ctx_how.get("id", 0)}, '
+              f'by (date,team)={_ctx_how.get("team_date", 0)}, MISS={_miss}'
+              + (f'  <-- {_miss} props scored with NO context' if _miss else ''))
     return {'scored': scored, 'passed': passed, 'ranked': dict(ranked)}
 
 
