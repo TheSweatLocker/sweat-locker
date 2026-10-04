@@ -106,6 +106,27 @@ def _f(v):
         return None
 
 
+def publishable_teams(sport: str, season: int):
+    """Teams a rating may be PUBLISHED for. None means 'all of them'.
+
+    NCAAF only. The margin fit should keep every game — an FBS team's win over
+    an FCS opponent is a real result and the adjustment needs it — but ranking
+    261 programmes together puts Mercyhurst in a table with Alabama and makes
+    the rank meaningless. SP+ coverage is the division line already used by
+    reconcile_ncaaf_stat_sources (139 rated teams), so reuse it rather than
+    invent a second definition of FBS.
+    """
+    if sport != 'NCAAF':
+        return None
+    try:
+        rows = _pull('ncaaf_team_stats',
+                     {'select': 'team,sp_overall', 'season': f'eq.{season}'})
+        fbs = {r['team'] for r in rows if r.get('sp_overall') is not None}
+        return fbs or None
+    except Exception:
+        return None          # never block a publish on the gate failing
+
+
 def _season_start(sport: str, season: int) -> str:
     """Season opener from sport_registry, so PRESEASON never rates a team.
 
@@ -285,9 +306,15 @@ def main() -> int:
         print('%-6s %9.2f %9.2f' % (t, rating[t], sos.get(t, 0.0)))
 
     if args.write:
+        keep = publishable_teams(args.sport, season)
+        if keep is not None:
+            print(f'  publishing {len(keep)} of {len(rating)} teams '
+                  f'(FBS only; the fit still used every game)')
         payload = []
         for key, vals, label in (('sor_margin', rating, 'Strength of Record (margin)'),
                                  ('sos_margin', sos, 'Strength of Schedule (margin)')):
+            if keep is not None:
+                vals = {t: v for t, v in vals.items() if t in keep}
             order = sorted(vals, key=lambda x: -vals[x])
             for i, t in enumerate(order, 1):
                 payload.append({'sport': args.sport, 'team': t, 'season': season,

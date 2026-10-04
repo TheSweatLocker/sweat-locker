@@ -27,10 +27,10 @@ THE FOUR COMPONENTS, and what each is there to stop
    inverted. A team that wins by 3 every week is a better bet than one
    alternating +28 and -21 to the same average, and a season average hides
    exactly that.
-4. AUTHORITY (15%) — margin relative to what was expected of them, i.e. do
-   they win big when they are supposed to. Computed against the team's own
-   rating differential per game, so it measures taking care of business
-   rather than just being good.
+4. AUTHORITY (15%) — margin relative to what the MARKET expected, i.e. cover
+   margin against the closing line. Do they take care of business when they
+   are installed as the favourite. Measured against the market and not against
+   our own rating, for the reason in the next section.
 
 KNOWN OVERLAP, stated rather than hidden. Measured on NFL 2026 at 3 games:
 
@@ -85,7 +85,7 @@ H_W = {**H, 'Content-Type': 'application/json',
        'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 from compute_margin_strength import (RESULTS, SPORT_CFG, load_games, fit_srs,
-                                     sos_from)
+                                     sos_from, publishable_teams)
 
 WEIGHTS = {'quality': 0.55, 'schedule': 0.15,
            'consistency': 0.15, 'authority': 0.15}
@@ -199,6 +199,13 @@ def run(sport: str, season: int, write: bool) -> None:
               % (t[:26], ratings[t], d['gp'], d['trust'], d['quality'],
                  d['schedule'], d['consistency'], d['authority']))
     if write:
+        # FBS only for NCAAF — the fit used every game, but a 261-team table
+        # ranks Mercyhurst against Alabama and the rank stops meaning anything.
+        keep = publishable_teams(sport, season)
+        if keep is not None:
+            before = len(ratings)
+            ratings = {t: v for t, v in ratings.items() if t in keep}
+            print(f'  publishing {len(ratings)} of {before} teams (FBS only)')
         order = sorted(ratings, key=lambda x: -ratings[x])
         payload = [{'sport': sport, 'team': t, 'season': season,
                     'stat_key': 'sweat_rating', 'raw_value': ratings[t],

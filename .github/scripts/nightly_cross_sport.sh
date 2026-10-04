@@ -193,6 +193,28 @@ bash "$RUN_STEP" --label "aggregate_daily_records.py (nightly)" \
 # record and stamp it as fresh.
 bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   python compute_schedule_strength.py
 
+# ══ 2026-10-04 · MARGIN-BASED SOS/SOR + THE SWEAT RATING ══
+# compute_schedule_strength above rates on WIN PERCENTAGE only. These rate on
+# opponent-adjusted MARGIN, which beat it out of sample on all six sports
+# (NCAAF +0.575 -> +0.675, NFL +0.344 -> +0.393, NCAAB +0.401 -> +0.458).
+# Both write alongside the win% keys rather than replacing them, so the two can
+# be compared on live data before anything is retired.
+#
+# SCHEDULED HERE DELIBERATELY. compute_schedule_strength was run once by hand
+# on 09-26 and never wired up, so every value froze that day and decayed
+# silently for four days. A rating nobody refreshes is worse than no rating,
+# because the staleness is invisible.
+#
+# Order matters: the Sweat Rating consumes the margin ratings, so it runs
+# second. NCAAF publishes FBS only (SP+ coverage is the division line) while
+# still FITTING on every game, including FCS opponents.
+for _sp in NFL NCAAF NHL NBA NCAAB MLB; do
+  bash "$RUN_STEP" --label "compute_margin_strength.py ($_sp)" \
+    python compute_margin_strength.py --sport "$_sp" --write || true
+done
+bash "$RUN_STEP" --label "compute_sweat_rating.py (all sports)" \
+  python compute_sweat_rating.py --all --write || true
+
 # 2026-10-03 · EXTERNAL SOR BENCHMARK. Andy: "add as weekly benchmark for
 # data." Records strengthofrecord.com's published FBS Strength of Record
 # beside ours. A reference point ONLY -- never an input to a pick, and
