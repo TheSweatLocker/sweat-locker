@@ -254,8 +254,23 @@ def check_primary_play_stale() -> Optional[dict]:
 
 
 def check_grader_coverage() -> Optional[dict]:
-    """Alert if yesterday's games/props are <90% graded 24h after game time."""
-    yday = _days_ago(1)
+    """Alert if a settled slate is <90% graded. Looks 2 days back, not 1.
+
+    ══ 2026-10-04 · THIS FIRED CRITICAL EVERY DAY AND WAS ALWAYS WRONG ══
+    The docstring promised "24h after game time" and then checked YESTERDAY.
+    The watchdog cron runs ~05:24 UTC; MLB props for the previous day are
+    graded ~11:40 UTC. So it asked whether yesterday was graded six hours
+    before the grader ran, and answered 0%.
+
+    Measured: 10-01 "0% (0/403)", 10-02 "0% (0/109)", 10-04 "0% (0/407)" — all
+    CRITICAL, all false. On 10-03, 404 of those 407 props did in fact grade.
+
+    A CRITICAL that is wrong every day is worse than no check: it is exactly
+    how a real grading failure gets scrolled past. Two days back is genuinely
+    settled — a game finishing 04:00 UTC has had a full day and two grader
+    passes — so a gap there is real.
+    """
+    yday = _days_ago(2)
     r = requests.get(f'{SB}/rest/v1/mlb_pipeline_props',
         params={'game_date': f'eq.{yday}', 'select': 'result'},
         headers=H_READ, timeout=15)
@@ -340,10 +355,32 @@ def check_sharp_source_dropped() -> Optional[dict]:
     # silence the check entirely, and a busy day shouldn't inflate them.
     slate_factor = max(0.10, min(slate_factor, 1.5))
 
+    # ══ 2026-10-04 · THIRD FALSE-ALARM FIX ON THIS CHECK ══
+    # After the 08-28 column/pagination bugs and the 09-21 slate-size bug, the
+    # average itself was still wrong: `sum(cnts)/len(cnts)` divides by the days
+    # the source APPEARED, not the days in the window. That is fine for a daily
+    # scraper and badly wrong for an EVENT-DRIVEN one.
+    #
+    # bfo is UFC-only — 37 rows in 14 days, all of them on the two fight nights
+    # (09-26: 17, 10-03: 20). One active day at 20 produced an average of 20
+    # and an expectation of 25.6 for a Sunday with no UFC card, so it reported
+    # CRITICAL "bfo 0/25.6" on every non-fight day. There was nothing wrong
+    # with bfo.
+    #
+    # Dividing by the window length is the honest denominator: a source that
+    # only produces on event days genuinely has a low daily expectation, and
+    # bfo falls to ~2.9 — under the avg >= 5 floor — so it stops firing without
+    # needing a hardcoded list of which sources are episodic.
+    n_days = len(day_totals)
     dropped = []
     for src, cnts in baseline.items():
         if not cnts: continue
-        avg = sum(cnts) / len(cnts)
+        avg = sum(cnts) / n_days
+        active_days = len(cnts)
+        # A source seen on 2 or fewer of the window's days is episodic, not
+        # daily; absence is its normal state and says nothing about health.
+        if active_days <= 2:
+            continue
         expected = avg * slate_factor
         today_cnt = today_counts.get(src, 0)
         # avg >= 5 keeps tiny sources out; expected >= 3 keeps the normalised
