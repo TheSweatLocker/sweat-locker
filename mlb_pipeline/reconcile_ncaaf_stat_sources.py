@@ -143,6 +143,10 @@ def main() -> int:
     ap.add_argument('--tolerance-pct', type=float, default=2.0,
                     help='relative drift allowed before a team is reported')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--report-only', action='store_true',
+                    help='print the verdict but always exit 0 — for hosts like '
+                         'mlb_grade_overnight where a stale NCAAF aggregate is '
+                         'not that job\'s failure')
     a = ap.parse_args()
     season = a.season
 
@@ -254,7 +258,22 @@ def main() -> int:
               f'{len(drift[label])}')
 
     if count_gaps:
-        hard.append(f'{len(count_gaps)} teams where the log is short a game')
+        # 2026-10-04 · SAY WHICH SIDE IS SHORT. This read "the log is short a
+        # game" unconditionally, but the first live failure was the opposite:
+        # Bowling Green aggregate 4 · log 5, because ncaaf_team_stats refreshed
+        # Sat 16:13 UTC — BEFORE Saturday's games finished — while the per-game
+        # log had them. Naming the wrong side sends whoever reads the alert to
+        # the wrong table.
+        _ag_short = sum(1 for _, ag, lg in count_gaps if ag < lg)
+        _lg_short = len(count_gaps) - _ag_short
+        if _ag_short and not _lg_short:
+            _who = ('the AGGREGATE is behind the log — ncaaf_team_stats has not '
+                    'refreshed since those games finished')
+        elif _lg_short and not _ag_short:
+            _who = 'the LOG is missing games the aggregate counts'
+        else:
+            _who = f'{_ag_short} aggregate-behind, {_lg_short} log-behind'
+        hard.append(f'{len(count_gaps)} teams with a game-count gap — {_who}')
         print(f'\n  🚨 GAME-COUNT GAPS (log is missing games the aggregate counts)')
         for t, ag, lg in sorted(count_gaps, key=lambda z: z[1] - z[2],
                                 reverse=True)[:15]:
@@ -303,6 +322,14 @@ def main() -> int:
             print(f'  🚨 {h}')
         print('  FAIL — the log cannot verify the published stats until the '
               'above are closed.')
+        # A reconciliation REPORT must not fail an unrelated job. This runs
+        # inside mlb_grade_overnight, where a stale NCAAF aggregate has nothing
+        # to do with whether MLB graded — and a red X on the grader for a stats
+        # lag is exactly how a real grading failure gets ignored later.
+        if getattr(a, 'report_only', False):
+            print('  (--report-only: exiting 0 so the host workflow reports '
+                  'its own health, not this one)')
+            return 0
         return 1
     print('  OK — both sources agree within tolerance on every rated team.')
     return 0
