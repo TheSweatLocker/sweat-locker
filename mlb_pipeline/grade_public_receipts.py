@@ -151,6 +151,36 @@ _PROP_LABEL_RE = re.compile(
 SURFACE_MARKETS = {'potd', 'dawg', 'dotd'}
 
 
+# 2026-10-04: the SAME play can be captured on two surfaces by two writers,
+# and only one of them stamps audit.bet_market. Today's POTD was written
+# twice — identical matchup, identical label "BUF RL -7 (Jerry 70/100)",
+# identical source_id — but jerry_anchor_potd stamped bet_market='rl' while
+# generate_sweat_card did not. So the potd-surface row graded LOSS and its
+# sweat_card twin sat ungraded: one play, two surfaces, two different states
+# on screen.
+#
+# Rather than depend on every writer remembering the stamp, infer the market
+# from the label as a last resort. Deliberately narrow: the word has to be
+# there, and a label that reads like a PLAYER prop is refused outright, since
+# "Aaron Nola Over 11.5 Outs" would otherwise look like a game total. An
+# unidentifiable label keeps the surface code and stays visibly ungraded.
+_LABEL_MARKET = (
+    (re.compile(r'\b(rl|ats|spread|puck\s*line|run\s*line)\b', re.I), 'rl'),
+    (re.compile(r'\b(ml|moneyline)\b', re.I), 'ml'),
+    (re.compile(r'^\s*(over|under)\b', re.I), 'total'),
+)
+
+
+def _market_from_label(label):
+    s = str(label or '')
+    if not s or _PROP_LABEL_RE.search(s):
+        return None
+    for rx, mkt in _LABEL_MARKET:
+        if rx.search(s):
+            return mkt
+    return None
+
+
 def _effective_market(rec):
     """Real market for grading; surface codes resolve via audit.bet_market."""
     m = str(rec.get('market') or '').lower()
@@ -163,7 +193,9 @@ def _effective_market(rec):
         except Exception:
             a = None
     bm = (a or {}).get('bet_market') if isinstance(a, dict) else None
-    return str(bm).lower() if bm else m
+    if bm:
+        return str(bm).lower()
+    return _market_from_label(rec.get('pick_label')) or m
 
 # 2026-09-21: grading the prop backlog issues ~1,000 sequential PATCHes and
 # the host reset the connection partway through — and because each patch was
