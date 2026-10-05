@@ -220,12 +220,32 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
 
 # ─── Source: jerry_reads (game side/total + POTD) ───────────────────
 
+def _american(v):
+    """American odds as an int, or None. Refuses the shapes that are not a
+    price: an empty numeric column reads 0, and no real American price sits
+    strictly between -100 and +100. A blank beats a wrong number here."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if -100 < f < 100:
+        return None
+    return int(round(f))
+
+
 def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     print(f'\n=== backfill_jerry_reads · {sport} ===')
     # Get is_potd if column exists; fallback to null
+    # 2026-10-04: price_american and the snapshot matchup were NOT selected,
+    # so every game_read receipt was written with pick_odds and matchup NULL
+    # — 895 of 895 since 09-01. Without a price a receipt can say whether the
+    # pick won but not what it returned, and without a matchup it cannot even
+    # be joined to a result (NFL game ids live in a different ID space). Both
+    # were sitting one column away in the source row the whole time.
     url = (f'{SB}/rest/v1/jerry_reads?sport=eq.{sport}'
            f'&select=id,sport,game_id,game_date,call_market,call_side,'
-           f'call_line,call_text,conviction,result,generated_at,resolved_at'
+           f'call_line,call_text,conviction,result,generated_at,resolved_at,'
+           f'price_american,priced_at,matchup:input_snapshot->>matchup'
            f'&order=game_date.desc')
     batch = []
     written = 0
@@ -241,7 +261,7 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
             elif r_low in ('v', 'void'): result = 'VOID'
             else: result = str(result).upper()
         try:
-            odds_int = None  # jerry_reads doesn't carry odds explicitly
+            odds_int = _american(row.get('price_american'))
             line_val = float(row.get('call_line')) if row.get('call_line') is not None else None
         except (TypeError, ValueError):
             line_val = None
@@ -261,7 +281,9 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
             'pick_side': (row.get('call_side') or '').upper() or None,
             'pick_line': line_val,
             'pick_odds': odds_int,
-            'matchup': None,              # would need ctx join; leave for downstream enrichment
+            'matchup': (str(row['matchup'])
+                        if row.get('matchup') and '@' in str(row['matchup'])
+                        else None),
             'pick_label': row.get('call_text'),
             'tier': None,
             'conviction': row.get('conviction'),
