@@ -168,7 +168,30 @@ def main() -> int:
 
     fails = []
 
+    # ── 0. BOX SCORES. The bottom of the whole chain. ──────────────────
+    # 2026-10-05: five receipts from 10-03/10-04 could not be settled by any
+    # path, and the reason was here. They name prop tuples the prop table no
+    # longer holds — Michael King ha_under 4.5 (the table has ha_over 1.5),
+    # Austin Hays hits_under 0.5 (no prop row at all) — so the prop-table
+    # settler has nothing to read. The box-score fallback should cover exactly
+    # that case, except mlb_player_game_log had NO ROW for those players on
+    # those dates either.
+    #
+    # It is kept current by this script, which until now ran ONLY inside
+    # mlb_grade_overnight — the workflow measured at 5.5h late and some days
+    # not at all. A store that stops updating is worse than none, because the
+    # lookback thins out silently instead of failing. It belongs at the bottom
+    # of the chain, before anything that reads a box score.
+    lo = (today - dt.timedelta(days=args.days + 1)).isoformat()
+    print('0. persist box scores')
+    ok, _ = run('MLB player game log', ['backfill_mlb_player_game_log.py',
+                                        '--start', lo, '--end', today.isoformat(),
+                                        '--resume'])
+    if not ok:
+        fails.append('MLB player game log')
+
     # ── 1. SCORES. Nothing downstream can grade without these. ─────────
+    print()
     print('1. ingest final scores')
     for label, cmd in (
         ('MLB results + props + card', ['resolve_game_results.py']),
