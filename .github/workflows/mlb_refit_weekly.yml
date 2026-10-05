@@ -17,7 +17,7 @@ on:
 
 jobs:
   refit-retrain:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write   # committing the new weights JSON back to repo

@@ -22,7 +22,7 @@ on:
 
 jobs:
   retry:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
