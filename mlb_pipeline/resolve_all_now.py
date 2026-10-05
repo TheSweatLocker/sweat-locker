@@ -222,6 +222,13 @@ def main() -> int:
         ('NFL props', ['resolve_nfl_props_espn.py', '--lookback',
                        str(max(args.days, 3))]),
         ('POTD', ['grade_potd.py']),
+        # 2026-10-05: backfill_jerry_pick_alignment existed as a ONE-SHOT
+        # from launch weekend and was never scheduled, so the badge and the
+        # prose could disagree indefinitely. Running it today found a live
+        # one: NCAAF USC @ Penn State published 'Penn State ML' against a
+        # primary_play of 'USC ML'. It self-skips NFL inside the week lock
+        # and skips started games, so it is safe on a timer.
+        ('pick alignment', ['backfill_jerry_pick_alignment.py']),
     ):
         ok, _ = run(label, cmd)
         if not ok:
