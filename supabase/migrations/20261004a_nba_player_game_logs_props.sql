@@ -69,4 +69,26 @@ CREATE INDEX IF NOT EXISTS nba_player_game_logs_player_date_idx
 CREATE INDEX IF NOT EXISTS nba_player_game_logs_name_date_idx
     ON nba_player_game_logs (player_name, game_date DESC);
 
+
+-- ─────────────────────────────────────────────────────────────────────
+-- nba_pipeline_props already carries 30 of the 32 columns nhl_pipeline_props
+-- has, so the prop board itself is nearly ready. The two it lacks are the
+-- two that matter most for joining a prop to a player's history:
+--
+--   player_id        the join key to nba_player_game_logs. Name-matching is
+--                    what served the WRONG FIGHTER on a UFC card (surname
+--                    `ilike` + limit(1) returned someone else's record), and
+--                    NHL needed migration 20261003c for exactly this reason.
+--   player_position  guard/forward/centre, which is what makes a rebound or
+--                    assist line readable against positional context.
+ALTER TABLE nba_pipeline_props
+    ADD COLUMN IF NOT EXISTS player_id       TEXT,
+    ADD COLUMN IF NOT EXISTS player_position TEXT;
+
+COMMENT ON COLUMN nba_pipeline_props.player_id IS
+  'ESPN athlete id — joins to nba_player_game_logs.player_id. Never match props to logs on name alone: a surname ilike + limit(1) is how a UFC card showed the wrong fighter.';
+
+CREATE INDEX IF NOT EXISTS nba_pipeline_props_player_date_idx
+    ON nba_pipeline_props (player_id, game_date DESC);
+
 NOTIFY pgrst, 'reload schema';
