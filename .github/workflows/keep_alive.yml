@@ -18,9 +18,28 @@ name: Keep Alive (prevent GH scheduled-workflow skip)
 # GH schedule queue has plenty of scheduled-workflow activity to stay
 # warm without a 48/day heartbeat. Hourly is enough belt-and-suspenders.
 
+# ══ 2026-10-05 · SCHEDULE DISABLED (reversible — uncomment to restore) ══
+# This workflow exists to keep GitHub's scheduled-workflow queue "warm" so
+# other crons are not skipped. Measured today, it is not achieving that and
+# it costs 24 runner acquisitions a day to not achieve it:
+#
+#   * every workflow we have runs 3.4-5.6h late (median, 870 heartbeats)
+#   * three had not started in 26+ hours on 10-05
+#   * mlb_line_poller is scheduled 72x/day and LANDS 3-4 times (4-6%)
+#   * Andy is seeing "The job was not acquired by Runner of type hosted"
+#
+# All of that is happening WITH this heartbeat running hourly, so the premise
+# is disproven by our own data. Its own 09-08 note already said the other
+# 24 workflows supply plenty of queue activity on their own — there are now
+# 266 scheduled acquisitions a day without it.
+#
+# Disabled rather than deleted so it is one uncomment to restore. WHAT TO
+# WATCH: if scheduled-workflow skip rates get WORSE over the next few days
+# (check watchdogs.check_workflow_stale and the landed-run counts in
+# line_history), restore it. If they are unchanged, delete the file.
 on:
-  schedule:
-    - cron: '0 * * * *'
+  # schedule:
+  #   - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:

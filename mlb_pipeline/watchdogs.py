@@ -943,6 +943,66 @@ def check_roster_physicality_stale() -> Optional[dict]:
         return None
 
 
+def check_line_poller_landing_rate() -> Optional[dict]:
+    """Alert when the line poller is scheduled but not actually running.
+
+    ══ 2026-10-05 · THE BIGGEST THING WE WERE NOT MEASURING ══
+    mlb_line_poller is scheduled 72x/day (every 15 min across an 18h window).
+    Counted by distinct capture minute in line_history:
+
+        2026-10-01   4 landed runs of 72    5.6%
+        2026-10-03   4                      5.6%
+        2026-10-04   4                      5.6%
+        2026-10-05   3                      4.2%
+
+    The poller writes UNCONDITIONALLY on every pre-game event — no dedup —
+    so landed runs are directly countable, and 95% of them never happen.
+    GitHub is refusing the runners ("The job was not acquired by Runner of
+    type hosted"). The workflow shows no failure because the job never
+    starts.
+
+    This is not cosmetic. line_poller is the sole writer of `line_history`,
+    which is what prices every pick for ROI and CLV. It is why 484 of 528
+    unpriced Jerry reads looked like they "predated line_history collection"
+    — the history is sparse because the collector lands 5% of the time, not
+    because the feature is new.
+
+    Nothing was watching this, so it degraded silently for weeks.
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/line_history',
+            params={'select': 'captured_at', 'sport': 'eq.MLB',
+                    'captured_at': f'gte.{_days_ago(1)}T00:00:00Z',
+                    'limit': '2000'},
+            headers=H_READ, timeout=20)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    # Distinct capture MINUTE == one landed poller run.
+    landed = len({str(x.get('captured_at'))[:16] for x in rows
+                  if x.get('captured_at')})
+    SCHEDULED = 72
+    pct = 100.0 * landed / SCHEDULED
+    # Below ~25% means the schedule is decorative. Above that, movement
+    # capture is coarse but usable.
+    if pct >= 25:
+        return None
+    return {
+        'check_name': 'line_poller_landing_rate',
+        'severity': 'CRITICAL' if pct < 10 else 'WARNING',
+        'message': (f'MLB line poller landed {landed}/{SCHEDULED} scheduled '
+                    f'runs yesterday ({pct:.0f}%). line_history is the only '
+                    f'source that prices picks for ROI/CLV — at this rate '
+                    f'most games get no pre-game line capture.'),
+        'detail': {'landed_runs': landed, 'scheduled': SCHEDULED,
+                   'pct': round(pct, 1), 'date': _days_ago(1)},
+    }
+
+
 def check_workflow_stale() -> Optional[dict]:
     """Alert when a scheduled workflow simply has not run.
 
@@ -1041,6 +1101,7 @@ CHECKS = [
     check_roster_physicality_stale,
     check_supabase_capacity,
     check_workflow_stale,
+    check_line_poller_landing_rate,
 ]
 
 
