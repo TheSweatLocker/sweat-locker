@@ -1020,6 +1020,24 @@ def pick_sharp_card() -> list[dict]:
             continue
         if d < SHARP_RECORD_EPOCH: continue
         sp = (r.get('sport') or 'MLB').upper()
+        # ══ 2026-10-05: THE DOUBLE COUNT ══
+        # aggregate_daily_records writes BOTH a per-sport row AND an 'ALL'
+        # rollup row per date. This loop took every row with
+        # surface=sharp_card regardless of sport, so on any date carrying
+        # both, every pick was counted TWICE — once in its sport, once in ALL.
+        #
+        # It stayed invisible while no ALL rows existed. Backfilling 35 days
+        # on 10-04 created 31 of them and the published all-time record jumped
+        # to a population that never happened:
+        #
+        #     per-sport rows only   502-351-2   +53.96u
+        #     ALL rows only         333-232-1   +21.74u   (== receipts)
+        #     summed, i.e. shipped  835-583-3   +75.70u   <- wrong
+        #
+        # _aggregate below builds its own ALL rollup from the per-sport
+        # entries, so the ALL rows must be skipped here, not summed.
+        if sp == 'ALL':
+            continue
         # Emit one entry per (win, loss, push) so the aggregator's
         # bucket-into-window logic (in _aggregate) sees individual picks.
         # units are already computed at day-level — divide evenly across picks
