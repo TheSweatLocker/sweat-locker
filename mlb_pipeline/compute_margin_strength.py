@@ -127,6 +127,32 @@ def publishable_teams(sport: str, season: int):
         return None          # never block a publish on the gate failing
 
 
+# Sports whose results table stores `season` as a hyphenated label
+# ("2026-27") rather than an integer year. Filtering those with eq.2026
+# matches ZERO rows and the run exits "no NBA games for 2026" — which is how
+# NBA reached opening night with no ratings at all.
+HYPHEN_SEASON = {'NBA', 'NCAAB'}
+
+# Games-per-team at which the CURRENT season is trusted on its own. Below it,
+# the prior season is blended in with a linearly decaying weight. Scoped to
+# the two sports that need it: NBA opened 10-03 with ONE scored game, and a
+# league rated on one game is noise. Deliberately NOT applied to NFL/NCAAF/
+# MLB/NHL — their published ratings are pinned pending Andy's 10-05 review and
+# must not move tonight.
+CARRYOVER_FULL = {'NBA': 25, 'NCAAB': 15}
+
+
+def season_label(sport: str, year: int):
+    """The value this sport's `season` column actually holds for `year`."""
+    if sport in HYPHEN_SEASON:
+        return f'{year}-{str(year + 1)[2:]}'
+    return year
+
+
+def prior_label(sport: str, year: int):
+    return season_label(sport, year - 1)
+
+
 def _season_start(sport: str, season: int) -> str:
     """Season opener from sport_registry, so PRESEASON never rates a team.
 
@@ -162,7 +188,8 @@ def load_games(sport: str, season=None) -> list[dict]:
         except Exception:
             has_season = False
         if has_season:
-            params['season'] = f'eq.{season}'
+            _lbl = season if isinstance(season, str) else season_label(sport, season)
+            params['season'] = f'eq.{_lbl}'
         else:
             params['game_date'] = f'gte.{_season_start(sport, season)}'
             params['and'] = f'(game_date.lte.{season + 1}-07-31)'
@@ -197,13 +224,19 @@ def fit_srs(games, cfg, iters: int = ITERS) -> dict:
     for g in games:
         m = g['margin'] - (0.0 if g.get('neutral') else hfa)
         m = max(-cap, min(cap, m))
-        obs[g['home']].append((g['away'], m))
-        obs[g['away']].append((g['home'], -m))
+        # 2026-10-04: observations carry a weight so a PRIOR season can anchor
+        # an early-season rating without dominating it once real games exist.
+        # Absent/!=1 weights leave every previously-published rating identical.
+        w = float(g.get('weight', 1.0) or 1.0)
+        obs[g['home']].append((g['away'], m, w))
+        obs[g['away']].append((g['home'], -m, w))
     rating = collections.defaultdict(float)
     for _ in range(iters):
         nxt = {}
         for t, lst in obs.items():
-            nxt[t] = sum(m + rating[o] for o, m in lst) / (len(lst) + ridge)
+            num = sum(w * (m + rating[o]) for o, m, w in lst)
+            den = sum(w for _, _, w in lst) + ridge
+            nxt[t] = num / den
         # Re-centre so ratings are relative to an average team, which is what
         # makes "average opponent rating" readable as schedule strength.
         mu = sum(nxt.values()) / len(nxt) if nxt else 0.0
@@ -232,7 +265,7 @@ def _corr(xs, ys):
 
 
 def validate(sport: str, cfg) -> int:
-    games = load_games(sport)
+    games = clean_games(sport, load_games(sport))
     games = [g for g in games if g.get('date')]
     games.sort(key=lambda g: g['date'])
     print(f'{sport}: {len(games)} graded games\n')
@@ -280,6 +313,119 @@ def validate(sport: str, cfg) -> int:
     return 0
 
 
+# ── NBA/NCAAB data hygiene ────────────────────────────────────────────
+# Three defects found 2026-10-04, all of which were silently feeding the
+# rating before this gate existed:
+#
+#  1. ALL-STAR GAMES. "Team Stars", "Team Stripes", "World", "Team Chuck",
+#     "Team Shaq", "Team Kenny", "Team Candace" — 11 exhibition games across
+#     two Februaries, and two of those fake teams were ranking inside the
+#     published top 20.
+#  2. INTERNATIONAL PRESEASON EXHIBITIONS. Melbourne United, Melbourne Pnx,
+#     Hapoel Jerusalem, Guangzhou Loong-Lions. LAC beat Guangzhou 142-95;
+#     a +47 margin against a non-NBA club inflates a real franchise.
+#  3. PRESEASON between two real NBA teams. 65 of them in 2025-26 (Oct 2-20).
+#     `_season_start` exists precisely to stop this, but NBA filters on the
+#     `season` COLUMN — which includes preseason — so the gate never applied.
+#
+# Plus an alias split: one row says "Los Angeles Clippers" where every other
+# row says "LA Clippers". Left alone it would fork a franchise in two.
+NBA_ALIASES = {'Los Angeles Clippers': 'LA Clippers'}
+
+# Franchise count per league, used to separate real teams from exhibition
+# squads by appearance count rather than by maintaining a name list.
+FRANCHISES = {'NBA': 30}
+
+# Earliest plausible regular-season date, as MM-DD of the season's first year.
+# NBA openers sit in the Oct 21-22 window: sport_registry gives 2026-10-21,
+# and the 2024-25 data independently begins 10-22. Anything before this in a
+# league whose `season` column spans preseason is an exhibition.
+REG_START_MMDD = {'NBA': '10-20'}
+
+
+def _season_first_year(season) -> int | None:
+    t = str(season or '')
+    return int(t[:4]) if len(t) >= 4 and t[:4].isdigit() else None
+
+
+def clean_games(sport: str, games: list[dict], quiet: bool = False) -> list[dict]:
+    """Drop exhibitions and preseason; fold alias spellings together."""
+    if sport not in FRANCHISES and sport not in REG_START_MMDD:
+        return games
+    alias = NBA_ALIASES if sport == 'NBA' else {}
+    for g in games:
+        g['home'] = alias.get(g['home'], g['home'])
+        g['away'] = alias.get(g['away'], g['away'])
+    appear = collections.Counter()
+    for g in games:
+        appear[g['home']] += 1
+        appear[g['away']] += 1
+    n_fr = FRANCHISES.get(sport)
+    real = set(t for t, _ in appear.most_common(n_fr)) if n_fr else set(appear)
+    mmdd = REG_START_MMDD.get(sport)
+    kept, drop_exh, drop_pre = [], 0, 0
+    for g in games:
+        if n_fr and (g['home'] not in real or g['away'] not in real):
+            drop_exh += 1
+            continue
+        if mmdd:
+            y = _season_first_year(g.get('season'))
+            d = str(g.get('date') or '')
+            if y and d and d < f'{y}-{mmdd}':
+                drop_pre += 1
+                continue
+        kept.append(g)
+    if not quiet and (drop_exh or drop_pre):
+        print(f'  hygiene: dropped {drop_exh} exhibition / non-franchise and '
+              f'{drop_pre} preseason game(s); {len(kept)} remain')
+    return kept
+
+
+def load_with_carryover(sport: str, season: int, quiet: bool = False):
+    """Current-season games, plus the PRIOR season at a decaying weight.
+
+    NBA opened 2026-10-03 with exactly ONE scored game in `2026-27`. Rating a
+    30-team league on one game produces noise, and shrinking that noise toward
+    the mean produces a flat rating nobody can read — which is precisely the
+    state NHL is in tonight (sd 0.4 across 32 teams).
+
+    A preseason power rating is supposed to start from last season and move as
+    evidence arrives, so that is what this does. The prior season enters at
+
+        w = 1 - (games_per_team / CARRYOVER_FULL[sport])
+
+    so on opening night the rating IS essentially last season, and by 25
+    games-per-team (NBA) the prior is gone and the current season stands alone.
+    No discontinuity, and no pretending we know something on day one.
+
+    Returns the games unchanged for any sport without a CARRYOVER_FULL entry,
+    so NFL / NCAAF / MLB / NHL ratings are untouched.
+    """
+    cur = clean_games(sport, load_games(sport, season), quiet)
+    full = CARRYOVER_FULL.get(sport)
+    if not full:
+        return cur
+    teams = {t for g in cur for t in (g['home'], g['away'])}
+    gpt = (2 * len(cur) / len(teams)) if teams else 0.0
+    w = max(0.0, 1.0 - gpt / float(full))
+    if w <= 0:
+        if not quiet:
+            print(f'  carryover: none needed ({gpt:.1f} games/team >= {full})')
+        return cur
+    prior = clean_games(sport, load_games(sport, season - 1), quiet)
+    for g in prior:
+        g['weight'] = w
+        # Explicit flag: consumers must not infer "is this a prior season?"
+        # from the weight. On opening night w is exactly 1.0, so a
+        # weight-based test silently treats last season as current and any
+        # staleness discount never fires.
+        g['prior_season'] = True
+    if not quiet:
+        print(f'  carryover: {gpt:.1f} games/team this season -> prior season '
+              f'({len(prior)} games) blended at weight {w:.2f}')
+    return cur + prior
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', required=True, choices=sorted(RESULTS))
@@ -293,7 +439,7 @@ def main() -> int:
         return validate(args.sport, cfg)
 
     season = args.season or date.today().year
-    games = load_games(args.sport, season)
+    games = load_with_carryover(args.sport, season)
     if not games:
         print(f'no {args.sport} games for {season}')
         return 0

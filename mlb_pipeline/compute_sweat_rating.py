@@ -85,6 +85,7 @@ H_W = {**H, 'Content-Type': 'application/json',
        'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 from compute_margin_strength import (RESULTS, SPORT_CFG, load_games, fit_srs,
+                                     load_with_carryover, CARRYOVER_FULL,
                                      sos_from, publishable_teams)
 
 WEIGHTS = {'quality': 0.55, 'schedule': 0.15,
@@ -109,9 +110,23 @@ def _z(vals: dict) -> dict:
     return {k: (v - mu) / sd for k, v in vals.items()}
 
 
+# How much a PRIOR-season game counts toward trust, relative to a current one.
+# 2026-10-04: NBA's regular season does not open until 10-21 (sport_registry),
+# so the current season has ZERO real games and the rating is entirely last
+# season's. Driving shrinkage off current-season games alone would print 75.0
+# for all 30 teams — the dead-flat state NHL is in tonight. But 82 games of
+# last season IS evidence; it is just stale, because rosters turn over. Half
+# weight is a judgement call, not a measurement, and it is FLAGGED FOR ANDY:
+# it decides how confident an opening-night rating looks.
+PRIOR_TRUST_DISCOUNT = 0.5
+
+
 def components(sport: str, season: int):
     cfg = SPORT_CFG[sport]
-    games = load_games(sport, season)
+    # load_with_carryover drops exhibitions/preseason and blends the prior
+    # season at a decaying weight for the sports configured for it; for every
+    # other sport it returns exactly what load_games returned.
+    games = load_with_carryover(sport, season, quiet=True)
     if not games:
         return None
     rating = fit_srs(games, cfg)
@@ -144,7 +159,15 @@ def components(sport: str, season: int):
         expected[h].append(cover)
         expected[a].append(-cover)
 
-    gp = {t: len(v) for t, v in per_game.items()}
+    # Trust-weighted game count: a carried-over game counts for less, so an
+    # opening-night rating is confident-but-not-certain rather than flat.
+    gp = collections.defaultdict(float)
+    for g in games:
+        w = float(g.get('weight', 1.0) or 1.0)
+        eff = PRIOR_TRUST_DISCOUNT * w if g.get('prior_season') else w
+        gp[g['home']] += eff
+        gp[g['away']] += eff
+    gp = {t: gp.get(t, 0.0) for t in per_game}
     consistency = {}
     for t, v in per_game.items():
         # Low spread = dependable. Single-game teams get the league's worst
@@ -176,7 +199,7 @@ def sweat_rating(sport: str, season: int):
         trust = min(1.0, n / float(full)) if full else 1.0
         val = CENTRE + PER_SD * blended * trust
         out[t] = round(max(FLOOR, min(CEIL, val)), 1)
-        detail[t] = {'gp': n, 'trust': round(trust, 2),
+        detail[t] = {'gp': round(n, 1), 'trust': round(trust, 2),
                      'quality': round(zq.get(t, 0.0), 2),
                      'schedule': round(zs.get(t, 0.0), 2),
                      'consistency': round(zc.get(t, 0.0), 2),
