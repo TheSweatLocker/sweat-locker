@@ -187,6 +187,9 @@ def main() -> int:
     ap.add_argument('--since', default='2025-10-01')
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--limit', type=int, default=0, help='cap games (testing)')
+    ap.add_argument('--refill', action='store_true',
+                    help='re-fetch games already stored, to fill columns that '
+                         'did not exist on the first pass')
     ap.add_argument('--apply', action='store_true')
     args = ap.parse_args()
 
@@ -206,7 +209,16 @@ def main() -> int:
         params['game_date'] = f'gte.{args.since}'
     games = page('nba_game_results', params)
     # Skip games already ingested, so this is resumable.
-    done = {str(x['game_id']) for x in page(TABLE, {'select': 'game_id'})}
+    #
+    # 2026-10-05: --refill exists because the first full pass ran BEFORE
+    # migration 20261004a was applied, so live_columns() correctly dropped
+    # fg3m / opponent_abbrev / is_home and 58,600 rows landed without them.
+    # Resume-by-game would then skip every one of those games forever and the
+    # columns would stay empty — a backfill that can never complete. With the
+    # unique index now in place the upsert path merges, so re-fetching fills
+    # the new columns without duplicating rows.
+    done = set() if args.refill else {
+        str(x['game_id']) for x in page(TABLE, {'select': 'game_id'})}
     todo = [g for g in games if str(g['game_id']) not in done]
     if args.limit:
         todo = todo[:args.limit]
