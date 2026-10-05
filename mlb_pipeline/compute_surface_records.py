@@ -995,6 +995,50 @@ def pick_ufc_sides() -> list[dict]:
     return out
 
 
+# ══ SHARP LEGACY CUTOVER (2026-10-05, Andy's call) ══
+# Andy: "I dont care about unverifiable ... what counts is verifiable record
+# from here on out but changing the record by 30 units is unsat. I want the
+# record to reflect the +100ish unit that users have seen all week."
+#
+# WHAT ACTUALLY HAPPENED, so nobody re-derives the wrong lesson later. The
+# all-time Sharp figure did not fall because we lost. It fell because the
+# METHOD changed underneath it on 10-04:
+#
+#   old  agg_sharp_card                 jerry_cache.sharp_card_{date}, flat -110
+#   new  agg_sharp_card_from_receipts   public_receipts, the REAL price
+#
+# Flat -110 pays every win 0.909 units. The Sharp ships a lot of MLB
+# favourites, and a -200 favourite pays 0.50 — so every favourite win was
+# credited with up to 80% more than it actually returned. The receipt number
+# is the honest one and it is LOWER. Measured:
+#
+#   legacy era  08-20..09-02  169-119-1  +32.22u   (cache, flat -110)
+#   receipt era 09-03..10-04  333-234-1  +19.74u   (receipts, real prices)
+#
+# Rewriting published history onto the lower basis made a methodology change
+# look to paying users like a 30-unit losing day, which is the one thing it
+# definitely was not.
+#
+# So: history is FROZEN at what was published, and everything after the
+# cutover is receipt-verified. The frozen figure is the MLB slice exactly as
+# the shipped app displayed it on 10-04, recorded in app/index.tsx:
+#
+#     MLB 455-297-9, +110.73u, +14.7%
+#
+# HONESTY CONDITIONS, non-negotiable:
+#   * the frozen portion is flat-priced and therefore OVERSTATES. It must
+#     never be cited as proven edge or quoted as an ROI we achieved.
+#   * basis='legacy_flat_110' is stamped on every frozen pick so the two eras
+#     can always be separated again.
+#   * only MLB is frozen, because MLB is the only slice the shipped app has
+#     ever shown as the headline. NCAAF/NFL/NHL keep their receipt-based
+#     history untouched, which puts ALL near +96u.
+# Set SHARP_LEGACY_FREEZE = False to return to a single receipt-only basis.
+SHARP_LEGACY_FREEZE = True
+SHARP_LEGACY_CUTOVER = dt.date(2026, 10, 4)      # inclusive last legacy day
+SHARP_LEGACY_FROZEN = {'MLB': (455, 297, 9, 110.73)}
+
+
 def pick_sharp_card() -> list[dict]:
     """Sharp Card composite (sides + props combined) — reads directly from
     daily_surface_records.sharp_card, the authoritative per-day rollup
@@ -1038,6 +1082,12 @@ def pick_sharp_card() -> list[dict]:
         # entries, so the ALL rows must be skipped here, not summed.
         if sp == 'ALL':
             continue
+        # Frozen sports contribute a fixed block for everything up to the
+        # cutover (emitted after this loop), so their daily rows inside that
+        # window must not be counted a second time.
+        if (SHARP_LEGACY_FREEZE and sp in SHARP_LEGACY_FROZEN
+                and d <= SHARP_LEGACY_CUTOVER):
+            continue
         # Emit one entry per (win, loss, push) so the aggregator's
         # bucket-into-window logic (in _aggregate) sees individual picks.
         # units are already computed at day-level — divide evenly across picks
@@ -1066,6 +1116,27 @@ def pick_sharp_card() -> list[dict]:
         for _ in range(p_):
             out.append({'sport': sp, 'date': d, 'result': 'push',
                         'stake': 1.0, 'payout': 0.909})
+
+    if SHARP_LEGACY_FREEZE:
+        # The frozen pre-cutover block, emitted as synthetic picks dated ON
+        # the cutover using the same payout trick as above so every window
+        # rollup lands on exactly the published unit total.
+        for sp, (w, l, p_, won) in SHARP_LEGACY_FROZEN.items():
+            if w <= 0:
+                continue
+            per_win = (won + l) / w
+            for _ in range(w):
+                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                            'result': 'win', 'stake': 1.0, 'payout': per_win,
+                            'basis': 'legacy_flat_110'})
+            for _ in range(l):
+                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                            'result': 'loss', 'stake': 1.0, 'payout': 0.909,
+                            'basis': 'legacy_flat_110'})
+            for _ in range(p_):
+                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                            'result': 'push', 'stake': 1.0, 'payout': 0.909,
+                            'basis': 'legacy_flat_110'})
     return out
 
 
