@@ -81,6 +81,38 @@ if [ "${1:-}" = "--gate" ]; then
     _summary '```'
     cat "$TALLY" >> "${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
     _summary '```'
+    # ══ 2026-10-05 · PUBLISH *WHICH* STEP FAILED, NOT JUST THAT ONE DID ══
+    # Andy: "seeing recent workflow failures with nightly and ncaab failing,
+    # why?" — and nobody could answer without opening the Actions UI, because
+    # the only record of WHICH step failed was a GitHub log that expires.
+    # workflow_heartbeat.meta was empty on all 200 recent end-events, so the
+    # database knew a run happened and nothing about what went wrong.
+    #
+    # Smoke-testing every nightly step by hand found all of them passing, so
+    # the failing step is intermittent — exactly the case where a durable
+    # record is the only way to ever catch it. Post the tally where we can
+    # query it. Best-effort: never let telemetry fail the gate.
+    if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_KEY:-}" ]; then
+      # Build the payload in python, not sed/awk. The first version escaped
+      # quotes by hand and produced "[]" for a tally containing a label with a
+      # double quote in it — a telemetry bug that hides the very failure it is
+      # meant to report. json.dumps cannot get this wrong.
+      python3 - "$TALLY" <<'PYJSON' > /tmp/_sl_stepfail.json 2>/dev/null || true
+import json, os, sys
+try:
+    lines = [l.rstrip('
+') for l in open(sys.argv[1], encoding='utf-8', errors='replace') if l.strip()]
+except Exception:
+    lines = []
+print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+                  'event': 'step_failures',
+                  'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
+                  'meta': {'count': len(lines), 'failed': lines}}))
+PYJSON
+      if [ -s /tmp/_sl_stepfail.json ]; then
+        curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat"           -H "apikey: $SUPABASE_KEY"           -H "Authorization: Bearer $SUPABASE_KEY"           -H "Content-Type: application/json"           -H "Prefer: return=minimal"           --data-binary @/tmp/_sl_stepfail.json >/dev/null 2>&1 || true
+      fi
+    fi
     exit 1
   fi
   if [ -s "$FINDINGS" ]; then
