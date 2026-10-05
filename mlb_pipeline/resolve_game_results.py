@@ -225,17 +225,29 @@ def run():
     # Over) until the morning audit caught it manually.
     et_today = _et_today()
     week_ago = (et_today - timedelta(days=7)).isoformat()
+    # 2026-10-04: the window ended at YESTERDAY, so a game that finished at
+    # 4pm could not be resolved until the next day's run — SD 3-4 MIL was
+    # Final on statsapi while our row still held NULL scores and three
+    # receipts (Padres ML, Over 7.0, and the card's Padres ML) sat ungraded.
+    # Including today is safe because the write path below refuses anything
+    # whose abstractGameState is not 'Final', and _is_postponed only reports
+    # postponed when the API says so (its date fallback needs 3+ days), so an
+    # in-progress game is skipped rather than graded 0-0 or pushed.
+    today = et_today.isoformat()
+    # Still used by the prop / dawg / card paths below, which read box scores
+    # that can be PARTIAL mid-game. Widening those needs a per-path
+    # Final check, so they stay bounded at yesterday until that is in place.
     yesterday = (et_today - timedelta(days=1)).isoformat()
     # Pull null-score rows
     r = requests.get(
-        f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=is.null&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
+        f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=is.null&game_date=gte.{week_ago}&game_date=lte.{today}&select=*',
         headers=HEADERS
     )
     games_null = r.json()
     # Pull stale 0-0 rows separately (or.is.null doesn't compose cleanly
     # across two columns in PostgREST — do as a second query and dedupe)
     r2 = requests.get(
-        f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=eq.0&away_score=eq.0&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
+        f'{SUPABASE_URL}/rest/v1/mlb_game_results?home_score=eq.0&away_score=eq.0&game_date=gte.{week_ago}&game_date=lte.{today}&select=*',
         headers=HEADERS
     )
     games_zero = r2.json() if r2.status_code == 200 else []
