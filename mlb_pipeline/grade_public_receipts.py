@@ -20,6 +20,24 @@ to card items on 2026-09-17. All 410 carry a matchup. So the join is
 normalised before comparison because the card writes "Away @ Home" and
 the results table stores the teams separately.
 
+Two gaps in that join left 14 of 27 receipts ungraded on 2026-10-04 with
+9 NFL games already final, and both are fixed here:
+
+  1. TWO ID SPACES. `jerry_reads.game_id` is the Odds API event hash;
+     the results tables key on `20261004_NYJ_CHI`. No bridge table
+     exists, so a game_id that is *present but foreign* must fall through
+     to the matchup join instead of being trusted.
+  2. NFL SPELLS TEAMS TWICE. Reads say "New York Jets @ Chicago Bears",
+     results say NYJ / CHI, so the matchup join missed every NFL game
+     even when a matchup was present. Team keys now go through
+     nfl_teams.canon, which returns None rather than guessing.
+
+And `public_receipts.matchup` is NULL on every game_read row (the writer
+left it for "downstream enrichment"), so when the receipt has no matchup
+we read it from the source row's `input_snapshot.matchup`. That keeps
+grading working on the ~1.4k already-written receipts without rewriting
+a claim column.
+
 TEAM MATCHING
 Full-name containment, longest match wins. A substring match cost a real
 grade once already: "Iowa" matched inside "Northern Iowa" and graded a
@@ -50,6 +68,8 @@ try:
     from urllib3.util.retry import Retry
 except ImportError:
     Retry = None
+
+from nfl_teams import canon as nfl_canon
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -169,6 +189,69 @@ def _f(v):
 
 def _norm(s: str) -> str:
     return re.sub(r'[^a-z0-9 ]', '', str(s or '').lower()).strip()
+
+
+def _team_key(sport: str, name: str) -> str:
+    """Team key for the (date, away, home) join.
+
+    NFL stores abbreviations in the results tables while reads carry full
+    names, so NFL goes through the canonicaliser. `canon` returns None on
+    anything it cannot resolve; falling back to _norm there keeps the key
+    stable and simply fails to match, which is the safe outcome.
+    """
+    if str(sport or '').upper() == 'NFL':
+        ab = nfl_canon(name)
+        if ab:
+            return ab
+    return _norm(name)
+
+
+def _match_key(sport: str, game_date, away: str, home: str) -> tuple:
+    return (game_date, _team_key(sport, away), _team_key(sport, home))
+
+
+def _src_key(rec: dict) -> tuple:
+    return (str(rec.get('source_table') or ''), str(rec.get('source_id') or ''))
+
+
+# Tables whose rows hold the matchup inside a JSON snapshot rather than in a
+# column of their own. Value is the PostgREST path to pull it from.
+_SNAPSHOT_MATCHUP = {'jerry_reads': 'input_snapshot->>matchup'}
+
+
+def _source_matchups(recs: list) -> dict:
+    """Recover "Away @ Home" from source rows for receipts missing a matchup.
+
+    Reads only — this does not write back to public_receipts. The matchup is a
+    claim column and backfilling it is a separate, auditable job; grading must
+    not depend on having run it.
+    """
+    want = defaultdict(set)
+    for rec in recs:
+        if '@' in str(rec.get('matchup') or ''):
+            continue
+        tbl = str(rec.get('source_table') or '')
+        sid = str(rec.get('source_id') or '')
+        if tbl in _SNAPSHOT_MATCHUP and sid:
+            want[tbl].add(sid)
+    found = {}
+    for tbl, ids in want.items():
+        path = _SNAPSHOT_MATCHUP[tbl]
+        ids = sorted(ids)
+        for i in range(0, len(ids), 200):
+            chunk = ','.join(ids[i:i + 200])
+            r = _SESSION.get(f'{SB}/rest/v1/{tbl}', headers=H_READ, timeout=60,
+                             params={'select': f'id,matchup:{path}',
+                                     'id': f'in.({chunk})', 'limit': 1000})
+            if r.status_code != 200:
+                print(f'  ⚠ matchup recovery from {tbl} failed: '
+                      f'{r.status_code} {r.text[:120]}')
+                continue
+            for row in r.json():
+                m = row.get('matchup')
+                if m and '@' in str(m):
+                    found[(tbl, str(row['id']))] = str(m)
+    return found
 
 
 def paged(url: str, page: int = 1000):
@@ -327,7 +410,8 @@ def grade_one(rec: dict, res: dict, sport: str) -> tuple[str | None, str]:
     return None, f'market {market!r} not gradeable here'
 
 
-def run(surface: str | None, days: int, dry_run: bool) -> None:
+def run(surface: str | None, days: int, dry_run: bool,
+        verbose: bool = False) -> None:
     hi = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
     lo = hi - timedelta(days=days)
     url = (f'{SB}/rest/v1/public_receipts?select=*&result=is.null'
@@ -358,11 +442,18 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
             got += 1
             if row.get('game_id'):
                 by_gid[row['game_id']] = row
-            key = (row.get('game_date'),
-                   _norm(row.get('away_team')), _norm(row.get('home_team')))
-            by_match[key] = row
+            by_match[_match_key(sport, row.get('game_date'),
+                                row.get('away_team'),
+                                row.get('home_team'))] = row
         idx[sport] = (by_gid, by_match)
         print(f'  {sport}: {got} result rows indexed')
+
+    # public_receipts.matchup is NULL on every game_read row — the writer left
+    # it for "downstream enrichment" that never ran. The source row carries it
+    # inside input_snapshot, so fetch it for exactly the receipts that need it.
+    src_matchup = _source_matchups(recs)
+    if src_matchup:
+        print(f'  matchups recovered from source rows: {len(src_matchup)}')
 
     out = Counter()
     reasons = Counter()
@@ -375,10 +466,14 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
         by_gid, by_match = idx[sport]
         res = by_gid.get(rec.get('game_id')) if rec.get('game_id') else None
         if res is None:
+            # A game_id can be present but belong to a different ID space
+            # (Odds API hash vs nflverse key), so always try the team join.
             m = str(rec.get('matchup') or '')
+            if '@' not in m:
+                m = src_matchup.get(_src_key(rec)) or ''
             if '@' in m:
                 a, h = m.split('@', 1)
-                res = by_match.get((rec.get('game_date'), _norm(a), _norm(h)))
+                res = by_match.get(_match_key(sport, rec.get('game_date'), a, h))
         if res is None:
             out['no_result_row'] += 1
             continue
@@ -386,8 +481,19 @@ def run(surface: str | None, days: int, dry_run: bool) -> None:
         if grade is None:
             out['ungradeable'] += 1
             reasons[why] += 1
+            if verbose and why != 'no final score':
+                print(f'      SKIP {rec.get("sport"):<4} {rec.get("surface"):<11} '
+                      f'{str(rec.get("pick_label"))[:28]:<28} {why}')
             continue
         out[grade] += 1
+        if verbose:
+            # Every grade printed with the score it was derived from, so a
+            # human can audit the day without re-querying anything.
+            print(f'      {grade:<5} {rec.get("game_date")} {rec.get("sport"):<4} '
+                  f'{rec.get("surface"):<11} {rec.get("market"):<6} '
+                  f'{str(rec.get("pick_label"))[:26]:<26} '
+                  f'{res.get("away_team")} {res.get("away_score")}-'
+                  f'{res.get("home_score")} {res.get("home_team")}')
         patches.append((rec['id'], grade))
 
     print(f'\n  graded: {dict(out)}')
@@ -743,8 +849,10 @@ def main():
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--skip-props', action='store_true',
                    help='game markets only (props inherit by default)')
+    p.add_argument('--verbose', '-v', action='store_true',
+                   help='print every grade with the score it came from')
     a = p.parse_args()
-    run(a.surface, a.days, a.dry_run)
+    run(a.surface, a.days, a.dry_run, a.verbose)
     if not a.skip_props:
         grade_props(a.days, a.dry_run)
 
