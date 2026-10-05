@@ -46,7 +46,7 @@ Pending.
     python refresh_card_grades.py --days 35 --apply
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, re, sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -120,7 +120,68 @@ def build_lookup(game_date: str) -> dict:
     return look
 
 
-def resolve_pick(pick: dict, look: dict) -> str | None:
+# Market words carried in a label but not part of the pick's identity. The
+# SAME play is written "BUF ATS -7" on the card and "BUF RL -7" on its
+# receipt, so the market word has to come out before the two can be compared.
+_MARKET_WORDS = re.compile(
+    r'\b(ml|rl|ats|spread|puck\s*line|run\s*line|moneyline)\b', re.I)
+
+
+def _norm_label(s) -> str:
+    s = re.sub(r'\s*\([^)]*\)\s*$', '', str(s or ''))   # drop "(Jerry 70/100)"
+    s = _MARKET_WORDS.sub(' ', s)
+    s = re.sub(r'[^a-z0-9+\-. ]', '', s.lower())
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def _norm_game(s) -> str:
+    s = re.sub(r'[^a-z0-9 @]', '', str(s or '').lower())
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+_AMBIGUOUS = object()
+
+
+def build_side_lookup(game_date: str) -> dict:
+    """Graded SIDE results for one date, read from public_receipts.
+
+    Card side picks (ML / RL / ATS / total / POTD) settle in
+    resolve_game_results._resolve_sweat_card_top8, which is bounded at
+    yesterday — so today's card sat 'Pending' hours after BUF ATS -7 and
+    PHI +3 had both lost and their receipts had graded. public_receipts is
+    the immutable, already-verified record, so settling sides from it needs
+    no second box-score read and covers every sport at once.
+
+    Keyed two ways: (sport, game, label) first, then (sport, label) for cards
+    whose `game` string differs from the receipt's matchup. A key that two
+    receipts disagree on is marked ambiguous and refused rather than guessed.
+    """
+    look: dict = {}
+
+    def _put(key, res):
+        if key in look and look[key] != res:
+            look[key] = _AMBIGUOUS
+        else:
+            look.setdefault(key, res)
+
+    for rc in _page('public_receipts', {
+            'select': 'sport,matchup,pick_label,result,prop_type',
+            'game_date': f'eq.{game_date}',
+            'result': 'not.is.null',
+            'prop_type': 'is.null'}):
+        res = str(rc.get('result') or '').strip()
+        if res.upper() not in ('WIN', 'LOSS', 'PUSH'):
+            continue           # NO_ACTION / VOID decide nothing
+        sport = str(rc.get('sport') or '').upper()
+        lbl = _norm_label(rc.get('pick_label'))
+        if not lbl:
+            continue
+        _put((sport, _norm_game(rc.get('matchup')), lbl), res.title())
+        _put((sport, lbl), res.title())
+    return look
+
+
+def resolve_pick(pick: dict, look: dict, side_look: dict | None = None) -> str | None:
     """New result for a pending pick, or None to leave it alone."""
     cur = str(pick.get('result') or '').strip()
     if cur.lower() not in _PENDING:
@@ -128,7 +189,19 @@ def resolve_pick(pick: dict, look: dict) -> str | None:
     label = str(pick.get('label') or '')
     ptype = str(pick.get('type') or '')
     if not ptype.startswith('prop_'):
-        return None                      # sides settle elsewhere
+        if side_look is None:
+            return None                  # sides settle elsewhere
+        sport = str(pick.get('sport') or '').upper()
+        lbl = _norm_label(label)
+        if not lbl:
+            return None
+        for key in ((sport, _norm_game(pick.get('game')), lbl), (sport, lbl)):
+            hit = side_look.get(key)
+            if hit is _AMBIGUOUS:
+                return None              # two receipts disagree — never guess
+            if hit:
+                return hit
+        return None
     stat = ptype[len('prop_'):].lower()
     # "Shohei Ohtani Under 1.5 Hits" -> player is everything before the side
     low = label.lower()
@@ -150,7 +223,12 @@ def main() -> int:
     changed_rows = 0
     changed_picks = 0
     print(f'=== refresh card grades · last {args.days} days ===\n')
-    for i in range(1, args.days + 1):
+    # 2026-10-04: the range started at 1, so TODAY's card was never
+    # refreshed — `--days 1` looked only at yesterday. Today's card showed
+    # BUF ATS -7 and PHI +3 as 'Pending' hours after both had lost and the
+    # receipts had graded them. Starting at 0 is safe: a play whose receipt
+    # is still ungraded has no entry in the lookup and so is left Pending.
+    for i in range(0, args.days):
         d = (today - timedelta(days=i)).isoformat()
         key = f'sweat_card_{d}'
         r = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H, timeout=60,
@@ -161,16 +239,23 @@ def main() -> int:
         if isinstance(blob, str):
             blob = json.loads(blob)
         picks = blob.get('top_8') or []
-        if not picks:
+        # football_picks items carry NO result key at all, so the football
+        # side of the card was never graded in the payload. They settle the
+        # same way; only top_8 feeds top_8_summary, so the rollup below
+        # still counts `picks` alone.
+        fb_picks = [p for p in (blob.get('football_picks') or [])
+                    if isinstance(p, dict)]
+        if not picks and not fb_picks:
             continue
-        pending = [p for p in picks
+        pending = [p for p in picks + fb_picks
                    if str(p.get('result') or '').strip().lower() in _PENDING]
         if not pending:
             continue
         look = build_lookup(d)
+        side_look = build_side_lookup(d)
         fixed = []
-        for p in picks:
-            nv = resolve_pick(p, look)
+        for p in picks + fb_picks:
+            nv = resolve_pick(p, look, side_look)
             if nv:
                 fixed.append((p.get('label'), p.get('result'), nv))
                 p['result'] = nv
