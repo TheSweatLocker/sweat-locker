@@ -210,7 +210,17 @@ def main() -> int:
     print('\n2. grade source tables')
     for label, cmd in (
         ('prop_jerry_reads', ['grade_prop_jerry_reads.py']),
-        ('props', ['grade_props.py']),
+        # 2026-10-05: NFL props were NOT in this chain and nothing else
+        # ran them. The weekend audit reported "NFL props: no graded plays"
+        # while nfl_pipeline_props held 245 NULL rows including ALL of
+        # Sunday. Running resolve_nfl_props_espn --lookback 3 by hand
+        # graded 196 immediately, and they were the BEST surface of the
+        # weekend (+28.26u, +6.0%, with SKIP the only losing tier). A
+        # surface that performs and is invisible because nothing grades
+        # it is the worst version of this bug.
+        ('MLB props', ['grade_props.py']),
+        ('NFL props', ['resolve_nfl_props_espn.py', '--lookback',
+                       str(max(args.days, 3))]),
         ('POTD', ['grade_potd.py']),
     ):
         ok, _ = run(label, cmd)

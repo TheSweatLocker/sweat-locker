@@ -128,6 +128,24 @@ def _basis(priced_at, game_date):
     return 'publish' if pa <= gd + dt.timedelta(hours=PREGAME_GRACE_H) else 'close'
 
 
+def _pkey(game_date, player, prop_type, line):
+    """Identity of a prop: (date, player, type, line).
+
+    The line is normalised NUMERICALLY — the receipt carries 0.5 as a float
+    while the prop table may hold '0.5' as text, and str() on each gives keys
+    that never meet. A join that silently matches nothing looks exactly like
+    missing data.
+    """
+    try:
+        ln = f'{float(line):g}'
+    except (TypeError, ValueError):
+        ln = str(line)
+    return (str(game_date)[:10],
+            str(player or '').strip().lower(),
+            str(prop_type or '').strip().lower(),
+            ln)
+
+
 def _num(v):
     try:
         f = float(v)
@@ -166,12 +184,15 @@ def main() -> int:
 
     props = {}
     for sport, tbl in PROP_TABLES.items():
-        for p in page(tbl, {'select': 'player_name,prop_type,prop_line,'
+        for p in page(tbl, {'select': 'player_name,prop_type,prop_line,tier,'
                                       'book_over_odds,book_under_odds,game_date',
                             'game_date': f'gte.{args.since}'}):
-            key = (str(p.get('player_name') or '').strip().lower(),
-                   str(p.get('prop_type') or '').strip().lower(),
-                   str(p.get('prop_line')))
+            # 2026-10-05: the key was (name, type, line) with NO DATE, so the
+            # same player's same prop on two different dates collided and the
+            # first one seen won. A price or tier from the wrong night is a
+            # wrong number, not a missing one. Date is part of the identity.
+            key = _pkey(p.get('game_date'), p.get('player_name'),
+                        p.get('prop_type'), p.get('prop_line'))
             props.setdefault(key, p)
     print(f'prop rows indexed: {len(props)}')
 
@@ -190,7 +211,7 @@ def main() -> int:
     print(f'potd prices indexed: {len(potd)}\n')
 
     # ---- resolve -----------------------------------------------------
-    price_fixes, matchup_fixes = [], []
+    price_fixes, matchup_fixes, tier_fixes = [], [], []
     why = collections.Counter()
 
     def _jr_price(j, rec):
@@ -215,6 +236,21 @@ def main() -> int:
             m = (j or {}).get('matchup')
             if m and '@' in str(m):
                 matchup_fixes.append((rec, str(m)))
+
+        # --- tier, for prop receipts ----------------------------------
+        # 2026-10-05: 118 of 119 prop receipts in the weekend window carried
+        # tier=NULL while the source prop table had PRIME/STRONG/LEAN/
+        # COVERAGE/SKIP on every row. backfill_public_receipts stubs it
+        # ('prop_jerry_reads doesn't carry tier — reconstructable via
+        # mlb_pipeline_props if needed'). It IS needed: the published
+        # prop_prime / prop_strong / prop_lean records cannot be derived from
+        # the immutable receipt without it, so they still come from the
+        # mutable prop table — the exact architecture that broke the Sharp.
+        if not rec.get('tier') and rec.get('prop_type'):
+            _p = props.get(_pkey(rec.get('game_date'), rec.get('player_name'),
+                                 rec.get('prop_type'), rec.get('pick_line')))
+            if _p and _p.get('tier'):
+                tier_fixes.append((rec, str(_p['tier'])))
 
         # --- price ----------------------------------------------------
         if rec.get('pick_odds') is not None:
@@ -249,7 +285,7 @@ def main() -> int:
                 reason = 'unparseable prop source_id'
             else:
                 nm, ty, ln = parts
-                p = props.get((nm.strip().lower(), ty.strip().lower(), ln))
+                p = props.get(_pkey(rec.get('game_date'), nm, ty, ln))
                 if not p:
                     reason = 'prop row not found at that line'
                 elif ty.endswith('_over'):
@@ -302,6 +338,10 @@ def main() -> int:
     for s in sorted(by):
         print(f'   {s:<14} {dict(by[s])}')
     print(f'\n=== MATCHUP recoverable: {len(matchup_fixes)} ===')
+    print(f'=== TIER recoverable: {len(tier_fixes)} ===')
+    if tier_fixes:
+        _tc = collections.Counter(t for _r, t in tier_fixes)
+        print(f'   {dict(_tc)}')
 
     print('\n=== NOT recoverable (stays NULL, by reason) ===')
     for k, n in why.most_common():
@@ -346,6 +386,18 @@ def main() -> int:
             continue
         ok += 1
     print(f'\nprices written {ok}/{len(price_fixes)} (verified by read-back), {bad} failed')
+
+    tok = tbad = 0
+    for rec, tier in tier_fixes:
+        r = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W, timeout=60,
+                           params={'id': f'eq.{rec["id"]}', 'tier': 'is.null'},
+                           data=json.dumps({'tier': tier}))
+        body = r.json() if r.content else []
+        if r.status_code in (200, 204) and body and body[0].get('tier') == tier:
+            tok += 1
+        else:
+            tbad += 1
+    print(f'tiers written {tok}/{len(tier_fixes)}, {tbad} failed')
 
     mok = mbad = 0
     for rec, m in matchup_fixes:
