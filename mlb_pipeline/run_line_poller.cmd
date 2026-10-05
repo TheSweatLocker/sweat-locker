@@ -32,17 +32,14 @@ cd /d "%REPO%" || exit /b 1
 
 set "PYTHONIOENCODING=utf-8"
 set "LOG=%REPO%_line_poller_local.log"
-set "LOCK=%REPO%_line_poller.lock"
 
-REM Overlap guard. Task Scheduler is also told not to run parallel copies, but
-REM a queued instance plus a manual run can still collide, and two pollers
-REM writing the same minute would double-count captures in the very metric we
-REM use to prove this works.
-if exist "%LOCK%" (
-  echo [%DATE% %TIME%] SKIP - previous run still in progress >> "%LOG%"
-  exit /b 0
-)
-echo locked > "%LOCK%"
+
+REM NO LOCK FILE ON PURPOSE. The task is registered with
+REM MultipleInstances=IgnoreNew, which already guarantees no overlap and
+REM cannot go stale. The first version kept its own lock file; a run that
+REM got killed left the lock behind and would have blocked EVERY future
+REM run silently. A guarantee the OS already gives is not worth a
+REM deadlock we have to clear by hand.
 
 echo. >> "%LOG%"
 echo ======== [%DATE% %TIME%] line_poller start ======== >> "%LOG%"
@@ -50,5 +47,4 @@ echo ======== [%DATE% %TIME%] line_poller start ======== >> "%LOG%"
 set "RC=%ERRORLEVEL%"
 echo ======== [%DATE% %TIME%] exit=%RC% ======== >> "%LOG%"
 
-del "%LOCK%" >nul 2>&1
 exit /b %RC%
