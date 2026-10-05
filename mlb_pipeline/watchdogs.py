@@ -943,6 +943,84 @@ def check_roster_physicality_stale() -> Optional[dict]:
         return None
 
 
+def check_oc_flip_not_persisted() -> Optional[dict]:
+    """Alert when a read's NARRATIVE says one side and its PICK says another.
+
+    ══ 2026-10-05 · A DEFENSIVE GATE FIRING INTO THE VOID ══
+    Andy posted the CWS @ CLE total publicly, describing the engine flipping
+    from Under to Over on an OC-dissent signal. The narrative did flip. The
+    PICK never did. Three places record a side for that game:
+
+        mlb_game_context.primary_play        UNDER 6.5  LEAN      no flip flag
+        jerry_reads.input_snapshot...pp      OVER  6.5  COVERAGE  _oc_flipped
+        jerry_reads.call_side                UNDER 6.5
+
+    apply_oc_dissent_flip (defensive_gates.py) mutates the primary_play dict
+    in memory while the read is being written, so the flip is baked into the
+    narrative SNAPSHOT — but it is never persisted back to
+    <sport>_game_context.primary_play. compute_primary_play then re-ran at
+    14:33 and rewrote the canonical row WITHOUT the flip.
+
+    Consequence: enforce_primary_play_alignment compares call_side against
+    the CONTEXT copy, sees UNDER == UNDER, and correctly reports "unchanged".
+    Nothing is misaligned by its own definition, and the contradiction is
+    invisible. Meanwhile the prose, and any surface that reads the snapshot,
+    says OVER — which is how one sweat_card receipt published "Over 6.5"
+    against a game read of "Under 6.5".
+
+    The flip carries a documented 14-day dissent-band record of 7-30 (81%
+    fade edge). Whether it SHOULD change the published pick is Andy's call;
+    what is not defensible is it changing the story and not the pick while
+    nothing reports the gap. This check reports the gap.
+    """
+    ctx_tbl = {'MLB': 'mlb_game_context', 'NFL': 'nfl_game_context',
+               'NCAAF': 'ncaaf_game_context', 'NHL': 'nhl_game_context',
+               'NBA': 'nba_game_context'}
+    today = _days_ago(0)
+    bad = []
+    try:
+        reads = requests.get(f'{SB}/rest/v1/jerry_reads',
+            params={'select': 'id,sport,game_id,call_side,call_text,'
+                              'input_snapshot->confluence->primary_play',
+                    'game_date': f'gte.{today}', 'limit': '300'},
+            headers=H_READ, timeout=25)
+        if reads.status_code != 200:
+            return None
+        rows = reads.json()
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    for r in rows:
+        pp = r.get('primary_play')
+        if isinstance(pp, str):
+            try:
+                pp = json.loads(pp)
+            except Exception:
+                pp = None
+        if not isinstance(pp, dict) or not pp.get('_oc_flipped'):
+            continue
+        snap_side = str(pp.get('side') or '').upper()
+        call_side = str(r.get('call_side') or '').upper()
+        if snap_side and call_side and snap_side != call_side:
+            bad.append({'sport': r.get('sport'), 'read_id': r.get('id'),
+                        'narrative_side': snap_side, 'published_side': call_side,
+                        'label': pp.get('label')})
+    if not bad:
+        return None
+    return {
+        'check_name': 'oc_flip_not_persisted',
+        'severity': 'CRITICAL',
+        'message': (f'{len(bad)} read(s) where the OC-dissent flip changed the '
+                    f'NARRATIVE but not the published pick. The prose and the '
+                    f'receipt disagree on the side. e.g. '
+                    f'{bad[0]["sport"]} read {bad[0]["read_id"]}: prose says '
+                    f'{bad[0]["narrative_side"]}, pick says '
+                    f'{bad[0]["published_side"]}.'),
+        'detail': {'mismatches': bad[:20], 'count': len(bad)},
+    }
+
+
 def check_line_poller_landing_rate() -> Optional[dict]:
     """Alert when the line poller is scheduled but not actually running.
 
@@ -1102,6 +1180,7 @@ CHECKS = [
     check_supabase_capacity,
     check_workflow_stale,
     check_line_poller_landing_rate,
+    check_oc_flip_not_persisted,
 ]
 
 
