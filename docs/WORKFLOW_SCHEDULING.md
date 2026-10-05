@@ -161,3 +161,87 @@ All **27** `runs-on` entries moved from `ubuntu-latest` to **`ubuntu-24.04`**.
 before a launch, with playwright/apt/python differences landing unannounced.
 Pinning is free and removes a dated surprise; unpin deliberately after
 testing, not by default.
+
+---
+
+## 2026-10-05 · line poller moved to a host that actually runs it
+
+Andy: *"okay lets do it"* — with the standing requirement to prove it works.
+
+### The problem, measured
+
+`mlb_line_poller` was scheduled **72×/day** and landed **3–4**. Counted by
+distinct capture minute in `line_history` (the poller writes unconditionally
+on every pre-game event — no dedup — so landed runs are directly countable):
+
+| date | landed | of 72 |
+|---|---|---|
+| 2026-10-01 | 4 | 5.6% |
+| 2026-10-03 | 4 | 5.6% |
+| 2026-10-04 | 4 | 5.6% |
+| 2026-10-05 | 3 | 4.2% |
+
+`line_poller` is the **sole writer of `line_history`**, the table that prices
+every pick for ROI and CLV. This is why 484 of 528 unpriced Jerry reads
+appeared to "predate line_history collection" — the history is sparse because
+the collector lands 5% of the time, not because the feature is new.
+
+### What was done
+
+**Windows Task Scheduler, same Python, zero port.** Porting 391 lines of
+consensus-in-probability-space math and `close_total` locking to a Deno edge
+function mid-playoffs was the riskiest option available, not the safest.
+
+* `mlb_pipeline/run_line_poller.cmd` — wrapper with an overlap lock, UTF-8
+  output and append logging to `_line_poller_local.log`
+* `mlb_pipeline/register_line_poller_task.ps1` — idempotent registration,
+  `-Remove` to undo. Every 15 min, `MultipleInstances=IgnoreNew`,
+  `StartWhenAvailable` (catches up after sleep), 10-minute execution cap so a
+  hung poll cannot block the next, `/RL LIMITED` because the poller needs no
+  elevation.
+
+**Verified, not assumed:**
+
+```
+LastRunTime    10/05/2026 18:01:04
+LastTaskResult 0
+NextRunTime    10/05/2026 18:15:00
+MissedRuns     0
+log            114 line_history rows written, exit=0
+DB             landed capture minutes today 3 -> 6
+```
+
+**GitHub workflow demoted, not deleted** — `*/15` → hourly in both blocks, 72
+→ 18 runs/day. It remains the fallback for when the local machine is asleep.
+The poller writes unconditionally, so an overlapping GitHub + local run only
+duplicates one snapshot; it cannot corrupt a price.
+
+**`keep_alive` schedule disabled** (dispatch kept). Its purpose is preventing
+scheduled-workflow skips, and the 5% landing rate above happened *with it
+running hourly*. Premise disproven by our own data at 24 acquisitions/day.
+
+### Runner demand
+
+| | acquisitions/day |
+|---|---|
+| this morning | **266.4** |
+| now | **188.4** |
+| freed | **78.0 (29%)** |
+
+Remaining top consumers, and the next candidates for the same treatment:
+`prop_close_freeze` 52.3, `multisport_line_poller` 37.0,
+`mlb_imminent_refresh` 22.0. Those three are 111 more acquisitions a day, all
+pollers.
+
+### Watchdog
+
+`watchdogs.check_line_poller_landing_rate` — CRITICAL below 10% landed,
+WARNING below 25%. Nothing was watching the job that prices the entire
+record, so it degraded silently for weeks.
+
+### Known limitation
+
+This depends on Andy's machine being awake. `StartWhenAvailable` catches up
+after sleep but cannot run while the box is off. If the landing rate sags on
+days the machine sleeps, the next step is a ~$5/mo always-on VPS running the
+identical script — still no port.
