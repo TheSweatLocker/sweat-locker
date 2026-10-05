@@ -12,13 +12,34 @@ name: MLB Grade Overnight
 
 on:
   schedule:
-    # Try three times to catch grading windows and beat cron delays.
-    # 2:30am ET = 6:30 UTC — catches West Coast late games
-    - cron: '30 6 * * *'
-    # 4:30am ET = 8:30 UTC — grader safety net
-    - cron: '30 8 * * *'
-    # 5:30am ET = 9:30 UTC — final safety net right before morning pipeline
-    - cron: '30 9 * * *'
+    # ══ 2026-10-05 · SHIFTED EARLIER BY THE MEASURED DELAY ══
+    # These used to be 06:30 / 08:30 / 09:30 UTC, intended to land 2:30 /
+    # 4:30 / 5:30am ET. They never did. Measured from 88 start-heartbeats,
+    # actual minus scheduled:
+    #
+    #     slot 630  median +317m   p90 +426m   worst +556m
+    #     slot 830  median +317m
+    #     slot 930  median +317m
+    #
+    # i.e. the "overnight" grader routinely ran between 8am and noon ET —
+    # AFTER Andy checked the app — and on 10-05 none of the three had fired
+    # 22.8h after the previous run. GitHub Actions treats scheduled
+    # workflows as best-effort and drops or delays them under load; this is
+    # not specific to this file (every workflow we have shows a 3.4-5.6h
+    # median delay).
+    #
+    # So the schedule now carries the delay: each slot is set ~5.3h earlier
+    # than the time it is meant to land. Firing EARLY is harmless here —
+    # every step is idempotent and only fills NULLs, so an early run simply
+    # grades less and a later slot finishes the job. Firing late is what
+    # costs us.
+    #
+    # The real fix is an external trigger (workflow_dispatch is not subject
+    # to the schedule queue). Documented in docs/ for Andy to approve; this
+    # is the mitigation until then.
+    - cron: '10 1 * * *'     # intended landing ~06:30 UTC / 2:30am ET
+    - cron: '10 3 * * *'     # intended landing ~08:30 UTC / 4:30am ET
+    - cron: '10 4 * * *'     # intended landing ~09:30 UTC / 5:30am ET
   workflow_dispatch:
 
 jobs:
@@ -51,9 +72,9 @@ jobs:
         run: |
           CRON_SLOT="${{ github.event.schedule }}"
           case "$CRON_SLOT" in
-            '30 6 * * *')   SLOT='630' ;;
-            '30 8 * * *')   SLOT='830' ;;
-            '30 9 * * *')   SLOT='930' ;;
+            '10 1 * * *')   SLOT='630' ;;
+            '10 3 * * *')   SLOT='830' ;;
+            '10 4 * * *')   SLOT='930' ;;
             *)              SLOT='manual' ;;
           esac
           curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
@@ -363,9 +384,9 @@ jobs:
         run: |
           CRON_SLOT="${{ github.event.schedule }}"
           case "$CRON_SLOT" in
-            '30 6 * * *')   SLOT='630' ;;
-            '30 8 * * *')   SLOT='830' ;;
-            '30 9 * * *')   SLOT='930' ;;
+            '10 1 * * *')   SLOT='630' ;;
+            '10 3 * * *')   SLOT='830' ;;
+            '10 4 * * *')   SLOT='930' ;;
             *)              SLOT='manual' ;;
           esac
           curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \

@@ -943,6 +943,88 @@ def check_roster_physicality_stale() -> Optional[dict]:
         return None
 
 
+def check_workflow_stale() -> Optional[dict]:
+    """Alert when a scheduled workflow simply has not run.
+
+    ══ 2026-10-05 · THE THING THAT WAS BREAKING EVERY MORNING ══
+    Andy, repeatedly: "every fucking day its the same shit over and over."
+    None of it was grading logic. The jobs were not running.
+
+    Measured across 870 start-heartbeats, actual fire time minus scheduled
+    time, by workflow (median):
+
+        nightly_cross_sport  +334m      mlb_pipeline        +260m (worst +664m)
+        daily_card           +331m      nfl_pipeline        +251m
+        mlb_grade_overnight  +317m      ncaab_pipeline      +227m
+        nhl_pipeline         +281m      ncaaf_pipeline      +212m
+        nba_pipeline         +263m      ufc_pipeline        +203m
+
+    Every single one is hours late, and on 10-05 three had not started in
+    over 26 hours — nba_pipeline, nightly_cross_sport, ncaaf_pipeline — with
+    nothing anywhere saying so. GitHub Actions treats scheduled workflows as
+    best-effort and drops them under load.
+
+    A pipeline that silently stops is indistinguishable from a pipeline with
+    nothing to do, which is why this went unnoticed for weeks. This check is
+    the thing that notices.
+
+    Thresholds are per-workflow because cadences differ: a daily job silent
+    for 26h is broken, a weekly one is not.
+    """
+    # workflow -> hours after which silence is a defect
+    EXPECT_H = {
+        'mlb_grade_overnight': 26, 'daily_card': 26, 'mlb_pipeline': 26,
+        'nightly_cross_sport': 30, 'nhl_pipeline': 30, 'nba_pipeline': 30,
+        'ncaab_pipeline': 30, 'nfl_pipeline': 36, 'resolve_chain': 8,
+    }
+    r = requests.get(f'{SB}/rest/v1/workflow_heartbeat',
+        params={'select': 'workflow,fired_at', 'event': 'eq.start',
+                'order': 'fired_at.desc', 'limit': '400'},
+        headers=H_READ, timeout=20)
+    if r.status_code != 200:
+        return None
+    rows = r.json()
+    if not isinstance(rows, list) or not rows:
+        return None
+    latest: dict = {}
+    for x in rows:
+        w = x.get('workflow')
+        if w and w not in latest:
+            latest[w] = x.get('fired_at')
+    now = datetime.now(timezone.utc)
+    stale = []
+    for w, limit in EXPECT_H.items():
+        t = latest.get(w)
+        if not t:
+            stale.append((w, None))
+            continue
+        try:
+            age = (now - datetime.fromisoformat(str(t).replace('Z', '+00:00'))
+                   ).total_seconds() / 3600.0
+        except Exception:
+            continue
+        if age > limit:
+            stale.append((w, round(age, 1)))
+    if not stale:
+        return None
+    worst = max((a for _w, a in stale if a is not None), default=0)
+    never = [w for w, a in stale if a is None]
+    parts = [f'{w} {a}h' for w, a in stale if a is not None] +             [f'{w} NEVER' for w in never]
+    # A workflow with NO history is almost always one just added — on 10-05
+    # resolve_chain had existed for two hours and GitHub had not picked it up
+    # yet. Calling that CRITICAL on day one is exactly the false-CRITICAL
+    # trap that made grader_coverage worthless, so never-run is a WARNING and
+    # CRITICAL is reserved for a job that HAS run and then stopped.
+    return {
+        'check_name': 'workflow_stale',
+        'severity': 'CRITICAL' if worst > 36 else 'WARNING',
+        'message': ('Scheduled workflow(s) have not run: ' + ', '.join(parts)
+                    + '. Nothing downstream can be current.'),
+        'detail': {'stale': dict(stale), 'expect_hours': EXPECT_H,
+                   'never_run': never, 'worst_age_h': worst},
+    }
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -958,6 +1040,7 @@ CHECKS = [
     check_ufc_picks_ungraded,
     check_roster_physicality_stale,
     check_supabase_capacity,
+    check_workflow_stale,
 ]
 
 
