@@ -313,6 +313,11 @@ def _lookup_game_id_by_teams(sport: str, date_str: str, away: str, home: str) ->
     return None
 
 
+# Market words that mean "this is a spread / run-line / puck-line pick".
+# Word-bounded so a team name containing the letters cannot trip it.
+_SPREAD_WORD_RE = re.compile(r'\b(rl|ats|spread|puck\s*line|run\s*line)\b', re.I)
+
+
 def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
     """Best-effort extraction of pick side/market/line from the POTD data blob."""
     game = data.get('game') or {}
@@ -352,17 +357,25 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
             # and let the grader look up which side won
             call_side = '__PARSE_TEAM__'
             call_side_team = s[:-3].strip() if low.endswith(' ml') else s.replace(' ML', '').strip()
-        elif ' rl ' in f' {low} ' or ' spread ' in f' {low} ':
+        elif _SPREAD_WORD_RE.search(low):
             # 2026-09-11: "Team Name RL +1.5" / "Team Name -1.5 Spread"
             # → market=rl, team + signed line; grader resolves side later.
+            #
+            # 2026-10-04: this only knew 'rl' and 'spread', so the NFL POTD
+            # "BUF ATS -7 (Jerry 70/100)" matched NO branch, left call_market
+            # empty, and the function below would have stamped the date
+            # 'no-pick' — erasing a real published play that LOST (BUF won by
+            # 3) from the Receipts calendar. Football POTDs are written as ATS
+            # and hockey as puckline, so all three vocabularies belong here.
             call_market = call_market or 'rl'
             m_line = re.search(r'([+-]\s*\d+(?:\.\d+)?)', s)
             if m_line:
                 try: call_line = float(m_line.group(1).replace(' ', ''))
                 except (TypeError, ValueError): call_line = None
-            # Team name is everything before "RL"/"Spread" or the signed line
+            # Team name is everything before the market word or the signed line
             call_side = '__PARSE_TEAM__'
-            _team = re.split(r'\s+(?:rl|spread)\b|\s+[+-]\d', s, maxsplit=1,
+            _team = re.split(r'\s+(?:rl|ats|spread|puck\s*line|run\s*line)\b'
+                             r'|\s+[+-]\d', s, maxsplit=1,
                              flags=re.IGNORECASE)[0].strip()
             call_side_team = _team or None
         elif low.startswith('over'):
@@ -616,6 +629,14 @@ def main():
         base = dt.datetime.strptime(target, '%Y-%m-%d')
         dates = [(base - dt.timedelta(days=i)).strftime('%Y-%m-%d')
                  for i in range(args.backfill)]
+    elif not args.date:
+        # 2026-10-04: the default was yesterday ONLY, so today's POTD could
+        # never be graded on the day it ran. BUF ATS -7 sat 'Pending' on the
+        # Receipts calendar hours after BUF won by 3 — a published LOSS the
+        # user could see unresolved. Grading today first is safe: an unfinished
+        # game returns 'pending' and writes nothing (grade_potd bails when the
+        # game result is missing), and the whole function is idempotent.
+        dates = [_today_et(), target]
 
     print(f'=== grade_potd · {len(dates)} date(s) · dry_run={args.dry_run} ===')
     counts = {'graded': 0, 'already': 0, 'pending': 0, 'no-row': 0,
