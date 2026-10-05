@@ -1,0 +1,101 @@
+# Resolution chain — run the whole thing, often, in order.
+#
+# WHY (2026-10-05)
+# Andy: "every fucking day its the same shit over and over ... if we cant
+# resolve play efficiently how do i have any trust that selection logic is
+# correct." He was right, and the cause was not grading logic.
+#
+# mlb_grade_overnight fires three slots meant to land 2:30 / 4:30 / 5:30am ET.
+# Measured from workflow_heartbeat:
+#
+#     slot 630  scheduled 06:30 UTC   actual 11:55-12:45   ~5.5h late
+#     slot 830  scheduled 08:30 UTC   actual 13:37-14:17   ~5.7h late
+#     slot 930  scheduled 09:30 UTC   actual 14:23-15:56   ~5.5h late
+#
+# and on 10-05 none of the three had fired by 13:45 UTC, 22.8h after the
+# previous run. GitHub Actions treats scheduled workflows as best-effort and
+# delays or drops them under load. So the "overnight" grader routinely runs
+# between 8am and noon ET — after Andy looks at the app.
+#
+# The response is redundancy, not precision. This workflow is small, cheap and
+# idempotent (every step underneath only fills NULLs and never regrades), so
+# running it many times costs little and any ONE landing leaves the chain
+# fully resolved. It deliberately does NOT replace mlb_grade_overnight, which
+# still does MLB-specific work; this closes the chain regardless of whether
+# that one ran.
+#
+# Spread across the clock so a multi-hour delay on any single slot still
+# leaves an earlier slot that has already landed by morning ET.
+
+name: resolve_chain
+
+on:
+  schedule:
+    # Every 3 hours. With a ~5.5h observed delay, the 21:00 and 00:00 UTC
+    # slots are the ones expected to land overnight ET; the rest are safety.
+    - cron: '0 0,3,6,9,12,15,18,21 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'days back for the graders'
+        required: false
+        default: '2'
+
+concurrency:
+  # Never let two chain runs overlap — they would race on the same rows.
+  group: resolve-chain
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet requests python-dotenv
+
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"resolve_chain\",\"event\":\"start\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule || 'manual' }}\"}" || true
+
+      - name: Resolve the whole chain
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        working-directory: mlb_pipeline
+        run: |
+          python resolve_all_now.py --days "${{ github.event.inputs.days || 2 }}"
+
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"resolve_chain\",\"event\":\"end\",\"run_id\":\"${{ github.run_id }}\",\"cron_slot\":\"${{ github.event.schedule || 'manual' }}\",\"meta\":{\"status\":\"${{ job.status }}\"}}" || true
