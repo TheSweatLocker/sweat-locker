@@ -96,21 +96,30 @@ def run(label: str, args: list, timeout: int = 900) -> tuple[bool, str]:
     return ok, out
 
 
-def ungraded_report(days: int) -> dict:
-    """What is STILL unresolved, by surface — the verdict this ends on."""
-    lo = (_et_today() - dt.timedelta(days=days)).isoformat()
-    hi = _et_today().isoformat()
+def ungraded_report(days: int):
+    """Receipts still unresolved on a PAST-or-today date, by surface.
+
+    Returns (by_surface, error). The error is returned rather than swallowed:
+    the first version passed `game_date.lte` as a parameter NAME, which is not
+    PostgREST syntax. The query 400'd, the function returned {}, and the
+    verdict printed "no ungraded receipts in window" while 41 sat ungraded.
+    A false all-clear is worse than no check at all, so a failed query now
+    says so instead of reading as success.
+    """
+    today = _et_today()
+    lo = (today - dt.timedelta(days=days)).isoformat()
+    hi = today.isoformat()
     out = {}
     r = requests.get(f'{SB}/rest/v1/public_receipts', headers=H, timeout=60,
                      params={'select': 'surface,sport,market,pick_label,game_date',
                              'result': 'is.null',
-                             'game_date': f'gte.{lo}',
-                             'game_date.lte': hi, 'limit': 1000})
-    if r.status_code in (200, 206):
-        rows = [x for x in r.json() if str(x.get('game_date')) <= hi]
-        for x in rows:
-            out.setdefault(x['surface'], []).append(x)
-    return out
+                             'and': f'(game_date.gte.{lo},game_date.lte.{hi})',
+                             'limit': 1000})
+    if r.status_code not in (200, 206):
+        return out, f'{r.status_code} {r.text[:120]}'
+    for x in r.json():
+        out.setdefault(x['surface'], []).append(x)
+    return out, None
 
 
 def finals_without_scores(days: int) -> list:
@@ -227,9 +236,12 @@ def main() -> int:
     else:
         print('  every PAST game in window has a final score')
 
-    ung = ungraded_report(args.days)
+    ung, ung_err = ungraded_report(args.days)
     n = sum(len(v) for v in ung.values())
-    if n:
+    if ung_err:
+        print(f'  ⚠ ungraded check FAILED ({ung_err}) — cannot confirm clean')
+        fails.append('ungraded check')
+    elif n:
         print(f'  receipts still ungraded: {n}')
         for surf, rows in sorted(ung.items(), key=lambda kv: -len(kv[1])):
             ex = ', '.join(str(x.get('pick_label'))[:26] for x in rows[:2])
@@ -237,7 +249,7 @@ def main() -> int:
     else:
         print('  no ungraded receipts in window')
 
-    clean = not fails and not stuck and n == 0
+    clean = not fails and not stuck and n == 0 and not ung_err
     print(f'\n  {"CLEAN — chain fully resolved" if clean else "INCOMPLETE — see above"}')
     # Exit non-zero on a real failure so a workflow surfaces it, but NOT
     # merely because a game in progress has no score yet.
