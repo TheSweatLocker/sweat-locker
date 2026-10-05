@@ -187,7 +187,27 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
             'graded_at': row.get('resolved_at'),
             'source_table': 'prop_jerry_reads',
             'source_id': str(row.get('id')),
-            'audit': {'call_verdict': verdict} if verdict else None,
+            # ══ 2026-10-04 · STAMP WHICH SIDE pick_side ACTUALLY IS ══
+            # The 09-25 fix above changed pick_side from the PROP's direction
+            # to the side we BACKED. Correct — but it left the receipt table
+            # holding two conventions with nothing to tell them apart, and
+            # rows are still reconstructed at different times under whichever
+            # logic was current.
+            #
+            # Measured today on 64 FADE receipts that have a box-score final:
+            # reading pick_side as the backed side agrees with the stored
+            # result 34.4% of the time, and flipping it agrees 64.1%. NEITHER
+            # rule is right, because the meaning varies row to row — which is
+            # why settle_prop_receipts refuses all 123 fade-ambiguous receipts
+            # rather than guess, and why it should keep refusing them.
+            #
+            # No rule can repair the existing rows. This stops MAKING them:
+            # every receipt now records the convention it was written under, so
+            # a reader never has to infer it. Anything without the stamp is
+            # pre-10-04 and must stay unsettleable on a FADE.
+            'audit': ({'call_verdict': verdict,
+                       'side_convention': 'backed'} if verdict
+                      else {'side_convention': 'backed'}),
         })
         if len(batch) >= 500:
             written += upsert_batch(batch, dry_run)
