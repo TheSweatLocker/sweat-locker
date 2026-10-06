@@ -311,4 +311,7 @@ jobs:
       # silently broken surface cannot show a green check.
       - name: Gate — fail the run if any step failed
         if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

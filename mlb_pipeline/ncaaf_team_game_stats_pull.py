@@ -94,6 +94,18 @@ CH = {'Authorization': f'Bearer {CFBD_KEY}'}
 TABLE = 'ncaaf_team_game_stats'
 MAX_WEEK = 16
 
+# How many recent weeks to refresh on a default (nightly) run.
+# 2026-10-06: the default was ALL of weeks 0-16 every single night. Only the
+# current week — and the one before it, for stat corrections — can contain new
+# data, so 15 of those 17 calls bought nothing and the whole season was
+# re-pulled twice a night. Use --backfill or --week for history.
+DEFAULT_RECENT_WEEKS = 3
+
+
+class QuotaExceeded(RuntimeError):
+    """CFBD monthly quota is gone. Not retryable, and not a per-week problem:
+    every later week will fail identically, so the caller must stop."""
+
 
 def cfbd(path, params, tries=3):
     """GET with retry. Raises on persistent failure — a swallowed error here
@@ -110,6 +122,13 @@ def cfbd(path, params, tries=3):
         if r.status_code == 200:
             b = r.json()
             return b if isinstance(b, list) else []
+        if r.status_code == 429 and 'quota' in r.text.lower():
+            # 2026-10-06: "Monthly call quota exceeded" is NOT transient.
+            # Retrying it 3x per week across 17 weeks burned 51 doomed calls
+            # per run, twice nightly (this script runs in both
+            # mlb_grade_overnight and nightly_cross_sport). That is how a
+            # month of CFBD quota was gone by the 6th. Fail fast and loud.
+            raise QuotaExceeded(f'{r.status_code}: {r.text[:120]}')
         if r.status_code in (429, 500, 502, 503, 504):
             last = f'{r.status_code}: {r.text[:120]}'
             time.sleep(2.0 * (i + 1))
@@ -349,6 +368,8 @@ def main():
     ap.add_argument('--season', type=int)
     ap.add_argument('--week', type=int, help='single week (week 0 is real)')
     ap.add_argument('--backfill', nargs=2, type=int, metavar=('FROM', 'TO'))
+    ap.add_argument('--all-weeks', action='store_true',
+                    help='pull every week 0-MAX_WEEK instead of the recent window')
     ap.add_argument('--postseason', action='store_true',
                     help='also pull seasonType=postseason')
     ap.add_argument('--dry-run', action='store_true')
@@ -361,12 +382,32 @@ def main():
 
     print(f'=== ncaaf_team_game_stats_pull · seasons {seasons} ===')
     grand = 0
+    quota_dead = False
     for season in seasons:
+        if quota_dead:
+            break
         # Week 0 is real in college football — late-August kickoffs.
-        weeks = [a.week] if a.week is not None else list(range(0, MAX_WEEK + 1))
+        if a.week is not None:
+            weeks = [a.week]
+        elif a.backfill or a.all_weeks:
+            weeks = list(range(0, MAX_WEEK + 1))
+        else:
+            # Current CFBD week, approximated from the season opener (late
+            # Aug), then a small lookback for stat corrections.
+            _elapsed = (dt.date.today() - dt.date(season, 8, 23)).days
+            _cur = max(0, min(MAX_WEEK, _elapsed // 7))
+            weeks = list(range(max(0, _cur - DEFAULT_RECENT_WEEKS + 1), _cur + 1))
+            print(f'  default window: weeks {weeks[0]}-{weeks[-1]} '
+                  f'(--all-weeks for the full season)')
         for wk in weeks:
             try:
                 rows = build_rows(season, wk)
+            except QuotaExceeded as e:
+                print(f'  {season} wk{wk:<2} ! {e}')
+                print('  CFBD monthly quota exhausted — aborting; every '
+                      'remaining week would fail identically.')
+                quota_dead = True
+                break
             except RuntimeError as e:
                 print(f'  {season} wk{wk:<2} ! {e}')
                 continue

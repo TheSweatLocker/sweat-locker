@@ -149,4 +149,7 @@ jobs:
       # fails the run at the end with the list.
       - name: Fail the run if any step failed
         if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
