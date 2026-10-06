@@ -3601,11 +3601,73 @@ def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
         url = f"{base}&game_id=not.in.({ids_csv})"
     else:
         url = base
+
+    # ══ 2026-10-06 · THIS IS THE DELETER THAT STRANDS PUBLISHED PICKS ══
+    # It used to DELETE straight off the filter above. Measured today on the
+    # 10-06 slate: mlb_pipeline_props went 434 rows -> 227 between two reads
+    # minutes apart, and this age-based prune is the bulk of it.
+    #
+    # A prop receipt resolves its result through its source row, so deleting
+    # the row strands the receipt at result=NULL permanently. That is how
+    # "Mike Yastrzemski Under 0.5 Hits" shipped on the Sweat Card at PRIME/75
+    # with no source row at all, and how 238 prop receipts became unsettleable
+    # going back to June.
+    #
+    # Pruning a prop the book no longer lists is still correct hygiene — the
+    # fix is not to stop pruning. Receipts address this table by COMPOSITE KEY
+    # ("prop:Nick Pivetta|ks_over|3.5"), so a re-created row with a fresh id
+    # still answers the same receipt. Only DELETION breaks one.
+    #
+    # So: read the matching rows first, hold back any an UNGRADED receipt
+    # depends on, delete the rest by id. Once a receipt carries a result its
+    # source is prunable again, so this does not freeze the table.
+    #
+    # The rule lives in receipt_pins so the three deleters of this table share
+    # one implementation instead of three copies that drift.
     try:
-        r = requests.delete(url, headers=HEADERS, timeout=15)
-        # Response body is empty w/ Prefer=return=minimal; we only care about status
-        if r.status_code not in (200, 204):
-            print(f"  ! prune_stale_props returned {r.status_code}: {r.text[:200]}")
+        from receipt_pins import (LOOKUP_FAILED, composite_of,
+                                  pinned_prop_composites, split_deletable)
+        sel = url.replace('/rest/v1/mlb_pipeline_props?',
+                          '/rest/v1/mlb_pipeline_props?select=id,player_name,'
+                          'prop_type,prop_line&')
+        rr = requests.get(sel, headers=HEADERS, timeout=20)
+        if rr.status_code not in (200, 206):
+            print(f"  ! prune_stale_props: candidate read returned "
+                  f"{rr.status_code} — deleting nothing")
+            return
+        candidates = rr.json()
+        if not isinstance(candidates, list):
+            print("  ! prune_stale_props: unexpected candidate payload — "
+                  "deleting nothing")
+            return
+        if not candidates:
+            return
+        pins = pinned_prop_composites(gd)
+        if pins is LOOKUP_FAILED:
+            print(f"  ! prune_stale_props: receipt-pin lookup failed — "
+                  f"holding all {len(candidates)} stale row(s)")
+            return
+        deletable, held = split_deletable(candidates, pins)
+        if held:
+            print(f"  📌 prune_stale_props: holding {len(held)} stale row(s) "
+                  f"pinned by an ungraded receipt: "
+                  f"{[composite_of(h) for h in held][:4]}")
+        if not deletable:
+            return
+        deleted = 0
+        for i in range(0, len(deletable), 100):
+            chunk = [str(row['id']) for row in deletable[i:i + 100]]
+            dr = requests.delete(
+                f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
+                f"?id=in.({','.join(chunk)})",
+                headers=HEADERS, timeout=20)
+            if dr.status_code in (200, 204):
+                deleted += len(chunk)
+            else:
+                print(f"  ! prune_stale_props delete chunk {dr.status_code}: "
+                      f"{dr.text[:150]}")
+        if deleted:
+            print(f"  🧹 prune_stale_props removed {deleted} stale prop(s)")
     except Exception as e:
         print(f"  ! prune_stale_props error: {e}")
 
@@ -4807,6 +4869,37 @@ def run():
                 pname = (row.get('player_name') or '').strip().lower()
                 if gid in valid_game_pitchers and pname and pname not in valid_game_pitchers[gid]:
                     stale_to_delete.append(row)
+            if stale_to_delete:
+                # 2026-10-06 · Hold back any scratched-starter row an UNGRADED
+                # receipt depends on. If we published a prop for a pitcher who
+                # was later scratched, that receipt still has to be gradeable
+                # — as VOID/NO_ACTION — and deleting its source row makes even
+                # that impossible. Same rule as prune_stale_props above, shared
+                # from receipt_pins.
+                try:
+                    from receipt_pins import (LOOKUP_FAILED, composite_of,
+                                              pinned_prop_composites)
+                    _pins = pinned_prop_composites(gd)
+                    if _pins is LOOKUP_FAILED:
+                        print(f"  ! scratched-starter cleanup: receipt-pin "
+                              f"lookup failed — holding all "
+                              f"{len(stale_to_delete)} row(s)")
+                        stale_to_delete = []
+                    elif _pins:
+                        _before = len(stale_to_delete)
+                        _held = [r for r in stale_to_delete
+                                 if composite_of(r) in _pins]
+                        stale_to_delete = [r for r in stale_to_delete
+                                           if composite_of(r) not in _pins]
+                        if _held:
+                            print(f"  📌 scratched-starter cleanup: holding "
+                                  f"{_before - len(stale_to_delete)} row(s) "
+                                  f"pinned by an ungraded receipt: "
+                                  f"{[composite_of(h) for h in _held][:4]}")
+                except Exception as _pe:               # noqa: BLE001
+                    print(f"  ! scratched-starter pin check failed ({_pe}) — "
+                          f"holding all rows")
+                    stale_to_delete = []
             if stale_to_delete:
                 # Delete each stale row by (player_name, prop_type, game_date) match.
                 # Safer than bulk-IN because some books reuse pitcher names.

@@ -194,46 +194,25 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
     #
     # Fails CLOSED: if the lookup errors we keep everything. A pruner that
     # cannot prove a row is unreferenced must not delete it.
-    def _pinned_composites(date_str):
-        keys = set()
-        try:
-            rr = requests.get(f'{SB}/rest/v1/public_receipts', headers=H_READ,
-                              params={'select': 'source_id',
-                                      'source_table': 'eq.mlb_pipeline_props',
-                                      'result': 'is.null',
-                                      'game_date': f'eq.{date_str}',
-                                      'limit': '2000'}, timeout=30)
-            if rr.status_code not in (200, 206):
-                return None
-            body = rr.json()
-            if not isinstance(body, list):
-                return None
-            for z in body:
-                sid = str(z.get('source_id') or '')
-                if sid.startswith('prop:'):
-                    keys.add(sid[5:])
-        except Exception as e:                      # noqa: BLE001
-            print(f'  ⚠ pin lookup raised ({e}) — keeping all rows')
-            return None
-        return keys
+    # Shared with generate_props.prune_stale_props and the scratched-starter
+    # pass. This was written inline here on 2026-10-06 and then again in
+    # generate_props; three copies of one rule is how it drifts, so it now
+    # lives in receipt_pins and every deleter of this table imports it.
+    from receipt_pins import LOOKUP_FAILED, composite_of, pinned_prop_composites
 
-    _pins = _pinned_composites(gd)
-    if _pins is None:
+    _pins = pinned_prop_composites(gd)
+    if _pins is LOOKUP_FAILED:
         print('  ⚠ could not read receipt pins — refusing to delete anything')
         return 0
     if _pins:
         _by_id = {p['id']: p for p in props}
-
-        def _composite(row_id):
-            p = _by_id.get(row_id) or {}
-            return (f"{p.get('player_name')}|{p.get('prop_type')}|"
-                    f"{p.get('prop_line')}")
-
-        pinned_now = [_composite(i) for i in losers_to_delete
-                      if _composite(i) in _pins]
+        pinned_now = [composite_of(_by_id.get(i) or {})
+                      for i in losers_to_delete
+                      if composite_of(_by_id.get(i) or {}) in _pins]
         if pinned_now:
-            losers_to_delete = [i for i in losers_to_delete
-                                if _composite(i) not in _pins]
+            losers_to_delete = [
+                i for i in losers_to_delete
+                if composite_of(_by_id.get(i) or {}) not in _pins]
             print(f'  📌 {len(pinned_now)} loser row(s) PINNED by an ungraded '
                   f'public_receipt — keeping: {pinned_now[:5]}')
         if not losers_to_delete:
