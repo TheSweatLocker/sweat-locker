@@ -1163,6 +1163,115 @@ def check_workflow_stale() -> Optional[dict]:
     }
 
 
+def check_context_features_preseason() -> Optional[dict]:
+    """Alert when an UPCOMING game's context row still holds preseason values.
+
+    ══ 2026-10-06 · PICKS COULD BE BUILT ON JULY NUMBERS, SILENTLY ══
+    Andy asked whether users were seeing a made-up NFL penalty number. They
+    were not — Game Detail reads team_stats_rolling, which was fresh today
+    (ARI 300 penalty yards / 4 games = 75.0, GB 86.0 ranked 32nd). But the
+    question surfaced something else. nfl_game_context row timestamps:
+
+        wk 3 (played)   updated 2026-10-01    ARI penalty_yds_pg 69.51
+        wk 4 (played)   updated 2026-10-03    ARI                81.67
+        wk 5 (10-11)    updated 2026-10-03    ARI                75.00  correct
+        wk 6 (10-18)    updated 2026-07-28    ARI                49.53  STALE
+        wk 7..16        updated 2026-07-29    ARI                49.53  STALE
+
+    Weeks 7-16 were enriched once on 2026-07-29 — before a single 2026 game
+    was played — and never touched again. 49.53 is last season's blend.
+
+    updated_at is ROW level, so this is not a penalty-column problem: every
+    one of the ~222 context columns on those rows is a preseason value. The
+    enrichment refreshes roughly a two-week forward window and leaves the
+    rest of the season at its July values.
+
+    Nothing currently reads the penalty columns, so that specific number is
+    inert. What is NOT inert is that nothing anywhere asserts a game's
+    features were computed after the season started before picks are
+    generated from them. Weeks 3-5 were refreshed in time by luck of
+    scheduling, not by design, and a missed enrichment run would be
+    invisible — the row still has values, they are just four months old.
+    Same shape as team_stats_rolling being current-only and the SP+
+    backtests being leaky: a number that looks fine and means something
+    other than what it says.
+
+    Fires only for games inside FORWARD_DAYS, since a December row
+    legitimately has not been enriched yet. The test is whether the row
+    predates the season it describes.
+    """
+    # Games this close are about to be picked, so their features must be
+    # current NOW. A week-6 row holding week-4 numbers today is correct and
+    # expected — week 5 has not been played. Only imminent games are judged.
+    IMMINENT_DAYS = 4
+    TOL = 3.0          # yd/game; the stored value is a blend and rounds
+
+    today = _et_today()
+    horizon = (datetime.strptime(today, '%Y-%m-%d')
+               + timedelta(days=IMMINENT_DAYS)).strftime('%Y-%m-%d')
+
+    # Ground truth we can recompute ourselves, which is the whole point:
+    # season penalty yards / games played, straight from nfl_team_stats.
+    ts = requests.get(f'{SB}/rest/v1/nfl_team_stats', headers=H_READ,
+                      timeout=45,
+                      params={'select': 'team,games,penalty_yards,season',
+                              'order': 'season.desc', 'limit': '200'})
+    if ts.status_code not in (200, 206):
+        return None
+    truth = {}
+    for z in (ts.json() if isinstance(ts.json(), list) else []):
+        g, py = z.get('games'), z.get('penalty_yards')
+        if z.get('team') and g and py is not None and z['team'] not in truth:
+            truth[z['team']] = py / g
+    if not truth:
+        return None
+
+    cx = requests.get(
+        f'{SB}/rest/v1/nfl_game_context', headers=H_READ, timeout=45,
+        params={'select': 'game_date,week,home_team,away_team,'
+                          'home_penalty_yds_pg,away_penalty_yds_pg',
+                'game_date': f'gte.{today}', 'order': 'game_date.asc',
+                'limit': '200'})
+    if cx.status_code not in (200, 206):
+        return None
+    rows = cx.json()
+    if not isinstance(rows, list):
+        return None
+
+    drift, checked = [], 0
+    for r in rows:
+        gd = str(r.get('game_date') or '')[:10]
+        if not gd or gd > horizon:
+            continue
+        for side in ('home', 'away'):
+            team, val = r.get(f'{side}_team'), r.get(f'{side}_penalty_yds_pg')
+            if team not in truth or val is None:
+                continue
+            checked += 1
+            if abs(float(val) - truth[team]) > TOL:
+                drift.append({
+                    'game': f"{r.get('away_team')} @ {r.get('home_team')}",
+                    'date': gd, 'team': team,
+                    'context': round(float(val), 1),
+                    'truth': round(truth[team], 1)})
+    if not drift or checked < 10:
+        return None
+    worst = max(drift, key=lambda d: abs(d['context'] - d['truth']))
+    return {
+        'check_name': 'context_features_preseason',
+        'severity': 'CRITICAL' if len(drift) >= 6 else 'WARNING',
+        'message': (f'{len(drift)} of {checked} team-slots in games kicking '
+                    f'off within {IMMINENT_DAYS} days carry a penalty figure '
+                    f'that disagrees with nfl_team_stats by more than {TOL} '
+                    f'yd/g — worst {worst["team"]} in {worst["game"]} '
+                    f'({worst["date"]}): context says {worst["context"]}, '
+                    f'season to date is {worst["truth"]}. The enrichment has '
+                    f'not refreshed these rows for the upcoming slate.'),
+        'detail': {'imminent_days': IMMINENT_DAYS, 'tolerance_ydpg': TOL,
+                   'checked_slots': checked, 'drifted': drift[:20]},
+    }
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -1181,6 +1290,7 @@ CHECKS = [
     check_workflow_stale,
     check_line_poller_landing_rate,
     check_oc_flip_not_persisted,
+    check_context_features_preseason,
 ]
 
 
