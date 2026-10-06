@@ -319,6 +319,29 @@ bash "$RUN_STEP" --label "benchmark_external_sor.py (external SOR reference)" \
 if [ "$(date -u +%u)" = "7" ] || [ "${FORCE_WEEKLY_STATS:-0}" = "1" ]; then
   bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (weekly, full season)" \
     python ncaaf_team_game_stats_pull.py --all-weeks
+
+  # 2026-10-06 · ESPN volumetric fallback, runs AFTER CFBD and fills only the
+  # columns CFBD left NULL. CFBD's monthly quota is exhausted until Nov 1, so
+  # the pull above currently returns nothing and the 10-10/10-11 slate would
+  # be the first weekend with no per-game stats at all.
+  #
+  # Deliberately placed after, and NOT conditional on the pull succeeding:
+  # when CFBD has quota it stays the primary and this writes nothing (verified
+  # — a dry run against the fully-populated 10-03 slate had 0 rows to write).
+  # When CFBD is dead this is the only source.
+  #
+  # Accuracy measured against CFBD before wiring, four weekends:
+  #   09-12  160/160 names  98.02%      09-26  130/130 names  99.37%
+  #   09-19  142/142 names  97.55%      10-03  108/108 names  98.50%
+  # 540/540 team names resolved, no outlier week. The single biggest
+  # disagreement is Colorado State / Oregon State on 10-03, where ESPN's
+  # possession times sum to exactly 3600s and CFBD's to 3224s — i.e. CFBD is
+  # the wrong one there.
+  #
+  # It does NOT backfill EPA/PPA, success rate or explosiveness. Those come
+  # from CFBD play-by-play and nothing here recovers them.
+  bash "$RUN_STEP" --label "ncaaf_team_game_stats_espn.py (CFBD-free volumetric)" \
+    python ncaaf_team_game_stats_espn.py --days 10 --apply
 else
   echo "  (skip ncaaf_team_game_stats_pull - weekly, Sundays only; FORCE_WEEKLY_STATS=1 overrides)"
 fi
