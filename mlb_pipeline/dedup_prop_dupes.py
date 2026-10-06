@@ -179,6 +179,67 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
         print('  ✅ no duplicates to clean up')
         return 0
 
+    # ══ 2026-10-06 · DO NOT DELETE A PROP AN UNGRADED RECEIPT POINTS AT ══
+    # Measured today on the 10-06 slate: mlb_pipeline_props went from 434 rows
+    # to 227 between two reads minutes apart — 266 deleted, 59 re-inserted
+    # with fresh ids at 22:42-22:43. A published receipt addresses this table
+    # by COMPOSITE KEY, not id ("prop:Nick Pivetta|ks_over|3.5"), so id churn
+    # is survivable but a DELETED row orphans the receipt for good.
+    #
+    # That is how "Mike Yastrzemski Under 0.5 Hits" shipped on the Sweat Card
+    # at PRIME/75 and now has no source row at all, and it is the same defect
+    # that left 238 prop receipts permanently unsettleable going back to June.
+    # Same guard already added to cleanup_stale_coverage_props for
+    # prop_jerry_reads; this is the composite-key version for the props table.
+    #
+    # Fails CLOSED: if the lookup errors we keep everything. A pruner that
+    # cannot prove a row is unreferenced must not delete it.
+    def _pinned_composites(date_str):
+        keys = set()
+        try:
+            rr = requests.get(f'{SB}/rest/v1/public_receipts', headers=H_READ,
+                              params={'select': 'source_id',
+                                      'source_table': 'eq.mlb_pipeline_props',
+                                      'result': 'is.null',
+                                      'game_date': f'eq.{date_str}',
+                                      'limit': '2000'}, timeout=30)
+            if rr.status_code not in (200, 206):
+                return None
+            body = rr.json()
+            if not isinstance(body, list):
+                return None
+            for z in body:
+                sid = str(z.get('source_id') or '')
+                if sid.startswith('prop:'):
+                    keys.add(sid[5:])
+        except Exception as e:                      # noqa: BLE001
+            print(f'  ⚠ pin lookup raised ({e}) — keeping all rows')
+            return None
+        return keys
+
+    _pins = _pinned_composites(gd)
+    if _pins is None:
+        print('  ⚠ could not read receipt pins — refusing to delete anything')
+        return 0
+    if _pins:
+        _by_id = {p['id']: p for p in props}
+
+        def _composite(row_id):
+            p = _by_id.get(row_id) or {}
+            return (f"{p.get('player_name')}|{p.get('prop_type')}|"
+                    f"{p.get('prop_line')}")
+
+        pinned_now = [_composite(i) for i in losers_to_delete
+                      if _composite(i) in _pins]
+        if pinned_now:
+            losers_to_delete = [i for i in losers_to_delete
+                                if _composite(i) not in _pins]
+            print(f'  📌 {len(pinned_now)} loser row(s) PINNED by an ungraded '
+                  f'public_receipt — keeping: {pinned_now[:5]}')
+        if not losers_to_delete:
+            print('  ✅ every duplicate is pinned by a published receipt')
+            return 0
+
     deleted = 0
     CHUNK = 100
     for i in range(0, len(losers_to_delete), CHUNK):
