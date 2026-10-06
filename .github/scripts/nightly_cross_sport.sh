@@ -290,8 +290,30 @@ bash "$RUN_STEP" --label "benchmark_external_sor.py (external SOR reference)" \
 # self-heals gaps. That matters because the log had holes, not just lag —
 # Northwestern held weeks 1, 3, 4 and no week 2 — and a missing row reads
 # exactly like a bye. ~17 weeks x 3 CFBD endpoints a night.
-bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (per-game log)" \
-  python ncaaf_team_game_stats_pull.py
+# == 2026-10-06 - WEEKLY, NOT NIGHTLY (Andy call) ==
+# CFBD returned "Monthly call quota exceeded" on 2026-10-06 - a month of
+# quota gone by the 6th. This step was the main consumer: ~17 weeks x 3
+# endpoints every night, and on a dead quota it retried each 429 three
+# times, so ~51 doomed calls a night. It runs in BOTH mlb_grade_overnight
+# and nightly_cross_sport, so double it.
+#
+# Andy: "I dont think CFB should be a daily run, it should only run once a
+# week to pull the stats, probably best it runs on a sunday after all games
+# played for week and one run updates all stats."
+#
+# The data agrees: NCAAF plays Saturday plus a few Thu/Fri games, so nothing
+# changes Mon-Fri. Sunday ET once is correct - and it PRESERVES the
+# deliberate full-season re-run documented above (--all-weeks), because at
+# 51 calls a WEEK instead of a night that is affordable: ~204/month vs
+# ~1,530. The script default is now a 3-week trailing window for ad-hoc
+# runs; --all-weeks here keeps the weekly pass self-healing the holes that
+# made the per-game log untrustworthy in the first place.
+if [ "$(date -u +%u)" = "7" ] || [ "${FORCE_WEEKLY_STATS:-0}" = "1" ]; then
+  bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (weekly, full season)" \
+    python ncaaf_team_game_stats_pull.py --all-weeks
+else
+  echo "  (skip ncaaf_team_game_stats_pull - weekly, Sundays only; FORCE_WEEKLY_STATS=1 overrides)"
+fi
 
 # Compares ncaaf_team_stats (cumulative, what we publish) against
 # ncaaf_team_game_stats (immutable per-game, what can check it) and FAILS the
@@ -312,11 +334,17 @@ bash "$RUN_STEP" --label "ncaaf_team_game_stats_pull.py (per-game log)" \
 # X on the grader for a stats lag is exactly how a real grading failure gets
 # ignored later. The verdict still prints in full; only the exit code is
 # suppressed. Run it without the flag to gate on it.
-bash "$RUN_STEP" --label "reconcile_ncaaf_stat_sources.py (aggregate vs per-game)" \
+# Same weekly cadence as the pull it verifies - comparing two tables
+# that neither changed since yesterday is waste and a noisy detector.
+if [ "$(date -u +%u)" = "7" ] || [ "${FORCE_WEEKLY_STATS:-0}" = "1" ]; then
+  bash "$RUN_STEP" --label "reconcile_ncaaf_stat_sources.py (aggregate vs per-game)" \
   python reconcile_ncaaf_stat_sources.py --report-only
 
-bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
+  bash "$RUN_STEP" --label "recompute_ncaaf_per_game_stats.py (volumetric)" \
   python recompute_ncaaf_per_game_stats.py
+else
+  echo "  (skip NCAAF reconcile/recompute - weekly, Sundays only)"
+fi
 
 # 2026-10-03 · DAILY FLOOR for pace (plays_pg, top_min_pg -> NCAAF + NFL).
 # collect_pace_stats.py IS scheduled, inside ncaaf_pipeline.yml and
