@@ -67,8 +67,26 @@ if _env.exists():
 
 SB = os.environ.get('SUPABASE_URL')
 KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_KEY')
-# Server-side only. Never EXPO_PUBLIC_*, which Expo would bundle.
-KENPOM_KEY = os.environ.get('KENPOM_KEY') or os.environ.get('EXPO_PUBLIC_KENPOM_KEY')
+# ══ 2026-10-06 · THE FALLBACK CONTRADICTED THE COMMENT ABOVE IT ══
+# This read:
+#
+#   # Server-side only. Never EXPO_PUBLIC_*, which Expo would bundle.
+#   KENPOM_KEY = os.environ.get('KENPOM_KEY') or os.environ.get('EXPO_PUBLIC_KENPOM_KEY')
+#
+# saying "never EXPO_PUBLIC_*" and then falling back to it on the next line.
+# That fallback is WHY the dangerously-named secret still exists: nothing ever
+# forced the rename, because the server kept working either way. Meanwhile
+# app.config.js BLOCKS that exact name and fails the build on it, so the two
+# files actively disagreed about whether it should exist.
+#
+# Accepting only the server-side name makes the rename mandatory. If the key
+# is missing the puller says so (see main()) instead of silently depending on
+# a variable the app build refuses to allow.
+#
+# Note this key must be ROTATED regardless: app/index.tsx records that five
+# client call sites sent it to kenpom.com before 2026-09-28, so it was inlined
+# into every build up to v1.0.1 and is extractable from those binaries.
+KENPOM_KEY = os.environ.get('KENPOM_KEY')
 
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
