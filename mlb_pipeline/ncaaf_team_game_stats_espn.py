@@ -233,15 +233,44 @@ TOL = {'yards_per_pass': 0.15, 'yards_per_rush': 0.15,
        'possession_seconds': 60}
 
 
-def db_rows(date: str) -> dict:
+def db_rows(date: str):
+    """(by_team, by_opponent) for one date.
+
+    Two indexes because the resolver's canonical name and CFBD's stored
+    spelling DISAGREE for some teams — measured on 10-03:
+
+        resolver "Connecticut"       CFBD "UConn"
+        resolver "UMass"             CFBD "Massachusetts"
+        resolver "Louisiana Monroe"  CFBD "UL Monroe"
+
+    A team-name lookup alone made those three rows look ABSENT, which both
+    dropped them from the accuracy comparison (105 compared instead of 108)
+    and sent them down the insert path, where they failed on a NOT NULL
+    column. The game structure resolves it without inventing aliases: within
+    one date a team plays once, so the row whose OPPONENT matches our
+    resolved opponent is the row we want. UConn's row is found via Syracuse.
+    """
     r = requests.get(f'{SB}/rest/v1/ncaaf_team_game_stats', headers=H,
                      timeout=60,
                      params={'select': '*', 'game_date': f'eq.{date}',
                              'limit': '400'})
     if r.status_code not in (200, 206):
         print(f'  ⚠ db {r.status_code}: {r.text[:200]}')
-        return {}
-    return {z['team']: z for z in r.json() if z.get('team')}
+        return {}, {}
+    rows = r.json()
+    by_team = {z['team']: z for z in rows if z.get('team')}
+    by_opp = {}
+    for z in rows:
+        if z.get('opponent'):
+            # A collision would mean a team played twice on one date; keep
+            # the first and let the team index handle the rest.
+            by_opp.setdefault(z['opponent'], z)
+    return by_team, by_opp
+
+
+def find_db_row(by_team: dict, by_opp: dict, row: dict):
+    """The stored row for an ESPN side, by team name then by opponent."""
+    return by_team.get(row['team']) or by_opp.get(row['opponent'])
 
 
 def validate(dates: list) -> int:
@@ -257,8 +286,8 @@ def validate(dates: list) -> int:
         games = espn_games(d)
         if not games:
             continue
-        have = db_rows(d)
-        print(f'  {d}: ESPN {len(games)} games · DB rows {len(have)}')
+        by_team, by_opp = db_rows(d)
+        print(f'  {d}: ESPN {len(games)} games · DB rows {len(by_team)}')
         for g in games:
             for row in g['teams']:
                 if not row['team']:
@@ -266,7 +295,7 @@ def validate(dates: list) -> int:
                     namebad += 1
                     continue
                 nameok += 1
-                db = have.get(row['team'])
+                db = find_db_row(by_team, by_opp, row)
                 if not db:
                     continue
                 for f in PLAIN_FIELDS:
@@ -334,17 +363,28 @@ def validate(dates: list) -> int:
 
 def apply_dates(dates: list, do_write: bool) -> int:
     written = skipped = 0
+    norow: list = []
     for d in dates:
         games = espn_games(d)
         if not games:
             continue
-        have = db_rows(d)
+        by_team, by_opp = db_rows(d)
         pending = []
         for g in games:
             for row in g['teams']:
                 if not row['team']:
                     continue
-                db = have.get(row['team'])
+                db = find_db_row(by_team, by_opp, row)
+                if db is None:
+                    # No stored row, and INSERT is impossible: the table has a
+                    # NOT NULL column (cfbd_game_id) only CFBD can supply.
+                    # Attempting it just emits a 400 per row, which is what
+                    # the first run did for UConn, Massachusetts and UL
+                    # Monroe. Rows for future dates already exist from the
+                    # schedule pull, so patching is the path that matters —
+                    # report these and move on.
+                    norow.append(f"{row['team']} vs {row['opponent']}")
+                    continue
                 patch = {}
                 for f in PLAIN_FIELDS:
                     ev = row['stats'].get(f)
@@ -378,29 +418,45 @@ def apply_dates(dates: list, do_write: bool) -> int:
         for row, g, db, patch in pending:
             patch['source'] = 'espn'
             patch['fetched_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
-            if db is None:
-                body = {**patch, 'team': row['team'],
-                        'opponent': row['opponent'],
-                        'game_date': d, 'season': g['season'],
-                        'week': g['week'], 'home_away': row['home_away'],
-                        'points': row['points'],
-                        'opp_points': row['opp_points']}
-                r = requests.post(f'{SB}/rest/v1/ncaaf_team_game_stats',
-                                  headers=H_W, timeout=60,
-                                  data=json.dumps(body))
-            else:
+            if True:
+                # ncaaf_team_game_stats has NO id column — the first version
+                # of this used db['id'] and died with KeyError on the very
+                # first write. (team, game_date) is the addressing key, and
+                # db_rows() is keyed by team within a single date, so it is
+                # unique by construction.
+                #
+                # params= is load-bearing, not style: a team like "Texas A&M"
+                # put raw into the query string ends it at the ampersand, the
+                # filter matches nothing, and PostgREST returns 200 having
+                # patched 0 rows.
+                # Address by the STORED team name, not the resolved one. They
+                # differ for UConn/Massachusetts/UL Monroe, and filtering on
+                # the resolver's spelling made PostgREST return 200 having
+                # matched 0 rows — a success status for a write that never
+                # happened. The read-back check below is what caught it.
                 r = requests.patch(f'{SB}/rest/v1/ncaaf_team_game_stats',
                                    headers=H_W, timeout=60,
-                                   params={'id': f'eq.{db["id"]}'},
+                                   params={'team': f'eq.{db["team"]}',
+                                           'game_date': f'eq.{d}'},
                                    data=json.dumps(patch))
-            ok = r.status_code in (200, 201, 204) and (r.json() if r.content
-                                                       else True)
+            # A 200 is not a write. Require a row back and check one field of
+            # it actually holds what we sent.
+            body = r.json() if r.content else []
+            field = next(iter(patch))
+            ok = (r.status_code in (200, 201)
+                  and isinstance(body, list) and body
+                  and str(body[0].get(field)) == str(patch[field]))
             if ok:
                 written += 1
             else:
-                print(f'   x {row["team"]} {r.status_code} {r.text[:120]}')
+                print(f'   x {row["team"]} {r.status_code} '
+                      f'rows={len(body) if isinstance(body, list) else "?"} '
+                      f'{r.text[:110]}')
     print(f'\n  {"wrote" if do_write else "would write"} {written} row(s); '
           f'{skipped} already complete')
+    if norow:
+        print(f'  {len(norow)} ESPN side(s) had no stored row (cannot insert '
+              f'without cfbd_game_id): {norow[:6]}')
     return 0
 
 
