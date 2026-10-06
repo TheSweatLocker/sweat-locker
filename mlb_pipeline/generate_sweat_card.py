@@ -2104,6 +2104,62 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             elif conv >= 65: tier = "STRONG"
             elif conv >= 50: tier = "LEAN"
             else:            tier = "READ"
+
+            # ══ 2026-10-06 · primary_play IS THE AUTHORITY, NOT jerry_reads ══
+            # Andy: "Padres ML on sweat card as prime (sentence starts out with
+            # Brewers ML at +113...) then in game detail it says Brewers ML low
+            # conviction, this is unsat and inconsistent."
+            #
+            # Exactly what happened on 2026-10-06 MIL @ SD:
+            #
+            #   13:00:50  recompute_primary_play --force -> side AWAY, tier
+            #             COVERAGE, sub "⚠ Engine passed: MC sim has our side
+            #             at 18% win prob · -45.9pp edge"
+            #   13:01:39  THIS LOOP read jerry_reads, still holding HOME /
+            #             conviction 95, and published "San Diego Padres ML
+            #             PRIME" carrying a short_read that argued the BREWERS
+            #   later     reconcile_jerry_to_primary forced jerry_reads to
+            #             AWAY / 0 to match primary_play, prose untouched
+            #
+            # Game Detail renders jerry_reads, the card renders its own frozen
+            # payload, so the two screens disagreed on which TEAM we backed.
+            #
+            # The ordering is unfixable by moving steps: mlb_pipeline.yml runs
+            # reconcile at line 1965 but recompute_primary_play --force at 2392
+            # — the recompute invalidates the reconciliation — and daily_card.yml
+            # builds the card without running reconcile at all. So the card must
+            # not depend on jerry_reads having been reconciled.
+            #
+            # reconcile_jerry_to_primary's own docstring already states the
+            # rule: "the ensemble is the DECISION authority. Jerry's job is to
+            # narrate that pick." This applies it at the point of publication —
+            # side and tier come from primary_play, prose stays Jerry's. No new
+            # guard, one fewer thing that can desync.
+            pp = gctx.get("primary_play") or {}
+            pp_type = str(pp.get("type") or "").lower()
+            pp_side = str(pp.get("side") or "").upper()
+            pp_tier = str(pp.get("tier") or "").upper()
+            if pp_type == mkt and pp_side:
+                # The engine refusing the game outranks any Jerry conviction.
+                # COVERAGE is the tier recompute_primary_play assigns when it
+                # passes; publishing a PRIME over it is how a -45.9pp edge
+                # reached the card.
+                _sub = str(pp.get("sub") or "")
+                if pp_tier in ("COVERAGE", "SKIP", "PASS") or "Engine passed" in _sub:
+                    print(f"  🚫 sweat-card authority gate: primary_play passed "
+                          f"on {gctx.get('away_team')} @ {gctx.get('home_team')} "
+                          f"(tier={pp_tier or '?'}) — dropping Jerry's "
+                          f"{mkt.upper()} {side} conv {conv}")
+                    continue
+                if pp_side != side:
+                    print(f"  ↔ sweat-card side from primary_play: "
+                          f"{gctx.get('away_team')} @ {gctx.get('home_team')} "
+                          f"{mkt.upper()} {side} -> {pp_side}")
+                    side = pp_side
+                if pp_tier in ("PRIME", "STRONG", "LEAN", "READ") and pp_tier != tier:
+                    print(f"  ↔ sweat-card tier from primary_play: "
+                          f"{tier} -> {pp_tier} (Jerry conv {conv})")
+                    tier = pp_tier
             if mkt == "ml":
                 # HEAVY-FAV ML HARD FILTER (2026-08-04): Jerry's prompt says
                 # never emit ML at -200+ but Jerry has violated it in practice
