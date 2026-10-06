@@ -93,6 +93,30 @@ def run(label: str, args: list, timeout: int = 900) -> tuple[bool, str]:
     lines = [l.rstrip() for l in out.split('\n') if l.strip()]
     tail = ' | '.join(lines[-3:])[:260]
     print(f'  {"OK " if ok else "FAIL"} {label:<34} {dur:5.1f}s  {tail}')
+    if not ok:
+        # == 2026-10-06 - PERSIST WHAT FAILED ==
+        # A chain run reported STEPS FAILED: ['prop_jerry_reads',
+        # 'NFL props'] and BOTH exited 0 when re-run by hand minutes later,
+        # so the cause was transient and UNKNOWABLE - the only record was
+        # three tail lines in a console buffer that was already gone. Same
+        # blindness the GitHub gate had until its step-failure tally was
+        # published to the DB. Keep the full output on disk, named and
+        # timestamped, so the next transient failure is diagnosable instead
+        # of a shrug.
+        try:
+            d = _HERE / '_chain_failures'
+            d.mkdir(exist_ok=True)
+            safe = ''.join(c if (c.isalnum() or c in '-_') else '_'
+                           for c in label)[:60]
+            stamp = dt.datetime.now().strftime('%Y%m%dT%H%M%S')
+            fp = d / (stamp + '_' + safe + '.log')
+            hdr = ('# ' + label + chr(10) + '# argv: ' + repr(args)
+                   + chr(10) + '# ' + dt.datetime.now().isoformat()
+                   + chr(10) * 2)
+            fp.write_text(hdr + out, encoding='utf-8', errors='replace')
+            print('       -> full output: ' + fp.name)
+        except Exception as e:
+            print('       -> could not save failure log: ' + type(e).__name__)
     return ok, out
 
 

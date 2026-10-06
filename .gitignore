@@ -95,3 +95,4 @@ content/*.local-backup
 content/*.preserve
 content/*_breakdown.md
 content/*_breakdown.txt
+mlb_pipeline/_chain_failures/
