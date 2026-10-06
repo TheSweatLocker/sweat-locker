@@ -155,6 +155,15 @@ jobs:
           # prints "DRY RUN — add --commit to write." Without the flag the
           # step would pass every day and settle nothing, which is a worse
           # failure than not scheduling it at all — it would look fixed.
+          #
+          # 2026-10-06 · --sport is deliberately NOT passed. It used to default
+          # to MLB, so this line — the settler's only scheduled caller — settled
+          # MLB and silently skipped the NFL branch for the four days it
+          # existed, leaving 25 settleable NFL receipts ungraded while the step
+          # exited 0. The default is now ALL and the script iterates its own
+          # supported-sport list, so adding a sport in the script is enough and
+          # this file never has to change again. Do not "fix" this by hardcoding
+          # a sport here; that reintroduces the exact failure.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \

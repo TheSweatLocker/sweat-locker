@@ -89,6 +89,67 @@ def _paged(table: str, date: str, tier: str = 'COVERAGE') -> list[dict]:
     return out
 
 
+# ══ 2026-10-06 · THIS PRUNER IS WHY 238 PUBLISHED RECEIPTS CAN NEVER BE GRADED ══
+# public_receipts is the immutable published-pick ledger, and a prop receipt
+# inherits its result from prop_jerry_reads via source_id. This script deleted
+# those source rows with no idea anything referenced them. Measured today: of
+# 240 ungraded prop_jerry receipts, 238 point at a prop_jerry_reads row that no
+# longer exists, going back to June.
+#
+# That is not recoverable after the fact. settle_prop_receipts can re-derive the
+# number from the box score, but not the SIDE WE BACKED: on a FADE the backed
+# side is the opposite of the one the receipt displays, and the only record of
+# the verdict was the row deleted here. Reading the verdict off the receipt's own
+# audit blob was tried and reverted — on exactly this population (reconstructed
+# capture, source gone) audit=PASS was wrong 48 of 48 times in NFL and 87% of the
+# time in MLB. So those 238 receipts are permanently unsettleable. The only fix
+# that works is the one that stops creating them.
+#
+# A row an UNGRADED receipt depends on is therefore pinned and never deleted.
+# Once the receipt carries a result it no longer needs its source, so the row
+# becomes prunable again and the cleanup stays effective.
+#
+# FAILS CLOSED. If the pin lookup errors we keep the rows. A pruner that cannot
+# prove a row is unreferenced must not delete it — the cost of keeping a stale
+# read for a day is nil, and the cost of deleting a pinned one is a published
+# pick that can never be graded.
+def _receipt_pinned(ids: list) -> set:
+    """Of `ids`, those an ungraded public_receipts row still depends on."""
+    want = [str(i) for i in ids]
+    pinned = set()
+    for i in range(0, len(want), 150):
+        csv = ','.join(f'"{x}"' for x in want[i:i + 150])
+        try:
+            r = requests.get(f'{SB}/rest/v1/public_receipts', headers=H_READ,
+                             params={'select': 'source_id',
+                                     'source_table': 'eq.prop_jerry_reads',
+                                     'source_id': f'in.({csv})',
+                                     'result': 'is.null', 'limit': '1000'},
+                             timeout=30)
+            rows = r.json() if r.status_code in (200, 206) else None
+            if not isinstance(rows, list):
+                print(f'    ⚠ pin lookup failed ({r.status_code}) — keeping '
+                      f'all {len(want)} rows in this batch')
+                return set(want)
+        except Exception as e:                      # noqa: BLE001
+            print(f'    ⚠ pin lookup raised ({e}) — keeping all rows')
+            return set(want)
+        pinned.update(str(x['source_id']) for x in rows if x.get('source_id'))
+    return pinned
+
+
+def _drop_pinned(sport: str, ids: list, details: list | None = None):
+    """Filter ids (and parallel details) down to the genuinely unreferenced."""
+    pinned = _receipt_pinned(ids)
+    if not pinned:
+        return ids, details
+    keep_i = [i for i, x in enumerate(ids) if str(x) not in pinned]
+    print(f'  [{sport}] {len(ids) - len(keep_i)} row(s) PINNED by an ungraded '
+          f'public_receipt — not deleting those')
+    return ([ids[i] for i in keep_i],
+            [details[i] for i in keep_i] if details is not None else None)
+
+
 def scan_and_clean(sport: str, date: str, dry_run: bool = False) -> int:
     """Returns count of stale prop_jerry_reads deleted."""
     table = PROPS_TABLES.get(sport)
@@ -118,6 +179,10 @@ def scan_and_clean(sport: str, date: str, dry_run: bool = False) -> int:
                 )
     if not stale_ids:
         print(f'  [{sport}] ✓ no stale-COVERAGE prop_jerry_reads found')
+        return 0
+    stale_ids, stale_details = _drop_pinned(sport, stale_ids, stale_details)
+    if not stale_ids:
+        print(f'  [{sport}] ✓ every stale row is pinned by an ungraded receipt')
         return 0
     print(f'  [{sport}] {len(stale_ids)} STALE prop_jerry_reads (conv>={STALE_CONVICTION_FLOOR}):')
     for d in stale_details[:15]: print(f'    · {d}')
@@ -205,6 +270,15 @@ def scan_stale_jerry_reads(sport: str, date: str, dry_run: bool = False) -> int:
              if (jr['player_name'], jr['prop_type'], jr['direction']) not in alive]
     if not stale:
         print(f'  [{sport}] ✓ no orphaned jerry_reads')
+        return 0
+    _pinned = _receipt_pinned([jr['id'] for jr in stale])
+    if _pinned:
+        before = len(stale)
+        stale = [jr for jr in stale if str(jr['id']) not in _pinned]
+        print(f'  [{sport}] {before - len(stale)} row(s) PINNED by an ungraded '
+              f'public_receipt — not deleting those')
+    if not stale:
+        print(f'  [{sport}] ✓ every orphaned row is pinned by an ungraded receipt')
         return 0
     print(f'  [{sport}] {len(stale)} ORPHANED jerry_reads (parent prop demoted below LEAN):')
     for jr in stale[:15]:

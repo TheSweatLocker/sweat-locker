@@ -54,9 +54,20 @@ this agrees with them. Run it first. A settler that disagrees with our own
 published record is worse than no settler, and this is the only way to know
 before writing anything.
 
-    python settle_prop_receipts.py --validate --days 14
-    python settle_prop_receipts.py --days 14              # dry run
-    python settle_prop_receipts.py --days 14 --commit
+    python settle_prop_receipts.py --validate             # every sport, 45d
+    python settle_prop_receipts.py                        # dry run
+    python settle_prop_receipts.py --commit
+    python settle_prop_receipts.py --sport NFL --days 200 # one sport, history
+
+--validate is not optional ceremony. On 2026-10-06 it found 13 NFL receipts
+whose PUBLISHED grade contradicts the week-correct box score — Aaron Rodgers
+graded a LOSS on OVER 31.5 pass attempts in a game he threw 40 — all written
+by resolve_nfl_props.py before it was disabled on 09-19 for taking
+`m.iloc[-1]`, the player's latest row of the season, instead of the row for
+the game being graded. Disabling that script stopped new damage and corrected
+none of the rows it had already written. Run --validate after any grading
+change; a settler disagreeing with the record means one of the two is wrong
+and you do not yet know which.
 """
 import argparse
 import os
@@ -507,16 +518,52 @@ def settle(rec: dict, fadeable: set, verdicts: dict) -> tuple:
     return ('Win' if hit else 'Loss'), actual, 'ok'
 
 
+# ══ 2026-10-06 · THE DEFAULT WAS SILENTLY DROPPING A WHOLE SPORT ══
+# An NFL settling branch was built on 10-02 against 88 reachable NFL prop
+# receipts. It then never ran once, because the only scheduled caller is
+# daily_card.yml:
+#
+#     python settle_prop_receipts.py --commit
+#
+# with no --sport, and --sport defaulted to 'MLB'. So the NFL code existed,
+# was correct, and was unreachable — and because the step exits 0 after
+# settling the MLB rows, nothing anywhere reported a problem. Measured
+# 2026-10-06: 25 NFL prop receipts ungraded, every one of them settleable.
+#
+# The fix is not "pass --sport NFL in the workflow". A default that silently
+# narrows scope is the defect: the next sport added would be invisible the
+# same way. ALL is now the default and it iterates every sport this settler
+# actually supports, so a new branch is live the day it is written.
+SPORTS = ('MLB', 'NFL')
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--days', type=int, default=14)
-    ap.add_argument('--sport', default='MLB')
+    # 14 days was the old default and it could not reach its own backlog.
+    # The ungraded prop receipts on 2026-10-06 ran from 2026-06 to 2026-10;
+    # a 14-day window left everything before 09-22 permanently unsettleable,
+    # because a receipt only gets one pass through the scheduled run and the
+    # window had already moved past it. 45 days covers the live backlog; use
+    # --days 200 to sweep history.
+    ap.add_argument('--days', type=int, default=45)
+    ap.add_argument('--sport', default='ALL',
+                    help="sport, or ALL (default) for every supported sport")
     ap.add_argument('--validate', action='store_true',
                     help='re-settle ALREADY-GRADED receipts and report agreement')
     ap.add_argument('--limit', type=int, default=0, help='cap rows (0 = all)')
     ap.add_argument('--commit', action='store_true')
     args = ap.parse_args()
 
+    sports = list(SPORTS) if args.sport.upper() == 'ALL' else [args.sport]
+    rc = 0
+    for sp in sports:
+        if len(sports) > 1:
+            print()
+        rc |= run_one(args, sp) or 0
+    return rc
+
+
+def run_one(args, sport):
     hi = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
     lo = hi - timedelta(days=args.days)
     # source_id MUST be selected — the FADE guard looks it up, and PostgREST
@@ -540,7 +587,7 @@ def main():
          # only SETTLEABLE with LABEL_PARSE on, and that is unvalidated — so
          # while it is off, keep the original prop_jerry scoping so a run
          # cannot silently churn through 80 receipts it will only refuse.
-         'market': 'eq.prop', 'sport': f'eq.{args.sport}',
+         'market': 'eq.prop', 'sport': f'eq.{sport}',
          **({} if LABEL_PARSE else {'surface': 'eq.prop_jerry'}),
          'game_date': f'gte.{lo}', 'order': 'game_date.asc'}
     q['result'] = 'not.is.null' if args.validate else 'is.null'
@@ -550,12 +597,12 @@ def main():
         recs = recs[:args.limit]
 
     mode = 'VALIDATE' if args.validate else ('APPLY' if args.commit else 'DRY')
-    print(f'=== settle_prop_receipts · {args.sport} · {lo}..{hi} · {mode} ===')
+    print(f'=== settle_prop_receipts · {sport} · {lo}..{hi} · {mode} ===')
     print(f'  {len(recs)} receipt(s)')
     if not recs:
         return
 
-    fadeable = fadeable_families(args.sport, (hi - timedelta(days=120)).isoformat())
+    fadeable = fadeable_families(sport, (hi - timedelta(days=120)).isoformat())
     verdicts = source_verdicts(recs)
     print(f'  fadeable families: {sorted(fadeable) or "none"}')
     print(f'  source reads still present: {len(verdicts)}/{len(recs)}')

@@ -223,6 +223,20 @@ def run(game_date: str | None = None, dry_run: bool = False, sport: str = 'MLB')
             if len(chunk) < 1000: break
         orphan_ids = [j['id'] for j in jr
                       if (j['player_name'], j['prop_type'], j['direction']) in deleted_keys]
+        # 2026-10-06 · Never delete a read an UNGRADED public_receipt depends on.
+        # This is the second of two places that deleted prop_jerry_reads rows
+        # blind; between them they stranded 238 published prop receipts at
+        # result=NULL permanently, because a receipt inherits its result through
+        # source_id and the backed side of a FADE exists nowhere else. Imported
+        # rather than re-implemented — a second copy of this rule drifting from
+        # the first is how the original gap survived so long.
+        from cleanup_stale_coverage_props import _receipt_pinned
+        _pinned = _receipt_pinned(orphan_ids)
+        if _pinned:
+            _before = len(orphan_ids)
+            orphan_ids = [i for i in orphan_ids if str(i) not in _pinned]
+            print(f'  📌 {_before - len(orphan_ids)} orphaned read(s) PINNED by an '
+                  f'ungraded public_receipt — keeping them')
         for i in range(0, len(orphan_ids), CHUNK):
             chunk = orphan_ids[i:i+CHUNK]
             id_list = ','.join(str(x) for x in chunk)
