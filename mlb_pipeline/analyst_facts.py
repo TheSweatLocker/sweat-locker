@@ -207,6 +207,23 @@ def build_provided_facts_mlb(ctx: dict) -> dict:
             'barrel_pct_team': ctx.get(f'{side}_team_barrel_pct'),
         }
 
+    def _spread_favors(val, home_team, away_team):
+        """'Padres by 0.33' — the sign spelled out as a team.
+
+        Convention measured, not assumed: projected_spread correlates +0.2998
+        with actual home margin across 89 games, so a POSITIVE value favours
+        the HOME team. close_spread runs the other way (-0.1829), which is
+        exactly why a bare signed number in a prompt is a trap.
+        """
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return None
+        if abs(v) < 0.05:
+            return f'pick’em (projection {v:+.2f}, no side)'
+        team = home_team if v > 0 else away_team
+        return f'{team} by {abs(v):.2f} runs'
+
     return {
         'matchup': f'{away} @ {home}',
         'sport': 'MLB',
@@ -216,9 +233,25 @@ def build_provided_facts_mlb(ctx: dict) -> dict:
             'conviction': pp.get('conviction'), 'type': pp.get('type'),
             'side': pp.get('side'),
         },
+        # ══ 2026-10-06 · A SIGNED NUMBER WITH NO TEAM ON IT GETS INVERTED ══
+        # This handed the model a bare `projected_spread` and nothing saying
+        # which team the sign favours, so the convention had to be inferred.
+        # On MIL @ SD 2026-10-06 it was inferred backwards: projected_spread
+        # was +0.33, which measured against actual home margin means the
+        # PADRES by 0.33 (r=+0.2998 over 89 games, higher = home better). The
+        # read quoted "the model projects a near-pick'em at +0.33" and used it
+        # to argue the BREWERS — citing the magnitude while asserting the
+        # opposite of the sign. That read then reached the card as a PRIME.
+        #
+        # The fix is to remove the thing being inferred. `spread_favors` names
+        # the team outright, so there is no convention left to get wrong, and
+        # the raw signed value stays for anything that reads it numerically.
+        # Cheaper and more reliable than validating prose after generation.
         'model_projections': {
             'projected_spread': ctx.get('projected_spread'),
             'projected_total': ctx.get('projected_total'),
+            'spread_favors': _spread_favors(ctx.get('projected_spread'),
+                                            home, away),
         },
         'starting_pitchers': {home: _sp_block('home'), away: _sp_block('away')},
         'bullpens': {
