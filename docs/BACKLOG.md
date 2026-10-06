@@ -1383,3 +1383,143 @@ verifiable.
 | MLB tab note moved to sport_registry, derived from real state | `ed469ff6` |
 | notes relocated below filters | `055ef4a1` |
 | conviction-0 chips render NO PLAY | pending build |
+
+---
+
+# 2026-10-06 — ONE ROOT CAUSE, SIX SYMPTOMS
+
+Everything below traces to **B12** (rows stay mutable) and **B32** (we never
+store the closing price). Both were already logged. Neither was closed. Today
+they produced a user-visible contradiction on a postseason card.
+
+## R1 · Immutable receipts published from mutable tables — THE root cause
+
+`mlb_pipeline_props` is deleted and re-inserted during the day. Measured
+2026-10-06: 434 rows to 227 **between two queries minutes apart**; batches
+written 18:39 (164), 18:40 (4), 22:42 (22), 22:43 (37), all with fresh ids.
+
+Six symptoms, one cause:
+
+1. Nick Pivetta Over 3.5 Ks carried FOUR convictions — Sharp 24, Sweat Card
+   65, prop_jerry 50, source row 83 — each surface read a different
+   generation. No component was wrong.
+2. "Mike Yastrzemski Under 0.5 Hits" shipped PRIME/75 and has **no source
+   row at all**.
+3. Receipts cite `prop_jerry_reads` ids (135052/135054/135064) that are gone.
+4. 238 prop receipts permanently unsettleable, back to June.
+5. The Padres/Brewers card contradiction — the card froze a `jerry_reads` row
+   that was rewritten underneath it.
+6. It corrupted MY OWN analysis: a join dropped 610 of 1,216 receipts (50%)
+   because it could only see surviving source rows, and the bias concentrated
+   in STRONG (88% of STRONG receipts had their source deleted, leaving n=33
+   that ran 45.5%) — which is what made the tier ladder look "inverted".
+
+Pinned so an ungraded receipt's source is never deleted: `6e24d001`
+(prop_jerry_reads, by id) and `1d13e37a` (props, by composite key). Both fail
+closed. **THE CHURN ITSELF IS NOT FIXED** — rows still get rebuilt with new
+ids and different convictions mid-day.
+
+FIX (not done): make prop rows stable — upsert in place and never delete a
+row for a game that has not started. The `on_conflict` target is already the
+full natural key (game_date, player_name, prop_type, direction, prop_line),
+so the DELETES are what break id stability, not the writes.
+
+VERIFY: count rows and the min/max id for today twice, ten minutes apart, and
+diff them; or check `created_at` clustering — batches minutes apart mean a
+rebuild happened.
+
+## R2 · We publish a worse price than the one we already observed (extends B32)
+
+Of 408 reads carrying both a taken and a best-available price:
+
+    pick price == best available     28  ( 7%)
+    pick price WORSE than best      380  (93%)
+    median give-up when worse       1.11pp of implied probability
+
+For scale: PRIME's measured shortfall is **-2.1pp** (59.2% delivered vs 61.3%
+implied). So roughly half of it may be self-inflicted at the point of
+recording rather than a selection problem.
+
+Also confirmed: `pick_odds` is the PUBLISH price, not the close — 318 of 326
+game_read receipts match `price_american`, **zero** match
+`close_price_american`. And `close_price_american` is empty on EVERY read, so
+CLV and line movement remain unmeasurable (B32 unchanged). Only 418 of 1,641
+reads carry any price at all.
+
+WHY THIS BLOCKS THE TIERING WORK: every ROI number we compute is measuring
+bookkeeping as much as picks. Tuning selection against it bakes the artifact
+in. Price capture first, re-measure tiers second.
+
+VERIFY: in `jerry_reads`, compare `price_american` against `price_best` where
+both are non-null and count rows where the taken price implies a higher
+probability than the best price did.
+
+## Open, lower tier (logged so they are not re-discovered)
+
+* **Side selection is not deterministic.** MIL @ SD 2026-10-06: `primary_play`
+  computed HOME/Padres/95 at 12:58:44 and AWAY/Brewers/0 at 13:00:50 —
+  opposite sides two minutes apart, both ending COVERAGE for different reasons
+  (LR dissent, then the MC hard block).
+  VERIFY: `primary_play_computed_at` against `primary_play.side` across a day.
+* **`projected_spread` and `jerry_pred_spread` disagree in sign on 22.5% of
+  games** (20 of 89). Directional accuracy against actual home margin:
+  projected 66.3%, close_spread 57.3%, jerry_pred 52.8%,
+  **model_pred_spread 49.3% (a coin flip, n=75)** — and both weak ones feed
+  side selection. Leakage can only inflate, so the bad numbers are the
+  trustworthy ones.
+* **`mc_p_away_win + mc_p_home_win = 0.892`**, not 1.0 (MIL @ SD). MC gates
+  every pick through `defensive_gates`.
+* **Sharp displays a tier derived from base conviction next to a number taken
+  from refit.** `refit_conviction` lands in a different band than base
+  **59.3%** of the time (n=214, median gap 18.3, max 69.6). That is how a
+  PRIME shows conviction 24.
+* **`refit_conviction` covers 3.8% of the board** (386 of 10,202 since 09-22):
+  100% on er/ks, **0% on every high-volume batter family** (rbis, runs,
+  total_bases, hr, hits). Flat ladder. It is a second probability score, not a
+  value score — decide whether it lives or dies.
+* **102 published grades are provably wrong** — MLB 87 of 5,058 judged, NFL 15
+  of 1,337. Correcting them makes the record **~11.8u WORSE**. ANDY'S CALL,
+  untouched. NFL cause: `resolve_nfl_props.py` took the player's latest row of
+  the season instead of the game being graded; disabled 09-19, rows never
+  corrected.
+  VERIFY: `python mlb_pipeline/audit_prop_grades.py --sport MLB --since 2026-06-01`
+* **`daily_degen` is 25-119 (17.4%)** on n=144. Fix or retire.
+* **`nfl_game_context.updated_at` is never written** — it is an INSERT
+  timestamp, so row freshness is unknowable. `team_tendencies_updated_at` is
+  NULL on every row. One line each in two files.
+* **CFB "this week" tab shows 2 games** against a full Thu-Sun slate while NFL
+  advanced correctly.
+* **KenPom key must be rotated before NCAAB opens 2026-11-03** — it shipped
+  inlined in builds up to v1.0.1 and is extractable from those binaries.
+  Config is now clean (`78709762`); the exposed value is not recoverable.
+  Also delete the stale `EXPO_PUBLIC_KENPOM_KEY` secret from GitHub and all
+  three EAS environments — no code reads it.
+* **EPA from ESPN play-by-play FAILS its pre-declared bar**: r=0.8593 against
+  0.95. The EP surface is textbook and the error budget points at EP bin noise
+  (fitted on 22,955 plays); three seasons (~400k) are now cached for a refit.
+  `off_power_success` r=0.84 — not fit to use.
+* **371 past-game ungraded receipts**, of which 238 are permanently
+  unsettleable (R1). The rest need the settler run over a wider window.
+* **Price thresholds are hardcoded across 10+ files** — `compute_surface_records`
+  42, `defensive_gates` 36, `generate_sweat_card` 26, `generate_sharp_card` 20,
+  plus two dedicated gate scripts. Every one approximates a price term missing
+  from the ranking. They are why the decision path feels like it flip-flops.
+
+## Closed 2026-10-06
+
+| item | SHA |
+|---|---|
+| Sweat Card takes side+tier from `primary_play`, refuses to publish over a pass | `4656e20b` |
+| `analyst_facts` names the team the spread favours (root cause of the Brewers prose) | `2b58f37a` |
+| Pin guard: never delete a `prop_jerry_reads` row an ungraded receipt needs | `6e24d001` |
+| Pin guard: same for `mlb_pipeline_props`, by composite key | `1d13e37a` |
+| `settle_prop_receipts` covers every sport (was silently MLB-only), 45d window | `6e24d001` |
+| `audit_prop_grades.py` — grade auditor independent of the grader | `e35a7bad` |
+| `stat_pit_vs_cover.py` — point-in-time stat-vs-ATS engine | `45b099fc` |
+| ESPN NCAAF volumetric stats, validated over 4 weekends | `e02efae1` `5b3d8222` |
+| Advanced metrics from ESPN play-by-play, 7 of 8 at r>=0.97 | `f672aad1` |
+| EPA model plus an honest failing verdict | `f9c03447` |
+| Chain failure output persisted instead of discarded | `df3b2ee8` |
+| Watchdog: context row stale when its slate is imminent | `1cc8737c` |
+| `kenpom_pull` accepts only the server-side key name | `78709762` |
+| CFBD key rotated by Andy, verified live, 376 stat rows upserted | 2026-10-06 |
