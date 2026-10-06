@@ -200,6 +200,16 @@ def main() -> int:
         ('NHL results (yesterday)', ['nhl_resolve_results.py', '--date',
                                      (today - dt.timedelta(days=1)).isoformat()]),
         ('NCAAF results', ['resolve_ncaaf_results.py']),
+        # 2026-10-06: CFBD's monthly quota is exhausted, and
+        # resolve_ncaaf_results sources its scores from CFBD — with the
+        # quota dead it reports "CFBD games w/ scores: 0" and NCAAF
+        # cannot be graded AT ALL. ESPN needs no key and no quota, and
+        # agreed with CFBD on 53 of 53 scores for 2026-10-03 with 0
+        # mismatches. Runs AFTER the CFBD attempt so CFBD stays primary
+        # whenever it has quota, and only fills rows where home_score
+        # IS NULL so a CFBD score is never overwritten.
+        ('NCAAF results (ESPN fallback)', ['ncaaf_results_espn.py',
+                                          '--days', '10', '--apply']),
         ('NBA results', ['nba_resolve_results.py', '--date', today.isoformat()]),
     ):
         ok, _ = run(label, cmd)

@@ -1,0 +1,182 @@
+{
+  "conf2_dog_rl": {
+    "wins": 13,
+    "losses": 17,
+    "pushes": 8,
+    "n": 30,
+    "win_pct": 43.3,
+    "expression": "|signal_confluence_net|=2 AND confluence points to the DOG RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf2_fav_rl": {
+    "wins": 15,
+    "losses": 16,
+    "pushes": 15,
+    "n": 31,
+    "win_pct": 48.4,
+    "expression": "|signal_confluence_net|=2 AND confluence points to the FAV RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf2_dog_ml": {
+    "wins": 17,
+    "losses": 21,
+    "pushes": 0,
+    "n": 38,
+    "win_pct": 44.7,
+    "expression": "|signal_confluence_net|=2 AND confluence points to the DOG ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf2_fav_ml": {
+    "wins": 22,
+    "losses": 24,
+    "pushes": 0,
+    "n": 46,
+    "win_pct": 47.8,
+    "expression": "|signal_confluence_net|=2 AND confluence points to the FAV ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf3_dog_rl": {
+    "wins": 13,
+    "losses": 15,
+    "pushes": 6,
+    "n": 28,
+    "win_pct": 46.4,
+    "expression": "|signal_confluence_net|=3 AND confluence points to the DOG RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf3_fav_rl": {
+    "wins": 14,
+    "losses": 18,
+    "pushes": 13,
+    "n": 32,
+    "win_pct": 43.8,
+    "expression": "|signal_confluence_net|=3 AND confluence points to the FAV RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf3_dog_ml": {
+    "wins": 18,
+    "losses": 16,
+    "pushes": 0,
+    "n": 34,
+    "win_pct": 52.9,
+    "expression": "|signal_confluence_net|=3 AND confluence points to the DOG ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf3_fav_ml": {
+    "wins": 21,
+    "losses": 24,
+    "pushes": 0,
+    "n": 45,
+    "win_pct": 46.7,
+    "expression": "|signal_confluence_net|=3 AND confluence points to the FAV ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf4_dog_rl": {
+    "wins": 11,
+    "losses": 5,
+    "pushes": 11,
+    "n": 16,
+    "win_pct": 68.8,
+    "expression": "|signal_confluence_net|=4 AND confluence points to the DOG RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf4_fav_rl": {
+    "wins": 6,
+    "losses": 4,
+    "pushes": 4,
+    "n": 10,
+    "win_pct": 60.0,
+    "expression": "|signal_confluence_net|=4 AND confluence points to the FAV RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf4_dog_ml": {
+    "wins": 17,
+    "losses": 10,
+    "pushes": 0,
+    "n": 27,
+    "win_pct": 63.0,
+    "expression": "|signal_confluence_net|=4 AND confluence points to the DOG ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf4_fav_ml": {
+    "wins": 9,
+    "losses": 5,
+    "pushes": 0,
+    "n": 14,
+    "win_pct": 64.3,
+    "expression": "|signal_confluence_net|=4 AND confluence points to the FAV ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf5_dog_rl": {
+    "wins": 6,
+    "losses": 9,
+    "pushes": 2,
+    "n": 15,
+    "win_pct": 40.0,
+    "expression": "|signal_confluence_net|=5 AND confluence points to the DOG RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf5_fav_rl": {
+    "wins": 5,
+    "losses": 4,
+    "pushes": 4,
+    "n": 9,
+    "win_pct": 55.6,
+    "expression": "|signal_confluence_net|=5 AND confluence points to the FAV RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf5_dog_ml": {
+    "wins": 6,
+    "losses": 11,
+    "pushes": 0,
+    "n": 17,
+    "win_pct": 35.3,
+    "expression": "|signal_confluence_net|=5 AND confluence points to the DOG ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf5_fav_ml": {
+    "wins": 8,
+    "losses": 5,
+    "pushes": 0,
+    "n": 13,
+    "win_pct": 61.5,
+    "expression": "|signal_confluence_net|=5 AND confluence points to the FAV ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf6_dog_rl": {
+    "wins": 1,
+    "losses": 5,
+    "pushes": 1,
+    "n": 6,
+    "win_pct": 16.7,
+    "expression": "|signal_confluence_net|=6 AND confluence points to the DOG RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf6_fav_rl": {
+    "wins": 5,
+    "losses": 4,
+    "pushes": 5,
+    "n": 9,
+    "win_pct": 55.6,
+    "expression": "|signal_confluence_net|=6 AND confluence points to the FAV RL side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf6_dog_ml": {
+    "wins": 1,
+    "losses": 6,
+    "pushes": 0,
+    "n": 7,
+    "win_pct": 14.3,
+    "expression": "|signal_confluence_net|=6 AND confluence points to the DOG ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  },
+  "conf6_fav_ml": {
+    "wins": 8,
+    "losses": 6,
+    "pushes": 0,
+    "n": 14,
+    "win_pct": 57.1,
+    "expression": "|signal_confluence_net|=6 AND confluence points to the FAV ML side",
+    "computed_at": "2026-06-07T19:03:09.164536+00:00"
+  }
+}

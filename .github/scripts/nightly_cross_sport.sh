@@ -93,6 +93,14 @@ echo "── resolvers ──"
 bash "$RUN_STEP" --label "resolve_ncaaf_results.py (nightly)" \
   python resolve_ncaaf_results.py --skip-external
 
+# 2026-10-06: CFBD monthly quota exhausted. resolve_ncaaf_results takes its
+# scores from CFBD, so on a dead quota it grades NOTHING ("CFBD games w/
+# scores: 0"). ESPN needs no key and no quota and agreed with CFBD on 53
+# of 53 scores for 2026-10-03, 0 mismatches. Runs AFTER the CFBD attempt
+# and only fills home_score IS NULL rows, so CFBD stays primary.
+bash "$RUN_STEP" --label "ncaaf_results_espn.py (CFBD-free fallback)" \
+  python ncaaf_results_espn.py --days 10 --apply
+
 # 2026-09-29 NEW: NFL had NO daily resolver. resolve_nfl_results ran only on
 # nfl_pipeline's Tue/Wed crons, so Sunday games were not graded until Tuesday —
 # the same three-day lag NCAAF avoided only by borrowing this workflow. Andy's

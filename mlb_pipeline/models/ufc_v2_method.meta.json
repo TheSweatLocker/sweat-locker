@@ -1,0 +1,147 @@
+{
+  "name": "method",
+  "version": "v2",
+  "feature_names": [
+    "a_dec_wins",
+    "a_finishing_rate",
+    "a_grappling_threat",
+    "a_ko_wins",
+    "a_losses",
+    "a_recent_form",
+    "a_sapm",
+    "a_slpm",
+    "a_str_acc",
+    "a_str_def",
+    "a_striking_dominance",
+    "a_sub_avg",
+    "a_sub_wins",
+    "a_td_acc",
+    "a_td_avg",
+    "a_td_def",
+    "a_total_fights",
+    "a_wins",
+    "age_diff",
+    "b_dec_wins",
+    "b_finishing_rate",
+    "b_grappling_threat",
+    "b_ko_wins",
+    "b_losses",
+    "b_recent_form",
+    "b_sapm",
+    "b_slpm",
+    "b_str_acc",
+    "b_str_def",
+    "b_striking_dominance",
+    "b_sub_avg",
+    "b_sub_wins",
+    "b_td_acc",
+    "b_td_avg",
+    "b_td_def",
+    "b_total_fights",
+    "b_wins",
+    "experience_diff",
+    "finishing_rate_diff",
+    "form_diff",
+    "height_diff",
+    "is_5_round",
+    "reach_diff",
+    "slpm_diff",
+    "stance_mismatch",
+    "stance_southpaw_a",
+    "stance_southpaw_b",
+    "str_def_diff",
+    "sub_threat_diff",
+    "td_def_diff"
+  ],
+  "trained_at": "2026-08-20T01:53:38.252657",
+  "hyperparams": {
+    "max_depth": 3,
+    "learning_rate": 0.075,
+    "min_child_weight": 1,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "reg_lambda": 2.0
+  },
+  "best_iter": 110,
+  "n_train": 1316,
+  "n_val": 272,
+  "n_test": 378,
+  "class_names": [
+    "KO_TKO",
+    "SUB",
+    "DEC"
+  ],
+  "train_metrics": {
+    "log_loss": 0.6704839086026219,
+    "accuracy": 0.7879939209726444,
+    "n": 1316
+  },
+  "val_metrics": {
+    "log_loss": 0.9605537794663868,
+    "accuracy": 0.4963235294117647,
+    "n": 272
+  },
+  "test_metrics": {
+    "log_loss": 1.0493848415342186,
+    "accuracy": 0.4656084656084656,
+    "n": 378
+  },
+  "test_per_class": {
+    "per_class": {
+      "KO_TKO": {
+        "precision": 0.47058823529411764,
+        "recall": 0.5161290322580645,
+        "f1": 0.49230769230769234,
+        "support": 124,
+        "predicted_count": 136
+      },
+      "SUB": {
+        "precision": 0.26744186046511625,
+        "recall": 0.359375,
+        "f1": 0.30666666666666664,
+        "support": 64,
+        "predicted_count": 86
+      },
+      "DEC": {
+        "precision": 0.5705128205128205,
+        "recall": 0.46842105263157896,
+        "f1": 0.5144508670520231,
+        "support": 190,
+        "predicted_count": 156
+      }
+    },
+    "confusion_matrix": [
+      [
+        64,
+        24,
+        36
+      ],
+      [
+        10,
+        23,
+        31
+      ],
+      [
+        62,
+        39,
+        89
+      ]
+    ],
+    "class_order": [
+      "KO_TKO",
+      "SUB",
+      "DEC"
+    ]
+  },
+  "test_predicted_class_counts": {
+    "KO_TKO": 136,
+    "SUB": 86,
+    "DEC": 156
+  },
+  "heavier_sub_weight_used": false,
+  "split_boundaries": {
+    "train_end": "2025-10-01",
+    "val_end": "2026-02-01"
+  },
+  "sample_weight_strategy": "inverse_frequency"
+}
