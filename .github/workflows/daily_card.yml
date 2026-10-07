@@ -238,6 +238,32 @@ jobs:
       # it never overwrites a published price, and it reads each write back
       # (a 204 is not a write). A 7-day window keeps it cheap; the historical
       # sweep is a manual --since run.
+      # ══ 2026-10-07 · CAPTURE THE RECEIPTS BEFORE PRICING THEM ══
+      # backfill_public_receipts.py was in NO workflow — the same failure as
+      # the price backfill below. Run by hand once, never again.
+      #
+      # What that cost: the Ledger went cross-sport around 09-28 (its legs
+      # now pair e.g. a Yankees ML with an Avalanche ML, so sport_scope is
+      # 'MULTI'), and 16 of the 17 snapshots since then had no receipt at
+      # all. The app's October Ledger card read "1-0 +1.15u" while
+      # ledger_snapshots held 9-4 +8.21u — including yesterday's two
+      # parlays, both WON, showing as no record whatsoever.
+      #
+      # Runs BEFORE the pricing step so a receipt written today is priced in
+      # the same pass. Idempotent: ignore-duplicates on
+      # (sport, surface, game_date, source_id).
+      - name: Capture receipts from the source tables
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          for S in MLB NFL NCAAF NHL; do
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "backfill_public_receipts.py ($S)"               python backfill_public_receipts.py --sport "$S" || true
+          done
+
       - name: Price the receipts just published
         continue-on-error: true
         working-directory: mlb_pipeline

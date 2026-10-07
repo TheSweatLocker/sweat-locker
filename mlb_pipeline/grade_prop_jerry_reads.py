@@ -104,9 +104,28 @@ def _fetch_stat_for_date(pid: int, stat_field: str, game_date: str,
     """
     try:
         season = game_date[:4]
+        # ══ 2026-10-07 · gameLog DEFAULTS TO REGULAR SEASON ONLY ══
+        # Without gameType the MLB API returns gameType=R splits, so every
+        # POSTSEASON game is invisible. It is October, which is the only
+        # baseball being played, so this fallback was blind to the entire
+        # slate. Verified on Yamamoto (pid 808967), 2026-10-06:
+        #
+        #   no gameType  -> 28 splits, 2026-10-06 ABSENT
+        #   gameType=R   -> 28 splits, 2026-10-06 ABSENT
+        #   gameType=P   ->  1 split,  2026-10-06 PRESENT, IP 7.0 (= 21 outs)
+        #   gameType=R,P -> 29 splits, 2026-10-06 PRESENT
+        #
+        # Consequence Andy hit: "Yastrzemski under hit not graded, it hit"
+        # (0 hits, postseason, so the lookup returned None and the row was
+        # stamped UNGRADEABLE) and the POTD "Yamamoto graded as lost when he
+        # went 21" outs against a 17.5 line.
+        #
+        # 'R,P' rather than 'P' alone so regular-season grading is unchanged
+        # and a backfill across the season boundary still works.
         r = requests.get(MLB_GAMELOG.format(pid=pid),
             params={'stats': 'gameLog', 'group': group,
-                    'season': season, 'sportId': 1}, timeout=10)
+                    'season': season, 'sportId': 1,
+                    'gameType': 'R,P'}, timeout=10)
         if r.status_code != 200: return None
         splits = r.json().get('stats', [{}])[0].get('splits', [])
         # Find the split matching game_date

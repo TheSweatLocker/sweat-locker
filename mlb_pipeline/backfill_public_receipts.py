@@ -347,8 +347,26 @@ def backfill_ledger(sport: str, dry_run: bool = False) -> int:
     # sport_scope holds values like 'MLB' / 'MULTI', so an exact match on
     # the sport is right for single-sport rows; MULTI rows are handled by
     # the daily_degen path.
-    url = (f'{SB}/rest/v1/ledger_snapshots?sport_scope=eq.{sport}'
-           f'&select=id,sport_scope,game_date,kind,legs,legs_hit,result,'
+    # ══ 2026-10-07 · THE LEDGER WENT CROSS-SPORT AND THIS DID NOT ══
+    # Filtering `sport_scope=eq.{sport}` captured only single-sport parlays.
+    # Measured today, ledger_snapshots holds
+    #     MLB 231 · MULTI 17 · NCAAF 1 · NFL 1
+    # and SINCE 2026-09-28 it is MULTI 16 / MLB 1 — the Ledger started
+    # pairing legs across sports (the shipped Chalk Duo is a Yankees ML with
+    # an Avalanche ML). So every parlay for the last ten days was invisible
+    # to this backfill.
+    #
+    # What Andy saw: the app's October Ledger card reads "1-0 +1.15u" — the
+    # single MLB-scoped row from 10-03 — while ledger_snapshots has October
+    # at 9-4 +8.21u. Yesterday alone was two parlays, both WON (+1.64,
+    # +1.61), and the card showed no record at all.
+    #
+    # Capture every scope and let the row's own sport_scope be the receipt's
+    # sport ('MULTI' for cross-sport). The upsert is ignore-duplicates on
+    # (sport, surface, game_date, source_id) and source_id is the snapshot
+    # id, so re-running across sports cannot double-write.
+    url = (f'{SB}/rest/v1/ledger_snapshots?'
+           f'select=id,sport_scope,game_date,kind,legs,legs_hit,result,'
            f'snapshotted_at,graded_at,combined_odds,unit_pnl'
            f'&order=game_date.desc')
     batch = []
@@ -373,7 +391,7 @@ def backfill_ledger(sport: str, dry_run: bool = False) -> int:
         kind = row.get('kind') or 'parlay'
         hit = row.get('legs_hit')
         batch.append({
-            'sport': sport,
+            'sport': str(row.get('sport_scope') or sport).upper(),
             'surface': 'ledger',
             'market': kind,
             'game_date': row.get('game_date'),
