@@ -1623,3 +1623,249 @@ without a new binary. Two decisions for Andy: (a) ship a build, and (b) whether
 to add `expo-updates` so client logic fixes stop requiring App Store review.
 
 VERIFY after build: NCAAF Games tab on a Tue/Wed lists the Saturday slate.
+
+---
+
+# 2026-10-07 — line integrity, money flow, and tier caps
+
+Found while building the NFL week-5 hand-by-hand. Seven items. One shipped,
+one needs a migration applied by hand, five are open. House rules apply: no
+line numbers, every item carries a VERIFY, nothing closed without a SHA.
+
+**The two that block everything else: B51 is shipped but B57 refuses it at
+the database, so the stale lines are STILL LIVE on the cards right now.**
+
+### B51 · `close_spread` is the OPENING line, so we publish stale picks — FIXED `9527924c`, NEEDS A LIVE RUN
+
+**ROOT CAUSE for the whole class.** `<sport>_game_context.close_spread` is in
+practice the open, never refreshed:
+
+| sport | rows with both | identical to `open_spread` |
+|---|---|---|
+| NFL | 314 | 263 — **83.8%** |
+| NCAAF | 486 | 336 — 69.1% |
+| MLB | 80 | 74 — 92.5% |
+
+Every published number derives faithfully from it — `primary_play.line`, the
+label, `jerry_reads.call_line`, the frozen receipt. So the pick builder was
+never buggy; its input was the wrong column. A model projection was the
+obvious suspect and is **rejected** (matches `projected_spread` 3 of 14,
+`v3_spread` 2 of 14 — noise).
+
+Not a timing problem either: `line_history` had all 14 of next week's games
+priced at 10-06T19:56, before the reads ran.
+
+The hole was CADENCE. Lines pull Tue 11am; the 6-hourly injury cron covered
+**Thu–Sun only**. Nothing ran Tue to Thu, which is exactly when mid-week
+injury news lands. BAL @ ATL opened BAL -6.5, traded -6.0 on 138 captures, and
+is now BAL **+3.5** — 9.5 points with the favourite flipping — entirely inside
+that gap, and the card read "BAL -6" all week.
+
+FIX SHIPPED: `refresh_market_lines.py` updates market columns only from
+`line_history` (median across books, `MIN_BOOKS=3`, never a started game,
+never `primary_play`, fails closed per game). Wired before the label
+normalizer in `nfl_pipeline.yml` and before the recompute in
+`ncaaf_pipeline.yml`. Wednesday added to the cron.
+
+**STILL OWED:** the live correction, in this order:
+
+    python refresh_market_lines.py
+    python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 10
+
+VERIFY: `python audit_published_lines.py --sport NFL --live` shows
+`NEVER TRADED` at 0.
+
+### B52 · A wrong line freezes into a receipt permanently — OPEN, needs a pre-capture guard
+
+`public_receipts.pick_line` is set-once via `trg_freeze_receipt_identity`, so
+BAL @ ATL's captured `game_read` receipt stays at **-6** even after B51
+corrects the card. It will grade against a number nobody could take. Records
+are not to be repaired, so the only fix is to stop a bad line reaching
+capture.
+
+Two distinct failure modes, and the guard must treat them differently:
+
+- **MOVED** — the books did trade there. BAL -6 on 138 captures. Legitimate;
+  keep it, and surface the move.
+- **NEVER TRADED** — the books never posted it. NE -8.5 on a game that ranged
+  -4.0..-3.0 across 1,064 captures. Block this one.
+
+FIX: in the capture path, reject a `call_line` that
+`market_line.ever_traded()` says never existed, and log it rather than
+publishing. Do NOT block on "differs from current" — that would suppress
+every legitimately moved pick.
+
+VERIFY: `python audit_published_lines.py --days 35`. NFL was ok 59.3% /
+MOVED 15.4% / NEVER TRADED 25.3% on 91 checkable picks.
+
+### B53 · The `cz` money-flow source is unusable — OPEN
+
+Andy spotted "100 percent on over" on a college card. One source, three
+separate failures. NCAAF splits for 10/07-10/09:
+
+| source | values exactly 0.0 or 100.0 |
+|---|---|
+| `fr` | 0 of 42 — 0.0% |
+| `ftp` | 0 of 64 — 0.0% |
+| `cz` | 18 of 74 — **24.3%** |
+
+1. **Saturation.** Wyoming@SJSU `total OVER 100%/100%`; also MO State@WKU,
+   Iowa State@BYU, FSU@Louisville.
+2. **Both sides at 100%** in the same game (MO State@WKU `ml HOME 100/100`
+   and `total UNDER 100/100`) — the numbers are not shares of anything.
+3. **It duplicates its `ml` row into `rl`.** NMSU@FIU: `ml AWAY 33%/69%` and
+   `rl AWAY 33%/69%`, identical every game. So any "the spread money is on X"
+   sourced from cz is really the moneyline number.
+
+Already on file at 15.2% saturation; it is worse on college and still feeding
+the product.
+
+FIX: exclude cz from money-flow display and from read prompts until the
+scraper is fixed; show per-source values rather than a blend so a saturated
+source is visible instead of averaged in. `fr`/`ftp` are clean; `oc` is what
+The Fade runs on.
+
+VERIFY: count `oc/fr/ftp/cz` values equal to 0.0 or 100.0 in
+`public_splits_archive` for the current week.
+
+### B54 · A moneyline edge verdict is applied to a spread bet — OPEN
+
+`model_edge.edge_pp()` correctly refuses non-moneylines, and its own docstring
+says comparing conviction to an ML price is meaningless for a spread. But the
+ORDER re-introduces exactly that: `defensive_gates` computes the edge cap on
+the **ML price**, builds `new_pp` as `type: ml`, and then the
+heavy-favourite reroute rewrites it to `type: rl` and keeps the cap.
+
+Live examples: FIU capped STRONG to COVERAGE on "model 55% vs 64% implied"
+where 64% is the **-178 moneyline**, then published as a -6.5 spread. BAL @
+ATL capped PRIME to COVERAGE on "68% vs 74% implied" from an ML of -278, then
+rerouted to a -6 spread.
+
+So we declare "no value" on the moneyline, move the bet to the spread, and
+carry the moneyline's verdict onto a proposition we never evaluated. This is
+burying plays: 13 of 57 NCAAF games this week sit at COVERAGE.
+
+FIX: on reroute, either drop the ML-derived `_edge_cap` (the spread is
+unevaluated, not bad) or produce a cover probability and re-evaluate. Do not
+silently inherit.
+
+VERIFY: count rows where `primary_play._heavy_ml_reroute` is set AND
+`_edge_cap` is non-null.
+
+### B55 · The reads take their line from a third place — OPEN
+
+Worse than either table. Of 81 NFL reads where
+`nfl_game_context.close_spread`, `nfl_game_results.close_spread` and
+`input_snapshot.signals.close_spread` all exist:
+
+    snapshot matches BOTH tables      35
+    snapshot matches NEITHER          19   <- 23%, a number from somewhere else
+    snapshot matches context only     14
+    snapshot matches results only     13
+
+This feeds the published `call_line` AND `model_deference.market_need()`, so
+the deference gate sometimes compares model margins against a line from
+nowhere.
+
+FIX: find what populates `signals.close_spread` and point it at
+`market_line.home_line()`.
+
+VERIFY: re-run the three-way comparison; `matches NEITHER` should be 0.
+
+**Related, same family:** `nfl_game_results.close_spread` is the trustworthy
+column (agrees with the books 6 of 6 on games tested) and is what
+`model_scorecard.py` reads — so **the measured records quoted on 10/07 are
+NOT contaminated**. `nfl_game_context` and results differ by 3+ on 15 of 270
+games (5.6%); a handful of context values (IND@WAS +16.5 when the books
+ranged +3.0..+4.5 over 501 captures; ARI@SF -17.5 vs -9.0..-7.0) never traded
+at ANY point, so staleness alone does not explain all of it. The app reads
+context, so the app is the exposed surface.
+
+### B56 · Four published college lines are 3+ points off — OPEN
+
+NCAAF `close_spread` itself is clean (82.1% exact vs the books this week,
+zero games 3+ off), so these are pick-level, not market data:
+
+| pick | tier | published | the books |
+|---|---|---|---|
+| **Florida -14.5** | **STRONG, conv 81** | -14.5 | **-11.5** |
+| BYU -14.5 | LEAN | -14.5 | -10.5 |
+| North Texas -24.5 | LEAN | -24.5 | -28.5 |
+| Georgia -2.5 | PASS | -2.5 | Georgia **+1.5** |
+
+Florida is the only one on a card as a recommended play, and it is the
+highest-conviction college pick of the week at 3 points worse than available.
+
+FIX: covered by B51's refresher plus the NCAAF recompute once both run;
+Florida should be re-derived. Confirm it actually moves.
+
+VERIFY: `python audit_published_lines.py --sport NCAAF --live`
+
+### Measurement caveat recorded the same day — the model vote is a dog proxy
+
+Not a backlog item, a rule for anyone quoting the model numbers. Grade a flat
+take-the-dog baseline on the SAME games before calling a model vote an edge:
+
+| sport | model vote | flat dog, same games | verdict |
+|---|---|---|---|
+| NCAAF | **56.0%** n=166 | 50.0% | real, +6pp |
+| NFL | 55.8% n=52 | **55.8%** | identical — dog proxy, 93% dog |
+| MLB | 58.4% n=572 | **59.1%** | worse than the baseline |
+
+In NFL and MLB "defer to the models" is the same instruction as "stop taking
+favourites" — the override takes the favourite 28 of 29 times in NFL (45.5%
+on favourites vs 66.7% on dogs). NCAAF is the reverse: there the favourite is
+the good side (55.2%, n=210). Also: MLB records graded at a flat -110
+overstate, because its "dog" is a +1.5 runline priced -150 to -200.
+
+### B57 · The pick lock freezes the PRICE along with the pick — MIGRATION WRITTEN, NEEDS APPLYING BY HAND
+
+Found trying to apply B51's correction. The refresher updated 107 games'
+market columns successfully, then the label normalizer was **refused on 10 of
+11 NFL picks** and reported "repaired 11" anyway.
+
+`enforce_pick_lock` compares `primary_play->>'label'`. That label bundles the
+team WITH the number — `"BAL -6"` — so a line refresh is byte-for-byte
+indistinguishable from flipping the pick to another team. Once Thursday stamps
+`pick_locked_at`, the NUMBER is frozen for the week too.
+
+Every week-5 game carries a stamp (2026-10-02..10-07). The single game with no
+stamp, BUF @ LA, is the only label that updated. That is the proof.
+
+This contradicts the lock's own stated intent — 20260926b says it exists so
+mid-week ensemble drift cannot flip a pick, and the labels-only pass says it
+"changes NONE of those: it only rewrites label and line to agree with the side
+the lock already froze". Both are right. The trigger just could not tell them
+apart, because it was handed one string carrying two facts.
+
+Two further problems in the same place:
+
+1. **`pick_lock_drift` does not exist.** PostgREST returns 400. So every
+   refusal since 20260929c has been silent.
+2. **The write reported success.** `patch_pp` returned True on any 2xx, and
+   the trigger returns **200 with the unchanged row**. `updated_at` moved,
+   so the lie survived inspection. `_pp_locked()` could not catch it either:
+   `pick_lock.lock_active('NFL')` was False (Wednesday) while the trigger
+   locks off the stamp — two layers, different rules.
+
+FIX WRITTEN: `supabase/migrations/20261007a_pick_lock_freezes_side_not_number.sql`
+compares `side`, `type` and the TEAM at the head of the label instead of the
+whole string. Side/market/team change is still refused; a number-only change
+passes. Everything stays frozen once `kickoff_utc` passes, number included,
+because a settled price must never be restated. Creates `pick_lock_drift`.
+
+Call-site fix shipped in the same commit: `patch_pp` now reads the row back
+and compares the label, so it can never again count a discarded write. It now
+correctly reports **"repaired 0 FAILED 10"**.
+
+**OWED: apply the migration** (needs to be run by hand, like 20261004a), then
+re-run:
+
+    python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 10
+
+VERIFY: `python audit_published_lines.py --sport NFL --live` → the 10/11 games
+show `ok`; BAL @ ATL reads `BAL +3.5`. Then
+`select count(*) from pick_lock_drift` should be 0 for number-only changes.
+
+**Until it is applied the stale lines are still live on the cards** — BAL −6
+(books +3.5), NE −8.5 (books −3.5), CHI +2.5 (books −2.5).

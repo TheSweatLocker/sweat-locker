@@ -26,7 +26,7 @@ CLI:
   python recompute_nfl_primary_play.py --dry-run
 """
 from __future__ import annotations
-import argparse, os, sys, time
+import argparse, json, os, sys, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -307,11 +307,50 @@ def patch_pp(game_id: str, pp: dict) -> bool:
         return False
     payload = {'primary_play': pp,
                'updated_at': datetime.now(timezone.utc).isoformat()}
+    # ══ 2026-10-07 · A 200 IS NOT A WRITE. READ THE ROW BACK. ══
+    # This returned True on any 2xx, and on 2026-10-07 that made it report
+    # "repaired 11" when exactly ONE row changed. The DB trigger
+    # enforce_pick_lock silently swaps primary_play back to OLD and returns
+    # 200 with the unchanged row, so every stamped game was refused while the
+    # script counted it as fixed. `updated_at` DID move, which made the lie
+    # look like a success even on inspection.
+    #
+    # _pp_locked() above cannot catch it: pick_lock.lock_active('NFL') was
+    # False at the time (Wednesday), while the trigger locks off
+    # `pick_locked_at` being stamped — two layers with different rules. So
+    # the only trustworthy check is the row the server hands back.
+    #
+    # Same failure already on file for enforce_pick_lock discarding
+    # primary_play; this is the fix applied at the call site that counts.
+    want = (pp or {}).get('label')
+    hdrs = {**H_W, 'Prefer': 'return=representation'}
     for attempt in range(3):
         try:
             r = requests.patch(f'{SB}/rest/v1/nfl_game_context?game_id=eq.{game_id}',
-                               headers=H_W, json=payload, timeout=30)
-            if r.status_code in (200, 201, 204): return True
+                               headers=hdrs, json=payload, timeout=30)
+            if r.status_code in (200, 201):
+                try:
+                    rows = r.json()
+                except ValueError:
+                    rows = None
+                if not isinstance(rows, list) or not rows:
+                    return False
+                got = rows[0].get('primary_play') or {}
+                if isinstance(got, str):
+                    try:
+                        got = json.loads(got)
+                    except ValueError:
+                        got = {}
+                landed = got.get('label') if isinstance(got, dict) else None
+                if landed == want:
+                    return True
+                print(f'  🚫 {game_id}: write DISCARDED by the DB lock — '
+                      f'row still reads {landed!r}, wanted {want!r}')
+                return False
+            if r.status_code == 204:
+                # No body to verify against; treat as unconfirmed, not success.
+                print(f'  ? {game_id}: 204 with no row returned — unverified')
+                return False
         except requests.exceptions.RequestException:
             if attempt == 2: return False
             time.sleep(2 ** attempt)
