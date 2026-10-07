@@ -1698,7 +1698,7 @@ every legitimately moved pick.
 VERIFY: `python audit_published_lines.py --days 35`. NFL was ok 59.3% /
 MOVED 15.4% / NEVER TRADED 25.3% on 91 checkable picks.
 
-### B53 · The `cz` money-flow source is unusable — OPEN
+### B53 · The `cz` money-flow source is unusable — **CLOSED** `ea82c918`
 
 Andy spotted "100 percent on over" on a college card. One source, three
 separate failures. NCAAF splits for 10/07-10/09:
@@ -1728,7 +1728,7 @@ The Fade runs on.
 VERIFY: count `oc/fr/ftp/cz` values equal to 0.0 or 100.0 in
 `public_splits_archive` for the current week.
 
-### B54 · A moneyline edge verdict is applied to a spread bet — OPEN
+### B54 · A moneyline edge verdict is applied to a spread bet — **CLOSED** `ea82c918` + `4719f6b6`, applied 2026-10-07
 
 `model_edge.edge_pp()` correctly refuses non-moneylines, and its own docstring
 says comparing conviction to an ML price is meaningless for a spread. But the
@@ -1923,3 +1923,75 @@ kickoff for any sport. That is the long-standing B32 ("CLV is unmeasurable").
 And the product half: we now hold every number needed to show
 "opened -6.5 · we called -6 · now +3.5 · moved 9.5 to ATL" and we surface none
 of it. That display needs an app build (see the NO OTA PATH item).
+
+
+## 2026-10-07 night — B53 + B54 CLOSED, two new items
+
+### B53 result
+`UNRELIABLE_SOURCES = {"cz"}` in splits_v2_pipeline, excluded from the
+averages and the agreement count but NOT from the data (still in
+`sources_present`, rows still archived). On the real Wyoming@SJSU shape:
+`bets_pct_avg` 75.0 -> 62.5 (cz was dragging it 12.5 points) and
+`sources_agree` 3 -> 2, which had been setting `triple_confirmed` off a
+garbage source. Drop it from the set when the scraper is fixed — it reads
+`cleatz_signals.sharp_bets_pct`, the root of all three symptoms.
+
+### B54 result — NCAAF 10/07-10/17
+
+    tier       before   after
+    STRONG         22      27
+    LEAN           20      18
+    COVERAGE       17      14
+    PASS            8       8
+    spread picks carrying an ML cap:  7 -> 2
+
+Five picks freed from a verdict earned on a moneyline they are no longer:
+Bowling Green -7, Utah State -5.5, San Jose State -6, Kansas State -7.5,
+Ole Miss -7.5 — all COVERAGE -> STRONG. The last 2 are games that had already
+kicked off and were correctly skipped.
+
+Took two passes. The first fix was INLINE in the reroute, which returns early
+on a pick that is already 'rl', so rows rerouted on an earlier run could never
+reach it — 5 of 7 stayed stuck. Extracted to
+`drop_ml_edge_cap_on_spread(pp)`, which runs on any pick and handles fresh and
+stale rows identically.
+
+### B58 · apply_pick_gates_post_pass is in NO workflow — OPEN
+
+This is why the 5 stale rows sat there: the only tool that applies gate fixes
+to STORED picks is manual. `grep -rn apply_pick_gates_post_pass
+.github/workflows/*.yml` returns nothing. So every gate fix shipped since it
+was written reaches new picks only, and any pick already written keeps the old
+behaviour until someone runs it by hand.
+
+Running it on NCAAF tonight changed 16 rows — 5 were B54, and 11 were other
+gates that should have applied already (Miami (OH) ML and Wake Forest ML
+LEAN -> COVERAGE, plus field-only fixes). That is 11 picks that were wrong for
+an unknown number of days.
+
+FIX: wire it into nfl_pipeline.yml and ncaaf_pipeline.yml after the recompute.
+It is reasonably safe by design — it refuses promotions EXCEPT for rerouted
+and unpriced picks, and skips started games — but adding an unwired tool to a
+cron is a standing behaviour change, so it wants a decision rather than a
+quiet commit.
+VERIFY: `python apply_pick_gates_post_pass.py --sport NCAAF` (dry by default)
+should report `CHANGED 0` the day after it starts running on schedule.
+
+### B59 · ~450 games have no locked closing line, but it is recoverable — OPEN
+
+`freeze_closing_lines.py` is exactly the right mechanism — T-5min MLB,
+T-15min NFL/NCAAF, idempotent, stamps `close_locked_at` — and it IS on a
+10-minute cron in prop_close_freeze.yml. But it is stamped on only 16 of 272
+NFL rows (5.9%), 57 of 478 NCAAF (11.9%) and 0 of 81 MLB. Its own dry run
+reports `NFL: 92 unlocked game(s) older than 12h` and `NCAAF: 358`.
+
+It refuses to guess a close after the fact, which is correct. But we can now
+RECONSTRUCT it: line_history holds every quote, so the last capture before
+kickoff IS the close, and `market_line.index_by_matchup(rows, as_of=kickoff)`
+returns it. That recovers CLV on ~450 games.
+
+NOT DONE AND NOT TO BE DONE QUIETLY: writing `close_spread` on settled games
+restates prices and would change grades. Andy's call.
+Also worth checking why the live cron misses so much — the windows are
+`*/10 22-23`, `*/10 0-4` daily and `*/10 16-21` Sat/Sun only, which look like
+they should cover the NFL and college slates.
