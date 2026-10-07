@@ -1635,7 +1635,7 @@ line numbers, every item carries a VERIFY, nothing closed without a SHA.
 **The two that block everything else: B51 is shipped but B57 refuses it at
 the database, so the stale lines are STILL LIVE on the cards right now.**
 
-### B51 · `close_spread` is the OPENING line, so we publish stale picks — FIXED `9527924c`, NEEDS A LIVE RUN
+### B51 · `close_spread` is the OPENING line, so we publish stale picks — **CLOSED** `9527924c` + `ba08482b`, run 2026-10-07
 
 **ROOT CAUSE for the whole class.** `<sport>_game_context.close_spread` is in
 practice the open, never refreshed:
@@ -1781,7 +1781,7 @@ ranged +3.0..+4.5 over 501 captures; ARI@SF -17.5 vs -9.0..-7.0) never traded
 at ANY point, so staleness alone does not explain all of it. The app reads
 context, so the app is the exposed surface.
 
-### B56 · Four published college lines are 3+ points off — OPEN
+### B56 · Four published college lines are 3+ points off — **CLOSED** by B51's refresher + NCAAF recompute, 2026-10-07
 
 NCAAF `close_spread` itself is clean (82.1% exact vs the books this week,
 zero games 3+ off), so these are pick-level, not market data:
@@ -1818,7 +1818,7 @@ on favourites vs 66.7% on dogs). NCAAF is the reverse: there the favourite is
 the good side (55.2%, n=210). Also: MLB records graded at a flat -110
 overstate, because its "dog" is a +1.5 runline priced -150 to -200.
 
-### B57 · The pick lock freezes the PRICE along with the pick — MIGRATION WRITTEN, NEEDS APPLYING BY HAND
+### B57 · The pick lock freezes the PRICE along with the pick — **CLOSED** `fe16116e`, migration applied 2026-10-07
 
 Found trying to apply B51's correction. The refresher updated 107 games'
 market columns successfully, then the label normalizer was **refused on 10 of
@@ -1869,3 +1869,57 @@ show `ok`; BAL @ ATL reads `BAL +3.5`. Then
 
 **Until it is applied the stale lines are still live on the cards** — BAL −6
 (books +3.5), NE −8.5 (books −3.5), CHI +2.5 (books −2.5).
+
+
+## 2026-10-07 late — B51/B56/B57 CLOSED, result
+
+    audit_published_lines --live        ok      MOVED   NEVER TRADED
+    NFL   before                        28      14      23
+    NFL   after                         49       0       0
+    NCAAF before                        56      24       2
+    NCAAF after                         72       8       2
+
+39 picks corrected across both sports. Florida -14.5 (STRONG, conv 81) is now
+Florida -11.5. BAL -6 is BAL +3.5. No new pick_lock_drift rows, so the lock is
+letting a number through and still refusing a pick change.
+
+Residual, both understood and small:
+* NCAAF 8 MOVED — all 10/10 games whose recompute also wanted a SIDE change,
+  so the trigger correctly refused the whole patch. Needs a labels-only mode
+  for NCAAF (NFL has one; NCAAF does not).
+* 2 NEVER TRADED — Notre Dame -10 at BYU, where only ONE book is quoting
+  (-12.5) so the refresher's MIN_BOOKS=3 floor correctly declined to write.
+  Failing closed, as designed.
+
+### CORRECTION to B52 — the frozen receipt is mostly RIGHT
+
+B52 said the frozen `public_receipts.pick_line` of BAL -6 "will grade against a
+number nobody could take". Wrong. BAL -6 traded on **153 captures**. It was a
+real, takeable number when we called it, so the receipt is an honest record of
+the bet we made and must NOT be touched.
+
+The receipt is only wrong for the NEVER TRADED class — NE -8.5 on a game that
+ranged -4.0..-3.0. So the pre-capture guard should block **only** numbers
+`market_line.ever_traded()` rejects, and must NOT block on "differs from
+current". B52 narrows accordingly, and `public_receipts.pick_line` turns out to
+be the line-at-pick store that the architecture below needs.
+
+### THE FOUR NUMBERS A PICK NEEDS — 3 of 4 exist
+
+Andy: "pull opening line, pull line right before game start and lock, keep
+pulling inbetween to assess movement when pick was made."
+
+| number | where it lives | state |
+|---|---|---|
+| opening line | `open_spread` | present |
+| continuous in-between | `line_history` | present — ~870 captures per NFL game over 8 days |
+| line AT PICK | `public_receipts.pick_line` (frozen by trigger) | present |
+| line at KICKOFF, locked | nowhere we capture ourselves | **MISSING** |
+
+The close only reaches us post-hoc from nflverse (`nfl_game_results`), which is
+accurate but third-party and NFL-only. Nothing snapshots the final number at
+kickoff for any sport. That is the long-standing B32 ("CLV is unmeasurable").
+
+And the product half: we now hold every number needed to show
+"opened -6.5 · we called -6 · now +3.5 · moved 9.5 to ATL" and we surface none
+of it. That display needs an app build (see the NO OTA PATH item).
