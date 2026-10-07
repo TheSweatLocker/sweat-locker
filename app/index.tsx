@@ -2991,13 +2991,34 @@ setEvData(evOpps.slice(0,20));
         // week's slate. But baseWk = floor(days/7)+1 with a Sunday anchor
         // rolls on Sun → Sun/Mon/Tue tail resolved to NEXT week (Sun 9/14
         // gave baseWk=4 when fans still call it Week 3 tail; Tue roll made
-        // it Week 5 — worse). Fix: anchor on Wed of Week 1 (2026-08-27),
-        // the dead day between fan-Weeks. Now floor(days/7)+1 naturally
-        // rolls only on the following Wed, so the full Sat-Tue play-week
-        // tail (plus Wed-Fri lead-in for cardless days) all resolves to
-        // the correct week without any manual roll. Drops the special-case
-        // clause in _currentSeasonWeek below.
-        NCAAF: new Date('2026-08-27T00:00:00-04:00'), // 2026 Week 1 play-week start (Wed)
+        // it Week 5 — worse). Fix attempted: anchor on "Wed of Week 1"
+        // (2026-08-27), the dead day between fan-Weeks.
+        //
+        // ── 2026-10-06 · THAT REASONING WAS WRONG BY ONE DAY ──
+        // 2026-08-27 is a THURSDAY, not a Wednesday. So floor(days/7)+1
+        // rolls every THURSDAY — the day the CFB slate STARTS, not a dead
+        // day. The block therefore splits the real week in half: Wed reads
+        // week N while Thu/Fri/Sat read week N+1.
+        //
+        // Measured cost on the shipped v1.0.2, NCAAF "This Week" tab:
+        //     Tue 10-06   2 games   (57 sitting under "Next Week")
+        //     Wed 10-07   2
+        //     Thu 10-08  57   <- self-corrects
+        //     Fri 10-09  53
+        //     Sat 10-10  48
+        //     Sun 10-11   0   <- blank for four straight days
+        //     Mon 10-12   0
+        //     Tue 10-13   0
+        //     Wed 10-14   0
+        // Four of every seven days empty or near-empty, user-facing.
+        //
+        // NOT fixed by moving the anchor to a real Wednesday — no uniform
+        // 7-day block reproduces CFBD weeks, which are schedule-defined
+        // (bye weeks, Week 0, neutral-site openers). The anchor stays ONLY
+        // as the last-resort fallback; _weekByDate below is the authority
+        // and makes every row above read correctly. Do not re-derive weeks
+        // from this date.
+        NCAAF: new Date('2026-08-27T00:00:00-04:00'), // a THURSDAY — fallback only
       };
       // ══ 2026-10-07 · YOU CANNOT COMPUTE A CFB WEEK FROM A CALENDAR ══
       // Andy: the Games tab showed 2 CFB games while the slate ran Thu-Sun.
