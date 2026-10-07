@@ -277,6 +277,33 @@ jobs:
             --label "backfill_receipt_prices.py" \
             python backfill_receipt_prices.py --since "$SINCE" --apply
 
+      # ══ 2026-10-07 · RESULTS MUST KEEP SETTLING AFTER THE PICK LOCK ══
+      # The Sweat Card HARD-LOCKS at noon ET and refuses every republish
+      # after it. That is correct for PICKS — a subscriber who acted on the
+      # card must not see it change. It is wrong for yesterday's RESULTS,
+      # which settle hours after the lock by definition: games finish at
+      # night and grade in the morning.
+      #
+      # With no way to refresh them, a wrong grade sat on the home screen
+      # for a full day. Andy saw it today: the recap read 2-1 with one
+      # pending while the real figure was 4-0 — Yamamoto's POTD showed Loss
+      # against a box score of 21 outs, and Yastrzemski showed Pending
+      # having gone 0-for.
+      #
+      # This writes exactly ONE key (yesterday_recap) and cannot touch
+      # today's picks, so it is safe to run on every slot including the
+      # post-lock ones. It runs AFTER settling and receipt capture so it
+      # sees the freshest grades.
+      - name: Refresh yesterday's recap (post-lock safe)
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "refresh_yesterday_recap.py"             python refresh_yesterday_recap.py --apply
+
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline
         env:

@@ -307,6 +307,39 @@ def fetch_yesterday_recap():
                 "result": "not.is.null",
                 "select": "player_name,prop_type,prop_line,direction,result",
             }) or []
+            # ══ 2026-10-07 · THE RECEIPT IS THE GRADED RECORD ══
+            # Andy: "yesterday recap sweat card still not reflect correct
+            # record?" It did not, for two reasons, and both are below.
+            #
+            # (1) _resolved_result RETURNS EARLY on any stored non-Pending
+            #     result, so a wrong grade frozen into yesterday's cached card
+            #     was permanent on the recap no matter how many times the card
+            #     rebuilt. Yamamoto Over 17.5 Outs sat at "Loss" while the box
+            #     score said 21 outs.
+            # (2) The fallback resolves against mlb_pipeline_props, which is
+            #     deleted and rebuilt during the day. Yastrzemski Under 0.5
+            #     Hits has NO prop row at all any more, so it could only ever
+            #     stay "Pending" — it actually went 0-for, a WIN.
+            #
+            # public_receipts is the immutable graded ledger: frozen identity,
+            # DB-enforced, and `result` is one of the three columns grading is
+            # allowed to write. It is the only source that is both correct and
+            # cannot be churned out from under this. So it is consulted FIRST,
+            # keyed on the exact label the card published, and the mutable
+            # prop tables stay as the fallback for anything with no receipt.
+            #
+            # Yesterday's recap goes 2-1 (1 pending) -> 4-0 on this.
+            receipt_lookup = {}
+            for _rc in (sb_get("public_receipts", {
+                    "game_date": f"eq.{yesterday}",
+                    "surface": "eq.sweat_card",
+                    "select": "pick_label,result",
+            }) or []):
+                _lbl = (_rc.get("pick_label") or "").strip().lower()
+                _res = (_rc.get("result") or "").strip()
+                if _lbl and _res:
+                    receipt_lookup[_lbl] = _res.title()
+
             # Build lookup keyed by (player_name_lower, prop_type_lower)
             prop_lookup = {}
             # ══ 2026-10-04 · REGISTER THE COMPLEMENT ══
@@ -376,9 +409,15 @@ def fetch_yesterday_recap():
                 """Return the live-graded result if we can match this top_8
                 pick back to mlb_pipeline_props; else fall through to stored."""
                 stored = pick.get("result")
+                label = (pick.get("label") or "").strip()
+                # The graded ledger outranks whatever was frozen into the
+                # card. Checked BEFORE the early return, because the stale
+                # value we most need to correct is a confident wrong one.
+                _from_receipt = receipt_lookup.get(label.lower())
+                if _from_receipt and _from_receipt not in ("Pending",):
+                    return _from_receipt
                 if stored and stored not in ("Pending", "pending", None, ""):
                     return stored
-                label = (pick.get("label") or "").strip()
                 if not label:
                     return stored
                 # Labels look like "Jacob Misiorowski Under 1.5 er under"
