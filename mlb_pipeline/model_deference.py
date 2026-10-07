@@ -118,11 +118,29 @@ def market_need(sport: str, struct: dict):
     NFL stores a POSITIVE spread as a HOME favourite; the others store the
     home handicap. Getting this backwards would invert the whole gate, so it
     is written out rather than inferred.
+
+    THE LINE LIVES IN A DIFFERENT PLACE IN EVERY SPORT, verified against live
+    snapshots 2026-10-07. Reading only `market.spread` found it in MLB and
+    NCAAF and MISSED BOTH OTHERS — NFL carries no `market` key whatsoever
+    (its line is `signals.close_spread`) and NHL calls it `puckline`. That
+    silently failed the gate open on the sport with the single worst override
+    penalty, which is the opposite of what it is for.
     """
-    mk = (struct.get('market') or {}) if isinstance(struct, dict) else {}
-    sp = _f(mk.get('spread'))
-    if sp is None:
-        sp = _f(mk.get('close_spread'))
+    if not isinstance(struct, dict):
+        return None
+    mk = struct.get('market') or {}
+    sig = struct.get('signals') or {}
+    sp = None
+    for blk, keys in ((mk, ('spread', 'close_spread', 'puckline')),
+                      (sig, ('close_spread', 'spread'))):
+        if not isinstance(blk, dict):
+            continue
+        for k in keys:
+            sp = _f(blk.get(k))
+            if sp is not None:
+                break
+        if sp is not None:
+            break
     if sp is None:
         return None
     home_line = -sp if sport == 'NFL' else sp
