@@ -78,20 +78,41 @@ MIN_BOOKS = 3
 BIG_MOVE_PTS = 3.0
 
 SPORTS = {
-    # table, spread column, does the table store nflverse sign?, ml columns
+    # table, spread column, does the table store nflverse sign?, ml columns,
+    # and the kickoff column — which is named differently in every sport and
+    # does not exist at all in MLB.
     'NFL':   dict(tbl='nfl_game_context',   spread='close_spread',
                   flip=True,  home_ml='close_home_ml', away_ml='close_away_ml',
-                  total='close_total'),
+                  total='close_total', kick='kickoff_utc'),
     'NCAAF': dict(tbl='ncaaf_game_context', spread='close_spread',
                   flip=False, home_ml='close_home_ml', away_ml='close_away_ml',
-                  total='close_total'),
+                  total='close_total', kick='kickoff_utc'),
     'MLB':   dict(tbl='mlb_game_context',   spread='close_spread',
                   flip=False, home_ml='home_ml_close', away_ml='away_ml_close',
-                  total='close_total'),
+                  total='close_total', kick=None),
     'NHL':   dict(tbl='nhl_game_context',   spread='close_puckline',
                   flip=False, home_ml='close_home_ml', away_ml='close_away_ml',
-                  total='close_total'),
+                  total='close_total', kick='commence_time'),
 }
+
+# ══ 2026-10-07 · DEFECT IN THE FIRST VERSION OF THIS FILE, FOUND SAME DAY ══
+# The docstring claimed it "never touches a game that has already started".
+# The only guard was `game_date >= today`, which INCLUDES a game that kicked
+# off four hours ago. So a 1pm Sunday game was still eligible at 6pm, and
+# restating its line would overwrite the closing number with a post-game
+# quote — the precise error the docstring warned about, shipped in the same
+# commit as the warning.
+#
+# Two guards now, because they protect different things:
+#   kickoff in the past   -> the market after kickoff is not our price
+#   close_locked_at set   -> freeze_closing_lines.py has already stamped the
+#                            TRUE close at T-5/15min; that is the number of
+#                            record and nothing may overwrite it
+#
+# `close_locked_at` is the existing per-sport close lock (NFL/NCAAF/MLB have
+# the column; NHL does not) and is the fourth of the four numbers a pick
+# needs: open, continuous, at-pick, and a locked close.
+CLOSE_LOCK_COL = 'close_locked_at'
 
 
 def page(t, p, cap=200000):
@@ -130,10 +151,36 @@ def run(sport: str, days_ahead: int, dry: bool):
     cols = ['game_id', 'game_date', 'home_team', 'away_team', scol,
             'open_spread', cfg['total'], 'open_total',
             cfg['home_ml'], cfg['away_ml']]
+    if cfg.get('kick'):
+        cols.append(cfg['kick'])
+    if sport != 'NHL':                      # NHL has no close lock column
+        cols.append(CLOSE_LOCK_COL)
     ctx = page(tbl, {'select': ','.join(cols),
                      'and': f'(game_date.gte.{today},game_date.lte.{until})'})
     if not ctx:
-        print(f'{sport}: no unstarted games in {today}..{until}')
+        print(f'{sport}: no games in {today}..{until}')
+        return 0, 0
+
+    # Drop anything already underway or already closed. MLB has no kickoff
+    # column, so it can only be guarded by the close lock and the date — a gap
+    # worth closing, noted rather than papered over.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    kept, started, locked = [], 0, 0
+    for z in ctx:
+        if z.get(CLOSE_LOCK_COL):
+            locked += 1
+            continue
+        kc = cfg.get('kick')
+        if kc and z.get(kc) and str(z[kc]) <= now_iso:
+            started += 1
+            continue
+        kept.append(z)
+    if started or locked:
+        print(f'  {sport}: skipping {started} already started, '
+              f'{locked} with a locked close')
+    ctx = kept
+    if not ctx:
+        print(f'{sport}: nothing refreshable in {today}..{until}')
         return 0, 0
 
     sp_rows = ML.fetch_market(sport, 'spread', today)

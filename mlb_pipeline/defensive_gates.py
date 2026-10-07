@@ -1848,6 +1848,69 @@ def apply_unpriced_market_gate(pp: dict | None, ctx: dict,
     return out
 
 
+def drop_ml_edge_cap_on_spread(pp: dict | None) -> dict | None:
+    """Un-cap a spread pick that was demoted on the MONEYLINE's price.
+
+    ══ 2026-10-07 · THE MONEYLINE MUST NOT JUDGE THE SPREAD ══
+    model_edge.edge_pp() refuses any pick type but 'ml', and its module note
+    says why: conviction and a moneyline's implied probability describe the
+    same event ONLY for a moneyline. The gate ORDER re-introduced what the
+    function refuses — defensive_gates caps the tier on the ML price, builds
+    the pick as type 'ml', and apply_heavy_ml_spread_reroute then rewrites it
+    to 'rl' with the cap still attached.
+
+    It also DOUBLE-COUNTS ONE FACT, and the halves cancel. The reroute fires
+    BECAUSE the ML is too expensive (<= -200). "The model does not beat this
+    ML price" is that same observation restated. So the pipeline found a bad
+    price, moved off it to escape that price, then demoted the pick for the
+    price it had just escaped.
+
+    WHY THIS IS A SEPARATE FUNCTION rather than inline in the reroute, which
+    is where it started: a row rerouted on an EARLIER run comes back as type
+    'rl', so the reroute returns at its own first guard and inline logic never
+    fires. That left 5 of 7 affected NCAAF picks still sitting at COVERAGE
+    after the first attempt — all five marked `_heavy_ml_reroute`, all five
+    with an ACTIVE cap. Exactly the stale-row problem apply_pick_gates_post_
+    pass already documents for subtitles ("a row rerouted on an earlier run
+    returns early from that gate, so its stale subtitle can only be repaired
+    here"). Handling fresh and stale rows in one place is the only way both
+    get fixed.
+
+    SAFE TO RUN ON ANYTHING, and it fires on nothing unless all three hold:
+      * the pick is a SPREAD now
+      * it carries `_heavy_ml_reroute`, proving the cap was earned on an ML
+        that is no longer the bet
+      * the cap's reason carries 'edge:', so a non-price cap — notably the
+        NCAAF lr_v1 PRIME rule — can never be erased by accident
+
+    Restores the tier held BEFORE the cap. The spread is UNEVALUATED, not bad:
+    no cover probability exists for it, which is a reason to withhold
+    confidence, not to assert a negative. The caller's STRONG ceiling supplies
+    that restraint.
+    """
+    if not isinstance(pp, dict):
+        return pp
+    if str(pp.get('type') or '').lower() not in ('rl', 'spread'):
+        return pp
+    if not pp.get('_heavy_ml_reroute'):
+        return pp
+    cap = pp.get('_edge_cap')
+    if not isinstance(cap, dict) or 'edge:' not in str(cap.get('reason') or ''):
+        return pp
+    restored = str(cap.get('from') or '').upper()
+    if not restored:
+        return pp
+    out = dict(pp)
+    out['tier'] = restored
+    out['_edge_cap'] = None
+    out['_edge_cap_dropped_on_reroute'] = {
+        'was': cap,
+        'why': ('ML edge cap does not apply to a spread — no cover '
+                'probability exists for this pick'),
+    }
+    return out
+
+
 def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
                                   sport: str = 'MLB') -> dict | None:
     """Express a heavily-juiced ML pick on the spread instead.
@@ -1983,29 +2046,24 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     # and sets STRONG, so restoring PRIME and re-applying the ceiling lands on
     # STRONG either way. Only caps whose reason carries 'edge:' are undone, so
     # a non-price cap could never be erased here by accident.
-    _cap = pp.get('_edge_cap')
-    if isinstance(_cap, dict) and 'edge:' in str(_cap.get('reason') or ''):
-        _restored = str(_cap.get('from') or '').upper()
-        if _restored:
-            out['tier'] = _restored
-            tier_before = _restored
-            out['_edge_cap'] = None
-            out['_edge_cap_dropped_on_reroute'] = {
-                'was': _cap,
-                'why': ('ML edge cap does not apply to a spread — no cover '
-                        'probability exists for this pick'),
-            }
-
-    if tier_before == 'PRIME':
-        out['tier'] = 'STRONG'
+    # The reroute marker has to be stamped BEFORE the cap is dropped:
+    # drop_ml_edge_cap_on_spread requires it as proof that the cap was earned
+    # on a moneyline that is no longer the bet, so calling the drop first
+    # silently does nothing. Caught in test — the stale-row cases passed while
+    # the fresh reroute still shipped COVERAGE.
     out['_heavy_ml_reroute'] = {
         'from_market': 'ml',
         'ml_price': price,
         'threshold': HEAVY_ML_THRESHOLD,
         'to_line': -line_mag,
         'tier_before': tier_before,
-        'tier_after': out.get('tier'),
     }
+    out = drop_ml_edge_cap_on_spread(out)
+    tier_before = str(out.get('tier') or tier_before).upper()
+
+    if tier_before == 'PRIME':
+        out['tier'] = 'STRONG'
+    out['_heavy_ml_reroute']['tier_after'] = out.get('tier')
     # The conviction travels, so say what it is a probability OF.
     out['_conviction_basis'] = 'ml_win_probability'
     note = (f'rerouted ML -> spread: {team} ML at {price:+d} is past the '
@@ -2054,6 +2112,9 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # Rerouting here catches both the legacy and the override paths, because
     # every ML pick that survives to this line passes through it.
     pp = apply_heavy_ml_spread_reroute(pp, ctx, sport=sport)
+    # Also catches rows rerouted on an EARLIER run, which return early from
+    # the reroute above and would otherwise keep a moneyline's cap forever.
+    pp = drop_ml_edge_cap_on_spread(pp)
     # Re-run the juice trap on the post-override pick: a reroute may not have
     # been possible (no spread stored), and in that case the ML must still be
     # demoted rather than ship untouched at a trap price.
