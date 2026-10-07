@@ -266,7 +266,48 @@ def main() -> int:
     why = collections.Counter()
 
     def _jr_price(j, rec):
-        """(price, basis, reason) — basis is 'publish' or 'close'."""
+        """(price, basis, reason) — basis is 'publish' or 'close'.
+
+        ══ 2026-10-06 · THE CITED READ MAY DESCRIBE A DIFFERENT BET ══
+        jerry_reads has 41 writers and no row-level write protection (B41),
+        and rows get rewritten with a different call after a receipt has
+        already frozen. Measured across all 1,340 receipts citing
+        jerry_reads:
+
+            agrees with its cited read      1,091   81.4%
+            market differs                    186
+            side and/or line differs           63
+            cited row is gone                   2
+
+        249 of 1,340 (18.6%) disagree. Not subtle ones either — receipt
+        "Alabama -11.5" against read "South Carolina +12.5", receipt
+        "BUF ML" against read "Over 50.5", receipt "Over 42.5" against
+        read "Under 43.5".
+
+        The GRADES are safe: grade_public_receipts resolves from the
+        receipt's own pick_label and pick_line, not from the source row
+        ("The LABEL is authoritative for the sign"). But a PRICE taken
+        from a read that now describes a different bet is simply the wrong
+        number, and unlike a missing price it looks right.
+
+        So the read has to still be describing the same bet before its
+        price is usable. Mismatches fall through to line_history, which is
+        keyed on the receipt's own market/side/line and cannot drift.
+        """
+        rm = str(rec.get('market') or '').strip().lower()
+        jm = str(j.get('call_market') or '').strip().lower()
+        if rm and jm and rm != jm:
+            return None, None, (f'cited read is a {jm} call, receipt is '
+                                f'{rm} — refusing its price')
+        rs = str(rec.get('pick_side') or '').strip().upper()
+        js = str(j.get('call_side') or '').strip().upper()
+        if rs and js and rs != js:
+            return None, None, (f'cited read is on {js}, receipt is on {rs} '
+                                f'— refusing its price')
+        rl, jl = _num(rec.get('pick_line')), _num(j.get('call_line'))
+        if rl is not None and jl is not None and abs(rl - jl) > 0.01:
+            return None, None, (f'cited read is at {jl}, receipt at {rl} '
+                                f'— refusing its price')
         p = _num(j.get('price_american'))
         if p is None:
             return None, None, 'source row has no price'
