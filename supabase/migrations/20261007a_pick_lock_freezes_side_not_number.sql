@@ -40,14 +40,27 @@
 -- played game's price would restate what we claim to have taken. That is
 -- the receipt-integrity half of this trigger and it is untouched.
 --
--- ALSO FIXED HERE: the drift log was unreachable. `pick_lock_drift` does not
--- exist (PostgREST returns 400 on it), so every refusal since 20260929c has
--- been silent — the exact "a 204 is not a write" failure already on file.
--- Created below, so a refusal is visible instead of inferred.
+-- RETRACTED from the first version of this migration: I wrote that
+-- `pick_lock_drift` "does not exist (PostgREST returns 400 on it)". It
+-- exists and it works — it had already logged all 20 refusals from today's
+-- two runs. The 400 was MY query selecting a `created_at` column; the real
+-- timestamp column is `attempted_at`. PostgREST returns 400 for an unknown
+-- COLUMN exactly as it does for an unknown table, and I read one as the
+-- other. That first version then failed to apply (42703) because
+-- CREATE TABLE IF NOT EXISTS silently skipped the existing table and the
+-- index on the non-existent column was what actually errored.
+--
+-- So the only thing the log needs is a `reason`, added below. Lesson worth
+-- keeping: a 400 names a column as readily as a table — SELECT * before
+-- concluding something is missing.
 -- ════════════════════════════════════════════════════════════════════════
 
 BEGIN;
 
+-- The table already exists with: id, sport, game_id, kept_label,
+-- wanted_label, kept, wanted, attempted_at. Only `reason` is new, so this is
+-- an ALTER and not a CREATE — and every statement is written to be safe on
+-- both an existing and a fresh database.
 CREATE TABLE IF NOT EXISTS public.pick_lock_drift (
     id            BIGSERIAL PRIMARY KEY,
     sport         TEXT,
@@ -56,12 +69,16 @@ CREATE TABLE IF NOT EXISTS public.pick_lock_drift (
     wanted_label  TEXT,
     kept          JSONB,
     wanted        JSONB,
-    reason        TEXT,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    attempted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS pick_lock_drift_created_idx
-    ON public.pick_lock_drift (created_at DESC);
+ALTER TABLE public.pick_lock_drift
+    ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE public.pick_lock_drift
+    ADD COLUMN IF NOT EXISTS attempted_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS pick_lock_drift_attempted_idx
+    ON public.pick_lock_drift (attempted_at DESC);
 CREATE INDEX IF NOT EXISTS pick_lock_drift_game_idx
     ON public.pick_lock_drift (sport, game_id);
 
