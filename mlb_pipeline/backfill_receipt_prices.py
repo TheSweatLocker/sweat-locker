@@ -58,6 +58,8 @@ from pathlib import Path
 
 import requests
 
+import pick_price
+
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 _HERE = Path(__file__).parent
 _env = _HERE / '.env'
@@ -156,6 +158,55 @@ def _num(v):
     if -100 < f < 100:
         return None
     return int(round(f))
+
+
+#: markets line_history can price, and the sides each one may legally carry.
+#: Checked rather than trusted because `pick_side` is not reliable: there are
+#: game_read rows with market='ml' and pick_side='OVER' on a team pick
+#: ("Pittsburgh Pirates ML"). Pricing those as a totals OVER would attach a
+#: real-looking number from the wrong market — worse than leaving it NULL.
+_LH_SIDES = {
+    'ml':     ('HOME', 'AWAY'),
+    'rl':     ('HOME', 'AWAY'),
+    'spread': ('HOME', 'AWAY'),
+    'dotd':   ('HOME', 'AWAY'),
+    'total':  ('OVER', 'UNDER'),
+}
+#: markets whose price depends on WHICH line, so a line is mandatory
+_LH_NEEDS_LINE = ('rl', 'spread', 'dotd', 'total')
+
+
+def _lh_price(rec: dict, market: str, reason: str):
+    """(price, basis, source, reason) from line_history, or (None, …, why).
+
+    Fails closed on every ambiguity: a wrong-market price looks valid and is
+    unrecoverable once published, while a missing one is merely missing.
+    """
+    allowed = _LH_SIDES.get(str(market or '').lower())
+    if not allowed:
+        return None, None, None, reason
+    side = str(rec.get('pick_side') or '').strip().upper()
+    if side not in allowed:
+        lbl = str(rec.get('pick_label') or '').lower()
+        if market == 'total' and 'under' in lbl:
+            side = 'UNDER'
+        elif market == 'total' and 'over' in lbl:
+            side = 'OVER'
+        else:
+            return (None, None, None,
+                    f'pick_side {rec.get("pick_side")!r} invalid for {market}')
+    line = rec.get('pick_line')
+    if str(market).lower() in _LH_NEEDS_LINE and line is None:
+        return None, None, None, f'{market} needs a line and the receipt has none'
+    at = rec.get('published_at')
+    if not at:
+        return None, None, None, 'no published_at, cannot bound the price in time'
+    r = pick_price.resolve(rec.get('game_id'), market, side,
+                           line=line, as_of=at)
+    if r.get('price') is None:
+        return None, None, None, f'line_history: {r.get("reason")}'
+    return (_num(r['price']), 'publish',
+            f'line_history.price[{r.get("book")}]', None)
 
 
 def main() -> int:
@@ -324,6 +375,28 @@ def main() -> int:
             got = _num(potd.get(d))
             basis, src = 'publish', 'daily_best_bet_history.odds_american'
             reason = 'POTD row never recorded a price' if got is None else None
+
+        # ---- LAST RESORT: line_history ------------------------------
+        # 2026-10-06. Everything above depends on a price someone else
+        # already wrote down, and the biggest of those sources is thin:
+        # jerry_reads.price_american is populated on 418 of 1,641 rows
+        # (25%). That ceiling — not this script's logic — is why one
+        # hand-run on 10-04 took game_read from 0% to 24% priced and
+        # stopped there.
+        #
+        # line_history is the better source for the same question:
+        # 629,388 rows, 100% of them carrying a price, every sport and
+        # every market (MLB ml 16,474 / spread 15,586 / total 16,444;
+        # NCAAF total 102,858; and so on), captured roughly every 15
+        # minutes per book and verified to stop at kickoff. It also
+        # covers the one case no context table can: spread and total
+        # prices, which have NO column anywhere except NHL. That is why
+        # "Under 6.0" shipped on tonight's Sweat Card unpriced.
+        #
+        # Asked for the capture at-or-before published_at, so a pick is
+        # never priced at a number that appeared after it was made.
+        if got is None and rec.get('game_id'):
+            got, basis, src, reason = _lh_price(rec, market, reason)
 
         if got is None:
             why[f'{surface}/{market or "-"}: {reason}'] += 1

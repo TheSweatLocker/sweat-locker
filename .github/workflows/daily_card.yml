@@ -215,6 +215,42 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python check_card_integrity.py
 
+      # ══ 2026-10-06 · PRICE WHAT WE JUST PUBLISHED ══
+      # 2,523 of 17,932 receipts (14.1%) carry no price, and it is the
+      # user-facing surfaces that are missing it:
+      #
+      #     dawg         130/130  100%     game_read  1014/1340  76%
+      #     daily_degen  156/156  100%     potd        100/146   68%
+      #     sweat_card   827/1030  80%     sharp_card    31/602   5%
+      #
+      # A record without prices cannot say whether the money went up: 5-3 on
+      # -250 favourites loses, 5-3 on +120 dogs wins well. The Dawg is the
+      # sharpest case — its real prices turn out to be -180 to -200, so every
+      # Dawg figure ever shown assumed juice it never had.
+      #
+      # THE FIX IS NOT A NEW SCRIPT. backfill_receipt_prices.py was written
+      # 2026-10-04, works, and was in NO workflow — run by hand once, never
+      # again. That is why game_read sits at 24% priced instead of 0% or
+      # 100%. Scheduling the thing that already exists is the whole fix.
+      #
+      # It runs AFTER the card, POTD and ledger so it prices the receipts
+      # this run just wrote, and it only ever fills columns that are NULL —
+      # it never overwrites a published price, and it reads each write back
+      # (a 204 is not a write). A 7-day window keeps it cheap; the historical
+      # sweep is a manual --since run.
+      - name: Price the receipts just published
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          SINCE=$(date -u -d '7 days ago' +%Y-%m-%d)
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_receipt_prices.py" \
+            python backfill_receipt_prices.py --since "$SINCE" --apply
+
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline
         env:

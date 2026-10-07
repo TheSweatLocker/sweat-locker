@@ -312,12 +312,54 @@ def potd_rows(records: list, game_date: str | None = None) -> list[dict]:
     return out
 
 
+def _num_or_none(v):
+    """float(v) or None — so a sign flip never raises on a NULL or a string."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _side_from_matchup(team, matchup) -> str | None:
+    """HOME / AWAY for a team pick, from an "Away @ Home" matchup string.
+
+    Needed because a price is stored per SIDE, not per team name: without
+    this, every Dawg receipt is unpriceable. 130 of 130 Dawg receipts carry
+    no price today for exactly this reason — `daily_dawg` has no price column
+    of its own, and the fallback to line_history needs a side.
+
+    Returns None rather than guessing when the team is not clearly one of the
+    two: a wrong side yields the OPPOSING price, which looks valid and
+    silently inverts the ROI of every row built on it.
+    """
+    t = str(team or '').strip().lower()
+    m = str(matchup or '')
+    if not t or '@' not in m:
+        return None
+    away, _, home = m.partition('@')
+    away, home = away.strip().lower(), home.strip().lower()
+    in_home = t in home or home in t
+    in_away = t in away or away in t
+    if in_home and not in_away:
+        return 'HOME'
+    if in_away and not in_home:
+        return 'AWAY'
+    return None
+
+
 def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
     """Dawg of the Day, from daily_dawg rows.
 
     Shape (verified, 123 rows back to 2026-04-22): game_date, team,
     matchup, game_id, tier, conviction, close_spread, spread_delta,
     result. One per day.
+
+    2026-10-06: this builder set no `pick_odds` and no `pick_side`, and
+    `daily_dawg` has no price column at all — so all 130 Dawg receipts are
+    unpriced. The price is recoverable from line_history (which holds spread
+    prices for every sport), but only given a side, so `pick_side` is now
+    derived from the matchup. `pick_line` already carries close_spread, which
+    is the other half line_history needs to price the right line.
     """
     out = []
     for rec in records or []:
@@ -327,7 +369,19 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
         team = rec.get('team')
         if not gd or not team:
             continue
+        _side = _side_from_matchup(team, rec.get('matchup'))
         out.append({
+            'pick_side': _side,
+            # The line FROM THE PICKED SIDE, not the home handicap.
+            # Verified 2026-10-06 on 4 of 4 games with spread quotes:
+            # close_spread equals the HOME line every time, while
+            # line_history stores each side's own line (home +1.5 / away
+            # -1.5 are the two halves of one market). The Dawg is usually
+            # the AWAY dog, so storing close_spread unflipped pointed at the
+            # FAVOURITE's run line — a real price for the opposite bet.
+            'pick_line': (-_num_or_none(rec.get('close_spread'))
+                          if _side == 'AWAY'
+                          else _num_or_none(rec.get('close_spread'))),
             'sport': str(rec.get('sport') or 'MLB').upper(),
             'surface': 'dawg',
             'game_date': gd,
@@ -337,7 +391,6 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
             'matchup': rec.get('matchup'),
             'market': 'dotd',
             'pick_label': team,
-            'pick_line': rec.get('close_spread'),
             'tier': rec.get('tier'),
             'conviction': rec.get('conviction'),
             'result': norm_result(rec.get('result')),
