@@ -304,6 +304,31 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "refresh_yesterday_recap.py"             python refresh_yesterday_recap.py --apply
 
+      # ══ 2026-10-07 · WHICH MODEL IS ACTUALLY RIGHT ══
+      # Andy: "we should know how good Jerry model vs panel is."
+      #
+      # Grades every model against the CLOSING LINE using only values frozen
+      # in jerry_reads.input_snapshot before kickoff, so nothing here can be
+      # hindsight. Writes one surface_records row per (sport, model), which
+      # is the same table the app already reads.
+      #
+      # Runs once a day on the 05 UTC slot — it re-grades history, so there
+      # is nothing to gain from running it three times.
+      - name: Model scorecard (once daily)
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "05" ] || [ "$HOUR" = "06" ]              || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "model_scorecard.py" python model_scorecard.py --apply
+          else
+            echo "skip: model scorecard runs on the 05/06 UTC slot (now ${HOUR} UTC)"
+          fi
+
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline
         env:
