@@ -149,8 +149,28 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     valid_markets = _VALID_MARKETS_BY_SPORT.get(sport.upper(), set())
 
     if line_only:
-        # Bail if pp is soft-tier or invalid market (nothing to align)
-        if tier in ('COVERAGE', 'PASS', 'SKIP') or market not in valid_markets or not side or not label:
+        # ══ 2026-10-07 · A SOFT TIER STILL SHOWS A NUMBER ══
+        # This used to bail on COVERAGE/PASS/SKIP as "nothing to align".
+        # That premise is wrong: game detail renders those picks — dimmed,
+        # with a LOW CONVICTION chip — and the number is right there in the
+        # label. GameDetailV2 says so in as many words ("Prior TIER=COVERAGE
+        # gate REMOVED — was returning null which felt broken to users").
+        #
+        # So the skip left exactly the tiers users can still see holding a
+        # stale line. After the 10-07 refresh fixed primary_play on 10 NFL
+        # games, 8 jerry_reads rows stayed wrong — BAL -6 against a market of
+        # BAL +3.5, NE -8.5 against -3.5 — and all 8 were COVERAGE or PASS.
+        # The badge on the games tab and the chip on the writeup disagreed,
+        # which is the precise defect this file was written to prevent.
+        #
+        # It also compounded with the reroute carrying a moneyline edge
+        # verdict onto spread picks (BACKLOG B54): that gate buries plays at
+        # COVERAGE, and this skip then froze their lines.
+        #
+        # A line refresh is correct at every tier. The tier guard belongs on
+        # FULL alignment, which resyncs prose and conviction and genuinely
+        # should not touch a non-play; it does not belong on a number.
+        if market not in valid_markets or not side or not label:
             return None
         # Require SAME side + SAME market — line-only is a line refresh,
         # never a pick change (those go through full-alignment path).

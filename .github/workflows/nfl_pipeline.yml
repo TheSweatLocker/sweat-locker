@@ -131,6 +131,37 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_odds_pull.py" python nfl_odds_pull.py
 
+      # ══ 2026-10-07 · MAKE close_spread MEAN THE CLOSE, FIRST ══
+      # Andy: "I need the line movement to assessed and not stale lines post
+      # as picks thats what i need just fix the systems."
+      #
+      # Both consumers below — the jerry line aligner and the label
+      # normalizer — were already correct and already wired. They just had
+      # nothing current to work from. close_spread is in practice the OPENING
+      # line (identical to open_spread on 263 of 314 NFL games, 83.8%), so
+      # they faithfully re-derived Tuesday's number all week.
+      #
+      # ORDER IS THE WHOLE POINT. This has to run BEFORE the jerry aligner,
+      # not just before the normalizer: the aligner sits earlier in this file,
+      # so a refresher placed below it would still leave jerry_reads a cycle
+      # behind primary_play — the exact badge-vs-chip mismatch the aligner
+      # exists to prevent.
+      #
+      # Reads line_history (every book, median across them) and updates the
+      # MARKET COLUMNS ONLY. Never primary_play, never a started game, and
+      # never a number fewer than 3 books quote. Window is 16 days so next
+      # week's slate is covered — at 10 days, 21 of next week's published
+      # lines sat stale outside the window.
+      - name: Refresh NFL market lines from the books (BEFORE both aligners)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_market_lines.py --sport NFL --days-ahead 16
+
       # 2026-09-18 line-only jerry alignment post odds-pull.
       # Rationale (Andy directive item #5.B): when close_spread updates
       # mid-week, primary_play.label refreshes to new line but jerry_reads
@@ -147,7 +178,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 14
+          python backfill_jerry_pick_alignment.py --sport NFL --line-only --days 16
 
       # 2026-09-22: side/label normalizer, lock-bypassing by design.
       # Same rationale as the line-only jerry alignment above — the week
@@ -164,38 +195,6 @@ jobs:
       #
       # Numbers are frozen once a game starts; only the team is repaired
       # on played games, so a settled price is never restated.
-      # ══ 2026-10-07 · MAKE close_spread MEAN THE CLOSE, BEFORE LABELS RUN ══
-      # Andy: "I need the line movement to assessed and not stale lines post
-      # as picks thats what i need just fix the systems."
-      #
-      # The normalizer below is correct and was already wired — it just had
-      # nothing current to normalize AGAINST. close_spread is in practice the
-      # OPENING line (identical to open_spread on 263 of 314 NFL games,
-      # 83.8%), so the labels were faithfully re-derived from Tuesday's
-      # number all week.
-      #
-      # That is a CADENCE hole, not a code bug: lines pull Tue 11am, and the
-      # 6-hourly refresh only covers Thu-Sun, so a WEDNESDAY injury move is
-      # never picked up before Thursday's lock. BAL @ ATL opened BAL -6.5 and
-      # is now BAL +3.5 — a 9.5-point swing with the favourite flipping — and
-      # the card said "BAL -6" all week.
-      #
-      # This step reads line_history (every book, median across them) and
-      # updates the market columns only. It never touches primary_play, never
-      # touches a started game, and refuses any number fewer than 3 books
-      # quote. Running it immediately before the normalizer is what makes the
-      # picks self-heal: the normalizer re-derives label+line from
-      # close_spread for any game that has not kicked off.
-      - name: Refresh NFL market lines from the books (pre-normalizer)
-        if: steps.mode.outputs.mode != 'resolver_only'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python refresh_market_lines.py --sport NFL --days-ahead 10
-
       - name: Normalize NFL primary_play labels (side/label agreement)
         if: steps.mode.outputs.mode != 'resolver_only'
         continue-on-error: true
@@ -204,7 +203,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 10
+          python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 16
 
       # Reports which published picks name a number the books never posted.
       # Distinct from a line that MOVED: "BAL -6" traded on 138 captures and
