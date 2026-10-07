@@ -98,3 +98,48 @@ jobs:
         run: |
           cd mlb_pipeline
           python archive_public_splits.py --sport ALL
+
+      # ── THE FADE ───────────────────────────────────────────────────────
+      # 2026-10-07. Lives here and not in cross_sport_lines.yml on purpose:
+      # that workflow is dispatch-only and workflow_heartbeat shows it has
+      # never once run, so a step added there would never fire. This job is
+      # the OddsCrowd refresh, and oddscrowd is the single source The Fade
+      # reads (it is the only archive source keyed on the real pick_side
+      # rather than sharp_side_norm — see compute_fade_records.py SOURCES).
+      # So the consumer sits directly behind its own producer.
+      #
+      # Two different cadences on purpose:
+      #   --today  every refresh. Public ticket share moves through the day,
+      #            so tonight's qualifying list has to move with it.
+      #   record   ONCE a day. It only changes when games grade, and Andy's
+      #            standing instruction is not to re-run work that cannot
+      #            have changed. Gated on the UTC hour in bash rather than
+      #            github.event.schedule — this workflow has four cron lines
+      #            and dispatch sends none, and a schedule-string gate is
+      #            exactly how clv_weekly_rollup's Sunday check silently
+      #            never matched (see cross_sport_lines.yml).
+      - name: The Fade - tonight's qualifying plays
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_fade_records.py --today --apply
+
+      - name: The Fade - graded record (once daily)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd mlb_pipeline
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ] \
+             || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python compute_fade_records.py --apply
+          else
+            echo "skip: record recomputes on the 12/13 UTC shot only (now ${HOUR} UTC)"
+          fi
