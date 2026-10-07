@@ -1804,6 +1804,16 @@ def upsert(rows: list, dry_run: bool = False) -> int:
     except Exception as _e:
         print(f'  ⚠ NCAAF publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
 
+    # 2026-10-07 · Stamp when these features were computed. Same fix as
+    # nfl_game_context: nothing here ever wrote updated_at, so it held the
+    # INSERT time and row freshness was unknowable. Reading it as staleness
+    # produced a false CRITICAL on nine NFL games whose content was current.
+    # Making it mean what its name says turns the next freshness question
+    # into a lookup instead of forensics.
+    _now_iso = datetime.now(timezone.utc).isoformat()
+    for _row in rows:
+        _row['updated_at'] = _now_iso
+
     r = requests.post(
         f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,

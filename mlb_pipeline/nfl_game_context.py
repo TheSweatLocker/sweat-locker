@@ -1984,6 +1984,27 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     for row in rows:
         for k in all_keys:
             if k not in row: row[k] = None
+
+    # ══ 2026-10-07 · updated_at WAS NEVER WRITTEN, SO IT MEANT INSERT ══
+    # Nothing in this file ever set it, so the column held the time the row
+    # was first created and freshness was unknowable. Chasing a suspected
+    # stale-features bug on 10-06 I read it as a staleness signal and raised a
+    # false CRITICAL on nine games that were fine: rows stamped 2026-07-22
+    # carried penalty figures matching nfl_team_stats exactly, because the
+    # CONTENT had been refreshed and only the timestamp had not.
+    #
+    # The other candidates are no better: computed_at is also insert-time,
+    # team_tendencies_updated_at is NULL on every row (written once by an old
+    # backfill), and team_form_enriched_at covers a different enrichment block
+    # so it reads fresh on rows whose features are months old.
+    #
+    # With this set, "when were these features computed" becomes a lookup
+    # instead of forensics, and watchdogs.check_context_features_preseason can
+    # test a timestamp rather than reverse-engineering freshness from values.
+    _now_iso = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        row['updated_at'] = _now_iso
+
     r = requests.post(
         f'{SB}/rest/v1/nfl_game_context?on_conflict=game_id',
         headers=H_WRITE, json=rows, timeout=30,

@@ -109,6 +109,24 @@ def run(season: int, dry_run: bool = False) -> int:
             # CFBD's percentPPA is the headline "% of production returning"
             'returning_offense_pct': _f(r.get('percentPPA')),
             'returning_defense_pct': None,  # not provided by CFBD
+            # ⚠ THESE COLUMNS ARE NAMED "yards" AND HOLD PPA. 2026-10-07:
+            # reviewing a screenshot I read Kennesaw's returning_rush_yards of
+            # -3.1 as an impossible negative percentage and reported it as a
+            # data bug. It is not — it is totalRushingPPA, and a returning
+            # rusher with negative PPA makes it legitimately negative.
+            #
+            # The scale difference is the giveaway and the trap: across 136
+            # teams returning_offense_pct is a 0-1 fraction (median 0.40, max
+            # 1.00) while these three run to 196.6 with 108 of 136 above 1.0.
+            # Sibling columns on two different scales, which is the same shape
+            # as the ESPN projections that held season totals and per-game
+            # values in one column.
+            #
+            # Currently harmless: grep finds ZERO consumers of these three.
+            # The app's RETURN PROD reads {home,away}_returning_production off
+            # the context table, which is the 0-1 percentPPA and renders
+            # correctly. Renaming needs a migration — logged in BACKLOG rather
+            # than done here — so until then this comment is the guard.
             'returning_pass_yards': _f(r.get('totalPassingPPA')),
             'returning_rush_yards': _f(r.get('totalRushingPPA')),
             'returning_receiving_yards': _f(r.get('totalReceivingPPA')),
