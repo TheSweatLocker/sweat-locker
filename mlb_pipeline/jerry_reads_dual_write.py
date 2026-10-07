@@ -29,6 +29,32 @@ from typing import Optional
 import requests
 
 
+def _freeze_published_call(payload: dict, sport: str, game_id: str,
+                           game_date: str):
+    """Thin wrapper so a receipt_pins import failure cannot break a read write.
+
+    Imported lazily and guarded: this module is the single write path for
+    every sport's reads, so an ImportError here would silently stop all read
+    generation. On failure the call fields are DROPPED from the payload rather
+    than written, which preserves whatever is already stored — the same
+    fail-closed posture as the rest of receipt_pins.
+    """
+    try:
+        from receipt_pins import freeze_published_call
+    except Exception as e:                              # noqa: BLE001
+        for k in ('call_market', 'call_side', 'call_line', 'call_text'):
+            payload.pop(k, None)
+        return payload, (f'receipt_pins unavailable ({e}) — leaving any '
+                         f'stored call untouched')
+    try:
+        return freeze_published_call(payload, sport, game_id, game_date)
+    except Exception as e:                              # noqa: BLE001
+        for k in ('call_market', 'call_side', 'call_line', 'call_text'):
+            payload.pop(k, None)
+        return payload, (f'call-freeze check errored ({e}) — leaving any '
+                         f'stored call untouched')
+
+
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 _SB_WRITE = ({'apikey': SUPABASE_KEY,
@@ -708,6 +734,33 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
         'call_odds_est': None,
         'conviction': parsed.get('conviction') or 0,
     }
+    # ══ 2026-10-06 · A PUBLISHED CALL IS A HISTORICAL FACT ══
+    # This upsert targets on_conflict=sport,game_id,game_date, so every
+    # regeneration rewrites call_market / call_side / call_line / call_text on
+    # the SAME row id — and public_receipts cites that id. Nothing stopped a
+    # later cron from changing what an already-published pick points at.
+    #
+    # Measured across all 1,340 receipts citing jerry_reads: 249 (18.6%)
+    # disagree with the row they cite — 186 on the market, 63 on side/line.
+    # Receipt "Alabama -11.5" cites a read calling South Carolina +12.5;
+    # "BUF ML" cites one calling Over 50.5. Those are different bets.
+    #
+    # It also made 174 of 330 backfilled prices wrong, because the price was
+    # copied from whatever the read said at backfill time (DET -9.5 priced at
+    # -300, a moneyline number on a spread bet).
+    #
+    # The boundary is publication, not time: before a receipt exists the row
+    # stays fully mutable (lineups confirm, lines move — rewriting is
+    # correct). Once a surface has shown it to a subscriber, the call is
+    # frozen and every OTHER field still updates — prose, prices,
+    # input_snapshot. Fails closed: if the receipt lookup cannot complete the
+    # call fields are dropped from the payload rather than risk an
+    # unrecoverable overwrite.
+    payload, _freeze_note = _freeze_published_call(
+        payload, sport, str(game_id), str(game_date))
+    if _freeze_note:
+        print(f'  🔒 jerry_reads ({sport} {game_id}): {_freeze_note}')
+
     try:
         r = requests.post(
             f'{_url}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
