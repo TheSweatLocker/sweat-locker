@@ -2359,8 +2359,41 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
                               {'sport': 'eq.NFL',
                                'game_id': f'eq.{game_id}',
                                'game_date': f'eq.{ct}',
-                               'select': 'id,short_read'})
-            if existing and (existing[0].get('short_read') or '').strip():
+                               'select': 'id,short_read,long_read,'
+                                         'prompt_version'})
+            # ══ 2026-10-06 · A BRIDGE STUB IS NOT A READ ══
+            # This test used to be "a non-empty short_read exists", and
+            # sync_jerry_reads_from_ctx.py writes exactly that when the real
+            # generator never covered a game: prompt_version
+            # '<sport>_ctx_bridge_v1', a one-clause short_read built from
+            # primary_play, no long_read, no input_snapshot.
+            #
+            # So the stub SATISFIED the lock and permanently blocked the real
+            # read. Andy found it on CLE @ NYJ (2026-10-11), which renders as
+            #   "CLE +2.5: CLE covering 66.70% ATS (2-1) · Away spread edge mc"
+            # and nothing else. Week 5 traced exactly:
+            #   11 full reads  2026-10-02 22:23-22:27  nfl_game_read_v2
+            #    4 stubs       2026-10-06 20:14        nfl_ctx_bridge_v1
+            #      (CLE@NYJ, BAL@ATL, IND@PIT, BUF@LA)
+            # Those 4 games entered nfl_game_context after the 10-02 run; the
+            # bridge swept them up, and from then on every real run skipped
+            # them. 19 of 93 NFL reads since 09-01 are stubs, plus 53 NCAAF
+            # and 14 NHL.
+            #
+            # The bridge is doing its job — something is better than a blank
+            # card. The defect is that its output counted as the finished
+            # article. A read now only locks the week if it has a long_read
+            # AND did not come from the bridge, so the next run replaces a
+            # stub with the real thing and still never churns a real read.
+            _ex = existing[0] if existing else {}
+            _is_stub = (not (_ex.get('long_read') or '').strip()
+                        or str(_ex.get('prompt_version') or '')
+                        .endswith('_ctx_bridge_v1'))
+            if existing and (_ex.get('short_read') or '').strip() and _is_stub:
+                print(f"  ♻️  bridge stub for {game_id} "
+                      f"({_ex.get('prompt_version')}) — generating the real "
+                      f"read over it")
+            elif existing and (_ex.get('short_read') or '').strip():
                 # 2026-09-28 · THE LOCK RELEASES ITSELF FOR A RULED-OUT QB.
                 # nfl_week_write_locked's own docstring names the exception:
                 # "NFL_UNLOCK_WEEK=1 env bypasses (emergency injury regen or
