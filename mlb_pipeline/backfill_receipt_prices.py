@@ -225,6 +225,17 @@ def main() -> int:
     # ---- sources -----------------------------------------------------
     jr_by_id, jr_by_game = {}, collections.defaultdict(list)
     for j in page('jerry_reads', {'select': 'id,sport,game_date,game_id,'
+                                            # 2026-10-07: call_text / call_side
+                                            # / call_line were NOT selected, so
+                                            # the pick-label fill read None every
+                                            # time and reported "0 recoverable"
+                                            # against 78 blank receipts. Same
+                                            # trap as feedback_explicit_select_
+                                            # silent_blanks: a column left out
+                                            # of SELECT does not error, it reads
+                                            # as NULL. _jr_price's mismatch guard
+                                            # needs them too.
+                                            'call_text,call_side,call_line,'
                                             'call_market,price_american,'
                                             'priced_at,input_snapshot->>matchup',
                                   'game_date': f'gte.{args.since}'}):
@@ -263,7 +274,6 @@ def main() -> int:
 
     # ---- resolve -----------------------------------------------------
     price_fixes, matchup_fixes, tier_fixes = [], [], []
-    label_fixes = []
     why = collections.Counter()
 
     def _jr_price(j, rec):
@@ -331,31 +341,23 @@ def main() -> int:
                 matchup_fixes.append((rec, str(m)))
 
 
-        # --- pick_label / pick_side, for receipts written before the read
-        # --- had a call --------------------------------------------------
-        # 2026-10-07. backfill_public_receipts used to write
-        # `market or 'game'` for a read whose call_market was still empty,
-        # so a receipt got created for a read that had not yet made a call.
-        # public_receipts is SET-ONCE, so market='game' and conviction=0
-        # became permanent on 80 receipts (NCAAF 56, NHL 22, MLB 2), 78 of
-        # them with no pick_label at all and 56 graded.
+        # ── pick_label / pick_side are NOT recoverable ──────────────
+        # 80 receipts (NCAAF 56, NHL 22, MLB 2) were written before their
+        # read had made a call, so they carry market='game', conviction=0 and
+        # a NULL pick_label while the read they cite now names a real pick
+        # ("Ottawa Senators ML", call_side HOME, conviction 54).
         #
-        # The placeholder itself is now prevented at source. These two
-        # columns are still NULL, and NULL -> value is exactly what the
-        # trigger permits, so the actual pick can be restored: the NHL rows
-        # read market='game' / pick_label=NULL while the read they cite says
-        # call_text='Ottawa Senators ML', call_side='HOME', conviction=54.
+        # I tried to restore those two columns on the assumption that
+        # NULL -> value was permitted. It is not. In
+        # 20260918b_receipt_enrichment_allow, pick_side / pick_line /
+        # pick_label sit in the FULLY FROZEN block — `NEW.x := OLD.x`
+        # unconditionally — not the set-once block. Only tier, conviction,
+        # pick_odds, matchup and audit allow NULL -> value. The fill ran and
+        # wrote 0 of 22, exactly as the trigger intends.
         #
-        # Safe against the drift problem: these receipts carry NO published
-        # call, so there is nothing to contradict. Filling cannot overwrite a
-        # published pick, only reveal one that was lost.
-        if stbl == 'jerry_reads' and not str(rec.get('pick_label') or '').strip():
-            j = jr_by_id.get(sid)
-            _ct = (j or {}).get('call_text')
-            if _ct and str(_ct).strip():
-                label_fixes.append((rec, str(_ct).strip(),
-                                    str((j or {}).get('call_side') or '').upper()
-                                    or None))
+        # Those receipts are permanently blank. The fix that matters is at
+        # source: backfill_public_receipts now skips a read with no
+        # call_market instead of inventing the 'game' placeholder.
 
         # --- tier, for prop receipts ----------------------------------
         # 2026-10-05: 118 of 119 prop receipts in the weekend window carried
@@ -481,7 +483,6 @@ def main() -> int:
         print(f'   {s:<14} {dict(by[s])}')
     print(f'\n=== MATCHUP recoverable: {len(matchup_fixes)} ===')
     print(f'=== TIER recoverable: {len(tier_fixes)} ===')
-    print(f'=== PICK LABEL recoverable: {len(label_fixes)} ===')
     if tier_fixes:
         _tc = collections.Counter(t for _r, t in tier_fixes)
         print(f'   {dict(_tc)}')
@@ -554,23 +555,6 @@ def main() -> int:
             mbad += 1
     print(f'matchups written {mok}/{len(matchup_fixes)}, {mbad} failed')
 
-    lok = lbad = 0
-    for rec, lbl, side in label_fixes:
-        body = {'pick_label': lbl}
-        if side and not rec.get('pick_side'):
-            body['pick_side'] = side
-        r = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W,
-                           timeout=60,
-                           params={'id': f'eq.{rec["id"]}',
-                                   'pick_label': 'is.null'},
-                           data=json.dumps(body))
-        back = r.json() if r.content else []
-        if (r.status_code in (200, 204) and back
-                and back[0].get('pick_label') == lbl):
-            lok += 1
-        else:
-            lbad += 1
-    print(f'pick labels written {lok}/{len(label_fixes)}, {lbad} failed')
     return 0
 
 
