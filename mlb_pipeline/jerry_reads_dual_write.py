@@ -661,6 +661,26 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     # ─── ENSEMBLE ALIGNMENT ENFORCER ───────────────────────────────
     # Runs BEFORE the truncation guard so the guard sees final prose.
     parsed = enforce_primary_play_alignment(sport, parsed, struct)
+
+    # ══ 2026-10-07 · AN UNJUSTIFIED OVERRIDE CANNOT CARRY A HIGH TIER ══
+    # Measured across MLB/NCAAF/NFL on graded games: when the published call
+    # agreed with the model majority it ran 58.3% ATS (n=175); when it
+    # overrode them, 45.1% (n=253) — while the models on those same games ran
+    # 55%. The overrides cost 47.7 units since August, and in MLB they landed
+    # on the PUBLIC's side 113 times out of 141 (the public grades 43.9%).
+    #
+    # The prompts now say defer. This enforces it, and ONLY on conviction —
+    # the side is never rewritten, so a user still sees the call that was
+    # actually written. A disagreement that names a fact the models cannot
+    # see (scratch, weather, lineup) keeps its tier; one that does not is
+    # capped at the LEAN ceiling. Fails open on any missing input.
+    try:
+        from model_deference import apply as _defer_apply
+        parsed, _defer_note = _defer_apply(sport, struct, parsed)
+        if _defer_note:
+            print(f'  🧮 model deference ({sport} {game_id}): {_defer_note}')
+    except Exception as _de:                            # noqa: BLE001
+        print(f'  ! model-deference gate skipped ({_de})')
     # 2026-09-05 short_read truncation guard. LLM sometimes emits a
     # fragment like "UCLA's SP+ sits at 5.4 vs." (26 chars, cut on
     # "vs." period). If short is under 100 chars, derive from the
