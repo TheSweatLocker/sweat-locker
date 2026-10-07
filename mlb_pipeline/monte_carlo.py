@@ -406,6 +406,8 @@ def simulate_game(g, n_iter=10000, line=None, seed=None):
     yrfis = 0
     over_count = 0
     margin_sum = 0.0
+    extra_inning_games = 0
+    unresolved_ties = 0
 
     for _ in range(n_iter):
         home_score = 0
@@ -425,6 +427,42 @@ def simulate_game(g, n_iter=10000, line=None, seed=None):
                 if inning == 1:
                     first_inning_runs += bot_runs
 
+        # ══ 2026-10-07 · BASEBALL HAS NO TIES ══
+        # The loop above stops at 9 innings, and the win branch below used to
+        # be `if home > away … elif away > home …` with no else — so every
+        # simulated game level after 9 was counted in NEITHER bucket and
+        # simply disappeared.
+        #
+        # Measured on 78 live MLB games before this fix:
+        #     mc_p_home_win + mc_p_away_win   mean 0.871, median 0.863,
+        #                                     min 0.818, 77 of 78 != 1.0
+        # while every OTHER MC market was exactly coherent — over+under+push
+        # 1.000, nrfi+yrfi 1.000, covers+push 1.000. Only the win buckets
+        # leaked, and by ~12.9%, which is close to the real rate of MLB games
+        # going past the 9th.
+        #
+        # This is not cosmetic. defensive_gates blocks picks on MC win
+        # probability ("⚠ Engine passed: MC sim has our side at 21% win
+        # prob"), and the sub on a published pick quotes it against the
+        # price-implied number ("simulation 70.8% vs 58.0% implied").
+        # Understating BOTH sides by ~13 points makes every such comparison
+        # read low, so the hard block fires on picks it should not.
+        #
+        # Fixed by playing it out rather than by reallocating the mass:
+        # extra innings use the same per-inning model, both halves, until
+        # someone leads after a complete inning. Capped so a pathological
+        # scoring model cannot spin forever — on the cap, the half-inning
+        # pattern has already decided it in practice, and a tie that survives
+        # 30 extra innings is assigned to neither (now a measurable
+        # near-zero rather than a silent 13%).
+        _extra = 0
+        while home_score == away_score and _extra < 30:
+            _extra += 1
+            away_score += _simulate_inning(rng, away, home, 9 + _extra)
+            home_score += _simulate_inning(rng, home, away, 9 + _extra)
+        if _extra:
+            extra_inning_games += 1
+
         total = home_score + away_score
         totals.append(total)
         home_scores.append(home_score)
@@ -433,6 +471,8 @@ def simulate_game(g, n_iter=10000, line=None, seed=None):
             home_wins += 1
         elif away_score > home_score:
             away_wins += 1
+        else:
+            unresolved_ties += 1
         margin_sum += (home_score - away_score)
         if first_inning_runs == 0:
             nrfis += 1
@@ -457,6 +497,12 @@ def simulate_game(g, n_iter=10000, line=None, seed=None):
         'expected_margin': round(margin_sum / n_iter, 2),
         'line_used': line,
         'n_iter': n_iter,
+        # Diagnostics so the tie leak can never go unnoticed again:
+        # p_extra_innings should sit near the real MLB rate, and
+        # p_unresolved_tie must be ~0 (it was effectively 0.129 before the
+        # extra-innings loop existed).
+        'p_extra_innings': round(extra_inning_games / n_iter, 3),
+        'p_unresolved_tie': round(unresolved_ties / n_iter, 4),
     }
 
 

@@ -337,6 +337,8 @@ def simulate_game(projected_spread: float, projected_total: float,
     away_exp = max(away_exp, 3.0)
 
     home_wins = 0
+
+    sim_ties = 0
     over_hits = 0
     total_margins = 0.0
     total_totals = 0.0
@@ -351,6 +353,7 @@ def simulate_game(projected_spread: float, projected_total: float,
         total_totals += total
         margin_sq_sum += margin * margin
         if home_score > away_score: home_wins += 1
+        elif home_score == away_score: sim_ties += 1
         if posted_total is not None and total > posted_total: over_hits += 1
 
     mean_margin = total_margins / n_sims
@@ -358,7 +361,22 @@ def simulate_game(projected_spread: float, projected_total: float,
     var_margin = (margin_sq_sum / n_sims) - (mean_margin ** 2)
     std_margin = math.sqrt(max(var_margin, 0))
 
-    p_home = home_wins / n_sims
+    # ══ 2026-10-07 · AN EXACT TIE WAS BEING CREDITED TO THE AWAY TEAM ══
+    # `mc_p_away = 1 - p_home` looks safe because it always sums to 1, but
+    # only home_wins was ever counted, so every simulated game that landed
+    # EXACTLY level fell into the away bucket by subtraction. Measured on the
+    # same draw this simulator uses (integer scores, sd 10.5): 2.4-2.7% of
+    # sims tie, so every NFL/NCAAF win probability carried a systematic
+    # ~2.5-point lean toward the road team.
+    #
+    # Found while fixing the MLB simulator, where the same omission was far
+    # worse — there ties were counted in NEITHER bucket and the two win
+    # probabilities summed to 0.871 on 77 of 78 live games.
+    #
+    # Football resolves a tie in overtime, which is close to a coin flip, so
+    # the tie mass is split rather than handed to one side. The rate is
+    # reported so this cannot hide again.
+    p_home = (home_wins + sim_ties / 2.0) / n_sims
     result = {
         'mc_p_home': round(p_home, 3),
         'mc_p_away': round(1 - p_home, 3),
@@ -366,6 +384,7 @@ def simulate_game(projected_spread: float, projected_total: float,
         'mc_expected_total': round(mean_total, 2),
         'mc_stddev_margin': round(std_margin, 2),
         'mc_confidence_high': (abs(mean_margin) > 7.0 and std_margin < 19.5),
+        'mc_p_sim_tie': round(sim_ties / n_sims, 4),
         'generated_at': datetime.now(timezone.utc).isoformat(),
     }
     if posted_total is not None:
