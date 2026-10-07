@@ -1523,3 +1523,41 @@ probability than the best price did.
 | Watchdog: context row stale when its slate is imminent | `1cc8737c` |
 | `kenpom_pull` accepts only the server-side key name | `78709762` |
 | CFBD key rotated by Andy, verified live, 376 stat rows upserted | 2026-10-06 |
+
+## DISCUSSION 2026-10-07 · Split-tab replacement: fade-the-public ROI tracker
+
+Andy's idea: replace Split with a fade product — track sides carrying a high
+share of public TICKETS, publish the ROI of fading them, and surface today's
+plays meeting the criteria. Cites NFL teams at >70% of bets going 3-12.
+Separately: move Sweat Rating / Poll into Jerry (Jerry as an AP-voter style
+ranker), freeing Split for this.
+
+TESTED AGAINST public_splits_archive (125,728 rows, 5,337 latest-capture
+game/market/side combos joined to results). Public side holding >=70% of
+tickets:
+
+    NCAAF  ML   public 84.6-92.6%   fading it 7-15%     <- catastrophic
+    MLB    ML   public 58.4-61.8%   fading it 38-42%    <- catastrophic
+    MLB    RL   public 39.6-47.2%   FADING 52.8-60.4%   <- the real signal
+    NCAAF  RL   public 40.7-55.6%   fading 44-59%       <- mixed
+
+THREE CONCLUSIONS
+
+1. SPREAD/TOTAL ONLY. Fading moneylines would be a disaster: the public backs
+   heavy favourites and favourites win games. That is the public being right
+   at a bad price, and a hit-rate fade cannot see the price. The loss is in
+   the juice, not the side.
+2. ON THE SPREAD THE IDEA HOLDS. MLB run line fade returns 52.8-60.4% against
+   a 52.38% breakeven, n=134-214 on the best-populated source.
+3. WE HAVE NO NFL SPLIT DATA AT ALL. Zero NFL rows at any threshold, which
+   matches the logged gap (cleatz + fadereport return 0 NFL; NFL has 2
+   external sources against MLB's 13). The sport the 3-12 stat comes from is
+   the one we cannot measure. An NFL fade tracker needs that pipe first.
+
+CONDITIONS IF BUILT: spread/total only; publish ROI not hit rate (a record
+without a price is what made the Degen parlay look like a disaster when its
+3-leg form returns +9.5%); and it is structurally honest in a way our own
+surfaces are not, since it grades someone else's picks.
+
+VERIFY: public_splits_archive joined to {sport}_game_results on game_id, take
+the latest capture per (game, market, side), threshold on *_bets_pct.
