@@ -38,16 +38,24 @@ import re
 #: published tier map (65-79 STRONG, 80+ PRIME).
 LEAN_CEILING = 64
 
-#: Facts the models genuinely cannot see. Naming one of these in the long read
-#: is what separates an informed disagreement from a hunch. Kept deliberately
-#: narrow — "value", "spot" and "angle" are not on it.
-JUSTIFIERS = (
-    'scratch', 'scratched', 'ruled out', 'is out', 'out with', 'inactive',
-    'questionable', 'doubtful', 'injury', 'injured', 'late news',
-    'weather', 'wind', 'rain', 'snow', 'temperature',
-    'lineup', 'bullpen usage', 'rest', 'back-to-back', 'b2b',
-    'suspended', 'illness', 'placed on', 'activated',
-)
+#: THERE IS DELIBERATELY NO PROSE ESCAPE HATCH. This started life with a
+#: JUSTIFIERS keyword list — scratch / weather / lineup / rest / injury — on
+#: the theory that an override grounded in a fact the models cannot see is
+#: legitimate and should keep its tier. Measured the same day, that theory is
+#: dead:
+#:
+#:      override, keywords present   45.0%  -19.73u  n=140
+#:      override, keywords absent    45.1%  -15.64u  n=113
+#:
+#: A 0.1pp difference, and the exception covered 55% of all overrides — 87%
+#: of NFL reads and 62% of MLB reads trip it, because the reads enumerate the
+#: injury report and the forecast either way. "Weather is a non-factor" and
+#: "no injury concerns" both match. Prose keywords cannot tell a load-bearing
+#: fact from a passing mention, so the exception was a hole, not a rule.
+#:
+#: If the exception is ever wanted back it has to be a field the read
+#: DECLARES — not something inferred from stray words — and it has to be
+#: measured before it is trusted.
 
 
 def _f(v):
@@ -147,16 +155,15 @@ def market_need(sport: str, struct: dict):
     return -home_line
 
 
-def has_named_reason(text: str) -> bool:
-    """Does the prose name something the models cannot see?"""
-    t = (text or '').lower()
-    return any(k in t for k in JUSTIFIERS)
-
-
 def apply(sport: str, struct: dict, parsed: dict) -> tuple[dict, str | None]:
-    """(parsed, note) with conviction capped on an unjustified override.
+    """(parsed, note) with conviction capped when the call fights the models.
 
-    Fails open on every missing input.
+    The SIDE is never touched — the published pick stays exactly what the read
+    said. Only the tier moves, so a capped pick still ships; it just stops
+    carrying a STRONG or PRIME badge it has not earned.
+
+    Fails open on every missing input: no line or no model margins means no
+    cap, because a missing input must never silently demote a real pick.
     """
     if not isinstance(parsed, dict) or not isinstance(struct, dict):
         return parsed, None
@@ -168,16 +175,9 @@ def apply(sport: str, struct: dict, parsed: dict) -> tuple[dict, str | None]:
     if mside is None or mside == side:
         return parsed, None                 # no majority, or we agree
 
-    prose = ' '.join(str(parsed.get(k) or '')
-                     for k in ('long_read', 'short_read', 'call_text'))
-    if has_named_reason(prose):
-        return parsed, (f'override of {n_for}/{n_tot} models allowed — prose '
-                        f'names a fact the models cannot see')
-
     conv = _f(parsed.get('conviction'))
     if conv is None or conv <= LEAN_CEILING:
         return parsed, None
     parsed['conviction'] = LEAN_CEILING
     return parsed, (f'conviction {conv:.0f} -> {LEAN_CEILING}: call is {side} '
-                    f'but {n_for}/{n_tot} models are {mside}, and the read '
-                    f'names no reason they could not see')
+                    f'but {n_for}/{n_tot} models are {mside}')
