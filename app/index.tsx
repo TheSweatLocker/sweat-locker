@@ -2999,16 +2999,79 @@ setEvData(evOpps.slice(0,20));
         // clause in _currentSeasonWeek below.
         NCAAF: new Date('2026-08-27T00:00:00-04:00'), // 2026 Week 1 play-week start (Wed)
       };
+      // ══ 2026-10-07 · YOU CANNOT COMPUTE A CFB WEEK FROM A CALENDAR ══
+      // Andy: the Games tab showed 2 CFB games while the slate ran Thu-Sun.
+      //
+      // Measured against the backend for 2026-10-06..10-10, where CFBD puts
+      // EVERY one of those dates in week 6:
+      //
+      //   Oct 6 Tue  db wk 6 ( 2 games)   arithmetic 6
+      //   Oct 7 Wed  db wk 6 ( 2 games)   arithmetic 6
+      //   Oct 8 Thu  db wk 6 ( 4 games)   arithmetic 7   <-- hidden
+      //   Oct 9 Fri  db wk 6 ( 5 games)   arithmetic 7   <-- hidden
+      //   Oct 10 Sat db wk 6 (48 games)   arithmetic 7   <-- hidden
+      //
+      // 57 of 61 week-6 games were filtered out of "THIS WEEK".
+      //
+      // The anchor below is labelled "(Wed)" in two comments and
+      // 2026-08-27 is a THURSDAY, so every boundary landed mid-slate. But
+      // moving it one day does not fix it: for Oct 6-10 to all resolve to
+      // week 6, the anchor would have to sit between Aug 30 and Sep 1, which
+      // breaks Week 1. No uniform 7-day block can reproduce these weeks,
+      // because CFBD weeks are defined by the SCHEDULE, not by arithmetic —
+      // bye structures and midweek games move them.
+      //
+      // Games come from the Odds API, which carries commence_time and no
+      // week, which is why this recomputed in the first place. So fetch the
+      // date -> week map from the table that already knows, and keep the
+      // arithmetic only as a fallback for dates the backend has no row for.
+      const _weekByDate: Record<string, number> = {};
+      const _WEEK_SRC: {[k: string]: string} = {
+        NCAAF: 'ncaaf_game_results',
+        NFL: 'nfl_game_context',
+      };
+      const _loadWeekMap = async (sportKey: string) => {
+        const tbl = _WEEK_SRC[sportKey];
+        if (!tbl) return;
+        try {
+          const since = new Date(todayStart);
+          since.setDate(since.getDate() - 10);
+          const { data } = await supabase
+            .from(tbl)
+            .select('game_date,week')
+            .gte('game_date', since.toISOString().slice(0, 10))
+            .limit(1000);
+          (data || []).forEach((row: any) => {
+            const d = String(row?.game_date || '').slice(0, 10);
+            if (d && row?.week != null) _weekByDate[d] = Number(row.week);
+          });
+        } catch {}
+      };
+
       const _seasonWeekOf = (sportKey: string, dateIso: string): number | null => {
-        const anchor = _seasonWeekAnchors[sportKey];
-        if (!anchor) return null;
         const t = new Date(dateIso);
         if (isNaN(t.getTime())) return null;
+        // Backend first — it is the authority and the arithmetic cannot match
+        // it in general.
+        const etDay = new Date(t.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const key = `${etDay.getFullYear()}-${String(etDay.getMonth() + 1).padStart(2, '0')}-${String(etDay.getDate()).padStart(2, '0')}`;
+        if (_weekByDate[key] != null) return _weekByDate[key];
+        const anchor = _seasonWeekAnchors[sportKey];
+        if (!anchor) return null;
         const days = Math.floor((t.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
         if (days < 0) return 0;
         return Math.floor(days / 7) + 1;
       };
       const _currentSeasonWeek = (sportKey: string): number | null => {
+        // 2026-10-07 · Same authority as _seasonWeekOf. "This week" is the
+        // week of the next date that actually has games, which is what a fan
+        // means on a dead day — and it keeps the current week and the game
+        // weeks on one definition so they cannot disagree.
+        const todayKey = `${todayStart.getFullYear()}-${String(todayStart.getMonth() + 1).padStart(2, '0')}-${String(todayStart.getDate()).padStart(2, '0')}`;
+        const upcoming = Object.keys(_weekByDate)
+          .filter(d => d >= todayKey)
+          .sort();
+        if (upcoming.length) return _weekByDate[upcoming[0]];
         const anchor = _seasonWeekAnchors[sportKey];
         if (!anchor) return null;
         const nowEt = new Date(todayStart);
@@ -3023,6 +3086,10 @@ setEvData(evOpps.slice(0,20));
         // boundary. See the NCAAF anchor comment above for the full trace.
         return baseWk;
       };
+
+      // Must complete before either week function is called — they read
+      // _weekByDate and fall back to the arithmetic when it is empty.
+      if (isWeekly) await _loadWeekMap(gamesSport);
 
       const thisSeasonWk = isWeekly ? _currentSeasonWeek(gamesSport) : null;
       const nextSeasonWk = thisSeasonWk != null ? thisSeasonWk + 1 : null;
