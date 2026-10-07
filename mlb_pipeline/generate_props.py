@@ -3654,20 +3654,77 @@ def wipe_todays_props(skip_live_game_ids=None, max_stale_hours: int = 6):
                   f"{[composite_of(h) for h in held][:4]}")
         if not deletable:
             return
-        deleted = 0
+
+        # ══ 2026-10-06 · DEMOTE, DO NOT DELETE ══
+        # The pins above stop a stale row being removed while an UNGRADED
+        # receipt needs it. They do not stop the churn, and the churn is the
+        # actual root cause (R1): measured on four consecutive slates, the
+        # share of surviving rows that were inserted AFTER the day's first
+        # batch — i.e. whose earlier row was deleted rather than merged — ran
+        #
+        #     10-06  63 of 227  (28%)      10-05  180 of 187  (96%)
+        #     10-04 135 of 219  (62%)      10-03  299 of 407  (73%)
+        #
+        # Every one of those is a key the scorer produced again minutes later.
+        # The DELETE bought nothing and cost id stability, which is how one
+        # play (Pivetta Over 3.5 K) ended up carrying four different
+        # convictions across four surfaces that each read a different
+        # generation.
+        #
+        # Deleting is also not what the prune is FOR. Its two stated jobs are
+        # covered elsewhere now:
+        #   scratched starters -> the dedicated pinned deleter below
+        #   pulled markets     -> the publish gate, which requires a fresh
+        #                         book line for every _BOOK_REQUIRED family
+        #   cross-run dupes    -> the on_conflict unique index on the upsert
+        #
+        # So demote instead: tier -> SKIP, which no surface publishes (218 of
+        # 227 rows on tonight's board are already SKIP). The row survives, so
+        # every receipt pointing at its composite key still resolves, and
+        # nothing new can strand.
+        #
+        # The demotion is deliberately NOT sticky. The upsert merges on the
+        # full natural key, so if the scorer produces this prop again it
+        # overwrites tier with the fresh value. A row stays SKIP only while
+        # the market really is gone — which is exactly the condition the
+        # prune was trying to express by deleting.
+        #
+        # Safe against the records: compute_surface_records reads this table's
+        # tier only WHERE result IS NOT NULL, and this prune can only reach
+        # game_date = today with started games exempted via skip_live_game_ids,
+        # so it never touches a graded row.
+        demoted = 0
         for i in range(0, len(deletable), 100):
             chunk = [str(row['id']) for row in deletable[i:i + 100]]
-            dr = requests.delete(
+            pr_ = requests.patch(
                 f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props"
                 f"?id=in.({','.join(chunk)})",
-                headers=HEADERS, timeout=20)
-            if dr.status_code in (200, 204):
-                deleted += len(chunk)
+                headers={**HEADERS, 'Prefer': 'return=representation'},
+                json={'tier': 'SKIP'}, timeout=20)
+            if pr_.status_code in (200, 204):
+                # A 204 is not a write. Require the rows back and confirm the
+                # value actually changed before counting it.
+                try:
+                    back = pr_.json() if pr_.text else []
+                except ValueError:
+                    back = []
+                if isinstance(back, list) and back:
+                    ok = [b for b in back
+                          if str(b.get('tier') or '').upper() == 'SKIP']
+                    demoted += len(ok)
+                    if len(ok) != len(back):
+                        print(f"  ! prune_stale_props: {len(back) - len(ok)} "
+                              f"row(s) came back not SKIP — not counted")
+                else:
+                    print(f"  ! prune_stale_props: PATCH returned "
+                          f"{pr_.status_code} with no rows — treating "
+                          f"{len(chunk)} as unconfirmed")
             else:
-                print(f"  ! prune_stale_props delete chunk {dr.status_code}: "
-                      f"{dr.text[:150]}")
-        if deleted:
-            print(f"  🧹 prune_stale_props removed {deleted} stale prop(s)")
+                print(f"  ! prune_stale_props demote chunk "
+                      f"{pr_.status_code}: {pr_.text[:150]}")
+        if demoted:
+            print(f"  🔻 prune_stale_props demoted {demoted} stale prop(s) "
+                  f"to SKIP (rows kept so receipts stay settleable)")
     except Exception as e:
         print(f"  ! prune_stale_props error: {e}")
 
