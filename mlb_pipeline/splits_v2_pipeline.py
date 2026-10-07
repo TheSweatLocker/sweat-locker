@@ -407,12 +407,50 @@ def compute_splits_summary(sport: str, game_id: str) -> dict:
             latest[key] = row
     ts_max = max((row["snapshot_ts"] for row in latest.values() if row.get("snapshot_ts")), default=None)
 
+    # ══ 2026-10-07 · ONE BAD SOURCE POISONS A FLAT MEAN ══
+    # `*_avg` below is an unweighted mean over every source, and
+    # matchup_story.money_flow_story quotes it VERBATIM into a read ("65% of
+    # the money is on X but only 71% of the bets"). `sources_agree` from the
+    # same loop drives `triple_confirmed`. So a garbage source does not just
+    # add noise — it moves a number we state as fact and can manufacture a
+    # "3 sources agree" flag.
+    #
+    # Andy, on a college card: "i saw 100 percent on over for one of the
+    # games". He was right, and it is one source. Measured on every NCAAF
+    # split value captured 10/07-10/09:
+    #
+    #     source   values exactly 0.0 or 100.0
+    #     fr        0 of 42    0.0%
+    #     ftp       0 of 64    0.0%
+    #     cz       18 of 74   24.3%     <- unusable
+    #
+    # Three separate failures, all cz: it saturates at the boundary; it
+    # reports BOTH sides at 100% in the same game (Missouri State @ WKU had
+    # ml HOME 100/100 AND total UNDER 100/100, so the numbers are not shares
+    # of anything); and it duplicates its ml row into rl identically every
+    # game (NMSU @ FIU: ml AWAY 33/69 and rl AWAY 33/69), so any "the spread
+    # money is on X" sourced from it is really the moneyline.
+    #
+    # compute_fade_records already reached this conclusion independently —
+    # its own note records cz "worse than mislabelled" and averaging it
+    # "producing readings like Liberty 71.3% from cz 100.0". The Fade excluded
+    # it; this aggregation never did.
+    #
+    # EXCLUDED FROM THE AVERAGES AND THE AGREEMENT COUNT, NOT FROM THE DATA.
+    # It stays in `sources_present` and its rows keep landing in
+    # public_splits_archive, so nothing is lost and per-source display can
+    # still show it. Drop from this set once the scraper is fixed — it reads
+    # cleatz_signals.sharp_bets_pct, which is the root of all three symptoms.
+    UNRELIABLE_SOURCES = {"cz"}
+
     # Aggregate per (market, side)
     summary = {"captured_at": ts_max}
     sources_present = set()
     by_market = defaultdict(lambda: defaultdict(dict))  # market -> side -> {metric: [values], sources: set}
     for (mkt, side, src, metric), row in latest.items():
-        sources_present.add(src)
+        sources_present.add(src)          # stays honest about what was pulled
+        if src in UNRELIABLE_SOURCES:
+            continue                      # see UNRELIABLE_SOURCES for why
         entry = by_market[mkt][side]
         entry.setdefault(f"{metric}_vals", []).append(row["value"])
         entry.setdefault("sources", set()).add(src)

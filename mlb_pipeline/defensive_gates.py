@@ -1883,6 +1883,14 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     WINNING THE GAME; it is not a cover probability. Carrying it onto a spread
     at PRIME would assert rigor the number does not supply. The pick still
     ships — this reroutes and demotes, it never suppresses.
+
+    ══ 2026-10-07 · AND THE MONEYLINE'S EDGE CAP IS DROPPED ON THE WAY ══
+    An `_edge_cap` whose reason carries 'edge:' was computed against the ML
+    price. That is the very price this reroute exists to escape, so carrying
+    it onto the spread double-counts the same fact and cancels the reroute's
+    purpose. The pre-cap tier is restored and the STRONG ceiling above is what
+    supplies the restraint instead. See the inline note below for the measured
+    cases (FIU, BAL) and why the NCAAF lr_v1 PRIME rule survives it.
     """
     if not isinstance(pp, dict):
         return pp
@@ -1940,6 +1948,54 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     _sub = pp.get('sub')
     if isinstance(_sub, str) and old_label and _sub.startswith(f'{old_label}:'):
         out['sub'] = out['label'] + _sub[len(str(old_label)):]
+
+    # ══ 2026-10-07 · DO NOT CARRY THE MONEYLINE'S VERDICT ONTO THE SPREAD ══
+    # The tier arriving here was capped by the MONEYLINE edge: conviction
+    # minus the ML's implied probability. model_edge.py's own module note says
+    # that comparison is meaningless for anything but a moneyline, and
+    # edge_pp() refuses non-ML pick types for exactly that reason. The ORDER
+    # re-introduced what the function refuses: defensive_gates caps on the ML
+    # price, builds the pick as type 'ml', and then this reroute rewrites it
+    # to 'rl' while the cap rides along.
+    #
+    # It is also DOUBLE-COUNTING THE SAME FACT, and the two halves cancel.
+    # The reroute fires because the ML is too expensive (price <= -200). "The
+    # model does not beat this ML price" is the same observation, restated. So
+    # the pipeline identified a bad price, moved off it to escape that price,
+    # and then demoted the pick for the price it had just escaped. That
+    # defeats the entire purpose of the reroute.
+    #
+    # Live, before this fix:
+    #   FIU   capped STRONG->COVERAGE on "model 55% vs 64% implied", where
+    #         64% is the -178 MONEYLINE, then published as a -6.5 SPREAD
+    #   BAL   capped PRIME->COVERAGE on "68% vs 74% implied" from an ML of
+    #         -278, then rerouted to a -6 spread
+    # One NCAAF recompute performed 50 reroutes, and 13 of 57 games that week
+    # sat at COVERAGE — a tier that keeps a pick off every card surface.
+    #
+    # So restore the tier the pick held BEFORE the ML cap and drop the cap.
+    # The spread is UNEVALUATED, not bad: we have no cover probability for it,
+    # which is a reason to withhold confidence, not to assert a negative.
+    #
+    # THE STRONG CEILING BELOW IS WHAT SUPPLIES THAT RESTRAINT, and it is
+    # applied to the RESTORED tier rather than the capped one. Note it also
+    # preserves the NCAAF lr_v1 rule for free: that rule only fires on PRIME
+    # and sets STRONG, so restoring PRIME and re-applying the ceiling lands on
+    # STRONG either way. Only caps whose reason carries 'edge:' are undone, so
+    # a non-price cap could never be erased here by accident.
+    _cap = pp.get('_edge_cap')
+    if isinstance(_cap, dict) and 'edge:' in str(_cap.get('reason') or ''):
+        _restored = str(_cap.get('from') or '').upper()
+        if _restored:
+            out['tier'] = _restored
+            tier_before = _restored
+            out['_edge_cap'] = None
+            out['_edge_cap_dropped_on_reroute'] = {
+                'was': _cap,
+                'why': ('ML edge cap does not apply to a spread — no cover '
+                        'probability exists for this pick'),
+            }
+
     if tier_before == 'PRIME':
         out['tier'] = 'STRONG'
     out['_heavy_ml_reroute'] = {
