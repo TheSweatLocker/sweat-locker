@@ -924,7 +924,14 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             'type': 'prop',
             'reason': (jerry_reason.get((p.get('player_name'), p.get('prop_type'),
                                          p.get('direction'), p.get('prop_line')))
-                       or f"conv={p.get('refit_conviction') or p.get('conviction')}"),
+                       # Base conviction, matching the tier shown. refit is
+                       # appended only when it exists and is LABELLED, so a
+                       # reader is never shown one score dressed as the other
+                       # (see the 'conviction' note below: r=+0.131).
+                       or (f"conv={p.get('conviction')}"
+                           + (f" · refit {p.get('refit_conviction')}"
+                              if p.get('refit_conviction') is not None
+                              else ""))),
             'odds': prop_odds,
             'line': p.get('prop_line'),
             # 2026-09-08: propagate player_team into composed item so
@@ -941,7 +948,37 @@ def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
             # 2026-09-17: preserve mlb_pipeline_props.id + conviction so
             # publish_lock at write-time can snapshot the effective tier.
             'id': p.get('id'),
-            'conviction': _p_conv,
+            # ══ 2026-10-06 · THE NUMBER MUST MATCH THE TIER IT SITS NEXT TO ══
+            # This was `_p_conv`, which prefers refit_conviction, while `tier`
+            # above is `effective_tier` — derived from BASE conviction. So The
+            # Sharp printed a base-derived tier beside a refit number, and the
+            # Sweat Card printed the same tier beside the base number. Andy saw
+            # the result on Pivetta Over 3.5 K (2026-10-06):
+            #     The Sharp   STRONG · conv 24     (refit 23.9)
+            #     Sweat Card  STRONG · conv 65     (base)
+            # Same play, same night, two tabs.
+            #
+            # It is not a rounding difference. Measured on 386 graded rows with
+            # both scores since 09-22, base and refit correlate at r=+0.131 —
+            # refit is NOT a recalibration of base, it is a nearly independent
+            # second score. Different scales too: base median 21.5 vs refit
+            # 46.5, and they fall in different tier bands on 70.4% of rows.
+            #
+            # So the displayed conviction is now the one the tier came from.
+            # refit travels alongside, labelled, instead of silently replacing
+            # it — the UI can show it as a second opinion and a reader can see
+            # which is which.
+            #
+            # NOT changing what publishes. The evidence favours refit within
+            # the families it covers (its ladder is monotonic in ROI,
+            # +16.9/+1.6/-5.0/-6.1, where the base ladder is INVERTED at
+            # PRIME -31.1% n=40 vs LEAN +1.1% n=87; and on the 267 rows where
+            # they disagree, refit's side ran -1.6% against base's -14.9%).
+            # But refit covers 3.8% of the board and 0% of every batter family,
+            # and its PRIME bucket is n=5. Re-tiering off it is a money
+            # decision on Andy's call, not a side effect of a display fix.
+            'conviction': p.get('conviction'),
+            'refit_conviction': p.get('refit_conviction'),
             'playbook_lifted': PROP_PLAYBOOK_ENABLED and pb and pb.get('playbook_tier')
                                 and effective_tier != p.get('tier'),
         })

@@ -223,6 +223,14 @@ def sharp_card_rows(items: list, game_date: str) -> list[dict]:
                 'units': it.get('units'),
                 'reason': (it.get('reason') or '')[:600],
                 'captured_by': 'generate_sharp_card',
+                # 2026-10-06: `conviction` above is now the BASE score, so it
+                # agrees with `tier` (it used to be refit, which is why The
+                # Sharp showed conv 24 beside a STRONG tier while the Sweat
+                # Card showed 65). refit is kept here rather than dropped:
+                # it is a nearly independent score (r=+0.131 against base on
+                # 386 graded rows) and the only way to settle live-or-die is
+                # to keep scoring it on published picks.
+                'refit_conviction': it.get('refit_conviction'),
             },
         })
     return out
