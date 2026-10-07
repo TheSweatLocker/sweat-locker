@@ -250,6 +250,7 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     batch = []
     written = 0
     scanned = 0
+    skipped_no_call = 0
     for row in paged(url):
         scanned += 1
         result = row.get('result')
@@ -269,11 +270,35 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
         # 'pass' verdict = Jerry decided to pass — skip as receipt (was not a pick)
         if market == 'pass':
             continue
+        # ══ 2026-10-07 · NO CALL YET IS NOT A PICK ══
+        # This used to write `market or 'game'` — a literal placeholder for a
+        # read whose call_market was still empty. public_receipts is SET-ONCE
+        # (trg_freeze_receipt_identity: NULL -> value allowed, value -> value
+        # blocked), so that placeholder became PERMANENT, and so did the
+        # conviction 0 written alongside it.
+        #
+        # Result: 80 receipts stuck at market='game', 78 with no pick_label at
+        # all, 56 of them graded — NCAAF 56, NHL 22, MLB 2, back to 08-10.
+        # The NHL ones are the visible case: the receipt reads
+        #     market='game'  pick_label=NULL  pick_side=NULL  conviction=0
+        # while the jerry_reads row it cites now says
+        #     call_market='ml'  call_side='HOME'
+        #     call_text='Ottawa Senators ML'  conviction=54
+        # The read filled in days later; the receipt could never catch up.
+        #
+        # A read with no call_market is a read, not a pick. Skipping it means
+        # the receipt gets created on the pass that finds a real call, with
+        # every field correct the first and only time it is writable. Same
+        # lesson as 'pending' being mapped to NULL in norm_result: a non-null
+        # sentinel for "not yet" is permanent damage in a set-once table.
+        if not market:
+            skipped_no_call += 1
+            continue
         batch.append({
             'sport': sport,
             'game_id': row.get('game_id'),   # 2026-09-20: joinability
             'surface': 'game_read',       # POTD promotion handled separately
-            'market': market or 'game',
+            'market': market,
             'game_date': row.get('game_date'),
             'published_at': row.get('generated_at'),
             'player_name': None,
@@ -299,7 +324,9 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
             batch = []
             print(f'  scanned={scanned}  written={written} ...')
     written += upsert_batch(batch, dry_run)
-    print(f'  scanned={scanned}  written={written}')
+    print(f'  scanned={scanned}  written={written}'
+          + (f'  skipped_no_call={skipped_no_call}'
+             if skipped_no_call else ''))
     return written
 
 
