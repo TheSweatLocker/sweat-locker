@@ -11,7 +11,14 @@ on:
     - cron: '10 12 * * 4'   # Thu 8am ET   — 2026-09-02 Thu-lock: Jerry reads generate + lock for the week (idempotent if Wed run already fired)
     # 2026-09-02: injury regen check every 6h Thu-Sun. GHA cron doesn't
     # accept range 4-0 (wraps week boundary). Use explicit day list.
-    - cron: '0 */6 * * 4,5,6,0'
+    #
+    # 2026-10-07: WEDNESDAY ADDED. The window Tue 11am -> Thu 8am had no
+    # refresh at all, and that is exactly when mid-week injury news lands.
+    # BAL @ ATL swung 9.5 points (BAL -6.5 to BAL +3.5, favourite flipped)
+    # inside that gap and the card showed "BAL -6" until Thursday, because
+    # the label normalizer can only re-derive from whatever close_spread
+    # holds and nothing had refreshed it since Tuesday's opening pull.
+    - cron: '0 */6 * * 3,4,5,6,0'
     - cron: '0 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
     - cron: '0 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
     - cron: '10 12 * * 0'   # Sun 8am ET   — final Sunday card
@@ -157,6 +164,38 @@ jobs:
       #
       # Numbers are frozen once a game starts; only the team is repaired
       # on played games, so a settled price is never restated.
+      # ══ 2026-10-07 · MAKE close_spread MEAN THE CLOSE, BEFORE LABELS RUN ══
+      # Andy: "I need the line movement to assessed and not stale lines post
+      # as picks thats what i need just fix the systems."
+      #
+      # The normalizer below is correct and was already wired — it just had
+      # nothing current to normalize AGAINST. close_spread is in practice the
+      # OPENING line (identical to open_spread on 263 of 314 NFL games,
+      # 83.8%), so the labels were faithfully re-derived from Tuesday's
+      # number all week.
+      #
+      # That is a CADENCE hole, not a code bug: lines pull Tue 11am, and the
+      # 6-hourly refresh only covers Thu-Sun, so a WEDNESDAY injury move is
+      # never picked up before Thursday's lock. BAL @ ATL opened BAL -6.5 and
+      # is now BAL +3.5 — a 9.5-point swing with the favourite flipping — and
+      # the card said "BAL -6" all week.
+      #
+      # This step reads line_history (every book, median across them) and
+      # updates the market columns only. It never touches primary_play, never
+      # touches a started game, and refuses any number fewer than 3 books
+      # quote. Running it immediately before the normalizer is what makes the
+      # picks self-heal: the normalizer re-derives label+line from
+      # close_spread for any game that has not kicked off.
+      - name: Refresh NFL market lines from the books (pre-normalizer)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_market_lines.py --sport NFL --days-ahead 10
+
       - name: Normalize NFL primary_play labels (side/label agreement)
         if: steps.mode.outputs.mode != 'resolver_only'
         continue-on-error: true
@@ -166,6 +205,20 @@ jobs:
         run: |
           cd mlb_pipeline
           python recompute_nfl_primary_play.py --labels-only --lookback 7 --days 10
+
+      # Reports which published picks name a number the books never posted.
+      # Distinct from a line that MOVED: "BAL -6" traded on 138 captures and
+      # was real; "NE -8.5" never existed on a game that ranged -4.0..-3.0.
+      # Read-only — it flags, it does not suppress.
+      - name: Audit published lines vs the books (report only)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_published_lines.py --sport NFL --live
 
       - name: Pull Odds API preseason lines (Aug only)
         if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'odds_only')

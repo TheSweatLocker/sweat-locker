@@ -337,6 +337,25 @@ jobs:
       # never get spread picks. Recompute re-scores against the enriched
       # ctx rows and patches primary_play in place. Mirrors MLB's
       # recompute_primary_play.py pattern.
+      # ══ 2026-10-07 · REFRESH THE MARKET BEFORE RECOMPUTING AGAINST IT ══
+      # close_spread is in practice the OPENING line — identical to
+      # open_spread on 336 of 486 NCAAF rows (69.1%) — and the recompute
+      # below derives every pick's label and line from it. NCAAF's column is
+      # in much better shape than NFL's (82.1% exact vs the books on this
+      # week's slate, zero games 3+ off), so this is preventive here rather
+      # than a repair, and it keeps movement computable as close - open.
+      # Market columns only: never primary_play, never a started game, and
+      # never a number fewer than 3 books quote.
+      - name: Refresh NCAAF market lines from the books (pre-recompute)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python refresh_market_lines.py --sport NCAAF --days-ahead 10
+
       - name: Recompute NCAAF primary_play with enriched signals
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
@@ -346,6 +365,16 @@ jobs:
         run: |
           cd mlb_pipeline
           python recompute_ncaaf_primary_play.py --days 10
+
+      - name: Audit published NCAAF lines vs the books (report only)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_published_lines.py --sport NCAAF --live
 
       # 2026-09-13: same LR-warn cap + anchor-cap discipline as NFL.
       # NCAAF 9/12 slate first-look data (n=228): LR-warn hits 4.3%,

@@ -115,23 +115,75 @@ def _page(params, cap=120000):
     return out
 
 
-def fetch_spreads(sport: str, since: str, until: Optional[str] = None):
-    """Raw spread quotes for a window, as a list of dicts.
+def fetch_market(sport: str, market: str, since: str,
+                 until: Optional[str] = None):
+    """Raw quotes for one market over a window, as a list of dicts.
 
     One call, then index it — a per-game query would be hundreds of round
-    trips for a slate.
+    trips for a slate. `market` is line_history's own spelling: 'spread',
+    'total', 'ml'.
     """
     # `book` is REQUIRED here, not optional detail: index_by_matchup takes the
     # latest quote PER BOOK before taking a median, so without it every row
     # collapses into one pseudo-book and the "median across books" silently
     # becomes "whatever was captured last".
     p = {'select': 'matchup,side,book,line,price,captured_at,commence_time',
-         'sport': f'eq.{sport}', 'market': 'eq.spread',
+         'sport': f'eq.{sport}', 'market': f'eq.{market}',
          'commence_time': f'gte.{since}'}
     rows = _page(p)
     if until:
         rows = [r for r in rows if str(r.get('commence_time') or '') < until]
     return rows
+
+
+def fetch_spreads(sport: str, since: str, until: Optional[str] = None):
+    """Spread quotes for a window. See fetch_market."""
+    return fetch_market(sport, 'spread', since, until)
+
+
+def index_prices(rows, as_of: Optional[str] = None):
+    """{matchup: {side: (median_price, n_books)}} — for moneylines.
+
+    Separate from index_by_matchup because a moneyline has no `line`, only a
+    price, so the median is taken over prices instead.
+    """
+    per_book = {}
+    for r in rows:
+        ca = str(r.get('captured_at') or '')
+        if as_of and ca > as_of:
+            continue
+        pr = _f(r.get('price'))
+        if pr is None:
+            continue
+        k = (str(r.get('matchup')), str(r.get('side')), str(r.get('book', '')))
+        if k not in per_book or ca > per_book[k][0]:
+            per_book[k] = (ca, pr)
+    agg = {}
+    for (mt, side, _bk), (_ca, pr) in per_book.items():
+        agg.setdefault(mt, {}).setdefault(side, []).append(pr)
+    return {mt: {s: (int(round(statistics.median(v))), len(v))
+                 for s, v in sides.items() if v}
+            for mt, sides in agg.items()}
+
+
+def index_totals(rows, as_of: Optional[str] = None):
+    """{matchup: (median_total, n_books)} — the over/under number."""
+    per_book = {}
+    for r in rows:
+        ca = str(r.get('captured_at') or '')
+        if as_of and ca > as_of:
+            continue
+        ln = _f(r.get('line'))
+        if ln is None:
+            continue
+        k = (str(r.get('matchup')), str(r.get('book', '')))
+        if k not in per_book or ca > per_book[k][0]:
+            per_book[k] = (ca, ln)
+    agg = {}
+    for (mt, _bk), (_ca, ln) in per_book.items():
+        agg.setdefault(mt, []).append(ln)
+    return {mt: (round(statistics.median(v), 2), len(v))
+            for mt, v in agg.items() if v}
 
 
 def index_by_matchup(rows, as_of: Optional[str] = None):
