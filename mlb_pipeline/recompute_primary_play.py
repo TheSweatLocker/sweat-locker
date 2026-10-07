@@ -40,6 +40,16 @@ from game_context import compute_primary_play
 from enrich_monte_carlo import _compute_nrfi_ensemble
 
 
+
+def _preserve_manual(old_pp, new_pp):
+    """Guarded wrapper — an import problem must not break a recompute."""
+    try:
+        from manual_pick_override import preserve
+        return preserve(old_pp or {}, new_pp)
+    except Exception as e:                              # noqa: BLE001
+        print(f'  ! manual-override preserve unavailable ({e})')
+        return new_pp, None
+
 def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
@@ -255,6 +265,19 @@ def run(date_str: str, dry_run: bool = False, force: bool = False) -> None:
         if _rebuilt is not None:
             new_pp = _rebuilt
 
+        # ══ 2026-10-06 · AN APPROVED MANUAL PICK SURVIVES RECOMPUTE ══
+        # Nothing in the repo read `_manual_correction` (verified by grep
+        # across every .py), so an approved override was silently reverted by
+        # the next recompute. MIL @ SD 2026-10-06 is the case: Andy asked for
+        # the Padres ML on the card, the override was applied, and the engine
+        # underneath it says COVERAGE with LR suggesting the OPPOSITE side
+        # (_lr_p_home_win 0.4469, suggested_side AWAY). That is the
+        # "opposite sides two minutes apart" symptom — not a scorer race, a
+        # human decision with no protection against recomputes that run all
+        # day.
+        new_pp, _mo_note = _preserve_manual(old_pp, new_pp)
+        if _mo_note:
+            print(f'  ✋ {_mo_note}')
         new_key = f"{(new_pp or {}).get('tier')}·{(new_pp or {}).get('label')}·{(new_pp or {}).get('type')}"
         pp_changed = old_key != new_key
 

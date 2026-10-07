@@ -47,6 +47,16 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     except Exception: pass
 
 
+
+def _preserve_manual(old_pp, new_pp):
+    """Guarded wrapper — an import problem must not break a recompute."""
+    try:
+        from manual_pick_override import preserve
+        return preserve(old_pp or {}, new_pp)
+    except Exception as e:                              # noqa: BLE001
+        print(f'  ! manual-override preserve unavailable ({e})')
+        return new_pp, None
+
 def _et_today() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
@@ -463,6 +473,19 @@ def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) ->
         # backing. Recompute label from side + close_spread every write.
         new_pp = _normalize_pp_side_label(new_pp, g)
 
+        # ══ 2026-10-06 · AN APPROVED MANUAL PICK SURVIVES RECOMPUTE ══
+        # Nothing in the repo read `_manual_correction` (verified by grep
+        # across every .py), so an approved override was silently reverted by
+        # the next recompute. MIL @ SD 2026-10-06 is the case: Andy asked for
+        # the Padres ML on the card, the override was applied, and the engine
+        # underneath it says COVERAGE with LR suggesting the OPPOSITE side
+        # (_lr_p_home_win 0.4469, suggested_side AWAY). That is the
+        # "opposite sides two minutes apart" symptom — not a scorer race, a
+        # human decision with no protection against recomputes that run all
+        # day.
+        new_pp, _mo_note = _preserve_manual(old_pp, new_pp)
+        if _mo_note:
+            print(f'  ✋ {_mo_note}')
         new_key = f"{new_pp['type']}/{new_pp['label']}/{new_pp['tier']}"
         # 2026-09-13: also patch when the visible pick hasn't changed
         # but the LR shadow was missing on old_pp — otherwise the
