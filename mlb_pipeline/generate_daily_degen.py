@@ -67,9 +67,31 @@ MIN_LEGS = 2
 #   • NO LR gate (LR is a probability floor for tight-edge value plays;
 #     Degen is variance chasing where LR would strip the exact +money
 #     legs that make Degen distinctive)
-DEGEN_MIN_LEGS = 4
-DEGEN_MAX_LEGS = 10
-DEGEN_MIN_COMBINED_PAYOUT = 500     # +500 floor
+# ══ 2026-10-07 · THREE LEGS. THE 4-10 LEG LONGSHOT SHAPE LOSES. ══
+# The 09-09 rebuild above chased longshots deliberately. Priced from the leg
+# odds the rows already store (156 parlays, Apr-Sep), that shape is the loser
+# and the shape it replaced is the winner:
+#
+#     3 legs   16-29   35.6%   median +216   need 31.6%   ROI  +9.5%   n=45
+#     4 legs   11-96   10.3%   median +719   need 12.2%   ROI -33.7%   n=107
+#
+# 4-leg hits 10.3% against a 12.2% breakeven on n=107 — short, and not by
+# variance. The wins also cluster cheap: winning parlays average about +345
+# while the median parlay is +719, so we win the modest ones and lose the
+# lottery tickets.
+#
+# HONEST LIMIT: n=45 on 3-leg is enough to prefer it over a -33.7%
+# alternative, NOT enough to call +9.5% an edge. Revisit once the receipts
+# carry prices (they now do — backfill_public_receipts._degen_combined_odds)
+# and the sample rebuilds.
+#
+# The payout floor moves with it. +500 forced 4+ legs by construction: three
+# legs clearing +500 needs each around +82, while the 3-leg builds we
+# actually made ran a +216 median. A floor above what the shape produces is
+# the same as not having the shape.
+DEGEN_MIN_LEGS = 3
+DEGEN_MAX_LEGS = 3
+DEGEN_MIN_COMBINED_PAYOUT = 175     # matches the +216 median 3-leg build
 DEGEN_LEG_ODDS_MIN = -125            # ban -200+ juice; -125 is the ceiling on juice
 DEGEN_LEG_ODDS_MAX = 300             # allow up to +300 dogs
 
@@ -232,27 +254,174 @@ def fetch_todays_games():
     return r.json() if r.status_code == 200 else []
 
 
+# ══ 2026-10-07 · THE SURFACE WAS MLB-ONLY AND WENT DARK ══
+# Every one of 578 historical legs was MLB. The last parlay is 2026-09-30;
+# MLB's regular season ended ~09-27, so Daily Degen did not break — it ran
+# out of sport, and would have stayed dark until April while NFL, NCAAF and
+# NHL were live and NBA opened 10/21.
+#
+# Props across sports share this schema (prop_type, prop_line, conviction,
+# tier, book_over_odds/book_under_odds), so they merge cleanly. The MLB-only
+# pieces below — NRFI/YRFI scoring, MLB spread/total deltas — are deliberately
+# left alone; rewriting those per sport is a much larger change and props are
+# 419 of the 578 historical legs, so they carry the surface.
+PROP_TABLES = [
+    ('MLB',   'mlb_pipeline_props'),
+    ('NFL',   'nfl_pipeline_props'),
+    ('NHL',   'nhl_pipeline_props'),
+    ('NBA',   'nba_pipeline_props'),
+]
+# Game-level picks DO have a uniform shape across sports — primary_play
+# carries side/type/tier/label on every context table — so they can be
+# bridged without touching the sport-specific scorers.
+# ⚠ FOUR TABLES, THREE MONEYLINE NAMING CONVENTIONS. Verified 2026-10-07:
+#
+#     nfl_game_context      home_ml_odds  / away_ml_odds
+#     ncaaf_game_context    close_home_ml / close_away_ml
+#     nhl_game_context      home_ml_close / away_ml_close
+#     nba_game_context      home_ml_close / away_ml_close
+#
+# The first version of this selected home_ml_odds from all four. Three
+# returned 400 ("column does not exist") and the code turned that into an
+# empty list, so the whole cross-sport feature reported zero legs and looked
+# like a tier filter being strict. A non-200 is now printed, never swallowed.
+CONTEXT_TABLES = [
+    ('NFL',   'nfl_game_context',   'home_ml_odds',  'away_ml_odds'),
+    ('NCAAF', 'ncaaf_game_context', 'close_home_ml', 'close_away_ml'),
+    ('NHL',   'nhl_game_context',   'home_ml_close', 'away_ml_close'),
+    ('NBA',   'nba_game_context',   'home_ml_close', 'away_ml_close'),
+]
+
+
+def fetch_primary_play_legs():
+    """Candidate legs from other sports' primary_play. MLB is excluded —
+    its game legs come from the NRFI/spread path below, and double-sourcing
+    would let the same game enter the pool twice."""
+    gd = today_et()
+    hdr = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+    out = []
+    for sport, table, home_ml, away_ml in CONTEXT_TABLES:
+        try:
+            r = requests.get(
+                f'{SUPABASE_URL}/rest/v1/{table}',
+                headers=hdr, timeout=20,
+                params={'select': f'game_id,home_team,away_team,primary_play,'
+                                  f'{home_ml},{away_ml}',
+                        'game_date': f'eq.{gd}',
+                        'primary_play': 'not.is.null', 'limit': '200'})
+            if r.status_code not in (200, 206):
+                # Loud on purpose. Swallowing this is what made the whole
+                # cross-sport path silently return nothing.
+                print(f'  ⚠ {table} query failed {r.status_code}: '
+                      f'{r.text[:160]}')
+                continue
+            rows = r.json()
+        except Exception as e:                            # noqa: BLE001
+            print(f'  ⚠ {table} unavailable ({e})')
+            continue
+        if not isinstance(rows, list):
+            print(f'  ⚠ {table} returned a non-list payload — skipping')
+            continue
+        for g in rows:
+            pp = g.get('primary_play') or {}
+            if not isinstance(pp, dict):
+                continue
+            tier = str(pp.get('tier') or '').upper()
+            # PRIME/STRONG/LEAN are published directional calls; COVERAGE and
+            # SKIP are the engine declining, and a decline is not a cheap leg.
+            # LEAN is included because the historical pool used it (32 of 578
+            # legs) and because without it the cross-sport pool is empty most
+            # days — measured 2026-10-06: NCAAF had one LEAN, NHL had nine
+            # COVERAGE (its documented calibration posture), so a PRIME/STRONG
+            # filter returned zero and the surface would have stayed MLB-only.
+            if tier not in ('PRIME', 'STRONG', 'LEAN'):
+                continue
+            if 'Engine passed' in str(pp.get('sub') or ''):
+                continue
+            side = str(pp.get('side') or '').upper()
+            mkt = str(pp.get('type') or '').lower()
+            odds = None
+            if mkt == 'ml':
+                odds = g.get(home_ml) if side == 'HOME' else g.get(away_ml)
+            if odds is None:
+                odds = -110          # spreads/totals price at -110 absent a book line
+            conv = pp.get('conviction')
+            try:
+                conv = int(conv)
+            except (TypeError, ValueError):
+                conv = 70 if tier == 'STRONG' else 80
+            out.append({
+                'pick': pp.get('label') or f'{side} {mkt}'.strip(),
+                'type': mkt.upper() or 'ML',
+                'sub_type': mkt,
+                'tier': tier,
+                'conviction': conv,
+                'odds': odds,
+                'odds_suggestion': odds,
+                'game_id': g.get('game_id'),
+                'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
+                'sport': sport,
+                'signals': [s for s in [pp.get('sub')] if s][:3],
+            })
+    if out:
+        by = {}
+        for c in out:
+            by[c['sport']] = by.get(c['sport'], 0) + 1
+        print(f'  [daily_degen] game legs from primary_play: {by}')
+    return out
+
+
 def fetch_pipeline_props():
     gd = today_et()
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/mlb_pipeline_props?game_date=eq.{gd}&select=*&order=conviction.desc",
-        headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'},
-        timeout=20
-    )
-    props = r.json() if r.status_code == 200 else []
-    # 2026-09-09 tier + odds lock via shared helper (see prop_snapshot_overlay
-    # module for context). Snapshot overrides live drift on tier/conviction/odds.
-    try:
-        from prop_snapshot_overlay import overlay_from_snapshots
-        props = overlay_from_snapshots(props, gd, sport='MLB')
-    except Exception:
-        pass
-    # 2026-09-17 SHARED POLICY via prop_ban_policy.py.
-    from prop_ban_policy import filter_mlb_props
-    before = len(props)
-    props, dropped = filter_mlb_props(props)
-    if dropped:
-        print(f'  [daily_degen] ban filter dropped {dropped} banned prop-family rows')
+    hdr = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
+    props = []
+    mlb_rows = []
+    for sport, table in PROP_TABLES:
+        try:
+            rr = requests.get(
+                f'{SUPABASE_URL}/rest/v1/{table}',
+                headers=hdr, timeout=20,
+                params={'select': '*', 'game_date': f'eq.{gd}',
+                        'order': 'conviction.desc', 'limit': '1000'})
+            rows = rr.json() if rr.status_code in (200, 206) else []
+        except Exception as e:                            # noqa: BLE001
+            print(f'  ⚠ {table} unavailable ({e})')
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            row['sport'] = sport
+        if sport == 'MLB':
+            mlb_rows = rows
+        else:
+            # Other sports have no calibrated cohort history here, so take
+            # only the tiers the pipeline already stands behind.
+            props.extend([r for r in rows
+                          if str(r.get('tier') or '').upper() in ('PRIME', 'STRONG')])
+
+    # The snapshot overlay and the ban policy are BOTH MLB-specific — the
+    # overlay takes sport='MLB' and filter_mlb_props bans MLB prop families.
+    # Running them over NHL/NFL rows would drop legs for families that do not
+    # exist in those sports, so only MLB rows pass through them.
+    if mlb_rows:
+        try:
+            from prop_snapshot_overlay import overlay_from_snapshots
+            mlb_rows = overlay_from_snapshots(mlb_rows, gd, sport='MLB')
+        except Exception:
+            pass
+        from prop_ban_policy import filter_mlb_props
+        mlb_rows, dropped = filter_mlb_props(mlb_rows)
+        if dropped:
+            print(f'  [daily_degen] ban filter dropped {dropped} banned '
+                  f'MLB prop-family rows')
+        props.extend(mlb_rows)
+
+    if props:
+        by = {}
+        for p in props:
+            s = p.get('sport') or 'MLB'
+            by[s] = by.get(s, 0) + 1
+        print(f'  [daily_degen] prop legs by sport: {by}')
     return props
 
 
@@ -874,6 +1043,12 @@ def run():
           f"{len(tier_rates) - len(prop_rates)} calibrated cohorts + {len(prop_rates)} live prop cohorts")
 
     candidates = extract_leg_candidates(games, props)
+    # 2026-10-07 · Cross-sport game legs. extract_leg_candidates reads
+    # MLB-shaped fields (NRFI/YRFI, MLB spread and total deltas), so other
+    # sports come in through primary_play, which has the same shape on every
+    # context table. Without this the surface is MLB-only and goes dark the
+    # day MLB ends — which is exactly what happened on 2026-09-30.
+    candidates.extend(fetch_primary_play_legs())
     print(f"  Candidate legs before selection: {len(candidates)}")
 
     # 2026-08-19: primary_play conflict filter. Drop legs that contradict
@@ -939,10 +1114,32 @@ def run():
         if decimal >= 2.0: return int(round((decimal - 1) * 100))
         return int(round(-100 / (decimal - 1)))
     def _combined_odds(legs_subset):
+        # 2026-10-07 · USE THE SAME PRICE THE RECEIPT WILL RECORD.
+        # This defaulted a missing price to -150, so the payout floor was
+        # tested against a number nothing else would ever see. On the 10-06
+        # dry run that read +430 while the parlay actually prices at +268 —
+        # a parlay could clear the floor on fabricated odds and be recorded
+        # at a payout that never cleared it.
+        #
+        # Same preference as backfill_public_receipts._degen_combined_odds:
+        # _real_odds > odds > odds_suggestion, and 0 is not a price (American
+        # 0 sends the decimal conversion through 100/0).
         dec = 1.0
         for l in legs_subset:
-            odds = l.get('odds') or l.get('_odds') or -150
-            dec *= _to_dec(odds)
+            price = None
+            for key in ('_real_odds', 'odds', '_odds', 'odds_suggestion'):
+                try:
+                    v = float(l.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if v != 0:
+                    price = v
+                    break
+            if price is None:
+                # An unpriced leg makes the parlay unpriceable. Returning a
+                # payout here would be inventing one.
+                return 0
+            dec *= _to_dec(price)
         return _to_amer(dec)
 
     # Start with min legs, add until we clear payout floor OR hit max

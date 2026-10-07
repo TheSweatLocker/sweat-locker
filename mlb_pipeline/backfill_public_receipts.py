@@ -383,6 +383,51 @@ def backfill_ledger(sport: str, dry_run: bool = False) -> int:
 
 # ─── Source: daily_degen ───────────────────────────────────────────
 
+def _degen_combined_odds(legs):
+    """American odds for the whole parlay, multiplied out of its legs.
+
+    ══ 2026-10-07 · pick_odds WAS HARDCODED None ON EVERY DEGEN RECEIPT ══
+    All 156 of them. So the surface could only ever be judged on hit rate,
+    and 25-119 (17.4%) reads like a disaster until you price it: a 4-leg
+    parlay is SUPPOSED to lose most of the time. I called it "losing at a
+    rate that isn't variance" with no price attached, which is the exact
+    mistake this repo has a rule about.
+
+    Priced from the legs it already stores, the truth is split:
+
+        3 legs   16-29   35.6%   median +216   need 31.6%   ROI  +9.5%
+        4 legs   11-96   10.3%   median +719   need 12.2%   ROI -33.7%
+
+    Leg prices live under three keys depending on vintage. Preference is
+    _real_odds > odds > odds_suggestion — most actually-observed first.
+
+    ZERO IS NOT A PRICE. One leg stored 0, and American 0 sends the decimal
+    conversion through 100/0. Treat it as missing and fall through, or a
+    single bad leg takes the whole parlay with it.
+    """
+    if not isinstance(legs, list) or not legs:
+        return None
+    dec = 1.0
+    for leg in legs:
+        if not isinstance(leg, dict):
+            return None
+        price = None
+        for key in ('_real_odds', 'odds', 'odds_suggestion'):
+            try:
+                v = float(leg.get(key))
+            except (TypeError, ValueError):
+                continue
+            if v != 0:
+                price = v
+                break
+        if price is None:
+            return None          # an unpriced leg makes the parlay unpriceable
+        dec *= 1 + (price / 100.0 if price > 0 else 100.0 / abs(price))
+    if dec <= 1:
+        return None
+    return int(round((dec - 1) * 100)) if dec >= 2 else int(round(-100 / (dec - 1)))
+
+
 def backfill_daily_degen(dry_run: bool = False) -> int:
     print(f'\n=== backfill_daily_degen (multi-sport blended) ===')
     url = (f'{SB}/rest/v1/daily_degen?select=game_date,legs,result,'
@@ -411,7 +456,7 @@ def backfill_daily_degen(dry_run: bool = False) -> int:
             'prop_type': None,
             'pick_side': None,
             'pick_line': None,
-            'pick_odds': None,
+            'pick_odds': _degen_combined_odds(legs),
             'matchup': None,
             'pick_label': f'daily_degen ({len(legs) if isinstance(legs,list) else "?"} legs)',
             'tier': None,
