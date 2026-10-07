@@ -1561,3 +1561,65 @@ surfaces are not, since it grades someone else's picks.
 
 VERIFY: public_splits_archive joined to {sport}_game_results on game_id, take
 the latest capture per (game, market, side), threshold on *_bets_pct.
+
+### UPDATE 2026-10-06 — The Fade shipped, and three statements above are now wrong
+
+Built as `mlb_pipeline/compute_fade_records.py` (`462de172`). Three corrections
+to the block above, all from auditing which column actually holds what:
+
+**"WE HAVE NO NFL SPLIT DATA AT ALL" — wrong, and Andy caught it.** 19,512 NFL
+split rows existed. My join returned zero because the ids are in two formats
+with no overlap: splits key NFL on a 32-char hash
+(`fc362aff0d889ec52d358307a70c32ed`), `nfl_game_results` on
+`season_week_away_home` (`2024_18_SEA_LA`). `nfl_game_context` carries both and
+bridges it. Reporting "no data" instead of asking why a join was empty is the
+same failure as the NHL props that cannot reach their own game.
+
+**The per-source numbers above are mostly sharp-side readings, not public.**
+`archive_public_splits.py` keys `latest_fr`, `latest_ftp` and `latest_cz` on
+`sharp_side_norm`, and only `latest_oc` on the real `pick_side`. So a ≥70%
+reading on three of the four sources means *sharp and public agree*, not *the
+public is piled in*. `cz` is worse — it reads
+`cleatz_signals.sharp_bets_pct`, which is exactly 100.0 on 15.2% of its rows
+and 0 never, while the other three never hit 100% in 139,188 values. The Fade
+therefore reads **oc only**.
+
+**Recomputed on the correct column**, ATS, ≥65% of tickets, graded −110:
+
+    MLB    176-147  54.5%  +4.0% ROI  n=323
+    NCAAF   31-26   54.4%  +3.8% ROI  n=57
+    NFL      3-2    60.0% +14.5% ROI  n=5   <- not publishable alone
+    NHL      no qualifying games
+
+Conclusion 2 above survives in substance (MLB spread fade clears breakeven) but
+at +4.0% rather than 52.8-60.4%, and NFL is n=5 rather than a product.
+
+**Conditions from the block above that are now met:** spread only (ML excluded
+in code with the measured reason in the docstring); ROI published next to the
+record; grades someone else's picks.
+
+**Still open:** `n` must appear beside every figure in the UI — NFL n=5 cannot
+render as "+14.5%" unqualified. And the tab design itself.
+
+---
+
+### 🚨 NCAAF Games tab shows 2 games — client week arithmetic, needs a build
+
+Not a data gap. `ncaaf_game_context` has 58 games for 10-06..10-10 (46 on
+Saturday), all with `close_spread` and `primary_play`; the Odds API returns 67.
+
+Shipped v1.0.2 derives the CFB week as 7-day blocks from a 2026-08-27 anchor.
+On Tue 10-06 that boundary lands on **Thursday**, so 10-07 reads week 6 while
+10-08/09/10 read week 7 and fail the `gwk === thisSeasonWk` filter. Exactly 2
+games survive — the number Andy reports.
+
+Fixed in `91c97750` (reads `ncaaf_game_results.week`); same filter then keeps
+**59**. The app's anon key can read that table's `game_date,week` (228 rows,
+all populated), so RLS is not in the way.
+
+**BLOCKER: there is no OTA path.** `expo-updates` is not installed and
+`app.json` has no `updates` block, so this client-side fix cannot reach a device
+without a new binary. Two decisions for Andy: (a) ship a build, and (b) whether
+to add `expo-updates` so client logic fixes stop requiring App Store review.
+
+VERIFY after build: NCAAF Games tab on a Tue/Wed lists the Saturday slate.
