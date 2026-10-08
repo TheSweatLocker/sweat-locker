@@ -53,7 +53,42 @@ on:
     # started at 22:00. The entire NFL Sunday afternoon slate sat unfrozen
     # while the odds poller kept overwriting close_* with LIVE numbers.
     # 16:00-21:59 closes that hole.
-    - cron: '*/10 16-21 * * 0,6'
+    #
+    # ══ 2026-10-07 · 15:00 ADDED — IT WAS 81 OF THE 105 UNFREEZABLE GAMES ══
+    # BACKLOG B60. Measured every game with a kickoff time since 09-01 (n=943)
+    # against whether this cron is awake in the ~10 minutes before it, which
+    # is what a T-5/T-15 freeze window actually needs:
+    #
+    #     sport   games  freezable  UNCOVERED
+    #     MLB        32     24          8
+    #     NCAAF     483    400         83
+    #     NFL       272    261         11
+    #     NHL       156    153          3
+    #     ALL       943    838        105   = 88.9% covered
+    #
+    # And the gap was almost ONE HOUR: 81 of the 105 sat at 15:00 UTC, all of
+    # them Saturday. Those are college NOON ET kickoffs — 16:00 UTC — whose
+    # T-10 lands at 15:50, ten minutes before this window opened. The whole
+    # early CFB slate, every week, for one missing hour.
+    #
+    # Starting at 15:00 instead of 16:00 costs 12 extra runs a week and takes
+    # coverage 88.9% -> 97.5%.
+    #
+    # WHICH FREEZER THOSE 81 GAMES HELP, stated so nobody mis-reads it later:
+    # NCAAF carries NO PROPS by project rule, so the CFB recovery lands
+    # entirely on freeze_closing_lines.py — GAME closing spreads and totals,
+    # which is what CLV on sides is measured against. The prop freezer in the
+    # same step gains from the MLB and NFL hours, not the Saturday one.
+    - cron: '*/10 15-21 * * 0,6'
+    # Weekday evenings: Thursday/Friday CFB and weeknight NFL, 14 more games.
+    # +90 runs/week for 97.5% -> 98.9%.
+    #
+    # DELIBERATELY NOT EXTENDING FURTHER. The last 10 uncovered games sit at
+    # 13:00, 14:00, 16:00 and 17:00 UTC on weekdays, and covering those needs
+    # */10 13-21 Mon-Fri — 180 additional runs a week for 4 more games. Bad
+    # trade; left uncovered on purpose and recorded in B60 rather than
+    # silently accepted.
+    - cron: '*/10 19-21 * * 1-5'
   workflow_dispatch:
 
 concurrency:

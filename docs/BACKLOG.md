@@ -2105,7 +2105,7 @@ coverage, the same disease the game freezer had: crons are `*/10 22-23` and
 afternoons (17:00-21:59 UTC) uncovered — exactly when MLB day games and
 weekday college/NFL games start.
 
-### B60 · Prop closing odds: 0.2% captured, nothing to backfill — OPEN, time-sensitive
+### B60 · Prop closing odds: 0.2% captured, nothing to backfill — **cron fixed 2026-10-07**, capture still to verify
 FIX: widen the prop-freeze cron to cover weekday afternoons, then verify
 `close_over_odds` climbs off 0.2% within a week. Consider a `prop_line_history`
 table so a missed window stops being unrecoverable.
@@ -2263,3 +2263,56 @@ NCAAB has not started. **Recheck NBA at the 10-21 open.**
 
 VERIFY: `python pull_externals_nfl.py --source oddscrowd --dry-run` should
 report ~39 picks; `--source oddscrowd` for ncaaf ~57; nhl ~20.
+
+
+## 2026-10-07 · B60 — the freeze window was missing one hour, and it cost 81 games
+
+Measured every game with a kickoff time since 09-01 (n=943) against whether
+the fast cron is awake in the ~10 minutes before it, which is what a
+T-5/T-15 freeze actually needs:
+
+    sport   games  freezable  UNCOVERED
+    MLB        32     24          8
+    NCAAF     483    400         83
+    NFL       272    261         11
+    NHL       156    153          3
+    ALL       943    838        105    = 88.9% covered
+
+**81 of the 105 sat at 15:00 UTC, every one of them a Saturday.** Those are
+college NOON ET kickoffs (16:00 UTC) whose T-10 falls at 15:50 — ten minutes
+before the weekend window opened at 16:00. The entire early CFB slate, every
+week, lost to one missing hour.
+
+### Changed
+    */10 16-21 * * 0,6   ->   */10 15-21 * * 0,6     +81 games, +12 runs/wk
+    added                     */10 19-21 * * 1-5     +14 games, +90 runs/wk
+
+Coverage 88.9% -> **98.9%**. Simulated before editing:
+
+    schedule                    covered   gap      %   runs/wk
+    current                         838   105   88.9%      366
+    weekend 15-21                   919    24   97.5%      378
+    weekend 15-21 + wd 19-21        933    10   98.9%      468
+    weekend 15-21 + wd 13-21        937     6   99.4%      648
+
+### DELIBERATELY LEFT UNCOVERED
+The last 10 games sit at 13:00, 14:00, 16:00 and 17:00 UTC on weekdays.
+Covering them needs `*/10 13-21 * * 1-5` — **180 more runs a week for 4 more
+games.** Declined on the ratio, recorded here rather than silently accepted.
+
+### WHICH FREEZER THE CFB RECOVERY HELPS
+NCAAF carries no props by project rule, so those 81 games land entirely on
+`freeze_closing_lines.py` — GAME closing spreads and totals, which is what
+CLV on sides is measured against. The prop freezer in the same step gains
+from the MLB and NFL hours, not the Saturday one.
+
+### STILL OWED on B60
+Prop closing ODDS remain at 71 of 36,790 rows (0.2%) and **cannot be
+backfilled** — `prop_line_history`, `prop_odds_history` and
+`mlb_prop_line_history` all 404, and `line_history` carries game markets only.
+So this fix only helps from today forward. VERIFY in a week: count
+`mlb_pipeline_props` rows with `close_over_odds` not null, grouped by
+game_date, and confirm it climbs off 0.2%.
+
+If it does not climb, the next step is a `prop_line_history` table so a missed
+window stops being permanent — which is the real structural fix.
