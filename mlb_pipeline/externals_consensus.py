@@ -36,12 +36,38 @@ HEADERS = {
 
 
 # ─── SBR ─────────────────────────────────────────────────────────────────
-SBR_URL = 'https://www.sportsbookreview.com/betting-odds/mlb-baseball/consensus/'
+# ══ 2026-10-07 · ONE URL WAS THE ONLY MLB-SPECIFIC THING IN HERE ══
+# BACKLOG B44, Andy 2026-09-24: "NFL needs more sources." Verified the gap at
+# 6 sources for NFL and NCAAF against 11 active for MLB, with sbr among the
+# six missing — and sbr is the best-performing of them, 56.8% on n=750.
+#
+# Nothing below needed rewriting. `__NEXT_DATA__`, the recursive game finder
+# and the consensus field names are identical across sports; only the URL
+# differed. Verified live on all three pages before touching the code.
+#
+# WORTH KNOWING — THE MARKETS FLIP BY SPORT:
+#     MLB    ML populated,     spread 0/0
+#     NFL    spread populated, ML 0/0
+#     NCAAF  spread populated, ML 0/0
+# The emit gates below already handle it: ML needs the two sides to sum to 95+
+# (0+0 fails, correctly skipped) and spread needs both sides non-zero AND 95+
+# (62+38 passes). So football yields SPREAD consensus where baseball yields
+# MONEYLINE consensus, with no branch required.
+SBR_URLS = {
+    'MLB':   'https://www.sportsbookreview.com/betting-odds/mlb-baseball/consensus/',
+    'NFL':   'https://www.sportsbookreview.com/betting-odds/nfl-football/consensus/',
+    'NCAAF': 'https://www.sportsbookreview.com/betting-odds/college-football/consensus/',
+    'NBA':   'https://www.sportsbookreview.com/betting-odds/nba-basketball/consensus/',
+    'NHL':   'https://www.sportsbookreview.com/betting-odds/nhl-hockey/consensus/',
+}
+#: Kept so any caller still importing the old name keeps working.
+SBR_URL = SBR_URLS['MLB']
 
 
 def fetch_sbr(slate: list, game_date: str,
-              find_game_id_fn: Callable) -> tuple[list, int]:
-    """SportsBookReview MLB consensus — Next.js SSR path.
+              find_game_id_fn: Callable,
+              sport: str = 'MLB') -> tuple[list, int]:
+    """SportsBookReview consensus — Next.js SSR path. Sport-parameterised.
 
     Emits ExternalPick rows per game per market where a meaningful lean
     exists. Consensus JSON shape (per-game):
@@ -61,22 +87,27 @@ def fetch_sbr(slate: list, game_date: str,
       60-74%           → 'neutral'
       < 60%            → skipped (not a lean)
     """
+    sp = str(sport or 'MLB').upper()
+    url = SBR_URLS.get(sp)
+    if not url:
+        print(f'  ⚠ SBR: no consensus URL configured for {sp}')
+        return [], 0
     try:
-        r = requests.get(SBR_URL, headers=HEADERS, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=15)
     except Exception as e:
-        print(f'  ⚠ SBR fetch failed: {e}')
+        print(f'  ⚠ SBR {sp} fetch failed: {e}')
         return [], 599
     if r.status_code != 200:
         return [], r.status_code
 
     m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
     if not m:
-        print('  ⚠ SBR: no __NEXT_DATA__ block on page')
+        print(f'  ⚠ SBR {sp}: no __NEXT_DATA__ block on page')
         return [], 200
     try:
         data = json.loads(m.group(1))
     except Exception as e:
-        print(f'  ⚠ SBR: __NEXT_DATA__ parse failed: {e}')
+        print(f'  ⚠ SBR {sp}: __NEXT_DATA__ parse failed: {e}')
         return [], 200
 
     games = _find_sbr_games(data)
@@ -99,7 +130,8 @@ def fetch_sbr(slate: list, game_date: str,
         a_ml = _clean_pct(cons.get('awayMoneyLinePickPercent'))
         if h_ml is not None and a_ml is not None and (h_ml + a_ml) >= 95:
             picks.extend(_emit_lean(gid, 'ml', h_ml, a_ml, ('HOME', 'AWAY'),
-                                    f'SBR ML: away {a_ml}% / home {h_ml}%'))
+                                    f'SBR ML: away {a_ml}% / home {h_ml}%',
+                                    source_url=url))
 
         # Spread — often 0 on SBR; only emit when both non-zero
         h_sp = _clean_pct(cons.get('homeSpreadPickPercent'))
@@ -107,14 +139,17 @@ def fetch_sbr(slate: list, game_date: str,
         if h_sp is not None and a_sp is not None and h_sp > 0 and a_sp > 0 \
                 and (h_sp + a_sp) >= 95:
             picks.extend(_emit_lean(gid, 'rl', h_sp, a_sp, ('HOME', 'AWAY'),
-                                    f'SBR RL: away {a_sp}% / home {h_sp}%'))
+                                    f'SBR RL: away {a_sp}% / home {h_sp}%',
+                                    source_url=url))
 
         # Total
         over = _clean_pct(cons.get('overPickPercent'))
         under = _clean_pct(cons.get('underPickPercent'))
         if over is not None and under is not None and (over + under) >= 95:
-            picks.extend(_emit_lean(gid, 'total', over, under, ('OVER', 'UNDER'),
-                                    f'SBR Total: over {over}% / under {under}%'))
+            picks.extend(_emit_lean(gid, 'total', over, under,
+                                    ('OVER', 'UNDER'),
+                                    f'SBR Total: over {over}% / under {under}%',
+                                    source_url=url))
 
     return picks, 200
 
@@ -148,21 +183,22 @@ def _clean_pct(v):
         return None
 
 
-def _emit_lean(gid, surface, pct_a, pct_b, sides, raw_text) -> list:
+def _emit_lean(gid, surface, pct_a, pct_b, sides, raw_text,
+               source_url: str = SBR_URL) -> list:
     """Emit an ExternalPick dict if either side is a meaningful lean (>=60%).
     Below 60% we treat as split/no-lean and skip (avoids noise rows)."""
     if pct_a >= 60:
         return [{
             'game_id': gid, 'source': 'sbr', 'surface': surface,
             'pick_side': sides[0], 'confidence': f'{pct_a}%',
-            'raw_text': raw_text, 'source_url': SBR_URL,
+            'raw_text': raw_text, 'source_url': source_url,
             'fade_flag': 'fade' if pct_a >= 75 else 'neutral',
         }]
     if pct_b >= 60:
         return [{
             'game_id': gid, 'source': 'sbr', 'surface': surface,
             'pick_side': sides[1], 'confidence': f'{pct_b}%',
-            'raw_text': raw_text, 'source_url': SBR_URL,
+            'raw_text': raw_text, 'source_url': source_url,
             'fade_flag': 'fade' if pct_b >= 75 else 'neutral',
         }]
     return []

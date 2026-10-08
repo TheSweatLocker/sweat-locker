@@ -59,6 +59,15 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 # Source registry — NCAAF sport-slug per URL (varies per site)
 # ─────────────────────────────────────────────────────────────
 SOURCE_REGISTRY = {
+    'sbr': {
+        # 'fade' like MLB's: SBR is a PUBLIC consensus feed, so an extreme
+        # lean is a fade candidate, not a handicapper's opinion to trust.
+        # ttl 6h because a public-percentage snapshot goes stale fast even on
+        # a week-long football slate.
+        'fade_flag': 'fade', 'ttl_hours': 6,
+        'base_url': 'https://www.sportsbookreview.com/betting-odds/college-football/consensus/',
+        'label': 'SBR Consensus NCAAF',
+    },
     'dimers': {
         'fade_flag': 'boost', 'ttl_hours': 48,
         'base_url': 'https://www.dimers.com/bet-hub/cfb/schedule',
@@ -687,6 +696,33 @@ def fetch_scoresandodds(slate: list, game_date: str, aliases: dict) -> tuple:
     return picks, status
 
 
+def fetch_sbr(slate: list, game_date: str, aliases: dict) -> tuple:
+    """SportsBookReview consensus for NCAAF — thin wrapper.
+
+    ══ 2026-10-07 · BACKLOG B44, "NFL needs more sources" ══
+    NCAAF had 6 active external sources against MLB's 11, and sbr was among
+    the six missing while being the best-performing of them: 56.8% on n=750
+    graded picks. externals_consensus.fetch_sbr needed no rewrite — only its
+    URL was MLB-specific, now keyed by sport in SBR_URLS.
+
+    On football the CONSENSUS ARRIVES ON THE SPREAD, not the moneyline: SBR
+    publishes spread 62/38 with ML at 0/0, the exact reverse of baseball. The
+    shared emit gates already handle that without a branch, so football yields
+    rl + total rows where MLB yields ml + total.
+    """
+    from externals_consensus import fetch_sbr as _sbr
+    picks_dicts, status = _sbr(slate, game_date, find_game_id, sport='NCAAF')
+    picks = []
+    for d in picks_dicts:
+        picks.append(ExternalPick(
+            game_id=d['game_id'], sport='NCAAF', game_date=game_date,
+            source=d['source'], surface=d['surface'], pick_side=d['pick_side'],
+            confidence=d.get('confidence'), raw_text=d.get('raw_text'),
+            source_url=d.get('source_url'), fade_flag=d.get('fade_flag'),
+        ))
+    return picks, status
+
+
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
@@ -697,6 +733,7 @@ FETCHERS = {
     'pickdawgz': fetch_pickdawgz,
     'oddscrowd': fetch_oddscrowd,
     'scoresandodds': fetch_scoresandodds,
+    'sbr': fetch_sbr,
 }
 
 
