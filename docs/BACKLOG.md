@@ -2454,3 +2454,69 @@ or the sport filter is being ignored, (c) a uniqueness constraint on
 
 Do NOT fix by picking the row that looks right. Andy: "no problem solving is
 actulaly happening jys band aid after band aid".
+
+---
+
+## B65 — MLB games exist TWICE, and the surfaces split across the copies
+**Found 2026-10-08** from Andy: "SO i see CHW as POTD but CLE ML in game djery
+pick and CLE in the sharp and CHW as Dawg of the day." Open. **Live impact.**
+
+One game — Cleveland Guardians @ Chicago White Sox, 2026-10-08 — has **two
+rows in `mlb_game_context`** under different `game_id`s, with the **same two
+starting pitchers** (Hagen Smith / Parker Messick), so it is a duplicate and
+not a doubleheader. 73 of 324 columns differ between them:
+
+    gid e0448f  fetched 01:26   total 7.5  ML -112  conviction 72  PRIME
+    gid b57e79  fetched 19:14   total 7.0  ML -115  conviction 55  LEAN
+                                                    (MC dissent downgrade)
+
+Same engine (`lr_v1`), same side (CLE AWAY), near-identical p_home_win (0.283
+vs 0.274). The stale 01:26 row was never retired when the game was re-keyed.
+
+**The surfaces then split across the two copies, and across two models:**
+
+    POTD           Chicago White Sox ML   "resolver STRONG"   <- opposite side
+    Dawg of Day    Chicago White Sox      STRONG              <- opposite side
+    Game read      Cleveland Guardians ML LEAN 55  (fresh row b57e79)
+    The Sharp      Cleveland Guardians ML PRIME 72 (STALE row e0448f)
+
+Two defects, both real:
+
+1. **The Sharp is publishing a PRIME the engine has since downgraded.** The
+   fresh row's own `sub` reads "55% vs 53% implied — no edge". The Sharp is
+   carrying PRIME/72 off the stale copy.
+2. **POTD and Dawg disagree with the game read about who wins.** POTD's
+   resolver likes CHW off starter xERA (Smith 2.45 vs Messick 3.15) and
+   `projected_spread` +0.57 toward home. The game read's `lr_v1` has
+   `p_home_win` = **0.274** — it thinks CHW wins 27% of the time. These are
+   not two angles on a game, they are two models flatly contradicting each
+   other on a moneyline, with no arbiter. A subscriber backing both the POTD
+   and The Sharp is on both sides of one game, paying juice twice.
+
+**It also explains the missing money flow.** All 19 split rows for this game
+are attached to the STALE game_id (e0448f); **zero** to the fresh one the app
+reads. So "MLB money flow not present" is the same root cause, not a separate
+scraper gap.
+
+Scope — MLB only, and recurring:
+
+    mlb_game_context      4 of 71 rows since 09-01 duplicated (5.6%)
+      x2 2026-09-25  Baltimore Orioles @ New York Yankees
+      x2 2026-09-25  Chicago Cubs @ Boston Red Sox
+      x2 2026-09-26  New York Mets @ Washington Nationals
+      x2 2026-10-08  Cleveland Guardians @ Chicago White Sox
+    nfl_game_context    0 · ncaaf_game_context 0 · nhl_game_context 0
+
+Needs, in order:
+  1. a unique constraint on (game_date, away_team, home_team) for MLB so a
+     re-key cannot create a second row silently;
+  2. a rule for which row wins when a re-key happens, and migration of the
+     splits/receipts/read off the retired id — note the splits live on the
+     STALE id, so "delete the old row" loses the money flow;
+  3. an arbiter between the POTD/Dawg resolver path and the game-read
+     `lr_v1` path, or an assertion that refuses to publish two surfaces on
+     opposite sides of one moneyline. The second is cheap and should exist
+     regardless of which model is right.
+
+Do NOT resolve by picking whichever row looks better. Andy on exactly this:
+"no problem solving is actulaly happening jys band aid after band aid".
