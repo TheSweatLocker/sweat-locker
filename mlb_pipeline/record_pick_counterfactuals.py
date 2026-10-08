@@ -223,16 +223,35 @@ def record(sports, days, apply):
               f"{r['origin']:<11}published {str(r['published_label'])[:20]:<22}"
               f"alt {str(r['alt_label'])[:20]}")
     if apply and rows_out:
-        r = requests.post(
-            f'{SB}/rest/v1/pick_counterfactual'
-            f'?on_conflict=game_id,origin,alt_label',
-            headers={**H_W, 'Prefer': 'resolution=merge-duplicates,'
-                                      'return=representation'},
-            data=json.dumps(rows_out), timeout=120)
+        # PostgREST rejects a batch whose objects have differing key sets
+        # ("All object keys must match", PGRST102). The manual rows carry
+        # tier/conviction that the lock_drift rows cannot know, so union the
+        # keys and fill the gaps with None rather than sending ragged dicts.
+        allkeys = sorted({k for row in rows_out for k in row})
+        rows_out = [{k: row.get(k) for k in allkeys} for row in rows_out]
+
+        # Dedupe in Python rather than via ON CONFLICT. The unique index is on
+        # (game_id, origin, COALESCE(alt_label,'')) and PostgREST cannot match
+        # an EXPRESSION index in on_conflict (42P10). Reading the existing keys
+        # first is also honest about what it skips.
+        have = {(str(x.get('game_id')), str(x.get('origin')),
+                 str(x.get('alt_label') or ''))
+                for x in _get('pick_counterfactual',
+                              {'select': 'game_id,origin,alt_label',
+                               'limit': '2000'})}
+        fresh = [r for r in rows_out
+                 if (str(r.get('game_id')), str(r.get('origin')),
+                     str(r.get('alt_label') or '')) not in have]
+        print(f'  {len(rows_out) - len(fresh)} already recorded · '
+              f'{len(fresh)} new')
+        if not fresh:
+            return len(rows_out)
+        r = requests.post(f'{SB}/rest/v1/pick_counterfactual', headers=H_W,
+                          data=json.dumps(fresh), timeout=120)
         if r.status_code not in (200, 201, 204):
-            print(f'  ! upsert {r.status_code} {r.text[:300]}')
+            print(f'  ! insert {r.status_code} {r.text[:300]}')
         else:
-            print(f'  upserted {len(r.json()) if r.content else len(rows_out)}')
+            print(f'  inserted {len(r.json()) if r.content else len(fresh)}')
     return len(rows_out)
 
 
