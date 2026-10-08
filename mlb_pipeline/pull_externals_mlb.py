@@ -776,22 +776,40 @@ def fetch_vsin(slate: list, game_date: str) -> tuple[list, int]:
         return [], landing.status_code
     lsoup = BeautifulSoup(landing.text, 'html.parser')
 
-    # Find Peterson's MLB article link — needs to be scoped to /mlb/ path
-    # (bare 'peterson in href' also matches his college basketball columns)
-    peterson_link = None
+    # ══ 2026-10-07 · NEVER KEY A SCRAPER ON A BYLINE ══
+    # This required 'peterson' in the href or title. VSiN changed columnist:
+    # the MLB best-bets column is now Adam Burke's. Measured on the live
+    # landing page today:
+    #
+    #     links matching sport-path + "best bets" + "peterson":   0
+    #     links matching sport-path + "best bets":                21
+    #
+    # So the fetcher had been returning an empty list and a 200 — a silent
+    # success with no picks — and vsin produced ONE pick in the whole of
+    # October. It is a 53.4% source on n=234, the best of the ones we were
+    # missing, and it was quietly dead the day a writer changed.
+    #
+    # A person's name is the most volatile thing on a publisher's page and the
+    # least load-bearing. The durable identifiers are the SPORT PATH (which is
+    # what actually stopped the original bug of matching his college
+    # basketball columns — not the name) and the phrase "best bets". Match on
+    # those and the column survives a byline change.
+    #
+    # Taking the FIRST match: VSiN lists newest first, so this is today's.
+    article_link = None
     for a in lsoup.find_all('a', href=True):
         href = a.get('href', '').lower()
         title = a.get_text(strip=True).lower()
-        is_mlb = '/mlb/' in href
-        is_peterson = 'peterson' in href or 'peterson' in title
-        if is_mlb and is_peterson and 'best bets' in title:
-            peterson_link = a.get('href')
+        if '/mlb/' in href and 'best bets' in title:
+            article_link = a.get('href')
             break
 
-    if not peterson_link:
+    if not article_link:
+        print('  ⚠ vsin: no MLB "best bets" article on the landing page')
         return [], 200
-    if peterson_link.startswith('/'):
-        peterson_link = 'https://vsin.com' + peterson_link
+    if article_link.startswith('/'):
+        article_link = 'https://vsin.com' + article_link
+    peterson_link = article_link        # name kept; used further down
 
     article = requests.get(peterson_link, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
     if article.status_code != 200:

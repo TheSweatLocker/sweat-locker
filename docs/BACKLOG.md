@@ -963,7 +963,7 @@ FIX:
 
 VERIFY: `python mlb_pipeline/verify_offerable.py`
 
-### B44 - NFL externals: 7 sources against MLB's 13
+### B44 - NFL externals: 7 sources against MLB's 13 - **PARTLY CLOSED 2026-10-07** `d0977c18`, see the 10-07 section
 Andy 2026-09-24: "NFL needs more sources."
 
 Last 3 days, verified:
@@ -2118,3 +2118,98 @@ destroys data that cannot be recovered later.
 B1, B2, B5, B25 are build gates. B8, B9, B20, B21 are screenshot QA.
 B3 is closed by Andy's decision (do NOT change records). B4, B29 are model
 work. B40 is a workflow refactor. B41 needs a migration.
+
+
+## 2026-10-07 · B44 worked, and the answer is not "port all five"
+
+Verified first. Active sources since 10/01, narrower than the backlog's
+3-day sample said:
+
+    MLB 11   NCAAF 6 -> 7   NFL 6 -> 7   UFC 1
+
+### DONE · sbr added to NFL and NCAAF (`d0977c18`)
+Took it first because it is the best performing of the six missing — **56.8%
+on n=750** — and was already a thin wrapper. Only its URL was MLB-specific;
+`SBR_URLS` is now keyed by sport and `fetch_sbr` takes `sport=`.
+
+Football consensus arrives on the SPREAD, not the moneyline (MLB publishes ML
+with spread 0/0; NFL and NCAAF the reverse) and the existing emit gates handle
+that with no branch. Live: NFL `rl HOME 62% / total OVER 61%`, NCAAF `rl AWAY
+61% / rl HOME 61% / total OVER 64%`.
+
+Caught on the way: `_emit_lean` hardcoded `source_url: SBR_URL`, so every
+football pick would have been stamped with the BASEBALL page.
+
+### THE RECORDS SAY DO NOT ADD TWO OF THEM
+
+    sbr          56.8%  n=750   <- added
+    vsin         53.4%  n=234   <- worth having, see B61
+    oddscrowd    52.0%  n=3280  <- dead on football, see B62
+    tonyspicks   51.0%  n=49    <- n too small to judge
+    docsports    49.5%  n=757   <- BELOW breakeven (52.38%)
+    betfirm      47.9%  n=265   <- BELOW breakeven, and no NFL page exists
+
+**docsports and betfirm should NOT be ported.** They would add noise to the
+consensus panel rather than signal, and handicapper picks as a voter block
+already grade 46.6%. More sources is only valuable where the source clears
+the price.
+
+### B62 - oddscrowd football is dead on THEIR side - OPEN, not fixable by us
+NFL last produced 2026-09-20, NCAAF 2026-09-26. **MLB is healthy** (12 picks
+today), so not a site-wide break and not our parser.
+
+Root cause: `oddscrowd.com/games/upcoming/football` **is soccer.** Every game
+link on it is Bundesliga, La Liga, Serie A, Premier League or Ligue 1. The
+puller passes `sport_url_slug='football'` and has been reading a soccer
+listing.
+
+Probed american-football, americanfootball, nfl, ncaaf, college-football,
+football-nfl, gridiron — all soft-404 (200 with zero game links) — and
+oddscrowd's own navigation now links only `baseball`. There is no American
+football slug to point at.
+
+Nothing to fix until oddscrowd serves those pages again. Recheck
+occasionally; do NOT rewrite the parser, because it is not the parser.
+
+VERIFY: `python pull_externals_nfl.py --source oddscrowd --dry-run` — it
+currently reports 0 picks from 23 fetches.
+
+### B61 - vsin was keyed on a BYLINE and went dead - HALF FIXED
+`fetch_vsin` required the string `peterson` in the article href or title.
+VSiN changed columnist; the MLB best-bets column is now **Adam Burke's**.
+Measured on the live landing page:
+
+    sport-path + "best bets" + "peterson":   0 links
+    sport-path + "best bets":               21 links
+
+So it returned `[], 200` — a silent success — and vsin produced ONE pick in
+all of October, on a 53.4% source.
+
+FIXED: discovery no longer depends on a person's name. It matches the sport
+path plus "best bets", takes the newest, and warns when it finds nothing. The
+sport path was always the real guard against matching his college-basketball
+columns; the name never was.
+
+STILL BROKEN: the prose parser. Burke's column contains the string
+"Moneyline" **zero times**, where Peterson's format was `TEAM Moneyline
+-ODDS`. vsin still yields 0 and needs a parser written against the new format
+— 24,875 chars of article text, `Pick:` appears twice, `ML` 66 times but
+mostly site navigation, so the article body has to be isolated first.
+
+**LESSON: never key a scraper on a byline.** A person's name is the most
+volatile thing on a publisher's page and the least load-bearing. And a
+fetcher returning `[], 200` on no-match reports success while dying — the
+same silent-failure shape as the old pickdawgz NFL stub.
+
+NFL and NCAAF vsin is a bigger job than MLB's: those columns are WEEKLY and
+come from three cappers (Makinen, Reynolds, Youmans), not one daily writer.
+
+### Remaining B44 candidates, honestly ranked
+1. **B61 vsin parser** — 53.4% n=234. MLB first (one column), football after.
+2. **tonyspicks** — NFL and NCAAF pages confirmed live, but needs a URL per
+   sport, a team normaliser per sport (it uses `_mlb_norm`), AND a new
+   action-to-market map, because its MLB map is baseball prose ("Lays the
+   First-Five", "Lays the Run"). n=49 means we cannot yet say it is worth it.
+3. **bettingpros** — NFL page live, but no graded record at n>=30, so adding
+   it is a bet on an unmeasured source.
+4. docsports, betfirm — **declined on the measurement.**
