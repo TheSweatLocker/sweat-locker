@@ -1028,6 +1028,22 @@ jobs:
           cd mlb_pipeline
           python nfl_ncaaf_signal_discipline.py --sport NFL --days 14
 
+      # 2026-10-08: see the NCAAF twin of this step. NFL measured CLEAN today
+      # (0 of 29 picks had conviction above its capped tier's ceiling), so
+      # this is here to keep it that way rather than to fix a live defect —
+      # NFL carries the same _edge_cap and juice-cap code paths that left four
+      # NCAAF picks advertising 81-95/100 under a capped tier.
+      - name: Clamp conviction to the capped tier (both copies)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python clamp_conviction_to_tier.py --sport NFL --apply
+
       - name: Generate NFL game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

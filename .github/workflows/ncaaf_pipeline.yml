@@ -419,6 +419,28 @@ jobs:
           cd mlb_pipeline
           python nfl_ncaaf_signal_discipline.py --sport NCAAF --days 14
 
+      # 2026-10-08: when a cap lowers the TIER, the conviction has to follow.
+      # Measured on the pre-lock NCAAF board: Duke -6.5 showed tier STRONG
+      # with conviction 95, because _edge_cap correctly demoted it from PRIME
+      # ("lr_v1 PRIME unproven in NCAAF, 5-10 n=15") and nothing touched the
+      # number. Four picks were advertising 81-95/100 under a capped tier.
+      # _discipline_cap already carries max_conviction and applies it; this
+      # closes the same hole for _edge_cap and the juice caps, on BOTH stored
+      # copies. Runs LAST of the gate passes so it sees the final tier.
+      # Never raises, never changes side/market/line, and refuses to clamp a
+      # pick with no recorded cap (that is a different defect — two
+      # independent derivations disagreeing — and it gets reported instead).
+      - name: Clamp conviction to the capped tier (both copies)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python clamp_conviction_to_tier.py --sport NCAAF --apply
+
       # 2026-09-20: freeze what the spread MODEL would have picked, next to
       # what we published. 3-week walk-forward had the published pick at
       # 46.8% out of sample while its own projected_spread ran 60.0%, and
