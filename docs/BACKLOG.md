@@ -2520,3 +2520,75 @@ Needs, in order:
 
 Do NOT resolve by picking whichever row looks better. Andy on exactly this:
 "no problem solving is actulaly happening jys band aid after band aid".
+
+---
+
+## B66 — the registry hit_rate barely predicts reality (r=+0.20, 11pp error)
+**Found 2026-10-08** from Andy: "then the leak inflated weights". Open.
+Instrument shipped (`audit_signal_claims.py`); the fix is NOT shipped.
+
+NCAAF's `signal_registry` advertises hit rates no ATS signal sustains —
+`ncaaf_home_fav_week1_chalk` 94.3% (n=70), `ncaaf_sp_plus_edge_home` 91.2%
+(n=68), `ncaaf_confluence_home` 85.6% (n=139), `ncaaf_home_field_baseline`
+74.5% (n=376) — while NCAAF published reads run **50.8%**.
+
+### Why the existing guard doesn't catch it
+`ensemble_scorer.edge_weight_v2` runs hit_rate through a Beta prior centred on
+breakeven. That protects against SMALL-SAMPLE luck and nothing else. For
+`ncaaf_home_field_baseline` at 74.5%/n=376:
+
+    posterior = (10.48 + 280) / (20 + 376) = 0.7335
+    edge_pp   = 0.2095
+    weight    = 1 - exp(-0.2095/0.06) = 0.97 of maximum
+
+A leak-inflated claim with a LARGE sample earns near-maximum weight. Nothing
+asks whether the claim is believable.
+
+### The measurement
+`primary_play._ensemble_sources` records every contributing signal with the
+hit_rate and contribution it was given at scoring time. Joined to the graded
+read, that yields each signal's rate ON THE PICKS IT DROVE — out of sample by
+construction. NCAAF, 246 graded picks:
+
+    signal                      claim        actual        gap
+    ncaaf_confluence_home       85.6% n=139  63.6% n=11   -22.0pp
+    ncaaf_home_field_baseline   74.5% n=376  57.1% n=28   -17.4pp
+    ncaaf_projected_spread      73.9% n=207  64.3% n=14    -9.6pp
+    ncaaf_home_spread_edge      62.2% n=45   40.0% n=20   -22.2pp
+    ncaaf_home_underdog_bark    54.8% n=42   33.3% n=18   -21.5pp
+
+    correlation(claimed, actual) = +0.204    (17 signals, actual n>=10)
+    mean ABS gap                 = 11.0pp
+    over-claims >5pp 7/17 · under-claims >5pp 4/17
+
+### Why this reframes the fix
+The registry number is not merely inflated — it is close to **uninformative**,
+in BOTH directions (`home_ats_hot_at_home` claims 51.9% and delivered 70.4%;
+`home_team_ats_hot_season` claims 44.8% and delivered 58.8%).
+
+So a plausibility ceiling on the >60% claims is NOT the fix. Measured, it
+would touch only **10.2%** of total NCAAF contribution (33.1 of 324.8) and
+would do nothing about an 11pp average error. The inflated giants are also
+low-volume — `ncaaf_confluence_home` drove 14 picks, `ncaaf_home_spread_edge`
+8 — while the workhorses (`ncaaf_ol_weight_adv_home` n=108,
+`ncaaf_ground_leverage_home` n=57) are much closer to honest at -2.6 and
+-4.2pp.
+
+NFL is not materially exposed: 1.2% of its contribution flows through >60%
+claims, on 55 graded picks.
+
+### The fix this points at — Andy's call
+Feed the OBSERVED on-pick rate back as the weight input instead of the
+backfilled hit_rate. The small samples that produces are exactly what
+`edge_weight_v2`'s Beta prior exists to handle: it shrinks toward breakeven
+until a signal earns otherwise. That is a genuine calibration loop grounded in
+our own graded picks rather than in a backfill (`origin=BACKFILL_2026-10-08` on
+102 of 110 NCAAF rows) whose provenance cannot be reconstructed.
+
+Sequencing, deliberately: this is a suppression-gate-class change to how picks
+are scored. It gets shadowed and decided on evidence, not shipped the night
+before a slate locks. `audit_signal_claims.py` is the instrument; run it weekly
+and the observed column becomes trustworthy as n accumulates.
+
+Related: 162 of 191 NFL and 58 of 110 NCAAF registry rows are tier
+UNVALIDATED and still carry weight; NCAAF has 17 ANTI_VALIDATED.
