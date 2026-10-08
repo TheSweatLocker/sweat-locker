@@ -379,16 +379,29 @@ jobs:
       # Scoped --sport NHL so this does not duplicate the all-sports pass that
       # still runs from MLB while MLB is alive.
       #
-      # FADEREPORT IS THE ONLY ONE OF THE FADE-FAMILY SCRAPERS THAT DOES NHL.
-      # Checked all three: cleatz_scraper's --sport choices are
-      # MLB/NFL/NCAAF/NBA/NCAAB, and fadethepublic_scraper declares
-      # NO_COVERAGE = ('NHL',) with the note "site has no hockey endpoint —
-      # fadereport covers it".
+      # 2026-10-08 SUPERSEDED, and the way it was wrong is worth keeping.
+      # This block used to read "FADEREPORT IS THE ONLY ONE OF THE FADE-FAMILY
+      # SCRAPERS THAT DOES NHL. Checked all three" — but the check was against
+      # our own SPORT_URL dict, where a 2026-08-23 comment recorded a 404 for
+      # hockey. cleatz now serves https://cleatz.com/public-betting/nhl/ with
+      # 14 games, moneyline + puck line + total, bets% AND handle%. A 404 is a
+      # snapshot of one day, not a property of a site; re-probe before
+      # declaring a source absent. Same lesson as calling oddscrowd dead.
       #
-      # So NHL ends up with TWO splits inputs, not one: this, plus the
-      # ScoresAndOdds step above, which writes public_splits_v2 directly.
-      # Still thin next to MLB's twelve sources, and worth widening before
-      # NHL money flow is treated as a strong signal rather than context.
+      # Measured before this step existed: NHL money flow was 1-of-3 sources
+      # (fadereport only), so there was no second opinion to diverge against
+      # and the panel had nothing to render.
+      #
+      # fadethepublic_scraper does still declare NO_COVERAGE = ('NHL',).
+      - name: Money flow source (NHL · cleatz)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python cleatz_scraper.py --sport NHL || echo "::warning::cleatz NHL failed"
       - name: Money flow source (NHL · fadereport)
         continue-on-error: true
         env:

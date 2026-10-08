@@ -59,7 +59,16 @@ SPORT_URL = {
     # them off-season is a safe no-op (scraper finds 0 games, writes 0 rows).
     'NBA':   'https://cleatz.com/public-betting/nba/',
     'NCAAB': 'https://cleatz.com/public-betting/college-basketball/',
-    # 'NHL':   HTTP 404 (Cleatz doesn't cover hockey as of 2026-08-23)
+    # 2026-10-08: NHL ADDED. The line here used to read "HTTP 404 (Cleatz
+    # doesn't cover hockey as of 2026-08-23)" and that was true when written —
+    # but it then got quoted as settled fact in nhl_pipeline.yml ("FADEREPORT
+    # IS THE ONLY ONE OF THE FADE-FAMILY SCRAPERS THAT DOES NHL. Checked all
+    # three"), and nobody re-probed. Andy: "also here
+    # https://cleatz.com/public-betting/nhl/". A 404 is a snapshot of one day,
+    # not a property of the site — same lesson as calling oddscrowd dead.
+    # NHL money flow was running on ONE source (fadereport), so there was no
+    # divergence to compute; this is the second.
+    'NHL':   'https://cleatz.com/public-betting/nhl/',
 }
 
 SPORT_TABLE = {
@@ -68,6 +77,7 @@ SPORT_TABLE = {
     'NCAAF': 'ncaaf_game_context',
     'NBA':   'nba_game_context',
     'NCAAB': 'ncaab_game_context',
+    'NHL':   'nhl_game_context',
 }
 
 # Common team-code → full-team-name map for fuzzy join
@@ -306,8 +316,15 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
         print(f'  ✗ HTTP {r.status_code}'); return 0
     txt = r.text
 
-    # Split at game-head divs to get individual game sections
-    sections = re.split(r'<div class="ccsp-game-head"', txt)
+    # Split at game-head divs to get individual game sections.
+    # 2026-10-08: cleatz serves NHL from a DIFFERENT component. Every other
+    # sport wraps a game in <div class="ccsp-game-head">; hockey uses
+    # <article class="cnhl-game"> with <header class="cnhl-head">. The market
+    # cells inside are the same ccsp-* markup, so only the split marker, the
+    # team pattern and the market names differ — everything downstream
+    # (sharp-side detection, divergence, write) is shared.
+    sections = re.split(r'<div class="ccsp-game-head"|<header class="cnhl-head"',
+                        txt)
     print(f'  · {len(sections) - 1} game sections found')
 
     all_rows = []
@@ -338,6 +355,18 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
             team_m = re.search(
                 rf'{_sep}([A-Z][A-Za-z0-9\s\.]+?)\s*{_sep}@\s*{_sep}([A-Z][A-Za-z0-9\s\.]+?)\s*{_sep}',
                 clean)
+        if not team_m:
+            # 2026-10-08 NHL shape: the hockey header renders both clubs
+            # inside ONE <strong>, so after tag-strip the matchup reads
+            # "| UTA Mammoth @ BOS Bruins |" with NO pipes around the '@'.
+            # Both patterns above require pipe separators flanking it, so
+            # every NHL game fell through and the slate parsed as 0 games.
+            # Mascots can be multi-word ("TOR Maple Leafs"), hence the
+            # greedy-but-bounded name class.
+            team_m = re.search(
+                rf'{_sep}([A-Z]{{2,3}}\s+[A-Za-z][A-Za-z\s\.]*?)\s+@\s+'
+                rf'([A-Z]{{2,3}}\s+[A-Za-z][A-Za-z\s\.]*?)\s*{_sep}',
+                clean)
         if not team_m: continue
         away_short = team_m.group(1).strip()
         home_short = team_m.group(2).strip()
@@ -347,9 +376,20 @@ def scrape_sport(sport: str, dry_run: bool = False) -> int:
         # market as "Spread"; MLB uses "Run Line". Both map to the same
         # normalized market key 'rl' downstream so the aggregator lens is
         # consistent regardless of sport terminology.
-        markets = {'Moneyline': 'ml', 'Total': 'total', 'Run Line': 'rl', 'Spread': 'rl'}
+        # 2026-10-08: 'Puck Line' added for NHL. Hockey's spread market has a
+        # third name and it normalizes to the same 'rl' key, so the aggregator
+        # lens stays sport-agnostic. Without this entry the NHL page would
+        # parse moneyline and total and silently drop the puckline.
+        markets = {'Moneyline': 'ml', 'Total': 'total', 'Run Line': 'rl',
+                   'Spread': 'rl', 'Puck Line': 'rl', 'Total Goals': 'total'}
         if sport in ('NFL', 'NCAAF', 'NBA', 'NCAAB'):
             market_order = ['Spread', 'Total', 'Moneyline']
+        elif sport == 'NHL':
+            # Order matters: _parse_market bounds each market by the NEXT
+            # market's label, so this must match the page's actual order,
+            # which the NHL component renders as ML -> Puck Line -> Total.
+            # The label is "Total Goals", not "Total".
+            market_order = ['Moneyline', 'Puck Line', 'Total Goals']
         else:
             market_order = ['Moneyline', 'Total', 'Run Line']
         for i, mkt_name in enumerate(market_order):
