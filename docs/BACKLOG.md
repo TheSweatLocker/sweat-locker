@@ -1956,7 +1956,7 @@ reach it — 5 of 7 stayed stuck. Extracted to
 `drop_ml_edge_cap_on_spread(pp)`, which runs on any pick and handles fresh and
 stale rows identically.
 
-### B58 · apply_pick_gates_post_pass is in NO workflow — OPEN
+### B58 · apply_pick_gates_post_pass is in NO workflow — **CLOSED** `6897592c`
 
 This is why the 5 stale rows sat there: the only tool that applies gate fixes
 to STORED picks is manual. `grep -rn apply_pick_gates_post_pass
@@ -1977,7 +1977,7 @@ quiet commit.
 VERIFY: `python apply_pick_gates_post_pass.py --sport NCAAF` (dry by default)
 should report `CHANGED 0` the day after it starts running on schedule.
 
-### B59 · ~450 games have no locked closing line, but it is recoverable — OPEN
+### B59 · ~450 games have no locked closing line — **DONE to the data ceiling** `6897592c`
 
 `freeze_closing_lines.py` is exactly the right mechanism — T-5min MLB,
 T-15min NFL/NCAAF, idempotent, stamps `close_locked_at` — and it IS on a
@@ -1995,3 +1995,63 @@ restates prices and would change grades. Andy's call.
 Also worth checking why the live cron misses so much — the windows are
 `*/10 22-23`, `*/10 0-4` daily and `*/10 16-21` Sat/Sun only, which look like
 they should cover the NFL and college slates.
+
+
+## 2026-10-07 late night — B58 + B59 done
+
+### B58 · post-pass wired and applied
+Applied NCAAF 16 rows and NFL 53 (40 COVERAGE->STRONG, 9 LEAN->STRONG, 4
+field-only). Wired into both pipelines after the recompute, before the line
+audit. Andy chose the STRONG ceiling over LEAN.
+
+NOT flip-flopping, verified: a second run on both sports reports CHANGED 0, so
+it converges. It refuses promotions except for rerouted/unpriced picks and
+skips started games.
+
+Also fixed its own output lying twice — `changed[:12]` hid 41 of 53 changes
+(now `--limit`, default 80) and the "… and N more" trailer stayed hardcoded at
+12 so a run that printed all 53 still claimed 41 were hidden.
+
+### B59 · closing lines backfilled, and the ceiling found
+
+    sport    rows written   close_locked_at coverage
+    MLB            77       0.0%  ->  95.1%
+    NCAAF         120      11.9%  ->  36.6%
+    NFL            17       5.9%  ->  12.1%
+
+ZERO grading impact, and the reason is worth keeping: the backfill writes the
+CONTEXT table, while graders and `model_scorecard` read
+`<sport>_game_results.close_spread` / `spread_result`. Only two games moved
+more than 3 points and both were already-wrong numbers:
+
+    ARI@SF   2026-09-27   context +17.5 -> +7.5   (11 books)
+    NT@Tulsa 2026-10-01   context  -1.5 -> +3.0   (11 books)
+
+and the Tulsa pick is a MONEYLINE, which cannot grade off a spread. On that
+game `results.close_spread` was 2.5, near the books' 3.0, while context held
+-1.5 — results was right there too, same as the NFL pattern.
+
+**THE CEILING, and it is not fixable.** 75 NFL and 240 NCAAF games remain
+unlocked because `line_history`'s earliest spread quote for every sport is
+**2026-09-23**. A game that kicked off before then has no stored quotes, so
+its close is genuinely unrecoverable — an absent record, not a join bug. Those
+games stay unlocked and honest rather than being given a reconstructed number
+that nothing supports.
+
+Going forward `freeze_closing_lines.py` owns it: its dry run now finds and
+freezes in-window games (2/2 NCAAF on the last check), and
+`refresh_market_lines.py` refuses to touch any row with `close_locked_at` set,
+so a verified close cannot be overwritten.
+
+### The four numbers a pick needs — all four now exist
+
+| number | where | state |
+|---|---|---|
+| opening line | `open_spread` | present |
+| continuous in between | `line_history` | ~870 captures per NFL game over 8 days |
+| line AT PICK | `public_receipts.pick_line`, frozen by trigger | present |
+| close at KICKOFF, locked | `close_locked_at` + freezer, now backfilled | present from 2026-09-23 on |
+
+What is still NOT built is the DISPLAY: nothing surfaces "opened -6.5 · called
+-6 · now +3.5 · moved 9.5 to ATL" even though every number for it is now
+stored. That needs an app build (see the NO OTA PATH item).
