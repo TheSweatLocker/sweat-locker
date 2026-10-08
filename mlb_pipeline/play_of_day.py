@@ -4866,19 +4866,67 @@ def run():
     expected_lean = pick.get('lean_display')
 
     def _potd_odds_american(pk):
+        """Price of the side THIS POTD actually published.
+
+        2026-10-08 BUG FIXED HERE. This used to read the side from
+        `ctx['primary_play']['side']` — which is the GAME READ's side, a
+        different decision made by a different path. The POTD label is built
+        by `build_lean` from the resolver (`"<team> ML (resolver STRONG)"`,
+        see the side_bl branch above), and the game read is `lr_v1`. They
+        normally agree, so the price was normally right and the defect stayed
+        invisible.
+
+        On 2026-10-08 they disagreed: the resolver published
+        "Chicago White Sox ML" (HOME) while `primary_play.side` was AWAY
+        (Cleveland, lr_v1 p_home_win=0.274). The POTD therefore stored
+        odds_american = -115, the CLEVELAND price, against a Chicago pick —
+        the home side was -103. `compute_surface_records` computes POTD units
+        straight off `daily_best_bet_history.odds_american`, so the published
+        POTD record was being paid at the wrong side's juice.
+
+        The side now comes from the pick's own label, which is the only field
+        that cannot describe a different bet than the one published. The old
+        `primary_play` read stays as a last resort for paths that don't name a
+        team in the label, and warns when it is used.
+        """
         try:
             ctx = pk.get('_ctx') or {}
-            pp  = ctx.get('primary_play') or {}
-            side  = (pp.get('side') or '').upper()
+            lean = (pk.get('lean_bet') or '').lower()
+            pp = ctx.get('primary_play') or {}
             ptype = (pp.get('type') or '').lower()
-            lean  = (pk.get('lean_bet') or '').lower()
-            if ptype == 'ml' or lean == 'ml':
-                if side == 'HOME':
-                    return int(ctx.get('home_ml_close') or ctx.get('home_ml_odds') or -110)
-                if side == 'AWAY':
-                    return int(ctx.get('away_ml_close') or ctx.get('away_ml_odds') or -110)
-        except Exception:
-            pass
+            if not (ptype == 'ml' or lean == 'ml'):
+                return -110
+
+            def _price(side_):
+                if side_ == 'HOME':
+                    return int(ctx.get('home_ml_close')
+                               or ctx.get('home_ml_odds') or -110)
+                return int(ctx.get('away_ml_close')
+                           or ctx.get('away_ml_odds') or -110)
+
+            # 1. The published label names the team. Match it, longest name
+            #    first so "Chicago White Sox" cannot be shadowed by a
+            #    substring of the other club.
+            label = str(pk.get('lean_display') or '')
+            home, away = str(ctx.get('home_team') or ''), str(ctx.get('away_team') or '')
+            cands = sorted(
+                [(home, 'HOME'), (away, 'AWAY')],
+                key=lambda t: -len(t[0]))
+            for team, side_ in cands:
+                if team and team.lower() in label.lower():
+                    return _price(side_)
+
+            # 2. No team in the label — fall back, but say so. A silent
+            #    fallback here is what hid the original defect.
+            side = (pp.get('side') or '').upper()
+            if side in ('HOME', 'AWAY'):
+                print(f"  ⚠ POTD price: label {label!r} names neither "
+                      f"{away!r} nor {home!r}; falling back to "
+                      f"primary_play.side={side}. Verify this is the same "
+                      f"bet the label describes.")
+                return _price(side)
+        except Exception as e:                                 # noqa: BLE001
+            print(f"  ⚠ POTD price resolution threw: {e} — defaulting -110")
         return -110
     potd_odds = _potd_odds_american(pick)
 

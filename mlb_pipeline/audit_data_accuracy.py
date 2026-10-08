@@ -415,8 +415,21 @@ def check_E15_potd_leandisplay_drift():
 def check_E16_potd_odds_drift():
     # odds_american came from primary_play backfill; check when primary_play type/side
     # disagreed with actual POTD lean text
+    #
+    # 2026-10-08: that comment described the real defect and then the check
+    # tested something else — it only asserted the lean was an ML, never that
+    # the stored price belonged to the side the lean NAMES. The bug it was
+    # written for was live the whole time: _potd_odds_american read the side
+    # from ctx['primary_play']['side'] (the game read's side, lr_v1) while the
+    # label came from the resolver. They normally agree, so it stayed hidden
+    # until 2026-10-08, when the POTD published "Chicago White Sox ML" (HOME)
+    # and stored -115 — the CLEVELAND price. Home was -103.
+    #
+    # compute_surface_records computes POTD units straight off
+    # odds_american, so a wrong side is a wrong published record.
     rows = get(f'daily_best_bet_history?sport=eq.MLB&bet_date=gte.{D14}&odds_american=not.is.null&select=bet_date,game,lean,odds_american')
-    drift = []
+    drift, wrong_side, fabricated, untestable = [], [], [], 0
+    MIN_GAP = 6          # cents; below this the two sides are indistinguishable
     for r in rows:
         lean = (r.get('lean') or '').lower()
         odds = r.get('odds_american')
@@ -425,11 +438,74 @@ def check_E16_potd_odds_drift():
         # ML rows with odds captured — verify magnitude reasonable
         if not is_ml:
             drift.append((r['bet_date'], r['game'][:40], r['lean'][:40], odds))
-    if drift:
+            continue
+
+        # ── the check the comment actually promised ──────────────────────
+        game = r.get('game') or ''
+        if ' @ ' not in game:
+            untestable += 1
+            continue
+        away, home = [s.strip() for s in game.split(' @ ', 1)]
+        ctx = get(f'mlb_game_context?game_date=eq.{r["bet_date"]}'
+                  f'&select=home_team,away_team,home_ml_close,away_ml_close') or []
+        match = [c for c in ctx
+                 if str(c.get('home_team')) == home
+                 and str(c.get('away_team')) == away]
+        if not match:
+            untestable += 1
+            continue
+        # A duplicated game row (BACKLOG B65) can hand us two different price
+        # pairs for one game. Take the WIDEST spread so a narrow stale copy
+        # cannot mask a real mis-side — that is exactly how 2026-10-08 slipped
+        # past this audit when it was first run.
+        best = max(match, key=lambda c: abs((c.get('home_ml_close') or 0)
+                                            - (c.get('away_ml_close') or 0)))
+        hp, ap = best.get('home_ml_close'), best.get('away_ml_close')
+        if hp is None or ap is None:
+            untestable += 1
+            continue
+        hp, ap = int(hp), int(ap)
+        if abs(hp - ap) < MIN_GAP:
+            untestable += 1
+            continue
+        # Longest team name first: "Chicago White Sox" must not lose to a
+        # "Chicago Cubs" substring match.
+        named = None
+        for team, side in sorted([(home, 'HOME'), (away, 'AWAY')],
+                                 key=lambda t: -len(t[0])):
+            if team and team.lower() in lean:
+                named = side
+                break
+        if named is None:
+            untestable += 1
+            continue
+        stored = int(odds)
+        # -110 is _potd_odds_american's hardcoded fallback. If neither real
+        # side is near it, the stored number is FABRICATED, not mis-sided —
+        # a distinct defect, so do not report it as a wrong side.
+        if stored == -110 and min(abs(-110 - hp), abs(-110 - ap)) >= MIN_GAP:
+            fabricated.append((r['bet_date'], r['lean'][:38], hp, ap))
+            continue
+        closer = 'HOME' if abs(stored - hp) < abs(stored - ap) else 'AWAY'
+        if closer != named:
+            wrong_side.append((r['bet_date'], r['lean'][:38], stored, hp, ap,
+                               named))
+
+    if wrong_side:
+        emit('E16', 'CROSSTAB', 'HIGH', 'FAIL',
+             f'{len(wrong_side)} POTD priced off the WRONG SIDE — units are '
+             f'wrong on these; sample {wrong_side[0]}')
+    elif fabricated:
+        emit('E16', 'CROSSTAB', 'MED', 'FAIL',
+             f'{len(fabricated)} POTD stored the hardcoded -110 with neither '
+             f'side near it (fabricated price); sample {fabricated[0]}')
+    elif drift:
         emit('E16', 'CROSSTAB', 'MED', 'FAIL',
              f'{len(drift)} POTD rows have odds_american but non-ML lean text; sample {drift[0]}')
     else:
-        emit('E16', 'CROSSTAB', 'OK', 'OK', 'POTD odds only captured on ML picks')
+        emit('E16', 'CROSSTAB', 'OK', 'OK',
+             f'POTD odds match the side the lean names '
+             f'({len(rows) - untestable} checked, {untestable} untestable)')
 
 def check_E17_props_l10_gate():
     # Post L10-gate: no PRIME/STRONG hits_over should have L10<10
