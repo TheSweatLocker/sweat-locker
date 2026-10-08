@@ -1245,7 +1245,7 @@ VERIFY: `python mlb_pipeline/jerry_pre_publish_audit.py --sport MLB --date <toda
 
 ## P2 — structural (the ones that keep causing the others)
 
-### B47 - NFL prop publish gate ships the losing tier and hides the winning one
+### B47 - NFL prop publish gate - **CLOSED 2026-10-07: R3 REJECTED out-of-sample, status quo retained**
 Found 2026-09-24. **Andy concurred with the R3 candidate on 09-24 and asked
 to see results after the 2026-09-27 weekend before it gates anything. Check
 this after that weekend.**
@@ -2316,3 +2316,71 @@ game_date, and confirm it climbs off 0.2%.
 
 If it does not climb, the next step is a `prop_line_history` table so a missed
 window stops being permanent — which is the real structural fix.
+
+
+## 2026-10-07 · B47 CLOSED — the pre-registered test killed the candidate
+
+Andy concurred with R3 on 09-24 *conditional on seeing the 09-27 weekend
+first*. That window now exists, so the recorded verify was run:
+
+    python audit_nfl_publish_rules.py --since 2026-09-27 --by-tier
+
+1,151 graded NFL props, 2026-09-27..10-05, labelled OUT-OF-SAMPLE by the
+script itself (rule written 09-24 on data to 09-21).
+
+    R1 live today: PRIME+STRONG, any price, any stat  54.5%  ROI +3.14%  +11.9u  n=380
+    R2: PRIME+STRONG, in band, counting only          55.2%  ROI +5.92%  +11.9u  n=201
+    R3 CANDIDATE: +LEAN, in band, counting only       52.4%  ROI +0.36%   +1.3u  n=359
+    R4: PRIME+LEAN (no STRONG), in band, counting     49.1%  ROI -6.03%   -9.8u  n=163
+    R6 price gate alone (any stat)                    53.9%  ROI +2.80%  +10.3u  n=369
+    R7 counting alone (any price)                     53.3%  ROI +0.64%   +2.4u  n=381
+
+    R3 vs R1:  ROI -2.78pp   units -10.6u   exposure -21 props
+
+**R3 IS REJECTED.** Shipping it would have cost 10.6 units over nine days.
+
+### The premise inverted, which is the whole lesson
+R3 existed because LEAN measured as the largest and most profitable tier
+in-sample (+5.08%, n=185). Out-of-sample, inside R3:
+
+    PRIME     60.0%  ROI +15.30%   +0.8u  n=5     n<30
+    STRONG    55.1%  ROI  +5.68%  +11.1u  n=196
+    LEAN      48.7%  ROI  -6.71%  -10.6u  n=158
+
+LEAN went **+5.08% -> -6.71%**. The backlog entry predicted exactly this
+("both filters were chosen by looking at the same rows they score on...
+in-sample selection always flatters") and writing the honest test down before
+agreeing to ship is what caught it.
+
+### R2 looks best and is NOT being shipped either
+R2 beats live on the same units with half the exposure. But selecting it from
+*this* window repeats the error one level up — it would be chosen by looking
+at the rows that score it.
+
+And its mechanism is already undermined: **the -150..+150 band is enforced at
+source** since `33f90b12`, so it no longer discriminates. Measured:
+
+    all tiers, before 09-24     1157/1361 priced rows in band   85.0%
+    all tiers, from 09-24 on    1428/1475                       96.8%
+    PUBLISHED tiers since 09-27  472/483                        97.7%
+
+So R2's band filter excludes 2.3% of published props and cannot be producing
+its advantage; the counting-stats filter would be doing all the work — which
+makes "counting stats only" the hypothesis to pre-register, not R2 as bundled.
+
+### DECISION: no change to v_nfl_props_publishable
+R1 is performing out-of-sample (54.5%, +3.14%, +11.9u on n=380) and no
+alternative is justified on evidence that was not selected on itself.
+
+PRE-REGISTERED FOR THE NEXT WINDOW, written down before looking:
+  * hypothesis: PRIME+STRONG restricted to COUNTING stats beats PRIME+STRONG
+    on all stats, on ROI, at n>=150.
+  * window: graded NFL props with game_date >= 2026-10-08.
+  * command: `python audit_nfl_publish_rules.py --since 2026-10-08 --by-tier`
+    and compare R1 against R2/R7.
+  * ship only if it holds. If it does not, the gate stays as it is.
+
+Also still true and unchanged: PRIME has effectively stopped occurring (n=5
+in nine days), so users see STRONG and almost nothing else. That is a
+labelling question — four tiers is more resolution than the calibration map
+supports — not a money question, and it is parked rather than closed.
