@@ -815,33 +815,96 @@ def fetch_vsin(slate: list, game_date: str) -> tuple[list, int]:
     if article.status_code != 200:
         return [], article.status_code
     asoup = BeautifulSoup(article.text, 'html.parser')
-    text = asoup.get_text(' ', strip=True)
+
+    # ══ 2026-10-07 · REWRITTEN FOR THE CURRENT COLUMN FORMAT ══
+    # The old parser looked for `TEAM Moneyline -ODDS`, which was Peterson's
+    # format. Burke's column contains the string "Moneyline" ZERO times, so
+    # the regex matched nothing even once the article was found again.
+    #
+    # Scope to <article> FIRST. The whole-page text is 24,875 chars of which
+    # most is site navigation — "ML" appears 66 times there, almost all of it
+    # menu chrome, so parsing the page body would invent picks out of nav
+    # links. The <article> node is 13,594 chars and is the column itself.
+    #
+    # Burke states a bet on its own line, and only for games he is betting —
+    # he writes up every game and says so ("even if I don't have any bets"),
+    # so a game with no `Pick:` line is a PASS and must not be inferred:
+    #
+    #     Guardians vs. White Sox (-121, 8)
+    #     Pick: White Sox -121
+    #     Dodgers (-155, 7.5) vs. Braves        <- no Pick: line, no bet
+    #     Brewers vs. Padres (-113, 7.5)
+    #     Pick: Brewers -107
+    #
+    # The matchup header's parenthetical is the FAVOURITE's price and the
+    # total, and it attaches to whichever team is named first or second, so it
+    # is not a reliable side indicator. Only the `Pick:` line is parsed.
+    art = asoup.select_one('article') or asoup.select_one('main') or asoup
+    body_lines = [ln.strip() for ln in art.get_text('\n', strip=True).split('\n')
+                  if ln.strip()]
+
+    # "Pick: <something> <price-or-line>" — tolerant of a trailing parenthesised
+    # price, e.g. "Pick: White Sox -1.5 (+120)".
+    PICK_RE = re.compile(
+        r'^Pick:\s*(.+?)\s*(?:\(([+-]\d{2,4})\))?$', re.I)
+    TRAIL_NUM = re.compile(r'^(.*?)\s*([+-]?\d+(?:\.\d+)?)$')
 
     picks = []
-    # Pattern: "TEAM Moneyline -ODDS" — Peterson's format
-    ml_matches = re.findall(
-        r'([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?)\s+Moneyline\s+([+-]\d{2,4})',
-        text,
-    )
     seen = set()
-    for team, odds in ml_matches[:15]:
-        if team in seen:
+    for ln in body_lines:
+        m = PICK_RE.match(ln)
+        if not m:
             continue
-        seen.add(team)
-        # Match team → game
+        body, paren_odds = m.group(1).strip(), m.group(2)
+        if len(body) > 60:
+            continue                      # prose, not a pick line
+
+        tail = TRAIL_NUM.match(body)
+        subject = (tail.group(1) if tail else body).strip(' ,')
+        number = tail.group(2) if tail else None
+
+        # Totals: "Over 8" / "Under 7.5"
+        head = subject.split()[0].lower() if subject.split() else ''
+        if head in ('over', 'under'):
+            gid = None                    # a total needs a game; skip if the
+            continue                      # column does not name one (rare)
+
+        # Side bet. A number with a decimal is a RUN LINE; an integer of 2+
+        # digits with a sign is a MONEYLINE price.
+        surface, odds, line = 'ml', None, None
+        if number:
+            if '.' in number:
+                surface, line = 'rl', float(number)
+                odds = int(paren_odds) if paren_odds else None
+            else:
+                try:
+                    odds = int(number)
+                except ValueError:
+                    odds = None
+        elif paren_odds:
+            odds = int(paren_odds)
+
+        key = (subject.lower(), surface)
+        if key in seen:
+            continue
+        seen.add(key)
+
         for g in slate:
-            if _team_matches(g.get('home_team'), team):
+            if _team_matches(g.get('home_team'), subject):
                 pick_side, gid = 'HOME', g['game_id']
                 break
-            if _team_matches(g.get('away_team'), team):
+            if _team_matches(g.get('away_team'), subject):
                 pick_side, gid = 'AWAY', g['game_id']
                 break
         else:
+            print(f'  ⚠ vsin: no slate match for {subject!r} — skipped')
             continue
+
         picks.append(ExternalPick(
             game_id=gid, sport='MLB', game_date=game_date, source='vsin',
-            surface='ml', pick_side=pick_side, odds_american=int(odds),
-            raw_text=f"VSiN Peterson: {team} ML ({odds})",
+            surface=surface, pick_side=pick_side, pick_line=line,
+            odds_american=odds,
+            raw_text=f'VSiN: {ln[:120]}',
             source_url=peterson_link,
         ))
     return picks, 200
