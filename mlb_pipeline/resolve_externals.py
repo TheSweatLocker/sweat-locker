@@ -100,6 +100,38 @@ SPORT_CONFIG = {
         'total_under_ok': ('under',),
         'push_vals':      ('push',),
     },
+    # 2026-10-08: NHL added — the SAME defect the NCAAF comment above
+    # describes, recurring because that fix added one sport instead of
+    # auditing every caller. nhl_pipeline.yml has called
+    # `resolve_externals.py --sport NHL --days 14` since launch, but NHL was
+    # not in SPORT_CONFIG, so argparse rejected the value and the step exited
+    # 2 on EVERY run. continue-on-error swallowed it. Result: 84 of 84 NHL
+    # external picks ungraded (20 of them on completed games), so no W-L
+    # record could render beside a source name in the externals panel —
+    # which is exactly what Andy reported seeing.
+    #
+    # NHL names its columns differently and they are mapped, not guessed:
+    #   total_points -> total_goals
+    #   close_spread -> close_puckline  (NOT selected; see below)
+    # `run_line_result` exists but is NULL on all 1,000 finished rows
+    # measured, so `spread_result` is the authority — and its vocabulary
+    # ('home_covered'/'away_covered'/'push') already matches the buckets.
+    #
+    # close_puckline is deliberately NOT selected. It would only be used by
+    # the margin fallback, and that fallback's `margin > -line` rule
+    # disagreed with the stored spread_result on 30 of 400 finished games
+    # (OT/SO handling). Leaving it out makes a NULL spread_result return
+    # 'no_spread_result' instead of silently grading 7.5% of pucklines wrong.
+    'NHL': {
+        'results_table': 'nhl_game_results',
+        'select_cols': ('game_id,home_score,away_score,total_goals,home_win,'
+                        'spread_result,total_result,close_total'),
+        'spread_home_ok': ('home_covered',),
+        'spread_away_ok': ('away_covered',),
+        'total_over_ok':  ('over',),
+        'total_under_ok': ('under',),
+        'push_vals':      ('push',),
+    },
 }
 
 
@@ -254,6 +286,7 @@ def grade_pick(pick: dict, result: dict, cfg: dict) -> tuple:
     side = (pick.get('pick_side') or '').upper()
     margin = int(home_score) - int(away_score)
     total_pts = result.get('total_runs') or result.get('total_points') \
+        or result.get('total_goals') \
         or (int(home_score) + int(away_score))
 
     # MONEYLINE
