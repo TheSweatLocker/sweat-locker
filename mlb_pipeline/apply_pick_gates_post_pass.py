@@ -112,6 +112,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', help='limit to one sport')
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--limit', type=int, default=80,
+                    help='how many changes to print (default 80)')
     args = ap.parse_args()
 
     from defensive_gates import apply_all_defensive_gates
@@ -226,7 +228,11 @@ def main() -> int:
               f'· started/skipped {skipped_started} · unchanged {same} '
               f'· refused promotions {refused_promo} · subtitle fixes {sub_fixed}'
               f' · CHANGED {len(changed)}')
-        for ctx, pp, new, b, a in changed[:12]:
+        # 2026-10-07: was changed[:12]. This is the only review surface for a
+        # pass that rewrites stored picks, and on the first NFL run it hid 41
+        # of 53 changes behind "… and 41 more" — so nobody could see what they
+        # were approving. --limit keeps output sane on a huge catch-up run.
+        for ctx, pp, new, b, a in changed[:args.limit]:
             rr = ' [reroute]' if new.get('_heavy_ml_reroute') else ''
             up = ' [unpriced]' if new.get('_unpriced_market') else ''
             print(f"   {str(ctx.get('away_team'))[:13]:13s}@"

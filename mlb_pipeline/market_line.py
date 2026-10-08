@@ -249,12 +249,31 @@ def build_matcher(by_matchup, sport: str):
             return hits[0] if len(hits) == 1 else None
         na = str(away or '').lower().replace('.', '').strip()
         nh = str(home or '').lower().replace('.', '').strip()
+        # ══ 2026-10-07 · BOTH SIDES MUST RESOLVE. NO ONE-SIDED FALLBACK. ══
+        # There used to be a second pass here that accepted a match when
+        # EITHER side resolved, "if len(hits) == 1". That is a guess, and this
+        # function's own docstring says it must return None instead of
+        # guessing — because a wrong match compares a pick against a
+        # DIFFERENT GAME's line.
+        #
+        # It did exactly that. Measuring the proposed closing-line backfill,
+        # the one-sided pass produced "corrections" like:
+        #
+        #     North Carolina -36.5  ->  +21.0
+        #     Boston College -37.5  ->  +14.2
+        #     Memphis        -35.5  ->  -14.0
+        #     max |change| 57.5 points
+        #
+        # all FCS-vs-FBS blowouts whose real line IS -35 to -43, and all of
+        # them 19 apparent GRADE FLIPS that were purely this fallback picking
+        # another game with a similar name. Same shape as the
+        # `ilike '*Panthers*'` mistake earlier the same day: a result that
+        # cannot be uniquely attributed must not be used.
+        #
+        # A game that cannot be matched on both halves is now simply reported
+        # as unmatched, which is honest and loud rather than wrong and quiet.
         hits = [mt for mt, (a, h) in halves.items()
                 if na and nh and a.startswith(na) and h.startswith(nh)]
-        if len(hits) == 1:
-            return hits[0]
-        hits = [mt for mt, (a, h) in halves.items()
-                if (na and a.startswith(na)) or (nh and h.startswith(nh))]
         return hits[0] if len(hits) == 1 else None
 
     return match

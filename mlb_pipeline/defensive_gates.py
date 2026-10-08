@@ -1900,6 +1900,23 @@ def drop_ml_edge_cap_on_spread(pp: dict | None) -> dict | None:
     restored = str(cap.get('from') or '').upper()
     if not restored:
         return pp
+
+    # ══ THE STRONG CEILING HAS TO LIVE HERE TOO ══
+    # It used to exist only in apply_heavy_ml_spread_reroute, after this
+    # function was called. On an ALREADY-rerouted row the reroute returns at
+    # its first guard, so the ceiling never ran and the restored tier shipped
+    # raw. The post-pass dry run showed exactly what that produces:
+    #
+    #     WAS @ SF    rl/SF -7.5     COVERAGE -> PRIME
+    #     BAL @ ATL   rl/BAL +3.5    COVERAGE -> PRIME
+    #
+    # A spread pick at PRIME off a conviction that is an ML WIN probability —
+    # the precise thing the reroute docstring forbids ("Carrying it onto a
+    # spread at PRIME would assert rigor the number does not supply"). Undoing
+    # an unjustified demotion must not manufacture an unjustified promotion.
+    if restored == 'PRIME':
+        restored = 'STRONG'
+
     out = dict(pp)
     out['tier'] = restored
     out['_edge_cap'] = None
@@ -1907,6 +1924,7 @@ def drop_ml_edge_cap_on_spread(pp: dict | None) -> dict | None:
         'was': cap,
         'why': ('ML edge cap does not apply to a spread — no cover '
                 'probability exists for this pick'),
+        'ceiling': 'STRONG',
     }
     return out
 
