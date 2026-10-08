@@ -225,6 +225,37 @@ jobs:
       #   * skips games that have started
       #   * IDEMPOTENT — a second run on both sports reports CHANGED 0, so it
       #     converges and cannot oscillate with the recompute above
+      # ══ 2026-10-08 · INJURY NEWS ARRIVES AFTER THE PICK ══
+      # Andy: "ensure model precition reflect injuries liek starting QBs...
+      # rpviding a pick with predate model data or missing factor sis not the
+      # rigth answer".
+      #
+      # nfl_qb_injury_gate already makes the right call — a ruled-out starter
+      # caps the pick to COVERAGE/45, because a model whose inputs predate the
+      # news cannot claim conviction about it. It just ran ONCE, at generation,
+      # and injury news arrives LAST. Caleb Williams was reported Out on 10-08
+      # for a 10-11 game locked on 10-04; nothing re-read nfl_injuries after
+      # the pick existed.
+      #
+      # Measured when this step was written: BAL @ CLE sat at STRONG conv 72
+      # with Lamar Jackson Questionable, and CHI @ GB had primary_play gated to
+      # COVERAGE/45 while jerry_reads still read conviction 79 — the badge
+      # gated, the writeup not, on the one game with a ruled-out QB.
+      #
+      # The gate only ever RESTRICTS: the post-pass refuses any result that
+      # would raise a tier or conviction, so a cleared injury can never quietly
+      # promote a stored pick back onto a card. Idempotent — a second run
+      # reports 0 changes.
+      - name: Re-apply QB injury gate to stored picks (both copies)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_qb_gate_post_pass.py --days 10 --apply
+
       - name: Apply defensive-gate fixes to stored picks (post-pass)
         if: steps.mode.outputs.mode != 'resolver_only'
         continue-on-error: true
