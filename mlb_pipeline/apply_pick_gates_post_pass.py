@@ -239,8 +239,13 @@ def main() -> int:
                   f"{str(ctx.get('home_team'))[:13]:13s} "
                   f"{b[0]}/{str(b[2])[:18]:18s}/{b[3]:8s} -> "
                   f"{a[0]}/{str(a[2])[:18]:18s}/{a[3]}{rr}{up}")
-        if len(changed) > 12:
-            print(f'   … and {len(changed) - 12} more')
+        # Was hardcoded to 12 alongside the old slice, so after --limit landed
+        # it still announced "… and 41 more" on a run that had printed all 53.
+        # A review surface that misreports its own completeness is worse than
+        # one that truncates honestly.
+        if len(changed) > args.limit:
+            print(f'   … and {len(changed) - args.limit} more '
+                  f'(raise --limit to see them)')
 
         grand['changed'] += len(changed)
         grand['started'] += skipped_started

@@ -366,6 +366,36 @@ jobs:
           cd mlb_pipeline
           python recompute_ncaaf_primary_play.py --days 10
 
+
+      # ══ 2026-10-07 · GATE FIXES MUST REACH PICKS THAT ARE ALREADY WRITTEN ══
+      # Andy: "if you find an issue, consequence how ever you word it we need
+      # to log and record and come up with soultuon living with issues will
+      # destory us."
+      #
+      # This script existed and was in NO workflow (BACKLOG B58), so every
+      # defensive-gate fix ever shipped reached NEW picks only. Anything
+      # already in the table kept the old behaviour until someone ran it by
+      # hand. That is how 5 NCAAF picks sat at COVERAGE carrying a moneyline's
+      # verdict days after the gate that caused it was fixed — and running it
+      # for the first time changed 16 NCAAF and 53 NFL rows, 11 of which were
+      # OTHER gates that should have applied already.
+      #
+      # SAFE BY DESIGN, and verified rather than assumed:
+      #   * refuses PROMOTIONS except for rerouted / unpriced picks, so it
+      #     cannot re-score the board upward through a plumbing job
+      #   * skips games that have started
+      #   * IDEMPOTENT — a second run on both sports reports CHANGED 0, so it
+      #     converges and cannot oscillate with the recompute above
+      - name: Apply defensive-gate fixes to stored picks (post-pass)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python apply_pick_gates_post_pass.py --sport NCAAF --apply
+
       - name: Audit published NCAAF lines vs the books (report only)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
