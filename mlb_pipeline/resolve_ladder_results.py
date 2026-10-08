@@ -296,6 +296,7 @@ def run(since: str, dry_run: bool = False) -> int:
         print(f'  loaded {len(results_by_sport[s])} {s} results')
 
     graded = 0
+    ungradeable: list = []
     for rung in pending:
         res = results_by_sport.get(rung['sport'], {}).get(rung['game_id'])
         # Prop rungs resolve from mlb_pipeline_props, so a missing
@@ -303,7 +304,24 @@ def run(since: str, dry_run: bool = False) -> int:
         if not res and rung.get('market') != 'prop':
             continue
         verdict = grade_rung(rung, res)
-        if not verdict: continue
+        if not verdict:
+            # ══ 2026-10-08 · A SKIPPED RUNG MUST NOT BE SILENT ══
+            # This was a bare `continue`, so a rung the grader could not read
+            # vanished into "graded 0 rungs" with no reason given. The 10-07
+            # rung "Mike Yastrzemski Under 0.5 HITS" sat ungraded two days
+            # that way: mlb_pipeline_props holds total_bases_under, rbis_over,
+            # runs_over and hr_under for him but NO hits row, so there was
+            # nothing to mirror and nothing said so.
+            #
+            # The ladder is ONE PLAY A DAY. A single unreported gap freezes
+            # the streak and the published record, which is what Andy saw.
+            # Name every rung we decline, and why.
+            ungradeable.append(
+                f'rung {rung["id"]} {rung.get("game_date")} '
+                f'{rung.get("sport")} {rung.get("market")} '
+                f'{rung.get("pick_side")!r}'
+                + ('' if res else ' [no game-results row]'))
+            continue
         if dry_run:
             print(f'  [DRY] rung {rung["id"]} · {rung["matchup"]} · {rung["pick_side"]} → {verdict}')
             graded += 1
@@ -317,6 +335,11 @@ def run(since: str, dry_run: bool = False) -> int:
             graded += 1
             print(f'  ✓ {rung["matchup"]} · {rung["pick_side"]} → {verdict}')
     print(f'\n{"[DRY] would grade" if dry_run else "graded"} {graded} rungs')
+    if ungradeable:
+        print(f'  ! {len(ungradeable)} rung(s) COULD NOT BE GRADED - the '
+              f'ladder record is INCOMPLETE until these resolve:')
+        for _u in ungradeable:
+            print(f'      {_u}')
     if not dry_run: update_state_from_rungs()
     return graded
 
