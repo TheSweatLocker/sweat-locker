@@ -1,6 +1,6 @@
 # BACKLOG — living
 
-**Last verified: 2026-09-24 (late night) — run `python mlb_pipeline/verify_backlog.py` before quoting any number in this file**
+**Last verified: 2026-10-07 (late night) — run `python mlb_pipeline/verify_backlog.py` before quoting any number in this file**
 
 Single source of open work. Rules that keep it from rotting like
 `hardcoded_percent_audit.md` did (written 06-18, every line number
@@ -2055,3 +2055,66 @@ so a verified close cannot be overwritten.
 What is still NOT built is the DISPLAY: nothing surfaces "opened -6.5 · called
 -6 · now +3.5 · moved 9.5 to ATL" even though every number for it is now
 stored. That needs an app build (see the NO OTA PATH item).
+
+
+## 2026-10-07 · verify_backlog re-run — the list as it actually stands
+
+`python mlb_pipeline/verify_backlog.py`. The file's own rule 4 says re-verify
+before quoting it; this is that pass.
+
+### STALE — resolved, text was out of date (4)
+* **B10** NFL prop projection — now populated on **2690 of 2692** (backlog
+  still said 2 of 1423).
+* **B26** markdown in short_read — **0 of 473** forward-slate reads carry it.
+* **B46** NHL reads with no reasoning — **134 reads, 0** engine-sub shorts,
+  0 with a long_read under 300 chars.
+* **NHL launch-date promise** — 0 of 134 reads claim a date, 0 carry the
+  "27season" typo.
+
+### STILL TRUE (3 machine-checked)
+* **B44** NFL externals: 7 distinct sources vs MLB's 13.
+* **B47** NFL prop publish gate: 149 publishable, {STRONG 141, PRIME 8},
+  **LEAN absent** — the gate is unchanged, still shipping the losing tier and
+  hiding the winning one.
+* **B32** CLV — see the split below, because tonight only fixed half of it.
+
+### B32 SPLITS IN TWO, and the halves are not alike
+
+**Half done — GAME closing lines.** Fixed tonight (B59): `close_locked_at`
+coverage MLB 0 -> 95.1%, NCAAF 11.9 -> 36.6%, NFL 5.9 -> 12.1%, reconstructed
+from `line_history` back to its 2026-09-23 floor.
+
+**NOT done, and NOT RECOVERABLE — PROP closing odds.**
+`mlb_pipeline_props.close_over_odds` is populated on **71 of 36,790 rows**
+(0.2%). And unlike game lines there is nothing to reconstruct from:
+
+    prop_line_history        404 — does not exist
+    prop_odds_history        404 — does not exist
+    mlb_prop_line_history    404 — does not exist
+    line_history markets     {total, spread, ml} — GAME markets only
+
+So we have never stored a prop price over time. Every day without forward
+capture is a day of prop CLV permanently lost, and it directly blocks the
+one open analytical question in B36 — whether prop edge is real — because
+you cannot measure a prop edge against a closing price you do not have.
+
+`freeze_prop_closing_lines.py` is correct and does fire (it reports "no games
+in freeze window" outside T-5/15min, which is right). The gap is window
+coverage, the same disease the game freezer had: crons are `*/10 22-23` and
+`*/10 0-4` daily plus `*/10 16-21` Sat/Sun only, which leaves weekday
+afternoons (17:00-21:59 UTC) uncovered — exactly when MLB day games and
+weekday college/NFL games start.
+
+### B60 · Prop closing odds: 0.2% captured, nothing to backfill — OPEN, time-sensitive
+FIX: widen the prop-freeze cron to cover weekday afternoons, then verify
+`close_over_odds` climbs off 0.2% within a week. Consider a `prop_line_history`
+table so a missed window stops being unrecoverable.
+VERIFY: count `mlb_pipeline_props` rows with `close_over_odds` not null,
+by game_date, and watch it rise.
+WHY IT IS FIRST IN LINE: it is the only item on this list where waiting
+destroys data that cannot be recovered later.
+
+### NOT MACHINE-CHECKABLE (13) — unchanged
+B1, B2, B5, B25 are build gates. B8, B9, B20, B21 are screenshot QA.
+B3 is closed by Andy's decision (do NOT change records). B4, B29 are model
+work. B40 is a workflow refactor. B41 needs a migration.
