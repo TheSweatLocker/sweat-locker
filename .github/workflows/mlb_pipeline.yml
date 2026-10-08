@@ -2903,6 +2903,24 @@ jobs:
           echo "🔄 RESCUE: running resolve_potd.py (backfills any missing results)"
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_potd.py" python resolve_potd.py
 
+          # 2026-10-08: resolve_potd CANNOT grade a player-prop POTD — its
+          # compute_outcome only knows NRFI/YRFI, game totals, run lines and
+          # moneylines, and returns 'unknown bet type' for a prop. Most POTDs
+          # ARE pitcher props, and grade_potd.py (which can grade them) is in
+          # no workflow at all, so props were being settled by a path that
+          # never saw the pick:
+          #     10-06  Yamamoto Over 17.5 Outs  threw 21  -> recorded Loss
+          #     10-07  Mahle    Over 13.5 Outs  threw 19  -> recorded Loss
+          # Both wins. Two mornings in a row in front of users.
+          #
+          # This reconciler re-derives prop POTDs from the graded prop row and
+          # corrects jerry_cache + daily_best_bet_history + the receipt when
+          # they disagree. It ONLY writes on a proven disagreement with a
+          # GRADED prop row — never guesses, never touches non-prop POTDs —
+          # so it cannot damage a correct record.
+          echo "🔄 RESCUE: reconciling prop POTD grades"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "reconcile_potd_grades.py" python reconcile_potd_grades.py --days 14 --apply
+
           # 2026-08-27: surface_records aggregator — single source of truth
           # for Sharp Card + Receipts. Runs unconditionally at rescue-time
           # (cheap: reads-only + one upsert of <200 rows).

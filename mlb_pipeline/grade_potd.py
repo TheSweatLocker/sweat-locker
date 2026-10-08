@@ -329,6 +329,53 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
     # composed. Try each key in order.
     pick_side_raw = (data.get('leanDisplay') or data.get('pick') or
                      data.get('call_text') or data.get('call_side') or '')
+
+    # ══ 2026-10-08 · THE CACHE BLOB DOES NOT CONTAIN THE PICK ══
+    # Andy, two mornings running: "yesterday POTD is graded incorrectly in
+    # sweat card recap, second day in a row".
+    #
+    # jerry_cache.best_bet_<date>.data holds exactly six keys —
+    # matchup, narrative, pipelineGenerated, result, score, sport. There is
+    # NO leanDisplay, pick, call_text, call_side, game_id or prop_line. So
+    # every lookup above returns '' and this grader has been deciding Win or
+    # Loss WITHOUT EVER SEEING THE PICK. It is right only when the POTD
+    # happens to be a plain side and the game-level fallback agrees.
+    #
+    # It is wrong whenever the POTD is a player prop, which is most days:
+    #     10-06  Yamamoto Over 17.5 Outs   threw 21  -> graded Loss
+    #     10-07  Mahle    Over 13.5 Outs   threw 19  -> graded Loss
+    # Both are wins. The prop rows in mlb_pipeline_props had it right the
+    # whole time (outs_over, final_value 21 and 19, result Win) and so did
+    # public_receipts; only this path, which feeds the app's recap, was wrong.
+    #
+    # The pick text DOES exist — daily_best_bet_history.lean carries it
+    # verbatim ("Yoshinobu Yamamoto Over 17.5 Outs (Jerry 85/100)"), and this
+    # file already reads that table elsewhere. Use it when the blob is bare.
+    if not str(pick_side_raw).strip():
+        try:
+            _h = requests.get(f'{SB}/rest/v1/daily_best_bet_history',
+                              headers=H_R,
+                              params={'bet_date': f'eq.{date_str}',
+                                      'select': 'lean,game', 'limit': '1'},
+                              timeout=15)
+            if _h.status_code == 200 and _h.json():
+                _row = _h.json()[0] or {}
+                pick_side_raw = _row.get('lean') or ''
+                if pick_side_raw:
+                    print(f'  {date_str}: pick recovered from '
+                          f'daily_best_bet_history.lean -> {pick_side_raw!r}')
+                # the blob has no teams either; the history row does
+                if not game and _row.get('game'):
+                    _g = str(_row['game'])
+                    if ' @ ' in _g:
+                        _a, _hm = _g.split(' @ ', 1)
+                        game = {'away_team': _a.strip(), 'home_team': _hm.strip()}
+                        if not game_id:
+                            game_id = _lookup_game_id_by_teams(
+                                sport, date_str, game['away_team'],
+                                game['home_team'])
+        except Exception as _e:                              # noqa: BLE001
+            print(f'  {date_str}: lean recovery failed ({_e})')
     call_market = (data.get('call_market') or data.get('market') or '').lower()
     call_side = data.get('call_side') or ''
     call_line = data.get('call_line') or data.get('prop_line') or data.get('line')
