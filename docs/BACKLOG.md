@@ -2384,3 +2384,73 @@ Also still true and unchanged: PRIME has effectively stopped occurring (n=5
 in nine days), so users see STRONG and almost nothing else. That is a
 labelling question — four tiers is more resolution than the calibration map
 supports — not a money question, and it is parked rather than closed.
+
+---
+
+## B63 — 12 NHL receipts were born without a pick, and nothing noticed
+**Found 2026-10-08** while answering Andy's question about the NHL
+calibration banner. Open.
+
+NHL grading looked stalled: `public_receipts` showed 0 of 12 graded for
+10-06 and 10-07 while every earlier date was 100% graded. Score ingest was
+fine (`nhl_game_results` holds all 14 finals) and the source rows were fine
+— `jerry_reads` is 9/9 and 3/3 graded on those dates with real calls.
+
+The receipts themselves are empty shells:
+
+    GRADED 10-05 receipt     market='ml'    pick_label='Tampa Bay Lightning ML'
+                             pick_side='HOME'  conviction=81  result='WIN'
+    STRANDED 10-06 receipt   market='game'  pick_label=NULL
+                             pick_side=NULL    conviction=0   result=NULL
+
+`source_id` is correct on all 12 — each points at the right `jerry_reads`
+row, and every one of those rows carries a complete, graded call (e.g.
+id=6117 'Toronto Maple Leafs ML' conv 59 → Win). So the writer captured
+identity (game_id, matchup, odds, published_at) and dropped the pick. All 12
+carry `capture_mode='reconstructed'` and `published_at` on 2026-09-29, so
+they came from one backfill run.
+
+Consequences:
+  * `grade_public_receipts` can never grade them — there is no side or market
+    to resolve, so they sit in the ungraded bucket forever and look like a
+    grading failure when they are a WRITE failure.
+  * any record computed from receipts under-counts NHL by 12. This is why
+    `refresh_calibration_notice.py` counts `jerry_reads` instead.
+
+Two things to fix, and the second matters more:
+  1. backfill the 12 from their source rows — but note `public_receipts`
+     freezes identity and pick fields after publish (migration
+     20261007a), so this likely needs the freeze path, not a plain PATCH.
+  2. the writer must refuse to emit a receipt with no pick. A receipt whose
+     `pick_label`/`pick_side` is NULL and whose `market` is the placeholder
+     `'game'` is not a published pick and should either carry the pick or not
+     exist. Add the assertion at the write, and a watchdog that fails on any
+     receipt with identity but no pick.
+
+## B64 — surface_records: NULL window_label and cross-sport contamination
+**Found 2026-10-08.** Open.
+
+`surface_records` for sport=NHL returns 22 rows with `window_label` NULL on
+**every one**, and duplicate surfaces carrying different numbers:
+
+    ledger          9-5 (n=14) · 8-5 (n=13) · 56-76 (n=132)
+                    101-140 (n=241) · 106-140 (n=246)
+    nhl_sides       2-10 (n=12) · 1-8 (n=9) · 4-12 (n=16) ×3
+    sharp_card      2-4 (n=6) · 2-3 (n=5) · 6-6 (n=12) ×3
+    prop_coverage   2080-1791 (n=3871)   <-- NHL has no prop record remotely
+                                             this size; these are MLB numbers
+                                             sitting under sport=NHL
+
+`window_label` is what distinguishes 7d / 30d / season. With it NULL the app
+cannot tell the rows apart, so whichever one it reads is arbitrary — which is
+the same class of defect as the ledger record Andy caught surfacing 1-0 for
+two days. And `prop_coverage` at n=3,871 under NHL is cross-sport leakage,
+not an NHL record.
+
+Needs: (a) why `window_label` writes NULL for NHL when the aggregator takes
+a window argument, (b) whether `prop_coverage` rows are mis-tagged at write
+or the sport filter is being ignored, (c) a uniqueness constraint on
+(sport, surface, window_label) so duplicates cannot accumulate silently.
+
+Do NOT fix by picking the row that looks right. Andy: "no problem solving is
+actulaly happening jys band aid after band aid".
