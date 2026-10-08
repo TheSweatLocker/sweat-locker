@@ -21,7 +21,9 @@ PULLER = SportPuller(
     sport='NHL',
     ctx_table='nhl_game_context',
     results_table='nhl_game_results',
-    oddscrowd_sport_slug='hockey',
+    # 2026-10-07: was 'hockey', a CROSS-SPORT feed. The league page
+    # /games/upcoming/nhl carries 10 static game links, all -nhl-.
+    oddscrowd_sport_slug='nhl',
     league_slug='nhl',
     horizon_days=2,
 )

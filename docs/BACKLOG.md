@@ -2154,7 +2154,7 @@ consensus panel rather than signal, and handicapper picks as a voter block
 already grade 46.6%. More sources is only valuable where the source clears
 the price.
 
-### B62 - oddscrowd football is dead on THEIR side - OPEN, not fixable by us
+### B62 - ~~oddscrowd football is dead on THEIR side~~ **RETRACTED + FIXED**
 NFL last produced 2026-09-20, NCAAF 2026-09-26. **MLB is healthy** (12 picks
 today), so not a site-wide break and not our parser.
 
@@ -2213,3 +2213,53 @@ come from three cappers (Makinen, Reynolds, Youmans), not one daily writer.
 3. **bettingpros** — NFL page live, but no graded record at n>=30, so adding
    it is a bet on an unmeasured source.
 4. docsports, betfirm — **declined on the measurement.**
+
+
+## 2026-10-07 · B62 RETRACTED — oddscrowd was never dead, it was three of our bugs
+
+Andy: "What do you eman oddscrow dis dead,
+https://oddscrowd.com/games/upcoming/ncaaf this has all data and there is an
+nfl tab too". He was right.
+
+**How I got it wrong:** I probed with `?hide_leagues=1` appended — because
+that is what our puller sends — and counted only links matching one narrow
+regex. Both choices hid the answer.
+
+    /games/upcoming/ncaaf                  10 best-odds links, all -ncaaf-
+    /games/upcoming/ncaaf?hide_leagues=1    0 links
+    /games/upcoming/nfl                    10 best-odds links, all -nfl-
+    /games/upcoming/nhl                    10 best-odds links, all -nhl-
+    /games/upcoming/football               mixed NHL + NCAAF catch-all
+
+### The four bugs
+1. **`?hide_leagues=1` empties the page.** Removed from `LIST_URL`.
+2. **`football` and `hockey` are catch-all feeds, not leagues.** NFL/NCAAF
+   now use `nfl`/`ncaaf`, NHL uses `nhl`. **MLB deliberately stays on
+   `baseball`** — `/upcoming/mlb` names the teams in page text but exposes
+   only 3 `/games/` hrefs, so its per-game links are client-rendered. Same
+   for `/upcoming/nba`.
+3. **A weekly sport against a daily date filter.** `accepted_dates` was
+   {today, tomorrow}. Verified on CHI @ GB that title, anchor and all three
+   market regexes matched with usable splits — then the page was discarded
+   for being dated Oct 11. `lookahead_days` added (default 1 so MLB is
+   unchanged); football passes 8.
+4. **`pull_id` was the wrong column** — surfaced only once NHL started
+   returning picks. `external_pull_log` has an integer `id` AND a uuid
+   `pull_id`; `start_pull_log` returned the integer and `write_picks` stamped
+   it into a uuid column. Invisible while the fetcher returned zero, because
+   `write_picks` short-circuits on an empty list. **A pull that writes
+   nothing cannot reveal a broken write.**
+
+### Result, written live
+    NFL     oddscrowd  0 -> 39 picks / 13 games
+    NCAAF   oddscrowd  0 -> 57 picks / 19 games
+    NHL     oddscrowd  0 -> 20 picks /  7 games
+
+Active sources today: **NFL 6 -> 7, NCAAF 6 -> 7, NHL 0 -> 1**. oddscrowd is
+52.0% on n=3280, the largest sample of any source we carry.
+
+NBA and NCAAB remain unverified — `/upcoming/nba` exposes no static links and
+NCAAB has not started. **Recheck NBA at the 10-21 open.**
+
+VERIFY: `python pull_externals_nfl.py --source oddscrowd --dry-run` should
+report ~39 picks; `--source oddscrowd` for ncaaf ~57; nhl ~20.

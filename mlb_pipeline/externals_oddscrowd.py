@@ -58,6 +58,9 @@ def fetch_oddscrowd_generic(
     probe_back: int = 3,        # how many IDs before the LOWEST list-page ID to probe
     pace_secs: float = 0.3,
     budget_secs: float = 150.0, # hard wall-clock cap for the whole detail sweep
+    lookahead_days: int = 1,    # how many days past game_date to accept.
+                                # 1 = MLB's original today+tomorrow window;
+                                # football passes 8 for a week-out slate.
 ) -> tuple[list, int]:
     """Return (list_of_pick_dicts, http_status).
 
@@ -66,7 +69,24 @@ def fetch_oddscrowd_generic(
       pick_line, odds_american, confidence, raw_text, source_url, fade_flag,
       money_pct, bets_pct, divergence_pp   (extras for downstream analytics)
     """
-    LIST_URL = f'https://oddscrowd.com/games/upcoming/{sport_url_slug}?hide_leagues=1'
+    # ══ 2026-10-07 · ?hide_leagues=1 SUPPRESSES THE WHOLE GAME LIST ══
+    # Andy: "https://oddscrowd.com/games/upcoming/ncaaf this has all data and
+    # there is an nfl tab too" — and he is right. I had concluded oddscrowd
+    # football was dead on their side. It is not. Measured:
+    #
+    #     /games/upcoming/ncaaf                  10 best-odds links, all -ncaaf-
+    #     /games/upcoming/ncaaf?hide_leagues=1    0 links
+    #     /games/upcoming/nfl                    10 best-odds links, all -nfl-
+    #     /games/upcoming/football               mixed NHL + NCAAF generic feed
+    #
+    # So the parameter we were appending is what emptied the page, and the
+    # `football` slug was never the American-football listing — it is a
+    # catch-all. NFL stopped producing 2026-09-20 and NCAAF 2026-09-26 while
+    # MLB stayed healthy, which fits: baseball still returned one link with
+    # the param, football returned none.
+    #
+    # Dropped the param and the callers now pass the LEAGUE slug.
+    LIST_URL = f'https://oddscrowd.com/games/upcoming/{sport_url_slug}'
     landing = requests.get(LIST_URL, headers=HEADERS, timeout=15)
     if landing.status_code != 200:
         return [], landing.status_code
@@ -89,17 +109,36 @@ def fetch_oddscrowd_generic(
     month_next_full = d1.strftime('%B').lower()
     date_slug_next = f'-{league_slug}-{month_next_full}-{day_next}-{year_next}'
 
-    accepted_dates = {
-        (month_full, day, year),
-        (month_next_full, day_next, year_next),
-    }
+    # ══ 2026-10-07 · A WEEKLY SPORT AGAINST A DAILY-SPORT ASSUMPTION ══
+    # accepted_dates was {today, tomorrow} — correct for MLB, which plays
+    # every day, and the reason football produced nothing even once the
+    # listing was fixed. Verified on CHI @ GB: the title regex matched, the
+    # "Odds Comparison" anchor was present, and all three market regexes
+    # matched with usable splits (ml Bears 76%/23% bets, 82%/17% money) — the
+    # page was then DISCARDED because it is dated October 11 and the filter
+    # only accepted the 7th and 8th.
+    #
+    # NFL and NCAAF slates sit up to a week out, and these pullers already ask
+    # for a +/-7d slate, so the date window has to match the slate rather than
+    # the calendar. `lookahead_days` defaults to 1 to keep MLB behaviour
+    # byte-identical; the football callers pass 8.
+    from datetime import timedelta as _td2
+    _base = _dt.strptime(game_date, '%Y-%m-%d')
+    accepted_dates = set()
+    extra_slugs = []
+    for _i in range(0, max(1, int(lookahead_days)) + 1):
+        _d = _base + _td2(days=_i)
+        _k = (_d.strftime('%B').lower(), str(_d.day), str(_d.year))
+        accepted_dates.add(_k)
+        extra_slugs.append(f'-{league_slug}-{_k[0]}-{_k[1]}-{_k[2]}')
 
     # Discover known game URLs from list page for THIS sport + today OR
     # tomorrow's slug (covers late-night games slugged as tomorrow).
-    detail_paths = sorted(set(
-        re.findall(rf'/games/[a-z0-9\-]+{re.escape(date_slug)}/\d+/best-odds',      landing.text)
-      + re.findall(rf'/games/[a-z0-9\-]+{re.escape(date_slug_next)}/\d+/best-odds', landing.text)
-    ))
+    _found = []
+    for _sl in extra_slugs:
+        _found += re.findall(
+            rf'/games/[a-z0-9\-]+{re.escape(_sl)}/\d+/best-odds', landing.text)
+    detail_paths = sorted(set(_found))
 
     # Broader per-sport URL discovery (catches leagues sharing a page, e.g. NFL+NCAAF on /football)
     broader = sorted(set(re.findall(

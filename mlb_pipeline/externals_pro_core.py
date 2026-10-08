@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -101,17 +102,39 @@ def _git_sha() -> str:
 # The excepts now report instead of passing silently. A logging failure still
 # must not abort a pull — but it must not be invisible either.
 def start_pull_log(source: str, sport: str, triggered_by: str) -> Optional[str]:
+    """Insert a 'running' row and return its pull_id UUID.
+
+    ══ 2026-10-07 · THIS RETURNED THE WRONG ID COLUMN ══
+    `external_pull_log` carries TWO identifiers — `id`, an integer primary
+    key, and `pull_id`, a uuid. This returned `.get('id')`, the integer, and
+    write_picks then stamped it into `external_picks.pull_id`, which is a
+    UUID column:
+
+        picks write 400: invalid input syntax for type uuid: "11830"
+
+    It stayed invisible because the only caller is the shared SportPuller
+    (NHL / NBA), whose oddscrowd fetch was returning ZERO picks — so
+    write_picks short-circuited on the empty list and the bad id was never
+    sent. Fixing the oddscrowd slug today made NHL return 20 picks and the
+    latent bug fired on the first real write. A pull that writes nothing
+    cannot reveal a broken write.
+
+    pull_externals_mlb.py had it right all along: generate the uuid, insert
+    it, return it. Matching that so the two agree.
+    """
+    pull_id = str(uuid.uuid4())
     try:
         r = requests.post(
             f'{SB}/rest/v1/external_pull_log',
             headers={**H_WRITE, 'Prefer': 'return=representation'},
-            json={'source': source, 'sport': sport,
+            json={'pull_id': pull_id,
+                  'source': source, 'sport': sport,
                   'scheduled_at': _et_now().isoformat(),
                   'started_at': _et_now().isoformat(),
                   'status': 'running', 'triggered_by': triggered_by,
                   'agent_version': _git_sha()}, timeout=15)
         if r.status_code in (200, 201) and r.json():
-            return r.json()[0].get('id')
+            return pull_id
         print(f'  ⚠ pull_log insert -> {r.status_code}: {(r.text or "")[:160]}')
     except Exception as e:
         print(f'  ⚠ pull_log insert failed: {e}')
@@ -128,7 +151,8 @@ def complete_pull_log(pull_id, status, picks=0, games=0, err=None, ms=None):
     if ms is not None:
         body['duration_ms'] = ms
     try:
-        r = requests.patch(f'{SB}/rest/v1/external_pull_log?id=eq.{pull_id}',
+        # filters on pull_id (uuid) now that start_pull_log returns that
+        r = requests.patch(f'{SB}/rest/v1/external_pull_log?pull_id=eq.{pull_id}',
                            headers={**H_WRITE, 'Prefer': 'return=minimal'},
                            json=body, timeout=15)
         if r.status_code not in (200, 204):

@@ -658,12 +658,18 @@ def fetch_oddscrowd(slate: list, game_date: str, aliases: dict) -> tuple:
     page (mixed with NFL); slate + team-name matching filters cleanly."""
     from externals_oddscrowd import fetch_oddscrowd_generic
     picks_dicts, status = fetch_oddscrowd_generic(
-        sport_url_slug='football',
+        # 2026-10-07: was 'football', which is a CATCH-ALL feed (soccer,
+        # NHL, mixed), not the American-football listing. The league slug is
+        # the real page: /games/upcoming/ncaaf.
+        sport_url_slug='ncaaf',
         league_slug='ncaaf',
         sport_code='NCAAF',
         game_date=game_date,
         slate=slate,
         find_game_id_fn=find_game_id,
+        # slate is +/-7d; the date filter must match it, not the
+        # calendar day (see externals_oddscrowd lookahead_days).
+        lookahead_days=8,
     )
     picks = []
     for d in picks_dicts:
