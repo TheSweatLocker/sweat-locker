@@ -2921,6 +2921,24 @@ jobs:
           echo "🔄 RESCUE: reconciling prop POTD grades"
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "reconcile_potd_grades.py" python reconcile_potd_grades.py --days 14 --apply
 
+          # 2026-10-08: ONE BET, ONE RESULT. Tyler Mahle threw 19 outs against
+          # a 13.5 line and carried FOUR receipts with THREE answers —
+          # sharp_card LOSS, potd WIN, sweat_card ungraded, prop_jerry Win.
+          # Every surface grades itself by a different route and nothing ever
+          # asserted they agree, so patching one left the others lying.
+          #
+          # The existing consistency watchdog could not see it: it compares
+          # jerry_cache against daily_best_bet_history, and grade_potd WRITES
+          # one then COPIES it to the other — a copy checked against its own
+          # source can never disagree about a wrong grade.
+          #
+          # This groups receipts by the BET (labels differ per surface) and
+          # resolves only from a GRADED prop row — the one place a measured
+          # stat lives. Never by majority: three surfaces copying one bad
+          # grade is not evidence.
+          echo "🔄 RESCUE: reconciling receipt results across surfaces"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "reconcile_receipt_results.py" python reconcile_receipt_results.py --days 14 --apply || true
+
           # 2026-08-27: surface_records aggregator — single source of truth
           # for Sharp Card + Receipts. Runs unconditionally at rescue-time
           # (cheap: reads-only + one upsert of <200 rows).

@@ -43,6 +43,15 @@ H   = {'apikey': KEY, 'Authorization': f'Bearer {KEY}', 'Content-Type': 'applica
 
 SHARP_RECORD_EPOCH = dt.date(2026, 8, 20)   # jerry_reads sides record reset
 SPORTS = ['MLB', 'NFL', 'NCAAF', 'UFC', 'NBA', 'NHL', 'NCAAB']
+
+#: Surfaces whose unit of account spans sports, so a per-sport record is not a
+#: smaller true number — it is a meaningless one. The Ledger ships chalk
+#: parlays that intentionally pair, say, an NHL leg with an MLB leg; that
+#: combo belongs to no single sport. These report the ALL aggregate under
+#: every sport key so no caller can read a wrong-by-construction figure.
+#: Add to this set only when the SURFACE's bet itself crosses sports — not
+#: merely because a surface happens to cover several.
+CROSS_SPORT_SURFACES = {'ledger'}
 WINDOWS = ['mtd', 'd7', 'd30', 'lifetime']
 TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}
 
@@ -1347,7 +1356,33 @@ def build_rows():
         print(f'  {surface_name}: {len(rows)} graded picks', file=sys.stderr)
         for sport in SPORTS + ['ALL']:
             for wname, wrange in windows.items():
-                agg = _aggregate(rows, sport, wrange)
+                # ══ 2026-10-08 · A CROSS-SPORT SURFACE HAS NO PER-SPORT SPLIT ══
+                # Andy: the app showed the Ledger as 1-0 / +1.15u for October
+                # and it never moved, while the real record was 9-5 / +7.21u.
+                #
+                # Not a display bug and not a grading bug. ledger_snapshots IS
+                # graded daily. The bug is this data model: a chalk parlay
+                # DELIBERATELY combines legs across sports, so October's rows
+                # carry sport_scope='MULTI'. _aggregate then matches none of
+                # them to 'MLB', and the MLB row held the single MLB-only
+                # parlay of the month — frozen at 1-0 by construction.
+                #
+                # "The MLB ledger record" is a CATEGORY ERROR. There is no
+                # such thing, the same way there is no MLB-only record for a
+                # two-sport parlay. Splitting this surface by sport invents a
+                # dimension the product does not have, and whichever client
+                # asks for a sport gets a number that is wrong by definition.
+                #
+                # So the fix is to remove the dimension, not to paper over the
+                # read: a cross-sport surface reports its ALL aggregate under
+                # every sport key. Same number whoever asks. This also means
+                # the live v1.0.2 build — which hardcodes sport='MLB' because
+                # it predates the RECORD_SCOPE change by six days — shows the
+                # correct figure WITHOUT an App Store submission.
+                agg = _aggregate(rows,
+                                 'ALL' if surface_name in CROSS_SPORT_SURFACES
+                                 else sport,
+                                 wrange)
                 if agg is None: continue
                 out_rows.append({
                     'sport': sport, 'surface': surface_name, 'window_key': wname,
