@@ -102,19 +102,47 @@ def main():
     ap.add_argument('--sport', default='NCAAF')
     ap.add_argument('--def-metric', default='def_epa_per_play',
                     choices=DEF_METRICS)
+    ap.add_argument('--sor-key', default='sor',
+                    choices=('sor', 'sor_margin'), dest='sor_key',
+                    # argparse runs help through %-formatting, so a literal
+                    # percent must be doubled or add_argument raises
+                    # "badly formed help string".
+                    help="'sor' is win%%-based (8 snapshot dates); "
+                         "'sor_margin' is the better opponent-adjusted "
+                         "margin version but only has 4 dates so far")
     a = ap.parse_args()
     sport = a.sport.upper()
     dm = a.def_metric
+    sor_key = a.sor_key
 
     hist = _page('team_stats_rolling_history',
                  {'select': 'team,stat_key,raw_value,snapshot_date',
                   'sport': f'eq.{sport}',
-                  'stat_key': f'in.(sor,{dm})'})
-    snap = collections.defaultdict(dict)
+                  'stat_key': f'in.(sor,sor_margin,{dm})'})
+    # 2026-10-09 · PER-METRIC LOOKUP. The first version demanded SOR and the
+    # defence metric in the SAME snapshot, which discarded most games because
+    # the two are snapshotted on different days (NCAAF sor: 8 dates from
+    # 09-29; def_epa_per_play: 7 dates from 09-26, barely overlapping). Taking
+    # the latest snapshot before kickoff for EACH metric independently keeps
+    # the no-leak property — every value still predates the game — without
+    # throwing away games for a bookkeeping coincidence.
+    byk = collections.defaultdict(lambda: collections.defaultdict(dict))
     for x in hist:
-        snap[str(x['snapshot_date'])[:10]].setdefault(
-            str(x['team']), {})[str(x['stat_key'])] = _f(x['raw_value'])
-    dates = sorted(snap)
+        v = _f(x.get('raw_value'))
+        if v is not None:
+            byk[str(x['stat_key'])][str(x['snapshot_date'])[:10]][
+                str(x['team'])] = v
+    kdates = {k: sorted(d) for k, d in byk.items()}
+
+    def latest_before(key, team, gd):
+        for d in reversed(kdates.get(key, [])):
+            if d < gd:
+                v = byk[key][d].get(team)
+                if v is not None:
+                    return v
+        return None
+
+    dates = sorted({d for k in byk for d in kdates[k]})
     print(f'=== {sport} · defence metric: {dm} (lower is better)')
     print(f'    {len(hist)} history rows · {len(dates)} snapshot dates '
           f'{dates[0]}..{dates[-1]}')
@@ -128,19 +156,19 @@ def main():
     rows = []
     for g in res:
         gd = str(g['game_date'])[:10]
-        for d in reversed([d for d in dates if d < gd]):
-            hs = snap[d].get(str(g['home_team'])) or {}
-            as_ = snap[d].get(str(g['away_team'])) or {}
-            if (hs.get('sor') is not None and as_.get('sor') is not None
-                    and hs.get(dm) is not None and as_.get(dm) is not None):
-                rows.append({
-                    'y': 1 if str(g['spread_result']).lower() == 'home_covered'
-                         else 0,
-                    'sor_edge': hs['sor'] > as_['sor'],
-                    'def_edge': hs[dm] < as_[dm],      # lower allowed = better
-                    'date': gd, 'snap': d,
-                })
-                break
+        h, aw = str(g['home_team']), str(g['away_team'])
+        hs = latest_before(sor_key, h, gd)
+        as_ = latest_before(sor_key, aw, gd)
+        hd = latest_before(dm, h, gd)
+        ad = latest_before(dm, aw, gd)
+        if None in (hs, as_, hd, ad):
+            continue
+        rows.append({
+            'y': 1 if str(g['spread_result']).lower() == 'home_covered' else 0,
+            'sor_edge': hs > as_,
+            'def_edge': hd < ad,                   # lower allowed = better
+            'date': gd,
+        })
     print(f'    {len(res)} games with a cover result · {len(rows)} have a '
           f'PRE-GAME snapshot with both teams and both metrics')
     if len(rows) < 40:
