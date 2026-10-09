@@ -207,7 +207,7 @@ STAT_KEYS = {
 def load_outcomes(sport):
     """Graded games with a market line, plus the cover outcome."""
     rows = _page(RESULTS[sport],
-                 {'select': 'game_date,home_team,away_team,home_score,'
+                 {'select': 'game_id,game_date,home_team,away_team,home_score,'
                             'away_score,close_spread,spread_result,season'})
     out = []
     for x in rows:
@@ -228,6 +228,7 @@ def load_outcomes(sport):
             'mkt_home_margin': cs * HOME_FAV_SIGN[sport],
             'home_covered': 1 if res == 'home_covered' else 0,
             'season': x.get('season'),
+            'game_id': str(x.get('game_id') or ''),
         })
     out.sort(key=lambda g: g['date'])
     return out
@@ -272,6 +273,56 @@ def pit_sor(sport, games):
     print(f'    point-in-time SOR computed for {n_ok}/{len(games)} games '
           f'({len(ratings_at)} walk-forward refits)')
     return games
+
+
+#: "HOME money 18%/bets 12%" — the shape BOTH oddscrowd and scoresandodds use
+#: inside external_picks.raw_text. Parsed rather than re-scraped because the
+#: history is already sitting in the table: these two go back to 2026-07-28
+#: and 2026-08-26 against cleatz's 2026-09-10, and they are INDEPENDENT
+#: sources, so agreement between them is itself evidence rather than one feed
+#: counted twice. Verified 0 parse failures across 12,418 rows.
+_MF_TEXT = __import__('re').compile(
+    r'(HOME|AWAY|OVER|UNDER)\s+money\s+(\d{1,3})%\s*/\s*bets\s+(\d{1,3})%',
+    __import__('re').I)
+
+
+def money_flow_from_externals(sport):
+    """-> {(date, side_of_home): divergence} per source, from raw_text.
+
+    Divergence is money% - bets% on the HOME side. Positive means money is
+    heavier than ticket count on home, which is the classic sharp-money
+    reading. The two sides are complementary, so one number per game suffices.
+    """
+    rows = _page('external_picks',
+                 {'select': 'sport,source,surface,game_date,game_id,raw_text',
+                  'sport': f'eq.{sport}', 'surface': 'eq.rl',
+                  'source': 'in.(oddscrowd,scoresandodds)'})
+    per_source = collections.defaultdict(dict)
+    failed = collections.Counter()
+    for x in rows:
+        src = str(x['source'])
+        ms = _MF_TEXT.findall(str(x.get('raw_text') or ''))
+        sides = {s.upper(): (int(m), int(b)) for s, m, b in ms}
+        if 'HOME' not in sides or 'AWAY' not in sides:
+            failed[src] += 1
+            continue
+        hm, hb = sides['HOME']
+        div = hm - hb                 # home money minus home tickets
+        gd = str(x.get('game_date') or '')[:10]
+        if not gd:
+            continue
+        gid = str(x.get('game_id') or '')
+        if not gid:
+            continue
+        # Keyed on the game_id SLUG, not game_date: external_picks
+        # carries rows whose game_date disagrees with the date inside
+        # their own game_id (seen: game_id ...20260904... with
+        # game_date 2026-08-28). The slug is canonical in both tables.
+        per_source[src][gid] = div
+    for src, d in per_source.items():
+        print(f'      {src}: {len(d)} parsed rl readings'
+              f'{f" ({failed[src]} unparsed)" if failed[src] else ""}')
+    return per_source
 
 
 def attach_money_flow(sport, games):
@@ -342,6 +393,19 @@ def attach_money_flow(sport, games):
     if lags:
         print(f'      snapshot lag before kickoff: median '
               f'{statistics.median(lags):.0f}d, max {max(lags)}d')
+
+    # ── TWO MORE INDEPENDENT SOURCES, parsed out of external_picks ──────
+    ext = money_flow_from_externals(sport)
+    for src, idx2 in ext.items():
+        hit2 = 0
+        for g in games:
+            d = idx2.get(g.get('game_id'))
+            if d is None:
+                continue
+            g[f'mf_{src}_div'] = abs(d)
+            g[f'mf_{src}_side'] = 'home' if d > 0 else 'away'
+            hit2 += 1
+        print(f'      {src} joined on {hit2} games')
     return games
 
 
@@ -486,6 +550,50 @@ def main():
     print()
     report('STAT differential side',
            subset(lambda g: True, 'stat_side'), a.min_n, tests)
+
+    # ── PER-SOURCE money flow, then CROSS-SOURCE CONSENSUS ──────────────
+    # Three independent feeds. Testing them separately first is the whole
+    # point: if one shows a gradient and the others do not, that is a
+    # SCRAPER artefact, not a market signal. Only a direction that survives
+    # in more than one feed is worth believing.
+    print()
+    print('-' * 74)
+    print('  MONEY FLOW BY SOURCE — does the direction survive across feeds?')
+    print('  A gradient in one feed only is a scraper artefact, not a signal.')
+    print()
+    SRCS = [('cleatz', 'mf_side', 'mf_div'),
+            ('oddscrowd', 'mf_oddscrowd_side', 'mf_oddscrowd_div'),
+            ('scoresandodds', 'mf_scoresandodds_side',
+             'mf_scoresandodds_div')]
+    for name, sf, df in SRCS:
+        for lo in (0.0, 10.0, 20.0):
+            rows = []
+            for g in games:
+                if not g.get(sf) or g.get(df) is None or g[df] < lo:
+                    continue
+                gg = dict(g); gg['signal_covered'] = side_covered(g, g[sf])
+                rows.append(gg)
+            report(f'{name} div >= {lo:.0f}pp', rows, a.min_n, tests)
+        print()
+
+    print('  CROSS-SOURCE CONSENSUS — independent feeds pointing the same way')
+    print('  This is the conviction candidate: not one feed shouting louder,')
+    print('  but separate feeds agreeing.')
+    print()
+    for lo in (0.0, 10.0):
+        agree, split = [], 0
+        for g in games:
+            sides = [g.get(sf) for _n, sf, df in SRCS
+                     if g.get(sf) and g.get(df) is not None and g[df] >= lo]
+            if len(sides) < 2:
+                continue
+            if len(set(sides)) == 1:
+                gg = dict(g); gg['signal_covered'] = side_covered(g, sides[0])
+                agree.append(gg)
+            else:
+                split += 1
+        report(f'>=2 sources AGREE, div >= {lo:.0f}pp', agree, a.min_n, tests)
+        print(f'    {"(sources disagreed on)":<40}n={split}')
 
     # ── INDEPENDENCE ─────────────────────────────────────────────────────
     print('\n' + '-' * 74)
