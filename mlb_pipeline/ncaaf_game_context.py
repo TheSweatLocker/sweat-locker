@@ -1684,6 +1684,38 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
                          'prose': c.display_prose}
                         for c in top.contributions[:8]
                     ],
+                    # 2026-10-08 · PERSIST THE LOSING SIDE TOO.
+                    # B66 measured the registry hit_rate at r=+0.20 against
+                    # each signal's real performance (11pp mean error), so the
+                    # weights are close to noise and reweighting is the obvious
+                    # fix. It could not be EVALUATED: of 408 graded NCAAF picks,
+                    # 0 stored contributions for more than one side, and there
+                    # is no runner-up field — so "would the pick have flipped
+                    # under different weights" was unanswerable. Re-running the
+                    # scorer historically is not a substitute: team_stats_rolling
+                    # is current-only and leaks
+                    # (project_rolling_stats_leak_trap_929).
+                    # top.runner_up_contributions is already computed on every
+                    # decision and was thrown away. Same precedent as
+                    # _ensemble_all_markets below, which exists so the
+                    # "what if we'd played spread instead of ML" question stays
+                    # answerable. A shadow becomes measurable once this has a
+                    # few weeks of slates behind it.
+                    '_ensemble_runner_up': {
+                        'side': getattr(top, 'runner_up_side', None),
+                        'sources': [
+                            {'signal_key': c.signal_key,
+                             'class': c.signal_class,
+                             'side': c.side,
+                             'weight': round(c.weight, 2),
+                             'n': c.n,
+                             'contribution': round(c.contribution, 2),
+                             'hit_rate': (round(c.hit_rate, 3)
+                                          if c.hit_rate is not None else None)}
+                            for c in getattr(top, 'runner_up_contributions',
+                                             [])[:8]
+                        ],
+                    },
                     # 2026-09-08 mirror NFL/NHL/NBA: capture all three
                     # market picks so retrospective "what if we'd played
                     # spread instead of ML" backtest is possible. Loss of

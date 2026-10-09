@@ -2640,3 +2640,53 @@ Until (1) exists, UFC source records cannot render, and that is the honest
 state rather than a bug to paper over.
 
 DO NOT "fix" this by adding UFC to SPORT_CONFIG and joining on id.
+
+---
+
+## B66a — the reweighting shadow is BLOCKED: we only store the winning side
+**Found 2026-10-08** while starting the shadow build B66 points at.
+Prerequisite shipped; the shadow itself is still blocked until data accrues.
+
+B66 established that `signal_registry.hit_rate` predicts a signal's real
+performance at **r=+0.204** with an 11pp mean error, and that the fix is to
+weight by the OBSERVED on-pick rate instead. That change alters how every pick
+is scored, so it has to be shadowed before it ships.
+
+**It cannot be shadowed from what we store.** Measured over 408 graded NCAAF
+picks carrying `_ensemble_sources`:
+
+    picks whose stored sources span MORE THAN ONE side : 0
+    picks whose stored sources are all ONE side        : 408
+    runner-up field on primary_play                    : none
+
+Only the chosen candidate's contributions are persisted
+(`top.contributions[:8]`). Reweighting can therefore move the winning side's
+score but can never answer *would the pick have flipped*, which is the only
+question that matters. Every entry does carry both `weight` and `contribution`,
+so base strength is recoverable — the missing half is the losing side, not the
+arithmetic.
+
+Re-running the scorer over history is NOT a substitute: `team_stats_rolling`
+is current-only, so a historical re-score reads post-game stats and leaks
+(`project_rolling_stats_leak_trap_929`).
+
+### Shipped: persist the runner-up
+`MarketDecision.runner_up_contributions` and `.runner_up_side` are already
+computed on every decision (ensemble_scorer:1778) and were discarded.
+`_ensemble_runner_up` now stores them in the same shape as
+`_ensemble_sources`, at all eight write sites — NCAAF, NFL, NHL, NBA, MLB and
+the three recompute passes. Same precedent as `_ensemble_all_markets`, which
+exists so the "what if we'd played spread instead of ML" question stays
+answerable.
+
+Note the accrual path: this populates on a game's FIRST publish (the lock
+permits that — `OLD.primary_play IS NULL`), not on re-scores of already-locked
+picks. So data builds one slate at a time regardless of the lock state.
+
+### Still open
+  * the shadow itself, once a few weeks of slates carry a runner-up
+  * then the go/no-go on observed-rate weighting
+  * 45 of 408 picks have stored sources whose side DIFFERS from the published
+    pick side — the LR override and the ML/RL reroutes change the side after
+    the ensemble chose it, so `_ensemble_sources` describes the pre-override
+    pick. The shadow must account for that or it will compare the wrong thing.
