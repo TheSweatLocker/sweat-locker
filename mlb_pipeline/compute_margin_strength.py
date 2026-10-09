@@ -45,7 +45,7 @@ margin and the existing win%-based measure.
 """
 from __future__ import annotations
 import argparse, collections, os, sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -426,6 +426,11 @@ def load_with_carryover(sport: str, season: int, quiet: bool = False):
     return cur + prior
 
 
+#: One timestamp for the whole run, so every row of a single write
+#: carries the same clock rather than drifting across chunks.
+_NOW = datetime.now(timezone.utc).isoformat()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', required=True, choices=sorted(RESULTS))
@@ -467,6 +472,33 @@ def main() -> int:
                                 'stat_key': key, 'raw_value': round(vals[t], 3),
                                 'rank': i, 'league_size': len(order),
                                 'direction': 'higher', 'display_label': label,
+                                # ══ 2026-10-09 · STAMP refreshed_at EXPLICITLY ══
+                                # team_computed_stats.refreshed_at is
+                                # `timestamptz DEFAULT now()`, and a DEFAULT only
+                                # fires on INSERT. This script upserts with
+                                # merge-duplicates, so every nightly run took the
+                                # UPDATE path and the timestamp stayed pinned to
+                                # the row's first insert.
+                                #
+                                # Measured today: sos_margin / sor_margin read
+                                # refreshed_at = 2026-10-04T14:47:59 on every
+                                # sport. I concluded the margin ratings were five
+                                # days stale and went looking for a failing
+                                # workflow step. They were not stale at all — the
+                                # nightly had run fine every night (heartbeat
+                                # confirms nightly_cross_sport completed
+                                # 2026-10-08T19:05) and a manual --write of 64 NFL
+                                # rows returned 200 while the timestamp did not
+                                # move at all. Fresh values, lying clock.
+                                #
+                                # That is worse than having no timestamp, because
+                                # it makes current data look abandoned — and could
+                                # equally make abandoned data look current.
+                                #
+                                # compute_schedule_strength.py hit this exact bug
+                                # and fixed it on 2026-09-30 with the same
+                                # explicit stamp. Its sibling never got the fix.
+                                'refreshed_at': _NOW,
                                 'unit': ''})
         r = requests.post(f'{SB}/rest/v1/team_computed_stats'
                           '?on_conflict=sport,team,season,stat_key',
