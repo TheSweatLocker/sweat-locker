@@ -138,6 +138,74 @@ def _lr_warn_record(sport: str) -> Optional[dict]:
     return rec
 
 
+#: Floor below which the warn cohort's own record cannot steer the gate.
+_LR_WARN_EVIDENCE_MIN_N = 40
+#: -110 breakeven. A cohort has to clear THIS, not 50%, to be worth playing.
+_LR_WARN_BREAKEVEN = 52.38
+
+
+def lr_warn_verdict(sport: str) -> dict:
+    """Should the LR-warn cap fire for THIS sport? -> {cap, shadow, why}
+
+    ══ 2026-10-09 · THE GATE WAS SPORT-BLIND AND NFL DISAGREES ══
+    This module caps any pick the LR shadow strongly contradicts, and the
+    justification above cites NCAAF numbers only ("7-29, 19%, n=36"). But
+    v_signal_records — already read by _lr_warn_record for the user-facing
+    SENTENCE, and never consulted for the DECISION — says the same gate
+    performs oppositely in the two leagues:
+
+        NCAAF  LR_SHADOW/warn   26-52   33.3%   n=78   2SE +/-11.3pp
+        NFL    LR_SHADOW/warn   11-4    73.3%   n=15   2SE +/-25.8pp
+
+    NCAAF is emphatic and the cap is right there: 33.3% sits far below the
+    52.38% breakeven, well outside its own band. NFL points the other way,
+    and Andy caught a live instance — TB +8.5 on 2026-10-08 carried this
+    warning, was capped to COVERAGE, and won by 16.5 points. His read was
+    "was correct on TB +8.5 yesterday just the conviction was off."
+
+    SO WHY NOT JUST TURN IT OFF FOR NFL: because n=15 gives a 2SE band of
+    +/-25.8pp, which comfortably contains breakeven. Flipping a suppression
+    gate on fifteen games is the same mistake as trusting any other n=15
+    result, and this session has already retracted two findings for exactly
+    that. feedback_suppression_gate_needs_shadow is the standing rule —
+    shadow a suppression gate and exit on evidence, do not guess.
+
+    So: cap where the evidence supports capping, keep capping where the
+    evidence is merely ambiguous, and in that ambiguous case STAMP the pick
+    so the counterfactual is recorded and the question can actually be
+    settled instead of re-argued. The gate only stops firing once a sport's
+    warn cohort clears breakeven by more than two standard errors on at
+    least _LR_WARN_EVIDENCE_MIN_N decisions.
+    """
+    rec = _lr_warn_record(sport)
+    if not rec or rec.get('hit_pct_lifetime') is None:
+        return {'cap': True, 'shadow': False,
+                'why': 'no warn-cohort record for this sport — cap by default'}
+    w = int(rec.get('wins_lifetime') or 0)
+    l = int(rec.get('losses_lifetime') or 0)
+    n = w + l
+    if n < 1:
+        return {'cap': True, 'shadow': False, 'why': 'empty warn cohort'}
+    hit = float(rec['hit_pct_lifetime'])
+    se2 = 2 * (0.5 / n ** 0.5) * 100
+    beats = hit - _LR_WARN_BREAKEVEN > se2
+    if beats and n >= _LR_WARN_EVIDENCE_MIN_N:
+        return {'cap': False, 'shadow': False,
+                'why': (f'{sport} warn cohort {w}-{l} ({hit:.1f}%, n={n}) '
+                        f'beats breakeven by >2SE ({se2:.1f}pp) — the cap is '
+                        f'refuted, stop firing it')}
+    if hit > _LR_WARN_BREAKEVEN:
+        # Points the other way but not provably — cap, and record it.
+        return {'cap': True, 'shadow': True,
+                'why': (f'{sport} warn cohort {w}-{l} ({hit:.1f}%, n={n}) is '
+                        f'ABOVE breakeven but inside its 2SE band '
+                        f'({se2:.1f}pp) — still capping, shadowing for '
+                        f'evidence')}
+    return {'cap': True, 'shadow': False,
+            'why': (f'{sport} warn cohort {w}-{l} ({hit:.1f}%, n={n}) is '
+                    f'below breakeven — cap justified')}
+
+
 def _lr_warn_sentence(sport: str) -> str:
     rec = _lr_warn_record(sport)
     if not rec or rec.get('hit_pct_lifetime') is None:
@@ -309,6 +377,22 @@ def _apply_gates(pp: dict, spread_anchor_weight,
                     (side == 'HOME' and p_home <= (1.0 - LR_WARN_HARD_THRESHOLD)) or
                     (side == 'AWAY' and p_home >= LR_WARN_HARD_THRESHOLD)
                 )
+                # ══ 2026-10-09 · CONSULT THE GATE'S OWN TRACK RECORD ══
+                # The verdict is per SPORT. Until today this gate fired
+                # identically for NCAAF (warn cohort 33.3%, n=78 — cap
+                # plainly right) and NFL (73.3%, n=15 — points the other
+                # way). See lr_warn_verdict for why NFL is shadowed rather
+                # than switched off on fifteen games.
+                _verdict = lr_warn_verdict(sport)
+                if lr_disagrees_strongly and not _verdict['cap']:
+                    # Evidence has refuted the cap for this sport. Leave the
+                    # pick's tier alone, but say so on the pick so the change
+                    # is visible rather than a silent behaviour swap.
+                    new_pp['_lr_warn_released'] = {
+                        'p_home': round(p_home, 4), 'why': _verdict['why'],
+                    }
+                    applied.append(f'lr_warn_released:p={p_home:.2f}')
+                    lr_disagrees_strongly = False
                 if lr_disagrees_strongly:
                     # 2026-09-26 · LEAN -> PASS for picks that have not
                     # shipped yet.
@@ -346,6 +430,23 @@ def _apply_gates(pp: dict, spread_anchor_weight,
                         _record_cap(new_pp, 'PASS', 40,
                                     f'lr_warn_pass:p_home={p_home:.2f}')
                         _cap_word = 'no play'
+                    # ══ SHADOW THE CAP WHERE THE EVIDENCE IS AMBIGUOUS ══
+                    # NFL's warn cohort currently reads 11-4 (73.3%, n=15) —
+                    # above breakeven but inside its own 2SE band. The cap
+                    # still fires, because fifteen games cannot retire a
+                    # suppression gate. But the pick now carries what it
+                    # WOULD have shipped as, so the counterfactual is on the
+                    # record and the question gets settled by data instead of
+                    # re-argued next week. feedback_suppression_gate_needs_shadow.
+                    if _verdict.get('shadow'):
+                        new_pp['_lr_warn_shadow'] = {
+                            'p_home': round(p_home, 4),
+                            'tier_without_cap': pp.get('tier'),
+                            'conviction_without_cap': pp.get('conviction'),
+                            'tier_with_cap': new_pp.get('tier'),
+                            'why': _verdict['why'],
+                        }
+                        applied.append('lr_warn_shadowed')
                     _strip_lr_warn(new_pp)
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
                              f'{_cap_word}.' + _lr_warn_sentence(sport))
