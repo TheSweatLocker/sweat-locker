@@ -2799,3 +2799,70 @@ VERIFY: grep for `v_mlb_props_publishable` in app/components/GameDetailV2.tsx
 and read the select list.
 FIX: widen the select, render price with the band gate visible, group by prop
 family, surface the filtered-out count. Client build required.
+
+## 2026-10-09 · B64 CORRECTED — two of its three claims are wrong
+
+Andy's note on B64 was *"no problem solving is actulaly happening jys band aid
+after band aid"*, so this was re-derived from the tables rather than patched.
+Two of the three claims do not survive, and the residual issue is a different
+one.
+
+**CLAIM 1 — "window_label NULL on every row" → COSMETIC, already retracted.**
+`window_key` is the discriminator and it IS populated: d7 / d30 / mtd / epoch
+/ lifetime on all 22 NHL rows. `window_label` is a redundant second column.
+Nothing downstream is ambiguous.
+
+**CLAIM 2 — "duplicate surfaces carrying different numbers" → NOT DUPLICATES.**
+They are different TIME WINDOWS of the same surface, which is the table's
+whole design:
+
+    ledger     d7 10-4 · mtd 11-5 · d30 54-70 · epoch 103-140 · lifetime 108-140
+    nhl_sides  d7 2-3  · mtd 3-10 · d30 5-12  · epoch 5-12    · lifetime 5-12
+
+B64 read five windows as five duplicates. The uniqueness constraint it asked
+for already exists in effect on (sport, surface, window_key) — adding one on
+(sport, surface, window_label) would have been actively wrong, since
+window_label is NULL for all of them.
+
+**CLAIM 3 — "prop_coverage n=3,871 under NHL is MLB numbers" → NOT
+CONTAMINATION.** `_pick_prop_tier` tags `'sport': sport` correctly per source
+table, and `nhl_pipeline_props` genuinely contains the volume:
+
+    nhl_pipeline_props   26,199 rows · 21,815 graded · 21,815 graded COVERAGE
+    mlb_pipeline_props   36,894 rows · 36,894 graded ·  3,000 graded COVERAGE
+    nfl_pipeline_props    2,931 rows ·  2,647 graded ·      0 graded COVERAGE
+
+After the -300..+150 odds band and preseason exclusion, 4,247 NHL rows
+survive. The reason the NHL figure sits within 3 of the cross-sport `ALL` row
+(NHL d7 1277-1099 vs ALL d7 1280-1104) is simply that **NHL is almost the
+entire COVERAGE pool** — 21,815 of ~24,800 graded COVERAGE rows. The
+resemblance that looked like leakage is the arithmetic working.
+
+### THE REAL RESIDUAL ISSUE, which B64 did not name
+
+NHL `prop_coverage` publishes a **2284-1963 (n=4,247)** record while
+**`public_receipts` holds ZERO NHL prop rows**. So it is a record over
+PIPELINE rows that were never published to anyone — not a record of picks a
+user could have followed. Every NHL prop is tier=COVERAGE and COVERAGE is the
+tier the engine declines to publish, so the whole surface is by construction
+unpublished.
+
+That is the prop-record-inflation family, not a contamination bug — see
+`project_prop_record_inflation_held_1003` (+274u displayed, held by choice) and
+`feedback_surface_records_trust_levels` ("prop_prime is inflated — cite
+sides"). Whether an unpublished-pipeline rollup should surface as a "record"
+is a PRODUCT decision Andy has already taken once, deliberately. It should not
+be quietly changed as a bug fix.
+
+**DECISION NEEDED (Andy):** should `prop_coverage` surface for NHL at all,
+given 0 of its 4,247 graded rows were ever published? Options: hide the
+surface for sports with no published props; relabel it so it reads as model
+coverage rather than a betting record; or leave it, consistent with the 10-03
+decision.
+
+VERIFY: compare `surface_records?surface=eq.prop_coverage` against
+`public_receipts?sport=eq.NHL&market=eq.prop` (0 rows) and the
+`nhl_pipeline_props` graded-COVERAGE count (21,815).
+
+**Still open from B64:** nothing actionable as written. Closing claims 1-3;
+the residual is a product question above, not a defect.
