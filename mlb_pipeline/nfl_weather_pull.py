@@ -208,10 +208,56 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
 
     print(f'\nSummary: {updated}/{len(games)} games patched with weather')
 
+    # ══ 2026-10-09 · A SILENT NO-OP HID THIS FOR WEEKS ═══════════════════
+    # Measured today: nfl_game_context.wind was populated on 3 of 207
+    # UPCOMING games — and all three were DOMES, which take the temp=72 /
+    # wind=0 branch and never call the API. Every outdoor game had wind
+    # NULL.
+    #
+    # WHY IT WENT UNNOTICED: with no OPENWEATHER_API_KEY, fetch_forecast
+    # prints one warning line, returns None, the loop `continue`s, and this
+    # script still exits 0. The workflow step carries
+    # `continue-on-error: true`, so an empty pull looked exactly like a
+    # successful one in Actions. The key is present in mlb_pipeline/.env,
+    # which is why a local run patches 15/15 while the scheduled run
+    # patched only the domes.
+    #
+    # WHY IT MATTERS MORE THAN IT LOOKS: wind is the ONE lens that measured
+    # positive this week — NFL totals with wind >=11mph went UNDER 55.61% on
+    # n=1,444 (project_wind_under_lens_1009). A signal whose only input is
+    # missing on every upcoming outdoor game cannot fire, so the finding was
+    # unusable prospectively and nothing said so.
+    #
+    # So: exit NON-ZERO when outdoor games inside the window came away with
+    # no wind. continue-on-error still keeps the pipeline moving, but the
+    # step now shows as failed in Actions instead of passing green on a
+    # no-op. Same lesson as the bare `|| echo` masking review
+    # (project_bare_mask_review_920).
+    outdoor_missed = sum(1 for g in games
+                         if str(g.get('roof') or '').lower() not in
+                         ('dome', 'closed', 'indoor', 'indoors'))
+    outdoor_missed -= updated
+    if not OW_KEY:
+        print('\n  *** FAILING LOUDLY: OPENWEATHER_API_KEY is not set. ***')
+        print('  Domes still got their defaults, so a green run here means')
+        print('  NOTHING for outdoor games. Set the secret in GitHub Actions')
+        print('  (it exists in mlb_pipeline/.env, which is why local runs')
+        print('  look fine). Wind feeds the only positive totals lens we')
+        print('  have; without it that lens cannot fire.')
+        return 1
+    if len(games) and updated == 0:
+        print('\n  *** FAILING LOUDLY: 0 of '
+              f'{len(games)} upcoming games got weather. ***')
+        return 1
+    return 0
+
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--game-id', help='single game_id to patch')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_id=args.game_id, dry_run=args.dry_run)
+    # 2026-10-09: propagate the exit code. run() now returns 1 on a silent
+    # no-op (missing key, or zero games patched) and the old call discarded
+    # it, so the script exited 0 regardless and Actions showed green.
+    sys.exit(run(game_id=args.game_id, dry_run=args.dry_run) or 0)

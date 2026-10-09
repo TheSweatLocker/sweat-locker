@@ -154,6 +154,53 @@ def load(sport, market):
             g[f'{nm}_off'] = _f(src.get('off_epa_pp'))
             g[f'{nm}_def'] = _f(src.get('def_epa_pp'))
             g[f'{nm}_sp'] = _f(src.get('sp_overall'))
+
+        # ══ 2026-10-09 · NFL KEEPS THE SAME FACTS UNDER DIFFERENT KEYS ══
+        # The first version of this panel reported "stat differential joined
+        # on 0/7141" for NFL and I called it a writer gap. Half right: NFL
+        # genuinely has no frozen EPA, but it is NOT empty — generate_nfl_
+        # game_reads writes `team_rolling` and `team_defense` (per side, per
+        # l3/l5/season window) where NCAAF writes `efficiency`, and
+        # `signals.close_spread` / `models.matchup.projected_spread` where
+        # NCAAF writes `market`. Measured across 116 NFL snapshots:
+        #     team_rolling  56 non-empty, 53 with BOTH sides
+        #     team_defense  56 non-empty, 53 with BOTH sides
+        #     efficiency     0            (never written for NFL)
+        # So asking for the NCAAF key reported a gap that was really a
+        # schema difference. Reading the right keys makes NFL testable on
+        # ~53 games instead of zero.
+        #
+        # The NFL proxy is NET YARDS per game rather than net EPA — own
+        # offence minus own yards allowed. Weaker than EPA (yards are not
+        # points) and labelled as such wherever it is reported, but it is
+        # what was actually frozen.
+        tr, td = snap.get('team_rolling') or {}, snap.get('team_defense') or {}
+        if not eff and isinstance(tr, dict) and isinstance(td, dict):
+            for nm, sd in (('h', 'home'), ('a', 'away')):
+                roll = (tr.get(sd) or {}).get('season') or {}
+                dfn = (td.get(sd) or {}).get('season') or {}
+                own = _f(roll.get('total_yds_pg'))
+                pa = _f(dfn.get('pass_yds_pg_allowed'))
+                ra = _f(dfn.get('rush_yds_pg_allowed'))
+                allowed = None if pa is None or ra is None else pa + ra
+                # Scaled to a points-like magnitude so the bucket
+                # thresholds below do not need a per-sport branch. ~14 yards
+                # per point is the standard rough conversion; it affects
+                # scale only, never the SIGN, and the sign is what the
+                # direction buckets test.
+                g[f'{nm}_off'] = None if own is None else own / 14.0
+                g[f'{nm}_def'] = None if allowed is None else allowed / 14.0
+                g['_proxy'] = 'net_yards'
+        # NFL's market line and projection live under signals/models.
+        sig = snap.get('signals') or {}
+        mdl = snap.get('models') or {}
+        if g['spread'] is None:
+            g['spread'] = _f(sig.get('close_spread'))
+        if g['open_spread'] is None:
+            # NFL freezes no open_spread, so line movement is unavailable
+            # there rather than silently zero.
+            g['open_spread'] = None
+        g['proj'] = _f((mdl.get('matchup') or {}).get('projected_spread'))
         out.append(g)
     out.sort(key=lambda z: z['date'])
     return out

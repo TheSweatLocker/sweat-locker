@@ -302,11 +302,21 @@ def patch_game(game_id: str, patch: dict, dry_run: bool = False) -> bool:
     return True
 
 
-def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
+def run(game_id: Optional[str] = None, dry_run: bool = False) -> int:
     print('== NCAAF weather pull ==')
     if not OW_KEY:
-        print('  ⚠ OPENWEATHER_API_KEY missing — cannot fetch forecasts')
-        return
+        # ══ 2026-10-09 · DO NOT EXIT 0 ON A NO-OP ══
+        # The workflow step carries continue-on-error, so returning
+        # quietly here made a completely empty pull look identical to a
+        # successful one in Actions. Measured consequence on the NFL
+        # twin: wind was populated on 3 of 207 upcoming games, and all
+        # three were domes (which need no API call). A local dry run
+        # patches 50/51 because the key lives in mlb_pipeline/.env.
+        print('  *** FAILING LOUDLY: OPENWEATHER_API_KEY missing — '
+              'cannot fetch forecasts. ***')
+        print('  Set it in GitHub Actions secrets. A green run without'
+              ' it means NO weather was written.')
+        return 1
     if game_id:
         r = requests.get(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
                          headers=H_READ, timeout=15)
@@ -364,4 +374,5 @@ if __name__ == '__main__':
     p.add_argument('--game-id')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(game_id=args.game_id, dry_run=args.dry_run)
+    # 2026-10-09: propagate the exit code so a no-op shows as failed.
+    sys.exit(run(game_id=args.game_id, dry_run=args.dry_run) or 0)
