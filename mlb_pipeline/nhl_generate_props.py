@@ -124,7 +124,31 @@ def fetch_props_for_event(event_id: str) -> dict:
         # 200 with no bookmakers = nobody is pricing these markets yet.
         _FETCH_DIAG['no_books_offering'] += 1
 
-    by_key = {}
+    # ══ 2026-10-09 · STORE BOTH SIDES OF EVERY PRICE ═══════════════════════
+    # The old key was (player, prop_type, direction, line) where prop_type
+    # ALREADY embedded the direction. So the over outcome and the under
+    # outcome for the same player and line landed in two SEPARATE slots, and
+    # each slot only ever had its own side filled — `under_odds` was None on
+    # every over row and vice versa. Measured consequence:
+    # nhl_pipeline_props had 0.0% of 27,890 rows carrying both prices, while
+    # MLB (which does this correctly) carries both on 91-96%.
+    #
+    # WHY IT MATTERS beyond tidiness: without the opposite side's price you
+    # cannot evaluate what the other side WOULD have returned. That blocks
+    # every "should we have taken the other side" question — the NHL prop
+    # fade test (our overs hit 44.9%, below the 45% our discipline says to
+    # fade, and it is unmeasurable without the under price) and the
+    # reweighting shadow in B66a, which is blocked for exactly this reason.
+    #
+    # AND THE PAIR MUST COME FROM ONE BOOK. The old code let prices overwrite
+    # across bookmakers while `book` kept the FIRST one, so a stored price
+    # could be attributed to the wrong book. Worse, an over from book A
+    # paired with an under from book B is a FABRICATED no-vig line — stitching
+    # two books' best sides invents a market nobody offered. So prices are
+    # collected per book, and the chosen book is one that quotes BOTH sides
+    # where such a book exists.
+    per_book = {}          # (player_lc, base, line) -> {book: {over,under}}
+    display = {}
     for bk in data.get('bookmakers', []):
         book = bk.get('key')
         for mkt in bk.get('markets', []):
@@ -137,13 +161,29 @@ def fetch_props_for_event(event_id: str) -> dict:
                 if not direction or not player: continue
                 line = out.get('point'); price = out.get('price')
                 if line is None or price is None: continue
-                prop_type = f'{base}_{direction}'
-                key = (player.lower(), prop_type, direction, float(line))
-                slot = by_key.setdefault(key, {
-                    'display': player, 'line': float(line),
-                    'over_odds': None, 'under_odds': None, 'book': book,
-                })
-                slot[f'{direction}_odds'] = int(price)
+                # NOTE: no direction in the key — that is the whole fix.
+                key = (player.lower(), base, float(line))
+                display[key] = player
+                per_book.setdefault(key, {}).setdefault(
+                    book, {'over_odds': None, 'under_odds': None})
+                per_book[key][book][f'{direction}_odds'] = int(price)
+
+    by_key = {}
+    for key, books in per_book.items():
+        # Prefer a book quoting BOTH sides so the pair is a real market.
+        two_sided = [(b, q) for b, q in books.items()
+                     if q['over_odds'] is not None and q['under_odds'] is not None]
+        book, quote = (two_sided[0] if two_sided
+                       else next(iter(books.items())))
+        _player_lc, base, line = key
+        by_key[key] = {
+            'display': display[key], 'line': line, 'base': base,
+            'over_odds': quote['over_odds'],
+            'under_odds': quote['under_odds'],
+            'book': book,
+            # Recorded so a one-sided row is distinguishable from a bug.
+            'two_sided': bool(two_sided),
+        }
     return by_key
 
 
@@ -184,27 +224,34 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
         props = fetch_props_for_event(event_id)
         if not props: continue
 
-        for (player_lc, prop_type, direction, line), slot in props.items():
-            odds = slot.get('over_odds') if direction == 'over' else slot.get('under_odds')
-            payload = {
-                'game_date':      gd,
-                'game_id':        event_id,
-                'player_name':    slot['display'],
-                'matchup':        matchup,
-                'prop_type':      prop_type,
-                'direction':      direction,
-                'prop_line':      line,
-                'book_line':      line,
-                'book_over_odds': slot.get('over_odds'),
-                'book_under_odds': slot.get('under_odds'),
-                'book_source':    slot.get('book'),
-                'tier':           'COVERAGE',
-                'conviction':     0,
-                'signals':        {},
-                'last_attached_at': now_iso,
-            }
-            if upsert_prop(payload, dry_run=dry_run):
-                total_props += 1
+        # One slot now holds BOTH sides for a (player, prop, line), so emit
+        # one row per priced direction and give EACH row the full price pair.
+        # Row count is unchanged versus the old per-direction slots — what
+        # changes is that both rows now carry both prices.
+        for (player_lc, base, line), slot in props.items():
+            for direction in ('over', 'under'):
+                if slot.get(f'{direction}_odds') is None:
+                    continue    # that side genuinely was not quoted
+                payload = {
+                    'game_date':      gd,
+                    'game_id':        event_id,
+                    'player_name':    slot['display'],
+                    'matchup':        matchup,
+                    'prop_type':      f'{base}_{direction}',
+                    'direction':      direction,
+                    'prop_line':      line,
+                    'book_line':      line,
+                    # Both sides, from the SAME book — see fetch_props_for_event.
+                    'book_over_odds': slot.get('over_odds'),
+                    'book_under_odds': slot.get('under_odds'),
+                    'book_source':    slot.get('book'),
+                    'tier':           'COVERAGE',
+                    'conviction':     0,
+                    'signals':        {'two_sided_price': slot.get('two_sided')},
+                    'last_attached_at': now_iso,
+                }
+                if upsert_prop(payload, dry_run=dry_run):
+                    total_props += 1
 
     print(f'\n  {"[DRY] " if dry_run else ""}upserted {total_props} NHL props')
     if total_props == 0 and events:
