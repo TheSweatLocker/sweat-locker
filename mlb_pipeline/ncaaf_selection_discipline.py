@@ -19,10 +19,35 @@ Every slice is a coin flip within about one standard error. The NCAAF closing
 line is efficient: there is no favourite bias, no spread-size bias, no
 over/under bias to select on. At n=6,329 that is a REAL null, not thin data.
 
-Note this REFUTES the "NCAAF dog bias — dogs 24.3% vs favs 57.9%" note from
-09-26. On the actual market, favourites cover 47.7-52.4% at every size. That
-number described OUR MODEL'S behaviour, not a market inefficiency, and it must
-not be used as a reason to lean either way.
+This does NOT refute the "NCAAF dog bias — dogs 24.3% vs favs 57.9%" note from
+09-26 (an earlier commit message of mine said it did; that was an
+overstatement). That note measured OUR PICKS, not the market, so the two are
+compatible — and together they localise the defect: in a market where dogs
+cover ~50%, our dog picks going 24.3% was a selection failure, not a market
+tendency we were reading correctly.
+
+BUT THE DOG BIAS HAS SINCE DECAYED, and that matters more:
+    all time        FAV 56.9% n=167   DOG 38.7% n=75    gap 18.2pp
+    live window     FAV 50.0% n=104   DOG 41.7% n=36    gap  8.3pp
+    since pick lock FAV 53.7% n=54    DOG 50.0% n=28    gap  3.7pp
+Post-lock the gap is 3.7pp against 2SE bands of 13.6 and 18.9 — indistinguishable
+from zero. The 09-26 note warned "do NOT act on this without a second season's
+sample or a holdout"; that warning was correct. The pick lock (20260926b)
+appears to have removed the mechanism, which was drift flipping picks toward
+the dog. **A favourites-only rule is NOT supported by current data.**
+Hit rate is used throughout here because it comes from grading results and is
+therefore immune to the reconstructed-price problem that invalidates ROI
+comparisons across surfaces.
+
+AND THE PROMOTION HYPOTHESIS ALSO FAILS TO CLEAR NOISE
+The tempting story is that promoting a read to a card subtracts value.
+Post-lock, spreads only, on hit rate (provenance-safe):
+    promoted to a CARD   45.8%  n=24
+    left as a READ only  55.2%  n=58
+    promotion worth -9.3pp against a 2SE band of 24.3pp -> INSIDE NOISE
+And it is window-sensitive in the way noise is: moving the start date one week
+earlier takes game_read spreads from 55.2% (n=58) to 47.7% (n=107), i.e. from
+above breakeven to below. Do not build a rule on this.
 
 STEP 2 — THE ARITHMETIC THAT FOLLOWS
 If the market pays off at ~50% and we have no demonstrated edge, then price
@@ -286,11 +311,21 @@ def main():
     print('     r~+0.03 against winning, and PRIME measured worse than')
     print('     STRONG. A tier label we cannot justify is a trust problem as')
     print('     much as a money one.')
-    print('  4. WHAT IS STILL MISSING: a validated discriminator. Nothing')
-    print('     measured so far separates good NCAAF picks from bad ones.')
-    print('     Until one exists, the honest play is fewer NCAAF picks at')
-    print('     near-even prices with no PRIME label — not zero picks, and')
-    print('     not the current slate at -142.')
+    print('\n  WHAT IS *NOT* SUPPORTED, despite being tempting:')
+    print('  - favourites-only. The dog gap is 3.7pp post-pick-lock against')
+    print('    2SE bands of 13.6/18.9. The old 24.3% was the pre-lock drift')
+    print('    era and the lock already fixed the mechanism.')
+    print('  - "promotion to a card subtracts value". -9.3pp against a 24.3pp')
+    print('    2SE band, and it flips sign when the window moves one week.')
+    print('\n  4. WHAT IS STILL MISSING: a validated discriminator. Nothing')
+    print('     measured separates good NCAAF picks from bad ones. Every')
+    print(f'     candidate tested sits inside its noise band at n={len(cards)}')
+    print('     card plays — and that is the real blocker, not a lack of')
+    print('     ideas. Five weeks of NCAAF gives ~24 graded card spreads,')
+    print('     which cannot validate anything. Two routes out, both slow:')
+    print('     wait for sample, or build a predictor on the 6,329-game set')
+    print('     and walk-forward it there. Tuning on the published picks is')
+    print('     not a third option.')
     return 0
 
 
