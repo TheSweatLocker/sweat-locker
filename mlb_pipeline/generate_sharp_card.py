@@ -1041,6 +1041,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_anchor = 0
     dropped_no_price = 0
     dropped_no_edge = 0
+    dropped_ncaaf_total = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -1066,6 +1067,29 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # that's handled at render, not composition.
         if (pp.get('type') or '').lower() == 'pass':
             dropped_pass += 1
+            continue
+        # ══ 2026-10-09 · NO NCAAF TOTALS ON THE SHARP ══════════════════
+        # Three independent measurements, not one thin sample:
+        #   graded NCAAF total receipts   40.7% hit · -21.8% ROI · n=28
+        #   the NCAAF totals model        30.8% hit · -16.09u   · n=39
+        #   the MARKET itself             OVER 49.99% on 6,329 games
+        # The third is the one that settles it: at n=6,329 the NCAAF
+        # over/under is a coin flip to within ~1pp, so there is nothing to
+        # select on. Our two surfaces then landed well BELOW that coin flip
+        # while paying vig.
+        #
+        # This is a GUARD, not a cleanup: as of today the NCAAF slate
+        # generates 46 spread + 24 ML picks and ZERO totals, so it removes
+        # nothing from tomorrow's card. It exists so totals cannot come back
+        # silently if an upstream change starts emitting them again — the
+        # failure mode that produced the -21.8% in the first place.
+        #
+        # Deliberately NOT applied to NFL: NFL totals are a different
+        # question and the wind lens (nfl_wind_total_lens.py) found the one
+        # measured totals edge we have. Scope the gate to the sport the
+        # evidence covers.
+        if sport == 'NCAAF' and (pp.get('type') or '').lower() == 'total':
+            dropped_ncaaf_total += 1
             continue
         # ══ 2026-09-29 · A PICK THAT SAYS "NO EDGE" IS NOT A PICK ══
         # Today's Sharp Card published, verbatim:
@@ -1276,6 +1300,12 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         print(f'  {sport} no-play drops: {dropped_pass}')
     if dropped_lr_conflict:
         print(f'  {sport} LR-shadow-conflict drops: {dropped_lr_conflict}')
+    if dropped_ncaaf_total:
+        # Printed whenever it fires precisely BECAUSE it should normally be
+        # zero. A nonzero count means something upstream started emitting
+        # NCAAF totals again and wants looking at, not silently discarding.
+        print(f'  {sport} totals refused: {dropped_ncaaf_total} '
+              f'(NCAAF over/under is 49.99% on 6,329 games — nothing to pick)')
     if dropped_no_edge:
         # Printed unconditionally, not just for football: a pick refused for
         # declaring its own lack of edge is the engine contradicting itself,
@@ -1550,8 +1580,25 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
         for _it in items:
             if not isinstance(_it, dict): continue
             _t  = (_it.get('type') or '').lower()
+            # 2026-10-09: 'spread' is the LEGACY spelling of 'rl'. The old
+            # engine (legacy_nfl_compute_primary_play) emits type='spread'
+            # while ensemble_v2 emits 'rl' — 16 NFL primary_plays carry the
+            # legacy string, 2 of them PRIME. Without this alias they fell
+            # through to `_market = None` and `continue`, so they SILENTLY
+            # SKIPPED THE PUBLISH LOCK: the one mechanism that freezes a
+            # published pick's tier/conviction against later drift. A pick
+            # that is published but never locked is exactly the R1 root cause
+            # (immutable receipts published from mutable tables).
+            _ALIAS = {'spread': 'rl'}
+            _t = _ALIAS.get(_t, _t)
             _market = _t if _t in ('prop','ml','rl','total') else None
-            if not _market: continue
+            if not _market:
+                # Loud, not silent — an unrecognised market means a pick went
+                # out unlocked, and that must never pass unnoticed again.
+                print(f'  ! publish_lock SKIPPED — unknown market type '
+                      f'{(_it.get("type") or "")!r} on '
+                      f'{_it.get("sport")} {_it.get("matchup")}')
+                continue
             _sport = (_it.get('sport') or '').upper()
             if _market == 'prop':
                 _sid = _it.get('id')
