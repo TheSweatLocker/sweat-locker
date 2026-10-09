@@ -457,18 +457,72 @@ export default function GameDetailV2({
       // view Prop Jerry uses — v_mlb_props_publishable — so every ban
       // applies universally.
       if ((!gamePropsProp || gamePropsProp.length === 0) && gamesSport === 'MLB') {
+        // 2026-10-09: added book_over_odds / book_under_odds and the three
+        // jerry_* columns. They were ALREADY IN THE VIEW and simply not
+        // selected, so the panel rendered a prop with NO PRICE — a user
+        // could not see a -250 offer on a prop whose own publishable band is
+        // -300..+150, nor the Batter Hits O0.5 juice trap. Price is the field
+        // that decides whether a pick makes money; omitting it was the worst
+        // gap in this panel. Same explicit-SELECT-is-a-silent-blank trap this
+        // file documents elsewhere.
         const {data: propData, error: propErr} = await client
           .from('v_mlb_props_publishable')
-          .select('player_name,player_team,prop_type,direction,prop_line,display_conviction,tier,signals')
+          .select('player_name,player_team,prop_type,direction,prop_line,display_conviction,tier,signals,'
+                  + 'book_over_odds,book_under_odds,jerry_short_read,jerry_verdict,jerry_conviction')
           .eq('game_date', gameDate)
           .eq('game_id', gid)
           .order('display_conviction', {ascending: false})
-          .limit(15);
+          .limit(40);
         if (propErr) console.warn('[GameDetailV2] props fetch error:', propErr.message);
         if (!cancelled && propData) {
           // View returns display_conviction; map to conviction for downstream
           // GamePropsPanel that expects that key.
           setFetchedProps(propData.map((p: any) => ({...p, conviction: p.display_conviction})));
+        }
+      }
+      // ══ 2026-10-09 · NHL PROPS, INFORMATION ONLY ═══════════════════════
+      // Andy's call after seeing the numbers: NHL props are surfaced as DATA,
+      // never as plays. Measured on 4,247 graded props in the publishable
+      // band: 53.78% hit against 57.14% needed, -6.57% ROI, and the loss is a
+      // clean directional bias — every OVER family loses 11-21% while every
+      // UNDER is flat. No NHL prop family is demonstrably profitable, so
+      // nothing here may carry a play badge. See
+      // project_nhl_prop_over_bias_1009.
+      //
+      // Reads ctx_game_id, NOT game_id. nhl_pipeline_props.game_id is an MD5
+      // hash while the id this component holds is the NHL numeric id — two
+      // ID spaces, which is why filtering by game_id returned zero rows for
+      // every NHL game (project_nhl_props_cannot_join_their_game_1003).
+      // Bridged by migration 20261009a + bridge_nhl_prop_game_ids.py.
+      //
+      // There is no v_nhl_props_publishable view, so the -300..+150 odds band
+      // is applied HERE. Reading a raw pipeline table without the view's
+      // rules is exactly what leaked banned families into this panel on
+      // 09-15, so the band is not optional.
+      if ((!gamePropsProp || gamePropsProp.length === 0) && gamesSport === 'NHL') {
+        const {data: nhlData, error: nhlErr} = await client
+          .from('nhl_pipeline_props')
+          .select('player_name,team_abbrev,prop_type,direction,prop_line,conviction,tier,'
+                  + 'book_over_odds,book_under_odds,player_season_hit_pct,'
+                  + 'player_l10_hit_count,player_position')
+          .eq('game_date', gameDate)
+          .eq('ctx_game_id', String(gid))
+          .limit(400);
+        if (nhlErr) console.warn('[GameDetailV2] NHL props fetch error:', nhlErr.message);
+        if (!cancelled && nhlData) {
+          const inBand = nhlData.filter((p: any) => {
+            const o = String(p.direction || '').toLowerCase() === 'over'
+              ? p.book_over_odds : p.book_under_odds;
+            const n = Number(o);
+            return o != null && Number.isFinite(n) && n >= -300 && n <= 150;
+          });
+          // _infoOnly is what suppresses the tier pill downstream. Tagging
+          // the rows rather than branching on sport inside the panel keeps
+          // the rule with the data that earned it.
+          setFetchedProps(inBand.map((p: any) => ({
+            ...p, player_team: p.team_abbrev, _infoOnly: true,
+            _totalBeforeCap: inBand.length,
+          })));
         }
       }
     })();
@@ -5872,8 +5926,16 @@ function NCAAFRostersRichCard({ctx, homeTeam, awayTeam}: any) {
     notes.push(`${abbrev3(homeTeam)} OL outweighs opposing DL by ${Math.round(Number(olGapH))} lb — ground-game leverage.`);
   if (olGapA != null && Number(olGapA) >= 15)
     notes.push(`${abbrev3(awayTeam)} OL outweighs opposing DL by ${Math.round(Number(olGapA))} lb.`);
-  if (classEdge != null && Math.abs(Number(classEdge)) >= 0.3)
-    notes.push(`${abbrev3(Number(classEdge) > 0 ? homeTeam : awayTeam)} carries a class-year experience edge (Weeks 1-3 significant).`);
+  // 2026-10-09 WEEK GATE. This note carried its own expiry in its text —
+  // "(Weeks 1-3 significant)" — and then rendered in Week 7 regardless,
+  // because the only condition was the magnitude of classEdge. We were
+  // showing a claim that admits it no longer applies. `week` is on the
+  // context row, so gate on it and drop the parenthetical: inside the window
+  // the caveat is unnecessary, outside it the note should not exist.
+  const _wk = Number(ctx?.week ?? ctx?.season_week);
+  const _classWindow = Number.isFinite(_wk) && _wk >= 1 && _wk <= 3;
+  if (_classWindow && classEdge != null && Math.abs(Number(classEdge)) >= 0.3)
+    notes.push(`${abbrev3(Number(classEdge) > 0 ? homeTeam : awayTeam)} carries a class-year experience edge.`);
 
   return (
     <Section title="Rosters &amp; Continuity" hint="returning production + physicality">
@@ -6005,6 +6067,14 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
   const awayClassYr = ctx?.away_avg_class_year;
   const homeOl = ctx?.home_ol_avg_wt;
   const awayOl = ctx?.away_ol_avg_wt;
+  // 2026-10-09: the class-year note is only claimed significant in Weeks 1-3
+  // and had no week gate, so it rendered all season. Gate once here and reuse
+  // below; `classWindow` folds the week check into the same flag the note
+  // already tested so the two render sites cannot drift apart again.
+  const _wk = Number(ctx?.week ?? ctx?.season_week);
+  const classWindow = Number.isFinite(_wk) && _wk >= 1 && _wk <= 3;
+  const showClassNote = classWindow && classEdge != null
+    && Math.abs(Number(classEdge)) >= 0.3;
   const hasAny = rpHome != null || rpAway != null || olGapH != null || olGapA != null ||
                  classEdge != null || homeOl != null || awayOl != null;
   if (!hasAny) return null;
@@ -6043,7 +6113,7 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
         )}
         {((olGapH != null && Number(olGapH) >= 15) ||
           (olGapA != null && Number(olGapA) >= 15) ||
-          (classEdge != null && Math.abs(Number(classEdge)) >= 0.3)) && (
+          showClassNote) && (
           <View style={{marginTop: 4, gap: 4}}>
             {olGapH != null && Number(olGapH) >= 15 && (
               <Text style={[styles.pitcherStats, {color: C.accent}]}>
@@ -6055,9 +6125,9 @@ function NCAAFRostersCard({ctx, homeTeam, awayTeam}: any) {
                 {awayShort} OL outweighs opposing DL by {Math.round(Number(olGapA))} lb
               </Text>
             )}
-            {classEdge != null && Math.abs(Number(classEdge)) >= 0.3 && (
+            {showClassNote && (
               <Text style={[styles.pitcherStats, {color: C.accent}]}>
-                {Number(classEdge) > 0 ? homeShort : awayShort} carries a class-year experience edge (Weeks 1-3 significant)
+                {Number(classEdge) > 0 ? homeShort : awayShort} carries a class-year experience edge
               </Text>
             )}
           </View>
@@ -7110,34 +7180,86 @@ function CohortsPanel({ctx, cohortRecords}: any) {
 }
 
 // ─── GAME PROPS PANEL ────────────────────────────────────────────────────
+// 2026-10-09 rework. Three defects fixed and one capability added:
+//
+//  1. THE PRICE WAS NEVER SHOWN. book_over_odds / book_under_odds were in the
+//     view all along and simply not selected. A prop row without its price
+//     cannot be evaluated — the user could not see a -250 offer inside a
+//     -300..+150 band, nor the documented Batter Hits O0.5 juice trap.
+//  2. "Projected" COULD NEVER RENDER on the self-fetch path. The row read
+//     `projected_value ?? projected` and NEITHER column exists in
+//     v_mlb_props_publishable, so the field was dead whenever the modal
+//     fetched its own props. Replaced with season hit% / L10, which do exist.
+//  3. SEVEN PROPS VANISHED SILENTLY. The fetch took 15 and the panel sliced
+//     to 8 with nothing saying more existed — the same truncation class as
+//     project_postgrest_truncation_audit_912. Now the cap is explicit and the
+//     remainder is stated.
+//
+//  + INFO-ONLY ROWS. NHL props arrive tagged `_infoOnly` because they are
+//    surfaced as data, not plays (-6.57% ROI on n=4,247, every OVER family
+//    -11..-21%). Those rows get NO tier pill and NO conviction, because a
+//    tier badge is a claim we cannot support here.
 function GamePropsPanel({props: propsList}: {props: any[]}) {
+  const CAP = 10;
   if (!propsList || propsList.length === 0) {
     return <Text style={styles.emptyMuted}>No qualifying props for this game.</Text>;
   }
+  const infoOnly = propsList.some((p: any) => p?._infoOnly);
+  const total = Number(propsList[0]?._totalBeforeCap) || propsList.length;
+  const shown = propsList.slice(0, CAP);
   return (
     <View style={{gap: 4}}>
-      {propsList.slice(0, 8).map((p, i) => {
-        const dir = String(p.direction || '').toLowerCase() === 'over' ? '↑' : '↓';
-        const projected = p.projected_value ?? p.projected ?? null;
+      {infoOnly && (
+        <Text style={[styles.propDetail, {fontSize: 10, marginBottom: 6, lineHeight: 15}]}>
+          Model coverage for this game — every skater and goalie line our model
+          priced, shown for reference. These are not published picks and carry
+          no tier.
+        </Text>
+      )}
+      {shown.map((p, i) => {
+        const isOver = String(p.direction || '').toLowerCase() === 'over';
+        const dir = isOver ? '↑' : '↓';
+        // The price of the side actually being referenced — over props take
+        // the over price. Reading one column for both directions is the
+        // "check WHICH SIDE a column indexes" trap.
+        const odds = isOver ? p.book_over_odds : p.book_under_odds;
+        const oddsNum = Number(odds);
+        const hasOdds = odds != null && Number.isFinite(oddsNum);
+        const seasonPct = p.player_season_hit_pct ?? null;
         return (
           <View key={i} style={styles.propRow}>
-            <View style={[styles.propTier, tierPillStyle(p.tier)]}>
-              <Text style={[styles.propTierText, {color: tierPillTextColor(p.tier)}]}>{p.tier}</Text>
-            </View>
+            {!p._infoOnly && (
+              <View style={[styles.propTier, tierPillStyle(p.tier)]}>
+                <Text style={[styles.propTierText, {color: tierPillTextColor(p.tier)}]}>{p.tier}</Text>
+              </View>
+            )}
             <View style={{flex: 1}}>
               <Text style={styles.propPlayer} numberOfLines={1}>{p.player_name || '?'}</Text>
               <Text style={styles.propDetail}>
                 Line <Text style={styles.propBold}>{p.prop_line}</Text> {String(p.prop_type || '')}
-                {projected != null && <> · Projected <Text style={styles.propBold}>{f(projected, 1)}</Text></>}
+                {seasonPct != null && <> · season <Text style={styles.propBold}>{f(seasonPct, 0)}%</Text></>}
               </Text>
             </View>
             <View style={{alignItems: 'flex-end'}}>
               <Text style={[styles.propDetail, {color: C.text, fontWeight: '700'}]}>{dir} {p.direction}</Text>
-              <Text style={[styles.propDetail, {fontSize: 9}]}>conv {p.conviction}</Text>
+              {/* Price sits where the eye lands last, beside the side it
+                  belongs to. An unpriced row says so rather than showing a
+                  blank that reads as -110. */}
+              <Text style={[styles.propDetail, {fontSize: 11, fontWeight: '700'}]}>
+                {hasOdds ? (oddsNum > 0 ? `+${oddsNum}` : `${oddsNum}`) : 'no price'}
+              </Text>
+              {!p._infoOnly && p.conviction != null && (
+                <Text style={[styles.propDetail, {fontSize: 9}]}>conv {p.conviction}</Text>
+              )}
             </View>
           </View>
         );
       })}
+      {total > shown.length && (
+        <Text style={[styles.propDetail, {fontSize: 10, marginTop: 4}]}>
+          Showing {shown.length} of {total}.
+        </Text>
+      )}
     </View>
   );
 }
