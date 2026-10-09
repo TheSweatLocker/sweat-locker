@@ -419,6 +419,35 @@ jobs:
           cd mlb_pipeline
           python nfl_ncaaf_signal_discipline.py --sport NCAAF --days 14
 
+      # 2026-10-08 · two MEASURED suppressions. NCAAF published reads were
+      # 156-144 (52.0%) at -8.63u / -2.9% ROI against a 52.38% breakeven,
+      # while flat always-HOME ATS hit 54.2% on the same games -- the engine
+      # was losing to no model at all. The tier scale is inverted at the top:
+      # PRIME 4-13 (23.5%, n=17) is the WORST tier we publish, below LEAN
+      # (49.2%) and COVERAGE (58.0%), and correlation(conviction, win) is
+      # +0.040 over n=296. Dropping PRIME and totals takes the same 300 reads
+      # to 148-122 / 54.8% / +6.33u / +2.3% ROI.
+      #
+      # Two other candidate rules were REJECTED on the evidence: an ML price
+      # floor (unmeasurable -- 42% of NCAAF ML picks store no price, median
+      # real price -157) and dropping AWAY (redundant once PRIME and totals
+      # are gone: units flat, volume 270 -> 179).
+      #
+      # Runs BEFORE the conviction clamp, because it changes tier and the
+      # clamp then enforces tier/conviction coherence. Never touches a locked
+      # pick or a started game, so a published board is never rewritten.
+      # Pre-registered test is in the script docstring.
+      - name: NCAAF accuracy gates (no PRIME, no totals)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python ncaaf_accuracy_gates.py --apply
+
       # 2026-10-08: when a cap lowers the TIER, the conviction has to follow.
       # Measured on the pre-lock NCAAF board: Duke -6.5 showed tier STRONG
       # with conviction 95, because _edge_cap correctly demoted it from PRIME
