@@ -121,7 +121,22 @@ def publishable_teams(sport: str, season: int):
     try:
         rows = _pull('ncaaf_team_stats',
                      {'select': 'team,sp_overall', 'season': f'eq.{season}'})
-        fbs = {r['team'] for r in rows if r.get('sp_overall') is not None}
+        # ══ 2026-10-09 · FOLD THE GATE'S NAMES TOO ══
+        # THIS was what actually withheld SOR from five real FBS teams, and
+        # the alias fold in clean_games alone did not fix it. The RATING is
+        # keyed on ncaaf_game_results spellings (Appalachian State,
+        # Connecticut, Hawaii, San Jose State, UMass) while SP+ in
+        # ncaaf_team_stats uses the OTHER spellings (App State, UConn,
+        # Hawai'i, San José State, Massachusetts). So every one of the five
+        # WAS rated and then dropped here, because the gate's set and the
+        # rating's keys were in different name spaces — a silent set
+        # intersection losing exactly the teams whose names disagree.
+        #
+        # Measured: upcoming slate 102/107 with sor, the 5 missing being
+        # precisely these. Folding the gate into the same space as the rating
+        # takes it to 107/107.
+        fbs = {NCAAF_ALIASES.get(r['team'], r['team'])
+               for r in rows if r.get('sp_overall') is not None}
         return fbs or None
     except Exception:
         return None          # never block a publish on the gate failing
@@ -332,6 +347,45 @@ def validate(sport: str, cfg) -> int:
 # row says "LA Clippers". Left alone it would fork a franchise in two.
 NBA_ALIASES = {'Los Angeles Clippers': 'LA Clippers'}
 
+# ══ 2026-10-09 · NCAAF NAME SPLITS — FIVE REAL FBS TEAMS HAD NO SOR ════════
+# ncaaf_game_results carries BOTH spellings for five programs: the historical
+# feed's name on ~50 appearances and a second feed's name on ~5 this season,
+# while ncaaf_game_context (what the app queries) uses the SECOND one. The
+# solver therefore saw each as two separate teams, neither accumulating enough
+# history, and the display `sor`/`sos` keys came out missing for all five:
+#
+#     results (primary)   n    results (alt)        ncaaf_game_context
+#     App State           50   Appalachian State 5  Appalachian State
+#     UConn               51   Connecticut       6  Connecticut
+#     Hawai'i             51   Hawaii            5  Hawaii
+#     San José State      50   San Jose State    5  San Jose State
+#     Massachusetts       49   UMass             4  UMass
+#
+# Measured consequence: of 107 teams on the upcoming slate, 102 had `sor` and
+# the 5 missing were EXACTLY these. Their game cards rendered with 2 stat rows
+# instead of 14+ (no SOR, no SOS, no SP+, no defensive EPA) — and San Jose
+# State carried a STRONG-tier published pick on 2026-10-09 while showing
+# almost no data behind it.
+#
+# FOLD DIRECTION is toward the ncaaf_game_context spelling, because that is
+# the name the client holds when it queries team_stats_rolling. Folding the
+# other way would compute a correct rating under a name nothing looks up.
+#
+# EXACT-MATCH ONLY, and that matters here: 'UMass Dartmouth', 'Mass Maritime',
+# 'Central Connecticut', 'Southern Connecticut State' and 'Western Connecticut
+# St' are DIFFERENT schools that appear in the same results table. A substring
+# or fuzzy match would merge separate programs — the anti-pattern this
+# codebase has already removed once. A dict lookup cannot do that.
+NCAAF_ALIASES = {
+    'App State':      'Appalachian State',
+    'UConn':          'Connecticut',
+    "Hawai'i":        'Hawaii',
+    'San José State': 'San Jose State',
+    'Massachusetts':  'UMass',
+}
+
+ALIASES_BY_SPORT = {'NBA': NBA_ALIASES, 'NCAAF': NCAAF_ALIASES}
+
 # Franchise count per league, used to separate real teams from exhibition
 # squads by appearance count rather than by maintaining a name list.
 FRANCHISES = {'NBA': 30}
@@ -349,13 +403,28 @@ def _season_first_year(season) -> int | None:
 
 
 def clean_games(sport: str, games: list[dict], quiet: bool = False) -> list[dict]:
-    """Drop exhibitions and preseason; fold alias spellings together."""
+    """Drop exhibitions and preseason; fold alias spellings together.
+
+    2026-10-09: the alias fold now runs BEFORE the early return. It used to
+    sit after it, and since NCAAF is in neither FRANCHISES nor REG_START_MMDD
+    the function returned immediately for NCAAF — so the fold never executed
+    for the one sport that had five split teams. Aliasing and
+    exhibition-filtering are independent concerns; only the latter is
+    league-specific.
+    """
+    alias = ALIASES_BY_SPORT.get(sport) or {}
+    if alias:
+        folded = 0
+        for g in games:
+            for side in ('home', 'away'):
+                if g[side] in alias:
+                    g[side] = alias[g[side]]
+                    folded += 1
+        if folded and not quiet:
+            print(f'  folded {folded} alias appearances across '
+                  f'{len(alias)} {sport} name splits')
     if sport not in FRANCHISES and sport not in REG_START_MMDD:
         return games
-    alias = NBA_ALIASES if sport == 'NBA' else {}
-    for g in games:
-        g['home'] = alias.get(g['home'], g['home'])
-        g['away'] = alias.get(g['away'], g['away'])
     appear = collections.Counter()
     for g in games:
         appear[g['home']] += 1
