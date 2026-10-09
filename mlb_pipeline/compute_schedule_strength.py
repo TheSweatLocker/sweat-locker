@@ -67,7 +67,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import requests
 
@@ -496,6 +496,56 @@ def main():
                                'stat_key': 'in.(sos,sor)'}, timeout=60)
     landed = (chk.headers.get('content-range') or '').split('/')[-1]
     print(f'  wrote {written}/{len(payload)} · rows in table: {landed}')
+
+    # ══ 2026-10-09 · SNAPSHOT, SO THE QUESTION BECOMES ANSWERABLE ══
+    # Andy: "Do we have data from last week of how much SOR and SOS played in
+    # team covering spreads?" We did not, and could not.
+    #
+    # team_computed_stats is UPSERTED IN PLACE: one row per
+    # (sport, team, season, stat_key), a single refreshed_at, no history. So
+    # today's SOS/SOR already contains last week's results, and regressing it
+    # on last week's covers reads the outcome it is meant to predict — the
+    # rolling-stats leak trap (project_rolling_stats_leak_trap_929).
+    #
+    # Measured on the leaky version, which is still informative in one
+    # direction because leakage can only INFLATE a relationship:
+    #     SOS  NCAAF r=-0.002 (n=274) · NFL r=-0.017 (n=60)  -> a real NULL
+    #     SOR  NCAAF r=+0.320          · NFL r=+0.433         -> uninterpretable
+    # SOR is own_shrunk_win_pct + sos - 1 by this script's own derivation, and
+    # with SOS contributing nothing it is essentially current win% — including
+    # the game being measured. A 53pp NFL spread is not a real ATS effect.
+    #
+    # team_stats_rolling_history already has the exact column shape plus
+    # snapshot_date, so this needs no migration. Writing from `payload` rather
+    # than re-reading guarantees the snapshot equals what was just computed.
+    # Idempotent per day: the same (snapshot_date, sport, team, stat_key) is
+    # overwritten rather than duplicated.
+    # Whitelist the history table's own columns. Copying `payload` wholesale
+    # sent `refreshed_at`, which team_computed_stats has and the history table
+    # does not -> PGRST204 and a silent-ish skip. Only these keys exist on
+    # both.
+    _HIST_COLS = ('sport', 'team', 'season', 'stat_key', 'raw_value', 'rank',
+                  'league_size', 'direction', 'display_label', 'unit')
+    hist = [{k: p[k] for k in _HIST_COLS if k in p}
+            | {'snapshot_date': date.today().isoformat()}
+            for p in payload]
+    hwritten = 0
+    for i in range(0, len(hist), 500):
+        chunk = hist[i:i + 500]
+        hr = requests.post(
+            f'{SB}/rest/v1/team_stats_rolling_history'
+            '?on_conflict=snapshot_date,sport,team,season,stat_key',
+            headers=H_W, json=chunk, timeout=120)
+        if hr.status_code in (200, 201, 204):
+            hwritten += len(chunk)
+        else:
+            print(f'  ⚠ history write -> {hr.status_code}: '
+                  f'{(hr.text or "")[:200]}')
+            break
+    if hwritten:
+        print(f'  snapshotted {hwritten} SOS/SOR rows to '
+              f'team_stats_rolling_history for '
+              f'{date.today().isoformat()}')
 
     # ══ 2026-09-30 · PRUNE TEAMS WE NO LONGER RATE ══
     # An upsert writes; it never removes what it stopped producing. When
