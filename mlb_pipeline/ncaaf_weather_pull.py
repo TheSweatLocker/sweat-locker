@@ -222,8 +222,66 @@ STADIUMS: dict[str, dict] = {
 }
 
 
+OPEN_METEO = 'https://api.open-meteo.com/v1/forecast'
+
+
+def fetch_open_meteo(lat: float, lng: float,
+                     target_utc: datetime) -> Optional[dict]:
+    """Kickoff-hour forecast from Open-Meteo. Free, no API key.
+
+    ══ 2026-10-09 · THE STORED "FORECAST" WAS CURRENT CONDITIONS ══
+    OpenWeather onecall 3.0 needs a paid plan, so on the free tier it 401s
+    and the block below falls back to OW_CURRENT — the weather AT SCRAPE
+    TIME. This table's own writes recorded the giveaway:
+    weather_source='openweather_current'. For a Saturday game pulled on
+    Wednesday that is Wednesday's wind.
+
+    Measured on the NFL twin, 19 outdoor games with both the stored value and
+    the at-game reading backfilled from nflverse:
+        correlation(stored, actual) = -0.353   mean abs error 4.84 mph
+        stored >=11mph, actually was: 0 of 4 · actually >=11, caught: 0 of 2
+    So the wind lens (UNDER 55.61% at >=11mph, n=1,444,
+    project_wind_under_lens_1009) was uncapturable — not degraded by forecast
+    error, but fed a number that was never a forecast.
+
+    Open-Meteo returns real hourly forecasts up to 16 days, free and with NO
+    KEY, which also removes the missing-secret failure mode
+    (project_weather_pullers_silent_noop_1009). Tried first; OpenWeather
+    remains the fallback.
+    """
+    day = target_utc.strftime('%Y-%m-%d')
+    try:
+        r = requests.get(OPEN_METEO, params={
+            'latitude': lat, 'longitude': lng,
+            'hourly': 'temperature_2m,wind_speed_10m,precipitation',
+            'temperature_unit': 'fahrenheit', 'wind_speed_unit': 'mph',
+            'start_date': day, 'end_date': day, 'timezone': 'UTC',
+        }, timeout=20)
+        if r.status_code != 200:
+            return None
+        h = (r.json() or {}).get('hourly') or {}
+        times = h.get('time') or []
+        if not times:
+            return None
+        # Nearest hour to kickoff, not a daily mean — a daily average smears
+        # a windy evening into a calm morning.
+        idx = min(range(len(times)), key=lambda i: abs(
+            (datetime.fromisoformat(times[i]).replace(tzinfo=timezone.utc)
+             - target_utc).total_seconds()))
+        return {'temp': (h.get('temperature_2m') or [None] * len(times))[idx],
+                'wind_mph': (h.get('wind_speed_10m')
+                             or [None] * len(times))[idx],
+                'precip': (h.get('precipitation') or [0] * len(times))[idx] or 0,
+                'source': 'open_meteo'}
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
 def fetch_forecast(lat: float, lng: float, target_utc: datetime) -> Optional[dict]:
-    """Return {temp,wind_mph,precip,source} for target UTC datetime."""
+    """Kickoff-hour forecast. Open-Meteo first, OpenWeather as fallback."""
+    om = fetch_open_meteo(lat, lng, target_utc)
+    if om and om.get('wind_mph') is not None:
+        return om
     if not OW_KEY:
         return None
     try:

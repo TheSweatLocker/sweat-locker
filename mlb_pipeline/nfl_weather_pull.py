@@ -82,10 +82,76 @@ STADIUMS: dict[str, dict] = {
 }
 
 
+OPEN_METEO = 'https://api.open-meteo.com/v1/forecast'
+
+
+def fetch_open_meteo(lat: float, lng: float,
+                     target_utc: datetime) -> Optional[dict]:
+    """Hourly forecast AT KICKOFF from Open-Meteo. Free, no API key.
+
+    ══ 2026-10-09 · WE WERE STORING TODAY'S WEATHER, NOT KICKOFF'S ══
+    OpenWeather's onecall 3.0 endpoint requires a paid plan, so on the free
+    tier it 401s and fetch_forecast silently fell back to OW_CURRENT —
+    CURRENT conditions at scrape time. For a game five days out that is the
+    wind blowing at the stadium today, which has nothing to do with Sunday.
+    NCAAF's own writes recorded it: weather_source='openweather_current'.
+
+    MEASURED CONSEQUENCE, on 19 outdoor games with both a stored forecast and
+    the at-game reading backfilled from nflverse:
+        correlation(forecast, actual) = -0.353      <- NEGATIVE
+        mean absolute error           = 4.84 mph
+        forecast said >=11mph, actually was:  0 of 4   (precision 0%)
+        actually >=11mph, forecast caught:    0 of 2   (recall 0%)
+        worst: forecast 20 -> actual 4 · forecast 17 -> actual 2
+    So the wind lens — the one thing that measured positive this week, UNDER
+    55.61% at >=11mph on n=1,444 (project_wind_under_lens_1009) — was not
+    merely degraded by forecast error. It was uncapturable, because the
+    number we stored was not a forecast at all.
+
+    Open-Meteo gives genuine hourly forecasts up to 16 days out, free, with
+    NO KEY — which also removes the missing-secret failure this script was
+    hardened against earlier today
+    (project_weather_pullers_silent_noop_1009). It is tried FIRST; OpenWeather
+    stays as fallback so nothing is lost if Open-Meteo is unreachable.
+    """
+    day = target_utc.strftime('%Y-%m-%d')
+    try:
+        r = requests.get(OPEN_METEO, params={
+            'latitude': lat, 'longitude': lng,
+            'hourly': 'temperature_2m,wind_speed_10m,precipitation',
+            'temperature_unit': 'fahrenheit', 'wind_speed_unit': 'mph',
+            'start_date': day, 'end_date': day, 'timezone': 'UTC',
+        }, timeout=20)
+        if r.status_code != 200:
+            print(f'  ⚠ open-meteo {r.status_code}: {r.text[:120]}')
+            return None
+        h = (r.json() or {}).get('hourly') or {}
+        times = h.get('time') or []
+        if not times:
+            return None
+        # Pick the hour nearest kickoff rather than a daily average — a
+        # daily mean would smear a windy evening into a calm morning.
+        want = target_utc.strftime('%Y-%m-%dT%H:00')
+        idx = min(range(len(times)), key=lambda i: abs(
+            (datetime.fromisoformat(times[i]).replace(tzinfo=timezone.utc)
+             - target_utc).total_seconds()))
+        return {'temp': (h.get('temperature_2m') or [None] * len(times))[idx],
+                'wind_mph': (h.get('wind_speed_10m') or [None] * len(times))[idx],
+                'precip': (h.get('precipitation') or [0] * len(times))[idx] or 0,
+                'source': 'open_meteo', 'forecast_hour': times[idx],
+                'wanted_hour': want}
+    except Exception as e:                                  # noqa: BLE001
+        print(f'  ⚠ open-meteo failed ({type(e).__name__})')
+        return None
+
+
 def fetch_forecast(lat: float, lng: float, target_utc: datetime) -> Optional[dict]:
-    """Get forecast closest to target_utc from OpenWeather onecall (hourly)."""
+    """Kickoff-hour forecast. Open-Meteo first, OpenWeather as fallback."""
+    om = fetch_open_meteo(lat, lng, target_utc)
+    if om and om.get('wind_mph') is not None:
+        return om
     if not OW_KEY:
-        print('  ⚠ OPENWEATHER_API_KEY not set — skipping API pull')
+        print('  ⚠ open-meteo gave nothing and OPENWEATHER_API_KEY not set')
         return None
     params = {'lat': lat, 'lon': lng, 'appid': OW_KEY, 'units': 'imperial',
               'exclude': 'current,minutely,daily,alerts'}
