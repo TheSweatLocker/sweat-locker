@@ -206,17 +206,89 @@ def lr_warn_verdict(sport: str) -> dict:
                     f'below breakeven — cap justified')}
 
 
-def _lr_warn_sentence(sport: str) -> str:
-    rec = _lr_warn_record(sport)
-    if not rec or rec.get('hit_pct_lifetime') is None:
+#: A user-facing rate needs more than the old n>=10. See _lr_warn_sentence.
+_LR_WARN_PUBLISH_MIN_N = 20
+_LR_WARN_TIER_CACHE: dict = {}
+
+
+def _lr_warn_tier_record(sport: str, tier: str) -> Optional[tuple]:
+    """(w, l) for this sport's warn cohort AT THIS TIER, or None.
+
+    ══ 2026-10-09 · THE POOLED RATE WAS MIXING TIERS ══
+    v_signal_records groups by (sport, signal_key, kind) only, so the
+    sentence quoted ONE number across every tier. Broken out by pick_tier,
+    the NFL warn cohort that reads 11-4 (73.3%) overall is:
+
+        LEAN       8-0   (100%)     <- carries the entire result
+        COVERAGE   3-2   ( 60%)
+        STRONG     0-2   (  0%)
+
+    So a user reading a STRONG pick was shown "73%" for a tier that had gone
+    0-2, and the 73% itself rests on a single eight-game streak. Pooling
+    across tiers is exactly feedback_tier_mix_reverses_the_sign. NCAAF is
+    uniformly bad by comparison (COVERAGE 1-9, LEAN 20-38, STRONG 2-4), which
+    is why its pooled 33.3% was not misleading — it happened to agree with
+    every cell.
+
+    Reads signal_attribution directly because the view cannot express this.
+    """
+    k = ((sport or '').upper(), (tier or '').upper())
+    if k in _LR_WARN_TIER_CACHE:
+        return _LR_WARN_TIER_CACHE[k]
+    out = None
+    try:
+        r = requests.get(f'{SB}/rest/v1/signal_attribution', headers=H_READ,
+                         params={'select': 'result',
+                                 'sport': f'eq.{k[0]}',
+                                 'signal_key': 'eq.LR_SHADOW',
+                                 'kind': 'eq.warn',
+                                 'pick_tier': f'eq.{k[1]}',
+                                 'result': 'in.(W,L)',
+                                 'limit': '2000'}, timeout=20)
+        if r.status_code == 200 and isinstance(r.json(), list):
+            res = [str(x.get('result')) for x in r.json()]
+            out = (res.count('W'), res.count('L'))
+    except Exception as e:
+        print(f'  ⚠ LR-warn tier record lookup failed ({type(e).__name__})')
+    _LR_WARN_TIER_CACHE[k] = out
+    return out
+
+
+def _lr_warn_sentence(sport: str, tier: str = '') -> str:
+    """The warning's track record AT THE TIER THIS PICK WILL SHIP AS.
+
+    Quotes the tier-specific cohort, not the pooled one, and stays silent
+    rather than publishing a rate off a thin cell. Two guards, both of which
+    the previous version failed:
+      * TIER-SCOPED, so a STRONG pick is not shown a LEAN cohort's record.
+      * n >= _LR_WARN_PUBLISH_MIN_N, raised from 10. NFL's pooled figure was
+        n=15 with 8 of it in one cell; publishing a percentage off that is
+        the kind of number Andy has had to correct before (the hardcoded
+        4.3% that was wrong by 15 points for two weeks).
+    """
+    rec = _lr_warn_tier_record(sport, tier) if tier else None
+    if rec:
+        w, l = rec
+        n = w + l
+        if n >= _LR_WARN_PUBLISH_MIN_N:
+            return (f' At this tier, picks carrying this warning have gone '
+                    f'{w}-{l} ({100.0 * w / n:.0f}%, n={n}).')
+        # Tier cell too thin — say nothing rather than fall back to the
+        # pooled figure, which is what made this misleading in the first
+        # place.
         return ''
-    w = rec.get('wins_lifetime') or 0
-    l = rec.get('losses_lifetime') or 0
+    # No tier given (caller predates this change): fall back to pooled, but
+    # only at the raised floor.
+    pooled = _lr_warn_record(sport)
+    if not pooled or pooled.get('hit_pct_lifetime') is None:
+        return ''
+    w = pooled.get('wins_lifetime') or 0
+    l = pooled.get('losses_lifetime') or 0
     n = w + l
-    if n < 10:          # too thin to publish as a rate
+    if n < _LR_WARN_PUBLISH_MIN_N:
         return ''
     return (f' Picks carrying this warning have gone {w}-{l} '
-            f'({float(rec["hit_pct_lifetime"]):.0f}%, n={n}).')
+            f'({float(pooled["hit_pct_lifetime"]):.0f}%, n={n}, all tiers).')
 
 
 def _record_cap(pp: dict, cap_tier: str, cap_conv: int, reason: str) -> None:
@@ -449,7 +521,13 @@ def _apply_gates(pp: dict, spread_anchor_weight,
                         applied.append('lr_warn_shadowed')
                     _strip_lr_warn(new_pp)
                     _flag = (f'⚠ LR shadow warns other way (p_home={p_home:.2f}) — '
-                             f'{_cap_word}.' + _lr_warn_sentence(sport))
+                             f'{_cap_word}.'
+                             # Pass the tier the pick will SHIP as, so the
+                             # quoted record is that tier's cohort rather
+                             # than a pool spanning tiers that went 8-0 and
+                             # 0-2.
+                             + _lr_warn_sentence(sport,
+                                                 str(new_pp.get('tier') or '')))
                     _append_flag(new_pp, _flag)
                     applied.append(f'lr_warn_{"cap" if locked else "pass"}:p={p_home:.2f}')
             except (TypeError, ValueError):
