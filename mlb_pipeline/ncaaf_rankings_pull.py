@@ -84,16 +84,31 @@ def fetch_upcoming_games() -> list:
     """Get NCAAF games in next 8 days needing rank patch."""
     today_iso = datetime.now(timezone.utc).date().isoformat()
     horizon_iso = (datetime.now(timezone.utc).date() + timedelta(days=8)).isoformat()
+    # 2026-10-09 BUGFIX: this was a dict literal with 'game_date' as a
+    # DUPLICATE KEY. Python keeps only the last value, so the gte.today bound
+    # was discarded before requests ever built the URL — the old comment
+    # ("last one wins in PostgREST") blamed the server for what the dict
+    # literal did. The query became `game_date <= today+8` with NO lower
+    # bound, and with order=asc + limit=400 that returns the OLDEST 400 games
+    # of the season. Once the season passed 400 games the upcoming slate fell
+    # off the end of the page and AP rank stopped being patched entirely —
+    # populated through 2026-10-03, then 0/70 on every later game.
+    #
+    # PostgREST needs two filters on the SAME column, which a dict cannot
+    # express. Either repeat the key via a list of tuples (below) or use an
+    # and=() group. A list of tuples is the general fix for any repeated
+    # query param.
     r = requests.get(
         f'{SB}/rest/v1/ncaaf_game_context',
         headers=H_READ,
-        params={
-            'select': 'game_id,home_team,away_team,game_date,home_ap_rank,away_ap_rank',
-            'game_date': f'gte.{today_iso}',
-            'game_date': f'lte.{horizon_iso}',  # last one wins in PostgREST
-            'order': 'game_date.asc',
-            'limit': '400',
-        },
+        params=[
+            ('select', 'game_id,home_team,away_team,game_date,'
+                       'home_ap_rank,away_ap_rank'),
+            ('game_date', f'gte.{today_iso}'),
+            ('game_date', f'lte.{horizon_iso}'),
+            ('order', 'game_date.asc'),
+            ('limit', '400'),
+        ],
         timeout=30,
     )
     if r.status_code != 200:
