@@ -199,8 +199,13 @@ bash "$RUN_STEP" --label "grade_public_receipts.py (nightly)" \
 # Recovered 50 on the first run; the other 183 have no graded prop row either
 # and are left alone rather than guessed.
 #
-# This does NOT stop the orphaning. Whatever deletes prop_jerry_reads rows out
-# from under live receipts still does -- that is a separate change.
+# CORRECTED 2026-10-08: the orphaning is NOT ongoing. Both pruners
+# (cleanup_stale_coverage_props.py, dedup_prop_dupes.py) grew a receipt pin on
+# 2026-10-06 and it is verified holding -- of 411 post-guard receipts, 69 had
+# their source pruned and ALL 69 already carried a result (68 NO_ACTION, 1
+# Win); orphaned-and-still-ungraded post-guard is ZERO. The pin protects a
+# receipt only while result IS NULL, by design. So this step is historical
+# recovery, not a workaround for a live bug.
 bash "$RUN_STEP" --label "grade_orphaned_receipts.py (nightly)" \
   python grade_orphaned_receipts.py --days 45 --apply
 

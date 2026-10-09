@@ -22,9 +22,24 @@ mis-stamped:
 
 `grade_public_receipts` resolves a prop receipt by following source_id into the
 source table, so a deleted source row makes the receipt permanently
-ungradeable. It reports `source_row_ungraded` and moves on, forever. Something
-deletes prop_jerry_reads rows (regeneration / dedupe) while public_receipts
-holds a pointer nothing maintains.
+ungradeable. It reports `source_row_ungraded` and moves on, forever.
+
+WHO DELETED THEM, AND WHY IT IS NOT STILL HAPPENING (corrected 2026-10-08).
+Two scripts pruned prop_jerry_reads: cleanup_stale_coverage_props.py and
+dedup_prop_dupes.py. I first wrote that this was ongoing. It is not — BOTH
+grew a receipt pin on 2026-10-06 (`_receipt_pinned`, imported rather than
+copied, failing closed on a lookup error). Verified on 2026-10-08 across all
+15,218 prop_jerry_reads-sourced receipts:
+
+    distinct source ids 15218 · still present 13963 · MISSING 1255
+    post-guard (game_date >= 2026-10-06): 411 receipts, 69 orphaned
+    of those 69: 68 NO_ACTION, 1 Win
+    orphaned AND still ungraded, post-guard: 0
+
+Zero leaks. The pin protects a receipt only while `result IS NULL`, by design
+("once the receipt carries a result it no longer needs its source"), so
+pruning a source under an already-resolved receipt is correct. Every orphan
+this script recovers predates the guard.
 
 THE KEY INSIGHT: the receipt does not need its source row. `pick_label` carries
 the whole bet — "Tyler Mahle Over 13.5 Outs (Jerry 85/100)" — and
@@ -42,9 +57,9 @@ WHAT IT WILL NOT DO
     receipt is reported and left alone, never guessed
   * never touches identity or pick fields (the 20260918b freeze would revert
     them anyway); `result` and `graded_at` are mutable by design
-  * does not try to fix the orphaning itself. Stopping prop_jerry_reads rows
-    from being deleted out from under live receipts is a separate change to
-    whatever deletes them, and guessing at that here would be the band-aid.
+  * does not re-fix the orphaning. Both pruners were already guarded on
+    2026-10-06 and the guard is verified holding (see above), so this is pure
+    historical recovery, not a workaround for a live bug.
 
 CLI
     python grade_orphaned_receipts.py --days 180
