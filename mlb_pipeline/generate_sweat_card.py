@@ -281,7 +281,30 @@ def fetch_yesterday_recap():
     })
     if y_card_rows:
         y_data = y_card_rows[0].get("data") or {}
-        if isinstance(y_data.get("top_8"), list) and y_data["top_8"]:
+        # 2026-10-09 · THE RECAP WAS MLB-ONLY. Andy: "yesterday sweat card
+        # college football games and possibly others plays are not showing on
+        # yesterday recap on sweat card why, also the sharp says 0-1 yesterday
+        # but there were like 6 plays".
+        #
+        # Measured on sweat_card_2026-10-08, which stores three lists:
+        #     top_8             1 entry   (MLB only)
+        #     football_picks    4 entries (all NCAAF, correctly graded)
+        #     unified_top_picks 5 entries (ALL sports, correctly graded)
+        # This function read top_8, so the recap showed ONE play and summarised
+        # it "0-1" while four graded NCAAF plays and a winning NHL play sat in
+        # the sibling fields. Nothing was mis-graded — the receipts were right
+        # (Liberty WIN, WKU WIN, ARST LOSS, UTSA LOSS, CHW LOSS = 2-3). The
+        # recap was reading the wrong field.
+        #
+        # unified_top_picks is the all-sport list the card already composes and
+        # already resolves, so this needs no new grading path. top_8 remains
+        # the fallback for older cached cards that predate it, which is why the
+        # selection is a fallback chain rather than a swap.
+        y_picks = (y_data.get("unified_top_picks")
+                   if isinstance(y_data.get("unified_top_picks"), list)
+                   and y_data.get("unified_top_picks")
+                   else y_data.get("top_8"))
+        if isinstance(y_picks, list) and y_picks:
             # Overlay live prop results so the recap reflects current
             # grading state. Yesterday's card top_8 was written at
             # midnight while many late games were still pending; props
@@ -525,7 +548,7 @@ def fetch_yesterday_recap():
                     "result": _resolved_result(p),
                     "game": p.get("game"),
                 }
-                for p in y_data["top_8"]
+                for p in y_picks
             ]
             # Backfill POTD + DotD results from the top_8 entries. The
             # best_bet cache row doesn't get its result field populated
@@ -535,10 +558,10 @@ def fetch_yesterday_recap():
             # 2026-09-14: use _resolved_result() so NFL-prop POTDs pick up
             # the live-graded result from nfl_pipeline_props instead of
             # the frozen "Pending" written at lock time.
-            potd_pk = next((p for p in y_data["top_8"] if p.get("type") == "POTD"), None)
+            potd_pk = next((p for p in y_picks if p.get("type") == "POTD"), None)
             if potd_pk and recap.get("potd"):
                 recap["potd"]["result"] = _resolved_result(potd_pk)
-            dawg_pk = next((p for p in y_data["top_8"] if p.get("type") == "DotD"), None)
+            dawg_pk = next((p for p in y_picks if p.get("type") == "DotD"), None)
             if dawg_pk and recap.get("dawg"):
                 recap["dawg"]["result_status"] = _resolved_result(dawg_pk)
         # 2026-09-14: recompute top_8_summary from freshly-resolved
