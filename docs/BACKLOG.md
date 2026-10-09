@@ -2592,3 +2592,51 @@ and the observed column becomes trustworthy as n accumulates.
 
 Related: 162 of 191 NFL and 58 of 110 NCAAF registry rows are tier
 UNVALIDATED and still carry weight; NCAAF has 17 ANTI_VALIDATED.
+
+---
+
+## B67 — UFC externals cannot be graded: the game_id is a foreign ID space
+**Found 2026-10-08.** Open. **A naive fix here produces wrong grades that
+look correct — read this before touching it.**
+
+UFC externals: 63 picks, all from `bfo`, all `ml`, 46 on completed events,
+**0 graded**. Two gaps looked like the cause: UFC is absent from
+`resolve_externals.SPORT_CONFIG`, and no workflow calls the resolver for UFC
+at all. Both true, and both irrelevant, because the join underneath does not
+exist.
+
+`ufc_fight_results` has everything needed (`fighter_a`, `fighter_b`, `winner`
+as 'a'/'b', `method`, `event_date`). And `external_picks.game_id` is populated
+on all 63. Joining them on `ufc_fight_results.id` even appears to work:
+
+    external pick       game_id '388'   game_date 2026-08-01
+    ufc_fight_results   id       388    event_date 2025-09-13
+
+**Eleven months apart.** The match is coincidental — both ID spaces are small
+integers, so 3 of 6 sampled ids "matched" and returned a real `winner`. A
+resolver built on this would have silently graded picks against unrelated
+fights and reported success. Same class as
+`project_nhl_props_cannot_join_their_game_1003`.
+
+`external_picks.game_id` for UFC is bestfightodds' own fight id (source
+`bfo`). There is no fallback: the rows carry no fighter names, no matchup and
+no pick_label — only `pick_side` ('FIGHTER_A'/'FIGHTER_B') and
+`odds_american`. So the side cannot even be resolved to a person without the
+bridge.
+
+Needs, in order:
+  1. an identity bridge from the bfo fight id to `ufc_fight_results` — most
+     likely by capturing fighter names at scrape time in the bfo puller, then
+     matching (event_date, fighter pair) the way `resolve_externals` does for
+     team sports;
+  2. only then a UFC path in the resolver. UFC genuinely does not fit
+     SPORT_CONFIG's home/away + spread_result shape, so it needs its own
+     grader, not a config entry (`feedback_universal_vs_sport_specific`:
+     universal unless the data model differs — here it differs);
+  3. a join-rate assertion so a 0%% or coincidental match rate fails loudly
+     instead of writing grades.
+
+Until (1) exists, UFC source records cannot render, and that is the honest
+state rather than a bug to paper over.
+
+DO NOT "fix" this by adding UFC to SPORT_CONFIG and joining on id.
