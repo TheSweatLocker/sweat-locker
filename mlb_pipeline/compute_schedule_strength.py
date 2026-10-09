@@ -413,16 +413,26 @@ def main():
         for v in vals:
             payload.append({
                 'sport': sport, 'team': v['team'], 'season': args.season,
-                'stat_key': 'sos', 'raw_value': v['sos'],
+                # 2026-10-09 · RENAMED off the display keys. 'sos'/'sor' are
+                # what GameDetailV2 renders, and they now carry the
+                # opponent-adjusted MARGIN values from
+                # compute_margin_strength, which beat this win%-based measure
+                # out of sample (+0.393 vs +0.343, n=4,345 NFL games). This
+                # measure is retained under its own explicit name rather than
+                # deleted, so the two stay comparable on live data -- but it
+                # is no longer what users see.
+                'stat_key': 'sos_winpct', 'raw_value': v['sos'],
                 'rank': rk_sos[v['team']], 'league_size': size,
-                'direction': 'higher', 'display_label': 'Strength of Sched',
+                'direction': 'higher',
+                'display_label': 'Strength of Sched (win%)',
                 'unit': '', 'refreshed_at': _NOW,
             })
             payload.append({
                 'sport': sport, 'team': v['team'], 'season': args.season,
-                'stat_key': 'sor', 'raw_value': v['sor'],
+                'stat_key': 'sor_winpct', 'raw_value': v['sor'],
                 'rank': rk_sor[v['team']], 'league_size': size,
-                'direction': 'higher', 'display_label': 'Strength of Record',
+                'direction': 'higher',
+                'display_label': 'Strength of Record (win%)',
                 'unit': '', 'refreshed_at': _NOW,
             })
         top = sorted(vals, key=lambda x: -x['sor'])[:3]
@@ -493,7 +503,7 @@ def main():
     chk = requests.get(f'{SB}/rest/v1/{TARGET}',
                        headers={**H, 'Prefer': 'count=exact', 'Range': '0-0'},
                        params={'select': 'team', 'season': f'eq.{args.season}',
-                               'stat_key': 'in.(sos,sor)'}, timeout=60)
+                               'stat_key': 'in.(sos_winpct,sor_winpct)'}, timeout=60)
     landed = (chk.headers.get('content-range') or '').split('/')[-1]
     print(f'  wrote {written}/{len(payload)} · rows in table: {landed}')
 
@@ -563,7 +573,7 @@ def main():
     for sport, keep in produced.items():
         cur = page(TARGET, {'sport': f'eq.{sport}',
                             'season': f'eq.{args.season}',
-                            'stat_key': 'in.(sos,sor)', 'select': 'team'})
+                            'stat_key': 'in.(sos_winpct,sor_winpct)', 'select': 'team'})
         orphans = sorted({r['team'] for r in cur} - keep)
         if not orphans:
             continue
@@ -576,7 +586,7 @@ def main():
             d = requests.delete(f'{SB}/rest/v1/{TARGET}', headers=H_W,
                                 params={'sport': f'eq.{sport}',
                                         'season': f'eq.{args.season}',
-                                        'stat_key': 'in.(sos,sor)',
+                                        'stat_key': 'in.(sos_winpct,sor_winpct)',
                                         'team': f'eq.{t}'}, timeout=60)
             if d.status_code in (200, 204):
                 pruned += 1

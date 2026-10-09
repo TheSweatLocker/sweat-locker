@@ -102,14 +102,22 @@ def main():
     ap.add_argument('--sport', default='NCAAF')
     ap.add_argument('--def-metric', default='def_epa_per_play',
                     choices=DEF_METRICS)
-    ap.add_argument('--sor-key', default='sor',
-                    choices=('sor', 'sor_margin'), dest='sor_key',
+    # 2026-10-09: 'sor' now carries the opponent-adjusted MARGIN values (the
+    # display keys were swapped), and the win%-based history was renamed to
+    # 'sor_winpct' so neither series mixes two metrics. Default to
+    # sor_winpct because it has the most snapshot history (8 dates vs 4);
+    # switch to sor_margin once that series is long enough.
+    ap.add_argument('--sor-key', default='sor_winpct',
+                    choices=('sor_winpct', 'sor_margin', 'sor'),
+                    dest='sor_key',
                     # argparse runs help through %-formatting, so a literal
                     # percent must be doubled or add_argument raises
                     # "badly formed help string".
                     help="'sor' is win%%-based (8 snapshot dates); "
                          "'sor_margin' is the better opponent-adjusted "
-                         "margin version but only has 4 dates so far")
+                         "margin version but only has 4 dates so far; "
+                         "'sor' is the live display key, margin-valued "
+                         "from 2026-10-09 onward")
     a = ap.parse_args()
     sport = a.sport.upper()
     dm = a.def_metric
@@ -118,7 +126,7 @@ def main():
     hist = _page('team_stats_rolling_history',
                  {'select': 'team,stat_key,raw_value,snapshot_date',
                   'sport': f'eq.{sport}',
-                  'stat_key': f'in.(sor,sor_margin,{dm})'})
+                  'stat_key': f'in.(sor,sor_winpct,sor_margin,{dm})'})
     # 2026-10-09 · PER-METRIC LOOKUP. The first version demanded SOR and the
     # defence metric in the SAME snapshot, which discarded most games because
     # the two are snapshotted on different days (NCAAF sor: 8 dates from

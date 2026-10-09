@@ -462,8 +462,31 @@ def main() -> int:
             print(f'  publishing {len(keep)} of {len(rating)} teams '
                   f'(FBS only; the fit still used every game)')
         payload = []
+        # ══ 2026-10-09 · ALSO WRITE THE DISPLAY KEYS ══
+        # Andy asked whether the SOS/SOR on the game-detail card is the
+        # opponent-adjusted equation or just record. It was just record: the
+        # card hardcodes stat_keys 'sos' and 'sor'
+        # (GameDetailV2.tsx:4227-4286) and `sos_margin`/`sor_margin` appear
+        # NOWHERE in app/. So the better metric — validated out of sample at
+        # corr +0.393 against win%'s +0.343 on n=4,345 NFL games — was being
+        # computed nightly and shown to nobody.
+        #
+        # There is no OTA path (project_no_ota_path_client_fixes_need_builds),
+        # so surfacing it by adding new rows to the card needs an Apple build.
+        # Writing the margin values under the keys the card ALREADY reads is
+        # backend-only and lands immediately. The `_margin` keys stay as the
+        # canonical names so nothing downstream has to care about the alias,
+        # and the alias can be dropped once a build can show the real names.
+        #
+        # The win%-based script moves to `sos_winpct`/`sor_winpct` in the same
+        # change, and its existing history rows are renamed to match — because
+        # leaving both metrics under one stat_key would make `sor` history mean
+        # win% before today and margin after, silently breaking every
+        # snapshot-based backtest that spans the boundary.
         for key, vals, label in (('sor_margin', rating, 'Strength of Record (margin)'),
-                                 ('sos_margin', sos, 'Strength of Schedule (margin)')):
+                                 ('sos_margin', sos, 'Strength of Schedule (margin)'),
+                                 ('sor', rating, 'Strength of Record'),
+                                 ('sos', sos, 'Strength of Schedule')):
             if keep is not None:
                 vals = {t: v for t, v in vals.items() if t in keep}
             order = sorted(vals, key=lambda x: -vals[x])

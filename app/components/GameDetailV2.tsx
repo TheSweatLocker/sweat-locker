@@ -4654,12 +4654,18 @@ const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
     what: 'Average winning or losing margin.',
     read: 'Predicts future performance better than record, but is distorted by blowouts against weak non-conference opponents. Read it next to Strength of Schedule.'},
 
+  // 2026-10-09: these two now carry the OPPONENT-ADJUSTED MARGIN rating, not
+  // opponent win rate. The values are in POINTS and the help text below was
+  // rewritten to match — the previous copy described a win-share fraction and
+  // would have been actively wrong about what the number on screen means.
+  // Backend swap only (compute_margin_strength now writes the sos/sor keys),
+  // because there is no OTA path and the card's stat_key list is hardcoded.
   sos: {name: 'Strength of Schedule',
-        what: 'How hard the opponents this team has already played are — their combined win rate, with games against this team removed.',
-        read: 'Higher means a tougher slate faced. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited. Early in a season this lands on very few possible values — after three games it can only be a handful of fractions — so two teams showing the identical number is normal, not an error.'},
+        what: 'How hard the opponents this team has already played are, in points — the average quality of the schedule faced, where 0 is an average opponent.',
+        read: 'Higher means a tougher slate. It says nothing about how good THIS team is: a 1-4 team can lead the league in it. Use it to judge whether a record was earned or inherited. Because it rates opponents on scoring margin adjusted for who THEY played — not just their win-loss record — a team that beat someone who later turns out to be good gets credit for it as that opponent\'s rating rises.'},
   sor: {name: 'Strength of Record',
-        what: 'How impressive this record is GIVEN that schedule — this team\'s win rate minus the rate an average team would expect against the same opponents.',
-        read: '+0.30 means winning 30 points more often than a neutral team would against this slate. 0.00 is exactly as expected. Negative means the record flatters them. This is the one that separates teams; SOS alone does not. Early in a season it lands on very few possible values — after two games there are only six across the whole league — so teams cluster on identical numbers and the percentile can jump a long way between neighbouring values.'},
+        what: 'How good this team has actually been, in points, once you correct for who they played — roughly how much better or worse than an average team they would be on a neutral field.',
+        read: '+10 is a strong team, 0 is average, -10 a weak one, and the gap between two teams is roughly the spread you would expect on a neutral field. This is the one that separates teams; SOS alone does not. It is built from scoring margin rather than win-loss, with home field, blowout damping and a correction for how few games have been played, so one lopsided result cannot carry it.'},
   sp_overall:  {name: 'SP+ Overall', what: 'A tempo- and opponent-adjusted rating of overall team quality, in points.',
                 read: 'It is a points-above-average figure, so 0 is an average team. +10 is a strong team, -10 a weak one. The gap between two teams is roughly the spread on a neutral field.'},
   sp_offense:  {name: 'SP+ Offense', what: 'The offensive half of SP+ — points the offense is worth against an average defense.',
@@ -4874,11 +4880,15 @@ function StatCell({row, unit, align, edge, strong, decimals}: any) {
 const _LOW_RES_STATS = new Set(['sos', 'sor']);
 
 function rowDecimals(a: any, b: any, statKey?: string): number {
-  // SOS/SOR are win-share fractions over a handful of games, so their
-  // resolution is genuinely coarse: measured 2026-09-27, NFL sos had 7
-  // distinct values across 32 teams and sor had 6. Three decimals on
-  // "0.000" advertises a precision the metric does not have and is why
-  // two tied teams read as a placeholder rather than as a real tie.
+  // SOS/SOR are held at two decimals, but as of 2026-10-09 for a DIFFERENT
+  // reason than when this was written. The original: they were win-share
+  // fractions over a handful of games and genuinely coarse — measured
+  // 2026-09-27, NFL sos had 7 distinct values across 32 teams and sor had 6,
+  // so three decimals on "0.000" advertised precision the metric did not
+  // have. They now carry an opponent-adjusted margin in POINTS, which is
+  // continuous, so the ties-as-placeholder problem is gone — but two
+  // decimals is still right for a points figure, where "+2.53" is readable
+  // and "+2.534" is false precision on a few games of scoring margin.
   if (statKey && _LOW_RES_STATS.has(statKey)) return 2;
   const mag = Math.max(
     a == null || !isFinite(Number(a)) ? 0 : Math.abs(Number(a)),
