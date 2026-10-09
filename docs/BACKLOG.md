@@ -2866,3 +2866,70 @@ VERIFY: compare `surface_records?surface=eq.prop_coverage` against
 
 **Still open from B64:** nothing actionable as written. Closing claims 1-3;
 the residual is a product question above, not a defect.
+
+## 2026-10-09 · B70 — NCAAF full-slate spot check through our own lens
+
+Andy 2026-10-09: *"i want to breakddown and spot check all college football
+games thorugh our lens looking at raw data veirfying accuacry while also
+assessing SOR/SOS and if we concur with engine."*
+
+Three distinct jobs in one ask, and they want separating because two are
+mechanical and one is judgement:
+
+**(a) RAW-DATA ACCURACY — mechanical, scriptable.** Per game, confirm the
+inputs the read is built on actually exist and are right:
+  - `close_spread` present AND the sign convention correct (NCAAF: NEGATIVE =
+    home favourite; this has been wrong before — `project_close_spread_sign_bug_914`)
+  - SP+ off/def/overall present for both teams (currently 100% on the slate)
+  - `home_ap_rank`/`away_ap_rank` — fixed 2026-10-09 in `3bd19b06`, now 29/70
+  - team stats present for both teams in `team_stats_rolling`, and whether the
+    row is current-season or a prior-season fallback (`*_stats_blend_label`)
+  - whether the published line still matches the market (`project_published_lines_wrong_1007`
+    — close_spread was being served as the OPEN)
+  - pick/tier internal consistency: `primary_play.tier` vs any cap applied,
+    conviction inside the tier's ceiling
+
+**(b) SOR/SOS ASSESSMENT — mechanical.** Per game, the margin-rating gap
+(`sor` home − away, now the opponent-adjusted points rating) against the market
+spread. The rating is in points and the gap is meant to approximate a
+neutral-field spread, so `sor_gap + HFA` vs `close_spread` is a like-for-like
+comparison and the residual is the disagreement. Report it, do NOT treat it as
+an edge: SOR/SOS is a sound descriptive rating but UNPROVEN as a predictor
+(`project_sos_sor_root_cause_930`), and the SOR+defence combo test came back
+inside noise.
+
+**(c) DO WE CONCUR WITH THE ENGINE — judgement, not scriptable.** This is the
+part Andy actually wants and it cannot be automated: reading each game's raw
+inputs and saying whether the pick follows from them. The script's job is to
+lay the evidence out per game so this can be done quickly and consistently;
+the concur/dissent call is mine to make and state, with a reason.
+
+### Scope and honesty constraints
+
+- 70 upcoming NCAAF games, 46 of them on the 10-10 Saturday slate. At that
+  volume the output must be a compact one-line-per-game table with a flagged
+  subset, not 70 paragraphs.
+- **The engine's NCAAF record is the context this runs in:** cards measured
+  -29.2% ROI on 44 live-priced plays, conviction does not rank (r~+0.03), and
+  the market itself is a coin flip at every slice on 6,329 games. So "do we
+  concur" must not become a hunt for reasons to like picks. Where the raw data
+  does not support the pick, say so; where it is genuinely ambiguous, say that
+  too rather than manufacturing a verdict.
+- Anything surfaced as a specific play must be DB-verified per CLAUDE.md
+  rule 1 — no composed pick lists.
+- Known live example to carry in: Maryland @ Ohio State (-34.5) shows
+  `sweat_tier=PRIME` beside `primary_play.tier=LEAN`. That is CORRECT, not a
+  defect — `sweat_tier` measures distance from the book, not pick confidence
+  (relabelled 10-02). A spot check must not re-flag it.
+
+### Timing
+
+The useful window for the 10-10 slate is tonight. Picks are already locked
+(`pick_locked_at` stamped 10-09T02:41Z), so this is a VERIFICATION pass and a
+record of where we agree — not an opportunity to re-pick. If a genuine data
+defect turns up, that is a different conversation and Andy's call.
+
+FIX: build `ncaaf_slate_spotcheck.py` producing one row per game — market
+line, SOR/SOS gap, SP+ gap, AP ranks, model projection, pick + tier, data-
+completeness flags, and a residual column — then review the output and record
+concur/dissent per game with reasons.
