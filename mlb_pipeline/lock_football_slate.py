@@ -100,7 +100,7 @@ def _iso(s):
         return None
 
 
-def run(sport, dry=False, unlock=False):
+def run(sport, dry=False, unlock=False, beyond_slate=False):
     tbl = CTX_TABLE[sport]
     today = _today_et()
     horizon = read_horizon(sport, on=today)
@@ -119,17 +119,85 @@ def run(sport, dry=False, unlock=False):
         return 0
     rows = r.json()
 
-    if unlock:
+    if unlock or beyond_slate:
         targets = [g for g in rows if g.get('pick_locked_at')
                    and (_iso(g.get('kickoff_utc')) or now) > now]
-        print(f'  {sport}: UNLOCK {len(targets)} upcoming game(s)')
+        if beyond_slate:
+            # 2026-10-08 SCOPED UNLOCK. Measured: 80 upcoming NFL games were
+            # stamped, out to 2027-01-10, with 65 of them BEYOND the slate
+            # window — and 42 stamped in a single day when no slate holds 42
+            # games. So the auto-stamp that 20260929c was written to remove is
+            # still firing, and picks months out are frozen at whatever was
+            # computed in early October. recompute_nfl_primary_play exists to
+            # re-score once team form, defense and team stats land, and a
+            # stamped row refuses it: 35 refusals logged in pick_lock_drift
+            # this week alone.
+            #
+            # Plain --unlock is the wrong instrument here because it also
+            # frees the CURRENT slate, which is correctly locked ("whatever
+            # comes out in the morning stays"). This releases ONLY what is
+            # outside the window this same script uses to decide what to
+            # stamp, so the two can never disagree about where the boundary
+            # is: not on the slate, and not kicking off within
+            # LOCK_IMMINENT_HOURS.
+            keep = []
+            for g in targets:
+                ko = _iso(g.get('kickoff_utc'))
+                on_slate = bool(ko and (ko - now) <= timedelta(
+                    days=LOCK_SLATE_DAYS))
+                imminent = bool(ko and (ko - now) <= timedelta(
+                    hours=LOCK_IMMINENT_HOURS))
+                if not on_slate and not imminent:
+                    keep.append(g)
+            targets = keep
+            print(f'  {sport}: UNLOCK-BEYOND-SLATE {len(targets)} game(s) '
+                  f'past {LOCK_SLATE_DAYS}d - current slate left locked')
+        else:
+            print(f'  {sport}: UNLOCK {len(targets)} upcoming game(s)')
+        # 2026-10-08: VERIFY, because this used to lie. The unlock printed
+        # "65 game(s)" and cleared nothing: every PATCH returned 200 and the
+        # stamp survived, because enforce_pick_lock still carries
+        #     NEW.pick_locked_at := OLD.pick_locked_at;
+        # the line migration 20260929d exists to delete and which is NOT
+        # applied to the database. A 204 — or a 200 — is not a write.
+        # Each PATCH now asks for the row back and the result is counted, so a
+        # no-op reports itself instead of being mistaken for success.
+        cleared = 0
         for g in targets:
             if dry:
+                print(f"      DRY FREE {g['game_date']} "
+                      f"{g['away_team']}@{g['home_team']}")
                 continue
-            requests.patch(
-                f"{SUPABASE_URL}/rest/v1/{tbl}?game_id=eq.{g['game_id']}",
-                headers=HDRS, json={'pick_locked_at': None}, timeout=30)
-        return len(targets)
+            pr = requests.patch(
+                f'{SUPABASE_URL}/rest/v1/{tbl}',
+                headers={**HDRS, 'Prefer': 'return=representation'},
+                params={'game_id': f"eq.{g['game_id']}"},
+                json={'pick_locked_at': None}, timeout=30)
+            if pr.status_code not in (200, 204):
+                print(f'      ! patch {pr.status_code} {pr.text[:120]}')
+                continue
+            back = pr.json() if pr.content else []
+            if not back:
+                print(f"      ! {g['game_id']}: filter matched no row")
+            elif back[0].get('pick_locked_at') is not None:
+                pass                       # counted as not-cleared below
+            else:
+                cleared += 1
+        if not dry and targets and cleared == 0:
+            # ASCII only: this module does not reconfigure stdout and the
+            # Windows cp1252 console raises UnicodeEncodeError on emoji,
+            # which would turn an honest warning into a crash.
+            print(f'  !! {sport}: {len(targets)} game(s) targeted and ZERO '
+                  f'cleared. The stamp is being restored by the database.')
+            print(f'     enforce_pick_lock still has '
+                  f'"NEW.pick_locked_at := OLD.pick_locked_at". Apply '
+                  f'supabase/migrations/20260929d_pick_lock_allow_unlock.sql '
+                  f'(and 20260929c, which removes the auto-stamp) - until '
+                  f'then every future pick stays frozen at first write and '
+                  f'recompute_* cannot land.')
+        elif not dry:
+            print(f'  {sport}: cleared {cleared}/{len(targets)}')
+        return cleared if not dry else len(targets)
 
     window_open = lock_active(sport)
 
@@ -182,11 +250,16 @@ def main():
     ap.add_argument('--unlock', action='store_true',
                     help='Deliberately release upcoming locks for the sport. '
                          'Explicit and auditable, per 20260926b.')
+    ap.add_argument('--unlock-beyond-slate', action='store_true',
+                    help='Release stamps ONLY on games outside the slate '
+                         'window, leaving the current slate locked. Safe to '
+                         'run every invocation; idempotent.')
     a = ap.parse_args()
     sports = [a.sport] if a.sport else sorted(CTX_TABLE)
     print(f'=== lock_football_slate {_today_et()} ===')
     for s in sports:
-        run(s, dry=a.dry_run, unlock=a.unlock)
+        run(s, dry=a.dry_run, unlock=a.unlock,
+            beyond_slate=a.unlock_beyond_slate)
 
 
 if __name__ == '__main__':

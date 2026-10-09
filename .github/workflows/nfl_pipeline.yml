@@ -1160,6 +1160,16 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
+          # 2026-10-08: release stamps on games OUTSIDE the slate window before
+          # stamping the slate itself. Measured 65 NFL games stamped out to
+          # 2027-01-10 and 7 NCAAF beyond the window, frozen at whatever was
+          # computed in early October, which is what recompute_* keeps being
+          # refused against (35 refusals in pick_lock_drift this week).
+          # Idempotent and scoped -- the current slate is never touched. It
+          # currently clears ZERO and says so loudly, because enforce_pick_lock
+          # still restores OLD.pick_locked_at; it starts working the moment
+          # 20260929d + 20260929c are applied.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL unlock-beyond-slate)" python lock_football_slate.py --sport NFL --unlock-beyond-slate
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL)" python lock_football_slate.py --sport NFL
 
       # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and
