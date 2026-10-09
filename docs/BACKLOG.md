@@ -2690,3 +2690,112 @@ picks. So data builds one slate at a time regardless of the lock state.
     pick side — the LR override and the ML/RL reroutes change the side after
     the ensemble chose it, so `_ensemble_sources` describes the pre-override
     pick. The shadow must account for that or it will compare the wrong thing.
+
+## 2026-10-09 · B68 + B69 — Andy's two product items (DISCUSSION, not yet scoped)
+
+Andy 2026-10-09: *"Thoguths on changinfg how stats are displayed to where its
+Home O vs Away D, Away O vs Home D, instead of seeing offense then switching to
+defense ot see both teams of each ... this will be discussion. Other thing i
+wnated to bring up is abetter filtering process for prop jerry or better way of
+surfcing in game prop loko in game details"*
+
+### B68 · Stat display: matchup pairing instead of Offense/Defense sub-tabs
+
+**Today:** `TeamStatsCard` in `app/components/GameDetailV2.tsx` holds
+`side: 'off'|'def'` and renders rows as *stat label | away cell | home cell*.
+So the Offense tab compares AWAY OFFENCE to HOME OFFENCE — two units that never
+face each other. Answering "can the home team move the ball" means holding four
+numbers across a tab switch.
+
+**Andy's framing is analytically correct, not just a layout preference.** Points
+are produced by Home O vs Away D. It is also the exact form of our own rating
+model (`perf = off_i - def_j + home` in `opponent_adjusted_rating.py`), so the
+display would finally mirror the engine instead of cutting across it.
+
+**It is the same data transposed** — the sub-tab stops meaning Offense/Defense
+and starts meaning *which team has the ball*. No new query. The work is in which
+keys pair.
+
+**HOW WELL EACH SPORT PAIRS** (from the OFFENSE / DEFENSE key lists):
+
+- **NBA — best fit.** points_pg/points_allowed_pg, efg_pct/opp_efg_pct,
+  tov_pct/opp_tov_pct, orb_pct/opp_orb_pct. Four-factors was designed for this.
+- **NHL — excellent.** xgf_per60/xga_per60, high_danger_for/against, and
+  pp_pct/pk_pct, which is a textbook special-teams matchup.
+- **NFL — 5 clean pairs.** pass_yds_pg, rush_yds_pg, total_yds_pg,
+  off_pass_epa/def_pass_epa, off_rush_epa/def_rush_epa.
+- **NCAAB — 2 pairs.** ppg_for/ppg_against, off_rating/def_rating.
+- **NCAAF — ONLY 3 pairs, and it is a DATA gap, not a UX one.** off_epa_per_play,
+  off_success_rate and sp_offense pair; pass_yds_pg / rush_yds_pg /
+  total_yds_pg / third_down_pct / off_explosiveness have NO defensive
+  counterpart because the NCAAF_DEFENSE list carries no yards-allowed stats at
+  all. A matchup view ships half-empty for NCAAF until those are pulled.
+- **MLB — does not pair conceptually.** Batting (obp/slg/woba/wrc+) against
+  pitching (era/whip/k9) are different units. MLB's real matchup is lineup vs
+  the STARTING PITCHER, which is a different feature, not this one.
+
+**THREE CATEGORIES, NOT TWO** — the structural point worth settling first:
+
+1. **Matchup pairs** (Home O vs Away D) — drive each side's scoring.
+2. **Game environment** — pace/tempo, and in NFL the wind finding. These are
+   ADDITIVE, not opposed: both teams' pace combine to set total plays. Putting
+   tempo in a "vs" column implies a contest that isn't happening.
+3. **Context** — SOS/SOR, which tell you how much to trust 1 and 2. The 09-26
+   comment in the file already says schedule context belongs beside the stats.
+
+**ALSO FOUND:** the NFL_OFFENSE list has no points_pg while NFL_DEFENSE has
+points_allowed_pg — so you can see what an NFL team concedes but not what it
+scores. Asymmetric and probably just an omission.
+
+**HONEST CAVEAT to carry into the discussion:** a matchup differential invites
+"home O outranks away D, so bet home". Our own measurements say team stats do
+not beat the close (project_models_dont_beat_the_close_1005, and the NCAAF
+market is 50/50 at every slice on 6,329 games). Ship this as *comprehension*,
+not as an implied edge — no green "EDGE" chip on the pair.
+
+VERIFY: grep for `const [side, setSide]` and the `_OFFENSE = [` / `_DEFENSE = [`
+lists in app/components/GameDetailV2.tsx
+FIX: regroup the key lists into pairs + environment + context; relabel the
+sub-tab. Needs a client build (project_no_ota_path_client_fixes_need_builds).
+
+### B69 · Game-detail props: price is never shown, and Jerry's read is right there unused
+
+Found while scoping Andy's second item. GamePropsPanel and its fetch in
+GameDetailV2.tsx select only
+player_name, player_team, prop_type, direction, prop_line, display_conviction,
+tier, signals.
+
+`v_mlb_props_publishable` has 21 columns. **Four relevant ones are already in
+the view and simply not selected:**
+
+- `book_over_odds`, `book_under_odds` — **THE PRICE IS NOT SHOWN AT ALL.** A
+  user cannot see they are being offered -250 on a prop whose own publishable
+  band is -300..+150, and cannot see the Batter Hits O0.5 -200+ juice trap.
+  After a full day establishing that price decides the result, a prop row
+  without its price is the single worst omission in the panel.
+- `jerry_short_read`, `jerry_verdict`, `jerry_conviction` — Jerry's prose is
+  sitting in the view unselected. Andy's "better way of surfcing in game prop
+  loko" is mostly **selecting fields that already exist**, not new pipeline.
+
+**Two silent-blank defects of the same class** (feedback_explicit_select_silent_blanks):
+
+1. The panel renders `p.projected_value ?? p.projected` — **neither column
+   exists in the view**, so "Projected" can NEVER render on the self-fetch
+   path. It only appears when a parent passes gameProps in. Dead field in the
+   modal.
+2. Fetch is `.limit(15)`, panel is `.slice(0, 8)` — **7 props silently
+   dropped** with nothing telling the user more exist. Same truncation class as
+   project_postgrest_truncation_audit_912.
+
+**And it is MLB-ONLY:** the fetch is gated on `gamesSport === 'MLB'`. NFL, NHL
+and NBA props never appear in game detail. (NCAAF/NCAAB are correctly excluded —
+feedback_college_sports_no_props.)
+
+So "better filtering" has a cheap prerequisite: show price, show Jerry's read,
+stop dropping 7 rows, and say how many were filtered. Filtering UI on top of a
+panel that hides the price would sort the wrong field.
+
+VERIFY: grep for `v_mlb_props_publishable` in app/components/GameDetailV2.tsx
+and read the select list.
+FIX: widen the select, render price with the band gate visible, group by prop
+family, surface the filtered-out count. Client build required.
