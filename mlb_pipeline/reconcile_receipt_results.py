@@ -122,15 +122,32 @@ def _page(t, p, cap=60000):
     return out
 
 
-def truth_from_props(key):
-    """The measured answer, or None. Never guesses."""
+#: Per-run cache of prop rows by (table, game_date). truth_from_props is
+#: called once per distinct BET, and each call used to page the whole props
+#: table for that date — fine for one day's reconcile, ruinous for a
+#: many-date backfill (grade_orphaned_receipts walks 180 days). Caching here
+#: rather than in the caller keeps ONE definition of the matching rules.
+_PROPS_CACHE: dict = {}
+
+
+def truth_from_props(key, rows=None):
+    """The measured answer, or None. Never guesses.
+
+    `rows` lets a caller supply prefetched prop rows for this date; otherwise
+    they are fetched once per (table, date) and cached for the run.
+    """
     date_s, sport, player, direction, line, stat = key
     tbl = PROPS_TABLE.get(sport)
     if not tbl:
         return None, None
-    rows = _page(tbl, {'select': 'player_name,prop_type,prop_line,direction,'
-                                 'result,final_value',
-                       'game_date': f'eq.{date_s}'})
+    if rows is None:
+        ck = (tbl, date_s)
+        if ck not in _PROPS_CACHE:
+            _PROPS_CACHE[ck] = _page(
+                tbl, {'select': 'player_name,prop_type,prop_line,direction,'
+                                'result,final_value',
+                      'game_date': f'eq.{date_s}'})
+        rows = _PROPS_CACHE[ck]
     for r in rows:
         if str(r.get('player_name') or '').strip().lower() != player:
             continue

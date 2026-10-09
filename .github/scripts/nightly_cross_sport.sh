@@ -185,6 +185,25 @@ bash "$RUN_STEP" --detector --label "verify_potd_coverage.py (all sports)" \
 bash "$RUN_STEP" --label "grade_public_receipts.py (nightly)" \
   python grade_public_receipts.py
 
+# 2026-10-08 · recover receipts whose SOURCE ROW was deleted. Measured 321
+# receipts ungraded on games that had already finished; 234 of them point at
+# prop_jerry_reads rows that no longer exist (sampled 40 source_ids, found 0,
+# every id inside the live range 34..136969 -- so deleted after the receipt was
+# written, not mis-stamped). grade_public_receipts resolves a prop receipt by
+# following source_id into the source table, so a dead pointer makes it
+# permanently ungradeable: it logs source_row_ungraded and moves on, forever.
+#
+# The receipt does not need its source row. pick_label carries the whole bet,
+# and the measured stat lives in <sport>_pipeline_props. Runs AFTER
+# grade_public_receipts so it only sees what that pass could not resolve.
+# Recovered 50 on the first run; the other 183 have no graded prop row either
+# and are left alone rather than guessed.
+#
+# This does NOT stop the orphaning. Whatever deletes prop_jerry_reads rows out
+# from under live receipts still does -- that is a separate change.
+bash "$RUN_STEP" --label "grade_orphaned_receipts.py (nightly)" \
+  python grade_orphaned_receipts.py --days 45 --apply
+
 # ── 5. RECORDS + RECEIPTS ───────────────────────────────────────────────
 echo ""
 echo "── records ──"
