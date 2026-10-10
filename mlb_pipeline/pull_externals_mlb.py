@@ -1452,27 +1452,51 @@ def fetch_tonyspicks(slate: list, game_date: str) -> tuple[list, int]:
 FETCHERS = {
     'dimers': fetch_dimers,
     'covers': fetch_covers,
-    'cbs': fetch_cbs,
     'action': fetch_action,
     'vsin': fetch_vsin,
     'bettingpros': fetch_bettingpros,
-    'oddsshark': fetch_oddsshark,
     'pickswise': fetch_pickswise,
     'pickdawgz': fetch_pickdawgz,
     'docsports': fetch_docsports,
-    'scp': fetch_scp,
-    'fangraphs': fetch_fangraphs,
-    'ballparkpal': fetch_ballparkpal,
+    # 2026-10-10 · FIVE UNIMPLEMENTED STUBS REMOVED FROM DISPATCH:
+    #     cbs · oddsshark · scp · fangraphs · ballparkpal
+    # Each of their fetch_* functions is a one-line `return [], 200`. They
+    # have NEVER produced a row (verified against all 12,833 external_picks
+    # rows), and returning 200 made the runner count them as OK — five silent
+    # successes per pull that produced nothing, which is why MLB appeared to
+    # have 18 sources when 13 are implemented.
+    #
+    # Dropping them from FETCHERS rather than deleting their SOURCE_REGISTRY
+    # config: the config records the intended url and fade_flag for whoever
+    # implements them, and an unmapped source prints
+    #     "no fetcher for <name> — skip"
+    # and counts 0/0 instead of a false OK. That is exactly how the disabled
+    # betfirm entry behaved, and it is what made this findable at all.
+    # The stub functions are left in place so restoring an entry is a
+    # one-line change once a real parser exists.
     'oddscrowd': fetch_oddscrowd,
     'scoresandodds': fetch_scoresandodds,
     'sbr': fetch_sbr,
-    # 2026-09-08 DISABLED: betfirm site added 403 anti-scraping between
-    # 8/31 and 9/8. Last successful pull 2026-08-31; every attempt since
-    # returned 403. Not worth playwright/rotating-UA workaround for
-    # ~51 picks/week volume (10% of scoresandodds). Re-enable by
-    # restoring the entry + confirming site allows scraping again.
-    # See watchdog: sharp_source_dropped alert 9/8.
-    # 'betfirm': fetch_betfirm,
+    # 2026-09-08 DISABLED: betfirm added 403 anti-scraping between 8/31 and
+    # 9/8. The disable note set the re-enable condition as "restoring the
+    # entry + confirming site allows scraping again".
+    #
+    # 2026-10-10 RE-ENABLED — that condition is met, verified rather than
+    # assumed. Tested with the EXACT url and the EXACT headers
+    # externals_consensus sends (not a hand-rolled browser request, which is
+    # the "probe the site, not your own url" trap in reverse):
+    #     3 consecutive GETs -> 200, 200, 200 · 33,384 bytes each
+    # and the parser runs end to end, extracting the live matchup
+    # (white sox @ guardians) off the page. No playwright and no UA rotation
+    # needed, so the "not worth a workaround" reasoning no longer applies —
+    # there is no workaround to build.
+    #
+    # Volume is small (~51 picks/week, 10% of scoresandodds) but MLB is down
+    # to the playoffs where EVERY source on a one-game slate matters, and
+    # betfirm is fade_flag 'trust' rather than another consensus feed.
+    # If the 403 returns, the watchdog (sharp_source_dropped, which caught it
+    # on 9/8) fires again and this entry comes back out.
+    'betfirm': fetch_betfirm,
     'tonyspicks': fetch_tonyspicks,
 }
 
