@@ -1,6 +1,0 @@
-=== nfl_qb_vs_team_backfill · seasons [2021, 2022, 2023, 2024, 2025] ===
-  fetching nflverse player_stats (seasons: [2021, 2022, 2023, 2024, 2025]) ...
-  loaded 2368 QB game rows
-  aggregated: 1425 (qb, opp) buckets
-
-✓ upserted 1425 nfl_qb_vs_team rows
