@@ -3042,3 +3042,103 @@ NHL/NBA get the same eight sources football already has. Their scrapers exist
 and work; the gap is wiring, not scraping. Verify NCAAB's nine defined sources
 actually fire when the season opens 11-03 rather than discovering it in
 November.
+
+## 2026-10-10 · B73 — externals: the per-source record is three different bets pooled
+
+Andy: *"Are ther imrpivemtns that could be mde on extenrsls if so add to list"*
+
+Today's work fixed the PLUMBING (dead subsets in three pullers, sbr not
+landing for NCAAF, betfirm's expired 403, five MLB stubs counted as OK,
+NHL/NBA 3→6 sources). What it exposed is that the way we JUDGE externals is
+wrong, which matters more than coverage, because source weighting feeds the
+engine.
+
+### B73a · ml / rl / total are pooled into one hit rate — **the big one**
+
+11,473 graded external rows, split by surface:
+
+    ml      3439-2708   55.9%   n=6,147
+    total   1388-1343   50.8%   n=2,731
+    rl      1281-1314   49.4%   n=2,595
+
+An **ml** pick is graded on WHO WON and has no fixed breakeven — it depends
+entirely on the price. An **rl/total** pick does have one, 52.38% at -110.
+Pooling them and comparing the blend to 52.38% is the documented
+ml-vs-rl conflation (feedback_ml_vs_rl_conflation) applied to source records.
+
+It distorts the leaderboard badly. Per-source, by surface:
+
+    source           ml              rl            total
+    dimers        77.1% n=468        —               —        <- ml ONLY
+    sbr           59.6% n=428   40.0% n=5     52.7% n=328
+    pickdawgz     59.4% n=451   43.5% n=62    51.8% n=137
+    oddscrowd     56.2% n=1084  49.2% n=1148  50.7% n=1153
+    action        55.0% n=1159       —               —
+    covers        55.9% n=376   46.6% n=163         —
+    scoresandodds 51.2% n=537   51.2% n=853   49.7% n=874
+    pickswise     50.9% n=458   48.1% n=335   52.4% n=143
+    docsports     49.5% n=759       —               —
+    betfirm       45.6% n=180   36.8% n=19    57.6% n=66
+
+dimers' headline 77.1% is an ml-only source picking win-probability
+favourites. Favourites win straight up ~77% of the time at the prices dimers
+selects; it is not a 25-point edge. Any weighting that reads the pooled number
+ranks dimers top and is ranking "picks favourites".
+
+FIX: record and weight per (source, surface). Never compare an ml hit rate to
+52.38%.
+
+### B73b · **externals are BELOW breakeven on spreads, pooled across every source**
+
+rl is 49.4% on n=2,595 — and 2SE is ±2.0pp, so that is not noise. Six of the
+seven sources with any rl volume sit under 50%. If the engine gives external
+agreement any weight on a SPREAD pick, it is weighting a measurably
+sub-breakeven input. Worth checking what signal_sources actually does with
+external agreement on rl before adding any more sources.
+
+### B73c · only 46.7% of graded rows carry a PRICE
+
+5,354 of 11,473. Without `odds_american` an ml pick cannot be converted to ROI
+at all, so the one surface where externals look strongest (ml 55.9%) is the
+one we cannot value. A 55.9% ml hit rate is profitable or ruinous depending
+entirely on whether those are -130 favourites or -250 ones.
+
+FIX: capture the price on emit wherever the source shows one; report ml
+performance as ROI, not hit rate, and refuse to report it at all where the
+price is missing.
+
+### B73d · grading coverage is uneven, and UFC is zero
+
+    MLB    8893/9303  95.6%
+    NFL     876/1112  78.8%
+    NCAAF  1593/2094  76.1%
+    NHL     111/263   42.2%
+    UFC       0/63     0.0%   <- B67, foreign game_id space
+
+NHL at 42% means more than half its external rows can never inform a source
+record. UFC at 0% means its one live source (bfo) has never been judged.
+
+### B73e · unverified-until-season, and a stub named `fetcher_todo`
+
+NBA (opens 10-21) and NCAAB (opens 11-03) are now wired to 6 sources each and
+BOTH show zero rows, so neither is provable today. The refresh subsets were
+widened on evidence from other sports, not measured on these. Run
+`--refresh --dry-run` for each once games exist. UFC has one real source plus
+a stub literally named `fetcher_todo`.
+
+### B73f · the five MLB stubs: implement or delete
+
+cbs, oddsshark, scp, fangraphs, ballparkpal each have a `return [], 200` body
+and are now out of dispatch (259e20cb) so they no longer report a false OK.
+Their SOURCE_REGISTRY config remains with the intended url. Decide per source
+whether to write the parser or drop the config — leaving a defined-but-absent
+source is what made MLB look like it had 18.
+
+### NOT a bug, recorded so it is not re-litigated
+
+NCAAF per-game source coverage (median 6, max 7) is near its structural
+ceiling. The pick sites do not write up a 60-game Saturday: dimers covered 8
+games, pickdawgz 9, pickswise 12 of 46. Only the money-flow and consensus
+sources (scoresandodds, oddscrowd, covers, sbr, action) scale to a full slate.
+Reaching 7-10 per NCAAF game needs NEW full-slate sources, not better wiring
+of the current ones.
