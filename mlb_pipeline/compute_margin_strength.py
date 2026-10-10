@@ -382,6 +382,13 @@ NCAAF_ALIASES = {
     "Hawai'i":        'Hawaii',
     'San José State': 'San Jose State',
     'Massachusetts':  'UMass',
+    # 2026-10-10: a LIVE split, not a historical one. In the 2026 season
+    # ncaaf_game_results carries BOTH 'FIU' (6 game-sides) and 'Florida
+    # International' (2), so the team was being rated twice off partial
+    # schedules — FIU at 2.70 and Florida International at 0.39 in the same
+    # fit. Folded toward 'FIU' because that is what ncaaf_game_context uses,
+    # so the published rating joins the game rows without a second alias.
+    'Florida International': 'FIU',
 }
 
 ALIASES_BY_SPORT = {'NBA': NBA_ALIASES, 'NCAAF': NCAAF_ALIASES}
@@ -596,6 +603,46 @@ def main() -> int:
                           '?on_conflict=sport,team,season,stat_key',
                           headers=H_W, json=payload, timeout=90)
         print(f'\nwrite {len(payload)} rows -> {r.status_code} {r.text[:140]}')
+
+        # 2026-10-10 GHOST ROWS. This write UPSERTS and has never deleted, so
+        # a team that disappears from the fit keeps its last-written row
+        # forever. The alias fold is exactly what makes teams disappear:
+        # folding 'Massachusetts' into 'UMass' removed Massachusetts from the
+        # rating, but its old row survived at rank 69 — which inflated the
+        # league to 138 when 137 teams were actually rated and shifted every
+        # rank below it. Those ranks are USER-FACING (GameDetailV2 reads these
+        # stat_keys), and SOR/SOS now feed the game rows too via
+        # populate_game_sor, so a ghost is not cosmetic.
+        #
+        # Scoped tightly: same sport, same season, only the stat_keys this run
+        # actually wrote, and only teams absent from THIS run's rating set.
+        # Nothing else can be touched.
+        wrote_keys = sorted({p['stat_key'] for p in payload})
+        live = {p['team'] for p in payload}
+        gr = requests.get(f'{SB}/rest/v1/team_computed_stats',
+                          headers=H,
+                          params={'select': 'team,stat_key',
+                                  'sport': f'eq.{args.sport}',
+                                  'season': f'eq.{season}',
+                                  'stat_key': f'in.({",".join(wrote_keys)})',
+                                  'limit': '2000'}, timeout=60)
+        ghosts = sorted({x['team'] for x in (gr.json() or [])
+                         if isinstance(x, dict) and x.get('team') not in live}
+                        ) if gr.status_code in (200, 206) else []
+        if ghosts:
+            print(f'  {len(ghosts)} GHOST team(s) stored but not in this fit '
+                  f'(folded away or dropped): {ghosts}')
+            for t in ghosts:
+                dr = requests.delete(
+                    f'{SB}/rest/v1/team_computed_stats',
+                    headers=H_W,
+                    params={'sport': f'eq.{args.sport}',
+                            'season': f'eq.{season}', 'team': f'eq.{t}',
+                            'stat_key': f'in.({",".join(wrote_keys)})'},
+                    timeout=60)
+                print(f'    delete {t!r} -> {dr.status_code}')
+        else:
+            print('  no ghost rows')
     return 0
 
 

@@ -164,8 +164,17 @@ def main():
           f'sos {len(by.get("sos", {}))} teams · refreshed {fresh}')
 
     def look(key, team):
-        t = ALIASES.get(team, team)
-        return by.get(key, {}).get(t)
+        """Exact name FIRST, alias only as a fallback.
+
+        2026-10-10: order matters. compute_margin_strength now folds 'Florida
+        International' into 'FIU' (they were being rated as two teams off
+        partial schedules), so after that fold the stats table carries 'FIU'
+        and the alias below is unnecessary. Trying the alias first would then
+        look up a name that no longer exists and silently write nothing. Exact
+        first means this works both before and after the fold lands.
+        """
+        d = by.get(key, {})
+        return d.get(team) or d.get(ALIASES.get(team, team))
 
     # ---- UPCOMING games only. This is the leak guard. -------------------
     games = _page(tbl, {'select': 'game_id,game_date,home_team,away_team',
