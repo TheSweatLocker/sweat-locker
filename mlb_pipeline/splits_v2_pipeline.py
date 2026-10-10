@@ -121,7 +121,7 @@ def normalize_from_public_splits_archive(sport: str, game_date: str) -> list[dic
     return rows
 
 
-def _game_id_lookup(sport: str, game_date: str) -> dict:
+def _game_id_lookup_fwd(sport: str, game_date: str) -> dict:
     """Return {(away_team, home_team): game_id} for a sport's game_context
     in a 10-day horizon starting at game_date.
     Used when source-specific tables (fadereport_signals, cleatz_signals)
@@ -227,6 +227,60 @@ def _game_id_lookup(sport: str, game_date: str) -> dict:
     return enriched
 
 
+def _game_id_lookup(sport: str, game_date: str) -> dict:
+    """{(away, home): (game_id, flipped)} — adds NEUTRAL-SITE orientation.
+
+    2026-10-10. Andy: "i need net flow spread and ml avaiable for texas ou
+    gam only see total".
+
+    Red River is played at a neutral site, so fadereport lists it as
+    "Texas @ Oklahoma" while ncaaf_game_context holds "Oklahoma @ Texas".
+    Every key built by _game_id_lookup_fwd is FORWARD-only, so no alias can
+    rescue a reversed pair — the game gets no game_id and its ml/rl rows are
+    dropped on the floor. Its total survived only because a second source
+    happened to list that game the same way we do.
+
+    Measured on 2026-10-10: of 46 NCAAF games fadereport matched 45, and the
+    single miss was this game. All 25 of its null-game_id rows belonged to
+    just three matchups, and the other two (UConn@Temple, Hawai'i@Arizona
+    State) already resolve through the alias table. Orientation was the only
+    unhandled case.
+
+    ⚠ A REVERSED MATCH INVERTS HOME/AWAY — the source's "HOME" is our AWAY.
+    Mapping it silently would repeat project_external_handler_sport_blind_1003,
+    where inverted externals corrupted 11,646 rows. So this returns a
+    (game_id, flipped) PAIR and the caller MUST flip HOME/AWAY when flipped
+    is True. OVER/UNDER are orientation-independent and must NOT be flipped.
+
+    Forward keys always win: a reversed pair is registered only where no
+    forward key already claims it, so a genuine A@H plus H@A in the same
+    horizon can never shadow one another.
+    """
+    base = _game_id_lookup_fwd(sport, game_date)
+    out = {k: (gid, False) for k, gid in base.items()}
+    for (a, h), gid in base.items():
+        if (h, a) not in base:
+            out.setdefault((h, a), (gid, True))
+    return out
+
+
+def _resolve_gid(gid_idx: dict, away, home):
+    """(game_id, flipped) for a source's (away, home), or (None, False)."""
+    hit = gid_idx.get((away, home))
+    if not hit:
+        return None, False
+    if isinstance(hit, tuple):
+        return hit[0], bool(hit[1])
+    return hit, False          # tolerate a plain-dict index
+
+
+def _orient(side: str, flipped: bool) -> str:
+    """Flip HOME/AWAY for a reversed-orientation match. Never OVER/UNDER."""
+    if not flipped:
+        return side
+    return _flip(side) if side in ("HOME", "AWAY") else side
+
+
 def _snapshot_window(sport: str, game_date: str) -> str:
     """2026-09-10 · pre-game snapshot window per sport.
 
@@ -271,10 +325,16 @@ def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
         if not isinstance(row, dict): continue
         gid = row.get("game_id"); mkt = str(row.get("market","")).lower()
         sharp = str(row.get("sharp_side_norm","")).upper()
-        # Fallback: lookup gid via (away, home) team names when scraper left it null
+        # Fallback: lookup gid via (away, home) team names when scraper left it
+        # null. 2026-10-10: the index now also carries REVERSED pairs for
+        # neutral-site games, so a hit can require inverting HOME/AWAY — see
+        # _game_id_lookup. Without this, Red River matched nothing and its ml
+        # and rl rows were silently dropped.
+        _flp = False
         if not gid and row.get("home_team") and row.get("away_team"):
-            gid = gid_idx.get((row["away_team"], row["home_team"]))
+            gid, _flp = _resolve_gid(gid_idx, row["away_team"], row["home_team"])
         if not (gid and mkt and sharp): continue
+        sharp = _orient(sharp, _flp)
         ts = row.get("fetched_at")
         # sharp side gets bets_side_pct / money_side_pct
         for metric, val in (("bets_pct", row.get("bets_side_pct")),
@@ -318,9 +378,13 @@ def normalize_from_cleatz_signals(sport: str, game_date: str) -> list[dict]:
         if not isinstance(row, dict): continue
         gid = row.get("game_id"); mkt = str(row.get("market","")).lower()
         sharp = str(row.get("sharp_side_norm","")).upper()
+        # 2026-10-10: reversed-orientation hits invert HOME/AWAY — see
+        # _game_id_lookup.
+        _flp = False
         if not gid and row.get("home_team") and row.get("away_team"):
-            gid = gid_idx.get((row["away_team"], row["home_team"]))
+            gid, _flp = _resolve_gid(gid_idx, row["away_team"], row["home_team"])
         if not (gid and mkt and sharp): continue
+        sharp = _orient(sharp, _flp)
         ts = row.get("fetched_at")
         for metric, val in (("bets_pct", row.get("sharp_bets_pct")),
                             ("handle_pct", row.get("sharp_handle_pct"))):
