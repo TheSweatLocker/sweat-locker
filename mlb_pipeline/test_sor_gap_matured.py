@@ -244,19 +244,49 @@ def main():
 
     print('\n' + '=' * 74)
     hits = [t for t in tests if t[5].startswith('SIGNAL')]
-    print(f'  {len(tests)} buckets · {len(hits)} cleared breakeven by >2SE · '
-          f'chance ~{len(tests) * 0.025:.1f}')
+    # 2026-10-10 VERDICT BUG. This block used to count ONLY cells ABOVE
+    # breakeven and then print "nothing cleared" — which is how a strong
+    # FADE sat in the output for weeks being reported as a null. A bucket at
+    # 45.60% with a 2SE band of 4.81 is not nothing: it says back the OTHER
+    # side at 54.40%. A directional test must score both directions, so the
+    # fade side is scored here explicitly.
+    fades = [t for t in tests
+             if (BREAKEVEN - t[1]) > t[3] and (100 - t[1]) > BREAKEVEN]
+    print(f'  {len(tests)} buckets · {len(hits)} beat breakeven by >2SE '
+          f'FOLLOWING SOR · {len(fades)} where FOLLOWING is >2SE WORSE than '
+          f'breakeven · chance ~{len(tests) * 0.05:.1f} total')
     if hits:
-        print('\n  CLEARED:')
+        print('\n  CLEARED BY FOLLOWING SOR:')
         for lbl, hit, n, band, edge, _t in sorted(hits, key=lambda z: -z[4]):
             print(f'    {lbl.strip():<42}{hit:6.2f}%  n={n:<5} '
                   f'edge {edge:+.2f}pp')
-        print('\n  This SUPERSEDES the earlier SOR null — that test pooled')
-        print('  infant ratings and diluted the effect.')
-    else:
-        print('\n  Nothing cleared even with a per-team maturity floor and the')
-        print('  raw gap tested separately. The earlier null holds for the')
-        print('  right reason this time rather than by accident.')
+    if fades:
+        print('\n  FOLLOWING SOR IS SIGNIFICANTLY BAD HERE — which makes the')
+        print('  fade a candidate, NOT a proven play. Both numbers shown:')
+        for lbl, hit, n, band, edge, _t in sorted(fades, key=lambda z: z[1]):
+            fade_edge = 100 - hit - BREAKEVEN
+            verdict = ('fade also clears by 2SE' if fade_edge > band
+                       else 'fade does NOT clear breakeven by 2SE')
+            print(f'    {lbl.strip():<36}follow {hit:6.2f}%  fade '
+                  f'{100 - hit:6.2f}%  n={n:<5} 2SE +/-{band:.2f}')
+            print(f'      {"":34}fade edge {fade_edge:+.2f}pp -> {verdict}')
+        print('\n  BE PRECISE ABOUT WHAT THIS DOES AND DOES NOT SAY.')
+        print('  "Following loses by >2SE" and "fading wins by >2SE" are NOT')
+        print('  the same claim: breakeven is 52.38, not 50, so there is a')
+        print('  4.76pp dead zone where both sides lose to the vig. Report')
+        print('  the fade as a PRE-REGISTRATION candidate to grade forward,')
+        print('  never as a measured edge, unless its own edge clears its own')
+        print('  2SE band above.')
+        print('\n  The one thing here stronger than any single cell is the')
+        print('  GRADIENT: the fade strengthens monotonically with BOTH the')
+        print('  gap threshold and the per-team maturity floor. A lucky cell')
+        print('  does not line up in two directions at once. Note also that')
+        print('  nested thresholds are NOT independent tests — |edge|>=7 at')
+        print('  floor 8 is a subset of floor 6, so these are one finding')
+        print('  seen twice, not two confirmations.')
+    if not hits and not fades:
+        print('\n  Nothing cleared in EITHER direction, with a per-team')
+        print('  maturity floor and the raw gap tested separately.')
     return 0
 
 
