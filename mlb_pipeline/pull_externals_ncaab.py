@@ -734,9 +734,32 @@ def main():
     if args.source:
         sources = [args.source]; triggered_by = f'manual:single:{args.source}'
     elif args.refresh:
-        # Sat 10am ET — subset that publishes late-week (Peterson lock,
-        # Doc Sports finalizations, Action money-line % settlement)
-        sources = ['action', 'vsin', 'bettingpros']
+        # Pre-tip refresh.
+        #
+        # 2026-10-10 · THE THIRD COPY OF THE SAME DEFECT, found by
+        # audit_external_source_coverage.py. The subset was
+        # ['action', 'vsin', 'bettingpros'] — identical to the NFL and NCAAF
+        # copies — and vsin/bettingpros are two of the five documented
+        # MLB-ONLY sources. They are live for MLB (240 and 199 rows) and have
+        # never produced a row for any other sport, so this list was copied
+        # from the MLB puller without checking its members work here.
+        #
+        # ⚠ UNVERIFIABLE TODAY, AND THAT IS THE POINT. NCAAB opens 2026-11-03,
+        # so ALL NINE of its defined sources currently show zero rows — this
+        # subset cannot be measured until there are games. What IS known is
+        # that relying on three names, two of which have never produced
+        # outside MLB, would have the refresh fetch at most ONE source on
+        # opening night. So it is widened now to the same set that measured
+        # 7/7 live on NFL and NCAAF today, which is strictly better than the
+        # status quo even unverified.
+        #
+        # STILL OWED before 2026-11-03 (B72 flagged this): run
+        #   python pull_externals_ncaab.py --refresh --dry-run
+        # once games exist and confirm these actually fire, rather than
+        # discovering it in November. oddscrowd is excluded here for speed
+        # (slowest source) and because the full evening pull covers it.
+        sources = ['action', 'covers', 'scoresandodds',
+                   'dimers', 'pickswise', 'pickdawgz']
         triggered_by = 'cron:pretip_ncaab_refresh'
     else:
         # Wed 6pm ET — everything (or Thu 2pm TNF card lock)

@@ -904,9 +904,32 @@ def main():
     if args.source:
         sources = [args.source]; triggered_by = f'manual:single:{args.source}'
     elif args.refresh:
-        # Sat 10am ET — subset that publishes late-week (Peterson lock,
-        # Doc Sports finalizations, Action money-line % settlement)
-        sources = ['action', 'vsin', 'bettingpros']
+        # Sat 10am ET — the late-week refresh.
+        #
+        # 2026-10-10 · SAME DEFECT AS NCAAF HAD, found by
+        # audit_external_source_coverage.py after fixing the NCAAF copy. The
+        # subset was ['action', 'vsin', 'bettingpros'], chosen for sources
+        # that "publish late-week". Measured over every NFL external_picks row
+        # ever written:
+        #     action        81 rows · last pulled 2026-10-08
+        #     vsin           0 rows · NEVER
+        #     bettingpros    0 rows · NEVER
+        # So the Saturday refresh fetched ONE working source. vsin and
+        # bettingpros are two of the five documented MLB-ONLY sources — they
+        # are live for MLB (240 and 199 rows) and have never produced a single
+        # NFL row, so this subset was copied from the MLB puller without
+        # checking that its members work for this sport.
+        #
+        # Replaced with the sources that demonstrably produce NFL rows,
+        # excluding only oddscrowd: it is the slowest by a wide margin (62s on
+        # a 20-game slate) and carries money flow, which the Wednesday full
+        # pull already captures and which does not need a Saturday re-read.
+        #
+        # vsin/bettingpros deliberately NOT retained: a dead source inside a
+        # subset is indistinguishable from a live one that returned nothing,
+        # which is exactly how this survived a whole season on two sports.
+        sources = ['action', 'covers', 'scoresandodds', 'sbr',
+                   'dimers', 'pickswise', 'pickdawgz']
         triggered_by = 'cron:sat_nfl_refresh'
     else:
         # Wed 6pm ET — everything (or Thu 2pm TNF card lock)
