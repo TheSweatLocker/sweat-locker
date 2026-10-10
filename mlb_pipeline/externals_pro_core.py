@@ -43,6 +43,14 @@ KEY = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ.get('SUPABASE_K
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json'}
 
+#: Dimers' per-league URL slug. A sport absent here is SKIPPED with a printed
+#: reason rather than guessed at — a wrong slug renders someone else's league
+#: and the regex would happily emit picks for the wrong games.
+DIMERS_SLUG = {
+    'NHL': 'nhl', 'NBA': 'nba', 'MLB': 'mlb',
+    'NCAAF': 'cfb', 'NFL': 'nfl', 'NCAAB': 'cbb',
+}
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:
@@ -357,11 +365,88 @@ class SportPuller:
                 self.find_game_id(s, home_hint, away_hint),
             make_pick_fn=ExternalPick)
 
+    def fetch_sbr(self, slate, game_date):
+        """SportsBookReview consensus — the cheapest win available here.
+
+        ══ 2026-10-10 · B72, continuing the covers wiring above ══
+        externals_consensus.fetch_sbr was ALREADY sport-parameterised and
+        SBR_URLS ALREADY carried NHL and NBA entries:
+
+            'NBA': .../betting-odds/nba-basketball/consensus/
+            'NHL': .../betting-odds/nhl-hockey/consensus/
+
+        So this needed ZERO scraping work — only a line in this registry.
+        It had simply never been called for NHL/NBA because this class did
+        not offer it.
+
+        Worth doing first of the remaining four because sbr is the BEST
+        PERFORMER of the sources NHL/NBA were missing: 56.8% on n=750 graded
+        picks when it was wired into NCAAF for B44. No Playwright needed
+        either — it reads the Next.js SSR JSON, so it cannot be taken out by
+        a headless-browser failure the way dimers/action/pickswise can.
+
+        Note the market differs by sport: SBR publishes the consensus on the
+        SPREAD for football and on the MONEYLINE for baseball. The shared
+        emit gates handle that without a branch, so whichever market carries
+        the lean is what gets emitted.
+        """
+        from externals_consensus import fetch_sbr as _sbr
+        dicts, status = _sbr(
+            slate, game_date,
+            lambda s, home_hint, away_hint:
+                self.find_game_id(s, home_hint, away_hint),
+            sport=self.sport)
+        picks = []
+        for d in (dicts or []):
+            picks.append(ExternalPick(
+                game_id=d['game_id'], sport=self.sport, game_date=game_date,
+                source=d['source'], surface=d['surface'],
+                pick_side=d['pick_side'], confidence=d.get('confidence'),
+                raw_text=d.get('raw_text'), source_url=d.get('source_url'),
+                fade_flag=d.get('fade_flag')))
+        return picks, status
+
+    def fetch_dimers(self, slate, game_date):
+        """Dimers win-probability model picks.
+
+        2026-10-10 · B72. The NCAAF and MLB copies of this fetcher differ
+        ONLY in the URL slug and the sport label — the chunk regex and the
+        game matching are already generic — so it is extracted here rather
+        than copied a third time.
+
+        VERIFIED AGAINST THE LIVE SITE before wiring, because a regex written
+        for one sport's team names is exactly the kind of thing that silently
+        returns zero:
+            nhl  17,226 chars · 10 regex matches · 10 valid wp pairs
+                 (Blue Jackets 47.3 / Blues 52.7, Hurricanes 67.6 /
+                  Blackhawks 32.3, Predators 40.7 / Senators 59.3)
+            cfb  20,664 chars ·  5 matches ·  5 valid
+            nba  13,546 chars ·  0 matches ·  0 valid
+
+        NBA's zero is the SEASON, not the parser: the league opens
+        2026-10-21 and the schedule page carries no game blocks yet. That
+        must be re-verified once games appear rather than assumed — which is
+        why DIMERS_SLUG has an nba entry ready and the no-match path returns
+        ([], 200) as a silent empty instead of an error.
+        """
+        slug = DIMERS_SLUG.get(self.sport)
+        if not slug:
+            print(f'  dimers: no slug for {self.sport} — skip')
+            return [], 200
+        from externals_dimers import fetch_dimers_generic
+        return fetch_dimers_generic(
+            sport=self.sport, slug=slug, slate=slate, game_date=game_date,
+            find_game_id_fn=lambda s, home_hint, away_hint:
+                self.find_game_id(s, home_hint, away_hint),
+            make_pick_fn=ExternalPick)
+
     def fetchers(self) -> dict:
         return {'oddscrowd': self.fetch_oddscrowd,
                 'scoresandodds': self.fetch_scoresandodds,
                 'pickdawgz': self.fetch_pickdawgz,
-                'covers': self.fetch_covers}
+                'covers': self.fetch_covers,
+                'sbr': self.fetch_sbr,
+                'dimers': self.fetch_dimers}
 
     # ── run ──────────────────────────────────────────────────────────
     def run(self, game_date: Optional[str] = None, sources=None,
