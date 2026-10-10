@@ -2933,3 +2933,112 @@ FIX: build `ncaaf_slate_spotcheck.py` producing one row per game — market
 line, SOR/SOS gap, SP+ gap, AP ranks, model projection, pick + tier, data-
 completeness flags, and a residual column — then review the output and record
 concur/dissent per game with reasons.
+
+## 2026-10-09 · B71 — Red River close_spread sign is inverted (LIVE, user-facing)
+
+Andy: *"Take a look at why Texas Okalhoma game ahs not data for colleg football
+big game should have alot of data"*
+
+The data is mostly there — 180 of 207 context columns are filled. What is wrong
+is worse than missing: **the line direction is backwards on the biggest game of
+the weekend.**
+
+    ncaaf_20261010_Oklahoma_Texas
+      close_spread      +6.5     -> by convention, OKLAHOMA favoured by 6.5
+      open_spread       +6.5
+      home_ap_rank      1        (Texas)
+      away_ap_rank      None     (Oklahoma UNRANKED)
+      home_sp_overall   22.4 (#7)   away_sp_overall 12.8 (#27)
+      sp_gap            +9.6     -> Texas better by 9.6
+      projected_spread  11.82    -> our model: Texas by 11.8
+      primary_play      "Texas +6.5"
+
+The convention was re-verified rigorously on 6,444 graded games, because
+getting it backwards would invert several other conclusions:
+    close_spread < 0 : home wins 78.9%  n=4,190
+    close_spread > 0 : home wins 29.3%  n=2,240
+    correlation(close_spread, home_margin) = -0.723
+    spread_result agrees with (margin + spread > 0) on 6,428/6,444 = 99.8%
+So NEGATIVE = home favourite, definitively. A stored +6.5 therefore says the
+unranked road team is favoured by 6.5 over the AP #1 home team, while every
+one of our own ratings has Texas better by 6 to 12 points.
+
+TWO CONSEQUENCES, the second user-facing:
+  1. A FABRICATED EDGE. The engine compared projected_spread (Texas by 11.8)
+     against a line it read as Oklahoma by 6.5 and saw an ~18-point
+     disagreement. That is the largest "edge" on the slate and it is an
+     artefact of the sign.
+  2. THE PICK LABEL MISREPRESENTS THE BET. It reads "Texas +6.5" — Texas
+     TAKING points — when Texas is laying them. A user acting on that label
+     bets the wrong number.
+
+CONTEXT: market-vs-SP+ sign disagreement runs 18 of 254 comparable NCAAF games
+(7.1%), and most are small honest differences (|sp_gap| 5-8). Red River is the
+outlier by a wide margin: a 16-point swing with the #1 team as a home dog to an
+unranked opponent. No line_history rows exist for this game, so the stored
+value could not be reconciled against a book feed — which is itself part of the
+problem.
+
+ALSO FOUND while measuring:
+  * TWO rows in ncaaf_game_results for 2026-10-10, home/away REVERSED
+    (Oklahoma @ Texas and Texas @ Oklahoma, both unplayed). Same class as B65.
+    Only the Oklahoma @ Texas slug has a context row and externals.
+  * 'Virginia Tech Ho' and 'Virginia Tech' as separate rows for the same
+    2026-09-12 game with DIFFERENT spreads (-14.0 and -18.5) — a truncated
+    team name forking a game in two.
+  * ncaaf_game_context.neutral_site is populated on 0 of 494 rows. Red River
+    is at the Cotton Bowl. ncaaf_game_results.neutral_site IS populated
+    (607 True) and compute_margin_strength reads it correctly, so SOR is fine;
+    the gap is pre-game only.
+  * Red River has 3 externals against 10-12 on comparable 10-10 games.
+
+VERIFY: compare close_spread against sp_gap and ap ranks on
+ncaaf_20261010_Oklahoma_Texas; re-derive the convention with the 6,444-game
+test above before touching anything.
+FIX: establish where close_spread for this game came from and whether the sign
+flip is isolated or source-specific. Do NOT blanket-flip on sp_gap disagreement
+— 7.1% of games disagree legitimately. Picks are locked
+(pick_locked_at 2026-10-09T02:41), so a correction is Andy's call.
+
+---
+
+## 2026-10-09 · B72 — externals: NHL/NBA wired to 3 sources, NBA at zero
+
+Andy: *"are you seeing any picks form them one xternal pull across sports, i
+think we are droping the ball on numbe rof externals on some sports"*
+
+pickdawgz IS working — 675 rows across MLB 574 / NCAAF 48 / NFL 39 / NHL 14.
+Heavily MLB-skewed but not broken.
+
+The real gap is the overall shape. 12,528 external_picks rows, 14 sources:
+
+    sport    sources active   rows      puller defines
+    MLB            13         9,293     18
+    NCAAF           8         1,939     10
+    NFL             8         1,101     10
+    NHL             3           132      0  (delegates to externals_pro_core)
+    UFC             1            63      3
+    NBA             0             0      0  (delegates to externals_pro_core)
+    NCAAB           0             0      9  (off-season, opens 2026-11-03)
+
+pull_externals_nhl.py and pull_externals_nba.py are 44-46 line wrappers around
+externals_pro_core, which carries exactly THREE sources — oddscrowd,
+scoresandodds, pickdawgz. That matches NHL's 3 active sources exactly, so
+nothing is failing; the coverage was simply never built out.
+
+FIVE sources are MLB-ONLY: vsin, docsports, bettingpros, betfirm, tonyspicks
+(1,526 MLB rows, nothing elsewhere). And five more — action, covers, dimers,
+pickswise, sbr — are wired for MLB AND football but NOT for NHL/NBA, even
+though their scrapers demonstrably work for two other sports already.
+
+WHY THIS MATTERS NOW, not later: MLB has ONE upcoming game row and a
+2026-11-05 season end, and MLB is the sport carrying 13 of our 14 sources and
+74% of all external rows. NBA opens 2026-10-21 with THREE sources wired and
+zero rows today. So the externals stack is built for the sport that is
+finishing and nearly absent for the ones taking over.
+
+FIX: wire action, covers, dimers, pickswise and sbr into externals_pro_core so
+NHL/NBA get the same eight sources football already has. Their scrapers exist
+and work; the gap is wiring, not scraping. Verify NCAAB's nine defined sources
+actually fire when the season opens 11-03 rather than discovering it in
+November.
