@@ -856,9 +856,33 @@ def main():
     if args.source:
         sources = [args.source]; triggered_by = f'manual:single:{args.source}'
     elif args.refresh:
-        # Sat 10am ET — subset that publishes late-week (Peterson lock,
-        # Doc Sports finalizations, Action money-line % settlement)
-        sources = ['action', 'vsin', 'bettingpros']
+        # Sat 10am ET — the late-week refresh.
+        #
+        # 2026-10-10 · THIS SUBSET WAS TWO-THIRDS DEAD. It was
+        #     ['action', 'vsin', 'bettingpros']
+        # chosen for sources that "publish late-week". Measured across every
+        # NCAAF external_picks row ever written:
+        #     action        233 rows · last pulled 2026-10-10
+        #     vsin            0 rows · NEVER
+        #     bettingpros     0 rows · NEVER
+        # So the Saturday refresh — the pull that runs on the single biggest
+        # slate of the week — was fetching ONE working source. vsin is the
+        # byline-keyed scraper that went dead (backlog B61) and bettingpros
+        # has never produced an NCAAF row at all.
+        #
+        # Replaced with the sources that demonstrably work, excluding only
+        # oddscrowd: it took 62s on a 20-game NHL slate and it carries money
+        # flow, which the Wed full pull already captures and which does not
+        # need a Saturday re-read. Everything here is fast (covers 0.5s,
+        # sbr 1s, dimers 8s on measured runs) so the refresh stays a refresh.
+        #
+        # vsin/bettingpros are deliberately NOT kept "just in case" — a dead
+        # source in a subset is indistinguishable from a working one that
+        # returned nothing, which is exactly how this went unnoticed. The
+        # dark-source reporter in the workflow is what should surface them
+        # coming back.
+        sources = ['action', 'covers', 'scoresandodds', 'sbr',
+                   'dimers', 'pickswise', 'pickdawgz']
         triggered_by = 'cron:sat_ncaaf_refresh'
     else:
         # Wed 6pm ET — everything (or Thu 2pm TNF card lock)
