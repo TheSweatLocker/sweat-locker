@@ -897,9 +897,43 @@ def compute_projections(home_stats: dict, away_stats: dict,
         h_net = h_off_epa - (h_def_epa or 0)
         a_net = a_off_epa - (a_def_epa or 0)
         projected_spread = round((h_net - a_net) * K_PTS_EPA + hfa, 2)
+        # 2026-10-10 · THE EPA FALLBACK NOW EMITS NOTHING, which is what the
+        # 2026-09-26 note above said the fix should be: "an unrated matchup
+        # should not yield a confident pick at all". It was left unbuilt
+        # because the branch was dormant and a cap could not be measured.
+        # It is now measurable, and it is garbage when it fires.
+        #
+        # Graded 2026 games, by projected_spread_source:
+        #     sp_plus   n=137  mean |proj - market| =  3.9   |edge|>20 on   0
+        #     epa       n=3    mean |proj - market| = 40.5   |edge|>20 on   3
+        # Every single EPA game is off the market by more than 20 points.
+        # McNeese @ LSU projected +4.85 against a market of 54.5.
+        #
+        # spread_edge then reads that 50-point gap as a 50-point EDGE, which
+        # is not an edge, it is the absence of information — and it is read
+        # by the conviction ladder and by signal_sources as though it were a
+        # measurement.
+        #
+        # A NULL is strictly safer than a wrong number here: every consumer
+        # already handles projected_spread being absent (the sp_plus/epa
+        # branch above can already fall through to `return out`), whereas
+        # none of them can tell a 50-point edge from a 50-point error.
+        # projected_spread_source is still written below, so the row remains
+        # diagnosable and this stays reversible.
+        #
+        # LIVE EXPOSURE WHEN SHIPPED: ZERO — 69 of 69 upcoming games are on
+        # the sp_plus path. This is a guard for when an unrated team next
+        # appears, not a fix to a live number.
+        if projected_spread is not None:
+            print(f'  ⚠ EPA-only matchup ({out.get("away_team")} @ '
+                  f'{out.get("home_team")}): suppressing projected_spread '
+                  f'{projected_spread:+.2f} — unrated opponent yields no '
+                  f'margin opinion')
+        projected_spread = None
     else:
         return out
-    out['projected_spread'] = projected_spread
+    if projected_spread is not None:
+        out['projected_spread'] = projected_spread
 
     # 2026-08-09 Phase 2: matchup-adjusted total using SP+ off/def or EPA
     # per-play. Previously flat BASE_TOTAL for every game; now varies by
@@ -986,7 +1020,13 @@ def compute_projections(home_stats: dict, away_stats: dict,
     else:
         # Fallback: static base + split via spread
         total = BASE_TOTAL
-        if projected_spread >= 0:
+        # 2026-10-10: projected_spread is now None on an EPA-only matchup, and
+        # this branch is exactly where such a game lands (no SP+ off/def
+        # either). No margin opinion means no scoring lean — an even split,
+        # rather than a TypeError on None.
+        if projected_spread is None:
+            home_share = 0.50
+        elif projected_spread >= 0:
             home_share = 0.50 + min(0.10, projected_spread * 0.008)
         else:
             home_share = 0.50 + max(-0.10, projected_spread * 0.008)
@@ -1030,7 +1070,12 @@ def compute_projections(home_stats: dict, away_stats: dict,
         h_net_epa = h_off_epa - (h_def_epa or 0)
         a_net_epa = a_off_epa - (a_def_epa or 0)
         out['epa_pred_spread'] = round((h_net_epa - a_net_epa) * K_PTS_EPA + hfa, 2)
-        out['sp_plus_pred_spread'] = round(projected_spread, 2)  # alias, see above
+        # 2026-10-10: guard the alias. projected_spread is None on an EPA-only
+        # matchup, and this block runs for exactly those games, so an
+        # unguarded round() here was a TypeError. The alias is only meaningful
+        # when there IS a projection to alias.
+        if projected_spread is not None:
+            out['sp_plus_pred_spread'] = round(projected_spread, 2)  # alias
     return out
 
 

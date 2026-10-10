@@ -1162,18 +1162,67 @@ def _fade_consensus_ok(ctx: dict, source: dict, orig_side: str,
     votes_for_orig = 0
     votes_checked = 0
 
+    # 2026-10-10 · THE MC KEY NAMES WERE WRONG FOR EVERY SPORT BUT MLB, so
+    # this voter has never voted on football. Measured key names:
+    #     MLB    mc_p_home_win / mc_p_away_win · mc_p_over / mc_p_under
+    #     NCAAF  mc_p_home     / mc_p_away     · mc_p_over_line
+    #     NFL    mc_p_home     / mc_p_away     · mc_p_over_line
+    #     NHL    mc_p_home                     · mc_p_over
+    # The code below asked only for the MLB spellings, so on a real NCAAF row
+    # with mc_p_home = 0.75 the lookup returned None, votes_checked stayed at
+    # 1 (OddsCrowd alone), the `votes_checked >= 2` test could never pass and
+    # the function returned True — flip ALLOWED — on every market. Verified
+    # against three real 2026-10-10 context rows carrying full MC and OC data:
+    # HOME_RL, HOME_ML and AWAY_ML were all ALLOWED. The guard that exists to
+    # stop the engine flipping away from its own consensus has never blocked
+    # a football flip in production.
     # 1) Monte Carlo agreement with orig_side
     mc = ctx.get('mc_probabilities') if isinstance(ctx.get('mc_probabilities'), dict) else None
+
+    def _mc_p(*names):
+        for n in names:
+            v = (mc or {}).get(n)
+            if v is not None:
+                return v
+        return None
+
     if mc:
         try:
             if market == 'total':
-                p = mc.get('mc_p_over') if orig_side == 'OVER' else mc.get('mc_p_under')
+                p = (_mc_p('mc_p_over', 'mc_p_over_line')
+                     if orig_side == 'OVER' else _mc_p('mc_p_under'))
+                if p is None and orig_side == 'UNDER':
+                    # Football stores only the OVER probability.
+                    _o = _mc_p('mc_p_over', 'mc_p_over_line')
+                    p = (1.0 - float(_o)) if _o is not None else None
                 if p is not None:
                     votes_checked += 1
                     if float(p) >= 0.575:  # +15pp over 42.5% breakeven for MC probability
                         votes_for_orig += 1
             elif market == 'ml':
-                p = mc.get('mc_p_home_win') if orig_side == 'HOME_ML' else mc.get('mc_p_away_win')
+                p = (_mc_p('mc_p_home_win', 'mc_p_home')
+                     if orig_side == 'HOME_ML'
+                     else _mc_p('mc_p_away_win', 'mc_p_away'))
+                if p is not None:
+                    votes_checked += 1
+                    if float(p) >= 0.575:
+                        votes_for_orig += 1
+            elif market == 'rl':
+                # 2026-10-10: an rl arm, which this branch never had. Uses
+                # the EXPLICIT cover probabilities where the sport publishes
+                # them — MLB writes mc_p_home_covers / mc_p_away_covers, and
+                # because the key names name the side there is no spread sign
+                # convention to get wrong. Football does not publish them
+                # (NCAAF/NFL mc_probabilities carry only mc_p_home/mc_p_away,
+                # mc_expected_margin, mc_stddev_margin), so for football this
+                # arm simply does not vote and the projection voter added
+                # below is what gives rl its second opinion. Deliberately NOT
+                # deriving a cover probability from expected_margin/stddev
+                # here: that needs the per-sport spread sign and this function
+                # takes no `sport`, and a sign error would make the guard
+                # block the WRONG side.
+                p = (_mc_p('mc_p_home_covers') if orig_side == 'HOME_RL'
+                     else _mc_p('mc_p_away_covers'))
                 if p is not None:
                     votes_checked += 1
                     if float(p) >= 0.575:
@@ -1216,6 +1265,43 @@ def _fade_consensus_ok(ctx: dict, source: dict, orig_side: str,
                 if orig_side == 'OVER' and diff >= 1.5:
                     votes_for_orig += 1
                 elif orig_side == 'UNDER' and diff <= -1.5:
+                    votes_for_orig += 1
+        except (TypeError, ValueError):
+            pass
+
+    # 4) 2026-10-10 · OUR OWN PROJECTION vs the close — the voter that gives
+    # SPREAD picks a second opinion.
+    #
+    # Before this, `rl` had exactly ONE voter that could ever be checked
+    # (OddsCrowd): the MC branch has no rl arm and the Jerry branch is
+    # totals-only. So `votes_checked >= 2` was unreachable on a spread pick
+    # and the guard could not fire no matter how strongly our models agreed.
+    # Spreads are the bulk of the NCAAF board, so that was most of the
+    # football slate.
+    #
+    # SIGN SAFETY, deliberately not reinvented. NCAAF stores a NEGATIVE
+    # close_spread for a home favourite while projected_spread is a home
+    # margin, and NFL differs again. Rather than introduce a sign convention
+    # this function does not currently know (it takes no `sport`), this
+    # reuses the EXACT `projected_spread + close_spread` idiom already used by
+    # the compound-fade exception at the top of this function, where
+    # (ps + cs) > 0 means "our number likes HOME". A sign error here would
+    # make the guard block the WRONG side, which is worse than it not firing,
+    # so the already-proven form is used verbatim.
+    #
+    # Threshold 1.5 points mirrors the 1.5-unit bar the jerry_pred_total
+    # voter uses, rather than inventing a new one.
+    if market in ('ml', 'rl') and orig_side in ('HOME_ML', 'HOME_RL',
+                                                'AWAY_ML', 'AWAY_RL'):
+        try:
+            ps = ctx.get('projected_spread')
+            cs = ctx.get('close_spread')
+            if ps is not None and cs is not None:
+                lean_home = float(ps) + float(cs)   # >0 = our number likes HOME
+                votes_checked += 1
+                if orig_side.startswith('HOME') and lean_home >= 1.5:
+                    votes_for_orig += 1
+                elif orig_side.startswith('AWAY') and lean_home <= -1.5:
                     votes_for_orig += 1
         except (TypeError, ValueError):
             pass
