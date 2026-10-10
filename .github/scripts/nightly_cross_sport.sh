@@ -261,6 +261,23 @@ done
 bash "$RUN_STEP" --label "compute_sweat_rating.py (all sports)" \
   python compute_sweat_rating.py --all --write || true
 
+# 2026-10-10 · JOIN SOR/SOS ONTO THE GAME ROWS. Andy: "The engine should know
+# situations whrre SOR matters." It could not: compute_margin_strength above
+# writes SOR/SOS per TEAM into team_computed_stats, but
+# ncaaf_game_context.home_sor/away_sor were NULL on 494 of 494 rows because
+# nothing in the repo ever wrote them, and 0 of 837 signal_sources rows
+# mention sor or sos. SOR was a display-only number the model never saw.
+# Runs immediately after the per-team fit so the join reads today's values.
+#
+# Writes PRE-GAME ROWS ONLY (game_date >= today) and has no --all-dates flag:
+# team_computed_stats is a current snapshot, so backfilling a played game
+# would stamp post-game info on a pre-game row and poison every future
+# backtest reading these columns (project_rolling_stats_leak_trap_929).
+for _sp in NCAAF NFL; do
+  bash "$RUN_STEP" --label "populate_game_sor.py ($_sp)" \
+    python populate_game_sor.py --sport "$_sp" || true
+done
+
 # 2026-10-03 · EXTERNAL SOR BENCHMARK. Andy: "add as weekly benchmark for
 # data." Records strengthofrecord.com's published FBS Strength of Record
 # beside ours. A reference point ONLY -- never an input to a pick, and
