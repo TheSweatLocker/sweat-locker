@@ -1,0 +1,7 @@
+=== grade_props · NHL · 2026-10-02 ===
+  ⚠ 4 NHL prop player(s) did not resolve to an nhle.com id — left ungraded rather than guessed
+  loaded 137 player stat rows from 5 final games  (1 DNP → Void, never graded as a low line)
+  424 props to check (ungraded + buggy-zero sweep)
+  graded 216: 83W 133L 0P 208Void
+  hit rate: 38.4%
+  ⚠ 208 props skipped — player not found in boxscore (postponed / late scratch?)

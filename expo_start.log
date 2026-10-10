@@ -1,0 +1,9 @@
+  --non-interactive is not supported, use $CI=1 instead
+env: load .env
+env: export EXPO_PUBLIC_ANTHROPIC_API_KEY EXPO_PUBLIC_BDL_API_KEY EXPO_PUBLIC_KENPOM_KEY EXPO_PUBLIC_ODDS_API_KEY EXPO_PUBLIC_REVENUECAT_KEY_IOS EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_SUPABASE_URL
+Starting project at C:\Users\gomez\SweatShop
+Starting Metro Bundler
+
+CommandError: Input is required, but 'npx expo' is in non-interactive mode.
+Required input:
+> The package @expo/ngrok@^4.1.0 is required to use tunnels, would you like to install it globally?
