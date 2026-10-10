@@ -525,6 +525,49 @@ export default function GameDetailV2({
           })));
         }
       }
+
+      // ══ 2026-10-10 B69 · NFL PROPS ════════════════════════════════════
+      // Game detail fetched props for MLB and NHL only, so NFL props never
+      // appeared here at all — despite 46 publishable rows for this week,
+      // every one carrying a price AND a Jerry read.
+      //
+      // v_nfl_props_publishable has the same 21-column shape as the MLB view,
+      // so the ban rules live in the view exactly as they do for MLB and this
+      // does NOT re-implement them client-side (unlike NHL, which has no
+      // view and therefore needs the band applied here).
+      //
+      // NOT SELECTED: player_season_hit_pct. It exists on nfl_pipeline_props
+      // but NOT on this view, and selecting a column a view does not have is
+      // a 400 that returns zero rows. The season figure simply does not
+      // render for NFL — the explicit-SELECT-is-a-silent-blank trap, handled
+      // by checking the view's columns first rather than copying the MLB
+      // select verbatim.
+      //
+      // game_id matches: v_nfl_props_publishable and nfl_game_context both
+      // use the 32-char hash (verified), unlike NHL where the two ID spaces
+      // differ and a ctx_game_id bridge was required.
+      //
+      // NCAAF/NCAAB stay excluded deliberately — no props in college
+      // (feedback_college_sports_no_props).
+      if ((!gamePropsProp || gamePropsProp.length === 0) && gamesSport === 'NFL') {
+        const {data: nflData, error: nflErr} = await client
+          .from('v_nfl_props_publishable')
+          .select('player_name,player_team,prop_type,direction,prop_line,'
+                  + 'display_conviction,tier,signals,book_over_odds,'
+                  + 'book_under_odds,jerry_short_read,jerry_verdict,'
+                  + 'jerry_conviction')
+          .eq('game_date', gameDate)
+          .eq('game_id', String(gid))
+          .order('display_conviction', {ascending: false})
+          .limit(40);
+        if (nflErr) console.warn('[GameDetailV2] NFL props fetch error:', nflErr.message);
+        if (!cancelled && nflData) {
+          setFetchedProps(nflData.map((p: any) => ({
+            ...p, conviction: p.display_conviction,
+            _totalBeforeCap: nflData.length,
+          })));
+        }
+      }
     })();
 
     return () => { cancelled = true; };
@@ -7206,7 +7249,33 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
   }
   const infoOnly = propsList.some((p: any) => p?._infoOnly);
   const total = Number(propsList[0]?._totalBeforeCap) || propsList.length;
+  // 2026-10-10 B69 · GROUP BY PROP FAMILY. A flat list of ten rows mixing
+  // hits, strikeouts and bases forces the reader to scan for the family they
+  // care about, and the backlog note is explicit that filtering UI on top of
+  // an ungrouped list would sort the wrong field. Grouping is the cheap half
+  // of "better surfacing" and needs no new pipeline.
+  //
+  // Order is by the group's best conviction, not alphabetical, so the
+  // strongest family stays at the top where the old flat ordering put it —
+  // grouping must not bury the best play.
   const shown = propsList.slice(0, CAP);
+  const famOf = (p: any) => String(p?.prop_type || 'other')
+    .replace(/_(over|under)$/i, '')
+    .replace(/_/g, ' ')
+    .trim() || 'other';
+  const groups: {fam: string; rows: any[]; best: number}[] = [];
+  for (const p of shown) {
+    const fam = famOf(p);
+    let g = groups.find((x) => x.fam === fam);
+    if (!g) {
+      g = {fam, rows: [], best: -1};
+      groups.push(g);
+    }
+    g.rows.push(p);
+    const cv = Number(p?.conviction);
+    if (Number.isFinite(cv) && cv > g.best) g.best = cv;
+  }
+  groups.sort((a, b) => b.best - a.best);
   return (
     <View style={{gap: 4}}>
       {infoOnly && (
@@ -7216,7 +7285,12 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
           no tier.
         </Text>
       )}
-      {shown.map((p, i) => {
+      {groups.map((grp) => (
+      <View key={grp.fam} style={{gap: 4}}>
+      {groups.length > 1 && (
+        <Text style={styles.propFamilyHdr}>{grp.fam}</Text>
+      )}
+      {grp.rows.map((p: any, i: number) => {
         const isOver = String(p.direction || '').toLowerCase() === 'over';
         const dir = isOver ? '↑' : '↓';
         // The price of the side actually being referenced — over props take
@@ -7226,8 +7300,36 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
         const oddsNum = Number(odds);
         const hasOdds = odds != null && Number.isFinite(oddsNum);
         const seasonPct = p.player_season_hit_pct ?? null;
+        // 2026-10-10 B69 · THE PRICE NEEDS A VERDICT, NOT JUST A VALUE.
+        // Showing -250 shipped on 10-09; a number alone still asks the user
+        // to remember the house rules. Two documented traps, both of which
+        // cost real money before they were written down:
+        //   * the publishable band is -300..+150, so anything outside it
+        //     should never have reached a card
+        //   * Batter Hits OVER 0.5 worse than -200 is its own trap and is
+        //     not publishable even at PRIME (feedback_batter_hits_juice_trap)
+        // A flag is strictly better than a colour alone: colour is invisible
+        // to a colour-blind reader and carries no meaning on its own.
+        const fam = famOf(p);
+        const isHitsOver05 = isOver && /hits/.test(fam)
+          && Number(p.prop_line) === 0.5;
+        const outOfBand = hasOdds && (oddsNum < -300 || oddsNum > 150);
+        const hitsTrap = hasOdds && isHitsOver05 && oddsNum < -200;
+        const heavyJuice = hasOdds && !outOfBand && !hitsTrap
+          && oddsNum <= -200;
+        const priceWarn = outOfBand ? 'outside -300..+150'
+          : hitsTrap ? 'Hits O0.5 juice trap'
+          : heavyJuice ? 'heavy juice' : null;
+        // C.loss does NOT exist in this file's palette — it has `fade` for
+        // red and `warn` for amber. Using C.loss here would resolve to
+        // undefined and ship BLACK text, which is the documented
+        // undefined-palette-key trap (feedback_undefined_palette_key_renders
+        // _black). Keys verified against the C block at the top of this file.
+        const priceColor = (outOfBand || hitsTrap) ? C.fade
+          : heavyJuice ? C.warn : C.text;
         return (
-          <View key={i} style={styles.propRow}>
+          <View key={i}>
+          <View style={styles.propRow}>
             {!p._infoOnly && (
               <View style={[styles.propTier, tierPillStyle(p.tier)]}>
                 <Text style={[styles.propTierText, {color: tierPillTextColor(p.tier)}]}>{p.tier}</Text>
@@ -7245,16 +7347,88 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
               {/* Price sits where the eye lands last, beside the side it
                   belongs to. An unpriced row says so rather than showing a
                   blank that reads as -110. */}
-              <Text style={[styles.propDetail, {fontSize: 11, fontWeight: '700'}]}>
+              <Text style={[styles.propDetail,
+                            {fontSize: 11, fontWeight: '700',
+                             color: priceColor}]}>
                 {hasOdds ? (oddsNum > 0 ? `+${oddsNum}` : `${oddsNum}`) : 'no price'}
               </Text>
+              {priceWarn && (
+                <Text style={[styles.propDetail,
+                              {fontSize: 9, color: priceColor}]}>
+                  ⚠ {priceWarn}
+                </Text>
+              )}
               {!p._infoOnly && p.conviction != null && (
                 <Text style={[styles.propDetail, {fontSize: 9}]}>conv {p.conviction}</Text>
               )}
             </View>
           </View>
+          {/* 2026-10-10 B69 · JERRY'S READ WAS SELECTED AND NEVER RENDERED.
+              jerry_short_read / jerry_verdict / jerry_conviction were added
+              to the select on 10-09 and then appeared nowhere else in this
+              file — the query was widened and the fields were never wired to
+              a row. That is the substance of "a better way of surfacing in
+              game prop look": the content already exists per prop.
+
+              BUT IT CANNOT BE RENDERED RAW. jerry_short_read is a ~23-line
+              TERMINAL block: a header restating the pick and price, a 60-char
+              box-drawing rule, SIGNAL COVERAGE, an averages line, a ten-game
+              RECENT FORM list, then PLAYBOOK CONFIRMS bullets. Dumping it
+              into a mobile row would print box characters and newlines.
+              So the two lines that actually earn their space here are
+              extracted:
+                 ' L5 avg 3.4 · L10 avg 4.0 · Season avg 4.63 · Implied 64%'
+                 ' → 8/10 games OVER 2.5 (2 UNDER)'
+              The header is dropped because the row already shows player,
+              line, direction and price.
+
+              Defensive by construction: if the format changes, the matches
+              simply fail and nothing renders, rather than leaking raw
+              terminal output into the UI. */}
+          {(() => {
+            const raw = p.jerry_short_read;
+            if (!raw) return null;
+            const lines = String(raw).split('\n')
+              .map((s: string) => s.trim())
+              // drop box-drawing rules and empties
+              .filter((s: string) => s && !/^[─—=_-]{6,}$/.test(s));
+            const avg = lines.find((s: string) => /^L5 avg/i.test(s));
+            const hit = lines.find((s: string) => /^→/.test(s));
+            const keep = [hit, avg].filter(Boolean) as string[];
+            if (!keep.length) return null;
+            // The NFL rows arrive with doubled spaces around their separators
+            // (' · ' vs ' ·  '), so collapse runs of whitespace rather than
+            // letting one sport look ragged next to the other.
+            const body = keep.join(' · ')
+              .replace(/^→\s*/, '').replace(/\s{2,}/g, ' ').trim();
+            // A verdict is not always positive. jerry_verdict carries PASS and
+            // FADE as well as PRIME/STRONG, and 4 of today's MLB rows include
+            // a PASS. Painting PASS in the accent green would read as a
+            // recommendation — the opposite of what it says. Colour by the
+            // verdict's meaning, not by the fact that a verdict exists.
+            const vd = String(p.jerry_verdict || '').toUpperCase();
+            const vdColor = /PASS|FADE|AVOID/.test(vd) ? C.warn
+              : /PRIME|STRONG/.test(vd) ? C.accent : C.textMuted;
+            return (
+              <Text style={[styles.propDetail,
+                            {fontSize: 10, lineHeight: 14, marginTop: -1,
+                             marginBottom: 3, paddingLeft: 52}]}>
+                {!p._infoOnly && !!vd && (
+                  <Text style={{color: vdColor, fontWeight: '700'}}>
+                    {vd}
+                    {p.jerry_conviction != null ? ` ${p.jerry_conviction}` : ''}
+                    {' · '}
+                  </Text>
+                )}
+                {body}
+              </Text>
+            );
+          })()}
+          </View>
         );
       })}
+      </View>
+      ))}
       {total > shown.length && (
         <Text style={[styles.propDetail, {fontSize: 10, marginTop: 4}]}>
           Showing {shown.length} of {total}.
@@ -8389,6 +8563,13 @@ const styles = StyleSheet.create({
   propPlayer: {fontSize: 12, fontWeight: '600', color: C.text},
   propDetail: {fontSize: 10, color: C.textMuted, fontVariant: ['tabular-nums']},
   propBold: {color: C.text, fontWeight: '700'},
+  // 2026-10-10 B69 · prop-family group header. Uppercase + letter-spacing so
+  // it reads as a label rather than another data row, and textDim rather than
+  // textMuted so it recedes behind the props themselves.
+  propFamilyHdr: {
+    fontSize: 9, fontWeight: '700', color: C.textDim, letterSpacing: 0.8,
+    textTransform: 'uppercase', marginTop: 6, marginBottom: 1,
+  },
 
   // HRB tiles
   hrbTiles: {flexDirection: 'row', gap: 6},
