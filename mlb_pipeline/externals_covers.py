@@ -40,7 +40,21 @@ BASE = 'https://contests.covers.com/consensus/topconsensus'
 # Covers loads its table client-side on some leagues but serves it in the HTML
 # here; if that ever changes the row count drops to zero and the externals
 # watchdog reports the source dark rather than logging a silent success.
-LEAGUE_SLUG = {'NFL': 'nfl', 'NCAAF': 'ncaaf', 'NCAAB': 'ncaab'}
+# 2026-10-09 · NHL + NBA + MLB ADDED. This map was football-and-NCAAB only,
+# and fetch_covers_generic returns ([], 200) for any sport absent from it — a
+# silent empty, not an error. Consequence measured today: NHL had 3 external
+# sources against MLB's 13, and NBA had ZERO rows with the season opening
+# 2026-10-21.
+#
+# Probed all four slugs on contests.covers.com before adding them, rather than
+# assuming the URL shape generalises:
+#     nhl  HTTP 200  table present  10 rows
+#     nba  HTTP 200  table present   2 rows   (preseason, few games)
+#     mlb  HTTP 200  table present   4 rows   (playoffs)
+#     nfl  HTTP 200  table present  56 rows   (the existing baseline)
+# So covers publishes consensus for all of them and we simply never asked.
+LEAGUE_SLUG = {'NFL': 'nfl', 'NCAAF': 'ncaaf', 'NCAAB': 'ncaab',
+               'NHL': 'nhl', 'NBA': 'nba', 'MLB': 'mlb'}
 
 # Public consensus at or above this share is a fade signal, not a follow.
 FADE_PCT = 75
@@ -96,16 +110,41 @@ def fetch_covers_generic(sport: str, slate: list, year: int,
         if len(cells) < 4:
             continue
 
-        matchup_txt = re.sub(r'^(NCAAF|NCAAB|NFL)\s*', '', cells[0]).strip()
         row_date = covers_date_to_iso(cells[1], year)
         if not row_date or row_date not in slate_dates:
             skipped_date += 1
             continue
 
-        parts = matchup_txt.split()
-        if len(parts) < 2:
-            continue
-        away_hint, home_hint = parts[0], parts[1]
+        # ══ 2026-10-09 · READ THE FULL TEAM NAME FROM THE LOGO alt ══
+        # The text cell gives abbreviations on the pro leagues — NHL renders
+        # "NHL Tor Col", not "Toronto Colorado" — and the league-prefix strip
+        # below only ever knew NCAAF|NCAAB|NFL, so for NHL/NBA/MLB parts[0]
+        # came out as the literal league name and parts[1] as a 3-letter
+        # city. Both bugs produced the same symptom: 9 of 9 NHL rows
+        # "unmatched to a game_id".
+        #
+        # The row's <img alt> carries the FULL name — "Toronto Maple Leafs
+        # Picks", "Colorado Avalanche Picks" — which matches our slate
+        # exactly. Using it avoids inventing an abbreviation map, and that
+        # matters beyond tidiness: "La" is genuinely ambiguous between the LA
+        # Kings and Las Vegas, and a wrong map would attribute a
+        # handicapper's pick to the wrong game. Silent-empty is bad;
+        # confidently-wrong is worse.
+        #
+        # Football keeps the text path as a fallback, so the three leagues
+        # that already worked are untouched.
+        alts = [str(img.get('alt') or '') for img in row.find_all('img')]
+        names = [re.sub(r'\s+Picks$', '', a).strip() for a in alts
+                 if a.strip().endswith('Picks')]
+        if len(names) >= 2:
+            away_hint, home_hint = names[0], names[1]
+        else:
+            matchup_txt = re.sub(r'^(NCAAF|NCAAB|NFL|NHL|NBA|MLB)\s*', '',
+                                 cells[0]).strip()
+            parts = matchup_txt.split()
+            if len(parts) < 2:
+                continue
+            away_hint, home_hint = parts[0], parts[1]
         gid = find_game_id_fn(slate, home_hint=home_hint, away_hint=away_hint)
         if not gid:
             skipped_match += 1

@@ -322,10 +322,46 @@ class SportPuller:
                 self.find_game_id(s, home_hint, away_hint),
             make_pick_fn=ExternalPick)
 
+    def fetch_covers(self, slate, game_date):
+        """Covers.com public consensus — a FADE signal, not a follow.
+
+        ══ 2026-10-09 · NHL/NBA HAD THREE SOURCES, MLB HAD THIRTEEN ══
+        Measured across 12,528 external_picks rows:
+            MLB    13 sources   9,293 rows
+            NCAAF   8 sources   1,939
+            NFL     8 sources   1,101
+            NHL     3 sources     132
+            NBA     0 sources       0   <- season opens 2026-10-21
+        pull_externals_nhl.py and pull_externals_nba.py are thin wrappers
+        around this class, and this class offered exactly three fetchers —
+        so NHL/NBA could never have more than three sources no matter how
+        often they ran. Nothing was failing; the coverage was never built.
+
+        That matters NOW rather than eventually: MLB carries 13 of our 14
+        sources and 74% of all external rows, and MLB is down to ONE upcoming
+        game row with a 2026-11-05 season end. The externals stack is built
+        for the sport that is finishing.
+
+        covers is wired first because externals_covers.fetch_covers_generic
+        was ALREADY sport-parameterised — the only thing stopping NHL/NBA was
+        a three-entry LEAGUE_SLUG map, and a sport missing from it returns
+        ([], 200): a silent empty rather than an error. Verified against the
+        live site before wiring (nhl 10 rows, nba 2, mlb 4, nfl 56).
+        """
+        from externals_covers import fetch_covers_generic
+        year = int(str(game_date)[:4]) if str(game_date)[:4].isdigit() \
+            else _et_now().year
+        return fetch_covers_generic(
+            sport=self.sport, slate=slate, year=year,
+            find_game_id_fn=lambda s, home_hint, away_hint:
+                self.find_game_id(s, home_hint, away_hint),
+            make_pick_fn=ExternalPick)
+
     def fetchers(self) -> dict:
         return {'oddscrowd': self.fetch_oddscrowd,
                 'scoresandodds': self.fetch_scoresandodds,
-                'pickdawgz': self.fetch_pickdawgz}
+                'pickdawgz': self.fetch_pickdawgz,
+                'covers': self.fetch_covers}
 
     # ── run ──────────────────────────────────────────────────────────
     def run(self, game_date: Optional[str] = None, sources=None,
