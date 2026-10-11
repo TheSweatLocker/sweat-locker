@@ -266,6 +266,23 @@ _SOURCES_CACHE: Optional[list] = None
 _REGISTRY_CACHE: Optional[dict] = None
 _TRACK_CACHE: Optional[dict] = None
 
+#: 2026-10-10 · B73a · the natural hit rate of each surface, measured over
+#: all 11,473 graded external_picks rows:
+#:     ml      3439-2708   55.9%   n=6,147
+#:     total   1388-1343   50.8%   n=2,731
+#:     rl      1281-1314   49.4%   n=2,595
+#: An ml pick is graded on WHO WON and carries no vig, so it sits ~6pp above
+#: a spread cover rate for reasons that have nothing to do with skill. Source
+#: tiers are judged as a margin OVER these, not against one absolute number.
+#:
+#: rl and total are pinned at the -110 breakeven rather than their measured
+#: value (49.4 / 50.8). Those measured figures are BELOW breakeven — B73b —
+#: and crediting a source for beating a losing baseline would tier sources
+#: that still lose money. ml has no vig-free breakeven to pin to, so its
+#: measured baseline is used and the honest fix is ROI once price coverage
+#: improves (only 46.7% of rows carry a price today — B73c).
+_SURFACE_BASELINE = {'ml': 0.559, 'rl': 0.5238, 'total': 0.5238}
+
 
 _PAGE = 1000
 
@@ -969,8 +986,36 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
         n = int(rec.get('n_graded', 0)) if rec else 0
         persona = _persona(src)
 
-        # Fade-flip: known cold source's pick is a contrarian signal
-        if hr is not None and hr <= 0.35 and n >= 10:
+        # 2026-10-10 · B73a · SURFACE-RELATIVE BASELINE.
+        #
+        # The tier thresholds below used to be absolute (>=0.57 VALIDATED,
+        # >=0.55 DISCOVERY) and were applied to ml, rl and total hit rates
+        # alike. Those three are not the same measurement. Pooled across all
+        # 11,473 graded external rows:
+        #
+        #     ml      3439-2708   55.9%   n=6,147
+        #     total   1388-1343   50.8%   n=2,731
+        #     rl      1281-1314   49.4%   n=2,595
+        #
+        # An ml pick is graded on WHO WON, so its hit rate carries no vig and
+        # sits naturally high — a source that picks win-probability
+        # favourites hits 60-77% while being worth nothing (dimers is
+        # 77.1% on n=468, ml-only, and would clear VALIDATED by 20 points).
+        # An rl/total pick is graded against a line built to be a coin flip,
+        # so 53% there is genuinely good and could never reach 0.55.
+        #
+        # Net effect of one absolute threshold: ml sources were promoted and
+        # rl sources suppressed for reasons unrelated to source quality.
+        # Thresholds are now stated as a MARGIN OVER THE SURFACE'S OWN
+        # BASELINE, so "beats its surface by 2pp" means the same thing
+        # whichever market it is.
+        base = _SURFACE_BASELINE.get(market, 0.5238)
+        hr_rel = (hr - base) if hr is not None else None
+
+        # Fade-flip: known cold source's pick is a contrarian signal.
+        # Also surface-relative — a 35% ml source may simply pick dogs,
+        # which is not the same as being wrong.
+        if hr_rel is not None and hr_rel <= -0.17 and n >= 10:
             flip = {'HOME_ML':'AWAY_ML','AWAY_ML':'HOME_ML',
                     'HOME_RL':'AWAY_RL','AWAY_RL':'HOME_RL',
                     'OVER':'UNDER','UNDER':'OVER'}
@@ -991,8 +1036,15 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
                 ))
                 continue  # emit fade only, skip the losing-side opinion
 
-        tier = 'VALIDATED' if (hr and hr >= 0.57 and n >= 50) \
-               else 'DISCOVERY' if (hr and hr >= 0.55 and n >= 20) \
+        # Same margins as before (+1.8pp / +3.3pp over breakeven became
+        # +1.8pp / +3.3pp over the surface's own baseline), so rl and total
+        # behaviour is UNCHANGED — their baseline already was ~breakeven.
+        # What changes is ml, which no longer clears DISCOVERY just for being
+        # an average straight-up picker.
+        tier = 'VALIDATED' if (hr_rel is not None and hr_rel >= 0.033
+                               and n >= 50) \
+               else 'DISCOVERY' if (hr_rel is not None and hr_rel >= 0.018
+                                    and n >= 20) \
                else 'UNVALIDATED'
 
         wins = int(rec.get('n_wins') or 0) if rec else 0

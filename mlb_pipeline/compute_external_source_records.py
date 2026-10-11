@@ -58,15 +58,39 @@ def _norm_result(r: str | None) -> str:
     return ''
 
 
-def pick_roi(result: str, odds_american) -> float:
-    """1u flat stake ROI."""
+def pick_roi(result: str, odds_american):
+    """1u flat stake ROI, or None when the price is unknown.
+
+    2026-10-10 · B73c · THE -110 ASSUMPTION WAS INVENTING NUMBERS.
+    This used to `return 0.91  # default -110 assumption` for any winning
+    pick with no odds. Five sources carry NO price at all:
+
+        scoresandodds 2,568 rows · 0% priced
+        action        1,234 rows · 0%
+        sbr             860 rows · 0%
+        dimers          507 rows · 0%
+        tonyspicks       53 rows · 0%
+        (pickdawgz      692 rows · 1%)
+
+    ~5,300 graded rows, and for all of them the stored ROI was a fabrication.
+    It is worst precisely where it matters most: dimers is ml-ONLY and picks
+    the highest win-probability side, hitting 77.1% on n=468. Valued at an
+    assumed -110 that becomes roughly +47% ROI, and the table shows +53% on
+    the 30d window. Priced honestly it is nowhere near that — at -250
+    breakeven is 71.4%, at -300 it is 75.0%, at -400 it is 80.0%. So the
+    single best-looking source in the whole table might be marginal or
+    losing, and the -110 default is what hid it.
+
+    Returning None instead means the caller must decide what to do with an
+    unpriced pick, rather than silently crediting it with a price it never
+    had. A missing number is recoverable; a confident wrong one is not.
+    """
     r = _norm_result(result)
     if r == 'PUSH': return 0.0
     if r == 'LOSS': return -1.0
     if r == 'WIN':
         d = american_to_decimal(odds_american)
-        if d: return d - 1.0
-        return 0.91  # default -110 assumption
+        return (d - 1.0) if d else None
     return 0.0
 
 
@@ -156,8 +180,26 @@ def run(sport_filter: str | None = None) -> None:
         n = w + l + p
         n_graded = w + l  # exclude pushes from hit-rate math
         hit_rate = round(100 * w / n_graded, 2) if n_graded else None
-        total_units = sum(pick_roi(x.get('result'), x.get('odds_american')) for x in items)
-        roi = round(100 * total_units / n, 2) if n else None
+        # 2026-10-10 · B73c · ROI only over PRICED picks, and NULL when the
+        # price is unknown for any of them.
+        #
+        # pick_roi now returns None for a win with no odds. A LOSS is -1.0
+        # regardless of price, so a set of unpriced picks would otherwise
+        # aggregate to "every loss counted, every win worth nothing" — an ROI
+        # that is not merely imprecise but systematically and severely
+        # negative. So the whole ROI is withheld unless every graded pick in
+        # the group has a price, rather than mixing priced and unpriced.
+        #
+        # hit_rate is unaffected and still computed on everything: a hit rate
+        # needs no price. The surfaces that lose their ROI are exactly the
+        # ones whose ROI was fabricated (scoresandodds, action, sbr, dimers,
+        # tonyspicks — ~5,300 rows at 0-1% price coverage).
+        units = [pick_roi(x.get('result'), x.get('odds_american'))
+                 for x in items]
+        decided = [u for u in units if u is not None]
+        unpriced = sum(1 for u in units if u is None)
+        roi = (round(100 * sum(decided) / n, 2)
+               if (n and unpriced == 0) else None)
         payloads.append({
             'source': source, 'sport': sport, 'surface': surface,
             'window_days': win_days,
