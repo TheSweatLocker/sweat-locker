@@ -158,7 +158,7 @@ PROP_CONFIG = {
         'fantasy_col': 'proj_pass_tds',
     },
     'player_anytime_td': {
-        'col': 'anytime_td',
+        'col': 'anytime_td',        # derived: see _DERIVED_COLS
         'position': None,
         'league_baseline': 0.35,    # league avg (RBs + WRs mixed)
         'opp_col': 'def_pass_epa_allowed',
@@ -166,6 +166,12 @@ PROP_CONFIG = {
         'family': 'pass',   # mixed WR/RB but pass-D correlates with RZ pass usage
         'label': 'Anytime TD',
         'fantasy_col': 'proj_anytime_td',
+        # 2026-10-11: Odds API returns this as Yes/No with no `point`.
+        # Without these two flags build_prop_row drops every outcome — see
+        # the YES/NO block there. OVER 0.5 == "scores at least one TD",
+        # which grades against rushing_tds + receiving_tds.
+        'yes_no': True,
+        'default_line': 0.5,
     },
     'player_rush_tds': {
         'col': 'rushing_tds',
@@ -631,6 +637,23 @@ def _emit_matchup_rank(opp_pct: Optional[float], opp_team: str,
     return sig, bonus
 
 
+# 2026-10-11 DERIVED HISTORY COLUMNS.
+# `nfl_player_stats` stores rushing_tds and receiving_tds separately; there
+# is no `anytime_td` column. player_rolling selected cfg['col'] verbatim, so
+# `select=season,week,anytime_td` returned a 400 — PostgREST names the
+# missing COLUMN, not the table ([[feedback_select_star_before_concluding_
+# absent]]) — and the `status_code != 200` branch below swallowed it into
+# (None, None, 0). Every anytime-TD prop then fell back to the 0.35 league
+# baseline, i.e. the same projection for a goal-line back and a WR4.
+#
+# A prop whose history is a SUM of stored columns is resolved here rather
+# than by adding a generated column to the table, so the mapping lives next
+# to the code that consumes it and no migration is needed.
+_DERIVED_COLS = {
+    'anytime_td': ('rushing_tds', 'receiving_tds'),
+}
+
+
 @functools.lru_cache(maxsize=None)
 def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
     """Return (l4_avg, season_avg, games_played) for a player-prop.
@@ -638,13 +661,19 @@ def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
 
     2026-09-09: memoized. Same (player_id, prop_col, season) called 12+ times
     per outcome by the loop — cache cuts duplicate hits ~90%.
+
+    `prop_col` stays a plain string so the lru_cache key remains hashable; a
+    derived prop expands to its source columns via _DERIVED_COLS and is summed
+    per game-week.
     """
+    src = _DERIVED_COLS.get(prop_col)
+    sel = ','.join(src) if src else prop_col
     r = _retry_session.get(
         f'{SB}/rest/v1/nfl_player_stats'
         f'?player_id=eq.{player_id}'
         f'&order=season.desc,week.desc'
         f'&limit=20'
-        f'&select=season,week,{prop_col}',
+        f'&select=season,week,{sel}',
         headers=H_READ, timeout=15,
     )
     if r is None or r.status_code != 200:
@@ -652,15 +681,30 @@ def player_rolling(player_id: str, prop_col: str, current_season: int) -> tuple:
     rows = r.json() or []
     if not rows:
         return None, None, 0
-    vals = [_f(r.get(prop_col)) for r in rows if r.get(prop_col) is not None]
+
+    def _val(row):
+        """One game's value: the stored column, or the sum of its sources.
+
+        A derived row counts as present when ANY source is non-null — a
+        player with 1 rushing TD and a null receiving_tds scored 1, not
+        nothing. Treating the null as absent would drop real games.
+        """
+        if not src:
+            return _f(row.get(prop_col))
+        parts = [_f(row.get(c)) for c in src]
+        got = [p for p in parts if p is not None]
+        return sum(got) if got else None
+
+    vals = [v for v in (_val(r) for r in rows) if v is not None]
     if not vals:
         return None, None, 0
 
     l4 = vals[:4]
     l4_avg = round(sum(l4) / len(l4), 2) if l4 else None
     # Season avg = current season only
-    season_vals = [_f(r.get(prop_col)) for r in rows
-                   if r.get('season') == current_season and r.get(prop_col) is not None]
+    season_vals = [v for v in
+                   (_val(r) for r in rows if r.get('season') == current_season)
+                   if v is not None]
     season_avg = round(sum(season_vals) / len(season_vals), 2) if season_vals else None
     return l4_avg, season_avg, len(vals)
 
@@ -701,6 +745,112 @@ def tier_from_edge_pct(edge_pct: float) -> Optional[str]:
     if a >= 0.15: return 'PRIME'
     if a >= 0.10: return 'STRONG'
     if a >= 0.06: return 'LIGHT'
+    return None
+
+
+# ══ 2026-10-11 · YES/NO MARKETS ARE TIERED ON TRUE EDGE, NOT ON EDGE_PCT ══
+# tier_from_edge_pct measures (projection - line) / line. For a yes/no market
+# that is a category error: the 0.5 is a constant this file supplies so the
+# row has a line at all, NOT a number the market set. A back projected at
+# 0.96 TDs scores "92% above the line" and tiers PRIME, which says nothing
+# about whether +125 is a good price.
+#
+# Measured 2026-10-11 on 19,258 public_receipts, the existing ladder sorts by
+# CHALK rather than edge: post-leak PRIME props hit 59.3% against a 60.9%
+# implied, i.e. they lose to their own price, because PRIME lands on -150
+# favourites. Letting a brand-new market inherit that ladder would reproduce
+# the defect in a market built from scratch, where there is no reason to.
+#
+# So this market is the pilot for the B75a method: compare OUR probability to
+# the DE-VIGGED market probability and tier on the gap, in probability points.
+# Both prices are needed for the de-vig, which is why the NO price is read
+# even though the NO side is never published (Andy: overs only).
+def _devig_two_way(odds_a: Optional[int], odds_b: Optional[int]) -> Optional[float]:
+    """Fair probability of side A once the book's overround is removed."""
+    def _imp(o):
+        if o is None:
+            return None
+        try:
+            o = float(o)
+        except (TypeError, ValueError):
+            return None
+        if o == 0:
+            return None
+        return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+    pa, pb = _imp(odds_a), _imp(odds_b)
+    if pa is None or pb is None:
+        return None
+    tot = pa + pb
+    if tot <= 0:
+        return None
+    return pa / tot
+
+
+# ══ 2026-10-11 · THE POISSON CONVERSION RUNS HOT — MEASURED ══
+# P(scores) = 1 - exp(-lambda) is only honest if lambda is honest. Measured
+# on 17,692 player-weeks (2025+2026), lambda from PRIOR games only so there
+# is no leak, the raw conversion is well calibrated in aggregate (+0.3pp) and
+# badly overconfident exactly where anytime-TD bets live:
+#
+#   predicted   actual    gap
+#    0-10%       1.7%    +1.4      <- 80% of the sample sits here, which is
+#   30-40%      29.4%    -5.7         why the aggregate looks fine
+#   40-50%      36.1%    -9.5
+#   50-65%      43.4%   -13.0
+#   65%+        50.9%   -20.1
+#
+# A player the model calls 65%+ scores 50.9% of the time. Publishing the raw
+# number would have stamped PRIME on every workhorse back on model bias
+# rather than edge — the same defect as the chalk ladder, in a new market.
+#
+# Platt scaling fitted on 2025 (n=13,852) and validated on 2026 (n=3,840)
+# improves log loss 0.1797 -> 0.1607 and fixes the 30-50% bands, but it
+# OVER-corrects the top: 2026's 50-65% bucket actually hit 51.8% against a
+# calibrated 31.3%. Those bands hold n=56 and n=11 out of sample, so neither
+# the raw nor the calibrated number is established there.
+#
+# Applied, because it is better than raw on log loss and on every band with
+# real n — but see _TD_TIER_HELD below for why nothing publishes on it yet.
+_TD_CAL_A, _TD_CAL_B = -0.8433, 0.2466
+
+
+def _td_calibrate(p: float) -> float:
+    """Platt-scaled P(scores). See the measurement above for provenance."""
+    import math as _m
+    p = min(max(float(p), 1e-6), 1 - 1e-6)
+    z = _TD_CAL_A + _TD_CAL_B * _m.log(p / (1 - p))
+    return 1.0 / (1.0 + _m.exp(-max(-30.0, min(30.0, z))))
+
+
+# This market has ZERO graded history of its own — anytime_td_over held 2
+# rows in the entire table before today, because build_prop_row discarded
+# every outcome. A tier is a published promise, and B75 just measured what
+# happens when that promise is issued on an unvalidated ladder: post-leak
+# PRIME props hit 59.3% against a 60.9% implied and LOSE to their own price.
+#
+# So the edge tier is COMPUTED and STORED on every row, and the PUBLISHED
+# tier is held at COVERAGE (0.0 units, visible in game detail, excluded from
+# every record by compute_surface_records) until this market has graded
+# sample of its own. Flip _TD_TIER_HELD to False once it does — the decision
+# is then made on its own receipts rather than on a prior.
+# [[feedback_suppression_gate_needs_shadow]]
+_TD_TIER_HELD = True
+
+
+def tier_from_edge_pp(edge_pp: float) -> Optional[str]:
+    """Tier on probability points of edge over the de-vigged fair price.
+
+    Thresholds are deliberately stricter than they look. A genuine 10pp edge
+    on a two-way market is large; the existing edge_pct ladder calls 15% of a
+    line PRIME, which on a 45.5-yard prop is under 7 yards. Starting strict
+    and loosening on evidence is the right direction for a market with no
+    graded history at all yet.
+    """
+    if edge_pp is None:
+        return None
+    if edge_pp >= 0.10: return 'PRIME'
+    if edge_pp >= 0.06: return 'STRONG'
+    if edge_pp >= 0.03: return 'LIGHT'
     return None
 
 
@@ -1425,13 +1575,31 @@ NFL_PROP_ODDS_MAX = int(os.environ.get('NFL_PROP_ODDS_MAX', '150'))
 _PRICE_REJECTS: dict = defaultdict(int)
 
 
-def _price_ok(odds: Optional[int]) -> bool:
+# 2026-10-11 PER-MARKET PRICE BAND.
+# The global -120..+150 band is calibrated for over/under yardage props,
+# where both sides sit near even money. An anytime-TD YES is priced +100 to
+# +1500 by construction — only a goal-line workhorse is ever shorter than
+# +150 — so the global band rejects essentially the whole market. Applying
+# one band to a market whose natural price range sits entirely outside it is
+# not discipline, it is an accidental ban.
+#
+# The ceiling is set where the required hit rate stops being modelable
+# rather than at a round number: +400 needs 20%, and below that the sample
+# of players who score that rarely is too thin to say anything useful about.
+_PROP_ODDS_BAND = {
+    'player_anytime_td': (-250, 400),
+}
+
+
+def _price_ok(odds: Optional[int], market_key: Optional[str] = None) -> bool:
     """Reject prices where the required hit rate is beyond anything measured."""
     if odds is None:
         return False
+    lo, hi = _PROP_ODDS_BAND.get(market_key or '',
+                                 (NFL_PROP_ODDS_MIN, NFL_PROP_ODDS_MAX))
     if odds < 0:
-        return odds >= NFL_PROP_ODDS_MIN
-    return odds <= NFL_PROP_ODDS_MAX
+        return odds >= lo
+    return odds <= hi
 
 
 def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
@@ -1445,13 +1613,42 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     line = _f(outcome.get('point'))
     side = (outcome.get('name') or '').upper()   # 'Over' | 'Under'
     odds = _i(outcome.get('price'))
+
+    # ══ 2026-10-11 · YES/NO MARKETS (anytime TD) ══
+    # The Odds API returns player_anytime_td as a YES/NO market: name is
+    # 'Yes'/'No' and there is NO `point` at all. The guard below required
+    # both a line and an OVER/UNDER side, so every anytime-TD outcome
+    # returned None — we requested the market, spent quota fetching it, and
+    # discarded 100% of it without an error. `anytime_td_over` had 2 rows in
+    # the whole table. Silent success, same class as the dead gates in
+    # pull_externals and the consensus fade guard.
+    #
+    # YES maps to OVER 0.5 ("scores at least one"), which is what the market
+    # means and what makes it gradeable against rushing_tds + receiving_tds.
+    #
+    # ANDY 2026-10-11, explicit: "For AT TDs dont wnat to assess udner just
+    # overs". The NO side is therefore never emitted as a row. Its PRICE is
+    # still read a few lines down into odds_under, because removing the vig
+    # needs both sides — that is the input to a real edge number rather than
+    # a raw projection, and it is the whole point of B75a. Capturing the
+    # price is not the same as publishing the pick.
+    if cfg.get('yes_no'):
+        if side == 'YES':
+            side = 'OVER'
+        elif side == 'NO':
+            return None          # overs only, by directive
+        else:
+            return None
+        if line is None:
+            line = cfg.get('default_line', 0.5)
+
     if not player_name or line is None or side not in ('OVER', 'UNDER'):
         return None
 
     # Price band — see NFL_PROP_ODDS_MIN. Rejected here so the row is never
     # created, rather than created and filtered later by something that might
     # forget to.
-    if not _price_ok(odds):
+    if not _price_ok(odds, market_key):
         _PRICE_REJECTS[market_key] += 1
         return None
 
@@ -1470,15 +1667,18 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     # 69.8%. Both sides are already sitting in market['outcomes'] here; the
     # loop simply threw the counterpart away.
     odds_over = odds_under = None
+    _yn = bool(cfg.get('yes_no'))
     for _o in (market.get('outcomes') or []):
         if (_o.get('description') or '') != player_name:
             continue
-        if _f(_o.get('point')) != line:
+        # A yes/no market carries no `point`, so matching on it would skip
+        # every counterpart and leave both prices None — no de-vig, no edge.
+        if not _yn and _f(_o.get('point')) != line:
             continue
         _s = (_o.get('name') or '').upper()
-        if _s == 'OVER':
+        if _s in ('OVER', 'YES'):
             odds_over = _i(_o.get('price'))
-        elif _s == 'UNDER':
+        elif _s in ('UNDER', 'NO'):
             odds_under = _i(_o.get('price'))
 
     # Player lookup
@@ -1573,8 +1773,37 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     edge_pct = edge / line if line > 0 else 0
     # For UNDER picks: flip sign — model says lower → UNDER edge
     directional_edge = edge_pct if side == 'OVER' else -edge_pct
-    if directional_edge <= 0:
-        # Wrong-side pick — skip
+
+    # Yes/no markets: replace the fraction-of-line edge with a real
+    # probability edge before the wrong-side guard. See tier_from_edge_pp.
+    # proj is expected TDs for the game, so P(at least one) is the Poisson
+    # complement — a player projected at 0.96 TDs is 61.7% to score, not 96%.
+    _edge_pp = None
+    _p_raw = _p_cal = _p_fair = None
+    if cfg.get('yes_no'):
+        import math as _math
+        _p_raw = 1.0 - _math.exp(-max(float(proj), 0.0))
+        _p_cal = _td_calibrate(_p_raw)
+        _p_fair = _devig_two_way(odds_over, odds_under)
+        if _p_fair is None:
+            # No counterpart price means no de-vig, and without it the
+            # "edge" is just our number vs a vigged one, which overstates
+            # every play. Drop rather than publish an inflated edge.
+            return None
+        _edge_pp = _p_cal - _p_fair
+        directional_edge = _edge_pp
+
+    if directional_edge <= 0 and not (cfg.get('yes_no') and _TD_TIER_HELD):
+        # Wrong-side pick — skip.
+        #
+        # 2026-10-11: a HELD yes/no market is exempt. The wrong-side guard
+        # assumes the edge number is trustworthy enough to act on, and for
+        # anytime TD it is explicitly not yet — the Platt fit compresses
+        # every probability into 17-38%, so gating on it drops the ENTIRE
+        # market and we would land zero rows again, which is the exact bug
+        # being fixed here. While the tier is held nothing publishes anyway,
+        # so every priced YES is stored and the market earns its own graded
+        # receipts. The sign gate returns the moment _TD_TIER_HELD is False.
         return None
 
     tier = tier_from_edge_pct(directional_edge)
@@ -1588,8 +1817,26 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         _fam = {'pass': 'pass', 'rush': 'rush', 'reception': 'recv',
                 'receptions': 'recv', 'anytime': 'td'}.get(_pt0, _pt0)
     _tier_shadow_family = family_tier_shadow(_fam, tier)
+    _tier_edge_shadow = None
+    if _edge_pp is not None:
+        # Override the chalk ladder for yes/no markets (see tier_from_edge_pp).
+        _tier_edge_shadow = tier_from_edge_pp(_edge_pp)
+        if _TD_TIER_HELD:
+            # Computed above, recorded in signals below, NOT published.
+            # COVERAGE = 0.0 units, visible in game detail, excluded from
+            # every record by compute_surface_records.
+            tier = 'COVERAGE'
+        else:
+            tier = _tier_edge_shadow
+            if not tier:
+                return None
     if not tier: return None
     conv = conviction_from_edge_pct(directional_edge)
+    if _edge_pp is not None:
+        # Conviction on the same probability-point scale: 0pp -> 50,
+        # +20pp -> 100. Reusing conviction_from_edge_pct here would read a
+        # 0.10 probability edge as "10% of the line" and badly understate it.
+        conv = int(max(0, min(100, round(50 + _edge_pp * 250))))
 
     # 2026-09-02 EARLY-SEASON TIER CAP (Q2 discussion decision).
     # NFL Weeks 1-3 have no live calibration data — playbook can't
@@ -1748,6 +1995,24 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     }
     signals.update(ctx_sigs)   # merge fired ctx signals
     signals.update(l10_sigs)   # merge L10 hit-rate + chart data
+    if _edge_pp is not None:
+        # The whole edge calculation, kept on the row so the held tier can be
+        # graded later without recomputing it from inputs that will have moved.
+        signals.update({
+            'yes_no_market': True,
+            'p_model_raw': round(_p_raw, 4),
+            'p_model_cal': round(_p_cal, 4),
+            'p_fair_devig': round(_p_fair, 4),
+            'edge_pp': round(_edge_pp * 100, 2),
+            'tier_edge_shadow': _tier_edge_shadow,
+            'tier_held': bool(_TD_TIER_HELD),
+            'cal_version': f'platt_a{_TD_CAL_A}_b{_TD_CAL_B}',
+            # Overwrite the generic fraction-of-line edge. For a yes/no
+            # market it reads "0.96 projected vs a 0.5 line = 92%", which is
+            # the category error this whole block exists to avoid, and the
+            # UI renders it.
+            'edge_pct': round(_edge_pp * 100, 2),
+        })
 
     return {
         'game_id': event.get('id'),
