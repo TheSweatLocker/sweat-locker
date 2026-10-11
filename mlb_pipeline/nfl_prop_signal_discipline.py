@@ -118,6 +118,34 @@ def compute_confluence_tier(prop: dict) -> tuple[str, int, dict]:
     if not isinstance(signals, dict):
         return ('SKIP', 0, {'reason': 'no_signals_dict'})
 
+    # ══ 2026-10-11 · A HELD TIER MUST SURVIVE THIS PASS ══
+    # nfl_generate_props sets tier=COVERAGE and signals.tier_held=True on a
+    # market that is deliberately NOT published yet — today, anytime TD,
+    # whose own calibration failed (P(scores) runs 20pp hot at the top) and
+    # which therefore gathers receipts before it is allowed to claim a tier.
+    #
+    # This function recomputes tier FROM SCRATCH every cron pass, and the
+    # ladder keys off signals.edge_pct. A one-way market has no counterpart
+    # price, so there is no de-vigged edge to compute and edge_pct is
+    # honestly null — which falls straight through to SKIP. All 95 anytime
+    # TD rows were COVERAGE on write and SKIP two hours later.
+    #
+    # That is not harmless. SKIP is a MEASURED bucket (-4.1pp vs price on
+    # n=13,470, B75e) that downstream records read as "the engine refused
+    # this". Dumping a held market into it corrupts the one tier whose
+    # meaning we have actually established, and silently relabels rows we
+    # are mid-way through grading.
+    #
+    # Same shape as the safety-cap bug fixed in set_manual_pick today: one
+    # component makes a deliberate decision and another overwrites it
+    # without knowing a decision was made. A hold is only a hold if every
+    # writer honours it.
+    if signals.get('tier_held'):
+        return (str(prop.get('tier') or 'COVERAGE').upper(),
+                int(prop.get('conviction') or 0),
+                {'reason': 'tier_held — market not published pending its own '
+                           'graded sample; left untouched'})
+
     direction = (prop.get('direction') or '').lower()
     line = prop.get('book_line')
     edge_pct_raw = signals.get('edge_pct')
