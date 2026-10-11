@@ -90,6 +90,14 @@ if not (SB and KEY):
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
+#: 2026-10-10 · sibling of RESULTS_TABLE, used to bridge a receipt game_id
+#: that lives in the context ID space rather than the results one.
+CONTEXT_TABLE = {
+    'MLB': 'mlb_game_context', 'NFL': 'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context', 'NCAAB': 'ncaab_game_context',
+    'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
+}
+
 RESULTS_TABLE = {
     'MLB': 'mlb_game_results',
     'NFL': 'nfl_game_results',
@@ -477,7 +485,47 @@ def run(surface: str | None, days: int, dry_run: bool,
             by_match[_match_key(sport, row.get('game_date'),
                                 row.get('away_team'),
                                 row.get('home_team'))] = row
-        idx[sport] = (by_gid, by_match)
+        # 2026-10-10 · GAME_CONTEXT BRIDGE for receipts whose game_id lives in
+        # a different ID space than the results table.
+        #
+        # NFL game_read receipts carry the 32-char Odds-API hash while
+        # nfl_game_results is keyed '20260927_MIN_TB'
+        # (project_nfl_game_id_mismatch_911), so by_gid never hits. The
+        # existing matchup fallback cannot rescue them either: every one of
+        # these rows has matchup=NULL, and while the source lookup below
+        # recovers 24 of them, the recovered string still failed to join —
+        # leaving 26 NFL game_read picks ungraded, which is the whole of
+        # B74b.
+        #
+        # <sport>_game_context holds the SAME hash as the receipt plus the
+        # team names, so it bridges the two spaces directly. Measured on the
+        # 26: 26/26 receipt game_ids resolve in nfl_game_context, and from
+        # there 2 reach a scored result row (the other 24 are August
+        # PRESEASON, which has no scored rows — handled separately, and
+        # preseason must never enter a published record anyway,
+        # project_nhl_preseason_record_930).
+        #
+        # Indexed by receipt-side game_id -> results row, so it slots in as a
+        # third resolution path without touching the first two.
+        by_ctx: dict = {}
+        ctbl = CONTEXT_TABLE.get(sport)
+        if ctbl:
+            cn = 0
+            for crow in paged(f'{SB}/rest/v1/{ctbl}?select=game_id,game_date,'
+                              f'home_team,away_team'
+                              f'&game_date=gte.{lo}&game_date=lte.{hi}'):
+                gid = crow.get('game_id')
+                if not gid:
+                    continue
+                hit = by_match.get(_match_key(sport, crow.get('game_date'),
+                                              crow.get('away_team'),
+                                              crow.get('home_team')))
+                if hit is not None:
+                    by_ctx[gid] = hit
+                    cn += 1
+            if cn:
+                print(f'  {sport}: {cn} game_id(s) bridged via {ctbl}')
+        idx[sport] = (by_gid, by_match, by_ctx)
         print(f'  {sport}: {got} result rows indexed')
 
     # public_receipts.matchup is NULL on every game_read row — the writer left
@@ -495,7 +543,7 @@ def run(surface: str | None, days: int, dry_run: bool,
         if sport not in idx:
             out['no_table'] += 1
             continue
-        by_gid, by_match = idx[sport]
+        by_gid, by_match, by_ctx = idx[sport]
         res = by_gid.get(rec.get('game_id')) if rec.get('game_id') else None
         if res is None:
             # A game_id can be present but belong to a different ID space
@@ -506,6 +554,9 @@ def run(surface: str | None, days: int, dry_run: bool,
             if '@' in m:
                 a, h = m.split('@', 1)
                 res = by_match.get(_match_key(sport, rec.get('game_date'), a, h))
+        if res is None and rec.get('game_id'):
+            # Third path: the receipt's game_id is in the CONTEXT id space.
+            res = by_ctx.get(rec.get('game_id'))
         if res is None:
             out['no_result_row'] += 1
             continue

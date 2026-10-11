@@ -1255,8 +1255,74 @@ def pick_prop_coverage() -> list[dict]:
     return _pick_prop_tier('COVERAGE')
 
 
+def pick_game_read() -> list[dict]:
+    """Jerry's PER-GAME analysis — the read that publishes in game detail.
+
+    ══ 2026-10-10 · B74a · THE ONE PUBLISHED SURFACE WITH NO SCOREBOARD ══
+    Andy: "add to list adding to jerry recipet tab Jerry by game analysis
+    record, anything that published in game detail across every sport".
+
+    The record already existed and was already graded — it was simply never
+    rolled up. surface_records held 293 rows across 34 surfaces (sharp_card,
+    prop_jerry, potd, dawg, ledger, ladder, <sport>_sides, panel_consensus,
+    prop_prime/strong/lean/coverage, model_*, voter_*) and NOT ONE game_read
+    row. So nothing aggregated it, and the app had nothing to query:
+    AdaptiveRecordChips, HomeStreakBanner and the Receipts surfaces all read
+    surface_records.
+
+    Reads public_receipts directly rather than re-deriving from jerry_reads.
+    That is deliberate: public_receipts is the FROZEN published claim, and
+    after B74b every gradeable game_read row is graded there (the grader's
+    new game_context bridge resolved the 26 NFL rows whose game_id was in a
+    different ID space). Re-deriving would risk grading a different pick than
+    the one that shipped.
+
+    DELIBERATELY NOT folded into the existing <sport>_sides surfaces. Those
+    are the ENGINE's primary_play side picks; this is Jerry's read. Two
+    different claims, and conflating them is the sweat_card-vs-sharp mistake
+    (feedback_sweat_card_vs_sharp_card) in a new place.
+
+    PRESEASON IS EXCLUDED via the shared _is_preseason gate. 24 NFL game_read
+    rows were preseason (season_type=PRE, weeks 2-4) and are now VOID; this
+    gate means that even if preseason rows arrive graded in future they never
+    reach a published record — the lesson from
+    project_nhl_preseason_record_930, where an NHL record turned out to be
+    100% preseason.
+
+    VOID and ungraded rows fall out naturally: _classify returns None for
+    anything that is not win/loss/push.
+
+    Payout is the flat -110 (0.909). public_receipts.pick_odds exists but is
+    sparse on this surface, and assuming a price we do not have is exactly
+    the B73c mistake — so the hit rate is the number to trust here and ROI
+    should be read as an approximation.
+    """
+    url = (f'{SB}/rest/v1/public_receipts'
+           f'?select=sport,game_date,result,market,pick_side'
+           f'&surface=eq.game_read&result=not.is.null')
+    out = []
+    for r in _paged(url):
+        cls = _classify(r.get('result'))
+        if cls not in ('win', 'loss', 'push'):
+            continue
+        sport = str(r.get('sport') or '').upper()
+        if not sport:
+            continue
+        try:
+            d = dt.date.fromisoformat(str(r['game_date'])[:10])
+        except Exception:
+            continue
+        if _is_preseason(sport, d):
+            continue
+        out.append({'sport': sport, 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 SURFACES = {
     'sharp':       pick_sharp,      # legacy — MLB sides only from primary_play
+    # 2026-10-10 B74a — Jerry's per-game read, see pick_game_read
+    'game_read':   pick_game_read,
     'prop':        pick_prop,       # legacy — props from mlb_pipeline_props
     'sharp_card':  pick_sharp_card, # 2026-09-05 authoritative combined (sides+props from cache)
     'ladder': pick_ladder,
