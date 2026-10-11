@@ -3142,3 +3142,76 @@ games, pickdawgz 9, pickswise 12 of 46. Only the money-flow and consensus
 sources (scoresandodds, oddscrowd, covers, sbr, action) scale to a full slate.
 Reaching 7-10 per NCAAF game needs NEW full-slate sources, not better wiring
 of the current ones.
+
+## 2026-10-10 · B74 — Jerry's by-game analysis has a record and nobody can see it
+
+Andy: *"add to list adding to jerry recipet tab Jerry by game analysis record,
+anything that published in game detail across every sport"*
+
+The record EXISTS and is mostly graded. It is simply never rolled up, so there
+is nothing for the receipts tab to read.
+
+### What exists today
+
+`public_receipts.surface = 'game_read'` is Jerry's per-game analysis — the read
+that publishes in game detail. 1,510 rows, 1,215 graded (80.5%):
+
+    sport    rows   graded      W-L     hit%
+    MLB       773      741   432-309   58.3%
+    NCAAF     454      327   174-153   53.2%
+    NHL       163       91    51-40    56.0%
+    NFL       120       56    36-20    64.3%
+    NBA         0        0      —        —     <- nothing published at all
+    NCAAB       0        0      —        —     off-season, opens 11-03
+
+Pooled that is 693-522 = 57.0% on n=1,215, which is a real record on a real
+sample and is currently invisible.
+
+### Why it is invisible
+
+`surface_records` holds 293 rows across 34 distinct surfaces — sharp_card,
+prop_jerry, potd, dawg, ledger, ladder, mlb_sides, nfl_sides, nhl_sides,
+ncaaf_sides, ufc_sides, panel_consensus, prop_prime/strong/lean/coverage,
+model_* and voter_* — and **not one `game_read` row**. So:
+  * nothing aggregates it per sport or per window
+  * the app has no row to query (AdaptiveRecordChips / HomeStreakBanner and
+    the receipts surfaces all read `surface_records`)
+  * Jerry's most-published artefact is the one surface with no scoreboard
+
+### B74a · roll game_read into surface_records, per sport
+
+Add it to whatever writes surface_records (compute_surface_records) with the
+same window_key treatment the other surfaces get. Note the existing
+`*_sides` surfaces are the ENGINE's side picks, not Jerry's read — do not
+fold game_read into those, they are different claims and conflating them
+would repeat the sweat_card-vs-sharp confusion.
+
+### B74b · close the grading gaps before publishing the number
+
+Grading coverage is uneven and the thin sports are the ones that would look
+best:
+    MLB    741/773   95.9%
+    NCAAF  327/454   72.0%
+    NHL     91/163   55.8%
+    NFL     56/120   46.7%   <- and it shows the HIGHEST hit rate, 64.3%
+Publishing NFL at 64.3% off 47% grading coverage would be a record built on
+half the sample, with no reason to think the ungraded half is like the graded
+half. Grade first, publish second.
+
+### B74c · NBA publishes no game_read at all
+
+Zero rows, and the season opens 2026-10-21. Either Jerry's read does not run
+for NBA or it runs and never writes a receipt. Worth settling before opening
+night rather than discovering an empty NBA tab in two weeks — same shape as
+the NBA externals gap (B72).
+
+### B74d · "anything that published in game detail" — audit the full set
+
+game_read is the main one, but game detail also surfaces prop rows, external
+picks and (as of 03be17d2) Jerry's prop read. Enumerate every artefact the
+game-detail screen publishes, and for each say whether it is graded and
+whether it is rolled up. The pattern today is that grading exists and rollup
+does not, so the audit is cheap and the answer is probably "several".
+
+**Client build required for the tab itself** — currently held pending the
+Split rework/rename. B74a/b/c are all backend and can land before it.
