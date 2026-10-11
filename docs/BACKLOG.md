@@ -3178,7 +3178,7 @@ model_* and voter_* — and **not one `game_read` row**. So:
     the receipts surfaces all read `surface_records`)
   * Jerry's most-published artefact is the one surface with no scoreboard
 
-### B74a · roll game_read into surface_records, per sport
+### B74a · ~~roll game_read into surface_records~~ **DONE** `828d3df3`
 
 Add it to whatever writes surface_records (compute_surface_records) with the
 same window_key treatment the other surfaces get. Note the existing
@@ -3186,26 +3186,41 @@ same window_key treatment the other surfaces get. Note the existing
 fold game_read into those, they are different claims and conflating them
 would repeat the sweat_card-vs-sharp confusion.
 
-### B74b · close the grading gaps before publishing the number
+### B74b · ~~close the grading gaps before publishing the number~~ **DONE** `828d3df3` — and the figures below were WRONG
 
-Grading coverage is uneven and the thin sports are the ones that would look
-best:
-    MLB    741/773   95.9%
-    NCAAF  327/454   72.0%
-    NHL     91/163   55.8%
-    NFL     56/120   46.7%   <- and it shows the HIGHEST hit rate, 64.3%
-Publishing NFL at 64.3% off 47% grading coverage would be a record built on
-half the sample, with no reason to think the ungraded half is like the graded
-half. Grade first, publish second.
+**CORRECTION 2026-10-10.** Those four percentages were bad measurements. The
+denominators included FUTURE games, in-progress games, VOIDs and preseason.
+Of receipts that could actually be graded:
+    MLB    755/758   99.6%
+    NCAAF  329/329  100.0%
+    NHL     91/91   100.0%
+    NFL     56/58    96.6%
+There was no broad grading gap. What was real: 26 NFL game_read picks were
+ungraded, because receipts carry the Odds-API hash while nfl_game_results
+keys '20260927_MIN_TB' and all 26 have matchup=NULL, so neither the game_id
+join nor the matchup fallback could resolve them.
 
-### B74c · NBA publishes no game_read at all
+FIXED by adding a `<sport>_game_context` bridge as a third resolution path in
+grade_public_receipts (context holds the same hash as the receipt plus the
+team names). 26/26 resolved; bridges built for MLB 41, NCAAF 467, NFL 67,
+NHL 134. Of the 26: **2 graded** (ATL @ GB 9/25 hand-checked), **24 VOIDed**
+as season_type='PRE' with zero August rows in nfl_game_results to grade
+against — preseason never enters a published record
+([[project_nhl_preseason_record_930]]). A re-run across ALL surfaces leaves
+only 'no final score' rows, i.e. nothing further is gradeable.
+
+I also initially called those 24 "pickless shells" — also wrong. Every one
+carries market, pick_side, conviction and a jerry_reads source_id; 17 carry a
+pick_line. They were real picks, just unlabelled.
+
+### B74c · NBA publishes no game_read at all — **SCOPED, NOT BUILT**
 
 Zero rows, and the season opens 2026-10-21. Either Jerry's read does not run
 for NBA or it runs and never writes a receipt. Worth settling before opening
 night rather than discovering an empty NBA tab in two weeks — same shape as
 the NBA externals gap (B72).
 
-### B74d · "anything that published in game detail" — audit the full set
+### B74d · ~~audit everything game detail publishes~~ **DONE** `828d3df3`
 
 game_read is the main one, but game detail also surfaces prop rows, external
 picks and (as of 03be17d2) Jerry's prop read. Enumerate every artefact the
@@ -3215,3 +3230,37 @@ does not, so the audit is cheap and the answer is probably "several".
 
 **Client build required for the tab itself** — currently held pending the
 Split rework/rename. B74a/b/c are all backend and can land before it.
+
+### B74 RESULTS (2026-10-10)
+
+**B74a done.** 25 game_read rows, 5 sports x 5 windows. Lifetime ALL
+668-506-16 = **56.9% on n=1,190**; MLB 58.3%, NFL 62.1%, NCAAF 53.2%,
+NHL 54.2%. Reads public_receipts (the frozen published claim) not jerry_reads;
+NOT folded into `<sport>_sides` (those are the ENGINE's picks, not Jerry's);
+preseason excluded via the shared `_is_preseason` gate — which mattered, NHL
+came out n=48 rather than 91 because 43 were preseason.
+
+**B74c cause found.** `jerry_reads` has ZERO NBA rows (MLB 812, NCAAF 499,
+NHL 163, NFL 127, UFC 88, NBA 0) because **`generate_nba_game_reads.py` does
+not exist**. Generators exist for MLB/NCAAB/NCAAF/NFL/NHL/UFC with NO shared
+core — each is standalone, 320-2,908 lines — so this is a real build, not
+wiring. `generate_ncaab_game_reads.py` (359 lines, the other basketball
+sport) is the template. NBA opens 10-21 and nba_game_context already has 81
+rows, so it is testable now.
+
+**B74d found TWO MORE unrolled surfaces**, same shape game_read was:
+
+    surface        rows   graded   rolled up?
+    prop_jerry    15331     49%    yes
+    game_read      1510     81%    yes (B74a)
+    sweat_card     1056     94%    NO   <- 988 graded picks, invisible
+    sharp_card      630     94%    yes
+    ledger          255     91%    yes
+    daily_degen     158     91%    NO   <- 144 graded picks, invisible
+    potd            149     93%    yes
+    dawg            131     91%    yes
+    external_picks 12835     89%    yes
+
+`sweat_card` and `daily_degen` are graded and unrolled. Deliberately NOT
+fixed: creating a record for the dashboard surface is a RECORDS decision and
+records do not move without Andy saying so. Andy's call.
