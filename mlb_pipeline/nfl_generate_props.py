@@ -929,10 +929,20 @@ def fetch_events(sport_key: str = 'americanfootball_nfl') -> list:
 
 _PROP_FETCH_ERRS: dict = {}
 
-def fetch_event_props(event_id: str, sport_key: str) -> dict:
+def fetch_event_props(event_id: str, sport_key: str,
+                      only_markets: tuple = ()) -> dict:
     """Player-prop markets require the per-event endpoint (Odds API v4).
-    Uses paid quota — 1 call per event × per market batch."""
-    markets = ','.join(PROP_CONFIG.keys())
+    Uses paid quota — 1 call per event × per market batch.
+
+    2026-10-11: `only_markets` narrows the request to specific Odds API
+    market keys. Added so a NEW market can be landed without regenerating
+    every other prop type on a game day — ANDY: "Dont run it unless we can
+    run and keep in background with publishe picks not being altered or
+    added to." Narrowing the REQUEST (not just filtering the response) also
+    means the run costs less quota.
+    """
+    keys = [k for k in PROP_CONFIG if not only_markets or k in only_markets]
+    markets = ','.join(keys)
     r = _retry_session.get(
         f'{ODDS_API_BASE}/{sport_key}/events/{event_id}/odds'
         f'?apiKey={ODDS_KEY}&regions=us&markets={markets}&oddsFormat=american',
@@ -2319,7 +2329,8 @@ def _load_nfl_ctx_by_game(game_dates: list) -> dict:
     return all_ctx
 
 
-def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
+def run(dry_run: bool = False, single_player: Optional[str] = None,
+        only_markets: tuple = ()) -> None:
     print(f'=== NFL props generator · {_et_now().date()} ===')
     if not ODDS_KEY:
         print('  ✗ ODDS_API_KEY missing — abort')
@@ -2363,11 +2374,18 @@ def run(dry_run: bool = False, single_player: Optional[str] = None) -> None:
         except Exception:
             continue
 
-        event_data = fetch_event_props(eid, 'americanfootball_nfl')
+        event_data = fetch_event_props(eid, 'americanfootball_nfl',
+                                       only_markets=only_markets)
         markets_seen = 0
         for book in (event_data.get('bookmakers') or []):
             for market in (book.get('markets') or []):
                 if market.get('key') not in PROP_CONFIG:
+                    continue
+                # Belt and braces: the request was already narrowed, but a
+                # book returning an unasked-for market must not slip into a
+                # scoped run and upsert a prop type we did not intend to
+                # touch.
+                if only_markets and market.get('key') not in only_markets:
                     continue
                 markets_seen += 1
                 for outcome in market.get('outcomes') or []:
@@ -2416,9 +2434,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--player', default=None, help='Test one player (partial match)')
+    ap.add_argument('--markets', default=None,
+                    help='Comma-separated Odds API market keys to generate '
+                         '(e.g. player_anytime_td). Default: every market in '
+                         'PROP_CONFIG. Scoping a run means only that prop '
+                         "type's rows are upserted — the write is a "
+                         'merge-duplicates upsert keyed on (game_id, '
+                         'player_name, prop_type, direction), so rows of '
+                         'other prop types are never touched.')
     args = ap.parse_args()
-    run(dry_run=args.dry_run, single_player=args.player)
+    only = ()
+    if args.markets:
+        only = tuple(m.strip() for m in args.markets.split(',') if m.strip())
+        unknown = [m for m in only if m not in PROP_CONFIG]
+        if unknown:
+            print(f'  ✗ unknown market key(s): {unknown}')
+            print(f'    known: {sorted(PROP_CONFIG)}')
+            return 1
+        print(f'  ⊂ SCOPED RUN — only {", ".join(only)} will be generated '
+              f'and upserted. No other prop type is read or written.')
+    run(dry_run=args.dry_run, single_player=args.player, only_markets=only)
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)
