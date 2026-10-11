@@ -852,6 +852,13 @@ def fetch_football_picks(today: str) -> list:
                 'type': pp.get('type'),
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),
+                # 2026-10-11: check_card_integrity warns "spread pick with
+                # no line on the card" on every football side, because the
+                # number only existed inside the label string ("TEN +7.5").
+                # Anything consuming the card structurally — the grader,
+                # the app, a receipt — had to re-parse prose to find the
+                # line it was graded against. Carry it as a field.
+                'line': pp.get('line'),
                 # 2026-10-11: Andy-approved overrides are carried through so
                 # the publish-lock and the item cap below can treat them
                 # differently from an auto-composed pick. set_manual_pick.py
