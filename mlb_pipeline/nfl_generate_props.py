@@ -1784,14 +1784,44 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         import math as _math
         _p_raw = 1.0 - _math.exp(-max(float(proj), 0.0))
         _p_cal = _td_calibrate(_p_raw)
+        # ══ 2026-10-11 · THE BOOK QUOTES THIS MARKET ONE-WAY ══
+        # Probed live rather than assumed (_probe_atd.py, and
+        # [[feedback_probe_the_site_not_your_own_url]]): DraftKings returns
+        # 26 outcomes for PHI @ JAX, every one name='Yes', 0 of 26 with a
+        # `point`, and NO 'No' side anywhere. The first cut of this block
+        # dropped the row when de-vig was impossible, which would have
+        # landed zero rows again — the exact bug being fixed.
+        #
+        # A single one-way quote cannot be de-vigged on its own. The
+        # principled fix is to normalise every player's probability in the
+        # game so they sum to the expected number of distinct TD scorers,
+        # which follows from the implied team totals we already store —
+        # that belongs in B76b with the model, not in the row builder.
+        #
+        # Until then the row still lands with the RAW implied probability
+        # and an explicit devig='none' marker, so nothing downstream can
+        # mistake a vigged number for a fair one. edge_pp stays null rather
+        # than being computed against a price we know is inflated.
         _p_fair = _devig_two_way(odds_over, odds_under)
+        _devig_mode = 'two_way' if _p_fair is not None else 'none'
         if _p_fair is None:
-            # No counterpart price means no de-vig, and without it the
-            # "edge" is just our number vs a vigged one, which overstates
-            # every play. Drop rather than publish an inflated edge.
-            return None
-        _edge_pp = _p_cal - _p_fair
-        directional_edge = _edge_pp
+            def _imp_one(o):
+                try:
+                    o = float(o)
+                except (TypeError, ValueError):
+                    return None
+                if o == 0:
+                    return None
+                return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+            _p_vigged = _imp_one(odds_over if odds_over is not None else odds)
+            if _p_vigged is None:
+                return None
+            _p_fair = _p_vigged       # recorded as vigged; see _devig_mode
+            _edge_pp = None
+            directional_edge = 0.0    # held market bypasses the sign guard
+        else:
+            _edge_pp = _p_cal - _p_fair
+            directional_edge = _edge_pp
 
     if directional_edge <= 0 and not (cfg.get('yes_no') and _TD_TIER_HELD):
         # Wrong-side pick — skip.
@@ -1818,9 +1848,13 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
                 'receptions': 'recv', 'anytime': 'td'}.get(_pt0, _pt0)
     _tier_shadow_family = family_tier_shadow(_fam, tier)
     _tier_edge_shadow = None
-    if _edge_pp is not None:
+    if cfg.get('yes_no'):
         # Override the chalk ladder for yes/no markets (see tier_from_edge_pp).
-        _tier_edge_shadow = tier_from_edge_pp(_edge_pp)
+        # Gated on the MARKET, not on _edge_pp — that is None whenever the
+        # book quotes one-way and no de-vig was possible, and falling through
+        # to tier_from_edge_pct(0.0) would return None and drop the row.
+        _tier_edge_shadow = (tier_from_edge_pp(_edge_pp)
+                             if _edge_pp is not None else None)
         if _TD_TIER_HELD:
             # Computed above, recorded in signals below, NOT published.
             # COVERAGE = 0.0 units, visible in game detail, excluded from
@@ -1995,15 +2029,20 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     }
     signals.update(ctx_sigs)   # merge fired ctx signals
     signals.update(l10_sigs)   # merge L10 hit-rate + chart data
-    if _edge_pp is not None:
+    if cfg.get('yes_no'):
         # The whole edge calculation, kept on the row so the held tier can be
         # graded later without recomputing it from inputs that will have moved.
+        # `devig` says whether p_market is fair or still carries the vig —
+        # without that marker a one-way quote is indistinguishable from a
+        # de-vigged one, and every downstream edge would be overstated.
         signals.update({
             'yes_no_market': True,
             'p_model_raw': round(_p_raw, 4),
             'p_model_cal': round(_p_cal, 4),
-            'p_fair_devig': round(_p_fair, 4),
-            'edge_pp': round(_edge_pp * 100, 2),
+            'p_market': round(_p_fair, 4),
+            'devig': _devig_mode,
+            'edge_pp': (round(_edge_pp * 100, 2)
+                        if _edge_pp is not None else None),
             'tier_edge_shadow': _tier_edge_shadow,
             'tier_held': bool(_TD_TIER_HELD),
             'cal_version': f'platt_a{_TD_CAL_A}_b{_TD_CAL_B}',
@@ -2011,7 +2050,8 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
             # market it reads "0.96 projected vs a 0.5 line = 92%", which is
             # the category error this whole block exists to avoid, and the
             # UI renders it.
-            'edge_pct': round(_edge_pp * 100, 2),
+            'edge_pct': (round(_edge_pp * 100, 2)
+                         if _edge_pp is not None else None),
         })
 
     return {
