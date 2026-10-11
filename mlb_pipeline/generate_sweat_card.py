@@ -852,6 +852,12 @@ def fetch_football_picks(today: str) -> list:
                 'type': pp.get('type'),
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),
+                # 2026-10-11: Andy-approved overrides are carried through so
+                # the publish-lock and the item cap below can treat them
+                # differently from an auto-composed pick. set_manual_pick.py
+                # stamps _manual_correction; see its docstring for why a
+                # primary_play write is the single source both cards read.
+                'manual': bool(pp.get('_manual_correction')),
             })
         if _skipped_past:
             print(f'  ⏭  {sport} sweat: skipped {_skipped_past} already-played games')
@@ -2998,16 +3004,62 @@ def build_card():
             if _locked_fb:
                 _new_ids = {p.get('game_id') for p in football_picks if isinstance(p, dict)}
                 _old_ids = {p.get('game_id') for p in _locked_fb}
-                if _new_ids != _old_ids:
-                    print(f"  🔒 football LOCKED — reusing {len(_locked_fb)} published "
-                          f"pick(s); fresh compose wanted {len(_new_ids)} "
-                          f"({len(_new_ids ^ _old_ids)} would have changed)")
-                football_picks = _locked_fb
+                # 2026-10-11 ANDY-APPROVED PICKS ARE ADDITIVE TO THE LOCK.
+                # The lock exists to stop a WORKFLOW RE-RUN from silently
+                # swapping picks users have already seen (2026-09-19 note
+                # below). An override Andy set by hand is the opposite case:
+                # a deliberate owner decision, made before the 12:00 ET
+                # publish lock, and set_manual_pick.py's whole contract is
+                # that such a write reaches BOTH cards.
+                #
+                # So manual picks are UNIONED IN rather than either side
+                # being discarded: every already-published pick is kept
+                # (nothing a user has seen disappears) AND the approved ones
+                # appear. An auto-composed pick that is neither still cannot
+                # displace a published one.
+                _manual_new = [p for p in football_picks
+                               if isinstance(p, dict) and p.get('manual')
+                               and p.get('game_id') not in _old_ids]
+                if _manual_new:
+                    # Stamp the published set so the item cap below cannot
+                    # evict it either — a pick a user has already seen must
+                    # survive both the lock AND the cap.
+                    for _p in _locked_fb:
+                        _p['_published'] = True
+                    football_picks = _locked_fb + _manual_new
+                    print(f"  🔓 football lock: kept {len(_locked_fb)} published "
+                          f"pick(s) + added {len(_manual_new)} Andy-approved "
+                          f"override(s) → {len(football_picks)}")
+                else:
+                    if _new_ids != _old_ids:
+                        print(f"  🔒 football LOCKED — reusing {len(_locked_fb)} published "
+                              f"pick(s); fresh compose wanted {len(_new_ids)} "
+                              f"({len(_new_ids ^ _old_ids)} would have changed)")
+                    football_picks = _locked_fb
     except Exception as _e:
         print(f"  ⚠ football lock check failed ({_e}) — composing fresh")
     # Cap at 5 (multi-sport peak day maximum). Rank by conviction already
     # applied in fetch_football_picks.
-    football_picks = football_picks[:5]
+    #
+    # 2026-10-11: the cap is AUTO-COMPOSITION discipline — it stops the
+    # engine filling a card with its own marginal picks. It is not a limit
+    # on what Andy may choose. A hand-approved pick silently falling off the
+    # bottom of a [:5] slice is the worst outcome: he is told it is on the
+    # card and it is not. So manual overrides are kept first and the engine's
+    # own picks fill whatever room is left, 5 minimum.
+    # Protected = Andy-approved OR already published today. Neither may be
+    # trimmed; only genuinely-new engine picks compete for what is left.
+    _fb_keep = [p for p in football_picks
+                if p.get('manual') or p.get('_published')]
+    _fb_auto = [p for p in football_picks
+                if not (p.get('manual') or p.get('_published'))]
+    _fb_cap = max(5, len(_fb_keep))
+    football_picks = (_fb_keep + _fb_auto)[:_fb_cap]
+    football_picks.sort(key=lambda p: -(p.get('conviction') or 0))
+    if _fb_keep:
+        print(f'  ✋ football cap {_fb_cap}: {len(_fb_keep)} protected '
+              f'(approved/published) + {len(football_picks) - len(_fb_keep)} '
+              f'engine pick(s)')
     if football_picks:
         print(f'  🏈 football picks appended: {len(football_picks)} '
               f'({sum(1 for p in football_picks if p["sport"]=="NFL")} NFL + '
@@ -3036,6 +3088,15 @@ def build_card():
         _unified_cap = 8
     elif _sports_present == 2:
         _unified_cap = max(_unified_cap, 6)
+    # 2026-10-11: the unified list is what the app renders, so a protected
+    # pick (Andy-approved, or already published today) being trimmed HERE
+    # hides it just as effectively as dropping it from football_picks. Floor
+    # the cap at every protected pick plus one slot, so the other sports'
+    # best play still appears alongside them.
+    _n_protected = sum(1 for p in football_picks
+                       if p.get('manual') or p.get('_published'))
+    if _n_protected:
+        _unified_cap = max(_unified_cap, _n_protected + 1)
     _now_month = datetime.now(timezone.utc).month
     _football_priority = _now_month in (9, 10, 11, 12, 1)  # Sept-Jan (reported only)
 
