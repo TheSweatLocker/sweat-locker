@@ -1319,10 +1319,85 @@ def pick_game_read() -> list[dict]:
     return out
 
 
+def pick_sweat_card() -> list[dict]:
+    """The Sweat Card (dashboard) — 988 graded picks with no record.
+
+    ══ 2026-10-10 · B74d · Andy concurred with rolling this up ══
+    Found by the B74d audit alongside game_read: graded and unrolled.
+    public_receipts.surface='sweat_card' holds 1,056 rows, 988 graded, and
+    surface_records had no sweat_card row — so the dashboard's own record
+    existed pick-by-pick and was never summed. Measured before wiring:
+    584-404 = 59.1%, MLB 935 / NCAAF 37 / NFL 16, 2026-05-22 onward.
+
+    NOT the same surface as sharp_card and deliberately not merged with it.
+    Sweat Card is the dashboard top-8; The Sharp is the Steam Room slate.
+    Different denominators, different discipline — feedback_sweat_card_vs
+    _sharp_card. pick_sharp_card above reads daily_surface_records; this
+    reads public_receipts, because that is where the sweat_card claim was
+    actually frozen at publish time.
+
+    ⚠ UNITS ARE APPROXIMATE AND THE HIT RATE IS NOT. Only 350 of the 988
+    graded picks carry pick_odds (35%). Real price is used where present and
+    the -110 default where not, which means units_net is a MIXED BASIS.
+    That is stated here rather than hidden because this file already records
+    what happens when a price basis changes silently: switching The Sharp
+    from flat -110 to real receipt prices on 10-04 moved all-time units from
+    +32.22u to +19.74u, and "rewriting published history onto the lower basis
+    made a methodology change look to paying users like a 30-unit losing
+    day". Flat -110 pays every win 0.909 while a -200 favourite returns 0.50,
+    and the Sweat Card ships MLB favourites — so a pure flat basis would
+    OVERSTATE units by up to 80% on those wins.
+
+    So: wins/losses/hit_rate are exact and complete; units_net is the best
+    available estimate and improves as pick_odds coverage does. Not resolved
+    by dropping the 65% unpriced rows, because that would silently shrink a
+    published record from 988 picks to 350.
+
+    Preseason excluded via the shared gate, same as pick_game_read.
+    """
+    url = (f'{SB}/rest/v1/public_receipts'
+           f'?select=sport,game_date,result,pick_odds'
+           f'&surface=eq.sweat_card&result=not.is.null')
+    out = []
+    for r in _paged(url):
+        cls = _classify(r.get('result'))
+        if cls not in ('win', 'loss', 'push'):
+            continue
+        sport = str(r.get('sport') or '').upper()
+        if not sport:
+            continue
+        try:
+            d = dt.date.fromisoformat(str(r['game_date'])[:10])
+        except Exception:
+            continue
+        if _is_preseason(sport, d):
+            continue
+        odds = r.get('pick_odds')
+        payout = 0.909
+        if odds is not None:
+            try:
+                payout = _american_win_payout(int(odds))
+            except (TypeError, ValueError):
+                payout = 0.909
+        out.append({'sport': sport, 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': payout})
+    return out
+
+
 SURFACES = {
     'sharp':       pick_sharp,      # legacy — MLB sides only from primary_play
     # 2026-10-10 B74a — Jerry's per-game read, see pick_game_read
     'game_read':   pick_game_read,
+    # 2026-10-10 B74d — the dashboard's own record, see pick_sweat_card.
+    # daily_degen was found in the same audit and deliberately NOT added: it
+    # is a 4-LEG PARLAY surface (25-119 = 17.4%) with ZERO prices on all 144
+    # graded picks. A 4-leg parlay at ~52% legs hits ~7.3% naturally, so
+    # 17.4% is beating that by a wide margin and could be strongly
+    # profitable — but with no prices the honest number (ROI) cannot be
+    # computed, and publishing "17.4%" beside surfaces at 55-60% would
+    # misrepresent it badly. Andy's call: capture leg prices first. It has
+    # also produced nothing since 2026-09-19.
+    'sweat_card':  pick_sweat_card,
     'prop':        pick_prop,       # legacy — props from mlb_pipeline_props
     'sharp_card':  pick_sharp_card, # 2026-09-05 authoritative combined (sides+props from cache)
     'ladder': pick_ladder,
