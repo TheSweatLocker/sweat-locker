@@ -3308,3 +3308,148 @@ Market lines are on 18/81 rows (odds window < schedule horizon), so
 invent a Monte Carlo or money-flow block.
 
 **B74 is now fully closed: a, b, c, d.**
+
+---
+
+## B75 — THE TIER LADDER SORTS BY CHALK, NOT BY EDGE (2026-10-11)
+
+ANDY: "we need a tier sytem that works, that if we say this is Prime Jax -6.5
+anytime we do that it's hitting more than not." He is right, and the reason it
+does not hold today is now measured rather than suspected.
+
+**Aggregate hit rate was the wrong unit all along.** Nobody plays the whole
+board. The TIER is the promise, so the tier is what has to be measured — on
+its own, repeatably. Measured on `public_receipts` (19,258 rows), props,
+against the price actually paid, POST-09-22 (outside the L5 leak window):
+
+```
+tier       hit%    implied%   edge    median odds   n
+PRIME      59.3%     60.9%    -1.6       -150      226
+STRONG     55.6%     53.8%    +1.7                 396
+LEAN       53.1%     54.2%    -1.1                 559
+COVERAGE   56.7%     49.6%    +7.0                 127
+```
+
+**PRIME is the chalkiest bucket and loses to its own price.** It hits a lot
+because it is stamped on -150 favourites, not because it finds mispricing.
+The "71%" that has been displayed is 72.5% pre-09-22 (the L5 leak window,
+[[project_prop_l5_leak_922]]) collapsing to 59.3% clean — and even that 59.3%
+is BELOW the 60.9% the market implies.
+
+**COVERAGE — the bucket we assign 0.0 units and refuse to publish — is the
+only one with a positive edge**, +7.0pp post-leak (n=127) and +4.9pp pre-leak
+(n=280). Two independent windows, same sign. Those are props priced near a
+coin flip, which is exactly where being right pays.
+
+Sides are the same shape, with an unstable ladder on top: post-09-22 PRIME
+60.2% (n=108) vs STRONG 46.9% (n=113), but PRE-09-22 it INVERTS (PRIME 56.3%
+n=343 vs STRONG 60.0% n=255). A ladder that flips sign across a date boundary
+is not a ladder.
+
+### B75a — retier on EDGE, not on probability
+Tier from `model_probability - implied_probability`, not from conviction.
+Inputs already stored per row (`projection`, `prop_line`, `se`, book odds), so
+this is a scoring change, not a data project. Then PRIME means "we think the
+market is wrong by >= X", a promise that can hold, instead of "this is a
+favourite", which the user can read off the board for free.
+MUST ship as a shadow column first and be graded against the live tier before
+it replaces it ([[feedback_suppression_gate_needs_shadow]]).
+
+### B75b — stop publishing an inflated PRIME number
+The displayed prop record is leak-contaminated and was HELD by choice
+([[project_prop_record_inflation_held_1003]]). Post-leak PRIME is 59.3%, and
+it does not beat its price. Decide: restate, or floor the window at 09-22.
+
+### B75c — the COVERAGE bucket is being thrown away
++7.0pp vs price on n=127. Before acting, control for WHY: COVERAGE is assigned
+when the ensemble has no credible chip, so this may be "the model shuts up
+exactly when the market is uncertain, and uncertainty is where the edge is."
+If that survives a control, COVERAGE is a publishable tier, not a bin.
+
+### B75d — tier must be measured PER SPORT PER MARKET
+NCAAF sides PRIME 37.0% (n=27) sits BELOW STRONG 52.9% (n=70). NFL sides
+STRONG 26.9% (n=26). `sweat_card` sides are FLAT across the whole ladder
+(PRIME 59.2% / STRONG 59.1% / LEAN 58.2%) — the label adds nothing there.
+One global ladder cannot be right for seven sports.
+
+## B76 — ANYTIME TD (OVERS ONLY) + FIRST TD PROBABILITIES (2026-10-11)
+
+ANDY, on Sam's Models going 100 -> 8.1k followers in a week: "For AT TDs dont
+wnat to assess udner just overs and first td probabliltiees, where to surface
+that firts td maybe in game details card?"
+
+**OVERS ONLY — no anytime-TD unders, by directive.** An anytime-TD under is a
+lay on a human being not scoring; it prices badly, grades meanly and is off
+brand.
+
+Feasibility checked, not assumed:
+* `nfl_player_stats` — 4,512 player-weeks for 2026 (wks 1-5), 262 with >=1 TD.
+  `target_share` and `wopr` populated on 4,512/4,512. Plus carries, targets,
+  air-yards share, rushing/receiving first downs.
+* `nfl_snap_counts` (offense_pct) and `nfl_injuries` present.
+* Implied team totals derive from `close_spread` + `close_total`, both on
+  `nfl_game_context`.
+* **`anytime_td_over` has 2 rows in `nfl_pipeline_props`.** Four including
+  unders. We do not pull this market at all — that is the first gap.
+* **No play-by-play table exists** (`nfl_play_by_play` / `nfl_pbp` both 404),
+  so NO inside-10 / goal-line / yardline splits. Sam's INSIDE 10 / 11-20 /
+  OPEN FIELD radar is NOT reproducible from what we hold.
+
+### B76a — pull the anytime-TD market
+Odds-pull change. Without a line there is no edge to compute and nothing to
+grade against. Blocks everything below.
+
+### B76b — anytime-TD model, overs only
+P(scores) from share-of-opportunity x implied team TDs. Gradeable from
+`nfl_player_stats` (rushing_tds + receiving_tds) from day one.
+Tier it on EDGE per B75a from the start — do NOT inherit the chalk ladder, or
+the most likely scorer becomes PRIME and we repeat the whole defect in a new
+market.
+
+### B76c — first-TD probabilities, surfaced in the game detail card
+Andy's placement. FTD is roughly P(anytime) reweighted by drive order and
+first-possession share. Honest limit: without play-by-play this is an
+approximation of an approximation, and it must be labelled as a CHANCE, not a
+pick — the one thing Sam does that we can adopt wholesale is "CHANCES, NOT
+PRICES" on a surface that is informational.
+
+### B76d — play-by-play source
+Gates real FTD (and red-zone work everywhere else). nflverse PBP is free.
+Until then B76c ships caveated or not at all.
+
+## B77 — SURFACE THE MARGIN DECOMPOSITION (2026-10-11)
+
+Sam's "WHERE THE MARGIN COMES FROM" — bars that SUM to the projected margin,
+with a sentence saying so. **We already compute this and discard it**:
+`signal_confluence_breakdown` and `_ensemble_sources[].contribution` carry
+per-signal point contributions and prose. Today they render as unordered
+chips. Mostly a presentation change over data we already hold.
+
+## B78 — MODEL CONSENSUS ROW IS SHOWING THINGS THAT ARE NOT LENSES (2026-10-11)
+
+From Andy's TB @ DAL screenshot. Measured on the NFL board:
+```
+tile    n     mean     sd     range
+v3     316   +2.19    2.45   [-15.7, +15.1]
+v4      58   +1.73    0.22   [ +0.8,  +2.0]   <-- CONSTANT
+MC      94   +2.25    7.72   [-13.5, +21.6]   <-- 3x the scale
+Panel   84   +0.58    2.89   [ -7.3,  +6.3]
+```
+* **v4 is a constant** (sd 0.22). "DAL 1.7" is what v4 says on every NFL game.
+  It is not a lens; it manufactures a fourth agreeing voice. Drop it while
+  sd ~ 0.2, self-healing like the SP+ dupe at GameDetailV2.tsx:2272.
+* **MC is 3x wider than the others**, so MC 19.4 is not a per-game outlier.
+* Three of the seven tiles have no margin at all and fake one to fit the row:
+  LR is `(p-0.5)*10` (:2293), GOAT is `+/-1` sign-only (:2309), CONF is a
+  signal count. A shared number-line axis would plot these as if they were
+  point spreads — do NOT put them all on one.
+* Totals: MC 12.75 / v3 11.47 / Panel 11.38 MAE vs the MARKET's 9.90 (n=65).
+  All three lose to the close; MC is worst and is the one shown in green.
+* Keep LR's "ml lens" / GOAT's "independent" neutral labels — they are the
+  09-17 guard against the win-prob vs cover-prob category error. Fix the
+  WORDING ("wins outright - not ATS"), not the logic.
+* Keep the 47-58 neutral band on cohort pills. Fading a 48.3% trend returns
+  51.7%, still under breakeven.
+
+No OTA path, so all of B78 rides the build already held for the Split rework —
+bundle it rather than planning a separate pass.
