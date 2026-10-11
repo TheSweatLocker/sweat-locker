@@ -239,6 +239,26 @@ jobs:
           cd mlb_pipeline
           python nba_game_context.py --days 4
 
+      # 2026-10-10 · B74c · NBA JERRY READS. jerry_reads held ZERO NBA rows
+      # (MLB 812, NCAAF 499, NHL 163, NFL 127, UFC 88, NBA 0) because
+      # generate_nba_game_reads.py did not exist — every other sport had a
+      # generator. So NBA published no per-game read and had no entry in the
+      # game_read record the Receipts tab now rolls up (B74a).
+      #
+      # Runs immediately AFTER nba_game_context so the read sees the same
+      # night's projections, efficiency ratings and primary_play. Ordering
+      # matters: the generator reads nba_game_context and would otherwise
+      # narrate yesterday's numbers.
+      - name: Generate NBA game reads (Jerry)
+        if: ${{ !cancelled() }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_nba_game_reads.py" python generate_nba_game_reads.py
+
       # 2026-09-21: NBA externals. There was no nba external puller at
       # all until today, even though the shared oddscrowd /
       # scoresandodds / pickdawgz modules were already parameterised for
