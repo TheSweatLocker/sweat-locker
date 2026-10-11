@@ -1815,6 +1815,33 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
         _p_fair = _devig_two_way(odds_over, odds_under)
         _devig_mode = 'two_way' if _p_fair is not None else 'none'
         if _p_fair is None:
+            # ══ 2026-10-11 · SET-LEVEL DE-VIG (B76b) ══
+            # No counterpart price exists on this market, but the players
+            # in one game are a SET and the overround lives on the set.
+            # nfl_td_normalize scales every listed player so they sum to
+            # the expected number of distinct TD scorers, which is fitted
+            # from the market's OWN implied team points (716 team-games,
+            # corr +0.792) — so this removes vig without injecting any
+            # opinion of ours.
+            #
+            # It runs HERE, on market['outcomes'], because the price band
+            # below drops 267 of 341 outcomes and a filtered subset cannot
+            # be normalised honestly — the first attempt did it per team
+            # over stored rows and produced a 2.1x scale factor on nearly
+            # every game.
+            try:
+                from nfl_td_normalize import (normalise_market,
+                                              implied_team_points)
+                _hp, _ap = implied_team_points(
+                    (ctx or {}).get('close_total'),
+                    (ctx or {}).get('close_spread'))
+                _fair_map = normalise_market(market.get('outcomes'), _hp, _ap)
+                if _fair_map and player_name in _fair_map:
+                    _p_fair = _fair_map[player_name]
+                    _devig_mode = 'set_normalised'
+            except Exception:                              # noqa: BLE001
+                pass                 # never block the publish on the de-vig
+        if _p_fair is None:
             def _imp_one(o):
                 try:
                     o = float(o)
