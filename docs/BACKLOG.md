@@ -3213,7 +3213,7 @@ I also initially called those 24 "pickless shells" — also wrong. Every one
 carries market, pick_side, conviction and a jerry_reads source_id; 17 carry a
 pick_line. They were real picks, just unlabelled.
 
-### B74c · NBA publishes no game_read at all — **SCOPED, NOT BUILT**
+### B74c · ~~NBA publishes no game_read at all~~ **BUILT** `9b3a33f7`
 
 Zero rows, and the season opens 2026-10-21. Either Jerry's read does not run
 for NBA or it runs and never writes a receipt. Worth settling before opening
@@ -3261,6 +3261,50 @@ rows, so it is testable now.
     dawg            131     91%    yes
     external_picks 12835     89%    yes
 
-`sweat_card` and `daily_degen` are graded and unrolled. Deliberately NOT
-fixed: creating a record for the dashboard surface is a RECORDS decision and
-records do not move without Andy saying so. Andy's call.
+**RESOLVED 2026-10-10, Andy concurred.**
+
+* `sweat_card` **ROLLED UP** (`114a66c6`) — 20 rows. Lifetime ALL
+  584-404-18 = **59.1%, +97.68u** on n=1,006; MLB 562-373-17 = 60.1%,
+  +109.84u. ⚠ Flagged before it surfaces: **NFL is 4-12 (25.0%) on n=16** and
+  **NCAAF 18-19 (48.6%) on n=38** — thin and negative, and visible the moment
+  anything renders per-sport. NOT merged with `sharp_card` (dashboard top-8 vs
+  Steam Room slate — different denominators). Units are a MIXED BASIS: only
+  35% of picks carry `pick_odds`, so real price where present and -110
+  otherwise. Hit rate is exact; units improve as price coverage does. Dropping
+  the unpriced 65% was rejected — it would shrink a published record from 988
+  picks to 350.
+* `daily_degen` **NOT rolled up, by decision.** It is a **4-leg parlay**
+  surface: 25-119 = 17.4% on n=144, **zero prices on all 144**, nothing since
+  2026-09-19. A 4-leg parlay at ~52% legs hits ~7.3% naturally, so 17.4% is
+  beating that by a wide margin and may be strongly profitable — but with no
+  prices the honest number (ROI) is uncomputable, and publishing "17.4%"
+  beside surfaces at 55-60% would misrepresent it badly. **Next step: capture
+  leg prices, then decide.** Also settle whether it is retired.
+
+### B74c RESULT (2026-10-10) — built and verified
+
+`generate_nba_game_reads.py` created and wired into `nba_pipeline.yml` right
+after `nba_game_context --days 4`. This is the **rebuild already scheduled**,
+not a revival: `mlb_pipeline.yml:1739` records the 8/17 NBA-from-scratch reset
+that deleted the legacy generator with BDL, noting "Rebuild scheduled for
+pre-season (Oct 22)". NBA opens 10-21.
+
+**The sign convention is the OPPOSITE of NCAAB's and was verified, not
+copied.** `corr(projected_home_wp, projected_spread) = -0.996` (n=18) ⇒
+`projected_spread` is NEGATIVE when HOME is favoured, same as `close_spread`.
+So `home_edge = close_spread - projected_spread` (a subtraction; NCAAB adds).
+Copying NCAAB would have named the **wrong favourite on every game** — the
+class of [[project_close_spread_sign_bug_914]] and the Red River inversion.
+Both conventions are written into the struct so the LLM is told, not left to
+infer.
+
+Verified end to end: dry run over 6 games (GSW @ LA edge +5.5 → "Model likes
+Los Angeles Lakers", Lakers home ✓); live run wrote a `jerry_cache` row with
+`sport='NBA'` uppercase and an 846-char narrative with correct direction; and
+**`jerry_reads` has its first NBA row ever**, stamped `game_date` from the
+context row rather than the run date ([[project_ncaaf_grading_gap_908]]).
+Market lines are on 18/81 rows (odds window < schedule horizon), so
+`struct.meta.absent_blocks` names what is missing per game and the read cannot
+invent a Monte Carlo or money-flow block.
+
+**B74 is now fully closed: a, b, c, d.**
