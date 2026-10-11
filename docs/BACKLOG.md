@@ -3453,3 +3453,71 @@ Panel   84   +0.58    2.89   [ -7.3,  +6.3]
 
 No OTA path, so all of B78 rides the build already held for the Split rework —
 bundle it rather than planning a separate pass.
+
+### B75e RESULT (2026-10-11) — history de-leaked; a real but SMALL tier signal exists
+
+`backtest_prop_tier_clean.py`, read-only, 21,209 pre-09-22 MLB props
+re-scored with every lookback recomputed from games STRICTLY BEFORE each
+prop's own `game_date`. Turns a 1,183-row clean backtest into a 21,209-row
+one without waiting for a season we no longer have.
+
+**The leak, quantified.** Stored vs clean `player_l5_hit_count` agree on
+only **7,788 / 13,593 = 57%**. It was wrong on nearly half the rows.
+
+```
+                 hit     implied    edge
+leaked L5 = 5   95.8%     60.6%    +35.2     <- the tautology
+clean  L5 = 5   71.0%     68.4%     +2.6     <- what it is actually worth
+```
+
+**The live tier's apparent edge is the leak.** On these same rows PRIME
+shows +17.5pp over fair (n=2,128) — but PRIME was ASSIGNED using the
+leaked L5, so that number measures the leak, not skill. The honest
+ceiling of any leak-free feature we own is ~+4pp, not +17.5pp.
+
+**A monotone leak-free signal does exist, and it survives a temporal
+holdout** (fit 2026-04-23..08-27, test 08-28..09-21):
+
+```
+clean season    test hit   test mkt    edge        n
+s<30%             18.5%      23.6%     -5.1      4,430
+s30-45            39.1%      40.1%     -1.0      3,086
+s45-55            49.3%      50.0%     -0.7      1,893
+s55-70            62.1%      59.7%     +2.3      3,854
+s70%+             76.0%      71.9%     +4.1      3,415
+```
+
+Same shape on clean L10 (0-2 -> -5.1, 7-8 -> +3.8, 9-10 -> +2.8). A ~9pp
+spread that holds on held-out games. Tiering on it: **top 10% = +5.3pp
+over fair, n=1,259, +/-2.8**, against -0.3pp for the population.
+
+**What does NOT transfer: a fitted per-cell edge table.** With a properly
+sized fit set, corr(fit edge, test edge) is +0.364 (season), **-0.235**
+(L10) and +0.139 (season x L10). An earlier lopsided split (fit n=1,395)
+showed +0.914 and was an artefact — the per-cell magnitudes are noise.
+Tier on the FEATURE BUCKETS, never on a learned edge lookup.
+
+**The honest ceiling.** +4 to +5pp is measured against the DE-VIGGED fair
+price. We pay fair plus overround, which on these props runs ~2.5-5pp per
+side. So the top tier is breakeven-to-modestly-profitable, not a 70%
+winner. A PRIME that promises "hits more often than not" is supportable;
+one that implies a large edge is not.
+
+**The most reliable component we own is a refusal.** SKIP: 40.8% hit vs
+44.9% implied, **-4.1pp on n=13,470** (+/-0.9). The engine identifies what
+NOT to bet far better than it identifies winners. Keep SKIP untouched.
+
+### B75a SPEC, now evidence-backed rather than guessed
+1. Tier on leak-free `clean_season_hit_rate` + `clean_L10` buckets. Live
+   rows already carry clean features — the `before_date` fix landed 09-22,
+   so no recompute is needed going forward.
+2. Set the top tier's published expectation at **+3-5pp over fair**.
+3. Keep SKIP exactly as-is.
+4. Shadow column first, graded against the live tier before it replaces
+   anything ([[feedback_suppression_gate_needs_shadow]]).
+
+**CAVEAT, load-bearing.** This is MLB props only, and MLB's season is
+over. The ladder is validated on the one sport we can no longer bet. The
+SHAPE should transfer to NFL/NHL; the THRESHOLDS should not be assumed to.
+Re-validate per sport as sample builds — [[B75d]] already says one global
+ladder cannot be right for seven sports, and this is the evidence for it.
