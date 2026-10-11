@@ -16856,6 +16856,34 @@ setJerryHistory(prev => {
                     {[
                       {key:'sharp',  label:'The Sharp',  badge:'SC'},
                       {key:'prop',   label:'Prop Card',  badge:'PC'},
+                      // 2026-10-10 · B74 · Jerry's per-game read and the
+                      // dashboard's own record. Both were graded all along and
+                      // simply never rolled up: surface_records held 34
+                      // surfaces and neither of these. compute_surface_records
+                      // now writes them (pick_game_read / pick_sweat_card), and
+                      // the generic surfaceData path already reads
+                      // surfaceRecords[`${sport}|${key}|${winKey}`], so these
+                      // need no new plumbing.
+                      //
+                      // game_read is the most sport-universal surface we have:
+                      // MLB 432-309, NCAAF 174-153, NFL 36-22, NHL 26-22
+                      // (1,190 graded lifetime, 57%). The Sharp is MLB-heavy by
+                      // comparison and Prop Card is MLB+NFL only, so this is
+                      // the box that actually delivers a record per sport.
+                      //
+                      // Label is short to match the others and to match what
+                      // users already see on the game screen — "Jerry Game
+                      // Analysis" wraps badly in a 46%-width tile.
+                      {key:'game_read',  label:'Jerry Reads', badge:'JR'},
+                      // Sweat Card = the DASHBOARD top-8. Distinct from The
+                      // Sharp (Steam Room slate) — different denominators,
+                      // different discipline. Never merge the two labels.
+                      // ⚠ Thin and NEGATIVE on football: NFL 4-12 (25%, n=16)
+                      // and NCAAF 18-19 (49%, n=38) will render as-is when a
+                      // user filters to those sports. Left visible on purpose
+                      // — "we show the receipts" — but it is the reason the
+                      // sample floor below exists.
+                      {key:'sweat_card', label:'Sweat Card', badge:'SW'},
                       {key:'ladder', label:'Ladder',     badge:'LD'},
                       {key:'ledger', label:'Ledger',     badge:'LG'},
                     ].map((sfc:any) => {
@@ -16875,7 +16903,23 @@ setJerryHistory(prev => {
                       // 2026-08-28: lead with HIT RATE (big) — the bragging
                       // number. Units become secondary. Prop juice math is
                       // brutal but the hit rate tells the real skill story.
-                      const hitColor = !d.hasData ? THEME.textDim :
+                      // 2026-10-10 · SAMPLE FLOOR on the big percentage.
+                      // A rate needs an n to mean anything (the standing rule
+                      // is n>=30 before a % is quoted). Rolling up the two new
+                      // surfaces exposed exactly why: Sweat Card NFL is 4-12
+                      // on n=16 and NCAAF 18-19 on n=38 — a 24pt "25%" tile
+                      // off sixteen picks reads as a verdict when it is noise,
+                      // and a 2SE band on n=16 is about +/-25pp.
+                      //
+                      // The picks are NOT hidden — W-L still shows, so the
+                      // record is there for anyone counting. Only the big
+                      // RATE is withheld, because that is the number that
+                      // overstates. Applies to every surface, not just the new
+                      // ones: the same honesty should have governed any thin
+                      // tile all along.
+                      const dN = d.wins + d.losses;
+                      const thinSample = d.hasData && dN < 30;
+                      const hitColor = (!d.hasData || thinSample) ? THEME.textDim :
                         d.hitPct >= 55 ? THEME.win :
                         d.hitPct >= 50 ? THEME.accent : THEME.loss;
                       return (
@@ -16884,9 +16928,14 @@ setJerryHistory(prev => {
                             <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>{sfc.label.toUpperCase()}</Text>
                             <Text style={{color:THEME.textDim,fontSize:9,backgroundColor:THEME.surfaceAlt,paddingHorizontal:5,paddingVertical:1,borderRadius:4}}>{sfc.badge}</Text>
                           </View>
-                          <Text style={{color: hitColor, fontSize:24, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:28}}>
-                            {!d.hasData ? '—' : `${d.hitPct.toFixed(0)}%`}
+                          <Text style={{color: hitColor, fontSize: thinSample ? 15 : 24, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:28}}>
+                            {!d.hasData ? '—' : thinSample ? `n=${dN}` : `${d.hitPct.toFixed(0)}%`}
                           </Text>
+                          {thinSample && (
+                            <Text style={{color:THEME.textDim,fontSize:9,marginTop:-2}}>
+                              building sample
+                            </Text>
+                          )}
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginTop:4}}>
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
                               {d.hasData
