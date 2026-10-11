@@ -94,6 +94,55 @@ TIERS = ('PRIME', 'STRONG', 'LEAN', 'COVERAGE', 'PASS')
 TYPES = ('ml', 'rl', 'spread', 'total')
 SIDES = ('HOME', 'AWAY', 'OVER', 'UNDER')
 
+#: Tier ordering, matching nfl_qb_injury_gate._RANK.
+_RANK = {'PASS': 0, 'COVERAGE': 1, 'LEAN': 2, 'LIGHT': 2,
+         'STRONG': 3, 'PRIME': 4}
+
+# ══ 2026-10-11 · A MANUAL PICK MUST NOT LIFT A SAFETY CAP ══
+# Andy's card on 10-11 carried CHI -2.5 and BAL +3.5 at STRONG. Both had
+# been demoted to COVERAGE by nfl_qb_injury_gate, which had correctly read
+# nfl_injuries and found Caleb Williams and Lamar Jackson both listed Out:
+#
+#   _qb_injury_cap {"reason": "Caleb Williams Out",
+#                   "tier_from": "STRONG", "tier_to": "COVERAGE"}
+#
+# The gate did its job. This script undid it. Nine of fourteen NFL games
+# were sitting at COVERAGE that morning for a MIX of reasons — most from
+# the ensemble's signal-credibility floor, two from a QB being ruled out —
+# and because nothing here distinguished them, a bulk re-tier to STRONG
+# treated an injury cap as if it were a thin-signal cap. CHI lost by 24.
+#
+# The distinction matters because the caps mean opposite things. A
+# credibility cap says "we are not confident". An injury cap says "the
+# INPUTS to this projection describe a player who is not playing" — the
+# number is not weak, it is measuring the wrong team. No amount of human
+# conviction about the side repairs that, because the side was chosen by
+# the same stale number.
+#
+# So: choosing a SIDE stays free. Raising a tier above a safety cap now
+# requires saying so explicitly, and prints exactly what it is overriding.
+_SAFETY_CAPS = {
+    '_qb_injury_cap': 'starting QB ruled out / doubtful',
+    '_mc_dissent': 'Monte Carlo dissent (sim has our side under 40%)',
+}
+
+
+def safety_caps(pp: dict) -> list:
+    """Every safety cap currently stamped on this pick, with its ceiling."""
+    out = []
+    for key, why in _SAFETY_CAPS.items():
+        blob = pp.get(key)
+        if not isinstance(blob, dict):
+            continue
+        ceiling = blob.get('tier_to') or blob.get('orig_tier')
+        out.append({
+            'key': key,
+            'why': why,
+            'ceiling': str(ceiling).upper() if ceiling else None,
+            'reason': blob.get('reason') or blob.get('mc_pick_win_pct'),
+        })
+    return out
+
 
 def et_now():
     return dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)
@@ -155,6 +204,13 @@ def main():
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--force-past-lock', action='store_true',
                     dest='force_lock')
+    ap.add_argument('--override-safety-cap', action='store_true',
+                    dest='force_cap',
+                    help='Raise the tier above a safety cap (QB ruled out, '
+                         'MC hard dissent). Prints exactly what is being '
+                         'overridden. Needed because a cap means the '
+                         'projection ran on inputs describing a player who '
+                         'is not playing — not that the pick is merely weak.')
     a = ap.parse_args()
 
     now, hrs = lock_status()
@@ -266,6 +322,38 @@ def main():
           f'{f" line {a.line:+g}" if a.line is not None else ""}')
     print(f'  reaches    : game detail + Sweat Card + The Sharp '
           f'(all three read primary_play)')
+
+    # A safety cap is not an opinion about strength — it is a statement that
+    # the model's INPUTS are wrong. Never lift one silently.
+    caps = safety_caps(old)
+    blocking = [c for c in caps
+                if c['ceiling']
+                and _RANK.get(a.tier, 9) > _RANK.get(c['ceiling'], 9)]
+    if caps:
+        print('\n  SAFETY CAPS on this pick:')
+        for c in caps:
+            mark = '  <-- you are raising ABOVE this' if c in blocking else ''
+            print(f"    · {c['key']}  ceiling {c['ceiling']}  "
+                  f"({c['why']}){mark}")
+            if c.get('reason'):
+                print(f"        reason: {c['reason']}")
+        qb = old.get('_qb_injury') or {}
+        if qb.get('note'):
+            print(f"\n    {str(qb['note'])[:300]}")
+    if blocking and not a.force_cap:
+        print('\n  REFUSED: this would raise the tier above a safety cap.')
+        print('    The cap is not low confidence — it means the projection')
+        print('    was built from inputs that describe a player who is not')
+        print('    playing, so the SIDE itself came from a stale number.')
+        print('    Picking a different side is free; promoting this one is')
+        print('    not. Re-run with --override-safety-cap if you still want')
+        print(f'    it, or set --tier {blocking[0]["ceiling"]} or lower.')
+        return 1
+    if blocking and a.force_cap:
+        print('\n  ⚠ OVERRIDING A SAFETY CAP, by explicit flag:')
+        for c in blocking:
+            print(f"      {c['key']} ceiling {c['ceiling']} -> {a.tier}"
+                  f"  ({c.get('reason')})")
 
     if not a.apply:
         print('\n  [DRY] nothing written. Re-run with --apply.')

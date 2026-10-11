@@ -298,11 +298,31 @@ def apply_to_pick(pp: Optional[dict], ctx: Optional[dict],
         if len(capped) > 1:
             pp['_qb_injury_cap'] = capped
         # Surface it in the sub-line the user actually reads.
-        sub = str(pp.get('sub') or '')
-        if 'QB' not in sub and v.get('qb'):
+        #
+        # ══ 2026-10-11 · THE TAG WAS WRITTEN ONCE AND NEVER REFRESHED ══
+        # The guard here was `if 'QB' not in sub`, which skipped the write
+        # whenever ANY QB tag already existed. Lamar Jackson went
+        # Questionable -> Out on the morning of 10-11: the cap updated
+        # correctly (_qb_injury_cap reason "Lamar Jackson Out", STRONG ->
+        # COVERAGE) while the sentence the user reads stayed frozen at
+        # "listed Questionable". The row then said two different things
+        # about the same player, and the softer one was the visible one.
+        #
+        # A status can only ever get WORSE between report and kickoff, so
+        # a stale tag understates risk by construction. Replace any tag
+        # this gate previously wrote rather than declining to write.
+        # [[feedback_late_data_must_invalidate_derived_output]]
+        if v.get('qb'):
             tag = (f"⚠ {v['team']} QB {v['qb']} listed {v['status']} — "
                    f"model inputs predate the change")
-            pp['sub'] = f'{sub} · {tag}' if sub else tag
+            parts = [s.strip() for s in str(pp.get('sub') or '').split('·')]
+            # Drop only OUR prior tag, identified by its own marker, so a
+            # human-written note mentioning a QB is never eaten.
+            parts = [s for s in parts
+                     if s and not (s.startswith('⚠') and ' QB ' in s
+                                   and 'listed' in s)]
+            parts.append(tag)
+            pp['sub'] = ' · '.join(parts)
     except Exception:
         pass
     return pp
