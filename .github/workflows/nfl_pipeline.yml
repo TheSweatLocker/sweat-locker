@@ -354,6 +354,15 @@ jobs:
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_game_context.py" python nfl_game_context.py
+          # 2026-10-12: nfl_game_context only sees what the Odds API returns,
+          # which is ~8 days. Everything past that kept its preseason
+          # enrichment — measured 2026-10-12, 358 beyond-window team-slots
+          # held LAST SEASON's rates exactly, and 164 of those rows carried a
+          # primary_play (50 STRONG, 2 PRIME) built on them. Game detail reads
+          # primary_play live, so those were visible. This refreshes the
+          # blended team-stat columns on every future row, no odds required.
+          # It writes stats only — never picks, tiers or lines.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_nfl_team_features.py" python refresh_nfl_team_features.py --apply
 
       # 2026-09-09: NFL splits_v2 aggregator was missing from this workflow —
       # every other sport (MLB/NBA/NHL/NCAAF/NCAAB) calls it but NFL never did.
