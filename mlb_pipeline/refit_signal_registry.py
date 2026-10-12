@@ -67,12 +67,58 @@ SPORTS_WITH_CTX = {
 }
 
 
-def _tier_for(n: int, hit_rate_frac: float) -> str:
-    if n >= 25 and hit_rate_frac <= 0.47:
+def _tier_for(n: int, hit_rate_frac: float,
+              blind_frac: Optional[float] = None) -> str:
+    """Tier a signal. With `blind_frac`, judge it against ITS OWN SIDE.
+
+    ══ 2026-10-11 · THE FLAT THRESHOLDS WERE SIDE-BLIND ══
+    >=55% earned VALIDATED and <=47% earned ANTI regardless of which side
+    the signal backs. In NCAAF home wins 58.9% of moneylines, so a
+    home-ML signal hitting 56% was being stamped VALIDATED for performing
+    WORSE than a blind bet on home — and VALIDATED is exactly what the
+    ensemble's credibility floor reads to decide a pick may reach a card.
+    Same defect as the edge_weight benchmark fixed in fe806500; fixing one
+    and not the other would just move it.
+
+    `blind_frac` is the rate a blind bet on the same side/market mix would
+    have returned over the same firings. When present, a signal must beat
+    it by more than its own 2SE — so a thin sample cannot earn VALIDATED
+    on a lucky run, which the flat rule allowed at n=20.
+
+    Falls back to the flat rule when no baseline is known (prop and
+    attribution paths, sports with no measured side rate), so nothing that
+    worked before changes.
+    """
+    if blind_frac is None:
+        if n >= 25 and hit_rate_frac <= 0.47:
+            return 'ANTI_VALIDATED'
+        if n >= 50 and hit_rate_frac >= 0.55:
+            return 'VALIDATED'
+        if n >= 20 and hit_rate_frac >= 0.55:
+            return 'DISCOVERY'
+        return 'UNVALIDATED'
+
+    edge = hit_rate_frac - blind_frac
+    se1 = 0.5 / (n ** 0.5)
+    se2 = 2.0 * se1
+    if n >= 25 and edge < -se2:
         return 'ANTI_VALIDATED'
-    if n >= 50 and hit_rate_frac >= 0.55:
+    # Must clear the juice as well as the side — beating a 48% side at
+    # 50% still loses money at -110.
+    if hit_rate_frac < 0.5238:
+        return 'UNVALIDATED'
+    # The bar matches the strength of the claim the label makes.
+    # VALIDATED says "proven", so it pays the full 2SE. DISCOVERY says
+    # "promising, thin sample" — 1SE, explicitly provisional.
+    #
+    # A single 2SE bar for both sounded rigorous and was useless: at
+    # n=60, 2SE is ±12.9pp, so a real 11pp edge still failed and NOTHING
+    # could ever promote. A ladder that can only demote is not a ladder,
+    # and the thin-sample tier exists precisely to carry claims this
+    # sample size cannot settle.
+    if n >= 50 and edge > se2:
         return 'VALIDATED'
-    if n >= 20 and hit_rate_frac >= 0.55:
+    if n >= 20 and edge > se1:
         return 'DISCOVERY'
     return 'UNVALIDATED'
 
@@ -243,7 +289,7 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
         rows = direct.json() or []
         print(f'  [{sport}] game rows from results.primary_play '
               f'(last {days}d): {len(rows)}')
-        return _tally_game_firings(rows)
+        return _tally_game_firings(rows, sport)
 
     res_rows = _page(results_table, {
         'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
@@ -278,16 +324,27 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
           f'{len(rows)} of {len(res_rows)} results, '
           f'{len(ctx_rows)} context rows')
 
-    return _tally_game_firings(rows)
+    return _tally_game_firings(rows, sport)
 
 
-def _tally_game_firings(rows: list) -> dict[str, dict]:
-    """{signal_key: {right, wrong}} from rows carrying primary_play + scores.
+def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
+    """{signal_key: {right, wrong, blind_sum}} from rows with primary_play.
 
     Shared by both fetch paths (results.primary_play for MLB, the
     ctx->results join for football) so the two cannot grade differently.
+
+    `blind_sum` accumulates what a BLIND bet on the same side would have
+    been expected to return on each firing, so _tier_for can judge the
+    signal against its own side rather than a flat threshold. Stays 0 when
+    the sport has no measured side rate, and the caller then falls back to
+    the flat rule rather than dividing by a baseline it does not have.
     """
-    firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
+    try:
+        from ensemble_scorer import side_baseline
+    except Exception:                                      # noqa: BLE001
+        side_baseline = lambda *_a, **_k: None             # noqa: E731
+    firings: dict[str, dict] = defaultdict(
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
     for row in rows:
         pp = row.get('primary_play') or {}
         if isinstance(pp, str):
@@ -320,6 +377,10 @@ def _tally_game_firings(rows: list) -> dict[str, dict]:
             correct = (src_side == winner)
             if correct: firings[base_key]['right'] += 1
             else:       firings[base_key]['wrong'] += 1
+            _b = side_baseline(sport, market, src_side)
+            if _b is not None:
+                firings[base_key]['blind_sum'] += _b
+                firings[base_key]['blind_n'] += 1
     return dict(firings)
 
 
@@ -371,12 +432,23 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
 
 
 def merge_firings(*dicts) -> dict[str, dict]:
-    """Combine multiple {signal_key → {right,wrong}} dicts, summing counts."""
-    out: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
+    """Combine multiple {signal_key → {right,wrong,…}} dicts, summing counts.
+
+    2026-10-11: blind_sum / blind_n must be carried through. They were
+    dropped here, so the side-aware tiering added to _tier_for never saw a
+    baseline and silently fell back to the flat rule — the tier
+    distribution came out byte-identical, which is what made it obvious.
+    A merge that quietly discards the keys its callers just started
+    producing is the same silent-no-op class as the rest of today.
+    """
+    out: dict[str, dict] = defaultdict(
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
     for d in dicts:
         for k, v in d.items():
-            out[k]['right'] += v['right']
-            out[k]['wrong'] += v['wrong']
+            out[k]['right'] += v.get('right', 0)
+            out[k]['wrong'] += v.get('wrong', 0)
+            out[k]['blind_sum'] += v.get('blind_sum', 0.0)
+            out[k]['blind_n'] += v.get('blind_n', 0)
     return dict(out)
 
 
@@ -447,7 +519,11 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             dropped += 1
             continue
         hr_frac = ct['right'] / n if n > 0 else 0.0
-        tier = _tier_for(n, hr_frac)
+        # Judge against the side the signal actually backs where we have a
+        # measured rate for it; otherwise the flat rule (see _tier_for).
+        _bn = ct.get('blind_n') or 0
+        blind = (ct['blind_sum'] / _bn) if _bn >= max(10, int(n * 0.8)) else None
+        tier = _tier_for(n, hr_frac, blind)
         weight = _recommended_weight_for(n, hr_frac, tier)
         out.append({
             'signal_name': signal_key,

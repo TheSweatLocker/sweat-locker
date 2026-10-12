@@ -42,6 +42,17 @@ if _env.exists():
 
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+
+# 2026-10-11: one definition of "has this signal earned a tier", shared
+# with refit_signal_registry, and one measured table of per-side base
+# rates, shared with the scorer. Three copies of the flat 55%/47% rule
+# existed before today and all three were side-blind.
+try:
+    from refit_signal_registry import _tier_for
+    from ensemble_scorer import side_baseline as _side_baseline
+except Exception:                                          # noqa: BLE001
+    _tier_for = None
+    _side_baseline = lambda *_a, **_k: None                # noqa: E731
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
@@ -239,6 +250,9 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
 
     w = l = p = 0
     fires = 0
+    blind_sum = 0.0
+    blind_n = 0
+    _sport = source.get('sport')
     for game in games:
         ctx_attr = AttrDict(game)
         if not evaluate_bool(condition, ctx_attr):
@@ -251,22 +265,58 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
         if result == 'W': w += 1
         elif result == 'L': l += 1
         elif result == 'P': p += 1
+        # What a BLIND bet on the same side would have returned. See the
+        # tier block below for why this is needed.
+        if result in ('W', 'L'):
+            _s = str(side).upper()
+            _mkt = ('ml' if _s.endswith('_ML')
+                    else 'rl' if _s.endswith('_RL') else None)
+            if _mkt:
+                _b = _side_baseline(_sport, _mkt, _s)
+                if _b is not None:
+                    blind_sum += _b
+                    blind_n += 1
 
     n_dec = w + l  # exclude pushes from hit rate math
     hit_rate = round(100 * w / n_dec, 1) if n_dec else None
-    edge_pp = round(hit_rate - 52.4, 1) if hit_rate is not None else None
 
-    # Tier assignment
-    if n_dec < 15:
+    # ══ 2026-10-11 · THIS TIER LADDER WAS SIDE-BLIND TOO ══
+    # >=55% earned VALIDATED whatever side the signal backs. NCAAF home
+    # wins 58.9% of moneylines and covers 51.6% ATS, so a home signal
+    # collected the base rate as if it were edge. Today this stamped
+    # ncaaf_home_underdog_bark VALIDATED at 56.9% on n=51 — +5.3pp over
+    # its own side against a 2SE of ±14, i.e. nothing — while an
+    # independent audit of its ACTUAL firings had it at 23.5%, the worst
+    # signal on the board.
+    #
+    # Third place this same defect lived: edge_weight's benchmark
+    # (fe806500), refit_signal_registry's thresholds (584be7c8), and here.
+    # _tier_for is IMPORTED rather than reimplemented so a fourth copy
+    # cannot drift away again.
+    #
+    # NOTE the two measurements answer different questions and both are
+    # kept: this replays condition_expr over every resolved game (what the
+    # signal WOULD have said), while audit_football_signals counts what it
+    # actually contributed in _ensemble_sources. Replay has more n;
+    # firings reflect what reached production. They should agree, and
+    # where they do not that gap is itself the finding.
+    blind = (blind_sum / blind_n) if blind_n >= max(10, int(n_dec * 0.8)) else None
+    edge_pp = (round(hit_rate - blind * 100, 1)
+               if (hit_rate is not None and blind is not None)
+               else (round(hit_rate - 52.4, 1) if hit_rate is not None
+                     else None))
+    if n_dec < 15 or hit_rate is None:
         tier = 'UNVALIDATED'
-    elif hit_rate is not None and n_dec >= 25 and hit_rate <= 48.0:
-        tier = 'ANTI_VALIDATED'
-    elif hit_rate is not None and n_dec >= 50 and hit_rate >= 55.0:
-        tier = 'VALIDATED'
-    elif hit_rate is not None and hit_rate >= 52.4:
-        tier = 'DISCOVERY'
+    elif _tier_for is not None:
+        tier = _tier_for(n_dec, hit_rate / 100.0, blind)
     else:
-        tier = 'UNVALIDATED'
+        # Import failed — fall back to the original flat ladder rather
+        # than crash a nightly job. Side-blind, and noisy by design.
+        print('  ⚠ _tier_for unavailable — using the legacy flat ladder')
+        if n_dec >= 25 and hit_rate <= 48.0:   tier = 'ANTI_VALIDATED'
+        elif n_dec >= 50 and hit_rate >= 55.0: tier = 'VALIDATED'
+        elif hit_rate >= 52.4:                 tier = 'DISCOVERY'
+        else:                                  tier = 'UNVALIDATED'
 
     weight = {'VALIDATED': 1.0, 'DISCOVERY': 0.5,
               'UNVALIDATED': 0.3, 'ANTI_VALIDATED': 0.0}[tier]
