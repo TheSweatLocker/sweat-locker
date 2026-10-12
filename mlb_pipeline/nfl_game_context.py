@@ -24,6 +24,7 @@ Usage:
 Required env: SUPABASE_URL, SUPABASE_KEY, ODDS_API_KEY
 """
 import argparse
+import functools
 import os
 import sys
 from datetime import datetime, date, timedelta, timezone
@@ -120,6 +121,99 @@ def load_team_def_stats(season: int) -> dict:
             if rows:
                 return {row['team']: row for row in rows}
     return {}
+
+
+@functools.lru_cache(maxsize=1)
+def load_qb_home_road_splits(current_season: int) -> dict:
+    """{qb_name: {career/recent home-road split}} from nfl_game_results.
+
+    ══ 2026-10-12 · FOUR SIGNALS HAVE NEVER FIRED FOR WANT OF THIS ══
+    nfl_home_qb_home_dominant, nfl_home_qb_recent_home_hot,
+    nfl_away_qb_road_struggles and nfl_away_qb_road_inverse all read
+    columns nobody ever wrote — *_career_h_r_delta_pp,
+    *_career_home_starts, *_career_road_starts, *_recent_home_starts,
+    *_recent_home_win_pct. They have sat "enabled" in the registry,
+    unable to fire, inflating our signal count.
+
+    I nearly filed this as "needs a feature built". It does not: every
+    input is already in nfl_game_results — home_qb_name, away_qb_name,
+    home_score, away_score, season — back to 2020. Checking before
+    deferring is the whole lesson.
+
+    UNITS MATTER AND THEY ARE NOT CONSISTENT, so they are matched to what
+    each condition actually tests:
+        *_career_h_r_delta_pp   PERCENTAGE POINTS (thresholds +/-10..15)
+        *_recent_home_win_pct   a FRACTION        (threshold 0.65)
+    Returning a fraction where points are expected would silently make
+    every one of these conditions false again, which is the state we are
+    trying to leave.
+
+    NO LEAK: only games with a final score are counted, and this enriches
+    UPCOMING games, so a QB's record is strictly prior information. If
+    this is ever used to backfill historical rows it MUST be bounded by
+    that row's own game_date instead.
+    """
+    rows, off = [], 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/nfl_game_results', headers=H_READ,
+                         params={'select': 'season,home_qb_name,away_qb_name,'
+                                           'home_score,away_score',
+                                 'home_score': 'not.is.null',
+                                 'limit': '1000', 'offset': str(off)},
+                         timeout=30)
+        if r.status_code not in (200, 206):
+            return {}
+        b = r.json() or []
+        rows += b
+        if len(b) < 1000 or len(rows) >= 20000:
+            break
+        off += 1000
+
+    RECENT_SEASONS = 2          # current + prior
+    agg: dict = {}
+
+    def _slot(name):
+        return agg.setdefault(name, {'hs': 0, 'hw': 0, 'rs': 0, 'rw': 0,
+                                     'rec_hs': 0, 'rec_hw': 0})
+
+    for g in rows:
+        try:
+            hs, as_ = float(g['home_score']), float(g['away_score'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        recent = (g.get('season') or 0) >= current_season - (RECENT_SEASONS - 1)
+        hq, aq = g.get('home_qb_name'), g.get('away_qb_name')
+        if hq:
+            s = _slot(hq)
+            s['hs'] += 1
+            if hs > as_:
+                s['hw'] += 1
+            if recent:
+                s['rec_hs'] += 1
+                if hs > as_:
+                    s['rec_hw'] += 1
+        if aq:
+            s = _slot(aq)
+            s['rs'] += 1
+            if as_ > hs:
+                s['rw'] += 1
+
+    out = {}
+    for name, s in agg.items():
+        home_pct = (s['hw'] / s['hs']) if s['hs'] else None
+        road_pct = (s['rw'] / s['rs']) if s['rs'] else None
+        delta_pp = (round((home_pct - road_pct) * 100, 1)
+                    if (home_pct is not None and road_pct is not None)
+                    else None)
+        out[name] = {
+            'career_home_starts': s['hs'],
+            'career_road_starts': s['rs'],
+            'career_h_r_delta_pp': delta_pp,
+            'recent_home_starts': s['rec_hs'],
+            'recent_home_win_pct': (round(s['rec_hw'] / s['rec_hs'], 3)
+                                    if s['rec_hs'] else None),
+        }
+    return out
 
 
 def load_team_games_played(season: int) -> dict:
@@ -1672,6 +1766,22 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
             row['away_qb_vs_team_recent_pass_td_avg'] = away_qb.get('recent_pass_td_avg')
             row['away_qb_vs_team_recent_int_avg'] = away_qb.get('recent_int_avg')
             row['away_qb_vs_team_recent_qb_rating'] = away_qb.get('recent_qb_rating')
+        # 2026-10-12: the home/road split columns four signals read. These
+        # are keyed on the QB NAME already resolved above, so they inherit
+        # whatever starter the depth chart named — including a backup when
+        # the starter is out, which is the correct behaviour.
+        _hr = load_qb_home_road_splits(season)
+        _hn, _an = row.get('home_qb_name'), row.get('away_qb_name')
+        _h = _hr.get(_hn) if _hn else None
+        _a = _hr.get(_an) if _an else None
+        if _h:
+            row['home_qb_career_home_starts'] = _h['career_home_starts']
+            row['home_qb_career_h_r_delta_pp'] = _h['career_h_r_delta_pp']
+            row['home_qb_recent_home_starts'] = _h['recent_home_starts']
+            row['home_qb_recent_home_win_pct'] = _h['recent_home_win_pct']
+        if _a:
+            row['away_qb_career_road_starts'] = _a['career_road_starts']
+            row['away_qb_career_h_r_delta_pp'] = _a['career_h_r_delta_pp']
     except Exception as e:
         print(f'  ⚠ QB vs team join failed for {away} @ {home}: {e}')
 
