@@ -836,6 +836,28 @@ def compute_projections(home_stats: dict, away_stats: dict,
         # internal name; ncaaf_sp_plus_edge_home/_away expects home_sp_plus.
         # Same value, aliased so signals can read + trend calls can too.
         'home_sp_plus': None, 'away_sp_plus': None,
+        # ══ 2026-10-12 · THE SAME ALIAS GAP, FOUR MORE SIGNALS ══
+        # The 08-22 fix above aliased sp_overall -> *_sp_plus for the TWO
+        # signals it found (ncaaf_sp_plus_edge_home/_away) and stopped
+        # there. Four others read names nobody ever wrote:
+        #
+        #   ncaaf_sp_plus_home_dominant       *_sp_plus_overall
+        #   ncaaf_sp_plus_away_dominant       *_sp_plus_overall
+        #   ncaaf_sp_plus_offense_vs_weak_def away_sp_plus_def, home_sp_plus_off
+        #   ncaaf_sp_plus_defenses_dominant   *_sp_plus_def
+        #
+        # Measured 2026-10-12: away_sp_plus_overall 100% NULL,
+        # home_sp_plus_overall 99% NULL, same for _off/_def — so all four
+        # have been physically unable to fire since they were written,
+        # while sitting in the registry as "enabled" and counting toward
+        # our signal depth.
+        #
+        # The columns exist on ncaaf_game_context and the DATA exists on
+        # ncaaf_team_stats (sp_offense / sp_defense / sp_overall). Only the
+        # carry-across was missing.
+        'home_sp_plus_overall': None, 'away_sp_plus_overall': None,
+        'home_sp_plus_off': None, 'away_sp_plus_off': None,
+        'home_sp_plus_def': None, 'away_sp_plus_def': None,
         'sp_plus_matchup_total': None,  # sum for over/under signal
         'sp_gap': None,
         'projected_spread': None, 'projected_total': None,
@@ -856,6 +878,15 @@ def compute_projections(home_stats: dict, away_stats: dict,
     # 2026-08-22: aliased for signal_sources readers (finding #13)
     out['home_sp_plus'] = h_sp
     out['away_sp_plus'] = a_sp
+    # 2026-10-12: the four signals the 08-22 pass missed. _overall is the
+    # same number under the name those conditions read; _off/_def are the
+    # genuine SP+ components, which ncaaf_team_stats has carried all along.
+    out['home_sp_plus_overall'] = h_sp
+    out['away_sp_plus_overall'] = a_sp
+    out['home_sp_plus_off'] = _f(home_stats.get('sp_offense'))
+    out['away_sp_plus_off'] = _f(away_stats.get('sp_offense'))
+    out['home_sp_plus_def'] = _f(home_stats.get('sp_defense'))
+    out['away_sp_plus_def'] = _f(away_stats.get('sp_defense'))
     if h_sp is not None and a_sp is not None:
         out['sp_plus_matchup_total'] = round(float(h_sp) + float(a_sp), 2)
 
