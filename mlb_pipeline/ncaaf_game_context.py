@@ -746,6 +746,77 @@ def _populated_pct(stats_dict: dict) -> float:
     return _rated_team_count(stats_dict) / len(stats_dict)
 
 
+def load_last_ats_by_team() -> dict:
+    """{team: [(game_date, 'W'|'L'|'P'), …]} newest-first, from results.
+
+    ══ 2026-10-12 · THE LAST SIGNAL THAT COULD NOT FIRE ══
+    ncaaf_home_dog_letdown_fade reads ctx.home_last_result_ats, a column
+    that has never existed anywhere. The signal is the classic letdown
+    fade: home team is a DOG (NCAAF stores a POSITIVE close_spread for
+    that) and covered its last game, so fade it back to AWAY_ML.
+
+    Like the NFL QB splits, this was filed as "needs a feature built" and
+    it did not: ncaaf_game_results already carries game_date, home_team,
+    away_team and spread_result. Checking before deferring is the lesson.
+
+    'W' means THAT TEAM covered, which is why the result is stored per
+    team rather than per game — home_covered is a W for the home side and
+    an L for the away side, and reading it from the wrong perspective
+    inverts the signal.
+
+    Four rows in the table carry 'true'/'false' in spread_result. They are
+    skipped rather than coerced; a junk value silently read as a cover
+    would put a fabricated result into a published pick.
+    """
+    out: dict = {}
+    off = 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/ncaaf_game_results', headers=H_READ,
+                         params={'select': 'game_date,home_team,away_team,'
+                                           'spread_result',
+                                 'spread_result': 'not.is.null',
+                                 'limit': '1000', 'offset': str(off)},
+                         timeout=30)
+        if r.status_code not in (200, 206):
+            return out
+        rows = r.json() or []
+        for g in rows:
+            res = str(g.get('spread_result') or '').lower()
+            if res not in ('home_covered', 'away_covered', 'push'):
+                continue                      # 'true'/'false' junk — skip
+            gd = str(g.get('game_date') or '')[:10]
+            if not gd:
+                continue
+            h, a = g.get('home_team'), g.get('away_team')
+            if h:
+                out.setdefault(h, []).append(
+                    (gd, 'P' if res == 'push' else
+                     ('W' if res == 'home_covered' else 'L')))
+            if a:
+                out.setdefault(a, []).append(
+                    (gd, 'P' if res == 'push' else
+                     ('W' if res == 'away_covered' else 'L')))
+        if len(rows) < 1000:
+            break
+        off += 1000
+    for t in out:
+        out[t].sort(key=lambda z: z[0], reverse=True)
+    return out
+
+
+def last_ats_result(hist: dict, team: str, before_date: str):
+    """That team's most recent ATS result STRICTLY BEFORE before_date.
+
+    Bounded by the game's own date rather than by 'today', so this stays
+    correct if it is ever used to rebuild historical rows — the leak that
+    [[project_prop_l5_leak_922]] was.
+    """
+    for gd, res in hist.get(team) or ():
+        if gd < before_date:
+            return res
+    return None
+
+
 def _league_mean_stats(stats_dict: dict) -> dict:
     """Compute league-mean SP+/EPA rates for regression-to-mean blending."""
     if not stats_dict: return {}
@@ -1493,7 +1564,8 @@ def _build_ncaaf_team_summary(team: str, stats: dict, all_stats: dict) -> Option
 
 def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
                        returning_prod: Optional[dict] = None,
-                       rolling_form: Optional[dict] = None) -> Optional[dict]:
+                       rolling_form: Optional[dict] = None,
+                       ats_hist: Optional[dict] = None) -> Optional[dict]:
     home = g.get('home_team'); away = g.get('away_team')
     if not home or not away:
         return None
@@ -1625,9 +1697,15 @@ def build_context_row(g: dict, team_stats: dict, stats_source: str = 'current',
         'away_l4_over_rate':  ra.get('over_rate'),
     }
 
+    # 2026-10-12: the column ncaaf_home_dog_letdown_fade reads. Bounded by
+    # this game's own date, so it is prior information even on a rebuild.
+    _last_ats = (last_ats_result(ats_hist, home, str(g['game_date'])[:10])
+                 if ats_hist else None)
+
     row = {
         'game_id': g['game_id'],
         'game_date': g['game_date'],
+        'home_last_result_ats': _last_ats,
         'season': g.get('season'),
         'season_type': g.get('season_type') or 'regular',
         'week': g.get('week'),
@@ -2019,9 +2097,14 @@ def run(dry_run: bool = False) -> None:
     rolling_form = load_team_rolling_form(season, window=4)
     print(f'  rolling_l4_form: {len(rolling_form)} teams')
 
+    ats_hist = load_last_ats_by_team()
+    print(f'  last-ATS history: {len(ats_hist)} teams, '
+          f'{sum(len(v) for v in ats_hist.values())} team-games')
+
     rows = [build_context_row(g, team_stats, stats_source=stats_source,
                                 returning_prod=returning_prod,
-                                rolling_form=rolling_form) for g in games]
+                                rolling_form=rolling_form,
+                                ats_hist=ats_hist) for g in games]
     rows = [r for r in rows if r]
     written = upsert(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
