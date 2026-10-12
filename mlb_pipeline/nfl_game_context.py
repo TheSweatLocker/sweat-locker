@@ -2146,6 +2146,20 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
     _now_iso = datetime.now(timezone.utc).isoformat()
     for row in rows:
         row['updated_at'] = _now_iso
+        # ══ 2026-10-12 · updated_at BECAME "LAST TOUCHED BY ANYBODY" ══
+        # The note above set updated_at here so freshness would be a
+        # lookup. It stopped working because six other writers also stamp
+        # this row — recompute_nfl_primary_play has stamped updated_at
+        # since 2026-09-30 to mean "pick recomputed", plus the MC, LR, v3,
+        # v4 and QB refreshers. Each is defensible alone; together they
+        # make the column mean nothing, which is how rows stamped
+        # 2026-10-07 and 2026-10-08 still carried July team stats (B79,
+        # 364 of 388 team-slots on last season's numbers).
+        #
+        # features_computed_at is written ONLY here, by the full
+        # enrichment, on every row it recomputes. A narrow PATCHer must
+        # never set it or it degrades into updated_at again.
+        row['features_computed_at'] = _now_iso
 
     r = requests.post(
         f'{SB}/rest/v1/nfl_game_context?on_conflict=game_id',
