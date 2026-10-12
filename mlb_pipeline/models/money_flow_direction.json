@@ -1,0 +1,441 @@
+{
+  "built_at": "2026-10-12T23:31:06Z",
+  "min_n": 40,
+  "min_edge_pp": 3.0,
+  "note": "Point estimate selects what to SHADOW; the bootstrap CI governs promotion to live, which is a human decision. FADE here means \"worth logging a flip\", never \"flip it live\".",
+  "cells": {
+    "MLB|ANY|ANY": {
+      "n": 625,
+      "roi_follow": -8.33,
+      "roi_fade": -2.69,
+      "hit_follow": 50.4,
+      "fade_ci": [
+        -10.38,
+        4.94
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow -8.3% vs fade -2.7% on n=625"
+    },
+    "MLB|ANY|CONFIRMED": {
+      "n": 392,
+      "roi_follow": -3.8,
+      "roi_fade": -7.43,
+      "hit_follow": 53.6,
+      "fade_ci": [
+        -17.24,
+        2.49
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow -3.8% vs fade -7.4% on n=392"
+    },
+    "MLB|ANY|LEAN": {
+      "n": 177,
+      "roi_follow": -22.21,
+      "roi_fade": 11.51,
+      "hit_follow": 40.7,
+      "fade_ci": [
+        -2.48,
+        25.25
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +11.5% beats follow -22.2% by 33.7pp on n=177"
+    },
+    "MLB|ANY|TRIPLE": {
+      "n": 56,
+      "roi_follow": 3.81,
+      "roi_fade": -14.4,
+      "hit_follow": 58.9,
+      "fade_ci": [
+        -40.98,
+        13.68
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow +3.8% vs fade -14.4% on n=56"
+    },
+    "MLB|CONSENSUS|ANY": {
+      "n": 264,
+      "roi_follow": 0.18,
+      "roi_fade": -12.73,
+      "hit_follow": 59.1,
+      "fade_ci": [
+        -25.34,
+        0.27
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow +0.2% vs fade -12.7% on n=264"
+    },
+    "MLB|CONSENSUS|CONFIRMED": {
+      "n": 187,
+      "roi_follow": 3.47,
+      "roi_fade": -17.73,
+      "hit_follow": 62.0,
+      "fade_ci": [
+        -32.92,
+        -1.98
+      ],
+      "fade_ci_excludes_zero": true,
+      "direction": "FOLLOW",
+      "why": "follow +3.5% vs fade -17.7% on n=187"
+    },
+    "MLB|CONSENSUS|LEAN": {
+      "n": 42,
+      "roi_follow": -19.11,
+      "roi_fade": 11.31,
+      "hit_follow": 42.9,
+      "fade_ci": [
+        -18.18,
+        40.91
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +11.3% beats follow -19.1% by 30.4pp on n=42"
+    },
+    "MLB|CONSENSUS|TRIPLE": {
+      "n": 35,
+      "roi_follow": 5.77,
+      "roi_fade": -14.92,
+      "hit_follow": 62.9,
+      "fade_ci": [
+        -51.17,
+        22.96
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=35 below MIN_N=40"
+    },
+    "MLB|PUBLIC_MOVE|ANY": {
+      "n": 74,
+      "roi_follow": -14.4,
+      "roi_fade": 5.05,
+      "hit_follow": 43.2,
+      "fade_ci": [
+        -15.56,
+        25.66
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +5.1% beats follow -14.4% by 19.4pp on n=74"
+    },
+    "MLB|PUBLIC_MOVE|CONFIRMED": {
+      "n": 61,
+      "roi_follow": -14.45,
+      "roi_fade": 5.29,
+      "hit_follow": 42.6,
+      "fade_ci": [
+        -17.22,
+        28.0
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +5.3% beats follow -14.4% by 19.7pp on n=61"
+    },
+    "MLB|PUBLIC_MOVE|LEAN": {
+      "n": 12,
+      "roi_follow": -22.92,
+      "roi_fade": 12.61,
+      "hit_follow": 41.7,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=12 below MIN_N=40"
+    },
+    "MLB|PUBLIC_MOVE|TRIPLE": {
+      "n": 1,
+      "roi_follow": 90.91,
+      "roi_fade": -100.0,
+      "hit_follow": 100.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=1 below MIN_N=40"
+    },
+    "MLB|RLM|ANY": {
+      "n": 2,
+      "roi_follow": -0.5,
+      "roi_fade": -12.41,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=2 below MIN_N=40"
+    },
+    "MLB|RLM|CONFIRMED": {
+      "n": 1,
+      "roi_follow": -100.0,
+      "roi_fade": 75.19,
+      "hit_follow": 0.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=1 below MIN_N=40"
+    },
+    "MLB|RLM|LEAN": {
+      "n": 1,
+      "roi_follow": 99.01,
+      "roi_fade": -100.0,
+      "hit_follow": 100.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=1 below MIN_N=40"
+    },
+    "MLB|SHARP_MOVE|ANY": {
+      "n": 285,
+      "roi_follow": -14.7,
+      "roi_fade": 4.67,
+      "hit_follow": 44.2,
+      "fade_ci": [
+        -6.63,
+        15.39
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +4.7% beats follow -14.7% by 19.4pp on n=285"
+    },
+    "MLB|SHARP_MOVE|CONFIRMED": {
+      "n": 143,
+      "roi_follow": -8.11,
+      "roi_fade": 0.03,
+      "hit_follow": 47.6,
+      "fade_ci": [
+        -15.05,
+        16.21
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +0.0% beats follow -8.1% by 8.1pp on n=143"
+    },
+    "MLB|SHARP_MOVE|LEAN": {
+      "n": 122,
+      "roi_follow": -24.19,
+      "roi_fade": 12.38,
+      "hit_follow": 39.3,
+      "fade_ci": [
+        -3.68,
+        28.62
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +12.4% beats follow -24.2% by 36.6pp on n=122"
+    },
+    "MLB|SHARP_MOVE|TRIPLE": {
+      "n": 20,
+      "roi_follow": -3.98,
+      "roi_fade": -9.22,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=20 below MIN_N=40"
+    },
+    "NCAAF|ANY|ANY": {
+      "n": 270,
+      "roi_follow": 9.61,
+      "roi_fade": -17.81,
+      "hit_follow": 61.1,
+      "fade_ci": [
+        -31.35,
+        -3.07
+      ],
+      "fade_ci_excludes_zero": true,
+      "direction": "FOLLOW",
+      "why": "follow +9.6% vs fade -17.8% on n=270"
+    },
+    "NCAAF|ANY|CONFIRMED": {
+      "n": 84,
+      "roi_follow": -6.61,
+      "roi_fade": 3.44,
+      "hit_follow": 57.1,
+      "fade_ci": [
+        -26.32,
+        35.91
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FADE",
+      "why": "fade +3.4% beats follow -6.6% by 10.1pp on n=84"
+    },
+    "NCAAF|ANY|LEAN": {
+      "n": 164,
+      "roi_follow": 18.65,
+      "roi_fade": -29.5,
+      "hit_follow": 64.0,
+      "fade_ci": [
+        -44.08,
+        -13.86
+      ],
+      "fade_ci_excludes_zero": true,
+      "direction": "FOLLOW",
+      "why": "follow +18.7% vs fade -29.5% on n=164"
+    },
+    "NCAAF|ANY|TRIPLE": {
+      "n": 22,
+      "roi_follow": 4.13,
+      "roi_fade": -11.81,
+      "hit_follow": 54.5,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=22 below MIN_N=40"
+    },
+    "NCAAF|CONSENSUS|ANY": {
+      "n": 118,
+      "roi_follow": -2.37,
+      "roi_fade": -11.46,
+      "hit_follow": 66.1,
+      "fade_ci": [
+        -35.91,
+        15.76
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow -2.4% vs fade -11.5% on n=118"
+    },
+    "NCAAF|CONSENSUS|CONFIRMED": {
+      "n": 47,
+      "roi_follow": -0.17,
+      "roi_fade": -8.92,
+      "hit_follow": 74.5,
+      "fade_ci": [
+        -54.81,
+        44.53
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow -0.2% vs fade -8.9% on n=47"
+    },
+    "NCAAF|CONSENSUS|LEAN": {
+      "n": 62,
+      "roi_follow": -8.34,
+      "roi_fade": -10.27,
+      "hit_follow": 59.7,
+      "fade_ci": [
+        -39.39,
+        20.2
+      ],
+      "fade_ci_excludes_zero": false,
+      "direction": "FOLLOW",
+      "why": "follow -8.3% vs fade -10.3% on n=62"
+    },
+    "NCAAF|CONSENSUS|TRIPLE": {
+      "n": 9,
+      "roi_follow": 27.27,
+      "roi_fade": -32.91,
+      "hit_follow": 66.7,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=9 below MIN_N=40"
+    },
+    "NCAAF|PUBLIC_MOVE|ANY": {
+      "n": 23,
+      "roi_follow": 45.94,
+      "roi_fade": -44.56,
+      "hit_follow": 65.2,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=23 below MIN_N=40"
+    },
+    "NCAAF|PUBLIC_MOVE|CONFIRMED": {
+      "n": 8,
+      "roi_follow": 19.0,
+      "roi_fade": -18.03,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=8 below MIN_N=40"
+    },
+    "NCAAF|PUBLIC_MOVE|LEAN": {
+      "n": 14,
+      "roi_follow": 71.76,
+      "roi_fade": -69.39,
+      "hit_follow": 78.6,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=14 below MIN_N=40"
+    },
+    "NCAAF|PUBLIC_MOVE|TRIPLE": {
+      "n": 1,
+      "roi_follow": -100.0,
+      "roi_fade": 90.91,
+      "hit_follow": 0.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=1 below MIN_N=40"
+    },
+    "NCAAF|RLM|ANY": {
+      "n": 2,
+      "roi_follow": -4.55,
+      "roi_fade": -33.87,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=2 below MIN_N=40"
+    },
+    "NCAAF|RLM|LEAN": {
+      "n": 2,
+      "roi_follow": -4.55,
+      "roi_fade": -33.87,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=2 below MIN_N=40"
+    },
+    "NCAAF|SHARP_MOVE|ANY": {
+      "n": 127,
+      "roi_follow": 14.39,
+      "roi_fade": -18.61,
+      "hit_follow": 55.9,
+      "fade_ci": [
+        -34.64,
+        -2.22
+      ],
+      "fade_ci_excludes_zero": true,
+      "direction": "FOLLOW",
+      "why": "follow +14.4% vs fade -18.6% on n=127"
+    },
+    "NCAAF|SHARP_MOVE|CONFIRMED": {
+      "n": 29,
+      "roi_follow": -24.11,
+      "roi_fade": 29.4,
+      "hit_follow": 31.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=29 below MIN_N=40"
+    },
+    "NCAAF|SHARP_MOVE|LEAN": {
+      "n": 86,
+      "roi_follow": 30.01,
+      "roi_fade": -36.76,
+      "hit_follow": 65.1,
+      "fade_ci": [
+        -54.15,
+        -17.58
+      ],
+      "fade_ci_excludes_zero": true,
+      "direction": "FOLLOW",
+      "why": "follow +30.0% vs fade -36.8% on n=86"
+    },
+    "NCAAF|SHARP_MOVE|TRIPLE": {
+      "n": 12,
+      "roi_follow": -4.55,
+      "roi_fade": -4.55,
+      "hit_follow": 50.0,
+      "fade_ci": null,
+      "fade_ci_excludes_zero": false,
+      "direction": "NEUTRAL",
+      "why": "n=12 below MIN_N=40"
+    }
+  }
+}

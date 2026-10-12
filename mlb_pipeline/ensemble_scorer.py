@@ -810,6 +810,42 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
             # place rather than flipped on one more in-sample read — but
             # the 2-source half of it is now a live question, not settled.
             if sport_u == 'MLB':
+                # ══ SHADOW THE EMISSION WE ARE NOT MAKING ══
+                # The quarantine means MLB emits nothing here, so a shadow
+                # that only flips EXISTING opinions could never fire on the
+                # cell with the best fade evidence in the whole model
+                # (MLB SHARP_MOVE LEAN: follow -24.2%, fade +12.4%, n=122).
+                # A shadow that cannot fire teaches nothing, so the proposal
+                # logged here is EMIT_FADED: take the opposite side of a flag
+                # we currently decline entirely. Still logs only — the
+                # `continue` below is unconditional.
+                try:
+                    d2, ev2 = _mf_direction(sport_u, cls)
+                    if d2 == 'FADE':
+                        c2 = _flag_to_candidate(
+                            str(flag.get('market') or '').lower(),
+                            str(flag.get('side') or '').upper(),
+                            cls.startswith('RLM')
+                            or cls.startswith('PUBLIC_MOVE'))
+                        f2 = _flip_candidate(c2) if c2 else None
+                        runner = _mf_runner()
+                        if f2 and runner is not None:
+                            runner.fire(
+                                sport=sport_u,
+                                game_date=str(ctx.get('game_date')
+                                              or '')[:10] or None,
+                                game_id=str(gid),
+                                target_table='line_movement_flags',
+                                target_id=(f'{gid}|{flag.get("market")}|'
+                                           f'{flag.get("side")}|{cls}'),
+                                proposed_action=f'EMIT_FADED {f2}',
+                                before_state={'side': None,
+                                              'reason': 'quarantined'},
+                                after_state={'side': f2},
+                                context={'classification': cls,
+                                         'signal_key': signal_key, **ev2})
+                except Exception:                              # noqa: BLE001
+                    pass
                 continue
 
         market = str(flag.get('market') or '').lower()
@@ -817,6 +853,36 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         invert = cls.startswith('RLM') or cls.startswith('PUBLIC_MOVE')
         cand = _flag_to_candidate(market, flag_side, invert)
         if not cand: continue
+
+        # ══ MONEY-FLOW DIRECTION SHADOW (2026-10-12) ══
+        # Where this sport's graded history says the flag side is the WRONG
+        # side, log the flip we would have made. In shadow mode `cand` is
+        # left untouched — nothing published changes — and the proposal is
+        # graded later by grade_money_flow_shadow.py. Promotion to live is a
+        # human decision: no cell clears its fade confidence interval yet,
+        # so the point estimate selects what to WATCH, never what to DO.
+        direction, evidence = _mf_direction(sport_u, cls)
+        if direction == 'FADE':
+            flipped = _flip_candidate(cand)
+            if flipped:
+                try:
+                    runner = _mf_runner()
+                    if runner is not None and runner.fire(
+                            sport=sport_u,
+                            game_date=str(ctx.get('game_date') or '')[:10]
+                            or None,
+                            game_id=str(gid),
+                            target_table='line_movement_flags',
+                            target_id=f'{gid}|{market}|{flag_side}|{cls}',
+                            proposed_action=f'{cand}->{flipped}',
+                            before_state={'side': cand},
+                            after_state={'side': flipped},
+                            context={'classification': cls, 'market': market,
+                                     'signal_key': signal_key,
+                                     **evidence}):
+                        cand = flipped      # only when mode == 'active'
+                except Exception:                              # noqa: BLE001
+                    pass    # monitoring must never break pick generation
 
         strength = 0.9 if '_TRIPLE_CONFIRMED' in cls else 0.7 if '_CONFIRMED' in cls else 0.4
         prose = prose_tmpl or f'{cls} on this side'
@@ -1179,6 +1245,82 @@ HANDLERS: dict[str, Callable[[dict, dict], list[Opinion]]] = {
     'scenario': _handler_scenario,
     'external_pick': _handler_external,
 }
+
+
+#: Per-sport money-flow direction, built by build_money_flow_direction.py.
+#: Loaded once, lazily, and never allowed to raise — this is monitoring.
+_MF_DIRECTION: Optional[dict] = None
+_MF_RUNNER = None
+
+
+def _mf_direction(sport: str, cls: str) -> tuple[str, dict]:
+    """Does this sport want the flag side FOLLOWED or FADED?
+
+    ══ WHY THIS IS PER SPORT ══
+    Money-flow signals invert between sports. Measured 2026-10-12 on the
+    same family and the same source count:
+        MLB   SHARP_MOVE LEAN  follow -24.2%  fade +12.4%  n=122
+        NCAAF SHARP_MOVE LEAN  follow +30.0%  fade -36.8%  n=86
+    One global treatment is therefore guaranteed wrong in one sport.
+
+    Returns ('FOLLOW'|'FADE'|'NEUTRAL', evidence). Most specific cell wins:
+    (family, source-count) then (family, ANY) then (ANY, source-count).
+    Anything missing or unreadable returns NEUTRAL, which changes nothing.
+    """
+    global _MF_DIRECTION
+    if _MF_DIRECTION is None:
+        try:
+            p = Path(__file__).parent / 'models' / 'money_flow_direction.json'
+            _MF_DIRECTION = json.loads(p.read_text(encoding='utf-8'))
+        except Exception:                                      # noqa: BLE001
+            _MF_DIRECTION = {'cells': {}}
+    cells = (_MF_DIRECTION or {}).get('cells') or {}
+    fam = (cls.rsplit('_CONFIRMED', 1)[0].rsplit('_LEAN', 1)[0]
+           .replace('_TRIPLE', ''))
+    sc = ('TRIPLE' if '_TRIPLE_CONFIRMED' in cls
+          else 'CONFIRMED' if '_CONFIRMED' in cls else 'LEAN')
+    for key in (f'{sport}|{fam}|{sc}', f'{sport}|{fam}|ANY',
+                f'{sport}|ANY|{sc}'):
+        cell = cells.get(key)
+        if cell and cell.get('direction') in ('FOLLOW', 'FADE'):
+            return str(cell['direction']), {'cell': key, **cell}
+    return 'NEUTRAL', {}
+
+
+def _mf_runner():
+    """Lazily build the RuleRunner for the direction shadow.
+
+    Registered on first use with a deliberately high min_sample and
+    promotion lift so the nightly auto-promoter in backtest_rules.py cannot
+    flip this live off a point estimate — promotion here is a human call.
+    """
+    global _MF_RUNNER
+    if _MF_RUNNER is not None:
+        return _MF_RUNNER or None
+    try:
+        from rule_registry import RuleRunner, register_rule
+        register_rule(
+            'MONEY_FLOW_DIRECTION_BY_SPORT', 'money_flow',
+            description=('Per-sport FOLLOW/FADE on line_movement_flags. '
+                         'Money flow inverts between MLB and NCAAF '
+                         '(SHARP_MOVE LEAN: MLB follow -24.2% / fade +12.4% '
+                         'n=122, NCAAF follow +30.0% / fade -36.8% n=86).'),
+            baseline_hit_rate=52.38, promotion_lift_pp=4.0,
+            min_sample=400, mode='shadow')
+        _MF_RUNNER = RuleRunner('MONEY_FLOW_DIRECTION_BY_SPORT')
+    except Exception:                                          # noqa: BLE001
+        _MF_RUNNER = False
+    return _MF_RUNNER or None
+
+
+def _flip_candidate(cand: str) -> Optional[str]:
+    """HOME_ML <-> AWAY_ML, HOME_RL <-> AWAY_RL, OVER <-> UNDER."""
+    if not cand:
+        return None
+    for a, b in (('HOME_', 'AWAY_'), ('AWAY_', 'HOME_')):
+        if cand.startswith(a):
+            return cand.replace(a, b, 1)
+    return {'OVER': 'UNDER', 'UNDER': 'OVER'}.get(cand)
 
 
 def _flag_to_candidate(market: str, side: str, invert: bool = False) -> Optional[str]:
