@@ -187,34 +187,115 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
     so they can't be trusted for backward-looking analysis."""
     tables = SPORTS_WITH_CTX.get(sport)
     if not tables: return {}
-    _ctx_table, results_table = tables
+    ctx_table, results_table = tables
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/{results_table}',
-                     headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
-                     params={'game_date': f'gte.{cutoff}',
-                             'home_score': 'not.is.null',
-                             'select': 'game_id,home_score,away_score,close_spread,close_total,primary_play'},
-                     timeout=30)
-    if r.status_code not in (200, 206):
-        # Sports without primary_play on results (NFL/NCAAF/NBA/NHL currently)
-        # just don't have game-scope grading data yet. Not an error — return
-        # empty and let prop grading carry the sport if it has anything.
-        msg = ''
-        try:
-            msg = r.json().get('message', '')
-        except Exception:
-            msg = r.text[:80]
-        if 'primary_play' in msg or 'close_spread' in msg or 'home_score' in msg:
-            print(f'  [{sport}] game results schema lacks primary_play/close_spread — game grading skipped')
-        else:
-            print(f'  ! game query failed {r.status_code}: {r.text[:200]}')
-        return {}
-    rows = r.json() or []
-    print(f'  [{sport}] game results rows (last {days}d): {len(rows)}')
 
+    # ══ 2026-10-11 · primary_play IS NOT ON THE RESULTS TABLE ══
+    # This selected primary_play FROM THE RESULTS TABLE. It lives on the
+    # CONTEXT table. PostgREST 400s on the missing column, the handler
+    # below caught it, and printed "game results schema lacks
+    # primary_play — game grading skipped", which reads like a known
+    # limitation of the sport. It is not: the data exists, one table over.
+    # `_ctx_table` was unpacked and never used — the underscore was the
+    # tell.
+    #
+    # Consequence: the game-ensemble grading path has been dead for every
+    # sport whose results table lacks the column, which is all of
+    # NFL/NCAAF/NBA/NHL. MLB "worked" only because mlb_game_results
+    # happens to carry primary_play. That is why 67 NCAAF ensemble signals
+    # and 123 NFL ones all sit at sample_n=0, and why _resolve_weight
+    # returns (None, 0, None) for every one of them so they fall back to
+    # RAMP_UP_PRIOR — a signal that loses weighted the same as one that
+    # wins.
+    #
+    # Joined on (game_date, home_team, away_team) rather than game_id,
+    # because NFL context and results use different id schemes
+    # ([[project_nfl_game_id_mismatch_911]]).
+    def _page(table, params):
+        out, off = [], 0
+        while True:
+            p = dict(params); p['limit'] = 1000; p['offset'] = off
+            rr = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ,
+                              params=p, timeout=60)
+            if rr.status_code not in (200, 206):
+                print(f'  ! {table} {rr.status_code}: {rr.text[:160]}')
+                return out
+            b = rr.json() or []
+            out += b
+            if len(b) < 1000: return out
+            off += 1000
+
+    # PREFER primary_play ON THE RESULTS TABLE where it exists (MLB).
+    # That column is the historical SNAPSHOT of what was published; the
+    # context table is overwritten on every recompute, so it cannot be
+    # trusted looking backwards (see this function's own docstring).
+    # Joining context unconditionally cost MLB 254 game rows -> 25 and
+    # swapped a frozen audit trail for a mutable one. Only fall back to
+    # the join for sports whose results table lacks the column.
+    direct = requests.get(
+        f'{SB}/rest/v1/{results_table}',
+        headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
+        params={'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
+                'select': 'game_id,home_score,away_score,close_spread,'
+                          'close_total,primary_play'},
+        timeout=30)
+    if direct.status_code in (200, 206):
+        rows = direct.json() or []
+        print(f'  [{sport}] game rows from results.primary_play '
+              f'(last {days}d): {len(rows)}')
+        return _tally_game_firings(rows)
+
+    res_rows = _page(results_table, {
+        'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
+        'select': 'game_date,home_team,away_team,home_score,away_score,'
+                  'close_spread,close_total'})
+    ctx_rows = _page(ctx_table, {
+        'game_date': f'gte.{cutoff}',
+        'select': 'game_date,home_team,away_team,primary_play'})
+    pp_by_key = {}
+    for c in ctx_rows:
+        pp = c.get('primary_play')
+        if isinstance(pp, str):
+            try:
+                import json as _json
+                pp = _json.loads(pp)
+            except Exception:
+                pp = None
+        if isinstance(pp, dict):
+            pp_by_key[(str(c.get('game_date'))[:10],
+                       str(c.get('home_team')).lower(),
+                       str(c.get('away_team')).lower())] = pp
+    rows = []
+    for r0 in res_rows:
+        k = (str(r0.get('game_date'))[:10],
+             str(r0.get('home_team')).lower(),
+             str(r0.get('away_team')).lower())
+        pp = pp_by_key.get(k)
+        if pp is None:
+            continue
+        rows.append({**r0, 'primary_play': pp})
+    print(f'  [{sport}] game rows joined ctx->results (last {days}d): '
+          f'{len(rows)} of {len(res_rows)} results, '
+          f'{len(ctx_rows)} context rows')
+
+    return _tally_game_firings(rows)
+
+
+def _tally_game_firings(rows: list) -> dict[str, dict]:
+    """{signal_key: {right, wrong}} from rows carrying primary_play + scores.
+
+    Shared by both fetch paths (results.primary_play for MLB, the
+    ctx->results join for football) so the two cannot grade differently.
+    """
     firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
     for row in rows:
         pp = row.get('primary_play') or {}
+        if isinstance(pp, str):
+            try:
+                import json as _json
+                pp = _json.loads(pp)
+            except Exception:
+                continue
         if not isinstance(pp, dict): continue
         # Prefer the exhaustive per-market sources if present; fall back to
         # winning-side-only sources.
