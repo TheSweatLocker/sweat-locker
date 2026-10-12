@@ -95,25 +95,14 @@ def page(table, params, cap=4000):
         off += 1000
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--sport', default='NFL', choices=sorted(CTX))
-    ap.add_argument('--since', default='2026-08-01')
-    ap.add_argument('--limit-rows', type=int, default=1000, dest='limit_rows')
-    a = ap.parse_args()
 
-    sigs = page('signal_sources', {
-        'select': 'signal_key,class,enabled,condition_expr,side_expr',
-        'sport': f'eq.{a.sport}', 'enabled': 'eq.true'})
-    rows = page(CTX[a.sport], {'select': '*', 'game_date': f'gte.{a.since}'},
-                cap=a.limit_rows)
-    print(f'=== dead-signal triage · {a.sport} · read-only ===')
-    print(f'  {len(sigs)} enabled signals · {len(rows)} context rows '
-          f'since {a.since}\n')
-    if not rows or not sigs:
-        print('  nothing to evaluate')
-        return 0
+def _evaluate(sigs: list, rows: list) -> dict:
+    """Bucket every signal by why it does or does not fire.
 
+    Shared by the CLI and by watchdogs.check_signal_wiring so the two
+    cannot drift — a second copy of this is how football stayed dark
+    while only MLB was being checked.
+    """
     ctxs = [AttrDict(r) for r in rows]
     # NULL rate per column, measured once.
     nullrate = {}
@@ -183,6 +172,49 @@ def main():
             buckets['THRESHOLD never met'].append((key, cond[:70], 0))
         else:
             buckets['FIRES'].append((key, '', fires))
+    return buckets
+
+
+def triage(sport: str, since: str = '2026-08-01', limit_rows: int = 1000):
+    """{bucket: [(signal_key, detail, fire_count)]} plus the row count.
+
+    Extracted from main() so watchdogs can run the same evaluation rather
+    than reimplement it. A second copy of this logic would drift, and the
+    whole reason football signals went dark is that the only check that
+    existed was MLB-only.
+
+    Returns (buckets, n_rows, n_signals).
+    """
+    sigs = page('signal_sources', {
+        'select': 'signal_key,class,enabled,condition_expr,side_expr',
+        'sport': f'eq.{sport}', 'enabled': 'eq.true'})
+    rows = page(CTX[sport], {'select': '*', 'game_date': f'gte.{since}'},
+                cap=limit_rows)
+    if not rows or not sigs:
+        return {}, len(rows), len(sigs)
+    return _evaluate(sigs, rows), len(rows), len(sigs)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--sport', default='NFL', choices=sorted(CTX))
+    ap.add_argument('--since', default='2026-08-01')
+    ap.add_argument('--limit-rows', type=int, default=1000, dest='limit_rows')
+    a = ap.parse_args()
+
+    sigs = page('signal_sources', {
+        'select': 'signal_key,class,enabled,condition_expr,side_expr',
+        'sport': f'eq.{a.sport}', 'enabled': 'eq.true'})
+    rows = page(CTX[a.sport], {'select': '*', 'game_date': f'gte.{a.since}'},
+                cap=a.limit_rows)
+    print(f'=== dead-signal triage · {a.sport} · read-only ===')
+    print(f'  {len(sigs)} enabled signals · {len(rows)} context rows '
+          f'since {a.since}\n')
+    if not rows or not sigs:
+        print('  nothing to evaluate')
+        return 0
+
+    buckets = _evaluate(sigs, rows)
 
     order = ['COLUMN DOES NOT EXIST', 'NULL INPUT — cannot fire',
              'EVAL ERROR', 'THRESHOLD never met', 'NO CONDITION',

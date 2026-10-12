@@ -1327,6 +1327,85 @@ def check_context_features_preseason() -> Optional[dict]:
     }
 
 
+def check_signal_wiring() -> Optional[dict]:
+    """Alert when a sport's signals cannot fire, or fire on every game.
+
+    ══ 2026-10-12 · WHY THIS IS NOT check_signal_source_dark ══
+    That check is MLB-ONLY — it queries sport='eq.MLB' against
+    mlb_game_context. Football and hockey have therefore never been
+    checked at all, and the cost of that showed up this week:
+
+      * 10 football signals sat "enabled" against columns nobody wrote.
+        Four NFL QB home/road splits, four NCAAF SP+ components, a
+        ncaaf_high_wind_under reading `wind_speed` when the column is
+        `wind`, and a letdown fade reading a column that never existed.
+      * NHL had five more, plus four back-to-back signals testing
+        rest_days == 0 when the minimum stored value is 1.
+      * nhl_home_pp_vs_weak_pk and nhl_away_pp_vs_weak_pk fired on
+        185/185 games because the condition treated percentages as
+        fractions.
+
+    Every one was invisible because nothing looked. A signal that cannot
+    fire inflates the registry — "123 enabled NFL signals" reads as depth
+    when the honest number is lower. A signal that fires on EVERY game is
+    worse than useless: it is a constant that dilutes every other
+    signal's share of the ensemble weight.
+
+    Runs the same evaluator as audit_dead_signals rather than a second
+    copy, because a drifting duplicate is how the original gap persisted.
+    """
+    try:
+        from audit_dead_signals import triage
+    except Exception:                                      # noqa: BLE001
+        return None
+    try:
+        reg = requests.get(f'{SB}/rest/v1/sport_registry', headers=H_READ,
+                           params={'select': 'sport,state'}, timeout=15)
+        live = {str(r.get('sport')).upper()
+                for r in (reg.json() or [])
+                if str(r.get('state') or '').lower() == 'in_season'}
+    except Exception:                                      # noqa: BLE001
+        return None
+
+    CTX_SPORTS = {'NFL', 'NCAAF', 'NHL', 'NBA', 'MLB'}
+    broken, constant, checked = [], [], []
+    for sport in sorted(live & CTX_SPORTS):
+        try:
+            buckets, n_rows, n_sigs = triage(sport, since=_days_ago(70),
+                                             limit_rows=600)
+        except Exception:                                  # noqa: BLE001
+            continue
+        if not buckets or n_rows < 25:
+            continue        # too little history to judge a condition
+        checked.append(sport)
+        for b in ('COLUMN DOES NOT EXIST', 'NULL INPUT — cannot fire',
+                  'EVAL ERROR'):
+            for key, detail, _n in (buckets.get(b) or []):
+                broken.append(f'{sport}:{key} ({b.split(" ")[0].lower()})')
+        # A condition true on ~every row carries no information.
+        for key, _d, fires in (buckets.get('FIRES') or []):
+            if n_rows and fires / n_rows >= 0.97:
+                constant.append(f'{sport}:{key} {fires}/{n_rows}')
+    if not checked or (not broken and not constant):
+        return None
+
+    bits = []
+    if broken:
+        bits.append(f'{len(broken)} signal(s) CANNOT fire')
+    if constant:
+        bits.append(f'{len(constant)} fire on ~every game')
+    return {
+        'check_name': 'signal_wiring',
+        'severity': 'WARNING' if len(broken) + len(constant) < 6 else 'CRITICAL',
+        'message': (f'{" and ".join(bits)} across {", ".join(checked)}. '
+                    f'A signal that cannot fire inflates the registry; one '
+                    f'that fires every game dilutes every other signal\'s '
+                    f'weight. Run audit_dead_signals.py --sport <X>.'),
+        'detail': {'cannot_fire': broken[:12], 'constant': constant[:12],
+                   'sports_checked': checked},
+    }
+
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -1346,6 +1425,7 @@ CHECKS = [
     check_line_poller_landing_rate,
     check_oc_flip_not_persisted,
     check_context_features_preseason,
+    check_signal_wiring,
 ]
 
 
