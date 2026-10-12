@@ -2376,9 +2376,29 @@ def run(dry_run: bool = False, single_player: Optional[str] = None,
     print(f'  events with props potentially available: {len(events)}')
 
     # 2026-08-23 batch-load ctx so build_prop_row can emit signals
-    game_dates_seen = sorted(set(
-        (e.get('commence_time') or '')[:10] for e in events if e.get('commence_time')
-    ))
+    # ══ 2026-10-12 · THE SAME UTC-vs-ET DRIFT, ONE LINE OVER ══
+    # This sliced the UTC date off commence_time. nfl_game_context stores
+    # game_date as the ET play date, so every game kicking after 8pm ET —
+    # TNF, SNF, MNF — looked up a date one day ahead and found nothing.
+    # ctx_by_game.get(event_id) then returned None and build_prop_row ran
+    # with ctx=None for the whole primetime slate.
+    #
+    # Caught on tonight's BUF @ LA: commence 2026-10-13T00:15Z slices to
+    # 2026-10-13, the context row is 2026-10-12, so close_total and
+    # close_spread were absent and the anytime-TD set de-vig silently fell
+    # back to devig='none' on all 11 players.
+    #
+    # It is not only the de-vig: ctx is what feeds the weather, rest,
+    # game_script and opponent-tier signals, so primetime props have been
+    # scored with none of them.
+    #
+    # This file already fixed the identical drift for the `game_date` FIELD
+    # (see _et_game_date and the 2026-09-19 note there, which lists these
+    # same windows). The row was corrected and the lookup was not.
+    game_dates_seen = sorted({
+        d for d in (_et_game_date(e.get('commence_time')) for e in events
+                    if e.get('commence_time')) if d
+    })
     ctx_by_game = _load_nfl_ctx_by_game(game_dates_seen)
     print(f'  ctx loaded for {len(ctx_by_game)} games')
 
