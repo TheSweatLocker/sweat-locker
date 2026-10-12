@@ -3521,3 +3521,83 @@ over. The ladder is validated on the one sport we can no longer bet. The
 SHAPE should transfer to NFL/NHL; the THRESHOLDS should not be assumed to.
 Re-validate per sport as sample builds — [[B75d]] already says one global
 ladder cannot be right for seven sports, and this is the evidence for it.
+
+## B79 — NFL/NCAAF PENALTY FEATURES ARE LAST SEASON'S, AND SIX SIGNALS READ THEM (2026-10-12)
+
+The `context_features_preseason` watchdog has been firing CRITICAL and was
+being read as cosmetic, because its own docstring said "nothing currently
+reads the penalty columns, so that specific number is inert". That sentence
+was wrong. Six ENABLED signals read them directly:
+
+```
+nfl_penalty_away_undisciplined    ctx.away_penalties_pg >= 7.5  -> HOME_RL
+nfl_penalty_home_undisciplined    ctx.home_penalties_pg >= 7.5  -> AWAY_RL
+nfl_penalty_sloppy_both           avg of both >= 7.0            -> OVER
+ncaaf_penalty_away_undisciplined  ctx.away_penalties_pg >= 8.0  -> HOME_RL
+ncaaf_penalty_home_undisciplined  ctx.home_penalties_pg >= 8.0  -> AWAY_RL
+ncaaf_penalty_sloppy_both         avg of both >= 7.5            -> OVER
+```
+
+They are not dormant: 22 firings on NFL and 26 on NCAAF in the audited
+window, and `ncaaf_penalty_away_undisciplined` is one of the worst signals
+measured (36.0% against a 54.1% blind, -18.1pp).
+
+**MEASURED, 388 upcoming NFL team-slots on 2026-10-12:**
+
+```
+stored == LAST SEASON's rate exactly   364  (94%)   <- prior-season fallback
+matches a current-season rate           12  ( 3%)
+neither                                 12  ( 3%)
+
+TB   stored 5.59  = 2025 (95/17)    2026 actual 8.00   row updated 2026-10-08
+GB   stored 6.18  = 2025 (105/17)   2026 actual 9.20   row updated 2026-10-07
+BAL  stored 5.82  = 2025 (99/17)    2026 actual 9.75   row updated 2026-07-28
+```
+
+**THE BLEND IS NOT THE BUG.** `_nfl_blend_pg` called today returns 8.00 for
+TB, 9.20 for GB — correct. `NFL_BLEND_UNTIL_GAMES = 3` and every team has 5
+games, so the current season should win outright. The stored rows simply
+carry the fallback written when the current season had no games, and
+nothing has rewritten them.
+
+**updated_at IS NOT A FRESHNESS SIGNAL.** Rows stamped 2026-10-07 and
+2026-10-08 still hold 2025 values, so some updater bumps the timestamp
+without refreshing team stats. Any check that trusts updated_at to decide
+whether features are current is checking the wrong thing — including the
+watchdog's own heuristic.
+
+**EFFECT ON PICKS.** 2025 penalty rates run ~2-3/game BELOW 2026's while the
+thresholds sit at 7.5 / 8.0, so on the upcoming slate 19 team-slots flip:
+17 where the signal should fire and stays silent, 2 where it fires on a
+four-month-old number (NYG@HOU away stored 7.53 vs an actual 7.20).
+
+### B79a — re-enrich the upcoming slate
+`nfl_game_context.py` takes no date-window argument; the full enrichment
+covers roughly a two-week forward window and everything past 2026-10-22 is
+still stamped 2026-07-28/29. Needs a window flag and a backfill pass.
+
+### B79b — a freshness assertion that does not trust updated_at
+Nothing asserts a game's features were computed after the season started
+before picks are generated from them. The test must compare the STORED
+VALUE against a recomputable ground truth (season total / games played),
+which is exactly what the watchdog does and what every consumer should.
+
+### B79c — MEASURED: it is EVERY blended column, not just penalties
+`_blend_off` writes ~20 columns the same way, and penalties were only
+noticed because a watchdog happened to cover them. Checked the same
+precise way on the same 388 upcoming team-slots:
+
+```
+column            stored == last season's rate exactly
+penalties                 364 (94%)
+pass_yards                364 (94%)
+rush_yards                364 (94%)
+pass_tds                  364 (94%)
+penalty_yards             364 (94%)
+```
+
+So the finding is not "six penalty signals read a stale column", it is
+"the upcoming slate's TEAM STATS are last season's", and those feed the
+ratings and projections as well as the signals. This is the real size of
+B79 and it should be fixed at the enrichment, once, rather than per
+consumer.

@@ -1186,8 +1186,36 @@ def check_context_features_preseason() -> Optional[dict]:
     enrichment refreshes roughly a two-week forward window and leaves the
     rest of the season at its July values.
 
-    Nothing currently reads the penalty columns, so that specific number is
-    inert. What is NOT inert is that nothing anywhere asserts a game's
+    ══ 2026-10-12 · THE "INERT" CLAIM ABOVE WAS WRONG ══
+    This used to say "nothing currently reads the penalty columns, so that
+    specific number is inert", and that sentence is why a CRITICAL alert
+    was read as cosmetic for six days. SIX ENABLED SIGNALS read them
+    directly:
+
+        nfl_penalty_away_undisciplined    ctx.away_penalties_pg >= 7.5 -> HOME_RL
+        nfl_penalty_home_undisciplined    ctx.home_penalties_pg >= 7.5 -> AWAY_RL
+        nfl_penalty_sloppy_both           avg >= 7.0                   -> OVER
+        ...and the three NCAAF equivalents at >= 8.0
+
+    They fire: 22 times on NFL and 26 on NCAAF in the audited window.
+
+    Measured 2026-10-12 on 388 upcoming NFL team-slots: 364 of them (94%)
+    hold LAST SEASON'S rate exactly — TB 5.59 (2025: 95/17) against a 2026
+    rate of 8.00, GB 6.18 against 9.20, BAL 5.82 against 9.75. The blend
+    itself is fine; called today it returns 8.00 for TB. The rows simply
+    carry a prior-season fallback written when the current season had no
+    games, and NOTHING HAS REWRITTEN THEM — including rows whose
+    updated_at reads 2026-10-07 and 2026-10-08. Some updater bumps the
+    timestamp without refreshing team stats, so updated_at cannot be used
+    to judge whether these features are current.
+
+    Consequence for picks, not just for data: 2025 penalty rates run ~2-3
+    per game BELOW 2026's, and the signal thresholds sit at 7.5 / 8.0. On
+    the upcoming slate that flips 19 team-slots — 17 where the signal
+    should fire and stays silent, 2 where it fires on a number that is
+    four months old.
+
+    What is ALSO still true is that nothing anywhere asserts a game's
     features were computed after the season started before picks are
     generated from them. Weeks 3-5 were refreshed in time by luck of
     scheduling, not by design, and a missed enrichment run would be
