@@ -36,6 +36,7 @@ CLI
 from __future__ import annotations
 
 import argparse
+import random
 import statistics
 import sys
 import time
@@ -100,6 +101,22 @@ def profit(odds, won):
     return -1.0
 
 
+def boot_ci(vals, iters=8000, seed=13):
+    """Percentile bootstrap CI of mean ROI. The hit-rate band says nothing
+    about money once prices are mixed, and a fade of a favourite-priced side
+    can win 60% and still lose."""
+    rng = random.Random(seed)
+    n = len(vals)
+    out = []
+    for _ in range(iters):
+        t = 0.0
+        for _i in range(n):
+            t += vals[rng.randrange(n)]
+        out.append(t / n)
+    out.sort()
+    return out[int(iters * 0.025)] * 100, out[int(iters * 0.975)] * 100
+
+
 def rate(label, sub, base, pad=40):
     """Hit rate AND ROI. A cell is only a finding if the money agrees.
 
@@ -123,15 +140,33 @@ def rate(label, sub, base, pad=40):
     edge = hit - base
     pf = [profit(r.get('odds'), r['won']) for r in sub]
     pf = [p for p in pf if p is not None]
+    px = [f(r.get('odds')) for r in sub]
+    px = [v for v in px if v not in (None, 0) and abs(v) <= 2000]
+    med_px = statistics.median(px) if px else None
     roi = (statistics.fmean(pf) * 100) if pf else None
     roi_s = f'{roi:+6.1f}%' if roi is not None else '    n/a'
+    if med_px is not None:
+        roi_s += f' @{med_px:+5.0f}'
     flag = ''
     if abs(edge) > se2:
         flag = '  <== beats band' if edge > 0 else '  <== LOSES beyond band'
-    if roi is not None and roi > 2.0 and edge > se2:
-        flag = '  <== EDGE (hit AND money)'
+    ci = ''
+    ci_clears = False
+    if len(pf) >= 30:
+        clo, chi = boot_ci(pf)
+        ci_clears = not (clo <= 0 <= chi)
+        ci = f'  CI[{clo:+6.1f},{chi:+6.1f}]' + ('' if not ci_clears else ' *')
+    # The EDGE label requires the ROI interval to exclude zero, not just a
+    # positive point estimate. An earlier version flagged a +6.5% cell whose
+    # CI ran [-7.2, +20.2] as an EDGE — the same standard that was used to
+    # reject the sharp x SP+ cell, applied inconsistently in the other
+    # direction. One bar, both directions.
+    if roi is not None and roi > 2.0 and edge > se2 and ci_clears:
+        flag = '  <== EDGE (hit AND money, CI excludes 0)'
+    elif roi is not None and roi > 2.0 and edge > se2:
+        flag = '  <== promising, CI straddles 0'
     print(f'    {label:<{pad}} {w}-{n - w}  {hit:5.1f}%  base {base:5.1f}%  '
-          f'edge {edge:+5.1f}  ROI {roi_s} (n={len(pf)})  n={n:<5} '
+          f'edge {edge:+5.1f}  ROI {roi_s}{ci}  n={n:<5} '
           f'±{se2:.0f}{flag}')
 
 
@@ -240,14 +275,19 @@ def main():
         ho, ao = f(g.get('home_off_epa_pp')), f(g.get('away_off_epa_pp'))
         hd, ad = f(g.get('home_def_epa_pp')), f(g.get('away_def_epa_pp'))
         epa_gap = ((ho - ad) - (ao - hd)) if None not in (ho, ao, hd, ad) else None
+        opp_odds = None
         if a.market == 'ml':
             odds = r.get(ml_cols[0] if side == 'HOME' else ml_cols[1])
+            opp_odds = r.get(ml_cols[1] if side == 'HOME' else ml_cols[0])
         elif a.sport in ('NFL', 'NCAAF'):
             odds = -110          # convention; football ATS is near-always -110
         else:
             odds = None          # MLB/NHL runline price is not stored
+        if a.market != 'ml' and odds is not None:
+            opp_odds = -110
         rows.append({'side': side, 'won': 1 if won else 0,
                      'div': statistics.fmean(divs), 'odds': odds,
+                     'opp_odds': opp_odds,
                      'sp_gap': sp_gap, 'epa_gap': epa_gap})
 
     if not rows:
@@ -278,9 +318,28 @@ def main():
     for lo in (0, 5, 10, 15, 20):
         sub = [r for r in rows if r['div'] >= lo]
         rate(f'divergence >= +{lo}', sub, basefor(sub))
-    for hi in (-5, -10):
+    for hi in (-5, -10, -15, -20, -25):
         sub = [r for r in rows if r['div'] <= hi]
         rate(f'divergence <= {hi} (public side)', sub, basefor(sub))
+
+    # ══ THE FADE, ON THE SAME GAMES ══
+    # A losing cell is only a playable signal if betting AGAINST it makes
+    # money, and that is not the mirror bucket: divergence is averaged over
+    # whichever sources reported, so `div >= +20` (n=169 on MLB ml) and
+    # `div <= -20` (n=17) are NOT the same games. The only honest test is to
+    # take each high-divergence reading and buy the OTHER side of that same
+    # game at the other side's own closing price. For ML there is no push, so
+    # the opposite side won exactly when this one lost.
+    print()
+    print('  FADE — buy the other side of those same games, at ITS price:')
+    for lo in (5, 10, 15, 20):
+        sub = [r for r in rows if r['div'] >= lo
+               and f(r.get('opp_odds')) not in (None, 0)]
+        fade = [{'side': r['side'], 'won': 1 - r['won'],
+                 'odds': r['opp_odds']} for r in sub]
+        rate(f'FADE of divergence >= +{lo}', fade,
+             100.0 - basefor(sub) if sub else 50.0)
+    print("  (base shown is the complement of the faded side's base rate)")
 
     for gname, gkey in (('SP+ gap', 'sp_gap'), ('off-def EPA gap', 'epa_gap')):
         have = [r for r in rows if r.get(gkey) is not None]
