@@ -742,6 +742,42 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
     if not flags: return []
 
     signal_key = source_row.get('signal_key', '')
+    # ══ 2026-10-12 · BOTH GUARDS BELOW WERE SPORT-BLIND ══
+    # They compared the bare MLB keys, but the live signals in every other
+    # sport are `sharp_split_confirmed_nfl` / `_ncaaf` / `_ncaab` / `_nhl`
+    # and nothing strips the suffix. Two consequences, both measured:
+    #
+    #  1. DOUBLE COUNTING. Outside MLB neither guard matched, so BOTH
+    #     signals emitted an Opinion for the SAME flag — one flag pushing a
+    #     side twice. (On MLB the same thing happened on TRIPLE flags
+    #     specifically: the quarantine let `sharp_split_confirmed` through
+    #     only when the class WAS triple, which is exactly when the triple
+    #     signal also fired.) This is the failure _handler_scenario already
+    #     documents for scenarios — correlated derivatives of one pattern
+    #     counted as independent agreement.
+    #  2. WEIGHT MISATTRIBUTION. A 1-source LEAN flag was scored with
+    #     `sharp_split_triple_confirmed`'s registry hit_rate / n / tier —
+    #     a weak flag borrowing a strong signal's track record.
+    #
+    # Each flag now routes to exactly ONE signal by source count. Strength
+    # still separates 2-source (0.7) from 1-source (0.4) below.
+    #
+    # WHY THE MLB QUARANTINE IS NOT EXTENDED. It would have cost money.
+    # Graded on the side the engine actually bets (audit_line_flags.py,
+    # 2026-10-12), 1-source flags run OPPOSITE ways by sport:
+    #     MLB   LEAN  42.3%  ROI -24.2%  n=189   (quarantine correct)
+    #     NCAAF LEAN  64.5%  ROI +18.5%  n=166, and it holds in BOTH halves
+    #                 of the season (+9.1% early, +24.3% late)
+    # Blanket-extending a quarantine derived from MLB would have switched
+    # off a signal earning in football. Sport-blind caps have bitten here
+    # before (the LR-warn cap, 2026-10-09) and the lesson is the same:
+    # measure per sport, then gate per sport.
+    sport_u = str(ctx.get('sport') or 'MLB').upper()
+    base_key = signal_key
+    for suf in ('_nfl', '_ncaaf', '_ncaab', '_nhl', '_nba', '_mlb', '_ufc'):
+        if base_key.endswith(suf):
+            base_key = base_key[:-len(suf)]
+            break
     prose_tmpl = source_row.get('display_prose_template') or ''
     hr, n, tier = _resolve_weight(source_row)
     is_recent = _is_recent_signal(source_row)
@@ -751,18 +787,30 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         cls = str(flag.get('classification') or '')
         if not cls or cls in ('PATTERN_ONLY', 'NEUTRAL', 'SOURCES_SPLIT'):
             continue
-        # 2026-08-31: QUARANTINE — 30d audit showed SHARP_MOVE_CONFIRMED
-        # (2-source) losing 42% (14-19) and fade-side winning 57.6%.
-        # SHARP_MOVE_LEAN (1-source) losing 34% and fade winning 65.6%.
-        # TRIPLE_CONFIRMED still correctly aligned (60% wins). Root cause
-        # is one of the split sources having money%/bets% inverted; while
-        # investigation is open, drop 2-source and 1-source confidence
-        # to 0 so ensemble no longer pushes picks toward the losing side.
-        if signal_key == 'sharp_split_confirmed' and '_TRIPLE_CONFIRMED' not in cls:
-            continue  # QUARANTINE 2-source SHARP_MOVE_CONFIRMED
-        # Match source_row to classification tier
-        if signal_key == 'sharp_split_triple_confirmed' and '_TRIPLE_CONFIRMED' not in cls:
-            continue
+        is_triple = '_TRIPLE_CONFIRMED' in cls
+        # Route each flag to exactly one signal by source count, so a flag
+        # cannot be counted twice and cannot borrow the other tier's record.
+        if base_key == 'sharp_split_triple_confirmed':
+            if not is_triple:
+                continue
+        elif base_key == 'sharp_split_confirmed':
+            if is_triple:
+                continue      # owned by the triple signal
+            # 2026-08-31 QUARANTINE, MLB ONLY. A 30d audit showed
+            # SHARP_MOVE_CONFIRMED (2-source) losing 42% (14-19) with the
+            # fade side winning 57.6%, and SHARP_MOVE_LEAN (1-source)
+            # losing 34%. Suspected root cause: one split source has
+            # money%/bets% inverted. Held to MLB because football measures
+            # the other way — see the note above.
+            #
+            # REVISIT (2026-10-12): on the FULL MLB sample, 2-source is
+            # 53.7% / ROI +4.7% on n=397, which disagrees with the 30-day
+            # window the quarantine was fit to. 1-source is still clearly
+            # bad (42.3% / -24.2% / n=189), so the quarantine is left in
+            # place rather than flipped on one more in-sample read — but
+            # the 2-source half of it is now a live question, not settled.
+            if sport_u == 'MLB':
+                continue
 
         market = str(flag.get('market') or '').lower()
         flag_side = str(flag.get('side') or '').upper()
