@@ -3012,6 +3012,24 @@ jobs:
           cd mlb_pipeline
           python backtest_rules.py
 
+      # 2026-10-12: money-flow direction shadow grader.
+      # MONEY_FLOW_DIRECTION_BY_SPORT logs SIDE proposals (a flip, or an
+      # EMIT_FADED on a flag we currently decline), which the generic grader
+      # above cannot score: would_have_hit() is built on BACK/FADE/PASS
+      # verdict semantics and returns None when before_state has no
+      # `verdict` key. Without this step the rule would log forever and
+      # never grade — the failure already on record for pick_lock_drift.
+      # Grades the PROPOSED side off the game score against the closing
+      # number; promotion stays a human decision (min_sample=400, lift=4.0).
+      - name: Monitoring — money-flow direction shadow grade
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        continue-on-error: true
+        run: |
+          cd mlb_pipeline
+          python grade_money_flow_shadow.py --apply
+
       # 2026-08-14 Session D: in-app user notes dispatcher
       # Reads monitoring signals + generates notes surfaced as dismissible
       # cards at top of Home tab. Data-first tone per LANGUAGE_GUARDRAILS.md.
