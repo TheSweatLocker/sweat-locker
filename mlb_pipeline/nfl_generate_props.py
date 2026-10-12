@@ -1914,7 +1914,12 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
     # meaningfully differentiate PRIME from STRONG. Cap PRIME → STRONG
     # during Weeks 1-3 until sample accumulates. Auto-expires Week 3-4.
     # Same discipline for NCAAF (see project_nfl_ncaaf_week1_readiness_820).
-    _gd = (event.get('commence_time') or '')[:10]
+    # 2026-10-12: was a raw UTC slice, the third instance of this drift in
+    # this file. A primetime game on the ET evening of 09-21 slices to
+    # 09-22 UTC and escapes the cap on the one boundary night that matters.
+    # Use the same ET conversion as the stored game_date so the cutoff and
+    # the row agree about which day a game belongs to.
+    _gd = _et_game_date(event.get('commence_time'))
     if _gd and _gd < '2026-09-22':  # 2026 NFL Week 3 ends Sept 22
         if tier == 'PRIME':
             tier = 'STRONG'

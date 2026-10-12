@@ -64,6 +64,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 import market_line as ML
+from sweat_dates import et_today, et_days_ahead
 import nfl_qb_injury_gate as QG
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -95,8 +96,19 @@ def main():
     ap.add_argument('--apply', action='store_true')
     args = ap.parse_args()
 
-    today = dt.date.today().isoformat()
-    until = (dt.date.today() + dt.timedelta(days=args.days)).isoformat()
+    # ══ 2026-10-12 · date.today() IS LOCAL, AND CI IS NOT ET ══
+    # This windowed on date.today(), which returns the ET date on Andy's
+    # box and the UTC date on the GitHub runner this job actually runs on
+    # (nfl_pipeline.yml:257, --days 10 --apply). Between 8pm and midnight
+    # ET the runner's "today" is already tomorrow, so the window started
+    # AFTER tonight's games and this gate skipped them entirely — the one
+    # gate whose job is catching a ruled-out starting QB, silently blind
+    # on exactly the primetime slate where a late inactive lands.
+    #
+    # Same class as the three UTC/ET drifts in nfl_generate_props. The
+    # conversion now has one definition; see sweat_dates.
+    today = et_today()
+    until = et_days_ahead(args.days)
     games = requests.get(f'{SB}/rest/v1/nfl_game_context', headers=H, params={
         'select': 'game_id,game_date,week,season_week,home_team,away_team,'
                   'home_qb_name,away_qb_name,home_qb_madden_ovr,'
