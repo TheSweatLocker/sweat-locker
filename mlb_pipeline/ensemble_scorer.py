@@ -541,9 +541,65 @@ RAMP_UP_DAYS = 30
 SAMPLE_MIN_N = 25
 
 
+# ══ 2026-10-11 · THE BENCHMARK WAS SIDE-BLIND ══
+# edge_weight scores every signal as `hit_rate - BREAKEVEN`, i.e. against
+# a flat 52.4%. That asks "does this signal beat a coin flip at -110",
+# when the question that earns weight is "does it beat a BLIND BET ON THE
+# SAME SIDE". Those differ by exactly the base rate of that side, and a
+# signal that merely leans toward the favoured side collects the gap for
+# free.
+#
+# Measured on all graded games, 2025+2026:
+#
+#   sport    HOME covers (ATS)        HOME wins (ML)
+#   NFL        51.3%  n=384             54.5%  n=391
+#   NCAAF      51.6%  n=2062            58.9%  n=4314
+#
+# So on SPREADS the flat benchmark is near enough — home covers ~51.5%,
+# marginally BELOW breakeven, so little is being given away. The damage is
+# on the MONEYLINE, where home wins 54.5% / 58.9% and every home-ML signal
+# banks 2-6pp for doing nothing. With ~95% of football firings on the home
+# side that compounds into the documented 91.4% home lean.
+#
+# (An earlier pass of this put the ATS gap at 54.1%, which was a 2026-only
+# figure taken from the subset of games carrying signal attribution — not
+# the population. Measuring the full results table moved it to 51.6%.)
+#
+# SHADOWED, NOT LIVE. baseline defaults to None -> BREAKEVEN, so every
+# existing caller is byte-identical until ENSEMBLE_SIDE_BASELINE=1 is set.
+# A weight change moves every published pick, and this one would move them
+# away from home across two sports at once
+# ([[feedback_suppression_gate_needs_shadow]]).
+_SIDE_BASELINE = {
+    # (sport, market_kind): P(home wins/covers). Away side is 1 - value.
+    ('NFL',   'ml'):  0.545,
+    ('NFL',   'ats'): 0.513,
+    ('NCAAF', 'ml'):  0.589,
+    ('NCAAF', 'ats'): 0.516,
+}
+
+
+def side_baseline(sport: Optional[str], market: Optional[str],
+                  side: Optional[str]) -> Optional[float]:
+    """Blind-bet rate for the side an opinion backs, or None if unknown.
+
+    None means "no measured baseline for this sport/market" and callers
+    fall back to BREAKEVEN — never to a guess, and never to another
+    sport's number (the 2026-08-26 cross-sport contamination fix).
+    """
+    if not sport or not side:
+        return None
+    kind = 'ml' if str(market).lower() == 'ml' else 'ats'
+    base = _SIDE_BASELINE.get((str(sport).upper(), kind))
+    if base is None:
+        return None
+    return base if str(side).upper().startswith('HOME') else 1.0 - base
+
+
 def edge_weight(hit_rate: Optional[float], n: int,
                 tier: Optional[str] = None,
-                is_recent: bool = False) -> float:
+                is_recent: bool = False,
+                baseline: Optional[float] = None) -> float:
     """Translate (hit_rate, n, tier) into weight in [0, 1].
 
     ANTI_VALIDATED → 0 (fade signal, not evidence).
@@ -577,7 +633,11 @@ def edge_weight(hit_rate: Optional[float], n: int,
     # ramp-up prior instead. See constant docstring for CLE @ COL example.
     if n < SAMPLE_MIN_N:
         return RAMP_UP_PRIOR
-    edge_pp = hit_rate - BREAKEVEN
+    # Beat a blind bet on the SAME SIDE, not a flat coin flip. See
+    # _SIDE_BASELINE. `baseline` is None for every caller until
+    # ENSEMBLE_SIDE_BASELINE=1, so this is BREAKEVEN as before.
+    bar = BREAKEVEN if baseline is None else max(baseline, BREAKEVEN)
+    edge_pp = hit_rate - bar
     if edge_pp <= 0:
         return 0.0
     # 2026-08-26 log-compression (audit recommendation). Old:
@@ -1559,8 +1619,12 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
 
     # Aggregate per candidate
     per_side: dict[str, list[Contribution]] = defaultdict(list)
+    _use_side_base = os.environ.get('ENSEMBLE_SIDE_BASELINE') == '1'
     for op in market_ops:
-        w = edge_weight(op.hit_rate, op.sample_n, op.tier, is_recent=op.is_recent)
+        _base = (side_baseline(sport, market, op.side)
+                 if _use_side_base else None)
+        w = edge_weight(op.hit_rate, op.sample_n, op.tier,
+                        is_recent=op.is_recent, baseline=_base)
         if w == 0 and op.strength == 0:
             continue
         c = Contribution(
