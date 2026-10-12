@@ -1047,37 +1047,64 @@ def check_line_poller_landing_rate() -> Optional[dict]:
 
     Nothing was watching this, so it degraded silently for weeks.
     """
+    # ══ 2026-10-12 · THIS CHECK WAS MEASURING ITS OWN TRUNCATION ══
+    # The query ran with limit=2000. MLB wrote 5,636 line_history rows on
+    # 2026-10-11, so the check saw the first 2,000 — which span far fewer
+    # distinct minutes — and reported "5/72 landed, 7%, CRITICAL". Fully
+    # paged, that day landed 51 distinct MLB capture minutes, plus NFL 44,
+    # NBA 36, NCAAF 37, NHL 37. The poller was working the whole time.
+    # [[feedback_never_measure_from_truncated_output]]
+    #
+    # SCHEDULED = 72 was stale as well. That schedule was demoted to an
+    # hourly GitHub fallback on 2026-10-05 after GitHub stopped acquiring
+    # runners, and the real poller moved to a local Windows task firing
+    # every 15 minutes (\SweatLocker\line_poller — verified Ready,
+    # LastTaskResult=0). Judging a local 96/day task against a retired
+    # 72/day cron produced a percentage of nothing.
+    #
+    # A false CRITICAL is not harmless: the context_features_preseason
+    # alert went unread for six days partly because this suite was already
+    # crying wolf. So the test is now an ABSOLUTE floor on distinct capture
+    # minutes — enough snapshots to price a slate — rather than a ratio
+    # against a schedule that keeps changing.
+    day = _days_ago(1)
+    rows, off = [], 0
     try:
-        r = requests.get(f'{SB}/rest/v1/line_history',
-            params={'select': 'captured_at', 'sport': 'eq.MLB',
-                    'captured_at': f'gte.{_days_ago(1)}T00:00:00Z',
-                    'limit': '2000'},
-            headers=H_READ, timeout=20)
-        if r.status_code != 200:
-            return None
-        rows = r.json()
+        while True:
+            r = requests.get(f'{SB}/rest/v1/line_history',
+                params={'select': 'captured_at', 'sport': 'eq.MLB',
+                        'captured_at': f'gte.{day}T00:00:00Z',
+                        'limit': '1000', 'offset': str(off)},
+                headers=H_READ, timeout=30)
+            if r.status_code not in (200, 206):
+                return None
+            batch = r.json()
+            if not isinstance(batch, list):
+                return None
+            rows += batch
+            if len(batch) < 1000 or len(rows) >= 60000:
+                break
+            off += 1000
     except Exception:
         return None
-    if not isinstance(rows, list):
-        return None
-    # Distinct capture MINUTE == one landed poller run.
+    # Distinct capture MINUTE == one landed poller run, same day only.
     landed = len({str(x.get('captured_at'))[:16] for x in rows
-                  if x.get('captured_at')})
-    SCHEDULED = 72
-    pct = 100.0 * landed / SCHEDULED
-    # Below ~25% means the schedule is decorative. Above that, movement
-    # capture is coarse but usable.
-    if pct >= 25:
+                  if str(x.get('captured_at', ''))[:10] == day})
+    # A slate needs roughly hourly coverage to price picks and show
+    # movement. Below 12 distinct minutes in a day the collector is
+    # effectively not running; below 6 it is dead.
+    FLOOR = 12
+    if landed >= FLOOR:
         return None
     return {
         'check_name': 'line_poller_landing_rate',
-        'severity': 'CRITICAL' if pct < 10 else 'WARNING',
-        'message': (f'MLB line poller landed {landed}/{SCHEDULED} scheduled '
-                    f'runs yesterday ({pct:.0f}%). line_history is the only '
-                    f'source that prices picks for ROI/CLV — at this rate '
-                    f'most games get no pre-game line capture.'),
-        'detail': {'landed_runs': landed, 'scheduled': SCHEDULED,
-                   'pct': round(pct, 1), 'date': _days_ago(1)},
+        'severity': 'CRITICAL' if landed < 6 else 'WARNING',
+        'message': (f'MLB line poller landed only {landed} distinct capture '
+                    f'minutes on {day} (floor {FLOOR}). line_history is the '
+                    f'only source that prices picks for ROI/CLV — at this '
+                    f'rate most games get no pre-game line capture. Check '
+                    f'the local task \\SweatLocker\\line_poller first.'),
+        'detail': {'landed_minutes': landed, 'floor': FLOOR, 'date': day},
     }
 
 
