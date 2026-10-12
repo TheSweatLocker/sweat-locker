@@ -595,6 +595,112 @@ def enrich_rest_and_travel(rows: list[dict]) -> None:
 # Upsert
 # ═══════════════════════════════════════════════════════════════════════
 
+def enrich_h2h_and_form(rows: list[dict]) -> None:
+    """Fill the h2h + venue-form columns 13 NHL signals read.
+
+    ══ 2026-10-12 · THESE COLUMNS HAVE NEVER HAD A WRITER ══
+    Eight columns exist on nhl_game_context and are 0 or NULL on all 126
+    rows of the current season, because nothing in this file ever wrote
+    them. Thirteen enabled signals read them and have therefore never
+    fired:
+
+        h2h_last5_games_played   9 signals     home_ats_l10_at_home   2
+        h2h_last5_home_wins      4             away_ats_l10_on_road   2
+        h2h_last5_overs          4             home_ml_l10_at_home    1
+        h2h_last5_home_covers    1             away_ml_l10_on_road    1
+
+    Not a broken writer — no writer at all. The signals were authored
+    against features nobody built, and then counted as NHL "depth".
+
+    Everything needed is in nhl_game_results: game_date, both teams, both
+    scores, spread_result and total_result back to 2024-10-04.
+
+    BOUNDED BY EACH GAME'S OWN DATE, not by "today", so these stay prior
+    information if the table is ever rebuilt — the L5-leak failure mode
+    ([[project_prop_l5_leak_922]]) costs nothing to avoid at write time.
+
+    Counts, not rates: every condition tests an integer count out of the
+    window (e.g. `home_ats_l10_at_home >= 7`), so a rate would make all
+    thirteen false in a new way.
+    """
+    if not rows:
+        return
+    hist, off = [], 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=H_READ,
+                         params={'select': 'game_date,home_team,away_team,'
+                                           'home_score,away_score,'
+                                           'spread_result,total_result',
+                                 'home_score': 'not.is.null',
+                                 'limit': '1000', 'offset': str(off)},
+                         timeout=30)
+        if r.status_code not in (200, 206):
+            print(f'  ⚠ h2h/form: results fetch {r.status_code} — skipped')
+            return
+        b = r.json() or []
+        hist += b
+        if len(b) < 1000 or len(hist) >= 20000:
+            break
+        off += 1000
+    hist.sort(key=lambda g: str(g.get('game_date') or ''))
+
+    # team -> [(date, venue, won, covered, over)] and (A,B) -> [meetings]
+    by_team: dict = {}
+    by_pair: dict = {}
+    for g in hist:
+        gd = str(g.get('game_date') or '')[:10]
+        h, a = g.get('home_team'), g.get('away_team')
+        if not gd or not h or not a:
+            continue
+        try:
+            hs, as_ = float(g['home_score']), float(g['away_score'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        sr = str(g.get('spread_result') or '').lower()
+        tr = str(g.get('total_result') or '').lower()
+        over = True if tr == 'over' else (False if tr == 'under' else None)
+        by_team.setdefault(h, []).append(
+            (gd, 'H', hs > as_, sr == 'home_covered', over))
+        by_team.setdefault(a, []).append(
+            (gd, 'A', as_ > hs, sr == 'away_covered', over))
+        by_pair.setdefault(frozenset((h, a)), []).append(
+            (gd, h, hs > as_, sr == 'home_covered', over))
+
+    def _venue_counts(team, venue, before, n=10):
+        """(wins, covers) in that team's last `n` games at that venue."""
+        seq = [x for x in reversed(by_team.get(team) or ())
+               if x[0] < before and x[1] == venue][:n]
+        return sum(1 for x in seq if x[2]), sum(1 for x in seq if x[3])
+
+    filled = 0
+    for row in rows:
+        gd = str(row.get('game_date') or '')[:10]
+        h, a = row.get('home_team'), row.get('away_team')
+        if not gd or not h or not a:
+            continue
+        hw, hc = _venue_counts(h, 'H', gd)
+        aw, ac = _venue_counts(a, 'A', gd)
+        row['home_ml_l10_at_home'] = hw
+        row['home_ats_l10_at_home'] = hc
+        row['away_ml_l10_on_road'] = aw
+        row['away_ats_l10_on_road'] = ac
+        meets = [x for x in reversed(by_pair.get(frozenset((h, a))) or ())
+                 if x[0] < gd][:5]
+        row['h2h_last5_games_played'] = len(meets)
+        # "home" in an h2h row means the home team OF THAT MEETING, which
+        # is not always this game's home team — count from this game's
+        # home side or the signal reads the wrong team's record.
+        row['h2h_last5_home_wins'] = sum(
+            1 for m in meets if (m[2] if m[1] == h else not m[2]))
+        row['h2h_last5_home_covers'] = sum(
+            1 for m in meets if (m[3] if m[1] == h else not m[3]))
+        row['h2h_last5_overs'] = sum(1 for m in meets if m[4] is True)
+        if meets or hw or hc or aw or ac:
+            filled += 1
+    print(f'  h2h/form: {filled}/{len(rows)} rows filled from '
+          f'{len(hist)} historical games')
+
+
 def _apply_ensemble(row: dict) -> None:
     """Ensemble cutover (mirror of nfl_game_context / ncaaf_game_context).
     Runs ensemble_scorer.score_game('NHL', row) and writes result to
@@ -1021,6 +1127,9 @@ def run_for_date(game_date: date, dry_run: bool = False) -> int:
     enrich_team_stats(games, season)
     enrich_goalies(games, season)
     enrich_rest_and_travel(games)
+    # 2026-10-12: h2h + venue-form counts. Must run BEFORE the ensemble
+    # scores the row, since 13 signals read these columns.
+    enrich_h2h_and_form(games)
     # Last — it scores the disagreement between market and model, so it
     # needs both sides already attached.
     enrich_sweat(games)
