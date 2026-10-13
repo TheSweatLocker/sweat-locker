@@ -264,6 +264,40 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "backfill_public_receipts.py ($S)"               python backfill_public_receipts.py --sport "$S" || true
           done
 
+      # ══ 2026-10-13 · ignore-duplicates CANNOT DELIVER A LATE GRADE ══
+      # The step above writes with Prefer: resolution=ignore-duplicates, which
+      # is right for the immutable half of a receipt — a published pick, line
+      # and price must never be rewritten. But `result` and `graded_at` are
+      # NULL at publish time and arrive hours later. Ignore-duplicates means a
+      # receipt first written BEFORE its grade existed can never receive it.
+      #
+      # Whether a receipt was affected was a pure race against the grader:
+      #   snapshot 390 (10-11 20:41) → receipt written AFTER grading → LOSS
+      #   snapshot 389 (10-11 11:15) → receipt written BEFORE grading → NULL
+      #
+      # Measured on discovery: 21 of 258 ledger receipts sat permanently
+      # ungraded while their snapshot carried a result, going back to 09-24.
+      # The stale rows skewed toward WINs, so the receipt trail under-reported
+      # the surface. 0 conflicted, so nothing was ever graded wrong — the
+      # grades simply never arrived.
+      #
+      # This fills those NULLs and ONLY those NULLs. It never overwrites a
+      # receipt that already carries a result, and it verifies the source row
+      # still describes the same bet before trusting its grade (a mutable
+      # source row gets regenerated under a frozen receipt — see the script's
+      # header for the two measured cases).
+      - name: Deliver late grades to receipts written before grading
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "sync_receipt_grades.py (ledger)" \
+            python sync_receipt_grades.py --source ledger_snapshots --apply || true
+
       - name: Price the receipts just published
         continue-on-error: true
         working-directory: mlb_pipeline

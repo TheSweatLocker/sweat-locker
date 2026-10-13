@@ -22,7 +22,7 @@ CLI:
   python nhl_game_context.py --dry-run             # print only
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse, os, re, sys, unicodedata
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -56,6 +56,19 @@ from nhl_data_client import (
 ODDS_BASE = 'https://api.the-odds-api.com/v4/sports'
 SPORT_KEY = 'icehockey_nhl'
 # During preseason use icehockey_nhl_preseason if it exists.
+
+#: Franchise RENAMES, keyed on the normalised form (lowercase, accents folded,
+#: punctuation stripped). Normalisation already reconciles punctuation and
+#: accents — 'St. Louis Blues'/'St Louis Blues' and 'Montréal'/'Montreal' both
+#: fold to one key — so this map is only for teams whose NAME actually changed
+#: and which therefore appear under two different words across our history.
+#:
+#: Utah: 83 rows in nhl_game_results from 2024-10 to 2025-04 are
+#: 'Utah Hockey Club'; 106 rows are the post-rebrand 'Utah Mammoth'. Anything
+#: computing a team's history by name sees two separate franchises without this.
+NHL_NAME_ALIASES = {
+    'utahhockeyclub': 'utahmammoth',
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -416,13 +429,53 @@ def enrich_market(rows: list[dict]) -> None:
         print(f'  ⚠ market enrich read failed: {e}')
         return
 
-    by_key = {(str(x.get('game_date'))[:10], x.get('home_team'), x.get('away_team')): x
+    # ══ 2026-10-13 · THE EXACT-STRING NAME JOIN DROPPED ST. LOUIS ══
+    # Andy: "St Louis Blues name not matching, some items are missing in game
+    # detail regarding them and odds of game at top of game card detail."
+    #
+    # Both symptoms, one cause. This join keyed on the RAW team strings, and
+    # the two tables are fed by two different APIs that spell one team
+    # differently:
+    #     nhl_game_context  ← NHL API      'St. Louis Blues'   (with period)
+    #     nhl_game_results  ← The Odds API 'St Louis Blues'    (no period)
+    # odds_pull_core._resolve stores `api_name` verbatim (it maps the name only
+    # to validate it and grab the abbrev), so the odds feed's spelling is what
+    # lands in results. The tuple never matched, `continue` fired, and the game
+    # got no odds at all — silently, with no warning and no miss count.
+    #
+    # Measured on tonight's slate: 15 of 16 games carried odds, the 16th was
+    # St. Louis @ Ottawa. Season to date, STL is the ONLY team with market data
+    # missing on every one of its 10 played games — which is also why its
+    # ats_last5 / ou_last5 / covers_as_fav_pct came back empty while all 31
+    # other teams were populated (backfill_nhl_team_tendencies reads
+    # spread_result / close_puckline straight off those rows).
+    #
+    # Normalise the key instead of trusting either feed's punctuation. The
+    # fold also covers 'Montréal Canadiens' vs 'Montreal Canadiens' — note the
+    # existing normaliser in odds_pull_core._canonical_id strips the accent
+    # rather than folding it ('montralcanadiens'), so it would NOT have matched
+    # the unaccented spelling. A rename ('Utah Hockey Club' → 'Utah Mammoth',
+    # 83 historical rows) is a different word, not punctuation, so it needs the
+    # alias map rather than normalisation.
+    def _nkey(s):
+        s = unicodedata.normalize('NFKD', str(s or ''))
+        s = ''.join(c for c in s if not unicodedata.combining(c))
+        s = re.sub(r'[^a-z0-9]', '', s.lower())
+        return NHL_NAME_ALIASES.get(s, s)
+
+    by_key = {(str(x.get('game_date'))[:10], _nkey(x.get('home_team')),
+               _nkey(x.get('away_team'))): x
               for x in res}
     hit = priced = 0
+    missed = []
     for row in rows:
-        k = (str(row.get('game_date'))[:10], row.get('home_team'), row.get('away_team'))
+        k = (str(row.get('game_date'))[:10], _nkey(row.get('home_team')),
+             _nkey(row.get('away_team')))
         m = by_key.get(k)
         if not m:
+            # Loud. A silent `continue` here is what hid St. Louis for a season.
+            missed.append(f"{row.get('away_team')} @ {row.get('home_team')} "
+                          f"{str(row.get('game_date'))[:10]}")
             continue
         hit += 1
         hml, aml = m.get('close_home_ml'), m.get('close_away_ml')
@@ -482,6 +535,14 @@ def enrich_market(rows: list[dict]) -> None:
             priced += 1
     print(f'  market: matched {hit}/{len(rows)} context rows to results, '
           f'{priced} carry a price')
+
+    if missed:
+        print(f'  ⚠ market enrich: {len(missed)} of {len(rows)} games found NO '
+              f'nhl_game_results row — these get NO odds on the card:')
+        for mg in missed[:12]:
+            print(f'      {mg}')
+        print('    A miss is a name or date mismatch between the NHL API '
+              '(context) and the Odds API (results) — check NHL_NAME_ALIASES.')
 
     # ══ 2026-09-27 · CAPTURE THE OPENING LINE ══
     #
