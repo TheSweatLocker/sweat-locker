@@ -295,6 +295,32 @@ jobs:
           cd mlb_pipeline
           python enrich_nba_injuries_to_context.py --apply
 
+      # ══ 2026-10-13 · STAR-OUT FADE, SHADOW ONLY ══
+      # The three star-out signals were rewired from the nonexistent
+      # ctx.*_star_out to the injury columns the step above now writes, and
+      # left enabled=FALSE. They contribute nothing to a published pick.
+      #
+      # The bar — differential injury_impact >= 15 ppg WITH a starter
+      # actually out — is a reasoned guess with no graded NBA history
+      # behind it (the season opens 10-20), so it gets tested rather than
+      # asserted. This logs each fire to rule_shadow_log and grades past
+      # ones on the real closing moneyline, recording ROI at 10/15/20/30 ppg
+      # so the threshold can be chosen from the record instead of re-guessed.
+      #
+      # Promotion stays manual: backtest_rules may flip this rule's
+      # registry mode to active, but nothing consumes that mode — only
+      # flipping the three signal_sources rows to enabled=true can affect
+      # picks, and that is a human decision on the graded evidence.
+      - name: Shadow NBA star-out fade (log + grade)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python shadow_nba_star_out.py --apply --days 3
+          python shadow_nba_star_out.py --grade --apply
+
       # 2026-10-10 · B74c · NBA JERRY READS. jerry_reads held ZERO NBA rows
       # (MLB 812, NCAAF 499, NHL 163, NFL 127, UFC 88, NBA 0) because
       # generate_nba_game_reads.py did not exist — every other sport had a
