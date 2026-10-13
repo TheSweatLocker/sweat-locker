@@ -268,6 +268,33 @@ jobs:
           cd mlb_pipeline
           python nba_game_context.py --days 4
 
+      # ══ 2026-10-13 · NBA HAD NO INJURY DATA REACHING THE ENGINE ══
+      # nba_game_context.home_starters_out / away_starters_out /
+      # home_injury_impact / away_injury_impact were 0 of 81 populated.
+      # nba_game_context.py:305 READS injury_impact and nothing had ever
+      # written it, so the three star-out signals
+      # (nba_home_star_out_fade, nba_away_star_out_fade,
+      # nba_prop_star_out_teammate_boost) evaluated NULL every night.
+      # Star availability is the most price-moving input in basketball.
+      #
+      # Both sources already existed and were simply never joined:
+      # nba_injuries (pulled two steps above) and nba_player_game_logs,
+      # which carries a real `started` boolean — so "is this a starter"
+      # is measured, not inferred from a minutes threshold.
+      #
+      # Placed AFTER nba_game_context (the rows must exist to PATCH) and
+      # BEFORE the Jerry reads below, so the read narrates a slate that
+      # already knows who is out. Same ordering logic as the read step's
+      # own comment.
+      - name: Enrich NBA game context with injuries
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_nba_injuries_to_context.py --apply
+
       # 2026-10-10 · B74c · NBA JERRY READS. jerry_reads held ZERO NBA rows
       # (MLB 812, NCAAF 499, NHL 163, NFL 127, UFC 88, NBA 0) because
       # generate_nba_game_reads.py did not exist — every other sport had a
