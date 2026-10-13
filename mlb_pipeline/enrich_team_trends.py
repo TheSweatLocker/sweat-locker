@@ -78,6 +78,42 @@ def _norm(name: str) -> str:
     }
     if s in MLB_ALIASES:
         return MLB_ALIASES[s]
+    # 2026-10-12: NBA needed the same treatment, and for the same reason —
+    # teamrankings stores city-only or abbreviated names ("Boston",
+    # "LA Lakers", "Okla City", "Golden State") while nba_game_context
+    # stores full names ("Boston Celtics", "Los Angeles Lakers",
+    # "Oklahoma City Thunder"). Measured before this: 0 of 31 NBA context
+    # names matched, so the enrichment reported "5/5 patched · home match
+    # 0/5" — it wrote the timestamp and nothing else, every run.
+    #
+    # Mapped by CITY on both sides so one entry covers both spellings; the
+    # two-team cities are the reason this cannot be a plain suffix strip.
+    NBA_ALIASES = {
+        'atlanta hawks': 'atlanta', 'boston celtics': 'boston',
+        'brooklyn nets': 'brooklyn', 'charlotte hornets': 'charlotte',
+        'chicago bulls': 'chicago', 'cleveland cavaliers': 'cleveland',
+        'dallas mavericks': 'dallas', 'denver nuggets': 'denver',
+        'detroit pistons': 'detroit',
+        'golden state warriors': 'goldenstate', 'golden state': 'goldenstate',
+        'houston rockets': 'houston', 'indiana pacers': 'indiana',
+        'los angeles clippers': 'laclippers', 'la clippers': 'laclippers',
+        'los angeles lakers': 'lalakers', 'la lakers': 'lalakers',
+        'memphis grizzlies': 'memphis', 'miami heat': 'miami',
+        'milwaukee bucks': 'milwaukee', 'minnesota timberwolves': 'minnesota',
+        'new orleans pelicans': 'neworleans', 'new orleans': 'neworleans',
+        'new york knicks': 'newyork', 'new york': 'newyork',
+        'oklahoma city thunder': 'oklacity', 'okla city': 'oklacity',
+        'oklahoma city': 'oklacity',
+        'orlando magic': 'orlando', 'philadelphia 76ers': 'philadelphia',
+        'phoenix suns': 'phoenix', 'portland trail blazers': 'portland',
+        'portland trailblazers': 'portland',
+        'sacramento kings': 'sacramento', 'san antonio spurs': 'sanantonio',
+        'san antonio': 'sanantonio',
+        'toronto raptors': 'toronto', 'utah jazz': 'utah',
+        'washington wizards': 'washington',
+    }
+    if s in NBA_ALIASES:
+        return NBA_ALIASES[s]
     # Common mascot suffixes teamrankings drops (NCAAF/NCAAB heavy)
     for suffix in [' wildcats', ' bulldogs', ' tigers', ' bears', ' eagles',
                    ' cardinals', ' hurricanes', ' longhorns', ' sooners',
@@ -192,10 +228,50 @@ def run_for_sport(sport: str, game_date: str, season: str, dry_run: bool = False
                   f'H={patch.get("home_season_cover_pct") or "?"}%  '
                   f'A={patch.get("away_season_cover_pct") or "?"}%')
             written += 1; continue
+        # ══ 2026-10-12 · PGRST204 STRIP-RETRY ══
+        # A PATCH naming ONE column the table lacks is rejected whole — all
+        # 12 trend fields are dropped, not just the missing one. Measured:
+        # mlb_game_context and nba_game_context have no
+        # *_season_ats_pushes (NFL and NCAAF do), so every MLB and NBA
+        # patch 400'd and home_season_cover_pct / over_pct sat at 0%
+        # populated. That is why 15 MLB signals and a slice of NBA's read
+        # NULL while NFL's equivalents were fine — one absent column, two
+        # sports, twelve dead fields.
+        #
+        # The --dry-run path never issues the PATCH, so the failure was
+        # invisible in exactly the mode used to check this job.
+        #
+        # Mirrors the strip-retry already in nfl_game_context.upsert_context:
+        # a missing column should cost that one column, not the write.
         pr = requests.patch(f'{SB}/rest/v1/{ctx_tbl}?game_id=eq.{g["game_id"]}',
                             headers=H_WRITE, json=patch, timeout=15)
+        stripped: list = []
+        for _ in range(len(patch)):
+            if pr.status_code in (200, 204):
+                break
+            try:
+                body = pr.json()
+            except Exception:                                  # noqa: BLE001
+                break
+            if str(body.get('code')) != 'PGRST204':
+                break
+            m = re.search(r"'([^']+)' column", str(body.get('message') or ''))
+            col = m.group(1) if m else None
+            if not col or col not in patch:
+                break
+            patch.pop(col, None)
+            stripped.append(col)
+            if not patch:
+                break
+            pr = requests.patch(
+                f'{SB}/rest/v1/{ctx_tbl}?game_id=eq.{g["game_id"]}',
+                headers=H_WRITE, json=patch, timeout=15)
         if pr.status_code in (200, 204):
             written += 1
+            if stripped:
+                print(f'    ⚠ {g["game_id"][:12]}: wrote {len(patch)} fields '
+                      f'after stripping absent column(s) {stripped} — add '
+                      f'them to {ctx_tbl} to stop losing them')
         else:
             print(f'    ✗ patch {g["game_id"]}: {pr.status_code} {pr.text[:120]}')
     print(f'  [{sport}] {written}/{len(games)} patched · home match {matched_h}/{len(games)} · away {matched_a}/{len(games)}')
