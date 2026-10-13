@@ -295,6 +295,36 @@ jobs:
           cd mlb_pipeline
           python enrich_nba_injuries_to_context.py --apply
 
+      # ══ 2026-10-13 · NBA HAD NO MONTE CARLO ══
+      # mc_probabilities was populated on NFL 106/316, NCAAF 382/536, NHL
+      # 136/187 and MLB 26/36 — and 0 of 81 on NBA. Not a nice-to-have: in
+      # the NFL model audit mc_expected_margin was the best voter available,
+      # the only one at market scale and the most independent of the others.
+      #
+      # Built from nba_team_stats (off_rating / def_rating / pace) and
+      # NOTHING from the existing model stack, deliberately. Building an
+      # "MC" on top of projected_spread would have produced another
+      # duplicate voter, which is the exact failure documented today (NCAAF:
+      # six spread columns, one real opinion).
+      #
+      # Every constant measured from our own 2,755 graded NBA games rather
+      # than borrowed: HFA +1.82 (not the 2.5-3.0 usually quoted), margin sd
+      # 16.22, team sd 13.41, total sd 21.41. Variance is two-component
+      # because one component cannot fit all three moments at once.
+      # Self-check reproduces margin +1.72/sd 16.00, total 228.8/sd 21.29,
+      # team sd 13.28 — all within ~1%.
+      #
+      # Runs after the injury enrichment so a sim is never built on a slate
+      # whose availability data is a step behind.
+      - name: NBA Monte Carlo simulator
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_mc_simulator.py --days 10
+
       # ══ 2026-10-13 · STAR-OUT FADE, SHADOW ONLY ══
       # The three star-out signals were rewired from the nonexistent
       # ctx.*_star_out to the injury columns the step above now writes, and
