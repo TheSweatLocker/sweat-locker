@@ -2294,8 +2294,29 @@ def get_park_factors(home_team):
         "Authorization": f"Bearer {SUPABASE_KEY}",
     }
     try:
+        # ══ 2026-10-13 · data[0] WAS A COIN FLIP BETWEEN TWO VINTAGES ══
+        # mlb_park_factors holds 61 rows for 30 teams: every club has a
+        # 2026-03-23 row AND a 2026-04-14 row, and 28 of 30 CONFLICT —
+        # Texas 80 vs 103, Oakland 94 vs 113, LA Dodgers 93 vs 111,
+        # Colorado 118 vs 133 (three rows). PostgREST does not guarantee
+        # row order without an explicit `order`, so `data[0]` returned
+        # whichever vintage the planner happened to emit. A 23-point swing
+        # in run_factor decided arbitrarily, per request.
+        #
+        # Same failure class as the Madden two-vintages collision
+        # (project_madden_week_collision_1001): two valid-looking rows, no
+        # tiebreak, and the consumer silently picks one.
+        #
+        # Now ordered newest-first and limited, so the choice is
+        # deterministic. NOTE the deeper problem this does not fix: BOTH
+        # vintages are from March/April 2026 and it is now October, so
+        # these factors are ~6 months stale and were computed on
+        # early-season samples. Texas at 80 is not a believable full-season
+        # run factor. Logged in docs/daily/2026-10-13.md for a refresh.
         r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/mlb_park_factors?team=eq.{requests.utils.quote(home_team)}&select=*",
+            f"{SUPABASE_URL}/rest/v1/mlb_park_factors"
+            f"?team=eq.{requests.utils.quote(home_team)}"
+            f"&select=*&order=updated_at.desc&limit=1",
             headers=headers
         )
         data = r.json()
