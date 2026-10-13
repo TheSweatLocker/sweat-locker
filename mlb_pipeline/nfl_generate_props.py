@@ -549,8 +549,29 @@ def load_positional_defense(season: int) -> dict:
 # row rather than applied. Grade the shadow against results, then decide —
 # feedback_suppression_gate_needs_shadow, which exists precisely because a gate
 # that looks obviously right still has to earn it.
-OPP_SHADOW_LAMBDA = 0.5
-OPP_SHADOW_CAP = 0.12
+# ══ 2026-10-12 · THE LAMBDA BINDS, NOT THE CAP ══
+# Swept retroactively over the 989 rows carrying a stored (pre-game)
+# opp_ratio, regressing (actual - line) on (proj - line) for each setting:
+#
+#   cap \ lam     0.15     0.30     0.50     0.75     1.00
+#   0.08        +0.051   +0.059   +0.068   +0.076   +0.081
+#   0.12        +0.051   +0.059   +0.069   +0.079   +0.087
+#   0.20        +0.051   +0.060   +0.069   +0.081   +0.089
+#   0.30        +0.051   +0.060   +0.070   +0.081   +0.090
+#
+# The slope rises monotonically with LAMBDA and saturates on CAP above
+# ~0.20. An earlier read of the single lam=0.5/cap=0.12 head-to-head
+# concluded the cap was what bound the signal; the sweep says the opposite,
+# and the old cap of 0.12 was holding a lam=0.5 shadow to barely more than
+# the live +/-7.5%, which is why the two were indistinguishable (+0.003).
+#
+# lam=1.0 means applying the opponent's positional allowance ratio IN FULL
+# rather than a shrunk version of it, which is also the mechanically natural
+# choice. Best cell CI is [-0.014,+0.195] on n=989 — it does not clear zero,
+# so this remains the RECORDED shadow (proj_shadow), never applied. The
+# monotone gradient across five lambdas is the evidence, not any one cell.
+OPP_SHADOW_LAMBDA = 1.0
+OPP_SHADOW_CAP = 0.25
 
 
 def positional_league_mean(posdef: dict, position: str,
@@ -2042,6 +2063,28 @@ def build_prop_row(event: dict, market: dict, outcome: dict, opp_map: dict,
 
     signals = {
         'l4': l4, 'season_avg': season_avg,
+        # ══ 2026-10-12 · THE PROJECTION IS ANTI-PREDICTIVE WHEN UNFED ══
+        # Measured over 3,084 graded props, regressing (actual - line) on
+        # (projection - line):
+        #     opp_pct PRESENT  n=2,847  slope +0.103  CI[+0.029,+0.176]
+        #     opp_pct MISSING  n=  237  slope -1.247  CI[-1.679,-0.814]
+        # The pooled figure (+0.030) was the average of a working projection
+        # and 237 rows of active anti-signal — our deviation from the line
+        # predicted the OPPOSITE result at better than 1:1.
+        #
+        # Root cause: every one of those 237 is from 2026-09-09..09-14, weeks
+        # 1-2, where season_avg is None (no season data yet) AND no positional
+        # defence exists yet, so project() degenerates to an L4-only number
+        # with no opponent term. 154 landed on 09-13 alone.
+        #
+        # Recorded, not enforced: the selection layer already down-tiers 78%
+        # of them (128 SKIP, 57 LIGHT of 237), and the defect is dormant from
+        # week 3 onward — it recurs every September rather than costing us
+        # now. Enforcement is a product call (it means no NFL props in weeks
+        # 1-2 unless a prior-season fallback feeds season_avg first), so this
+        # flag exists to make the population selectable instead of silently
+        # mixed into the record.
+        'proj_unfed': (season_avg is None or opp_pct is None),
         'league_baseline': cfg['league_baseline'],
         'opp_pct': opp_pct, 'opp_col': cfg['opp_col'],
         # 2026-10-01: record WHICH opponent lens produced opp_pct —
