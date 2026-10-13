@@ -364,6 +364,39 @@ jobs:
           # It writes stats only — never picks, tiers or lines.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_nfl_team_features.py" python refresh_nfl_team_features.py --apply
 
+      # ══ 2026-10-13 · CORRECTED MODEL CONSENSUS, SHADOW ONLY ══
+      # The live nfl_model_consensus_* pair has three measured defects: it
+      # reads v4_spread, which is a CONSTANT (sd 0.276 over 9 distinct values,
+      # slope +0.005 on the line) rather than a model; its home condition
+      # tests `v4_spread < 0` while the *_rl consensus tests
+      # `v4_spread > close + 0.5`, so the sign convention contradicts itself
+      # and the home side fires 0 of 59; and NEITHER condition compares to
+      # the line at all — `panel_away - panel_home > 0` only means panel
+      # thinks the away team wins outright, which fires AWAY_RL on a game
+      # where that side is favoured by 10 and predicted to win by 3.
+      #
+      # The corrected form requires mc_expected_margin AND v3_spread to both
+      # beat the closing line in the same direction. Those are the two best
+      # voters available: mc has sd 7.583 against close_spread's 6.377 and an
+      # on-line slope of +0.792 (the only voter at market scale), v3 has sd
+      # 4.042, and their deviations correlate only +0.414 — against +0.925
+      # for the v4/panel pair the live signals actually use.
+      #
+      # Shadow because it changes which side gets published: on the 10-13
+      # slate the corrected form fired 8 times against the live pair's 4, and
+      # the two DISAGREED on 2 of the 3 games where both fired. Promotion is
+      # rewiring the two signal_sources rows, by hand, on this record.
+      - name: Shadow corrected NFL model consensus (log + grade)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python shadow_nfl_consensus.py --apply --days 8
+          python shadow_nfl_consensus.py --grade --apply
+
       # 2026-09-09: NFL splits_v2 aggregator was missing from this workflow —
       # every other sport (MLB/NBA/NHL/NCAAF/NCAAB) calls it but NFL never did.
       # Result: nfl_game_context.splits_summary was NULL for every game, so
