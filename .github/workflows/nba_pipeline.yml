@@ -6,6 +6,35 @@ on:
     # All steps are silent no-ops until Oct 22 season opener. Restore
     # 22 UTC (post-market) cron once preseason starts ~early Oct.
     - cron: '0 12 * * *'   # 8:00am EDT — daily preseason placeholder
+    # ══ 2026-10-13 · RESTORED, AND IT IS WHY NBA EXTERNALS WERE EMPTY ══
+    # The note above prescribed this and it was never put back; preseason
+    # started 2026-10-03 and NBA games are being played now.
+    #
+    # The 12 UTC slot alone cannot collect money flow. OddsCrowd publishes
+    # its Bets%/Money% block only as a game approaches, and
+    # externals_oddscrowd requires that block to emit a pick at all —
+    # measured today on the SAME 25 candidate URLs: the 07:02 ET pull
+    # returned 0 picks, the 12:04 ET pull returned 12. Nothing was wrong
+    # with the parser or the slate match (every gate passes, find_game_id
+    # resolves all three test games); the job was simply running hours
+    # before the data exists, so external_picks held 0 NBA rows while 6 of
+    # 6 sources reported "ok".
+    #
+    # ══ THE SLOT IS CHOSEN FROM MEASURED LATENESS, NOT NOMINAL TIME ══
+    # These crons do not fire when they say. Measured from
+    # workflow_heartbeat across 294 starts (2026-10-13), median lateness is
+    # +4.38h, and it is WORSE for earlier slots:
+    #     12 UTC  +4.5h      15 UTC  +4.3h to +4.8h
+    #     18 UTC  +2.9h (p90 +4.6h)  20 UTC  +2.8h   22 UTC  +2.1h
+    # So 22 UTC would actually land ~8:10pm ET — after the 7pm tips, which
+    # is the mistake this comment exists to prevent. 18 UTC lands ~4:54pm
+    # ET at the median and ~6:33pm ET at p90: both still ahead of the
+    # earliest tip, and late enough for splits to be posted (the 12:04pm ET
+    # manual pull already had them).
+    #
+    # Keeping the 12 UTC run too: it builds context/reads for the day, and
+    # a second pass also re-resolves.
+    - cron: '0 18 * * *'   # ~4:54pm ET actual — post-market, pre-tip
   workflow_dispatch:
     inputs:
       date:
