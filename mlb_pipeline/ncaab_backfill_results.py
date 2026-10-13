@@ -11,6 +11,25 @@ Rationale:
   attached — early-season Sun Belt games often lack them — but scores
   are near-complete for the modern era.
 
+══ 2026-10-12 · ESPN NO LONGER RETURNS ODDS AT ALL ══
+The paragraph above is still true about SCORES and no longer true about
+odds. Probed directly on two dates:
+
+    scoreboard?dates=20260301   23 events,   0 carrying odds
+    scoreboard?dates=20250301  133 events,   0 carrying odds
+
+Zero even on the 2025 date, where our own 2024-25 rows are 75% populated
+with close_spread — so those lines did NOT come from this endpoint. They
+were captured LIVE by ncaab_odds_pull.py while that season was being
+played. Closing lines are therefore NOT backfillable from here.
+
+Consequence, measured the same day: backfilling the missing 2025-26 season
+added 3,524 games at 100% scores and 0% close_spread / close_total. NCAAB
+moneyline results can be graded for that season; ATS and totals cannot, and
+any NCAAB spread or total model can only be validated on 2024-25 (75%
+spread coverage). Do not re-run this expecting lines to appear — the gap
+needs a historical odds source, not another pass.
+
 Sign convention (matches ncaab_game_context + ncaab_odds_pull):
   close_spread NEGATIVE = home favored. ESPN's `odds[0].details` typically
   encodes as "TEAM ±X" — we parse and store home-perspective spread.
