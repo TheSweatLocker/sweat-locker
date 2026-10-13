@@ -79,7 +79,13 @@ SPORT_META = {
         # Landing tables were designed (20260820_nhl_historical_closing_odds.sql)
         # but never applied to production. Writing direct to game_results.close_*
         # unblocks LR training without needing a migration approval loop.
-        'target_cols': ('close_home_ml', 'close_away_ml', 'close_total', 'close_puckline'),
+        # 2026-10-13: the two puck-line PRICE columns are in this list now.
+        # Line 341 filters the payload to target_cols, so a key absent here is
+        # dropped silently — which is how the price/line split below would
+        # have looked like it worked while writing nothing.
+        'target_cols': ('close_home_ml', 'close_away_ml', 'close_total',
+                        'close_puckline', 'close_puckline_home_price',
+                        'close_puckline_away_price'),
         'has_spread': False,
         'has_puckline': True,
     },
@@ -287,14 +293,38 @@ def _extract_prices(game: dict, sport: str) -> dict | None:
             elif oc.get('name') == away:
                 out['spread_away_odds'] = int(oc['price'])
     elif sport == 'nhl' and spr.get('outcomes'):
-        # nhl_game_results has a single close_puckline INT field. Convention:
-        # store the home-side puckline odds (typically -1.5 favorite side
-        # if home is favored, +1.5 dog side otherwise). Downstream graders
-        # already understand this shape (spread_result mirrors it).
+        # ══ 2026-10-13 · THIS WROTE THE PRICE INTO THE LINE COLUMN ══
+        # The comment that used to sit here asserted the convention as fact:
+        # "store the home-side puckline odds ... downstream graders already
+        # understand this shape". Both halves were wrong.
+        #
+        # close_puckline is the LINE, home-perspective, NEGATIVE = home
+        # favoured. nhl_odds_pull's own module docstring states exactly that,
+        # and the PRICES have their own columns, added 2026-10-01 in
+        # 20261001a_nhl_puckline_total_prices.sql precisely because grading a
+        # +/-1.5 puck line at a flat -110 is meaningless.
+        #
+        # Writing int(oc['price']) here put values like -258 and +120 into a
+        # column whose only legal values are +/-1.5 (occasionally +/-2.5).
+        # Measured 2026-10-13: 78 such rows, 75 of them St. Louis.
+        #
+        # The two bugs COMPOUNDED. St. Louis is the one team whose name
+        # differs between the NHL API and the Odds API ('St. Louis Blues' vs
+        # 'St Louis Blues'), so the live puller never filled its rows. This
+        # script only writes where the existing value is NULL — so it found
+        # exactly St. Louis's holes and filled them with the wrong field.
+        # 75 of 83 St. Louis rows in 2024-25 were polluted and the other 8
+        # NULL: not one valid puck line for the whole season.
+        #
+        # Take `point` for the line and put the price where prices live.
         for oc in spr['outcomes']:
             if oc.get('name') == home:
-                out['close_puckline'] = int(oc['price'])
-                break
+                pt = oc.get('point')
+                if pt is not None:
+                    out['close_puckline'] = float(pt)
+                    out['close_puckline_home_price'] = int(oc['price'])
+            elif oc.get('name') == away:
+                out['close_puckline_away_price'] = int(oc['price'])
 
     # Must have at least ML data to be worth persisting
     if 'close_home_ml' not in out or 'close_away_ml' not in out:

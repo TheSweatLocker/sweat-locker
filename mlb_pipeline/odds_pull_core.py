@@ -40,6 +40,7 @@ this codebase already (project_close_spread_sign_bug_914).
 """
 from __future__ import annotations
 
+import collections
 import os
 import re
 import statistics
@@ -217,8 +218,54 @@ def _consensus(event: dict, home: str, away: str) -> dict:
         m = _median(at)
         return int(m) if m is not None else None
 
-    sp_line = _median(spreads)        # home perspective, negative = home fav
-    tot_line = _median(totals)
+    # ══ 2026-10-13 · A MEDIAN CAN RETURN A LINE NO BOOK POSTED ══
+    # A puck line is very nearly binary: books post -1.5 or +1.5 and almost
+    # nothing else. On an EVEN split the median averages the two middle
+    # values, so five books on -1.5 and five on +1.5 produce a consensus of
+    # 0.0 — a line that does not exist in hockey.
+    #
+    # Measured 2026-10-13: 3 stored nhl_game_results rows carry close_puckline
+    # 0.0 (2025-01-25, 2025-03-05, 2026-01-25), and all three have a
+    # spread_result graded against it. Tonight's Minnesota @ Winnipeg went out
+    # on the card as "0.0" for the same reason before the books settled.
+    #
+    # The damage is not only cosmetic. _price_at looks for books quoting
+    # exactly the consensus line, finds none at 0.0, and falls through to
+    # "median across all prices" — averaging the -1.5 favourite's price with
+    # the +1.5 dog's. So a fabricated line also produces a fabricated price.
+    #
+    # Rule: THE CONSENSUS LINE MUST BE A LINE SOMEONE ACTUALLY POSTED. Keep
+    # the median when books agree on it (the normal case, and it still rejects
+    # a single stale outlier); otherwise take the most-quoted posted value.
+    # This also fixes the continuous case — a 5.75 total nobody posted cannot
+    # push and grades every such game slightly wrong.
+    def _posted_consensus(values, prefer_negative=None):
+        vals = [v for v in values if v is not None]
+        if not vals:
+            return None
+        med = _median(vals)
+        if med is None:
+            return None
+        if any(abs(v - med) < 0.01 for v in vals):
+            return med                      # books agree — median is posted
+        counts = collections.Counter(vals)
+        top = max(counts.values())
+        modes = sorted(v for v, n in counts.items() if n == top)
+        if len(modes) == 1:
+            return modes[0]
+        # A dead-even split is a genuine pick-'em with no consensus line. Break
+        # it with the moneyline rather than arbitrarily: the favourite is the
+        # side that lays the puck line.
+        if prefer_negative is True:
+            return min(modes)
+        if prefer_negative is False:
+            return max(modes)
+        return min(modes, key=lambda v: (abs(v - med), v))
+
+    _hm, _am = _median(home_ml), _median(away_ml)
+    _home_fav = None if (_hm is None or _am is None) else (_hm < _am)
+    sp_line = _posted_consensus(spreads, prefer_negative=_home_fav)
+    tot_line = _posted_consensus(totals)
     return {
         'spread': sp_line,
         'total': tot_line,
