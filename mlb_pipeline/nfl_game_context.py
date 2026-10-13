@@ -2235,7 +2235,14 @@ def _enrich_nfl_qb_home_away_splits(rows: list) -> None:
     try:
         r = requests.get(
             f'{SB}/rest/v1/nfl_qb_home_away_splits',
-            headers=SB_READ,
+            # Same undefined-name bug as the rest-days lookback: SB_READ
+            # does not exist in this module. This enrichment has also never
+            # run. It is superseded in practice by
+            # load_qb_home_road_splits(), which derives the same splits from
+            # nfl_game_results and does work — and nfl_qb_home_away_splits
+            # holds 0 rows — but a call that always raises should not look
+            # like a call that found nothing.
+            headers=H_READ,
             params={
                 'qb_id': f'in.({",".join(qb_ids)})',
                 'select': 'qb_id,home_starts,home_wins,road_starts,road_wins,'
@@ -2302,9 +2309,27 @@ def _enrich_nfl_rest_days(rows: list) -> None:
         earliest = min((min(v) for v in team_dates.values() if v), default=None)
         if earliest:
             lookback = (earliest - timedelta(days=30)).isoformat()
-            r = requests.get(f'{SB}/rest/v1/nfl_game_results', headers=SB_READ,
+            # ══ 2026-10-12 · THIS LINE NEVER RAN ══
+            # It read SB_READ, which does not exist in this module (the
+            # header dict is H_READ). Every call raised NameError straight
+            # into the bare `except Exception: pass` below, so the lookback
+            # never happened, team_dates held only THIS slate's dates, and
+            # every `prior` list came back empty — home_rest/away_rest None
+            # on every row, on every run, since 2026-08-22.
+            #
+            # The five signals this function's docstring claims to close
+            # (nfl_rest_advantage_home/_away, nfl_home_rest_edge_2plus,
+            # nfl_away_rest_edge_2plus, nfl_short_week_thursday_fade) have
+            # therefore never had data. The 180 rows that DO carry home_rest
+            # were written by the one-off backfill_nfl_result_weather.py,
+            # which is not in any workflow — so the column looked 92.8%
+            # healthy while the code that maintains it was inert.
+            r = requests.get(f'{SB}/rest/v1/nfl_game_results', headers=H_READ,
                              params={'game_date': f'gte.{lookback}',
-                                     'select': 'game_date,home_team,away_team'}, timeout=15)
+                                     'select': 'game_date,home_team,away_team',
+                                     # No limit here meant PostgREST's default
+                                     # cap silently truncated the lookback.
+                                     'limit': '5000'}, timeout=30)
             if r.status_code == 200:
                 for h in r.json() or []:
                     d = h.get('game_date')
@@ -2314,8 +2339,12 @@ def _enrich_nfl_rest_days(rows: list) -> None:
                     for team in (h.get('home_team'), h.get('away_team')):
                         if team:
                             team_dates.setdefault(team, set()).add(d)
-    except Exception:
-        pass  # non-fatal — proceed with just current-slate dates
+    except Exception as _e:                                    # noqa: BLE001
+        # Non-fatal, but NOT silent. A bare `pass` here is what hid the
+        # SB_READ NameError above for seven weeks: the enrichment reported
+        # success, wrote None, and five signals sat enabled with no data.
+        print(f'  ⚠ rest-days lookback failed ({type(_e).__name__}: {_e}) — '
+              f'rest will be None on this slate')
 
     for r in rows:
         d = r.get('game_date')
