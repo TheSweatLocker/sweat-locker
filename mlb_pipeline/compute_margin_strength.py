@@ -189,7 +189,17 @@ def _season_start(sport: str, season: int) -> str:
     return f'{season}-08-01'
 
 
-def load_games(sport: str, season=None) -> list[dict]:
+def load_games(sport: str, season=None, include_unplayed: bool = False) -> list[dict]:
+    """Normalised games for a sport.
+
+    `include_unplayed` (2026-10-13, default False so every existing caller is
+    unchanged) also returns SCHEDULED fixtures, with margin/total None. The
+    ratings code must never see those — a game with no score cannot inform a
+    rating — but build_feature_history needs them as TARGETS: the features for
+    an upcoming game are fully defined from prior games, and without them the
+    table holds only history and can never support a forward pick. That gap
+    was caught by shadow_totals_candidates firing 0 of 193 NFL games.
+    """
     tbl = RESULTS[sport]
     params = {'select': '*'}
     if season is not None:
@@ -213,7 +223,10 @@ def load_games(sport: str, season=None) -> list[dict]:
     for g in rows:
         hs, as_ = _f(g.get('home_score')), _f(g.get('away_score'))
         h, a = g.get('home_team'), g.get('away_team')
-        if hs is None or as_ is None or not h or not a:
+        if not h or not a:
+            continue
+        unplayed = (hs is None or as_ is None)
+        if unplayed and not include_unplayed:
             continue
         # close_spread is the HOME handicap in every sport EXCEPT NFL, where it
         # is the AWAY line — verified on n=7,325 (project_close_spread_sign_bug_914).
@@ -223,7 +236,9 @@ def load_games(sport: str, season=None) -> list[dict]:
         home_line = None
         if cs is not None:
             home_line = -cs if sport == 'NFL' else cs
-        out.append({'home': h, 'away': a, 'margin': hs - as_,
+        out.append({'home': h, 'away': a,
+                    'margin': (None if unplayed else hs - as_),
+                    'unplayed': unplayed,
                     'date': g.get('game_date'), 'season': g.get('season'),
                     'neutral': bool(g.get('neutral_site')),
                     'home_line': home_line,
@@ -234,7 +249,7 @@ def load_games(sport: str, season=None) -> list[dict]:
                     # callers read by name and ignore it.
                     'game_id': g.get('game_id'),
                     'close_total': _f(g.get('close_total')),
-                    'total': (hs + as_)})
+                    'total': (None if unplayed else hs + as_)})
     return out
 
 

@@ -108,6 +108,8 @@ def team_history(games: list[dict]) -> dict:
     """{team: [game dicts, chronological]} from that team's own perspective."""
     per = collections.defaultdict(list)
     for g in games:
+        if g.get('unplayed') or g.get('margin') is None:
+            continue            # a game with no score cannot be history
         hl = g.get('home_line')
         resid_home = (g['margin'] + hl) if hl is not None else None
         for team, opp, margin, resid, at_home in (
@@ -155,6 +157,40 @@ def team_features(hist: list[dict], as_of: str, rating: dict,
     for w in FORM_WINDOWS:
         f[f'last{w}_margin'] = _mean([g['margin'] for g in past[-w:]])
 
+    # ══ 2026-10-13 · SCORING / TOTALS BLOCK ══
+    # The docstring claimed pf_pg, pa_pg and ou_overs/unders from the first
+    # commit and NONE of them were computed — the per-team history entries
+    # carried `total` and `close_total` and nothing read them. A docstring
+    # asserting a feature that does not exist is the same defect class as a
+    # comment asserting a measurement, and it was in a brand-new file.
+    #
+    # Points for/against are recovered from (total, margin) rather than
+    # re-reading scores, so there is still one loader:
+    #     pf = (total + team_margin) / 2      pa = (total - team_margin) / 2
+    # which holds for either side because team_margin is already signed from
+    # that team's perspective.
+    scored = [g for g in past if g.get('total') is not None]
+    if scored:
+        f['pf_pg'] = _mean([(g['total'] + g['margin']) / 2 for g in scored])
+        f['pa_pg'] = _mean([(g['total'] - g['margin']) / 2 for g in scored])
+        f['avg_total'] = _mean([g['total'] for g in scored])
+        f['last5_total'] = _mean([g['total'] for g in scored[-5:]])
+
+    # O/U record and the TOTAL residual — how much a team's games have been
+    # beating the number. This is the totals analogue of resid_l5, and it is
+    # the input a totals model actually needs.
+    t_priced = [g for g in past
+                if g.get('total') is not None and g.get('close_total') is not None]
+    f['total_games'] = len(t_priced)
+    if t_priced:
+        f['ou_overs'] = sum(1 for g in t_priced if g['total'] > g['close_total'])
+        f['ou_unders'] = sum(1 for g in t_priced if g['total'] < g['close_total'])
+        f['total_resid_mean'] = _mean([g['total'] - g['close_total']
+                                       for g in t_priced])
+        f['total_resid_l5'] = _mean([g['total'] - g['close_total']
+                                     for g in t_priced[-5:]])
+        f['avg_close_total'] = _mean([g['close_total'] for g in t_priced])
+
     # Rest: days since this team last played. Derived, not read, so it exists
     # on every sport and season rather than only where a feed populated it.
     try:
@@ -198,7 +234,12 @@ def build(sport: str, since_season=None, quiet: bool = False,
     """`until` truncates the INPUT games to that date — used by --leak-test to
     prove the output does not depend on games that had not happened yet."""
     cfg = SPORT_CFG[sport]
-    games = clean_games(sport, load_games(sport), quiet=True)
+    # TARGETS include scheduled fixtures; HISTORY never does. The features for
+    # an upcoming game are fully defined from earlier games, and without these
+    # rows the table could only ever describe the past — shadow_totals_candidates
+    # fired on 0 of 193 upcoming NFL games before this.
+    games = clean_games(sport, load_games(sport, include_unplayed=True),
+                        quiet=True)
     games = [g for g in games if g.get('date')]
     if until:
         games = [g for g in games if str(g['date'])[:10] <= until]
@@ -227,7 +268,10 @@ def build(sport: str, since_season=None, quiet: bool = False,
         # ~7.3k fits for NFL to produce identical numbers.
         fed_rows = 0
         for d in dates:
-            prior = [g for g in sg if str(g['date'])[:10] < d]
+            # Scheduled fixtures are excluded from the RATING input as well as
+            # from the history — fit_srs would read margin=None.
+            prior = [g for g in sg if str(g['date'])[:10] < d
+                     and not g.get('unplayed') and g.get('margin') is not None]
             rating = fit_srs(prior, cfg) if prior else {}
             sos = sos_from(prior, rating) if prior else {}
             for g in (x for x in sg if str(x['date'])[:10] == d):
