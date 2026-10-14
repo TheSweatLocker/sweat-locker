@@ -98,3 +98,17 @@ content/*_breakdown.txt
 mlb_pipeline/_chain_failures/
 mlb_pipeline/_pbp_cache/
 .gamelog_cache/
+
+# 2026-10-14 — gaps that let 266 scratch/cache files into commit 99979287.
+# The enumerated `mlb_pipeline/_*.{txt,csv,json}` rules above missed .log and
+# .md, and nothing covered the pitcher cache or the _analysis dump dir, so a
+# `git add -A mlb_pipeline/` swept all of it in alongside a 16-line fix.
+# Deliberately NOT a blanket `mlb_pipeline/_*`: legitimately tracked
+# `_`-prefixed .py files predate the scratch convention and a blanket rule
+# would misrepresent them as ignored.
+mlb_pipeline/.pitcher_cache/
+mlb_pipeline/_analysis/
+mlb_pipeline/_*.log
+mlb_pipeline/_*.md
+mlb_pipeline/_*.jsonl
+mlb_pipeline/audit_phase2_recal_dryrun_*.json

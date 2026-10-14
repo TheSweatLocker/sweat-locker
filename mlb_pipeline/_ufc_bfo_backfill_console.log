@@ -1,9 +1,0 @@
-=== UFC BFO historical odds backfill · 2026-08-20T02:31:42.219552+00:00 ===
-  ufc_fight_results total: 1115
-  distinct events: 92
-  event 25/92 · matched 291/301 fights · 0 no-URL · 0 zero-match · DB wrote 301 (disabled=False)
-  event 50/92 · matched 577/604 fights · 0 no-URL · 1 zero-match · DB wrote 604 (disabled=False)
-  event 75/92 · matched 862/914 fights · 0 no-URL · 1 zero-match · DB wrote 914 (disabled=False)
-  event 92/92 · matched 1058/1115 fights · 0 no-URL · 1 zero-match · DB wrote 1115 (disabled=False)
-
-=== done · 2026-08-20T03:22:53.119413+00:00 · report: _ufc_bfo_backfill_report_2026-08-19.md ===
