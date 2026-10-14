@@ -350,7 +350,7 @@ def patch_game(game_id: str, patch: dict, dry_run: bool = False) -> bool:
         print(f'  [DRY] {game_id} ← {patch}')
         return True
     r = requests.patch(
-        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json=patch, timeout=15,
     )
     if r.status_code not in (200, 204):
@@ -376,7 +376,7 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> int:
               ' it means NO weather was written.')
         return 1
     if game_id:
-        r = requests.get(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
+        r = requests.get(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
                          headers=H_READ, timeout=15)
         games = r.json() if r.status_code == 200 else []
     else:

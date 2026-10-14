@@ -198,13 +198,13 @@ def _write_panel(game_id, blob: dict) -> bool:
         'panel_pred_spread': blob.get('panel_projected_margin'),
     }
     r = requests.patch(
-        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json=payload, timeout=15)
     if r.status_code not in (200, 204):
         # Retry without top-level fields in case schema lacks them (pre-migration)
         if r.status_code == 400 and ('panel_pred_total' in (r.text or '') or 'panel_pred_spread' in (r.text or '')):
             r = requests.patch(
-                f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
+                f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
                 headers=H_WRITE, json={'panel_prediction': blob}, timeout=15)
             if r.status_code in (200, 204):
                 return True

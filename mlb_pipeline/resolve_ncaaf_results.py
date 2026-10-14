@@ -478,7 +478,7 @@ def apply_patches(patches: list, dry_run: bool = False) -> int:
                 print(f'  ⚠ upsert {gid} failed {r.status_code}: {r.text[:120]}')
         else:
             r = requests.patch(
-                f'{SB}/rest/v1/ncaaf_game_results?game_id=eq.{gid}',
+                f'{SB}/rest/v1/ncaaf_game_results?game_id=eq.{requests.utils.quote(str(gid), safe="")}',
                 headers=H_WRITE, json=payload, timeout=15,
             )
             if r.status_code in (200, 201, 204):

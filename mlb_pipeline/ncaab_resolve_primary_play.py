@@ -357,7 +357,7 @@ def _write(game_id, result: dict) -> bool:
         'primary_play': result['primary_play'],
     }
     r = requests.patch(
-        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json=payload, timeout=15)
     return r.status_code in (200, 204)
 

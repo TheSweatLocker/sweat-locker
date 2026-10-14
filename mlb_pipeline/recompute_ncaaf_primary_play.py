@@ -154,7 +154,7 @@ def patch_pp(game_id: str, pp: dict) -> bool:
                'updated_at': datetime.now(timezone.utc).isoformat()}
     for attempt in range(3):
         try:
-            r = requests.patch(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
+            r = requests.patch(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
                                headers=H_W, json=payload, timeout=30)
             if r.status_code in (200, 201, 204): return True
         except requests.exceptions.RequestException:

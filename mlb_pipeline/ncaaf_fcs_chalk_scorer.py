@@ -119,7 +119,7 @@ def patch_game(game_id: str, patch: dict, dry_run: bool = False) -> bool:
         print(f'  [DRY] {game_id}: {patch}')
         return True
     r = requests.patch(
-        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json=patch, timeout=15,
     )
     return r.status_code in (200, 204)

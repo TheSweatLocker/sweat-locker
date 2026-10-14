@@ -107,7 +107,7 @@ def run(target_season: Optional[int] = None, dry_run: bool = False):
         if dry_run:
             print(f'  [DRY] {g["game_id"]}: {patch}'); patched += 1; continue
         pr = requests.patch(
-            f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{g["game_id"]}',
+            f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(g["game_id"]), safe="")}',
             headers=H_WRITE, json=patch, timeout=15,
         )
         if pr.status_code in (200, 204): patched += 1

@@ -1,0 +1,394 @@
+{
+  "snapshot_at_utc": "2026-05-30T03:00:00Z",
+  "game_date": "2026-05-29",
+  "context": "Phase 2 (HA/ER/Outs/BB) recalibration shipped tonight, deferred to tomorrow per user request. This snapshot captures (1) tonights frozen published prop state, (2) recal deltas for the 3 cases user flagged live where the book line was known.",
+  "why_no_full_dryrun": "Odds API only serves lines for upcoming games. At 11pm ET tonight, tonights pitchers had already played or were in progress. Fetched lines were for 5/30 pitchers, not the 5/29 props in scope. Manual book lines below cover the 3 cases user flagged live.",
+  "manual_book_lines_audited": [
+    {
+      "player": "max meyer",
+      "prop_type": "ha_under",
+      "book_line": 4.5,
+      "projection": 3.6
+    },
+    {
+      "player": "michael lorenzen",
+      "prop_type": "er_over",
+      "book_line": 3.5,
+      "projection": 4.0
+    },
+    {
+      "player": "carlos rodón",
+      "prop_type": "ha_under",
+      "book_line": 4.5,
+      "projection": 4.2
+    }
+  ],
+  "tier_shifts_with_manual_lines": 3,
+  "deltas": [
+    {
+      "player": "Max Meyer",
+      "prop_type": "ha_under",
+      "matchup": "Miami Marlins @ New York Mets",
+      "old_line": 5.5,
+      "new_line": 4.5,
+      "old_conv": 91,
+      "new_conv": 68,
+      "old_tier": "PRIME",
+      "new_tier": "STRONG",
+      "edge_at_book": 0.9,
+      "multiplier": 0.75,
+      "recal_note": "Book Hits Allowed Under 4.5 vs proj 3.6 = +0.9 H edge — thin edge. Conviction 91 → 68 (×0.75)."
+    },
+    {
+      "player": "Michael Lorenzen",
+      "prop_type": "er_over",
+      "matchup": "San Francisco Giants @ Colorado Rockies",
+      "old_line": 2.5,
+      "new_line": 3.5,
+      "old_conv": 86,
+      "new_conv": 77,
+      "old_tier": "PRIME",
+      "new_tier": "STRONG",
+      "edge_at_book": 0.5,
+      "multiplier": 0.9,
+      "recal_note": "Book ER Over 3.5 vs proj 4.0 = +0.5 ER edge — moderate edge. Conviction 86 → 77 (×0.90)."
+    },
+    {
+      "player": "Carlos Rodón",
+      "prop_type": "ha_under",
+      "matchup": "New York Yankees @ Athletics",
+      "old_line": 5.5,
+      "new_line": 4.5,
+      "old_conv": 80,
+      "new_conv": 44,
+      "old_tier": "PRIME",
+      "new_tier": "LEAN",
+      "edge_at_book": 0.3,
+      "multiplier": 0.55,
+      "recal_note": "Book Hits Allowed Under 4.5 vs proj 4.2 = +0.3 H edge — minimal edge. Conviction 80 → 44 (×0.55). · Promoted to LEAN — thin but positive edge at book."
+    }
+  ],
+  "frozen_published_props_count": 32,
+  "frozen_published_props": [
+    {
+      "player": "Max Meyer",
+      "prop_type": "ha_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 91,
+      "tier": "PRIME",
+      "matchup": "Miami Marlins @ New York Mets",
+      "direction": "under"
+    },
+    {
+      "player": "Michael Lorenzen",
+      "prop_type": "er_over",
+      "prop_line": 2.5,
+      "book_line": null,
+      "conviction": 86,
+      "tier": "PRIME",
+      "matchup": "San Francisco Giants @ Colorado Rockies",
+      "direction": "over"
+    },
+    {
+      "player": "Marcus Semien",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 84,
+      "tier": "STRONG",
+      "matchup": "Miami Marlins @ New York Mets",
+      "direction": "under"
+    },
+    {
+      "player": "Jeff McNeil",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 84,
+      "tier": "STRONG",
+      "matchup": "New York Yankees @ Athletics",
+      "direction": "under"
+    },
+    {
+      "player": "José Fermín",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 84,
+      "tier": "STRONG",
+      "matchup": "Chicago Cubs @ St. Louis Cardinals",
+      "direction": "under"
+    },
+    {
+      "player": "Thomas Saggese",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 84,
+      "tier": "STRONG",
+      "matchup": "Chicago Cubs @ St. Louis Cardinals",
+      "direction": "under"
+    },
+    {
+      "player": "Mark Vientos",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 83,
+      "tier": "STRONG",
+      "matchup": "Miami Marlins @ New York Mets",
+      "direction": "under"
+    },
+    {
+      "player": "Michael Lorenzen",
+      "prop_type": "outs_under",
+      "prop_line": 17.5,
+      "book_line": null,
+      "conviction": 82,
+      "tier": "PRIME",
+      "matchup": "San Francisco Giants @ Colorado Rockies",
+      "direction": "under"
+    },
+    {
+      "player": "Michael Lorenzen",
+      "prop_type": "ha_over",
+      "prop_line": 6.5,
+      "book_line": null,
+      "conviction": 82,
+      "tier": "PRIME",
+      "matchup": "San Francisco Giants @ Colorado Rockies",
+      "direction": "over"
+    },
+    {
+      "player": "Erick Fedde",
+      "prop_type": "ks_under",
+      "prop_line": 4.5,
+      "book_line": null,
+      "conviction": 81,
+      "tier": "STRONG",
+      "matchup": "Detroit Tigers @ Chicago White Sox",
+      "direction": "under"
+    },
+    {
+      "player": "Michael Lorenzen",
+      "prop_type": "ks_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 81,
+      "tier": "STRONG",
+      "matchup": "San Francisco Giants @ Colorado Rockies",
+      "direction": "under"
+    },
+    {
+      "player": "Justin Wrobleski",
+      "prop_type": "ks_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 81,
+      "tier": "STRONG",
+      "matchup": "Philadelphia Phillies @ Los Angeles Dodgers",
+      "direction": "under"
+    },
+    {
+      "player": "Andre Pallante",
+      "prop_type": "ks_under",
+      "prop_line": 6.5,
+      "book_line": null,
+      "conviction": 81,
+      "tier": "STRONG",
+      "matchup": "Chicago Cubs @ St. Louis Cardinals",
+      "direction": "under"
+    },
+    {
+      "player": "Chris Paddack",
+      "prop_type": "ks_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 81,
+      "tier": "STRONG",
+      "matchup": "Atlanta Braves @ Cincinnati Reds",
+      "direction": "under"
+    },
+    {
+      "player": "Carlos Rodón",
+      "prop_type": "ha_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 80,
+      "tier": "PRIME",
+      "matchup": "New York Yankees @ Athletics",
+      "direction": "under"
+    },
+    {
+      "player": "Alex Freeland",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 80,
+      "tier": "STRONG",
+      "matchup": "Philadelphia Phillies @ Los Angeles Dodgers",
+      "direction": "under"
+    },
+    {
+      "player": "Jorge Mateo",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 80,
+      "tier": "STRONG",
+      "matchup": "Atlanta Braves @ Cincinnati Reds",
+      "direction": "over"
+    },
+    {
+      "player": "Kyle Isbel",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 78,
+      "tier": "STRONG",
+      "matchup": "Kansas City Royals @ Texas Rangers",
+      "direction": "under"
+    },
+    {
+      "player": "Max Meyer",
+      "prop_type": "er_under",
+      "prop_line": 2.5,
+      "book_line": null,
+      "conviction": 78,
+      "tier": "STRONG",
+      "matchup": "Miami Marlins @ New York Mets",
+      "direction": "under"
+    },
+    {
+      "player": "Michael Harris II",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 78,
+      "tier": "STRONG",
+      "matchup": "Atlanta Braves @ Cincinnati Reds",
+      "direction": "over"
+    },
+    {
+      "player": "Jonathan Aranda",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 77,
+      "tier": "STRONG",
+      "matchup": "Los Angeles Angels @ Tampa Bay Rays",
+      "direction": "over"
+    },
+    {
+      "player": "Masyn Winn",
+      "prop_type": "hits_under",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 76,
+      "tier": "STRONG",
+      "matchup": "Chicago Cubs @ St. Louis Cardinals",
+      "direction": "under"
+    },
+    {
+      "player": "Stephen Kolek",
+      "prop_type": "ha_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 75,
+      "tier": "PRIME",
+      "matchup": "Kansas City Royals @ Texas Rangers",
+      "direction": "under"
+    },
+    {
+      "player": "Matt Olson",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 75,
+      "tier": "STRONG",
+      "matchup": "Atlanta Braves @ Cincinnati Reds",
+      "direction": "over"
+    },
+    {
+      "player": "Trevor Rogers",
+      "prop_type": "er_over",
+      "prop_line": 2.5,
+      "book_line": null,
+      "conviction": 74,
+      "tier": "STRONG",
+      "matchup": "Toronto Blue Jays @ Baltimore Orioles",
+      "direction": "over"
+    },
+    {
+      "player": "Ernie Clement",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 74,
+      "tier": "STRONG",
+      "matchup": "Toronto Blue Jays @ Baltimore Orioles",
+      "direction": "over"
+    },
+    {
+      "player": "Trevor Rogers",
+      "prop_type": "ks_under",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 73,
+      "tier": "STRONG",
+      "matchup": "Toronto Blue Jays @ Baltimore Orioles",
+      "direction": "under"
+    },
+    {
+      "player": "Yandy Díaz",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 72,
+      "tier": "STRONG",
+      "matchup": "Los Angeles Angels @ Tampa Bay Rays",
+      "direction": "over"
+    },
+    {
+      "player": "Taj Bradley",
+      "prop_type": "ks_over",
+      "prop_line": 5.5,
+      "book_line": null,
+      "conviction": 71,
+      "tier": "STRONG",
+      "matchup": "Minnesota Twins @ Pittsburgh Pirates",
+      "direction": "over"
+    },
+    {
+      "player": "Julio Rodríguez",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 71,
+      "tier": "LEAN",
+      "matchup": "Arizona Diamondbacks @ Seattle Mariners",
+      "direction": "over"
+    },
+    {
+      "player": "Lucas Giolito",
+      "prop_type": "bb_over",
+      "prop_line": 2.5,
+      "book_line": null,
+      "conviction": 68,
+      "tier": "STRONG",
+      "matchup": "San Diego Padres @ Washington Nationals",
+      "direction": "over"
+    },
+    {
+      "player": "Willson Contreras",
+      "prop_type": "hits_over",
+      "prop_line": 0.5,
+      "book_line": null,
+      "conviction": 68,
+      "tier": "LEAN",
+      "matchup": "Boston Red Sox @ Cleveland Guardians",
+      "direction": "over"
+    }
+  ]
+}

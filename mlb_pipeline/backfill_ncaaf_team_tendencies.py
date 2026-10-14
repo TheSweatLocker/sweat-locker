@@ -195,7 +195,7 @@ def write_to_today(tendencies: dict, game_date: str, dry_run: bool = False) -> i
 
         if dry_run: written += 1; continue
         pr = requests.patch(
-            f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{g["game_id"]}',
+            f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(g["game_id"]), safe="")}',
             headers=H_WRITE, json=patch, timeout=15)
         if pr.status_code in (200, 204): written += 1
         else: print(f'    ✗ patch failed: {pr.status_code} {pr.text[:120]}')

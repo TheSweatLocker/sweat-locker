@@ -92,7 +92,7 @@ def patch_game(game_id: str, home_to: Optional[int], away_to: Optional[int],
         print(f'  [DRY] {game_id}: home={home_to} away={away_to}')
         return True
     r = requests.patch(
-        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json=patch, timeout=15,
     )
     return r.status_code in (200, 204)

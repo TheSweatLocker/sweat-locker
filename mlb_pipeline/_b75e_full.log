@@ -1,0 +1,64 @@
+  ✓ Loaded MLB prop LR model v2026-09-28T19:19 (23 features, test_acc 61.9%)
+=== B75e · re-score pre-09-22 props without the L5 leak ===
+
+  24057 graded pre-2026-09-22 MLB props
+  23995 map to a game-log stat · 62 do not (2 families)
+      unmapped: {'batter_ks_under': 33, 'batter_ks_over': 29}
+  788 distinct (player, group) logs to fetch/cache
+
+    …100/788 logs  (38s)
+    …200/788 logs  (96s)
+    …300/788 logs  (129s)
+    …400/788 logs  (155s)
+    …500/788 logs  (184s)
+    …600/788 logs  (205s)
+    …700/788 logs  (228s)
+  logs ready (253s)
+
+  21209 props re-scored with a leak-free lookback (needed >=5 prior games and a price)
+
+  BASELINE on this population:
+    all re-scored props        10249-10960  hit  48.3%  mkt  48.5%  edge  -0.2  n=21209  ±0.7
+    de-vigged price available on 21140/21209; the rest use the vigged side (a harder bar for us)
+
+  THE LEAK, shown directly — stored l5_hit_count:
+    leaked L5 = 0              52-2026  hit   2.5%  mkt  22.5%  edge -20.0  n=2078   ±2.2  loses
+    leaked L5 = 1              561-1737  hit  24.4%  mkt  33.6%  edge  -9.2  n=2298   ±2.1  loses
+    leaked L5 = 2              897-1605  hit  35.9%  mkt  46.7%  edge -10.8  n=2502   ±2.0  loses
+    leaked L5 = 3              2270-1638  hit  58.1%  mkt  55.5%  edge  +2.5  n=3908   ±1.6  EDGE
+    leaked L5 = 4              1778-502  hit  78.0%  mkt  57.9%  edge +20.1  n=2280   ±2.1  EDGE
+    leaked L5 = 5              505-22  hit  95.8%  mkt  60.6%  edge +35.2  n=527    ±4.4  EDGE
+
+  SAME FEATURE, recomputed honestly (games strictly before):
+    clean  L5 = 0              506-2131  hit  19.2%  mkt  23.8%  edge  -4.6  n=2637   ±1.9  loses
+    clean  L5 = 1              967-2219  hit  30.4%  mkt  34.8%  edge  -4.5  n=3186   ±1.8  loses
+    clean  L5 = 2              1601-1795  hit  47.1%  mkt  47.7%  edge  -0.6  n=3396   ±1.7
+    clean  L5 = 3              3296-2694  hit  55.0%  mkt  54.2%  edge  +0.8  n=5990   ±1.3
+    clean  L5 = 4              2612-1604  hit  62.0%  mkt  58.4%  edge  +3.6  n=4216   ±1.5  EDGE
+    clean  L5 = 5              1267-517  hit  71.0%  mkt  68.4%  edge  +2.6  n=1784   ±2.4  EDGE
+
+  clean L10:
+    clean L10 0-2              1055-3789  hit  21.8%  mkt  26.5%  edge  -4.8  n=4844   ±1.4  loses
+    clean L10 3-4              1767-2264  hit  43.8%  mkt  44.6%  edge  -0.7  n=4031   ±1.6
+    clean L10 5-6              3399-2920  hit  53.8%  mkt  53.1%  edge  +0.7  n=6319   ±1.3
+    clean L10 7-8              2980-1659  hit  64.2%  mkt  61.1%  edge  +3.2  n=4639   ±1.5  EDGE
+    clean L10 9-10             1048-328  hit  76.2%  mkt  73.8%  edge  +2.3  n=1376   ±2.7  EDGE
+
+  clean season hit rate:
+    clean season 0%-30%        946-3762  hit  20.1%  mkt  24.9%  edge  -4.8  n=4708   ±1.5  loses
+    clean season 30%-45%       1657-2382  hit  41.0%  mkt  41.8%  edge  -0.8  n=4039   ±1.6
+    clean season 45%-55%       1494-1510  hit  49.7%  mkt  50.0%  edge  -0.3  n=3004   ±1.8
+    clean season 55%-70%       3131-2158  hit  59.2%  mkt  57.8%  edge  +1.4  n=5289   ±1.4
+    clean season 70%-101%      3021-1148  hit  72.5%  mkt  68.8%  edge  +3.7  n=4169   ±1.5  EDGE
+
+  the LIVE tier on the same rows, for comparison:
+    PRIME                      1604-524  hit  75.4%  mkt  57.9%  edge +17.5  n=2128   ±2.2  EDGE
+    STRONG                     593-421  hit  58.5%  mkt  52.1%  edge  +6.3  n=1014   ±3.1  EDGE
+    LEAN                       2000-1556  hit  56.2%  mkt  54.3%  edge  +1.9  n=3556   ±1.7
+    COVERAGE                   560-481  hit  53.8%  mkt  52.2%  edge  +1.6  n=1041   ±3.1
+    SKIP                       5492-7978  hit  40.8%  mkt  44.9%  edge  -4.1  n=13470  ±0.9  loses
+
+========================================================================
+  stored vs clean L5 agree on 7788/13593 (57%) — the gap is the leak
+  Read every row against the `mkt` column, not against 52.38%.
+  A bucket that hits 70% on 70%-implied chalk is worth nothing.

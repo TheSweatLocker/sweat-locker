@@ -186,7 +186,7 @@ def _row_ratings(row: dict, fallback: dict) -> Optional[tuple]:
 
 def _write_mc(game_id, blob: dict) -> bool:
     r = requests.patch(
-        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{game_id}',
+        f'{SB}/rest/v1/ncaab_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
         headers=H_WRITE, json={'mc_probabilities': blob}, timeout=15)
     if r.status_code not in (200, 204):
         print(f'  ✗ write game {game_id}: {r.status_code} {r.text[:150]}')
