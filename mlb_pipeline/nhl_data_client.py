@@ -22,7 +22,7 @@ CLI (smoke tests):
   python nhl_data_client.py score 2026-10-07
 """
 from __future__ import annotations
-import argparse, csv, io, sys
+import argparse, csv, io, re, sys
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
@@ -360,33 +360,62 @@ def get_goalie_stats(goalie_name: str, season: int) -> Optional[dict]:
     except Exception:
         pass
 
-    # L5 SV% — need player_id first, then walk gameLog
+    # ══ L5 SV% · 2026-10-14 · THREE BUGS, ALL HIDDEN BY `except: pass` ══
+    # last5_sv_pct was NULL on 202 of 202 nhl_game_context rows since this was
+    # "actually implemented" on 2026-08-22. Traced live, every step failed:
+    #
+    #  1. WRONG ENDPOINT. api-web.nhle.com/v1/search/player returns HTTP 404 —
+    #     NHL moved player search to search.d3.nhle.com/api/v1/search/player.
+    #  2. ABBREVIATED NAMES. nhl_game_context stores goalies as 'L. Dostal',
+    #     'J. Oettinger'. Searching that literal string finds nothing; the
+    #     surname alone resolves uniquely.
+    #  3. WRONG SEASON SEGMENT. f'{season-1}{season % 100:02d}' builds '202526'
+    #     — six digits. The API wants eight: '20262027'.
+    #
+    # Verified after the fix: L. Dostal .8923, J. Oettinger .9439,
+    # B. Bussi .8710.
+    #
+    # The except now records WHY it failed instead of discarding it silently —
+    # a bare `except: pass` around the whole block is what let one dead
+    # endpoint, one name-format mismatch and one format-string bug survive two
+    # months unnoticed.
     try:
-        # NHL API search for player_id by name
-        sr = requests.get(
-            f'https://api-web.nhle.com/v1/search/player?q={requests.utils.quote(goalie_name)}&limit=5',
-            timeout=10)
+        # 'L. Dostal' -> 'Dostal'; a full name is left alone.
+        q = re.sub(r'^\s*[A-Za-z]\.\s*', '', str(goalie_name or '')).strip()
         pid = None
-        if sr.status_code == 200:
-            hits = sr.json() or []
-            for h in hits:
-                if h.get('positionCode') == 'G':
-                    pid = h.get('playerId') or h.get('id')
-                    break
+        if q:
+            sr = requests.get(
+                'https://search.d3.nhle.com/api/v1/search/player',
+                params={'culture': 'en-us', 'limit': '8', 'q': q,
+                        'active': 'true'}, timeout=10)
+            if sr.status_code == 200:
+                hits = sr.json() or []
+                for h in hits:
+                    if h.get('positionCode') == 'G':
+                        pid = h.get('playerId') or h.get('id')
+                        break
         if pid:
-            # Walk gameLog for the season
-            lg = requests.get(
-                f'https://api-web.nhle.com/v1/player/{pid}/game-log/{season-1}{season % 100:02d}/2',
-                timeout=10)
-            if lg.status_code == 200:
+            # Current season segment first, prior season as the fallback —
+            # early in a season a goalie may have no game log yet.
+            for seg in (f'{season}{season + 1}', f'{season - 1}{season}'):
+                lg = requests.get(
+                    f'https://api-web.nhle.com/v1/player/{pid}/game-log/'
+                    f'{seg}/2', timeout=10)
+                if lg.status_code != 200:
+                    continue
                 games = (lg.json() or {}).get('gameLog', [])[:5]
-                shots_faced = sum(int(g.get('shotsAgainst') or 0) for g in games)
-                goals_against = sum(int(g.get('goalsAgainst') or 0) for g in games)
+                shots_faced = sum(int(g.get('shotsAgainst') or 0)
+                                  for g in games)
+                goals_against = sum(int(g.get('goalsAgainst') or 0)
+                                    for g in games)
                 if shots_faced > 0:
-                    result['last5_sv_pct'] = round(1 - (goals_against / shots_faced), 4)
+                    result['last5_sv_pct'] = round(
+                        1 - (goals_against / shots_faced), 4)
                     result['last5_games'] = len(games)
-    except Exception:
-        pass
+                    break
+    except Exception as e:                                     # noqa: BLE001
+        print(f'    last5_sv_pct failed for {goalie_name!r}: '
+              f'{type(e).__name__}: {str(e)[:120]}')
 
     return result or None
 

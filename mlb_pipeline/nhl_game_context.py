@@ -71,6 +71,21 @@ NHL_NAME_ALIASES = {
 }
 
 
+def nkey(s) -> str:
+    """Normalised team key: fold accents, strip punctuation, apply renames.
+
+    2026-10-14: hoisted to module level. It was defined inside the odds-join
+    function, so the L10 scoring loader could not reach it and joined on RAW
+    names -- which is the same defect that cost St Louis all its odds and all
+    its tendencies on 10-13. nhl_game_results spells it 'St Louis Blues' and
+    nhl_game_context spells it 'St. Louis Blues'. One normaliser, one place.
+    """
+    s = unicodedata.normalize('NFKD', str(s or ''))
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r'[^a-z0-9]', '', s.lower())
+    return NHL_NAME_ALIASES.get(s, s)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Elo model apply (2026-08-17)
 # ═══════════════════════════════════════════════════════════════════════
@@ -218,32 +233,102 @@ def enrich_team_stats(rows: list[dict], season: int) -> None:
             row[f'{prefix}_high_danger_for'] = ta.get('high_danger_for')
             row[f'{prefix}_high_danger_against'] = ta.get('high_danger_against')
             row[f'{prefix}_5v5_cf'] = ta.get('corsi_for_pct')
-            # L10 GPG for offense-hot/cold signals
-            row[f'{prefix}_l10_goals_per_game'] = l10_gpg_cache.get(abbrev)
+            # L10 scoring form. Keyed on the normalised FULL name, not the
+            # abbrev: nhl_game_results has no abbrev column (which is why this
+            # was NULL for two months) and raw names disagree on St Louis.
+            _l10 = l10_gpg_cache.get(nkey(row.get(f'{prefix}_team'))) or {}
+            if _l10:
+                row[f'{prefix}_l10_goals_per_game'] = _l10.get('gf')
+                row[f'{prefix}_l10_goals_against_per_game'] = _l10.get('ga')
 
 
 def _load_l10_gpg_per_team() -> dict:
-    """Return {team_abbrev: avg_goals_per_game over last 10 completed games}.
-    Non-fatal on query miss."""
+    """{nkey(team): {'gf': goals-for pg, 'ga': goals-against pg}} over that
+    team's last 10 COMPLETED games.
+
+    ══ 2026-10-14 · THIS HAS RETURNED {} SINCE IT WAS WRITTEN ══
+    THE ACTUAL ROOT CAUSE WAS A TYPO: the request passed `headers=SB_READ`,
+    and SB_READ IS NOT DEFINED ANYWHERE IN THIS MODULE -- the canonical name is
+    H_READ, used five times elsewhere, and SB_READ appeared exactly once, here.
+    So every call raised NameError, and the bare `except: return {}` below
+    swallowed it. The wrong column names documented next were real too, but
+    execution never reached them. A bare except around a whole function body
+    turns a one-character typo into two months of silently NULL data.
+
+    The 2026-08-22 note on enrich_team_stats says this was added so
+    ctx.home_l10_goals_per_game would fire and revive four dead signals. It
+    never fired: the select asked for home_team_abbrev / away_team_abbrev, and
+    nhl_game_results HAS NO SUCH COLUMNS -- it carries full names in
+    home_team / away_team. PostgREST answers an explicit select on a missing
+    column with HTTP 400 ("column nhl_game_results.home_team_abbrev does not
+    exist"), the `if r.status_code != 200: return {}` swallowed it, and every
+    row got None for two months. The fix was written, shipped, and measured by
+    nobody. feedback_explicit_select_silent_blanks, exactly.
+
+    Three further defects fixed here:
+      * GOALS AGAINST was never computed at all, only goals-for, so
+        _tendency_bias's l10_goal_diff vote could never fire even with
+        goals-for populated -- it needs all four values.
+      * The join was on raw names. nhl_game_results spells it 'St Louis
+        Blues'; nhl_game_context spells it 'St. Louis Blues'. That is the
+        defect that cost St Louis all its odds and tendencies on 10-13, so
+        this keys on nkey() instead.
+      * `limit: 400` ordered by date desc covers roughly 25 nights of a
+        32-team league, which is not 10 games for every team early in a
+        season. Raised, and the per-team slice still takes the most recent 10.
+
+    A failure is now LOUD. Returning {} silently is what hid this.
+    """
+    from collections import defaultdict
     try:
-        r = requests.get(f'{SB}/rest/v1/nhl_game_results', headers=SB_READ,
-                         params={'select': 'home_team_abbrev,away_team_abbrev,home_score,away_score,game_date',
-                                 'order': 'game_date.desc',
-                                 'limit': '400'}, timeout=15)
-        if r.status_code != 200:
-            return {}
-        rows = r.json() or []
-        # per-team goals-scored in the games they played
-        from collections import defaultdict
-        team_recent_goals: dict = defaultdict(list)
-        for h in rows:
-            ha = h.get('home_team_abbrev'); aa = h.get('away_team_abbrev')
-            hs = h.get('home_score'); as_ = h.get('away_score')
-            if ha and hs is not None: team_recent_goals[ha].append(hs)
-            if aa and as_ is not None: team_recent_goals[aa].append(as_)
-        return {team: round(sum(goals[:10]) / min(10, len(goals)), 2)
-                for team, goals in team_recent_goals.items() if goals}
-    except Exception:
+        rows = []
+        off = 0
+        while True:
+            r = requests.get(
+                f'{SB}/rest/v1/nhl_game_results', headers=H_READ,
+                params={'select': 'home_team,away_team,home_score,'
+                                  'away_score,game_date',
+                        'order': 'game_date.desc',
+                        'limit': '1000', 'offset': str(off)}, timeout=30)
+            if r.status_code not in (200, 206):
+                print(f'  ⚠⚠ L10 load FAILED HTTP {r.status_code}: '
+                      f'{r.text[:180]} — l10_goals_* will be NULL and the '
+                      f'l10_goal_diff tendency vote cannot fire')
+                return {}
+            b = r.json() or []
+            rows += b
+            if len(b) < 1000 or len(rows) >= 4000:
+                break
+            off += 1000
+
+        per_team: dict = defaultdict(list)      # nkey -> [(gf, ga), ...]
+        for g in rows:
+            hs, as_ = g.get('home_score'), g.get('away_score')
+            if hs is None or as_ is None:       # unplayed game
+                continue
+            h, a = nkey(g.get('home_team')), nkey(g.get('away_team'))
+            if h:
+                per_team[h].append((float(hs), float(as_)))
+            if a:
+                per_team[a].append((float(as_), float(hs)))
+
+        out = {}
+        for team, games in per_team.items():
+            last10 = games[:10]                 # rows arrive date-desc
+            if not last10:
+                continue
+            n = len(last10)
+            out[team] = {
+                'gf': round(sum(x[0] for x in last10) / n, 2),
+                'ga': round(sum(x[1] for x in last10) / n, 2),
+                'n': n,
+            }
+        thin = sum(1 for v in out.values() if v['n'] < 10)
+        print(f'  L10 scoring form: {len(out)} teams from {len(rows)} result '
+              f'rows ({thin} with fewer than 10 completed games)')
+        return out
+    except Exception as e:                                     # noqa: BLE001
+        print(f'  ⚠⚠ L10 load raised {type(e).__name__}: {str(e)[:160]}')
         return {}
 
 
@@ -457,11 +542,7 @@ def enrich_market(rows: list[dict]) -> None:
     # the unaccented spelling. A rename ('Utah Hockey Club' → 'Utah Mammoth',
     # 83 historical rows) is a different word, not punctuation, so it needs the
     # alias map rather than normalisation.
-    def _nkey(s):
-        s = unicodedata.normalize('NFKD', str(s or ''))
-        s = ''.join(c for c in s if not unicodedata.combining(c))
-        s = re.sub(r'[^a-z0-9]', '', s.lower())
-        return NHL_NAME_ALIASES.get(s, s)
+    _nkey = nkey          # module-level since 2026-10-14; see nkey()
 
     by_key = {(str(x.get('game_date'))[:10], _nkey(x.get('home_team')),
                _nkey(x.get('away_team'))): x
