@@ -82,6 +82,33 @@ def load_training_data(seasons: list) -> 'pd.DataFrame':
     # Simpler: use pbp aggregated. Fall back to schedule-only features if too heavy.
     try:
         pbp = nfl.import_pbp_data(seasons, downcast=True)
+
+        # ══ 2026-10-14 · THIS IS WHY v4 HAS BEEN A CONSTANT SINCE 08-14 ══
+        # nflverse no longer ships `pass_epa` / `rush_epa` as pbp columns.
+        # The .agg() below named them, raised KeyError, and the `except` at the
+        # bottom of this block swallowed it and fell back to schedule-only
+        # features. Training then "succeeded" and saved a spread model whose
+        # feature_cols are 13 schedule/weather fields with NO team identity —
+        # so v4 could only ever emit league-average HFA. Measured on the rows
+        # it is still writing: sd 0.272, 6 distinct values, ZERO negative,
+        # v4_confidence 0.311 on every row.
+        #
+        # nfl_v4_inference.py:121-131 already derives these two from
+        # `play_type`. The trainer never got the same guard, so the two sides
+        # disagreed about what a feature vector contains and the model silently
+        # won.
+        if 'pass_epa' not in pbp.columns or 'rush_epa' not in pbp.columns:
+            if 'play_type' in pbp.columns:
+                pbp['pass_epa'] = pbp['epa'].where(pbp['play_type'] == 'pass')
+                pbp['rush_epa'] = pbp['epa'].where(pbp['play_type'] == 'run')
+                print('  derived pass_epa / rush_epa from play_type '
+                      '(nflverse no longer ships them)')
+            else:
+                pbp['pass_epa'] = pbp['epa']
+                pbp['rush_epa'] = pbp['epa']
+                print('  ⚠ no play_type either — pass/rush EPA both set to '
+                      'overall EPA')
+
         # Aggregate per (season, week, posteam) → offense EPA
         off_epa = (pbp.groupby(['season','week','posteam'])
                        .agg(off_epa=('epa','mean'),
@@ -91,19 +118,50 @@ def load_training_data(seasons: list) -> 'pd.DataFrame':
         # Rolling L4 per team over season
         off_epa = off_epa.sort_values(['posteam','season','week'])
         for col in ('off_epa','pass_epa','rush_epa'):
+            # ══ 2026-10-14 · .shift(1) IS THE WHOLE BALLGAME ══
+            # Without it, rolling(4) INCLUDES the current week, so week W's
+            # `off_epa_l4` carries week W's own EPA — the result of the very
+            # game being predicted. First retrain after fixing the
+            # feature-blindness scored spread MAE 7.48 against a market that
+            # manages about 10 on NFL margin, which is not a breakthrough, it
+            # is the outcome leaking into the features.
+            #
+            # It is also a train/serve skew: at inference the game has not
+            # been played, so build_current_epa() can only ever supply
+            # strictly-earlier weeks. Training on same-game EPA teaches the
+            # model to lean on a feature that is never there live.
             off_epa[f'{col}_l4'] = (off_epa.groupby(['posteam','season'])[col]
-                                          .transform(lambda s: s.rolling(4, min_periods=1).mean()))
+                                          .transform(lambda s: s.shift(1)
+                                                     .rolling(4, min_periods=1)
+                                                     .mean()))
         # Defense EPA: what team allowed while on defense
         def_epa = (pbp.groupby(['season','week','defteam'])
                        .agg(def_epa=('epa','mean'))
                        .reset_index())
         def_epa = def_epa.sort_values(['defteam','season','week'])
+        # Same shift on defence, same reason.
         def_epa['def_epa_l4'] = (def_epa.groupby(['defteam','season'])['def_epa']
-                                        .transform(lambda s: s.rolling(4, min_periods=1).mean()))
+                                        .transform(lambda s: s.shift(1)
+                                                   .rolling(4, min_periods=1)
+                                                   .mean()))
         print(f'  computed L4 EPA per team-week (off: {len(off_epa)} rows · def: {len(def_epa)} rows)')
     except Exception as e:
-        print(f'  ⚠ pbp aggregation failed: {e} — falling back to schedule-only features')
-        off_epa = pd.DataFrame(); def_epa = pd.DataFrame()
+        # ══ 2026-10-14 · NO MORE SILENT FALLBACK ══
+        # This except used to set off_epa/def_epa empty and carry on, which is
+        # how a spread model with no team identity got trained, saved and
+        # shipped. A model that cannot know who is playing is not a degraded
+        # model, it is a different and useless one, so failing to build team
+        # features is now fatal. Fix the cause or pass --allow-schedule-only
+        # deliberately, which also renames the output so it can never be
+        # mistaken for the real thing.
+        import traceback
+        traceback.print_exc(limit=4)
+        raise RuntimeError(
+            f'team EPA features could not be built ({type(e).__name__}: {e}). '
+            f'Refusing to train a feature-blind v4 — that is exactly how the '
+            f'2026-08-14 model shipped as a constant. Pass '
+            f'--allow-schedule-only only if you really want a schedule-only '
+            f'baseline.') from e
 
     # 3. Merge features into schedules
     schedules['home_short_week'] = (schedules['home_rest'] <= 4).astype(int)
@@ -160,8 +218,22 @@ FEATURE_COLS = [
     'div_game','wind','temp','is_dome','is_playoff','week','season',
 ]
 
+#: The features that let the model know WHO IS PLAYING. Without at least one
+#: of these, v4's remaining inputs are rest, weather, week and season, which
+#: carry exactly one signal — league-average home-field advantage — and the
+#: model collapses to a constant. The 2026-08-14 model shipped with none of
+#: them and has been emitting +1.5-always-HOME ever since, so their presence is
+#: now checked before anything is written to disk.
+TEAM_FEATURES = [
+    'home_off_epa_l4', 'away_off_epa_l4',
+    'home_def_epa_l4', 'away_def_epa_l4',
+    'home_pass_epa_l4', 'away_pass_epa_l4',
+    'home_rush_epa_l4', 'away_rush_epa_l4',
+]
 
-def train_and_save(df, out_dir: Path, dry_run: bool = False) -> dict:
+
+def train_and_save(df, out_dir: Path, dry_run: bool = False,
+                   allow_schedule_only: bool = False) -> dict:
     """Train two XGBRegressor models (spread, total), save .pkl each."""
     import numpy as np
     import pandas as pd
@@ -174,6 +246,28 @@ def train_and_save(df, out_dir: Path, dry_run: bool = False) -> dict:
     features_available = [c for c in FEATURE_COLS if c in df.columns]
     missing = [c for c in FEATURE_COLS if c not in df.columns]
     if missing: print(f'  ⚠ missing features (will be skipped): {missing}')
+
+    # ══ 2026-10-14 · A FEATURE-BLIND v4 MUST NOT REACH DISK ══
+    # This is the check whose absence let the 08-14 model ship. `missing` was
+    # printed as a warning, the 8 team-EPA features were dropped, and a model
+    # of rest+weather+week+season was saved under the name of a spread model.
+    team_have = [c for c in TEAM_FEATURES if c in features_available]
+    if not team_have:
+        if not allow_schedule_only:
+            raise RuntimeError(
+                'NONE of the team-strength features survived: '
+                f'{TEAM_FEATURES}. Only {features_available} are available, '
+                'which carry no team identity — the model would collapse to '
+                'league-average HFA, exactly as the 2026-08-14 model did '
+                '(sd 0.272, 6 distinct values, 0 negative). Refusing to save. '
+                'Pass --allow-schedule-only to build a deliberate '
+                'schedule-only baseline instead; it is written under a '
+                'different name so it can never be loaded as v4.')
+        print('  ⚠⚠ SCHEDULE-ONLY baseline requested — no team features. '
+              'Saving under *_schedule_only.pkl, NOT as v4.')
+    else:
+        print(f'  team-strength features present: {len(team_have)}/'
+              f'{len(TEAM_FEATURES)} → {team_have}')
     df = df.dropna(subset=features_available + ['spread_actual','total_actual']).copy()
     df['div_game'] = df.get('div_game', 0).fillna(0).astype(int) if 'div_game' in df.columns else 0
     print(f'  training on {len(df)} games ({len(features_available)} features)')
@@ -221,11 +315,19 @@ def train_and_save(df, out_dir: Path, dry_run: bool = False) -> dict:
         print(f'  {target_name}: MAE {mae:.2f} · RMSE {rmse:.2f} · n_val {len(y_val)}')
         if dry_run: continue
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f'nfl_v4_{target_name}.pkl'
+        # A schedule-only baseline is written under a DIFFERENT name so
+        # nfl_v4_inference.py can never load it as v4.
+        suffix = '_schedule_only' if not team_have else ''
+        path = out_dir / f'nfl_v4_{target_name}{suffix}.pkl'
         with open(path, 'wb') as f:
             pickle.dump({'model': model, 'feature_cols': features_available,
                          'trained_at': datetime.now(timezone.utc).isoformat(),
-                         'n_train': int(len(y_train)), 'metrics': metrics[target_name]}, f)
+                         'n_train': int(len(y_train)),
+                         'metrics': metrics[target_name],
+                         # so a feature-blind model can be spotted
+                         # without re-deriving it from feature_cols
+                         'team_features': team_have,
+                         'schedule_only': not team_have}, f)
         saved[target_name] = str(path)
         print(f'  saved → {path}')
 
@@ -240,13 +342,19 @@ def main():
         help='Directory to save .pkl files (relative to this script)')
     p.add_argument('--dry-run', action='store_true',
         help='Train + report metrics, but do not save .pkl')
+    p.add_argument('--allow-schedule-only', action='store_true',
+        help='Deliberately build a schedule-only baseline with NO team '
+             'features. Saves as nfl_v4_*_schedule_only.pkl so it can never '
+             'be loaded as v4. Without this flag, missing team features is '
+             'a hard failure.')
     args = p.parse_args()
 
     seasons = [int(s.strip()) for s in args.seasons.split(',')]
     out_dir = Path(__file__).parent / args.out_dir
 
     df = load_training_data(seasons)
-    result = train_and_save(df, out_dir, dry_run=args.dry_run)
+    result = train_and_save(df, out_dir, dry_run=args.dry_run,
+                            allow_schedule_only=args.allow_schedule_only)
     print(f'\n=== summary ===')
     print(json.dumps(result, indent=2))
 
