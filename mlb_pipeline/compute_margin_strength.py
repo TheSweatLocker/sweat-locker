@@ -232,7 +232,15 @@ def load_games(sport: str, season=None, include_unplayed: bool = False) -> list[
         # is the AWAY line — verified on n=7,325 (project_close_spread_sign_bug_914).
         # Getting this backwards silently inverts every cover, so it is resolved
         # here once rather than at each call site.
+        # NHL has no close_spread column at all — the puck line IS its spread
+        # and lives in close_puckline (home perspective, NEGATIVE = home
+        # favoured, same convention). Reading only close_spread returned None
+        # on every NHL game, so the whole market block went missing rather
+        # than erroring. This is the universal-vs-sport-specific case where
+        # the DATA MODEL genuinely differs, so it is resolved here once.
         cs = _f(g.get('close_spread'))
+        if cs is None and sport == 'NHL':
+            cs = _f(g.get('close_puckline'))
         home_line = None
         if cs is not None:
             home_line = -cs if sport == 'NFL' else cs

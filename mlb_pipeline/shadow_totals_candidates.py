@@ -59,12 +59,38 @@ try:
 except Exception:                                              # noqa: BLE001
     pass
 
+# ══ READ THIS BEFORE TREATING ANY OF THESE AS A FINDING ══
+# The audit was run across 6 sports, scoring ~65 features each and trying 5
+# thresholds per survivor. That is on the order of 48 graded rules. At a 5%
+# bar you would EXPECT roughly two or three to look good by chance, and the
+# strongest lifts measured here (+3 to +10pp over the direction control) are
+# exactly the size chance produces at that search width.
+#
+# NOT ONE of them cleared a bootstrap CI. Every single rule's interval
+# straddles zero:
+#   MLB   away_srs >= 0.281       -> UNDER  239/435 54.94%  CI[-3.7%, +12.5%]  lift +10.30pp
+#   NCAAF away_ou_unders >= 6     -> OVER   196/369 53.12%  CI[-8.1%, +11.4%]  lift  +9.39pp
+#   NFL   away_pa_pg >= 27.4      -> UNDER  138/252 54.76%  CI[-6.8%, +15.8%]  lift  +6.67pp
+#   MLB   away_last5_margin >= 2.2 -> UNDER 115/219 52.51%  CI[-12.1%,+11.4%]  lift  +5.90pp
+#   NBA   away_ats_l5_losses >= 2 -> UNDER  383/731 52.39%  CI[-7.0%, +6.8%]   lift  +4.47pp
+#   NCAAB win_pct_diff >= 0.217   -> OVER   301/572 52.62%  CI[-7.5%, +8.8%]   lift  +3.12pp
+#
+# A pattern worth naming rather than six independent discoveries: FIVE OF SIX
+# are AWAY-side features, and most point UNDER. A single away-side artefact
+# would produce exactly that, so these may be one thing wearing six hats.
+#
+# Three are shadowed below — the strongest per sport family — purely because
+# FORWARD data is the only thing that can separate them from the noise above.
+# Nothing here is promotable on what has been measured.
+#
 #: (rule_name, feature, threshold, side, context table)
 RULES = {
     'NFL': ('totals_away_pa_pg_under', 'away_pa_pg', 27.4, 'UNDER',
             'nfl_game_context'),
     'NCAAF': ('totals_away_ou_unders_over', 'away_ou_unders', 6.0, 'OVER',
               'ncaaf_game_context'),
+    'MLB': ('totals_away_srs_under', 'away_srs', 0.281, 'UNDER',
+            'mlb_game_context'),
 }
 
 
