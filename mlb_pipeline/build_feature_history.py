@@ -2,7 +2,7 @@
 """Reconstruct point-in-time team features for every historical game.
 
 Steps 1-2 of the feature-history project (see
-supabase/migrations/20261013a_feature_history.sql for why it exists).
+supabase/migrations/20261013b_feature_history.sql for why it exists).
 
 THE ONE INVARIANT
 -----------------
@@ -372,7 +372,7 @@ def write_db(rows: list[dict], chunk: int = 500) -> int:
             print(f'  ⚠ write {resp.status_code}: {resp.text[:300]}')
             if resp.status_code == 404 or 'PGRST205' in resp.text:
                 print('    feature_history does not exist yet — apply '
-                      'supabase/migrations/20261013a_feature_history.sql')
+                      'supabase/migrations/20261013b_feature_history.sql')
                 return ok
     return ok
 
