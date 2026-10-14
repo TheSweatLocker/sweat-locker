@@ -226,7 +226,15 @@ def load_games(sport: str, season=None) -> list[dict]:
         out.append({'home': h, 'away': a, 'margin': hs - as_,
                     'date': g.get('game_date'), 'season': g.get('season'),
                     'neutral': bool(g.get('neutral_site')),
-                    'home_line': home_line})
+                    'home_line': home_line,
+                    # 2026-10-13: carried through for build_feature_history,
+                    # whose unique key is (sport, game_id). The select is
+                    # already '*' so this costs nothing; without it every
+                    # reconstructed row was unwritable. Additive — existing
+                    # callers read by name and ignore it.
+                    'game_id': g.get('game_id'),
+                    'close_total': _f(g.get('close_total')),
+                    'total': (hs + as_)})
     return out
 
 
