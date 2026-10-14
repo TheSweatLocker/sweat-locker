@@ -266,9 +266,13 @@ def run(sports: list[str], repair: bool,
                         rp = requests.post(
                             f'{SB}/rest/v1/rpc/repair_opening_line',
                             headers={**H, 'Content-Type': 'application/json'},
+                            # jsonb payload: the open-line columns differ
+                            # per sport (MLB uses home_ml_open where NFL uses
+                            # open_home_ml), so the RPC takes a map rather
+                            # than fixed parameters.
                             json={'p_table': cfg['ctx'],
                                   'p_game_id': str(row['game_id']),
-                                  f'p_{col}': sv}, timeout=30)
+                                  'p_values': {col: sv}}, timeout=30)
                         if rp.status_code in (200, 204) and str(rp.text).strip() not in ('0', ''):
                             print(f'      -> repaired {col} = {sv} via '
                                   f'repair_opening_line RPC')
