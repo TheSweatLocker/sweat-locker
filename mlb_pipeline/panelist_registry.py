@@ -29,10 +29,18 @@ NFL -- six nameplates, three real equations:
              projected_spread + spread_delta, where the delta is rest / bye /
              short-week adjustments only. The nudge is far too small to cross
              the line, so v3 takes projected's side 100% of the time.
-  v4         DORMANT. nfl_game_context.py:1116-1117 sets v4_spread = None and
-             v4_total = None. Its 58 historical rows have sd 0.252 across 9
-             values and are never negative, so the home branch of any signal
-             reading it can never fire.
+  v4         CONSTANT, and still writing -- my first pass called this DORMANT
+             off nfl_game_context.py:1116, which was wrong. That line
+             neutralises v4 only INSIDE that script; nfl_v4_inference.py keeps
+             writing the column (29 rows in Sep, 30 in Oct). On the October
+             rows: sd 0.272, 6 distinct values, range [+0.78,+2.66], ZERO
+             negative, v4_confidence 0.311 on every row, and not one
+             team-strength feature among its 13 inputs. Always positive, so
+             any `v4_spread > 0` clause is vacuous and any `< 0` clause is
+             dead. The 09-27 note at that line predicted exactly this: "stops
+             it silently coming back if v4 starts writing again while still
+             feature-blind" -- it came back, and signal_sources had no guard.
+             nfl_model_consensus_away_spread is disabled as of 2026-10-14.
   panel      REAL and distinct. Fantasy-aggregated player projections
              (nfl_panel_projection) -- a genuinely different information set.
              Measured 53-61% agreement with the projected bloc.
@@ -100,7 +108,7 @@ IDENTITY = 'IDENTITY'       # literally the same arithmetic
 ALIAS = 'ALIAS'             # assigned from the other column
 DERIVATIVE = 'DERIVATIVE'   # other model + a nudge too small to cross the line
 ECHO = 'ECHO'               # simulation seeded from another model's output
-DORMANT = 'DORMANT'         # writes NULL today
+CONSTANT = 'CONSTANT'       # writes, but the same number regardless of who plays
 
 SEATABLE = (REAL,)
 
@@ -116,8 +124,13 @@ PANELISTS = {
         DERIVATIVE, 'nfl_v3_regression.py:80,160 projected_spread + '
         'rest/bye/short-week delta', '100% margin'),
     ('NFL', 'v4'): (
-        DORMANT, 'nfl_game_context.py:1116-1117 sets both to None',
-        'never negative in 58 historical rows; home branch cannot fire'),
+        CONSTANT,
+        'nfl_v4_inference.py WRITES the column; nfl_game_context.py:1116 '
+        'neutralises it only inside that script. Oct n=30, sd 0.272, 6 '
+        'distinct, range [+0.78,+2.66], ZERO negative, v4_confidence 0.311 '
+        'on every row, and v4_features_used carries no team-strength feature '
+        'at all -- it cannot know who is playing',
+        'always positive, so any `v4 > 0` clause is vacuous'),
     ('NFL', 'panel'): (
         REAL, 'fantasy-aggregated player projections (nfl_panel_projection)',
         '53-61% — a distinct voice'),
