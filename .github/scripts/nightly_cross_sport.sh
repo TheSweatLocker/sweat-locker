@@ -535,6 +535,31 @@ bash "$RUN_STEP" --detector --label "audit_data_quality.py (nightly)" \
 bash "$RUN_STEP" --detector --label "reconcile_resolution.py (nightly)" \
   python reconcile_resolution.py --days 7
 
+# ══ 2026-10-14 · MARKET SANITY, EVERY SPORT, EVERY NIGHT ══
+# A value that is not a line at all keeps appearing in line columns, from a
+# writer that has not been identified:
+#   nhl close_puckline  held MONEYLINE PRICES on 1,120 historical rows and
+#                       0.0 (an even-split median) on 3 more
+#   nfl_game_context    held close_total 96.5 / close_spread -21.5 on
+#                       CHI @ CAR, which finished 59-37 -- the final score
+#   mlb_game_results    held close_spread 4.5..15.5 on 10 rows in an April
+#                       window, 8 of them with a spread_result GRADED off it
+#
+# Static search found no script that derives a line from a score, so the cause
+# is still open. This detects the CONDITION, which works either way, and
+# repairs a context row from the results row for the same fixture. --repair
+# never writes results from context (results is the graded source of record)
+# and --null-unfixable only clears a results value when nothing cleaner
+# exists, per backfill_game_grades: "a wrong grade is worse than a missing one
+# because it looks like evidence."
+#
+# NOT --strict: a pre-existing implausible row must not start failing the
+# nightly. Flip to --strict once the backlog is clean (3 NFL preseason rows
+# with no results row to repair from, and one opener frozen by
+# freeze_opening_lines pending 20261014a).
+bash "$RUN_STEP" --detector --label "watchdog_market_sanity.py (nightly)" \
+  python watchdog_market_sanity.py --repair
+
 
 # 2026-09-29: the heartbeat watchdog runs HERE as well, and this is the copy
 # that matters. Its own note explains it lived in mlb_grade_overnight because

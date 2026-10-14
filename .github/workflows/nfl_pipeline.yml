@@ -364,6 +364,25 @@ jobs:
           # It writes stats only — never picks, tiers or lines.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "refresh_nfl_team_features.py" python refresh_nfl_team_features.py --apply
 
+          # ══ 2026-10-14 · div_game WAS 0% ON THE 2026 SEASON ══
+          # Populated on 285/285 rows in each of the last five seasons and on
+          # 0 of 274 in 2026, because the forward schedule is now created by
+          # nfl_odds_pull (via odds_pull_core.build_rows), which writes
+          # game_id/date/teams/market columns and nothing sport-specific. The
+          # historical rows came from the results importer, which did set it.
+          #
+          # It matters because div_game feeds the model and the nfl_div_home_cover
+          # cohort, and a NULL reads as "not a division game" to any truthiness
+          # test — a WRONG feature, not a missing one.
+          #
+          # Fills from nfl_game_context.NFL_DIVISION (imported, not copied —
+          # four copies of that map already exist). Deriving from history would
+          # be wrong: a team's historical rivals span REALIGNMENT, so ARI comes
+          # back with both NFC East and NFC West. Refuses to write if the
+          # derived division share leaves 18-45% (measured 35.0%, and 6 division
+          # games in a 17-game schedule is 35.3%).
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_nfl_div_game.py" python backfill_nfl_div_game.py --apply
+
       # ══ 2026-10-13 · CORRECTED MODEL CONSENSUS, SHADOW ONLY ══
       # The live nfl_model_consensus_* pair has three measured defects: it
       # reads v4_spread, which is a CONSTANT (sd 0.276 over 9 distinct values,

@@ -126,8 +126,9 @@ def main():
         print('  ° features_computed_at not in schema yet — writing the '
               'stat columns and skipping the stamp (apply 20261012c)')
 
-    now = dt.datetime.now(dt.timezone.utc).isoformat()
-    changed, same, skipped = 0, 0, 0
+    now_dt = dt.datetime.now(dt.timezone.utc)
+    now = now_dt.isoformat()
+    changed, same, skipped, write_fail = 0, 0, 0, 0
     sample = []
     for g in rows:
         h, aw = g.get('home_team'), g.get('away_team')
@@ -151,10 +152,22 @@ def main():
             if len(sample) < 6:
                 sample.append((str(g['game_date'])[:10], aw, h, before, after))
         if a.apply:
-            requests.patch(f"{SB}/rest/v1/nfl_game_context"
-                           f"?game_id=eq.{g['game_id']}",
-                           headers={**H_W, 'Prefer': 'return=minimal'},
-                           json=patch, timeout=30)
+            # ══ 2026-10-14 · THE WRITE WAS UNCHECKED ══
+            # The verify block below opens with "A 204 is not a write — prove
+            # it landed", and the write it was proving ignored its own status
+            # code entirely. A PGRST204 (a column missing from the patch) or an
+            # auth failure returned silently and the only symptom was the
+            # verify reporting 0/N, which reads as a stamp problem rather than
+            # a write problem. Count them and say so.
+            _pr = requests.patch(f"{SB}/rest/v1/nfl_game_context"
+                                 f"?game_id=eq.{g['game_id']}",
+                                 headers={**H_W, 'Prefer': 'return=minimal'},
+                                 json=patch, timeout=30)
+            if _pr.status_code not in (200, 204):
+                write_fail += 1
+                if write_fail <= 3:
+                    print(f"  ⚠ PATCH {g['game_id']} {_pr.status_code}: "
+                          f"{_pr.text[:200]}")
 
     print(f'  home_penalties_pg would change on {changed} rows, '
           f'already current on {same}, skipped {skipped}')
@@ -179,11 +192,39 @@ def main():
         print(f'\n  VERIFY by re-read: {fresh}/{len(chk)} rows carry a '
               f'penalties value (stamp pending migration 20261012c)')
         return 0
+    # ══ 2026-10-14 · THIS CHECK FAILED THE JOB ON A SUCCESSFUL WRITE ══
+    # It compared `features_computed_at[:10]` against et_today(). The stamp is
+    # written in UTC (dt.datetime.now(timezone.utc)) and et_today() is Eastern,
+    # so between 00:00 and ~04:00 UTC the two disagree by a calendar day and
+    # EVERY row looks unstamped.
+    #
+    # Measured on run 38503899770 (NFL Pipeline Weekly, 2026-10-14T03:03 UTC =
+    # 23:03 ET on 10-13): all 193 rows carried features_computed_at
+    # 2026-10-14, et_today() returned 2026-10-13, stamped came back 0, and the
+    # step exited 1. The data was correct and complete. The `0 */6 * * *` cron
+    # puts a run in that window every night, so this failed nightly and passed
+    # during the day, which is the shape that reads as flaky rather than wrong.
+    #
+    # A calendar-day comparison is the wrong instrument regardless of which
+    # timezone wins: a job that straddles midnight would also fail it. What
+    # this check actually wants to know is "did the stamp I just wrote land",
+    # so compare against the run's own timestamp with slack.
+    cutoff = (now_dt - dt.timedelta(hours=2)).isoformat()
     stamped = sum(1 for x in chk
-                  if str(x.get('features_computed_at') or '')[:10] == et_today())
-    print(f'\n  VERIFY by re-read: {stamped}/{len(chk)} rows carry today\'s '
-          f'features_computed_at')
-    return 0 if stamped else 1
+                  if str(x.get('features_computed_at') or '') >= cutoff)
+    print(f'\n  VERIFY by re-read: {stamped}/{len(chk)} rows stamped at or '
+          f'after {cutoff[:19]}Z (this run, 2h slack)')
+    if write_fail:
+        print(f'  ✗ {write_fail} PATCH call(s) failed — see above')
+        return 1
+    if not stamped:
+        print('  ✗ nothing carries a fresh stamp — the write did not land')
+        return 1
+    if stamped < len(chk):
+        # Partial is worth saying out loud but is not a failure: rows outside
+        # the --since window are not expected to be restamped.
+        print(f'  ° {len(chk) - stamped} row(s) not restamped this run')
+    return 0
 
 
 if __name__ == '__main__':
