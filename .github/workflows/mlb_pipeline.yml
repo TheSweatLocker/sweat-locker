@@ -1003,6 +1003,30 @@ jobs:
           cd mlb_pipeline
           python apply_refit_verdict_override.py
 
+          # ══ 2026-10-14 · THE ODDS FLOOR WAS BUILT AND NEVER WIRED ══
+          # apply_odds_band_gate.py has existed since 2026-10-05, is carefully
+          # family-scoped, and was in NO workflow — so it has never run once.
+          #
+          # What that cost, audited over the last 30 days: 187 publishable
+          # props priced at or worse than -200 in the floored families, at
+          # prices including -20000, -4215, -4000 and -3500, sitting in PRIME
+          # and LEAN. A -20000 prop risks 200 units to win 1. The script's own
+          # measurement on receipts that actually shipped: props published
+          # outside -300..+150 went 72-82 for -7.4% ROI.
+          #
+          # Placed HERE deliberately, per the script's own ordering note: it
+          # must run AFTER every tier-stamper (apply_prop_refit,
+          # apply_refit_verdict_override) because a later re-stamp would undo
+          # it, and BEFORE anything that publishes.
+          #
+          # It only ever demotes to SKIP, never promotes, and verifies each
+          # write by reading the row back (a 204 is not a write). The floor is
+          # family-scoped on purpose: a BLANKET -200 floor was measured and
+          # rejected because props at <=-200 that actually published went
+          # 556-143 for +46.36u, so a blanket rule would have thrown away a
+          # profitable slice.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_odds_band_gate.py" python apply_odds_band_gate.py --apply
+
       # 2026-08-23 SECOND DEDUP PASS. Wave 1a follow-up: the first
       # dedup_prop_dupes (line ~496) runs before apply_refit_verdict_override
       # + before any downstream writer that could insert dupe rows via
