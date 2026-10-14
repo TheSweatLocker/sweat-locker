@@ -150,11 +150,33 @@ def section_signals(sports):
             print('   context table EMPTY — every game-context signal in this '
                   'sport is inert')
             continue
+        # ══ PAST AND FUTURE MUST BE SCORED SEPARATELY ══
+        # nfl_game_context holds the whole remaining season: 123 past rows
+        # and 193 future ones. Gametime inputs CANNOT exist on a future row
+        # — weather, the model panel and the Madden delta are pulled near
+        # kickoff — so a single denominator makes healthy columns look
+        # broken. Measured 2026-10-12: panel_pred_home_pts is 60.2% on past
+        # games and 6.7% on future, which reads as 27.5% pooled and is not a
+        # defect. A first pass of this tool reported "70 of 123 NFL signals
+        # crippled" on the pooled number; that figure was inflated by games
+        # that have not happened yet.
+        #
+        # PAST coverage is what the registry's track record rests on.
+        # FUTURE coverage is what today's picks are actually decided on.
+        # Both are reported; neither alone is the answer.
         cols = set(rows[0].keys())
-        pop = {}
+        today = time.strftime('%Y-%m-%d')
+        past = [r for r in rows if str(r.get('game_date'))[:10] < today]
+        fut = [r for r in rows if str(r.get('game_date'))[:10] >= today]
+        print(f'   {len(past)} past · {len(fut)} upcoming '
+              f'(scored separately — gametime data cannot exist on a future '
+              f'row)')
+        pop, pop_f = {}, {}
         for c in cols:
-            n = sum(1 for r in rows if r.get(c) is not None)
-            pop[c] = n / len(rows) * 100
+            base = past or rows
+            pop[c] = sum(1 for r in base if r.get(c) is not None) / len(base) * 100
+            pop_f[c] = (sum(1 for r in fut if r.get(c) is not None)
+                        / len(fut) * 100) if fut else float('nan')
 
         # which columns do signals actually read?
         refd = defaultdict(list)
@@ -181,7 +203,8 @@ def section_signals(sports):
                 continue
             print(f'   {g:<9} {len(items)} columns:')
             for pct, c, nk in items[:14]:
-                print(f'       {c[:44]:<46}{pct:5.1f}% populated  '
+                print(f'       {c[:40]:<42}past {pct:5.1f}%  '
+                      f'upcoming {pop_f.get(c, float("nan")):5.1f}%  '
                       f'{nk} signal(s)')
             if len(items) > 14:
                 print(f'       … and {len(items) - 14} more')
@@ -202,7 +225,7 @@ def section_signals(sports):
                 worst.append((w, s['signal_key']))
         worst.sort()
         if worst:
-            print(f'   {len(worst)} signals decided on <50% of games '
+            print(f'   {len(worst)} signals decided on <50% of PAST games '
                   f'(worst input shown):')
             for w, k in worst[:10]:
                 print(f'       {k[:46]:<48}{w:5.1f}%')
