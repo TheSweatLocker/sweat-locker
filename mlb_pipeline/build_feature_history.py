@@ -177,6 +177,15 @@ def team_features(hist: list[dict], as_of: str, rating: dict,
         f['resid_mean'] = _mean([g['resid'] for g in priced])
         f[f'resid_l{RESID_WINDOW}'] = _mean(
             [g['resid'] for g in priced[-RESID_WINDOW:]])
+        # Last-5 ATS as its own window. Two reasons it is separate from the
+        # season-to-date record above: it is the form feature the live
+        # `*_ats_last5` columns hold, so validate_feature_history can compare
+        # like with like; and a 5-game window is what the existing tendencies
+        # builders use, so a model trained here lines up with what the card
+        # already shows.
+        last5 = priced[-5:]
+        f['ats_l5_covers'] = sum(1 for g in last5 if g['resid'] > 0)
+        f['ats_l5_losses'] = sum(1 for g in last5 if g['resid'] < 0)
 
     f['srs'] = round(rating[team], 4) if team in rating else None
     f['sos'] = round(sos[team], 4) if team in sos else None
