@@ -55,6 +55,7 @@ import collections
 import sys
 
 import requests
+from urllib.parse import quote as _urlquote
 
 import market_line as ML
 
@@ -96,6 +97,22 @@ SPORTS = {
               'total_range': (100.0, 200.0)},
 }
 
+
+
+def _q(v) -> str:
+    """Percent-encode a value used in a PostgREST filter.
+
+    Load-bearing, not hygiene. NCAAF game_ids embed the team names and several
+    contain an ampersand — Texas A&M, North Carolina A&T, Florida A&M, Prairie
+    View A&M. Unencoded, the '&' TERMINATES the query parameter: the filter
+    silently becomes game_id=eq.<...>_Texas A plus a stray 'M' param, the PATCH
+    matches ZERO rows, and PostgREST answers 204, which reads as success.
+
+    Measured 2026-10-14: a backfill reported "patched 571/571" and a read-back
+    found 553 populated. The 18 missing rows were every fixture with an '&' in
+    a team name. feedback_unencoded_url_filter_eats_writes.
+    """
+    return _urlquote(str(v), safe='')
 
 def page(table: str, params: dict) -> list[dict]:
     out, off = [], 0
@@ -204,7 +221,7 @@ def run(sports: list[str], repair: bool,
                             print('      -> spread_result was DERIVED from '
                                   'the bogus line; clearing it too')
                     pr = requests.patch(
-                        f"{SB}/rest/v1/{cfg['res']}?game_id=eq.{row['game_id']}",
+                        f"{SB}/rest/v1/{cfg['res']}?game_id=eq.{_q(row['game_id'])}",
                         headers={**H, 'Content-Type': 'application/json',
                                  'Prefer': 'return=minimal'},
                         json=patch, timeout=30)
@@ -242,7 +259,7 @@ def run(sports: list[str], repair: bool,
                     unrepaired += len(bad)
                     continue
                 pr = requests.patch(
-                    f"{SB}/rest/v1/{cfg['ctx']}?game_id=eq.{row['game_id']}",
+                    f"{SB}/rest/v1/{cfg['ctx']}?game_id=eq.{_q(row['game_id'])}",
                     headers=H_W, json=patch, timeout=30)
                 if pr.status_code not in (200, 204):
                     print(f'      -> PATCH {pr.status_code}: {pr.text[:160]}')
