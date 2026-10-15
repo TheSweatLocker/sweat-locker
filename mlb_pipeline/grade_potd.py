@@ -463,6 +463,76 @@ def _existing_calendar_result(date_str: str):
     return None
 
 
+class _SkipMirror(Exception):
+    """Raised to abandon the history mirror without failing the run."""
+
+
+def _nk_team(s) -> str:
+    """Normalised team/matchup key: accents folded, punctuation stripped."""
+    import unicodedata as _u
+    s = _u.normalize('NFKD', str(s or ''))
+    s = ''.join(c for c in s if not _u.combining(c))
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+
+def _history_identity_ok(date_str: str, graded_matchup) -> tuple[bool, str]:
+    """May a grade be mirrored onto the history row for this date?
+
+    ══ 2026-10-15 · THE PARTIAL MIRROR THAT FAKED A WIN ══
+    ANDY: "could of swore i saw Guardians earlier and now i see dodgers" ...
+    "LAD game ahsnt pkayed yet". Both true, and one defect.
+
+    The mirror below builds {result, game, lean, narrative, ...} from
+    jerry_cache and then drops every None:
+
+        mirror = {k: v for k, v in mirror.items() if v is not None}
+
+    That line exists for a good reason -- "never overwrite a good existing
+    value with None" -- but it makes the write PARTIAL. On 2026-10-15
+    leanDisplay and matchup were both None, so `result` and `narrative` were
+    written while `game` and `lean` were dropped. The history row kept
+    play_of_day's resolver pick (Los Angeles Dodgers ML) and received a
+    Guardians narrative plus a Win -- for a Dodgers game that had not been
+    played. mlb_game_results had Brewers @ Dodgers None-None while
+    Rays @ Guardians finished 2-3, and resolved_at was stamped 17:10 ET,
+    before first pitch.
+
+    _fetch_game_result already refuses a game with no score, so the scores
+    guard was never the gap. The gap was IDENTITY: nothing checked that the
+    game being graded is the game the row published. Matching on bet_date
+    alone is not matching on the bet.
+
+    Same lesson as the 2026-10-08 odds fix at play_of_day.py:4866 -- the side
+    there now comes from the pick's own label, "the only field that cannot
+    describe a different bet than the one published". This applies that to the
+    grade.
+
+    Returns (ok, why). ok=False means skip the result/narrative mirror.
+    """
+    if not graded_matchup:
+        return True, 'grader named no matchup — nothing to contradict'
+    try:
+        r = requests.get(f'{SB}/rest/v1/daily_best_bet_history', headers=H_R,
+                         params={'select': 'game,lean,result',
+                                 'bet_date': f'eq.{date_str}',
+                                 'limit': '1'}, timeout=15)
+        if r.status_code != 200 or not r.json():
+            return True, 'no history row yet'
+        existing = r.json()[0] or {}
+    except Exception as e:                                     # noqa: BLE001
+        return True, f'history read failed ({type(e).__name__}) — not blocking'
+    pub = str(existing.get('game') or '')
+    if not pub:
+        return True, 'history row has no game to contradict'
+    gk, pk = _nk_team(graded_matchup), _nk_team(pub)
+    if gk == pk or gk in pk or pk in gk:
+        return True, 'same game'
+    # A team named in the published LEAN but absent from the graded matchup is
+    # the clearest form of the mismatch.
+    return False, (f'IDENTITY MISMATCH — grading {graded_matchup!r} but the '
+                   f'published row is {pub!r} (lean {existing.get("lean")!r})')
+
+
 def grade_potd(date_str: str, dry_run: bool = False) -> str:
     row = _fetch_potd(date_str)
     if not row:
@@ -643,8 +713,26 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
                 'sweat_score': _score.get('total') or data.get('confidence'),
                 'narrative': data.get('narrative'),
             }
-            # Never overwrite a good existing value with None.
+            # Never overwrite a good existing value with None. This makes
+            # the write PARTIAL, which is how a Guardians grade landed on a
+            # Dodgers pick on 2026-10-15 — see _history_identity_ok.
             mirror = {k: v for k, v in mirror.items() if v is not None}
+
+            # IDENTITY GATE: refuse to stamp a result/narrative onto a row
+            # that published a DIFFERENT game. Matching on bet_date is not
+            # matching on the bet.
+            _ok, _why = _history_identity_ok(
+                date_str, mirror.get('game') or _g.get('matchup')
+                or data.get('matchup'))
+            if not _ok:
+                print(f'  {date_str}: REFUSING to mirror grade — {_why}')
+                mirror.pop('result', None)
+                mirror.pop('narrative', None)
+                mirror.pop('resolved_at', None)
+            if not any(k not in ('bet_date',) for k in mirror):
+                print(f'  {date_str}: nothing left to mirror after the '
+                      f'identity gate')
+                raise _SkipMirror()
             hr = requests.post(
                 f'{SB}/rest/v1/daily_best_bet_history?on_conflict=bet_date',
                 headers=dict(H_W, **{'Prefer': 'resolution=merge-duplicates,'
@@ -652,6 +740,8 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
                 json=[mirror], timeout=15)
             if hr.status_code not in (200, 201, 204):
                 print(f'  {date_str}: history mirror failed {hr.status_code}: {hr.text[:120]}')
+    except _SkipMirror:
+        pass
     except Exception as _e:
         print(f'  {date_str}: history mirror exception {_e}')
 
