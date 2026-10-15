@@ -141,6 +141,45 @@ def extra_predictions(sport, market):
     return out
 
 
+def load_games(sport, mode):
+    """Context rows paired with their result row, INCLUDING unplayed games.
+
+    ══ 2026-10-14 · WHY NOT build_panelist_records.joined() ══
+    joined() requires home_score and away_score, by design -- it grades. Using
+    it here meant `--today` saw only COMPLETED games and wrote 316 rows marked
+    pregame=true for games already played. That is hindsight stamped as a live
+    record, which is precisely what the pregame flag exists to prevent, and it
+    would have made the shadow engine's "live" record the one number nobody
+    could trust.
+
+    So this loader keeps unplayed games and reports which bucket each row is
+    in. --today takes the UNPLAYED ones; --backfill takes the graded ones.
+    """
+    ctx, _ = page(B.CONTEXT[sport], {'select': '*'})
+    res, _ = page(B.RESULTS[sport], {'select': '*'})
+    by_id, by_key = {}, {}
+    for r in res:
+        if r.get('game_id'):
+            by_id[str(r['game_id'])] = r
+        by_key[(str(r.get('game_date'))[:10], str(r.get('home_team')),
+                str(r.get('away_team')))] = r
+    played, unplayed = [], []
+    for c in ctx:
+        g = (by_id.get(str(c.get('game_id')))
+             or by_key.get((str(c.get('game_date'))[:10],
+                            str(c.get('home_team')), str(c.get('away_team')))))
+        hs = B._f((g or {}).get('home_score'))
+        as_ = B._f((g or {}).get('away_score'))
+        # The market lives on the results row where there is one, else on ctx.
+        src = g if g else c
+        if hs is not None and as_ is not None:
+            played.append((c, src, hs, as_))
+        else:
+            unplayed.append((c, src, None, None))
+    print(f'  {sport}: {len(played)} graded, {len(unplayed)} unplayed')
+    return unplayed if mode == 'today' else played
+
+
 def decide(votes, weights_used):
     """votes: {panelist: +1/-1}. -> (net, voters, total_weight)."""
     tw = sum(weights_used[p] for p in votes)
@@ -152,7 +191,11 @@ def decide(votes, weights_used):
 
 def run(sport, mode, dry, weights, have_weights):
     emin = B.EDGE_MIN[sport]
-    rows = B.joined(sport)
+    rows = load_games(sport, mode)
+    if not rows:
+        kind = 'unplayed' if mode == 'today' else 'graded'
+        print(f'{sport}: no {kind} games — nothing to decide')
+        return
     extra_by_market = {m: extra_predictions(sport, m)
                        for m in ('margin', 'total')}
     payload = []
