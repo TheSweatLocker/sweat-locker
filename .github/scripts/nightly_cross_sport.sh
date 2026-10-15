@@ -600,6 +600,14 @@ bash "$RUN_STEP" --detector --label "shadow_panelist_engine.py --today" \
 # fixed by hand five times (09-20, 09-26, 09-29 twice, 10-14) and each time the
 # NEXT one still got through, so it is a nightly check now rather than a thing
 # someone happens to notice.
+# 2026-10-14: and the pre-lock readiness report. A lock freezes whatever is
+# on the row, so coverage/scale/freshness are checked INSIDE the lock window
+# rather than across all rows -- coverage on "all rows" is exactly what hid
+# NCAAF epa at ratio 0.10 and NFL v4 at 0.02. Exits 1 on a problem, so it is
+# a detector and reports without failing the nightly.
+bash "$RUN_STEP" --detector --label "prelock_readiness.py (nightly)" \
+  python prelock_readiness.py
+
 bash "$RUN_STEP" --detector --label "audit_duplicate_votes.py (nightly)" \
   python audit_duplicate_votes.py
 
