@@ -112,3 +112,7 @@ mlb_pipeline/_*.log
 mlb_pipeline/_*.md
 mlb_pipeline/_*.jsonl
 mlb_pipeline/audit_phase2_recal_dryrun_*.json
+
+# 2026-10-15: timestamped .bak safety copies taken before a model/code change.
+# Useful locally for a rollback, never wanted in the repo.
+*.bak_[0-9]*
