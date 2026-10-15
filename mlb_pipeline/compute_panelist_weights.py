@@ -99,6 +99,11 @@ BREAKEVEN = B.BREAKEVEN          # 52.38% at -110
 #: It is a DIFFERENT PANELIST now and starts with no record.
 MODEL_CHANGED = {
     ('NFL', 'v4'): '2026-10-14 retrained with team features',
+    # epa's 54.3% / +3.6% on n=94 was earned at sd 1.46 -- a number pinned
+    # near the HFA, so that record is a fade-the-favourite record, not an EPA
+    # record. At the fitted scale it is a different panelist and starts clean.
+    ('NCAAF', 'epa'): '2026-10-14 rescaled K_PTS_EPA 5.5 -> 38.0 (ratio '
+                      '0.10 -> 0.72)',
 }
 
 #: Panelists whose number is NOT ON THE MARKET'S SCALE, with the measured
@@ -116,7 +121,11 @@ MODEL_CHANGED = {
 #: pick may read it until it has been graded" -- and that gate never reached
 #: the panel layer.
 SCALE_BLOCK = {
-    ('NCAAF', 'epa', 'margin'): 'ratio 0.08 (sd 1.46 vs market 18.52)',
+    # NCAAF epa was here at ratio 0.08. RESCALED 2026-10-14 to
+    # K_PTS_EPA_PANEL = 38.0 (fitted on n=332) and backfilled: sd 1.282 ->
+    # 8.854 against a market sd of 12.214, ratio 0.10 -> 0.72. On scale, so
+    # the block is lifted -- but its OLD record does not transfer, see
+    # MODEL_CHANGED.
     ('NCAAF', 'model', 'margin'): 'ratio 0.42 (sd 7.69 vs market 18.52)',
     ('NFL', 'v4', 'total'): 'ratio 0.34 pre-retrain rows',
 }

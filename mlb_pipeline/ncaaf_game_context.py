@@ -105,7 +105,48 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 # deltas that feed them all shift here, so tiers must be re-measured against
 # the new scale first.
 K_PTS_SP = 0.94           # SP+ rating diff → spread points scaling
-K_PTS_EPA = 5.5           # EPA diff → spread points (fallback)
+K_PTS_EPA = 5.5           # EPA diff → spread points (fallback; see note at
+                          # the EPA branch — that branch now NULLs
+                          # projected_spread, so this constant no longer
+                          # reaches a published number)
+
+# ══ 2026-10-14 · THE EPA PANELIST'S OWN SCALE, NOW MEASURED ══
+# epa_pred_spread used K_PTS_EPA = 5.5 and came out at sd 1.30 against a market
+# sd of 12.9 — ratio 0.10. At that scale the number is pinned near the HFA, so
+# `epa - market` takes its sign from the LINE rather than from the game: it
+# simply fades whichever side is favoured. panelist_registry lists epa as
+# NCAAF's one genuinely independent voice (50.7% side agreement with
+# projected), and it was unusable.
+#
+# The 2026-09-26 note at the EPA branch below got the number right and refused
+# to ship it, correctly: "Variance matching would want K_PTS_EPA 5.5 → 37.8,
+# which is not a calibration on n=10, it is a coin flip."
+#
+# That objection was sample size, and it is now answerable. Fitted on 332
+# graded 2026 NCAAF games (home_off_epa_pp / home_def_epa_pp, both populated
+# on 294+ rows):
+#
+#     net_epa = (home_off - home_def) - (away_off - away_def)
+#     net_epa sd                     0.2258
+#     actual_margin ~ net_epa        slope +38.92   corr +0.407
+#     market_line   ~ net_epa        slope -36.31   corr -0.511
+#                                    (negative because NCAAF close_spread is
+#                                     the HOME HANDICAP: negative = home
+#                                     favoured)
+#
+# Two independent estimates — variance matching at 37.8 and regression at
+# 38.92 on n=332 — agree. 38.0 is used.
+#
+# EXPECTED RESULT, stated before the change so it can be checked: sd moves
+# from 1.30 to roughly 0.2258 x 38 = 8.6, a ratio near 0.55-0.67. That is ON
+# SCALE but no better, because EPA alone explains less than the market does
+# (corr 0.407 vs 0.511). This makes epa a REAL VOICE, not a good one — whether
+# it earns weight is for its record to say.
+#
+# SEPARATE CONSTANT ON PURPOSE. K_PTS_EPA above still feeds the projected_spread
+# fallback branch, which NULLs its output anyway; rescaling that path is a
+# different decision with different consumers and is not being made here.
+K_PTS_EPA_PANEL = 38.0
 HOME_FIELD_PTS = 2.8      # CFB HFA slightly higher than NFL
 BASE_TOTAL = 52.0         # CFB avg total higher than NFL
 
@@ -1171,7 +1212,10 @@ def compute_projections(home_stats: dict, away_stats: dict,
     if h_off_epa is not None and a_off_epa is not None:
         h_net_epa = h_off_epa - (h_def_epa or 0)
         a_net_epa = a_off_epa - (a_def_epa or 0)
-        out['epa_pred_spread'] = round((h_net_epa - a_net_epa) * K_PTS_EPA + hfa, 2)
+        # K_PTS_EPA_PANEL, not K_PTS_EPA — fitted on n=332, see the
+        # constant's note. The old 5.5 left this at ratio 0.10.
+        out['epa_pred_spread'] = round(
+            (h_net_epa - a_net_epa) * K_PTS_EPA_PANEL + hfa, 2)
         # 2026-10-10: guard the alias. projected_spread is None on an EPA-only
         # matchup, and this block runs for exactly those games, so an
         # unguarded round() here was a TypeError. The alias is only meaningful
