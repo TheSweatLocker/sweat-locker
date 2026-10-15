@@ -101,6 +101,26 @@ MODEL_CHANGED = {
     ('NFL', 'v4'): '2026-10-14 retrained with team features',
 }
 
+#: Panelists whose number is NOT ON THE MARKET'S SCALE, with the measured
+#: ratio sd(panelist)/sd(market) from audit_projection_scale.py. Below ~0.5 a
+#: model cannot reach a big line, so `panelist - market` has a sign fixed by
+#: the line rather than by any opinion about the game. Its disagreements are
+#: arithmetic, so it must not be counted as an independent vote even though it
+#: is a genuine separate computation.
+#:
+#: NCAAF epa is the one that matters: panelist_registry marks it REAL, and it
+#: IS a distinct information set (50.7% side agreement with projected). But at
+#: sd 1.46 against a market sd of 18.52 it is pinned near zero and simply
+#: fades whichever side the line favours. ncaaf_game_context.py:1165-1169
+#: already says so -- "visibly compressed ... nothing that selects or tiers a
+#: pick may read it until it has been graded" -- and that gate never reached
+#: the panel layer.
+SCALE_BLOCK = {
+    ('NCAAF', 'epa', 'margin'): 'ratio 0.08 (sd 1.46 vs market 18.52)',
+    ('NCAAF', 'model', 'margin'): 'ratio 0.42 (sd 7.69 vs market 18.52)',
+    ('NFL', 'v4', 'total'): 'ratio 0.34 pre-retrain rows',
+}
+
 SPORTS = ['NFL', 'NCAAF', 'NHL', 'NBA', 'MLB', 'NCAAB']
 
 
@@ -223,6 +243,11 @@ def records_from_predictions(sport, market, live):
     return out
 
 
+#: set by the caller so weigh() can consult SCALE_BLOCK, which is
+#: market-specific, without changing its signature everywhere.
+_MARKET_CTX = {'m': None}
+
+
 def weigh(sport, panelist, rec):
     """-> (weight, basis, shrunk_edge)."""
     kind = REG.kind(sport, panelist)
@@ -234,6 +259,10 @@ def weigh(sport, panelist, rec):
             return 0.0, (f'registry_block:{kind}|model_changed:'
                          f'{MODEL_CHANGED[(sport, panelist)]}'), None
         return 0.0, f'registry_block:{kind}', None
+    # Rule 1a: off the market's scale -> its disagreements are arithmetic.
+    if (sport, panelist, _MARKET_CTX.get('m')) in SCALE_BLOCK:
+        why = SCALE_BLOCK[(sport, panelist, _MARKET_CTX['m'])]
+        return 0.0, f'scale_block:{why}', None
     # Rule 1b: the model changed, so the record is void. Uniform weight, and
     # it rebuilds a record from here.
     if (sport, panelist) in MODEL_CHANGED:
@@ -283,6 +312,7 @@ def main() -> int:
                   f'{"shrunk":>9}{"weight":>8}  basis')
             for name in sorted(names):
                 rec = recs.get(name)
+                _MARKET_CTX['m'] = market
                 wgt, basis, shrunk = weigh(sport, name, rec)
                 n = rec[2] if rec else 0
                 hit = f'{rec[3]:.1f}%' if rec else '—'
