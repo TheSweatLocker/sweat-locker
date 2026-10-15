@@ -569,6 +569,41 @@ bash "$RUN_STEP" --detector --label "watchdog_market_sanity.py (nightly)" \
 # dies with the season cannot report the season ending.
 # It watches the sport pipelines plus this workflow; this workflow failing to
 # START is covered by the external monitor, not by itself.
+# == 2026-10-14 - THE PANEL LAYER - BUILD AND MONITOR ==
+# ANDY: "we wont know until we build and monitor surely its better than what we
+# are doing." These run nightly so the record-weighted engine accumulates a
+# FORWARD record instead of waiting for someone to run it by hand.
+#
+# Order matters: weights derive from records, and the shadow engine reads the
+# weights.
+#
+# All are DETECTORS - they must not fail the nightly. Until migration
+# 20261014c is applied, panelist_weights and engine_shadow_picks 404, so these
+# report that and write nothing. The shadow engine still blocks duplicates via
+# panelist_registry in that state, so its decisions stay honest meanwhile.
+#
+# Nothing here publishes a pick. engine_shadow_picks exists so the weighted
+# panel can be compared head to head with what actually shipped, which is the
+# only basis on which it should ever be promoted.
+bash "$RUN_STEP" --detector --label "voter_rolling_form.py --today" \
+  python voter_rolling_form.py --today
+bash "$RUN_STEP" --detector --label "voter_pace_efficiency.py --today" \
+  python voter_pace_efficiency.py --today
+bash "$RUN_STEP" --detector --label "voter_goalie_special.py --today" \
+  python voter_goalie_special.py --today
+bash "$RUN_STEP" --detector --label "compute_panelist_weights.py --apply" \
+  python compute_panelist_weights.py --apply
+bash "$RUN_STEP" --detector --label "shadow_panelist_engine.py --today" \
+  python shadow_panelist_engine.py --today
+
+# And the guard that stops duplicate votes coming back. This class has been
+# fixed by hand five times (09-20, 09-26, 09-29 twice, 10-14) and each time the
+# NEXT one still got through, so it is a nightly check now rather than a thing
+# someone happens to notice.
+bash "$RUN_STEP" --detector --label "audit_duplicate_votes.py (nightly)" \
+  python audit_duplicate_votes.py
+
+
 bash "$RUN_STEP" --label "watchdog_workflow_heartbeat.py (nightly)" \
   python watchdog_workflow_heartbeat.py
 echo ""
