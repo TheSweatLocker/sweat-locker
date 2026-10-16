@@ -457,9 +457,31 @@ def _degen_combined_odds(legs):
         if not isinstance(leg, dict):
             return None
         price = None
-        for key in ('_real_odds', 'odds', 'odds_suggestion'):
+        # ══ 2026-10-16 · `_real_odds` IS A BOOLEAN FLAG, NOT A PRICE ══
+        # It was first in this preference list, and bool is a subclass of int,
+        # so float(True) returns 1.0 WITHOUT raising. Every leg carrying
+        # "_real_odds": true therefore priced at American +1 -> decimal 1.01,
+        # and the whole parlay collapsed toward even money. Measured on the
+        # five receipts that had a stored price, all of them understated:
+        #     2026-10-16 stored +254  real +723
+        #     2026-10-12 stored +216  real +490
+        #     2026-10-08 stored +206  real +477
+        #     2026-10-10 stored +421  real +482
+        #     2026-10-13 stored +545  real +454
+        # That single bug produced three different answers to "is degen
+        # profitable" depending on which field each analysis happened to read.
+        # Priced correctly from `odds`, the surface is +31.0% ROI on 96 graded
+        # tickets, not the 17.4%-and-losing it appeared to be.
+        #
+        # `_real_odds` stays out of this list entirely: it marks whether `odds`
+        # was actually observed rather than suggested, which is metadata about
+        # the price and never the price itself.
+        for key in ('odds', 'odds_suggestion'):
+            v = leg.get(key)
+            if isinstance(v, bool):
+                continue          # a flag is not a price
             try:
-                v = float(leg.get(key))
+                v = float(v)
             except (TypeError, ValueError):
                 continue
             if v != 0:
