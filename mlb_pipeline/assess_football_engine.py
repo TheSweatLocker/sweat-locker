@@ -116,6 +116,43 @@ def boot_slope(x, y, n=1000, seed=17):
     return out[int(0.025 * len(out))], out[int(0.975 * len(out))]
 
 
+def ml_grade(label, picks, indent='    '):
+    """picks: list of (took_home, home_ml, away_ml, actual_home_margin).
+
+    ══ 2026-10-16 · WHY THIS EXISTS ══
+    The first version of this script graded EVERY published pick with ats(),
+    including the ml: tiers. A moneyline pick is settled by who WON, not by who
+    covered, and a favourite very often wins without covering — so grading ML
+    on the spread systematically understates favourites and flatters dogs. That
+    alone could manufacture a "tier inversion", and it reported NCAAF ml:STRONG
+    at 31.8% / -39.3% and ml:LEAN at +27.3%. Same class of error as grading a
+    POTD against the narrative's game instead of the lean's: RIGHT NUMBER,
+    WRONG MARKET.
+    """
+    w = l = 0
+    u = 0.0
+    for th, hml, aml, mg in picks:
+        price = hml if th else aml
+        if price is None or mg == 0:
+            continue
+        pay = (100 / -price) if price < 0 else (price / 100)
+        hit = (mg > 0) if th else (mg < 0)
+        if hit:
+            w += 1
+            u += pay
+        else:
+            l += 1
+            u -= 1.0
+    n = w + l
+    if n < 12:
+        print(f'{indent}{label:<34}n={n} too few')
+        return None
+    lo, hi = wilson(w, n)
+    print(f'{indent}{label:<34}{w}-{l}  {100*w/n:5.1f}%  CI[{lo:.1f},{hi:.1f}]'
+          f'  {u:+7.2f}u  ROI {100*u/n:+6.1f}%  n={n}  [ML]')
+    return 100 * u / n
+
+
 def ats(label, picks, indent='    '):
     """picks: list of (took_home, market_home_margin, actual_margin)."""
     w = l = p = 0
@@ -164,6 +201,8 @@ def run(sport):
         mkt = cs if sport == 'NFL' else -cs
         rows.append({'c': c, 'mkt': mkt, 'mg': hs - as_,
                      'tot': hs + as_, 'ct': f(c.get('close_total')),
+                     'hml': f(c.get('close_home_ml')),
+                     'aml': f(c.get('close_away_ml')),
                      'date': str(c.get('game_date'))[:10]})
     rows.sort(key=lambda r: r['date'])
     print('=' * 78)
@@ -219,20 +258,33 @@ def run(sport):
     ats('always FAVOURITE',
         [(r['mkt'] > 0, r['mkt'], r['mg']) for r in te])
 
-    print('\n  C. PUBLISHED PICK (test slice)')
-    allp, bytier = [], defaultdict(list)
+    print('')
+    print('  C. PUBLISHED PICK (test slice) — GRADED IN ITS OWN MARKET')
+    spread_t, ml_t = defaultdict(list), defaultdict(list)
+    sp_all, ml_all = [], []
     for r in te:
         pp = jd(r['c'].get('primary_play'))
         side = str(pp.get('side') or '').upper()
         if side not in ('HOME', 'AWAY'):
             continue
-        t = (True, r['mkt'], r['mg']) if side == 'HOME' else \
-            (False, r['mkt'], r['mg'])
-        allp.append(t)
-        bytier[f"{pp.get('type')}:{pp.get('tier')}"].append(t)
-    ats('published, all tiers', allp)
-    for k in sorted(bytier, key=lambda x: -len(bytier[x])):
-        ats(f'  {k}', bytier[k])
+        th = side == 'HOME'
+        key = f"{pp.get('type')}:{pp.get('tier')}"
+        if str(pp.get('type') or '').lower() == 'ml':
+            t = (th, r['hml'], r['aml'], r['mg'])
+            ml_all.append(t)
+            ml_t[key].append(t)
+        else:
+            t = (th, r['mkt'], r['mg'])
+            sp_all.append(t)
+            spread_t[key].append(t)
+    print('   SPREAD / RL picks, graded ATS at -110:')
+    ats('published spread, all tiers', sp_all)
+    for k in sorted(spread_t, key=lambda x: -len(spread_t[x])):
+        ats(f'  {k}', spread_t[k])
+    print('   MONEYLINE picks, graded on WHO WON at the real price:')
+    ml_grade('published ML, all tiers', ml_all)
+    for k in sorted(ml_t, key=lambda x: -len(ml_t[x])):
+        ml_grade(f'  {k}', ml_t[k])
 
     # model-vs-market selector, the NHL lesson applied to football
     print('\n  D. SELECT ON ABSOLUTE PROJECTION vs ON DISAGREEMENT')
