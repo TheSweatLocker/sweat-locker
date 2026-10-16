@@ -2164,6 +2164,101 @@ def apply_ncaaf_ml_away_prime_cap(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+#: NHL ML requires this much of OUR OWN win probability behind a HOME pick.
+#: Measured break point — see apply_nhl_ml_confidence_gate.
+NHL_ML_WP_MIN = float(os.environ.get('NHL_ML_WP_MIN', '0.56'))
+
+
+def apply_nhl_ml_confidence_gate(pp: dict | None, ctx: dict) -> dict | None:
+    """Require NHL moneyline picks to be backed by our own win probability.
+
+    ══ 2026-10-16 · NHL SIDES WERE 34.5% AND THIS IS WHY ══
+    ANDY: "IF NHL sides is 10-19 we might as well flip them" — and then,
+    correctly, refused the flip: "thats saying we have a losing model so just
+    fade us and hope for the best".
+
+    He was right. The model is NOT broken at ranking winners. projected_home_wp
+    is calibrated (Brier 0.2348 vs a 0.2436 always-base, market 0.2245) and is
+    the single strongest discriminator of 19 pre-game signals scanned
+    (low half 36.7% -> high half 68.4%, gap +31.8%, p=0.009).
+
+    What was broken is SELECTION. Our edge against the market —
+    ourP(home) - de-vigged marketP(home) — is ANTI-informative: at edge>=0.03
+    it goes 25-37 (40.3%, ROI -21.3%) while the flip goes 37-25. That happens
+    because the market's probability is BETTER than ours, so picking games by
+    maximum disagreement picks our own noise.
+
+    MEASURED ON THE 90 PUBLISHED NHL ML PICKS, graded at the real price:
+
+        ALL published            48-42  53.3%  ROI  -8.9%
+        HOME, wp < 0.52           5-7   41.7%  ROI -24.2%  n=12
+        HOME, wp 0.52-0.56        6-11  35.3%  ROI -38.0%  n=17
+        HOME, wp 0.56-0.60       11-6   64.7%  ROI +14.5%  n=17
+        HOME, wp > 0.60          15-6   71.4%  ROI +12.6%  n=21
+        AWAY (all)               11-12  47.8%  ROI -16.3%  n=23
+        AWAY, wp < 0.45           3-6   33.3%  ROI -44.8%  n=9
+
+    Above the 0.56 break: 26-12 (68.4%, +13.5%). Below it, plus every AWAY
+    pick: 22-30 (42.3%). The band 0.52-0.56 is the worst in the set — a
+    near-coin-flip game carrying a published side.
+
+    SO THE GATE IS: a HOME pick needs wp >= NHL_ML_WP_MIN (0.56). An AWAY
+    pick is not supported at any wp — the away side of the rule was tested
+    separately and does not work (4-4 at the confidence threshold, 33.3% where
+    the model likes away most).
+
+    Sub-threshold picks are set to conviction 0, which this codebase already
+    treats as non-counting (compute_surface_records skips conviction==0 or
+    tier COVERAGE). The pick is NOT deleted and nothing is suppressed upstream
+    — the engine still produces it, and this says it has not earned a stake.
+
+    CAVEAT: n=17 and n=21 in the two passing bands. What makes it actionable
+    is that the ordering is monotonic across four bands and agrees with an
+    independently-built confidence selector (73.9%, +15.8% on a temporal test
+    slice, beating both always-HOME at -6.2% and market-favourite at +6.2%).
+
+    Threshold is env-tunable via NHL_ML_WP_MIN so it can be moved on the
+    forward record without a code change.
+    """
+    if not pp or not isinstance(pp, dict):
+        return pp
+    if str(pp.get('type') or '').lower() != 'ml':
+        return pp
+    side = str(pp.get('side') or '').upper()
+    if side not in ('HOME', 'AWAY'):
+        return pp
+    try:
+        wp = ctx.get('projected_home_wp')
+        wp = float(wp) if wp is not None else None
+    except (TypeError, ValueError):
+        wp = None
+    if wp is None:
+        # No probability to check against: leave the pick alone rather than
+        # demote on missing data.
+        return pp
+
+    why = None
+    if side == 'AWAY':
+        why = (f'NHL ML away picks are 11-12 (47.8%, ROI -16.3%) and 33.3% '
+               f'where the model most likes away; the away side of the '
+               f'confidence rule does not work')
+    elif wp < NHL_ML_WP_MIN:
+        why = (f'home wp {wp:.3f} < {NHL_ML_WP_MIN:.2f}: that band is '
+               f'11-18 (37.9%) with the 0.52-0.56 slice at 35.3% / -38.0%')
+    if not why:
+        return pp
+
+    pp = dict(pp)
+    pp['tier'] = 'COVERAGE'
+    pp['conviction'] = 0
+    note = f'NHL ML confidence gate: {why}. Demoted to conviction 0.'
+    prior = pp.get('audit_note') or ''
+    pp['audit_note'] = (note + (' | ' + str(prior) if prior else ''))[:900]
+    print(f'  [gate] NHL ML confidence demote ({side}, wp='
+          f'{wp:.3f}) -> conviction 0')
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2197,6 +2292,10 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # picks per sport. Runs AFTER other gates so juice-trap/MC-dissent
     # output still gets a chance; LR fires as a final override for ML.
     # 2026-09-14: NHL + NBA added post-backfill (see project_v1_0_1 #12).
+    if sport == 'NHL':
+        # 2026-10-16: our WP ranks winners but our EDGE vs the market does not.
+        # Require the pick to be backed by the part that works.
+        pp = apply_nhl_ml_confidence_gate(pp, ctx)
     if sport in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA'):
         pp = apply_ml_lr_override(pp, ctx, sport=sport)
     # 2026-10-02 · MUST SIT AFTER THE OVERRIDE, WHICH IS THE WHOLE POINT.

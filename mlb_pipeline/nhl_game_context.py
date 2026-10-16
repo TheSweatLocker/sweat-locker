@@ -942,8 +942,19 @@ def _apply_ensemble(row: dict) -> None:
             from defensive_gates import apply_all_defensive_gates
             row['primary_play'] = apply_all_defensive_gates(
                 row['primary_play'], row, sport='NHL')
-        except Exception:
-            pass  # gates unavailable — keep raw ensemble output
+        except Exception as _ge:                               # noqa: BLE001
+            # 2026-10-16: was `pass`. A bare swallow here means EVERY NHL
+            # defensive gate silently vanishes on one error — the juice trap,
+            # the MC dissent, the publish gate and the new ML confidence gate
+            # all gone, with the raw ensemble output published as though it had
+            # been checked. That is the same shape as the SB_READ typo that
+            # left l10_goals NULL for two months behind `except: return {}`.
+            # Still non-fatal, because a missing gate must not kill the slate —
+            # but it SAYS SO now.
+            print(f'  ⚠⚠ NHL defensive gates FAILED for '
+                  f'{row.get("away_team")} @ {row.get("home_team")}: '
+                  f'{type(_ge).__name__}: {str(_ge)[:160]} — raw ensemble '
+                  f'output kept UNGATED')
 
         # 2026-09-27 · EDGE CHECK LAST, AS A CEILING.
         #
