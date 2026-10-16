@@ -4930,6 +4930,48 @@ def run():
         return -110
     potd_odds = _potd_odds_american(pick)
 
+    # ══ 2026-10-16 · THE PUBLISH LOCK, FINALLY ASKED ══
+    # ANDY: "Guardians should of stayed as POTD and it would of won, i want to
+    # find out why the switch happened and i dont want it happening again."
+    #
+    # On 2026-10-15 jerry_anchor_potd published Cleveland Guardians ML at 11:31
+    # ET with conviction 70 (receipt id=2276071, capture_mode=reconstructed
+    # from daily_best_bet_history, pick_odds -133, conviction 70). A LATER run
+    # of THIS function overwrote the same bet_date row with "Los Angeles
+    # Dodgers ML (resolver STRONG)", sweat_score 35. Guardians won 3-2; the
+    # Dodgers lost 4-6. A conviction-70 pick was replaced by a score-35 pick
+    # after the 12:00 ET hard lock.
+    #
+    # jerry_anchor_potd.py:463-530 already had the lock, and a strict one —
+    # past POTD_HARD_LOCK_ET_HOUR a republish is "REFUSED even with --force".
+    # But both of its checks live INSIDE that script, so they stopped
+    # jerry_anchor_potd republishing over itself and never stopped this
+    # writer, which posts to daily_best_bet_history?on_conflict=bet_date
+    # unconditionally. The lock was never wrong; IT WAS NEVER ASKED.
+    #
+    # Same shape as the v4 neutralisation that guarded nfl_game_context's lens
+    # count while signal_sources read the raw column, and as the 10-08 POTD fix
+    # that corrected the odds and left the narrative. A guard one writer
+    # honours is a convention, not a lock. potd_publish_lock.py is now the
+    # single implementation and every writer asks it.
+    try:
+        from potd_publish_lock import potd_locked as _potd_locked
+        _locked, _why = _potd_locked(
+            today,
+            force=bool(os.environ.get('POTD_ALLOW_REPUBLISH') == '1'),
+            dry_run=False)
+        if _locked:
+            print(f"  🔒 POTD publish REFUSED for {today} — {_why}")
+            print(f"      would have written: {expected_game} | "
+                  f"{expected_lean} (score {pick['score']})")
+            return
+    except ImportError:
+        print("  ⚠ potd_publish_lock not importable — POTD write proceeding "
+              "UNGUARDED. This is the 2026-10-15 Guardians/Dodgers failure "
+              "mode; fix the import rather than ignoring this line.")
+    except Exception as _e:                                    # noqa: BLE001
+        print(f"  ⚠ POTD lock check threw ({_e}) — failing OPEN and writing")
+
     narrative = f"Play of the Day: {pick['away_team']} @ {pick['home_team']} | {pick.get('lean_display', '')}"
     try:
         r = requests.post(

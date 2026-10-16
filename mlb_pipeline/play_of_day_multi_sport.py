@@ -189,6 +189,29 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
     jerry_anchor_potd (this session).
     Override with POTD_ALLOW_REPUBLISH=1 env var.
     """
+    # ══ 2026-10-16 · DEFER TO THE SHARED LOCK ══
+    # This script's own anchor check (below, 2026-09-09) is correct but is a
+    # SECOND COPY of the rule and has no time-based hard lock, so it would
+    # still overwrite after 12:00 ET whenever the anchor marker happens to be
+    # absent — which is exactly how the 10-15 Guardians POTD was lost (the
+    # overwrite destroyed the anchor, so nothing downstream could tell a lock
+    # had ever existed). potd_publish_lock.py is the single rule; the local
+    # check stays underneath as a belt-and-braces fallback.
+    if not dry_run:
+        try:
+            from potd_publish_lock import potd_locked as _pl
+            _lk, _why = _pl(today,
+                            force=os.environ.get('POTD_ALLOW_REPUBLISH') == '1',
+                            dry_run=False)
+            if _lk:
+                print(f'  🔒 cross-sport POTD override REFUSED — {_why}')
+                return False
+        except ImportError:
+            print('  ⚠ potd_publish_lock not importable — falling back to the '
+                  'local anchor check only')
+        except Exception as _e:                                # noqa: BLE001
+            print(f'  ⚠ shared POTD lock threw ({_e}) — local check only')
+
     if not dry_run and os.environ.get('POTD_ALLOW_REPUBLISH') != '1':
         try:
             _existing = mlb_row  # already fetched by caller
