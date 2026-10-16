@@ -2092,6 +2092,78 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     return out
 
 
+def apply_ncaaf_ml_away_prime_cap(pp: dict | None, ctx: dict) -> dict | None:
+    """Demote NCAAF MONEYLINE picks that reach PRIME on the AWAY side.
+
+    ══ 2026-10-16 · THE NCAAF ML TIER LADDER IS INVERTED ══
+    Measured on all 99 graded NCAAF ML published picks, each graded on WHO WON
+    at its real price (not ATS — grading ML against the spread is what produced
+    a fake ml:STRONG of 31.8% when the true figure is 50.0%):
+
+        tier       n   %dogs  hit%   home%   breakeven   ROI
+        PRIME     13    7.7%  23.1%   7.7%     59.2%   -63.9%
+        STRONG    36    5.6%  50.0%  55.6%     64.6%   -25.5%
+        COVERAGE  32    6.2%  65.6%  90.6%     65.6%    -1.3%
+        LEAN      18   22.2%  72.2%  66.7%     58.7%   +20.2%
+
+    Monotonic and backwards: the more conviction, the worse the result against
+    the price being paid. Aggregated, PRIME+STRONG is 21-28 (42.9%, n=49) while
+    COVERAGE+LEAN is 34-16 (68.0%, n=50).
+
+    PRIME IS 12 OF 13 AWAY PICKS — home% 7.7% — at an average price of -129,
+    so these are away FAVOURITES, not dogs. It loses in every price band
+    (+dog 1/0%, -100/149 5/20%, -150/199 4/25%, -200/299 3/33%). Over the same
+    test slice NCAAF always-HOME returns +4.8% ATS and always-AWAY -13.9%, so
+    the sport had a real home edge while the top tier was systematically going
+    away. That is project_sp_plus_compression_927 — a compressed projection
+    manufacturing away/dog value — concentrated in the tier that carries the
+    largest stake.
+
+    WHY THE EXISTING GATE MISSES IT: apply_ncaaf_high_conviction_dog_cap
+    (2026-09-30) caps high-conviction DOGS. These are away FAVOURITES — only
+    7.7% are priced plus — so that gate never sees them. Right instinct, wrong
+    axis.
+
+    CAVEAT, STATED: n=13 for PRIME, and only ONE of those was a home pick, so
+    this says nothing about home PRIME and does not touch it. What justifies
+    acting on 13 is that the bucket fails in all four price bands and sits at
+    the top of a four-tier monotonic inversion — not the interval, which is
+    wide.
+
+    DEMOTES RATHER THAN BLOCKS. The pick still publishes, one tier lower, with
+    conviction clamped to that tier's ceiling — the ladder exists for exactly
+    this. Reversible by deleting the call in apply_all_defensive_gates.
+    """
+    if not pp or not isinstance(pp, dict):
+        return pp
+    if str(pp.get('type') or '').lower() != 'ml':
+        return pp
+    if str(pp.get('tier') or '').upper() != 'PRIME':
+        return pp
+    if str(pp.get('side') or '').upper() != 'AWAY':
+        return pp
+    pp = dict(pp)
+    tier_cap = {'STRONG': 65}
+    pp['tier'] = 'STRONG'
+    if isinstance(pp.get('conviction'), (int, float)):
+        pp['conviction'] = min(int(pp['conviction']), tier_cap['STRONG'])
+    note = ('NCAAF ML away-PRIME cap: PRIME on NCAAF ML is 3-10 (23.1%) on '
+            'n=13, 12 of 13 away, losing in every price band, at the top of a '
+            'monotonic tier inversion (PRIME 23.1% / STRONG 50.0% / COVERAGE '
+            '65.6% / LEAN 72.2%). Demoted PRIME -> STRONG.')
+    prior = pp.get('audit_note') or ''
+    pp['audit_note'] = (note + (' | ' + str(prior) if prior else ''))[:900]
+    sub = pp.get('sub') or ''
+    pp['sub'] = (f'STRONG (capped from PRIME — NCAAF away ML tier inversion)'
+                 if not sub else str(sub))
+    # ASCII only: an emoji here raised UnicodeEncodeError on a cp1252 console
+    # during unit test. A defensive gate that THROWS is worse than the bias it
+    # was added to fix, so this prints plainly.
+    print(f"  [gate] NCAAF ML away-PRIME capped -> STRONG "
+          f"({pp.get('label') or pp.get('side')})")
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2117,6 +2189,10 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
         # 2026-09-30: measured dog/fav split on 256 graded sides — see the
         # gate's docstring. Runs after large-spread so both can demote.
         pp = apply_ncaaf_high_conviction_dog_cap(pp, ctx)
+        # 2026-10-16: the dog cap above works on the DOG axis; the measured ML
+        # tier inversion lives on the AWAY axis (PRIME is 12 of 13 away
+        # FAVOURITES). See the gate's docstring.
+        pp = apply_ncaaf_ml_away_prime_cap(pp, ctx)
     # 2026-09-03 LR ML OVERRIDE — supervised models replace legacy ML
     # picks per sport. Runs AFTER other gates so juice-trap/MC-dissent
     # output still gets a chance; LR fires as a final override for ML.
