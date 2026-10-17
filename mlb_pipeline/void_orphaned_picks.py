@@ -122,6 +122,54 @@ def build_played():
     return by_gid, by_key
 
 
+def build_rescheduled():
+    """Games that were RE-DATED: unplayed, with a same-teams row on a later date.
+
+    ══ 2026-10-17 · WHY THIS BEATS THE 4-DAY TIMEOUT ══
+    ANDY wanted the Sweat Card recap and the Receipts POTD to track the
+    postponed baseball game accurately TODAY, not in four days.
+
+    The 4-day threshold exists because a one-night delay still plays and must
+    still grade — voiding early would destroy a live pick. But when the SAME
+    TEAMS appear on a LATER date while the earlier row has no score, the
+    postponement is not an inference, it is a fact:
+
+        2026-10-16  TB @ CLE  None-None  id=b9d2e07cf437b564   <- ghost
+        2026-10-17  TB @ CLE  None-None  id=bf41baaebfa23a20   <- rescheduled
+
+    MLB game_id is date-dependent, so the re-dated game carries a NEW id and
+    the 10-16 pick can never resolve against it. Waiting four days leaves a
+    dead row in yesterday's recap for four days.
+
+    So: an unplayed game with a same-teams successor on a later date is voided
+    immediately, and everything else still waits out STALE_DAYS.
+    """
+    sched = defaultdict(list)
+    for sport, tbl in RESULTS.items():
+        for r in page(tbl, {'select': 'game_id,game_date,home_team,away_team,'
+                                      'home_score,away_score'}):
+            d = str(r.get('game_date'))[:10]
+            if not d or d == 'None':
+                continue
+            sched[(sport, str(r.get('home_team')), str(r.get('away_team')))
+                  ].append((d, r.get('home_score'), str(r.get('game_id'))))
+    out = set()
+    for (sport, home, away), games in sched.items():
+        games.sort(key=lambda t: t[0])     # date only: score may be None
+        for i, (d, score, gid) in enumerate(games):
+            if score is not None:
+                continue
+            if (_stale(d) or 0) < 1:
+                continue          # NOT YET PLAYED. A playoff series lists the
+                                  # same matchup on several future dates; only a
+                                  # date already PAST with no score was missed.
+            # any LATER row for the same matchup means this one was re-dated
+            if any(d2 > d for d2, _s2, _g2 in games[i + 1:]):
+                out.add((sport, d, home, away))
+                out.add((sport, gid))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -136,6 +184,12 @@ def main() -> int:
     by_gid, by_key = build_played()
     print(f'games with a final score: {len(by_gid)} by id, '
           f'{len(by_key)} by (date, home, away)')
+    resched = build_rescheduled()
+    _rd = sorted(k for k in resched if len(k) == 4)
+    print(f'RE-DATED games (a PAST date with no score, same teams listed '
+          f'later): {len(_rd)}')
+    for sport, d, home, away in _rd:
+        print(f'    {sport:<6}{d}  {away[:24]:<25}@ {home[:24]}')
 
     plan = defaultdict(list)
 
@@ -146,15 +200,19 @@ def main() -> int:
             continue
         d = str(x.get('bet_date'))[:10]
         age = _stale(d)
-        if age is None or age <= stale_days:
+        if age is None:
             continue
         sport = str(x.get('sport') or 'MLB').upper()
         gm = str(x.get('game') or '')
+        redated = False
         if ' @ ' in gm:
             away, home = [s.strip() for s in gm.split(' @ ', 1)]
             if (sport, d, home, away) in by_key:
-                continue          # it DID play; this is a grading gap, not an orphan
-        plan['potd'].append((x, age, gm))
+                continue          # it DID play; a grading gap, not an orphan
+            redated = (sport, d, home, away) in resched
+        if not redated and age <= stale_days:
+            continue
+        plan['potd' if not redated else 'potd:RE-DATED'].append((x, age, gm))
 
     # ---- props ----
     for sport, tbl in (('MLB', 'mlb_pipeline_props'),
@@ -165,11 +223,15 @@ def main() -> int:
             if str(x.get('result') or '') not in ('', 'None'):
                 continue
             age = _stale(x.get('game_date'))
-            if age is None or age <= stale_days:
+            if age is None:
                 continue
             if (sport, str(x.get('game_id'))) in by_gid:
                 continue
-            plan[f'props:{sport}:{tbl}'].append((x, age, ''))
+            redated = (sport, str(x.get('game_id'))) in resched
+            if not redated and age <= stale_days:
+                continue
+            key = f'props:{sport}:{tbl}' + (':RE-DATED' if redated else '')
+            plan[key].append((x, age, ''))
 
     # ---- jerry_reads ----
     for x in page('jerry_reads', {'select': 'id,sport,game_date,game_id,'
@@ -207,7 +269,7 @@ def main() -> int:
 
     wrote = 0
     for k, v in plan.items():
-        if k == 'potd':
+        if k.startswith('potd'):
             for x, _age, _gm in v:
                 r = requests.patch(f'{SB}/rest/v1/daily_best_bet_history',
                                    headers=H_WRITE,

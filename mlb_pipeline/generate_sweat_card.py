@@ -17,6 +17,7 @@ in the workflow so the card has fresh upstream data.
 Usage: python generate_sweat_card.py
 """
 import os
+import re
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1584,6 +1585,13 @@ def _cohort_eligibility(prop, gate_window="30d"):
 _DEMOTE_MAP = {"PRIME": "STRONG", "STRONG": "LEAN", "LEAN": "LEAN"}
 
 
+# A player-prop label: "<player> Over|Under <line> <stat>[ · proj X]".
+# The leading group must be non-empty, which is what keeps a bare game total
+# ("Over 6.5") from ever parsing as a prop. See _play_signature.
+_PROP_LABEL_RE = re.compile(
+    r"^(.+?)\s+(over|under)\s+([0-9]+(?:\.[0-9]+)?)\s*(.*)$")
+
+
 def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
     """Pick the 8 highest-conviction plays for tonight's social card.
 
@@ -1854,11 +1862,47 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         # → both surfaced → Arizona ML duplicated on today's card. Generic
         # parenthetical strip covers this + any future annotation pattern.
         norm_label = _re.sub(r"\s*\([^)]*\)\s*$", "", norm_label).strip()
-        # For props, include the player name (already in label) so two
-        # different players on the same team don't collide.
-        if ptype.startswith("prop_"):
-            return ("prop", norm_label)
-        return (g.lower(), norm_label)
+        # ══ 2026-10-17 · THE SHAPE HAS TO MATCH, NOT JUST THE LABEL ══
+        # ANDY: "martinez porp on swaetcard is on there twice".
+        # top_8 on 10-17 held exactly TWO items and they were ONE play:
+        #   type=POTD        label="Nick Martinez Over 3.5 Hits Allowed (Jerry 82/100)"
+        #   type=prop_ha_over label="Nick Martinez Over 3.5 Hits Allowed"
+        # The 08-02 and 08-22 fixes above made the two labels normalize to the
+        # SAME string, and it still got through, because this function returned
+        # two different TUPLE SHAPES for them:
+        #   prop path -> ("prop", label)          [type startswith "prop_"]
+        #   POTD path -> (game,  label)           [type is "POTD"]
+        # Those can never be equal, so the set never collided. An ML POTD
+        # lands on (game, label) from BOTH paths, which is why the June and
+        # August ML duplicates stayed fixed and a PROP POTD did not.
+        #
+        # Returning a SET and deduping on any overlap removes the shape
+        # problem. Two rules keep it from over-collapsing:
+        #   * the prop signature is parsed to (player, side, line, stat), so
+        #     the "· proj 8.6" annotation the June fix tripped on cannot
+        #     break equality the way a whole-label compare does;
+        #   * a prop signature is only emitted when text precedes the
+        #     Over/Under — a game total reads "Over 6.5" with nothing before
+        #     it, so two different games sharing a total line can never
+        #     collapse into each other. That false positive is the dangerous
+        #     direction: a MISS leaves today's behaviour, a false HIT silently
+        #     drops a real pick off the card.
+        sigs = {(g.lower(), norm_label)}
+        m = _PROP_LABEL_RE.match(norm_label)
+        if m:
+            player = re.sub(r"[^a-z0-9]", "", m.group(1))
+            side = m.group(2)
+            try:
+                line = float(m.group(3))
+            except (TypeError, ValueError):
+                line = m.group(3)
+            stat = re.sub(r"[^a-z0-9]", "", (m.group(4) or "").split("·")[0])
+            if player:
+                sigs.add(("prop", player, side, line, stat))
+        elif ptype.startswith("prop_"):
+            # couldn't parse the label; keep the legacy behaviour
+            sigs.add(("prop", norm_label))
+        return sigs
 
     def _is_ml_pick(pick):
         """True when the pick is a moneyline bet (any path)."""
@@ -1876,7 +1920,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         # Play-signature dedup — same bet should never appear twice even
         # when surfaced by different paths.
         sig = _play_signature(pick)
-        if sig is not None and sig in seen_play_signatures:
+        if sig and (sig & seen_play_signatures):
             return False
         # Same-game ML conflict — once any ML pick is added on a game,
         # block opposite-side ML picks on the same game.
@@ -1916,7 +1960,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             prop_type_count[prop_type] = prop_type_count.get(prop_type, 0) + 1
         seen_keys.add(key)
         if sig is not None:
-            seen_play_signatures.add(sig)
+            seen_play_signatures |= sig
         if gkey is not None and _is_ml_pick(pick):
             seen_ml_games.add(gkey)
         if gkey is not None and _is_total:
