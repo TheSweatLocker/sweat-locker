@@ -3803,10 +3803,20 @@ def upload_game_context(context, commence_time=None):
         'home_pitcher_vs_team_recent_n_starts', 'away_pitcher_vs_team_recent_n_starts',
         # 2026-06-18 Phase 1 additions — strip if columns not yet migrated
         'data_completeness', 'model_confidence',
+        # 2026-10-17 XGBoost suppression shadow. Registered here so the row
+        # still writes before 20261017a_xgb_suppression_shadow.sql is applied:
+        # naming a column PostgREST doesn't know drops the WHOLE upsert, and a
+        # missing context row is far worse than a missing shadow value.
+        'xgb_shadow_home_runs', 'xgb_shadow_away_runs', 'xgb_shadow_total',
+        'xgb_shadow_spread', 'xgb_suppress_reason', 'xgb_model_version',
     )
     stripped_total = []
     retry_rounds = 0
-    while r.status_code == 400 and retry_rounds < 8:
+    # 2026-10-17: budget raised 8 -> 16. PostgREST names only the FIRST
+    # unknown column per response, so each missing column costs one round;
+    # the 6 shadow columns added today could exhaust an 8-round budget on a
+    # stale schema cache and leave the game un-upserted.
+    while r.status_code == 400 and retry_rounds < 16:
         round_stripped = []
         for k in candidate_strip_keys:
             if k in r.text and k in context:
@@ -5045,8 +5055,29 @@ def run(target_date=None):
             model_pred_away_runs = None
             model_pred_spread = None
             model_pred_total = None
+            # ══ 2026-10-17 · SHADOW THE SUPPRESSION ══
+            # When a guard below drops the model, model_pred_* is written NULL
+            # and the number it dropped used to be discarded, which made the
+            # guard unfalsifiable: "when they disagree by 4+, which was closer
+            # to the actual total?" could not be answered from stored data.
+            # These carry the suppressed value + the reason. Shadow only;
+            # nothing here changes a published pick.
+            xgb_shadow_home = xgb_shadow_away = None
+            xgb_shadow_total = xgb_shadow_spread = None
+            xgb_suppress_reason = None
+            xgb_model_version = None
             try:
-                from predict_runs import predict_runs, MODELS_LOADED, build_feature_dict
+                from predict_runs import (predict_runs, MODELS_LOADED,
+                                          build_feature_dict)
+                try:
+                    from predict_runs import LOADED_VERSION as _xgb_ver
+                except ImportError:
+                    _xgb_ver = None
+                xgb_model_version = _xgb_ver
+                if not MODELS_LOADED:
+                    xgb_suppress_reason = 'not_loaded'
+                elif projected_spread is None:
+                    xgb_suppress_reason = 'no_projected_spread'
                 if MODELS_LOADED and projected_spread is not None:
                     # v4 model schema (2026-05-18) — kitchen-sink 82-feature
                     # set. Pass everything we have; build_feature_dict reads
@@ -5158,12 +5189,21 @@ def run(target_date=None):
                         skip_xgb_reason = "missing xERA"
 
                     if skip_xgb_reason:
+                        xgb_suppress_reason = 'missing_xera'
                         print(f"  XGBoost suppressed: {skip_xgb_reason} — using v3 projected_total only")
                     else:
                         feat = build_feature_dict(_ctx_for_model)
                         pred_h, pred_a = predict_runs(feat)
+                        if pred_h is None or pred_a is None:
+                            xgb_suppress_reason = 'predict_returned_none'
                         if pred_h is not None and pred_a is not None:
                             xgb_total = pred_h + pred_a
+                            # shadow FIRST, so a suppression below still leaves
+                            # the number it suppressed on the row
+                            xgb_shadow_home = round(pred_h, 2)
+                            xgb_shadow_away = round(pred_a, 2)
+                            xgb_shadow_total = round(xgb_total, 2)
+                            xgb_shadow_spread = round(pred_h - pred_a, 2)
                             # Disagreement guard relaxed 2026-06-06: was 2.5,
                             # now 4.0. The 2.5 threshold was over-aggressive —
                             # SF@CHC 6/6 had v3=5.7, v4=9.42 (delta +3.72)
@@ -5179,7 +5219,10 @@ def run(target_date=None):
                             # vote: trust v4 when Jerry agrees with v4 vs v3.
                             DISAGREEMENT_THRESHOLD = 4.0
                             if projected_total is not None and abs(xgb_total - projected_total) >= DISAGREEMENT_THRESHOLD:
-                                print(f"  XGBoost suppressed: disagrees with v3 by {abs(xgb_total - projected_total):.1f} runs (xgb {xgb_total:.1f} vs v3 {projected_total:.1f}) — model blind spot, falling back to v3")
+                                xgb_suppress_reason = (
+                                    f'disagreement_{DISAGREEMENT_THRESHOLD}'
+                                    f'_delta_{abs(xgb_total - projected_total):.1f}')
+                                print(f"  XGBoost suppressed: disagrees with v3 by {abs(xgb_total - projected_total):.1f} runs (xgb {xgb_total:.1f} vs v3 {projected_total:.1f}) — model blind spot, falling back to v3 [shadowed]")
                             else:
                                 model_pred_home_runs = round(pred_h, 2)
                                 model_pred_away_runs = round(pred_a, 2)
@@ -5187,6 +5230,7 @@ def run(target_date=None):
                                 model_pred_total = round(xgb_total, 2)
                                 print(f"  XGBoost (informational): spread {model_pred_spread:+.2f} (v3 {projected_spread:+.2f}), total {model_pred_total:.1f} (v3 {projected_total:.1f})")
             except Exception as e:
+                xgb_suppress_reason = f'predict_failed:{type(e).__name__}'
                 print(f"  XGBoost predict failed: {e}")
 
             # Spread delta — projected vs posted
@@ -5935,6 +5979,12 @@ def run(target_date=None):
                 # join against resolved game outcomes to validate before
                 # promoting any to live signals.
                 "signal_confluence_shadow_breakdown": shadow_breakdown if shadow_breakdown else None,
+                "xgb_shadow_home_runs": xgb_shadow_home,
+                "xgb_shadow_away_runs": xgb_shadow_away,
+                "xgb_shadow_total": xgb_shadow_total,
+                "xgb_shadow_spread": xgb_shadow_spread,
+                "xgb_suppress_reason": xgb_suppress_reason,
+                "xgb_model_version": xgb_model_version,
                 "model_pred_home_runs": model_pred_home_runs,
                 "model_pred_away_runs": model_pred_away_runs,
                 "model_pred_spread": model_pred_spread,
