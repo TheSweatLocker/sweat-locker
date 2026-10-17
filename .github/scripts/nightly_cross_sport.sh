@@ -605,6 +605,14 @@ bash "$RUN_STEP" --detector --label "shadow_panelist_engine.py --today" \
 # rather than across all rows -- coverage on "all rows" is exactly what hid
 # NCAAF epa at ratio 0.10 and NFL v4 at 0.02. Exits 1 on a problem, so it is
 # a detector and reports without failing the nightly.
+# 2026-10-16: void picks whose game never resolved. A postponed game that
+# comes back under a NEW game_id (MLB ids are date-dependent) orphans its
+# POTD and props as Pending forever — the 2026-07-21 BAL@BOS POTD sat that
+# way for 87 days. Threshold is 4 days, so a one-night delay is untouched
+# and still grades normally. Detector: it must not fail the nightly.
+bash "$RUN_STEP" --detector --label "void_orphaned_picks.py (nightly)" \
+  python void_orphaned_picks.py --apply
+
 bash "$RUN_STEP" --detector --label "prelock_readiness.py (nightly)" \
   python prelock_readiness.py
 
