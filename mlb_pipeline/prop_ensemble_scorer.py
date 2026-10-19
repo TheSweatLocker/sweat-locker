@@ -970,8 +970,25 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
     # prop game_ids are odds-API hashes while NHL/NBA/NFL context and results
     # key on their own upstream ids — a game_id join matched 0 of 2,132 NHL
     # props. See prop_ctx_resolve for the measurement and the fallback key.
-    r = requests.get(f'{SB}/rest/v1/{ctx_table}?game_date=eq.{game_date}&select=*',
-                     headers=H_READ, timeout=15)
+    # ══ 2026-10-19 · LOAD A DATE WINDOW, NOT ONE DATE ══
+    # The odds API dates an event in UTC and context dates it in ET, so a
+    # prop dated 10-21 can belong to a context row dated 10-22. Loading one
+    # date meant that row was never in memory to match against, and NBA
+    # resolved MISS on 500 of 500 opening-night props - every ctx-dependent
+    # signal silently reporting "did not fire" instead of "no data".
+    # prop_ctx_resolve registers each context row on +/- 1 day for the same
+    # reason; this is the other half of that fix.
+    import datetime as _dt
+    try:
+        _d0 = _dt.date.fromisoformat(str(game_date)[:10])
+        _lo = (_d0 - _dt.timedelta(days=1)).isoformat()
+        _hi = (_d0 + _dt.timedelta(days=2)).isoformat()
+        _ctx_q = (f'?game_date=gte.{_lo}&game_date=lt.{_hi}&select=*'
+                  f'&limit=400')
+    except ValueError:
+        _ctx_q = f'?game_date=eq.{game_date}&select=*'
+    r = requests.get(f'{SB}/rest/v1/{ctx_table}{_ctx_q}',
+                     headers=H_READ, timeout=20)
     ctx_rows = r.json() if r.status_code == 200 else []
     ctx_index = build_ctx_index(ctx_rows)
 

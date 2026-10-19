@@ -49,7 +49,14 @@ from __future__ import annotations
 # Prop-side fields that may name the player's team, best first.
 _PROP_TEAM_FIELDS = ('team_abbrev', 'player_team', 'team')
 # Context-side fields naming the two teams.
-_CTX_TEAM_FIELDS = ('home_team_abbrev', 'away_team_abbrev', 'home_team', 'away_team')
+# ══ 2026-10-19 · THE ABBREV COLUMN IS NAMED DIFFERENTLY PER SPORT ══
+# nba_game_context carries home_abbrev / away_abbrev, NOT
+# home_team_abbrev. Only the latter was listed, so NBA never indexed an
+# abbreviation and fell through to full names - which a prop carrying
+# 'OKC' can never match. Both spellings are listed now.
+_CTX_TEAM_FIELDS = ('home_team_abbrev', 'away_team_abbrev',
+                    'home_abbrev', 'away_abbrev',
+                    'home_team', 'away_team')
 
 
 def build_ctx_index(ctx_rows) -> dict:
@@ -58,7 +65,7 @@ def build_ctx_index(ctx_rows) -> dict:
     A context row is registered under BOTH of its teams, so a prop resolves
     whichever side its player is on.
     """
-    by_id, by_team_date = {}, {}
+    by_id, by_team_date, by_matchup = {}, {}, {}
     for c in (ctx_rows or []):
         gid = c.get('game_id')
         if gid is not None:
@@ -70,7 +77,34 @@ def build_ctx_index(ctx_rows) -> dict:
             v = c.get(f)
             if v:
                 by_team_date[(str(gd), str(v).upper())] = c
-    return {'by_id': by_id, 'by_team_date': by_team_date}
+        # ══ 2026-10-19 · MATCHUP IS THE KEY THAT SURVIVES NBA ══
+        # NBA props carry team_abbrev NULL on 200 of 200 rows, so the
+        # (date, team) fallback has nothing to work with and every prop
+        # resolved MISS - 500 of 500 on opening night, which is why no NBA
+        # prop could reach a publishable tier. They DO carry `matchup`
+        # ("Oklahoma City Thunder @ San Antonio Spurs"), and context carries
+        # the same two full names, so (date, away, home) is an exact 1:1
+        # game join that needs no player-team at all. Registered for every
+        # sport: it identifies the GAME, which is all a context row is.
+        aw, hm = c.get('away_team'), c.get('home_team')
+        if aw and hm:
+            # Registered on the context date AND +/- 1 day. The odds API dates
+            # an event in UTC while context dates it in ET, so a 10-21 ET game
+            # can arrive on a prop as 10-22 - which left 457 of 500 NBA props
+            # MISS even after the matchup key existed. A team plays at most
+            # once in a 3-day window, so widening cannot create ambiguity.
+            import datetime as _dt
+            try:
+                _d0 = _dt.date.fromisoformat(str(gd)[:10])
+                _dates = [(_d0 + _dt.timedelta(days=k)).isoformat()
+                          for k in (0, -1, 1)]
+            except ValueError:
+                _dates = [str(gd)]
+            for _d in _dates:
+                by_matchup.setdefault(
+                    (_d, str(aw).upper(), str(hm).upper()), c)
+    return {'by_id': by_id, 'by_team_date': by_team_date,
+            'by_matchup': by_matchup}
 
 
 def derive_side_fields(ctx_row: dict, prop: dict) -> dict:
@@ -105,9 +139,11 @@ def derive_side_fields(ctx_row: dict, prop: dict) -> dict:
             break
     if not team:
         return {}
-    home_names = {str(ctx_row.get(f)).upper() for f in ('home_team_abbrev', 'home_team')
+    home_names = {str(ctx_row.get(f)).upper()
+                  for f in ('home_team_abbrev', 'home_abbrev', 'home_team')
                   if ctx_row.get(f)}
-    away_names = {str(ctx_row.get(f)).upper() for f in ('away_team_abbrev', 'away_team')
+    away_names = {str(ctx_row.get(f)).upper()
+                  for f in ('away_team_abbrev', 'away_abbrev', 'away_team')
                   if ctx_row.get(f)}
     if team in home_names:
         own, opp = 'home_', 'away_'
@@ -149,4 +185,12 @@ def resolve_ctx(index: dict, prop: dict) -> tuple[dict, str]:
             hit = index.get('by_team_date', {}).get((str(gd), str(v).upper()))
             if hit:
                 return (hit, 'team_date')
+        # matchup last: it needs no player-team, so it rescues the rows where
+        # team_abbrev was never populated (all of NBA today)
+        mu = prop.get('matchup')
+        if mu and ' @ ' in str(mu):
+            aw, hm = (q.strip().upper() for q in str(mu).split(' @ ', 1))
+            hit = index.get('by_matchup', {}).get((str(gd), aw, hm))
+            if hit:
+                return (hit, 'matchup')
     return ({}, 'miss')
