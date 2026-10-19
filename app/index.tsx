@@ -2251,18 +2251,33 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   const [sharpPicks, setSharpPicks] = useState<any[]>([]);
   const [sharpRecord, setSharpRecord] = useState<{w:number,l:number,p:number,unitsNet:number,wPrev:number,lPrev:number,pPrev:number,unitsNetPrev:number,yW:number,yL:number,yP:number,yUnits:number,sidesW?:number,sidesL?:number,propsW?:number,propsL?:number}>({w:0,l:0,p:0,unitsNet:0,wPrev:0,lPrev:0,pPrev:0,unitsNetPrev:0,yW:0,yL:0,yP:0,yUnits:0});
   // 2026-08-22: Split records per tier (triple / confirmed / lean). Reads
-  // daily_surface_records rows written by aggregate_daily_records.py::agg_split.
-  // User ask: 'every single sub tab in the steam room should have records to
-  // let users know if they work or not' — Split had no track record surface.
-  const [splitRecord, setSplitRecord] = useState<{
-    triple:{w:number,l:number,unitsNet:number},
-    confirmed:{w:number,l:number,unitsNet:number},
-    lean:{w:number,l:number,unitsNet:number},
-  }>({triple:{w:0,l:0,unitsNet:0}, confirmed:{w:0,l:0,unitsNet:0}, lean:{w:0,l:0,unitsNet:0}});
+  // 2026-10-19: the splitRecord state and its daily_surface_records query
+  // were REMOVED with The Split. They read split_sharp_triple/confirmed/lean,
+  // and the server stopped writing all three — agg_split is MLB-only and MLB
+  // has ended. A client that keeps querying a surface the server no longer
+  // produces is the drift that made The Split render permanent zeros in the
+  // first place, so it goes in the same commit as the replacement.
   // 2026-09-03: dynamic beta notice for The Split (jerry_cache row so we
   // can update message/hide without an App Store ship). Row key is
   // 'section_note_split' — insert/update via SQL to change.
   const [splitBetaNotice, setSplitBetaNotice] = useState<{enabled:boolean, message:string, tone?:string} | null>(null);
+  // ══ 2026-10-19 · THE FADE replaces The Split ══
+  // The Split's record was BLANK: aggregate_daily_records::agg_split carries
+  // `if not mlb_gids: return []` and MLB has ended, so surface_records held
+  // zero split surfaces. It also published one bucket while this client
+  // queried three, which is why two tiers rendered as permanent zeros.
+  // The Fade is the replacement: plays filtered to go AGAINST the public
+  // (tickets >= 65% on a spread or total), with a running record like The
+  // Sharp. Server: generate_the_fade.py -> jerry_cache 'fade_<date>' and
+  // public_receipts surface='fade'; rolled up by pick_fade.
+  const [fadeData, setFadeData] = useState<{
+    plays: any[],
+    record: {wins:number, losses:number, pushes:number, graded:number,
+             units:number, hit_rate:number|null, roi_pct:number|null,
+             confidence:string, tracking_min_n:number} | null,
+    backtest: any | null,
+    filter: any | null,
+  }>({plays:[], record:null, backtest:null, filter:null});
   const [sharpTabLoading, setSharpTabLoading] = useState(false);
   // 2026-08-17: The Ledger — auto-suggested chalk parlays + teasers.
   // Populated by generate_ledger.py from today's ensemble picks across
@@ -10101,27 +10116,29 @@ setJerryHistory(prev => {
         }
       } catch { setSplitBetaNotice(null); }
 
-      // 2026-08-22: Split record — sharp-signal historical performance by
-      // tier (triple / confirmed / lean) from daily_surface_records.
-      // Written by aggregate_daily_records.py::agg_split. Rolling 30d.
+      // 2026-10-19: The Fade — today's anti-public plays + its running
+      // record. Read from the jerry_cache row the generator writes, so the
+      // client never re-derives the filter: the play list a user sees is
+      // the exact one the receipts were written from.
       try {
-        const thirty = new Date(Date.now() - 30*86400000)
-          .toLocaleDateString('en-CA', {timeZone: 'America/New_York'});
-        const {data: splitRecs} = await supabase.from('daily_surface_records')
-          .select('surface,wins,losses,units_won')
-          .in('surface', ['split_sharp_triple','split_sharp_confirmed','split_sharp_lean'])
-          .gte('record_date', thirty);
-        const agg = {triple:{w:0,l:0,unitsNet:0}, confirmed:{w:0,l:0,unitsNet:0}, lean:{w:0,l:0,unitsNet:0}};
-        (splitRecs || []).forEach((r: any) => {
-          const bucket = r.surface.replace('split_sharp_','') as 'triple'|'confirmed'|'lean';
-          if (!agg[bucket]) return;
-          agg[bucket].w += r.wins || 0;
-          agg[bucket].l += r.losses || 0;
-          agg[bucket].unitsNet += Number(r.units_won) || 0;
-        });
-        Object.values(agg).forEach(v => v.unitsNet = Math.round(v.unitsNet * 100) / 100);
-        setSplitRecord(agg);
-      } catch { /* keep zeros — best-effort */ }
+        const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+        const {data: fadeRows} = await supabase.from('jerry_cache')
+          .select('data')
+          .eq('cache_key', `fade_${todayET}`)
+          .limit(1);
+        const fd: any = fadeRows && fadeRows[0]?.data;
+        if (fd) {
+          setFadeData({
+            plays: Array.isArray(fd.plays) ? fd.plays : [],
+            record: fd.record || null,
+            backtest: fd.backtest || null,
+            filter: fd.filter || null,
+          });
+        } else {
+          setFadeData({plays:[], record:null, backtest:null, filter:null});
+        }
+      } catch { setFadeData({plays:[], record:null, backtest:null, filter:null}); }
+
     } catch (e) { setSteamFlags([]); }
     setSteamLoading(false);
   }, []);
@@ -17443,14 +17460,14 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           <View>
             <Text style={styles.pageTitle}>💨 The Steam Room</Text>
             <Text style={{color:THEME.textDim,fontSize:12,marginBottom:4}}>
-              {steamSubTab === 'lines' ? 'How sharps operate — line moves + public splits across sources.' :
+              {steamSubTab === 'lines' ? 'Plays against the public. When the tickets pile on one side, we take the other.' :
                steamSubTab === 'ladder' ? 'Chase the streak — one pick, full stake, roll the winnings.' :
                steamSubTab === 'ledger' ? 'Combos + teasers — chalk parlays and line-move plays across the slate.' :
                'Disciplined bettor mode — flat 1u per qualified play, long-term ROI.'}
             </Text>
             <View style={{flexDirection:'row',gap:6,marginBottom:14,marginTop:10}}>
               {[
-                {id:'lines',label:'📊 The Split'},
+                {id:'lines',label:'🎯 The Fade'},
                 {id:'ladder',label:'🪜 The Ladder'},
                 {id:'sharp',label:'🎯 The Sharp'},
                 {id:'ledger',label:'🧾 The Ledger'},
@@ -17491,43 +17508,111 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   </View>
                 ) : null}
 
-                {/* 2026-08-31: SIGNAL-TIER GATE. LEAN (34%) + CONFIRMED
-                    (42%) tiers running below breakeven for 30+ days —
-                    only TRIPLE (all-3-source agreement) shows real
-                    edge (60% on n=5, still small but directionally
-                    positive). Rather than hide the record entirely
-                    (users lose track of what's working), we surface
-                    only TRIPLE as a "kept-honest" record and note the
-                    others were pruned. Investigation queued for
-                    whether LEAN 34% is a signal-inversion bug — if
-                    so, INVERTING would give a printing signal at 65%. */}
-                {splitRecord.triple.w + splitRecord.triple.l > 0 && (
-                  <View style={[styles.card, {padding:14, marginBottom:14}]}>
-                    <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:10}}>
-                      <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>SHARP SIGNAL RECORD</Text>
-                      <Text style={{color:THEME.textMuted, fontSize:9}}>30d · triple-source only</Text>
-                    </View>
-                    <View style={{flexDirection:'row', justifyContent:'center', paddingVertical:4}}>
-                      {(() => {
-                        const r = splitRecord.triple;
-                        const wl = r.w + r.l;
-                        const pct = wl ? Math.round(100*r.w/wl) : 0;
-                        const netColor = r.unitsNet > 0 ? THEME.win : r.unitsNet < 0 ? THEME.loss : THEME.textMuted;
-                        return (
-                          <View style={{alignItems:'center'}}>
-                            <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.6, marginBottom:6}}>🔥 TRIPLE-CONFIRMED</Text>
-                            <Text style={{color:THEME.text, fontSize:28, fontWeight:'800'}}>{r.w}-{r.l}</Text>
-                            <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}}>{wl ? `${pct}% hit` : '—'}</Text>
-                            <Text style={{color:netColor, fontSize:13, fontWeight:'700', marginTop:2}}>{r.unitsNet >= 0 ? '+' : ''}{r.unitsNet.toFixed(2)}u</Text>
+                {/* ══ 2026-10-19 · THE FADE · replaces the tier record ══
+                    The old card showed one bucket (TRIPLE) because the other
+                    two were quarantined on 2026-08-31 for running below
+                    breakeven — and the server stopped writing ANY of them
+                    when MLB ended, so this card rendered nothing at all.
+
+                    What replaced it is a play list with a running record,
+                    the shape Andy asked for: "plays passed through a filter
+                    of certain cirteria that is against the public, almost
+                    like the sharp set up wise ... and a running record like
+                    the sharp."
+
+                    THE RECORD AND THE BACKTEST ARE SHOWN SEPARATELY, on
+                    purpose. Receipts are not backfilled, so the live record
+                    starts 0-0 and counts only what published from 2026-10-19
+                    forward. The backtest that justified building this ships
+                    beside it, labelled, with its own caveat — presenting it
+                    as the record would be the retroactive-record mistake. */}
+                <View style={[styles.card, {padding:14, marginBottom:14}]}>
+                  <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:8}}>
+                    <Text style={{color:THEME.accent, fontSize:10, fontWeight:'800', letterSpacing:1}}>THE FADE</Text>
+                    {(() => {
+                      const r = fadeData.record;
+                      const wl = r ? r.wins + r.losses : 0;
+                      return (
+                        <Text style={{color:THEME.textMuted, fontSize:9}}>
+                          {r ? `${r.wins}-${r.losses}${r.pushes ? `-${r.pushes}` : ''}` : '0-0'}
+                          {r && r.confidence === 'tracking' ? ' · tracking' : ''}
+                          {wl ? ` · ${r!.hit_rate}% hit` : ''}
+                        </Text>
+                      );
+                    })()}
+                  </View>
+                  {(() => {
+                    const r = fadeData.record;
+                    const wl = r ? r.wins + r.losses : 0;
+                    if (!wl) {
+                      return (
+                        <Text style={{color:THEME.textDim, fontSize:12, lineHeight:17}}>
+                          No graded plays yet — this record starts today and counts only
+                          what publishes from here on.
+                        </Text>
+                      );
+                    }
+                    const netColor = r!.units > 0 ? THEME.win : r!.units < 0 ? THEME.loss : THEME.textMuted;
+                    return (
+                      <View style={{flexDirection:'row', justifyContent:'center', paddingVertical:4}}>
+                        <View style={{alignItems:'center'}}>
+                          <Text style={{color:THEME.text, fontSize:28, fontWeight:'800'}}>{r!.wins}-{r!.losses}</Text>
+                          <Text style={{color:THEME.textDim, fontSize:11, marginTop:2}}>{r!.hit_rate}% hit</Text>
+                          <Text style={{color:netColor, fontSize:13, fontWeight:'700', marginTop:2}}>
+                            {r!.units >= 0 ? '+' : ''}{Number(r!.units).toFixed(2)}u
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })()}
+                  <Text style={{color:THEME.textMuted, fontSize:10, marginTop:8, lineHeight:15}}>
+                    {fadeData.filter
+                      ? `Public tickets ≥ ${fadeData.filter.min_public_pct}% on spreads and totals.`
+                      : 'Public tickets ≥ 65% on spreads and totals.'}
+                  </Text>
+                  {fadeData.backtest ? (
+                    <Text style={{color:THEME.textMuted, fontSize:9, marginTop:4, fontStyle:'italic', lineHeight:14}}>
+                      Backtested {fadeData.backtest.record} ({fadeData.backtest.roi_pct > 0 ? '+' : ''}{fadeData.backtest.roi_pct}%) on {fadeData.backtest.n} football spreads — a backtest, not a live record.
+                    </Text>
+                  ) : null}
+                </View>
+
+                {/* Today's plays. The public split is the whole value of the
+                    card, so it leads the subtitle rather than hiding in a
+                    tooltip. */}
+                {fadeData.plays.length > 0 ? (
+                  <View style={{marginBottom:14}}>
+                    <Text style={{color:THEME.textMuted, fontSize:10, fontWeight:'800', letterSpacing:0.8, marginBottom:8}}>
+                      TODAY · {fadeData.plays.length} PLAY{fadeData.plays.length === 1 ? '' : 'S'}
+                    </Text>
+                    {fadeData.plays.map((pl:any, i:number) => (
+                      <View key={`fade-${i}`} style={[styles.card, {padding:12, marginBottom:8}]}>
+                        <View style={{flexDirection:'row', alignItems:'center', justifyContent:'space-between'}}>
+                          <View style={{flexDirection:'row', alignItems:'center', gap:6, flex:1}}>
+                            <View style={{backgroundColor:THEME.accent + '26', borderRadius:5, paddingHorizontal:6, paddingVertical:2}}>
+                              <Text style={{color:THEME.accent, fontSize:9, fontWeight:'800'}}>{String(pl.sport)}</Text>
+                            </View>
+                            <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'700', letterSpacing:0.5}}>
+                              {String(pl.market) === 'total' ? 'TOTAL' : 'SPREAD'}
+                            </Text>
                           </View>
-                        );
-                      })()}
-                    </View>
-                    <Text style={{color:THEME.textMuted, fontSize:9, textAlign:'center', marginTop:8, fontStyle:'italic'}}>
-                      Single-source and 2-source tiers pruned pending calibration audit — they were running below breakeven.
+                          <Text style={{color:THEME.text, fontSize:15, fontWeight:'800'}}>{String(pl.label)}</Text>
+                        </View>
+                        <Text style={{color:THEME.textDim, fontSize:11, marginTop:4}}>{String(pl.matchup)}</Text>
+                        <Text style={{color:THEME.hrb, fontSize:11, fontWeight:'600', marginTop:4, lineHeight:16}}>
+                          {String(pl.reason)}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={[styles.card, {padding:14, marginBottom:14}]}>
+                    <Text style={{color:THEME.textDim, fontSize:12, lineHeight:17}}>
+                      No fade plays on today's slate — nothing cleared the public threshold.
                     </Text>
                   </View>
                 )}
+
               <LineMovementTab
                 loading={steamLoading}
                 flags={steamFlags}
