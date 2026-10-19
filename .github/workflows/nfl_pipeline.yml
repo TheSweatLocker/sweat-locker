@@ -1105,8 +1105,28 @@ jobs:
           cd mlb_pipeline
           python clamp_conviction_to_tier.py --sport NFL --apply
 
+      # ══ 2026-10-19 · MNF HAD NO JERRY READ, EVERY WEEK ══
+      # ANDY: "hot ticket item fire fire there is no nfl game read something
+      # is jaked up for MNF why fix immediately then find out why".
+      #
+      # Checked an hour before WAS @ SF kicked off: jerry_reads held a row,
+      # but it was a STUB - short_read one line, long_read NULL,
+      # prompt_version 'nfl_ctx_bridge_v1', input_snapshot NULL. The app
+      # renders long_read in game detail, so the tab showed nothing.
+      #
+      # The cause is this condition, not the generator. Monday's cron exists
+      # (line 25, commented "MNF finalize") but the mode selector maps
+      # DOW=1 HOUR=14 to resolver_only, and this step only ran on full or
+      # card_only - so the one day of the week that has a Monday night game
+      # was the one day the read generator never ran. sync_jerry_reads_from_ctx
+      # dropped its bridge stub and nothing ever replaced it. A step named
+      # "MNF finalize" that skips the MNF read is the whole bug.
+      #
+      # resolver_only added. The generator is idempotent and explicitly
+      # detects a bridge stub ("generating the real read over it"), so this
+      # cannot double-write or clobber a real read.
       - name: Generate NFL game reads (Jerry)
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only' || steps.mode.outputs.mode == 'resolver_only'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
