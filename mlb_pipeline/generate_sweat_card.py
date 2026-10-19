@@ -1960,7 +1960,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             prop_type_count[prop_type] = prop_type_count.get(prop_type, 0) + 1
         seen_keys.add(key)
         if sig is not None:
-            seen_play_signatures |= sig
+            # .update(), NOT |=. An augmented assignment inside this nested
+            # function REBINDS the name and makes seen_play_signatures local
+            # to add(), so the read in the dedupe check above raises
+            # UnboundLocalError. That is what took the Sweat Card down for
+            # 2026-10-18: the card crashed here on the very first add() and
+            # no card was written at all. A method call mutates the enclosing
+            # set without rebinding.
+            seen_play_signatures.update(sig)
         if gkey is not None and _is_ml_pick(pick):
             seen_ml_games.add(gkey)
         if gkey is not None and _is_total:
