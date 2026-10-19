@@ -76,31 +76,40 @@ def c_imports():
 
 
 def c_curate():
-    """The path that broke. Driven with REAL props so add() genuinely runs."""
+    """The path that broke. Driven with REAL props so add() genuinely runs.
+
+    2026-10-19: asserting non-empty on ONE date was too strict - a one-game
+    playoff slate can have publishable tiers and still have every prop
+    rejected by the calibration gates, which is correct behaviour, not a
+    wiring error. It now tries several dates and only fails if NONE of them
+    produces a pick, which still refuses a vacuous pass.
+    """
     import generate_sweat_card as G
-    props, used_date = [], None
     probes = G.sb_get('mlb_pipeline_props', {
-        'select': 'game_date', 'order': 'game_date.desc', 'limit': '400'}) or []
+        'select': 'game_date', 'order': 'game_date.desc',
+        'limit': '1200'}) or []
+    seen, tried = [], 0
     for probe in probes:
         d = str(probe.get('game_date'))[:10]
-        if d == used_date:
+        if d in seen:
             continue
-        used_date = d
+        seen.append(d)
         rows = G.sb_get('mlb_pipeline_props', {
             'game_date': f'eq.{d}', 'select': '*', 'limit': '400'}) or []
-        if [p for p in rows if str(p.get('tier')) in ('PRIME', 'STRONG', 'LEAN')]:
-            props = rows
+        if not [p for p in rows
+                if str(p.get('tier')) in ('PRIME', 'STRONG', 'LEAN')]:
+            continue
+        tried += 1
+        out = G.curate_top_8([], rows, None, None, [], gate_window='off')
+        if not isinstance(out, list):
+            raise TypeError(f'curate_top_8 returned {type(out).__name__}')
+        if out:
+            return f'{len(out)} picks from {len(rows)} props on {d}'
+        if tried >= 6:
             break
-    if not props:
-        raise RuntimeError('no props with a publishable tier - cannot exercise '
-                           'add(); treat as a WIRING ERROR, not a pass')
-    out = G.curate_top_8([], props, None, None, [], gate_window='off')
-    if not isinstance(out, list):
-        raise TypeError(f'curate_top_8 returned {type(out).__name__}, not list')
-    if not out:
-        raise RuntimeError(f'0 picks from {len(props)} props on {used_date} - '
-                           f'add() never succeeded, so this proved nothing')
-    return f'{len(out)} picks from {len(props)} props on {used_date}'
+    raise RuntimeError(f'curate_top_8 returned 0 picks on all {tried} dates '
+                       f'tried - add() never succeeded, so this proved '
+                       f'nothing')
 
 
 def c_dedupe():
@@ -132,22 +141,39 @@ def c_dedupe():
 
 
 def c_line_integrity():
-    """The market snap must snap a fabricated line and fail open on junk."""
+    """The market snap must replace a never-posted line and fail open on junk.
+
+    2026-10-19: the first version of this check passed a ctx of just
+    {'close_spread': 7.5}. That used to work because the module read
+    close_spread directly; it now prefers the set of numbers the books
+    actually posted, which needs game_id/teams/date. With none of those the
+    snapper correctly FAILS OPEN - so the old check was asserting the old
+    design, not the behaviour we want. It now uses a real game.
+    """
     from line_integrity import snap_line
-    new, note = snap_line(-2.5, {'close_spread': 7.5}, 'NFL', 'HOME', 'rl')
-    if abs(new - (-7.5)) > 1e-9 or not note:
-        raise RuntimeError(f'KC -2.5 should snap to -7.5, got {new}')
-    same, n2 = snap_line(-5.5, {'close_spread': 5.5}, 'NFL', 'HOME', 'rl')
-    if abs(same - (-5.5)) > 1e-9 or n2:
-        raise RuntimeError('an exact match must not be touched')
+    real = {'game_id': '20261018_LAC_KC', 'away_team': 'LAC',
+            'home_team': 'KC', 'game_date': '2026-10-18',
+            'close_spread': 7.5}
+    new, note = snap_line(-2.5, real, 'NFL', 'HOME', 'rl')
+    if note is None or abs(new - (-2.5)) < 1e-9:
+        raise RuntimeError(f'KC -2.5 was never posted and must be replaced; '
+                           f'got {new} note={note}')
+    if new > -6.0:
+        raise RuntimeError(f'replacement {new} is not near the posted '
+                           f'-7.0/-7.5 band')
+    # a number that WAS posted must survive untouched
+    keep, n2 = snap_line(-7.5, real, 'NFL', 'HOME', 'rl')
+    if abs(keep - (-7.5)) > 1e-9 or n2:
+        raise RuntimeError(f'-7.5 was posted and must not change, got {keep}')
+    # fail open on anything unidentifiable
     for ctx in (None, {}, {'close_spread': 'abc'}):
         v, _ = snap_line(-6.5, ctx, 'NFL', 'HOME', 'rl')
         if abs(v - (-6.5)) > 1e-9:
             raise RuntimeError(f'must fail open on {ctx!r}, got {v}')
-    v, _ = snap_line(-6.5, {'close_spread': 2.0}, 'NFL', 'HOME', 'ml')
+    v, _ = snap_line(-6.5, real, 'NFL', 'HOME', 'ml')
     if abs(v - (-6.5)) > 1e-9:
         raise RuntimeError('moneyline must be untouched')
-    return 'snaps a fabricated line, leaves exact matches, fails open'
+    return 'replaces a never-posted line, keeps a real one, fails open'
 
 
 def c_recap():
