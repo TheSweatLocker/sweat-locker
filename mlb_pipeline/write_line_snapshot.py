@@ -56,6 +56,15 @@ CTX_TABLE = {
     # wasn't populating it because compute_align_status was orphaned.
     'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
+    # ══ 2026-10-19 · NBA + NHL, same reason as NFL/NCAAF in August ══
+    # compute_align_status_{nba,nhl}.py did not exist until today, so these
+    # two ctx tables never had oddscrowd_snapshot populated and there was
+    # nothing here to append. Both carry the column already. The effect was
+    # that line_snapshot held ZERO NBA and ZERO NHL rows (MLB 16,807 ·
+    # NCAAF 743 · NFL 549), and The Fade - which needs a public
+    # ticket/money split to fade - could only ever fire on football.
+    'NBA':   'nba_game_context',
+    'NHL':   'nhl_game_context',
 }
 
 
@@ -84,10 +93,32 @@ def run(sport: str = 'MLB', game_date: str | None = None,
     # → NFL/NCAAF fetch returned 42703 column-not-exist errors, silently
     # left line_snapshot table empty for those sports → detect_line_movement
     # found 0 flags → line_movement_flags stayed empty. Sport-aware select.
-    if sport == 'MLB':
-        home_ml_col, away_ml_col = 'home_ml_close', 'away_ml_close'
-    else:
-        home_ml_col, away_ml_col = 'close_home_ml', 'close_away_ml'
+    # ══ 2026-10-19 · AN EXPLICIT MAP, NOT if sport == 'MLB' ══
+    # The branch below used to be MLB-vs-everything-else, which is only true
+    # by accident: NBA uses MLB's spelling (home_ml_close), so adding NBA to
+    # CTX_TABLE sent it down the NFL path and the fetch came back
+    # 42703 column nba_game_context.close_home_ml does not exist - the exact
+    # failure this comment block was written about in September, recurring
+    # the moment a fifth sport arrived. Verified per table rather than
+    # inferred:
+    #     mlb_game_context  home_ml_close
+    #     nba_game_context  home_ml_close   (close_home_ml ABSENT)
+    #     nhl_game_context  both spellings present
+    #     nfl/ncaaf         close_home_ml
+    # A sport that is not listed raises instead of guessing, because a wrong
+    # guess here empties line_snapshot silently.
+    _ML_COLS = {
+        'MLB':   ('home_ml_close', 'away_ml_close'),
+        'NBA':   ('home_ml_close', 'away_ml_close'),
+        'NHL':   ('close_home_ml', 'close_away_ml'),
+        'NFL':   ('close_home_ml', 'close_away_ml'),
+        'NCAAF': ('close_home_ml', 'close_away_ml'),
+        'NCAAB': ('close_home_ml', 'close_away_ml'),
+    }
+    if sport not in _ML_COLS:
+        print(f'  [{sport}] no moneyline column mapping — refusing to guess')
+        return 0
+    home_ml_col, away_ml_col = _ML_COLS[sport]
     r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
         params={'game_date': f'eq.{gd}',
                 'select': f'game_id,close_spread,close_total,{home_ml_col},'
