@@ -1384,6 +1384,57 @@ def pick_sweat_card() -> list[dict]:
     return out
 
 
+def pick_fade() -> list[dict]:
+    """The Fade — plays that go AGAINST the public. See generate_the_fade.py.
+
+    ══ 2026-10-19 · THIS REPLACES THE SPLIT ══
+    ANDY, 10-01: "The Split needs to be reworked or changed ... the record on
+    the split doesn't make any sense". ANDY, 10-19: "we discussed changin to
+    the fade and strictly being plays passed through a filter of certain
+    cirteria that is against the public, almost like the sharp set up wise ...
+    and a running record like the sharp."
+
+    The Split's record is BLANK today, exactly as predicted on 10-01:
+    agg_split carries `if not mlb_gids: return []` and MLB has ended, so
+    surface_records holds zero split surfaces.
+
+    This reads public_receipts where surface='fade', the same way
+    pick_game_read and pick_sweat_card read theirs - the frozen published
+    claim, not a re-derivation. Re-deriving would risk grading a different
+    play than the one that shipped.
+
+    PAYOUT IS THE FLAT -110 (0.909) and that is correct here rather than a
+    compromise: the surface is spreads and totals only, which are priced at
+    about -110 on both sides. Moneylines are deliberately excluded from the
+    surface itself, because there the breakeven moves with the public
+    percentage - follow bets>=80 hits 70.1% against a 68.1% breakeven - so a
+    flat payout would misstate them badly.
+
+    PRESEASON excluded via the shared gate, per
+    project_nhl_preseason_record_930.
+    """
+    url = (f'{SB}/rest/v1/public_receipts'
+           f'?select=sport,game_date,result,market,pick_side'
+           f'&surface=eq.fade&result=not.is.null')
+    out = []
+    for r in _paged(url):
+        cls = _classify(r.get('result'))
+        if cls not in ('win', 'loss', 'push'):
+            continue
+        sport = str(r.get('sport') or '').upper()
+        if not sport:
+            continue
+        try:
+            d = dt.date.fromisoformat(str(r['game_date'])[:10])
+        except Exception:                                      # noqa: BLE001
+            continue
+        if _is_preseason(sport, d):
+            continue
+        out.append({'sport': sport, 'date': d, 'result': cls,
+                    'stake': 1.0, 'payout': 0.909})
+    return out
+
+
 SURFACES = {
     'sharp':       pick_sharp,      # legacy — MLB sides only from primary_play
     # 2026-10-10 B74a — Jerry's per-game read, see pick_game_read
@@ -1398,6 +1449,9 @@ SURFACES = {
     # misrepresent it badly. Andy's call: capture leg prices first. It has
     # also produced nothing since 2026-09-19.
     'sweat_card':  pick_sweat_card,
+    # 2026-10-19 — The Fade replaces The Split. The Split's record is blank:
+    # agg_split is MLB-only and MLB has ended. See pick_fade.
+    'fade':        pick_fade,
     'prop':        pick_prop,       # legacy — props from mlb_pipeline_props
     'sharp_card':  pick_sharp_card, # 2026-09-05 authoritative combined (sides+props from cache)
     'ladder': pick_ladder,

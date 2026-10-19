@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""The Fade — engine plays that go AGAINST the public, with a running record.
+
+== 2026-10-19 · WHY THIS REPLACES THE SPLIT ==
+ANDY, 10-01: "The Split needs to be reworked or changed, its just not meeting
+the mark, the record on the split doesn't make any sense its not providing any
+useful data for users."
+ANDY, 10-19: "we discussed changin to the fade and strictly being plays passed
+through a filter of certain cirteria that is against the public, almost like
+the sharp set up wise but play that are agisnt the public and a running record
+like the sharp."
+
+The Split had three defects and all three are server/client drift, not layout:
+agg_split published ONE bucket while the client queried three; agg_split is
+MLB-ONLY (`if not mlb_gids: return []`) so it went BLANK when baseball ended -
+surface_records holds zero split surfaces today; and split_antipublic was
+computed daily and never read.
+
+So this is not a repair of the Split. It is the product Andy described, built
+on the one filter that survived every control.
+
+== THE EVIDENCE THIS IS BUILT ON ==
+Fade the public ON SPREADS AND TOTALS, from the OddsCrowd money/bets feed in
+line_snapshot. Threshold chosen on an EARLY date half, reported on a LATE
+holdout that had no hand in choosing it:
+
+                        EARLY            LATE (holdout)
+    fade bets >= 65   +5.5% n=181      +1.3% n=115
+    fade bets >= 70   +8.6% n=116      +2.8% n=65
+    fade bets >= 75   +7.2% n=73      +12.3% n=34
+
+    full sample, football spreads, bets >= 65:
+        63-44   58.9%   CI[49.4,67.7]   ROI +12.4%   n=107
+
+Same sign in both halves and monotonic in the threshold - the only thing
+measured in this codebase that held its direction out of sample.
+
+Independently, flipping our OWN curated football spread picks returns 65.3%
+(+24.7%, n=75), and it works ONLY on the picks that agreed with the public
+(60.0% vs 49.6%). So "flip our spread" and "fade the public" are ONE
+mechanism. This expresses it as the public filter because that has 331
+football rows instead of 135 and does not require us to make a bad pick first.
+
+== WHY MONEYLINES ARE EXCLUDED, DELIBERATELY ==
+On a moneyline, heavy public means a short favourite, so the breakeven RISES
+with the public percentage: follow bets>=80 hits 70.1% against a 68.1%
+breakeven, which is -0.2% ROI, and the fade side loses 9-11%. On a spread or
+total both sides are about -110 and breakeven is a FLAT 52.38%, so the same
+56% is a real edge. Measuring a public-money effect on the moneyline answers
+a different question, and I got that wrong twice before catching it.
+
+== HONEST SAMPLE, STATED ON THE SURFACE ==
+107 graded football-spread plays at the chosen threshold, 38 of them in the
+holdout - two weekends. The direction is consistent; the magnitude is not
+settled. The payload carries `confidence: 'tracking'` until the record clears
+TRACKING_MIN_N, so the tab can say so rather than implying a settled edge.
+
+USAGE
+    python generate_the_fade.py --dry-run
+    python generate_the_fade.py
+    python generate_the_fade.py --date 2026-10-20
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+from collections import defaultdict
+
+import requests
+
+import market_line as ML
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:                                              # noqa: BLE001
+    pass
+
+SB, H = ML.SB, ML.H
+H_WRITE = {**H, 'Content-Type': 'application/json',
+           'Prefer': 'resolution=merge-duplicates,return=minimal'}
+
+#: Public TICKET share on a side before we will fade it. 65 is where the
+#: measured edge starts and holds in both halves; below it the effect thins
+#: toward the 52.38% breakeven. Env-overridable so it can be tuned on
+#: evidence rather than by editing code.
+FADE_MIN_PUBLIC = float(os.environ.get('FADE_MIN_PUBLIC', '65'))
+
+#: Markets allowed. Spreads and totals only - see the moneyline note above.
+FADE_MARKETS = ('rl', 'spread', 'total')
+
+#: Below this many graded plays the surface labels itself 'tracking'.
+TRACKING_MIN_N = 150
+
+#: Verified per-sport orientation of close_spread as a HOME HANDICAP, measured
+#: against line_history on games captured within 2h of kickoff (NFL 93% exact,
+#: NCAAF 89%). A sport absent here cannot have its spread graded or displayed,
+#: so it is skipped rather than guessed at.
+_HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}
+
+CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
+       'MLB': 'mlb_game_context', 'NHL': 'nhl_game_context',
+       'NBA': 'nba_game_context'}
+OPP = {'HOME': 'AWAY', 'AWAY': 'HOME', 'OVER': 'UNDER', 'UNDER': 'OVER'}
+
+
+def f(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if x != x else x
+
+
+def today_et() -> str:
+    return (dt.datetime.now(dt.timezone.utc)
+            - dt.timedelta(hours=4)).strftime('%Y-%m-%d')
+
+
+def page(t, p):
+    out, off = [], 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/{t}', headers=H, timeout=240,
+                         params=dict(p, limit='1000', offset=str(off)))
+        if r.status_code not in (200, 206):
+            print(f'  !! {t} HTTP {r.status_code} {r.text[:140]}')
+            return out
+        b = r.json()
+        out += b
+        if len(b) < 1000:
+            return out
+        off += 1000
+
+
+def latest_public_splits(date: str) -> dict:
+    """{(sport, game_id, market): split} — the LAST snapshot per game/market.
+
+    The last one is the settled public number. Earlier snapshots on the same
+    game are the same figure re-observed, so taking the max timestamp avoids
+    counting one game several times.
+    """
+    out = {}
+    for s in page('line_snapshot', {'select': 'sport,game_id,market,pick_side,'
+                                             'bets_pct,money_pct,line,'
+                                             'snapshot_ts'}):
+        mkt = str(s.get('market') or '').lower()
+        if mkt not in FADE_MARKETS:
+            continue
+        k = (str(s.get('sport')), str(s.get('game_id')), mkt)
+        ts = str(s.get('snapshot_ts'))
+        if k not in out or ts > str(out[k].get('snapshot_ts')):
+            out[k] = s
+    return out
+
+
+def build_plays(date: str) -> list[dict]:
+    """Today's fade plays. One per (game, market) at most."""
+    splits = latest_public_splits(date)
+    print(f'  public splits available: {len(splits)}')
+    # context for the slate, per sport, so a play can carry teams + the line
+    ctx = {}
+    for sport, tbl in CTX.items():
+        for c in page(tbl, {'select': 'game_id,game_date,away_team,home_team,'
+                                      'close_spread,close_total',
+                            'game_date': f'eq.{date}'}):
+            ctx[(sport, str(c.get('game_id')))] = c
+    print(f'  context rows for {date}: {len(ctx)}')
+
+    plays = []
+    skipped = defaultdict(int)
+    for (sport, gid, mkt), s in splits.items():
+        c = ctx.get((sport, gid))
+        if not c:
+            skipped['not on this slate'] += 1
+            continue
+        bets = f(s.get('bets_pct'))
+        if bets is None:
+            skipped['no public split'] += 1
+            continue
+        ps = str(s.get('pick_side') or '').upper()
+        if ps not in OPP:
+            skipped['no side'] += 1
+            continue
+        # which side is the public on, and how heavy?
+        if bets >= 50:
+            public, pub_pct = ps, bets
+        else:
+            public, pub_pct = OPP[ps], 100.0 - bets
+        if pub_pct < FADE_MIN_PUBLIC:
+            skipped[f'public under {FADE_MIN_PUBLIC:g}%'] += 1
+            continue
+        fade = OPP[public]
+        away, home = str(c.get('away_team')), str(c.get('home_team'))
+
+        if mkt in ('rl', 'spread'):
+            sgn = _HOME_HANDICAP_SIGN.get(sport)
+            cs = f(c.get('close_spread'))
+            if sgn is None:
+                skipped[f'{sport} spread orientation unverified'] += 1
+                continue
+            if cs is None:
+                skipped['no close_spread'] += 1
+                continue
+            home_handicap = sgn * cs
+            line = home_handicap if fade == 'HOME' else -home_handicap
+            team = home if fade == 'HOME' else away
+            label = f'{team} {line:+g}'
+        else:
+            ct = f(c.get('close_total'))
+            if ct is None:
+                skipped['no close_total'] += 1
+                continue
+            line = ct
+            label = f'{fade.title()} {ct:g}'
+
+        plays.append({
+            'sport': sport, 'game_id': gid, 'game_date': date,
+            'market': 'total' if mkt == 'total' else 'rl',
+            'matchup': f'{away} @ {home}',
+            'side': fade, 'line': line, 'label': label,
+            'public_side': public, 'public_pct': round(pub_pct, 1),
+            'public_money_pct': f(s.get('money_pct')),
+            # the reason string a user reads - the whole point of the tab
+            'reason': (f'{pub_pct:.0f}% of tickets are on '
+                       f'{(home if public == "HOME" else away) if public in ("HOME","AWAY") else public.title()}'
+                       f' — this fades them'),
+        })
+    plays.sort(key=lambda p: -p['public_pct'])
+    if skipped:
+        print(f'  filtered out: {dict(skipped)}')
+    return plays
+
+
+def graded_record() -> dict:
+    """The running record of this surface, from its own receipts."""
+    rows = page('public_receipts', {'select': 'result,pick_odds,game_date',
+                                    'surface': 'eq.fade'})
+    w = l = p = 0
+    for r in rows:
+        res = str(r.get('result') or '').upper()
+        if res in ('WIN', 'W'):
+            w += 1
+        elif res in ('LOSS', 'L'):
+            l += 1
+        elif res in ('PUSH', 'P'):
+            p += 1
+    n = w + l
+    units = (w * (100 / 110.0)) - l
+    return {'wins': w, 'losses': l, 'pushes': p, 'graded': n,
+            'units': round(units, 2),
+            'hit_rate': (round(100 * w / n, 1) if n else None),
+            'roi_pct': (round(100 * units / n, 1) if n else None),
+            'confidence': ('tracking' if n < TRACKING_MIN_N else 'established'),
+            'tracking_min_n': TRACKING_MIN_N}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--date', default=None)
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args()
+    date = a.date or today_et()
+    print(f'=== generate_the_fade · {date} · '
+          f'public >= {FADE_MIN_PUBLIC:g}% · '
+          f'{"DRY RUN" if a.dry_run else "WRITING"} ===')
+
+    plays = build_plays(date)
+    print(f'\n  FADE PLAYS: {len(plays)}')
+    for p in plays:
+        print(f"    {p['sport']:<6}{p['market']:<6}{p['label'][:30]:<31}"
+              f"public {p['public_pct']:>5.1f}% on {p['public_side']:<6}"
+              f"{p['matchup'][:34]}")
+
+    rec = graded_record()
+    print(f"\n  RUNNING RECORD: {rec['wins']}-{rec['losses']}-{rec['pushes']}  "
+          f"hit {rec['hit_rate']}%  units {rec['units']:+}  "
+          f"ROI {rec['roi_pct']}%  [{rec['confidence']}]")
+
+    payload = {'date': date, 'plays': plays, 'record': rec,
+               'filter': {'min_public_pct': FADE_MIN_PUBLIC,
+                          'markets': list(FADE_MARKETS),
+                          'moneyline_excluded_because':
+                              'breakeven moves with the public price'},
+               # ══ 2026-10-19 · THE BACKTEST IS NOT THE RECORD ══
+               # Receipts are NOT backfilled for past dates. Doing that would
+               # insert plays we never published and grade them instantly,
+               # presenting a retroactive record as if we had made the calls -
+               # the same class of error as reconstructed prices inflating
+               # ROI, and this surface exists to be trustworthy. So `record`
+               # starts at 0-0 and only counts plays published from today
+               # forward, while the measurement that justified building it
+               # rides alongside, clearly labelled as a backtest.
+               'backtest': {
+                   'what': ('fade the public on football spreads, '
+                            'public tickets >= 65%'),
+                   'record': '63-44', 'hit_rate': 58.9,
+                   'roi_pct': 12.4, 'n': 107,
+                   'ci95': [49.4, 67.7],
+                   'holdout': ('threshold chosen on an early date half; the '
+                               'late holdout returned +1.3% at >=65, +2.8% at '
+                               '>=70, +12.3% at >=75 - same sign in both '
+                               'halves'),
+                   'caveat': ('CI includes the 52.38% breakeven and the '
+                              'holdout is 38 plays. Direction is consistent; '
+                              'magnitude is not settled.'),
+                   'measured_on': '2026-10-19',
+               },
+               'generated_at': dt.datetime.now(dt.timezone.utc).isoformat()}
+
+    if a.dry_run:
+        print('\n  DRY RUN — nothing written')
+        print(f'  payload preview: {json.dumps(payload)[:300]}...')
+        return 0
+
+    # 1. the cache row the tab renders
+    cache_key = f'fade_{date}'
+    r = requests.post(f'{SB}/rest/v1/jerry_cache', headers=H_WRITE,
+                      params={'on_conflict': 'cache_key'},
+                      data=json.dumps({'cache_key': cache_key,
+                                       'game_id': cache_key,
+                                       'sport': 'MULTI',
+                                       'narrative': f'The Fade · {date}',
+                                       'data': payload,
+                                       'fetched_at': dt.datetime.now(
+                                           dt.timezone.utc).isoformat()}),
+                      timeout=60)
+    print(f'\n  cache write: HTTP {r.status_code}')
+
+    # 2. receipts, so the record grades itself the way every other surface does
+    if plays:
+        try:
+            from public_receipt import capture
+            rows = [{
+                'sport': p['sport'], 'surface': 'fade',
+                'game_date': p['game_date'], 'game_id': p['game_id'],
+                'market': p['market'], 'matchup': p['matchup'],
+                'pick_side': p['side'], 'pick_line': p['line'],
+                'pick_label': p['label'],
+                'source_table': 'line_snapshot',
+                'source_id': f"fade:{p['sport']}:{p['game_id']}:{p['market']}",
+                'audit': {'public_pct': p['public_pct'],
+                          'public_side': p['public_side'],
+                          'public_money_pct': p['public_money_pct'],
+                          'filter': f'public >= {FADE_MIN_PUBLIC:g}%'},
+            } for p in plays]
+            n = capture(rows, surface='fade')
+            print(f'  receipts captured: {n}/{len(rows)}')
+        except Exception as e:                                 # noqa: BLE001
+            print(f'  ⚠ receipt capture failed (not fatal): '
+                  f'{type(e).__name__}: {e}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
