@@ -438,7 +438,19 @@ def fetch_yesterday_recap():
                 # card. Checked BEFORE the early return, because the stale
                 # value we most need to correct is a confident wrong one.
                 _from_receipt = receipt_lookup.get(label.lower())
-                if _from_receipt and _from_receipt not in ("Pending",):
+                # ══ 2026-10-18 · A NON-RESULT MUST NOT OUTRANK A RESULT ══
+                # The ledger outranking the frozen card is right, but Void and
+                # NO_ACTION are not grades - they are withdrawals, and they
+                # were winning this comparison. Yesterday's POTD (Nick Martinez
+                # Over 3.5 HA) LOST and the recap showed it as Void, because
+                # the deduplicated copy of that pick had been voided on purpose
+                # and its label still matched here. That reported 3-2 for a
+                # 3-3 day: a loss hidden as a void, which flatters the record.
+                # Every postponement and every deduped duplicate would do the
+                # same, so the skip list has to name them.
+                if _from_receipt and _from_receipt not in (
+                        "Pending", "pending", "Void", "VOID", "void",
+                        "NO_ACTION", "No Action", "no_action"):
                     return _from_receipt
                 if stored and stored not in ("Pending", "pending", None, ""):
                     return stored
