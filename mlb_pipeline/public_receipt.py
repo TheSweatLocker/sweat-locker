@@ -175,6 +175,63 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
 
 # ── surface adapters ────────────────────────────────────────────────
 
+def _side_for_receipt(it: dict, market: str, prop_side):
+    """The side taken, for NON-prop markets, so CLV can be computed.
+
+    ══ 2026-10-19 · pick_side WAS NULL ON EVERY CARD SPREAD RECEIPT ══
+    All 65 sharp_card and all 41 sweat_card spread receipts carried
+    pick_side=NULL, while game_read carried it on 409 of 409. Closing line
+    value needs the side: a line of -6.0 is a different bet depending on
+    whether we took the home team or the away team, so without it a receipt
+    cannot be compared to the close at all, and CLV was computable on only
+    93 of 515 spread picks.
+
+    The card item already HAS it (`side`: 'HOME'). Both writers simply never
+    read it. Falls back to deriving it from the label against the matchup,
+    then to None - never a guess.
+    """
+    if prop_side:
+        return prop_side
+    sd = str(it.get('side') or it.get('pick_side') or '').strip().upper()
+    if sd in ('HOME', 'AWAY', 'OVER', 'UNDER'):
+        return sd
+    if str(market).lower() in ('total', 'totals', 'ou'):
+        lab = str(it.get('label') or it.get('pick') or '').upper()
+        if lab.startswith('OVER') or ' OVER ' in lab:
+            return 'OVER'
+        if lab.startswith('UNDER') or ' UNDER ' in lab:
+            return 'UNDER'
+        return None
+    # team markets: match the label's team against the matchup's two sides.
+    # PREFIX then WORD BOUNDARY, never a bare substring: NFL matchups use
+    # 2-3 letter codes and 'NO' is inside 'Minnesota', 'LA' inside 'Atlanta',
+    # so a substring test resolves the wrong side on real rows. A tie or an
+    # ambiguous match returns None - a NULL side is recoverable, a wrong one
+    # silently inverts the pick.
+    import re as _re
+    lab = str(it.get('label') or it.get('pick') or '')
+    mu = str(it.get('game') or it.get('matchup') or '')
+    if ' @ ' in mu and lab:
+        away, home = (q.strip() for q in mu.split(' @ ', 1))
+        head = lab.split('  ·')[0].strip().lower()
+
+        def _score(team):
+            t = str(team or '').strip().lower()
+            if not t:
+                return 0
+            if head.startswith(t):
+                return 2                      # "Baylor -6" vs home "Baylor"
+            if _re.search(rf'{_re.escape(t)}', head):
+                return 1                      # whole word elsewhere
+            return 0
+        sh, sa = _score(home), _score(away)
+        if sh > sa:
+            return 'HOME'
+        if sa > sh:
+            return 'AWAY'
+    return None
+
+
 def sharp_card_rows(items: list, game_date: str) -> list[dict]:
     """Shape published Sharp Card items into receipt rows.
 
@@ -216,6 +273,7 @@ def sharp_card_rows(items: list, game_date: str) -> list[dict]:
             'market': market,
             'pick_label': it.get('pick'),
             'pick_line': it.get('line'),
+            'pick_side': _side_for_receipt(it, market, None),
             'pick_odds': it.get('odds'),
             'tier': (it.get('tier') or None),
             'conviction': it.get('conviction'),
@@ -504,7 +562,7 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
                 'source_id': _sid(market, anchor),
                 'player_name': _player,
                 'prop_type': _ptype,
-                'pick_side': _pside,
+                'pick_side': _side_for_receipt(it, market, _pside),
                 'source_table': it.get('source_table') or 'jerry_cache.sweat_card',
                 'game_id': it.get('game_id'),
                 'matchup': it.get('game') or it.get('matchup'),

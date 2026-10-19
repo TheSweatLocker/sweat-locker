@@ -1426,6 +1426,21 @@ def run(force: bool = False, game_date: str | None = None,
             elif _mkt == 'fight' and _side:
                 parsed['call_text'] = f"Fighter {_side}"
 
+        # ══ 2026-10-19 · THE LINE MUST BE ONE A BOOK ACTUALLY POSTED ══
+        # call_line comes straight out of the LLM parse and nothing compared
+        # it to the market. Checked against line_history (1000 captures, 11
+        # books, an 11-day window per game), 30 of 62 game_read spread picks
+        # carried a number NO BOOK EVER POSTED - PHI -6.5 when the market was
+        # -2, KC -2.5 when it was -7.5 - mean 1.1 points off and up to 5.0.
+        # A record graded at a number nobody could bet is not a record, and
+        # it sits upstream of every tier, gate and model. Snaps to the
+        # market and rebuilds call_text so the label matches. Fails open.
+        try:
+            from line_integrity import apply_to_parsed as _snap_line
+            parsed = _snap_line(parsed, g, sport)
+        except Exception as _le:                               # noqa: BLE001
+            print(f'  [line] integrity check skipped: '
+                  f'{type(_le).__name__}: {_le}')
         if upsert_jerry_read_sport(g, parsed, struct, gd, sport):
             # Display fallback: prefer call_text; if missing, reconstruct from
             # market + side + line so logs don't misleadingly show "PASS" for

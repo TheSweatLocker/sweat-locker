@@ -74,6 +74,15 @@ def _f(v):
     return None if x != x else x
 
 
+def _side_for(market: str) -> str:
+    """The reference side to pull, per market vocabulary.
+
+    One side is enough: the other is its mirror (away = -home handicap,
+    under = the same total). Pulling one halves the rows.
+    """
+    return 'over' if str(market).lower() in ('total', 'totals', 'ou') else 'home'
+
+
 def stream(sport: str, market: str, since: str = '2026-08-01'):
     """Page through line_history with KEYSET pagination, yielding rows.
 
@@ -91,7 +100,16 @@ def stream(sport: str, market: str, since: str = '2026-08-01'):
                                            'captured_at,commence_time',
                                  'sport': f'eq.{sport}',
                                  'market': f'eq.{market}',
-                                 'side': 'eq.home',
+                                 # 2026-10-19: THE SIDE VOCABULARY IS
+                                 # PER-MARKET. spread/ml use home|away,
+                                 # totals use over|under. Filtering
+                                 # side=home on market=total matched ZERO
+                                 # rows and made Postgres scan the whole
+                                 # market=total partition, which came back
+                                 # as "canceling statement due to statement
+                                 # timeout" (57014) and read like a DB
+                                 # problem. It was this filter.
+                                 'side': f'eq.{_side_for(market)}',
                                  'book': 'in.(draftkings,betmgm,fanduel)',
                                  'commence_time': f'gte.{since}',
                                  'id': f'gt.{last_id}',

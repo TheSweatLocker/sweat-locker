@@ -45,7 +45,7 @@ RESULTS = []
 CRITICAL_MODULES = [
     'generate_sweat_card', 'game_context', 'public_receipt', 'market_line',
     'defensive_gates', 'predict_runs', 'potd_publish_lock',
-    'void_orphaned_picks', 'generate_jerry_synthesis',
+    'void_orphaned_picks', 'generate_jerry_synthesis', 'line_integrity',
 ]
 
 
@@ -131,6 +131,25 @@ def c_dedupe():
     return 'duplicate collapses, distinct games stay apart'
 
 
+def c_line_integrity():
+    """The market snap must snap a fabricated line and fail open on junk."""
+    from line_integrity import snap_line
+    new, note = snap_line(-2.5, {'close_spread': 7.5}, 'NFL', 'HOME', 'rl')
+    if abs(new - (-7.5)) > 1e-9 or not note:
+        raise RuntimeError(f'KC -2.5 should snap to -7.5, got {new}')
+    same, n2 = snap_line(-5.5, {'close_spread': 5.5}, 'NFL', 'HOME', 'rl')
+    if abs(same - (-5.5)) > 1e-9 or n2:
+        raise RuntimeError('an exact match must not be touched')
+    for ctx in (None, {}, {'close_spread': 'abc'}):
+        v, _ = snap_line(-6.5, ctx, 'NFL', 'HOME', 'rl')
+        if abs(v - (-6.5)) > 1e-9:
+            raise RuntimeError(f'must fail open on {ctx!r}, got {v}')
+    v, _ = snap_line(-6.5, {'close_spread': 2.0}, 'NFL', 'HOME', 'ml')
+    if abs(v - (-6.5)) > 1e-9:
+        raise RuntimeError('moneyline must be untouched')
+    return 'snaps a fabricated line, leaves exact matches, fails open'
+
+
 def c_recap():
     """Read-only. A recap with no date means the chain is broken."""
     import generate_sweat_card as G
@@ -167,6 +186,8 @@ def main() -> int:
             ('imports: every critical module', c_imports),
             ('curate_top_8: composes AND actually adds picks', c_curate),
             ('dedupe: POTD + its own prop collapse to one', c_dedupe),
+            ('line_integrity: snaps fabricated lines, fails open',
+             c_line_integrity),
             ('fetch_yesterday_recap: returns a dated recap', c_recap),
             ('sweat_card_rows: shapes receipts off the live card', c_receipts)):
         record(name, fn)

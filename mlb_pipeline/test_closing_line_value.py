@@ -123,6 +123,10 @@ def main() -> int:
         sp = str(x.get('sport'))
         ours = f(x.get('pick_line'))
         if ours is None:
+            import re as _re
+            m = _re.search(r'([+-]\d+(?:\.\d+)?)', str(x.get('pick_label') or ''))
+            ours = float(m.group(1)) if m else None
+        if ours is None:
             miss_line += 1
             continue
         lh = close_by_game.get((sp, str(x.get('game_id'))))
@@ -135,7 +139,21 @@ def main() -> int:
             continue
         side = str(x.get('pick_side') or '').upper()
         if side not in ('HOME', 'AWAY'):
-            continue
+            # ══ 2026-10-19 · DERIVE IT, THE COLUMN IS IMMUTABLE ══
+            # pick_side is NULL on all 65 sharp_card and all 41 sweat_card
+            # spread receipts, and public_receipts REFUSES to fill it: a PATCH
+            # returns HTTP 200 with a body showing the value unchanged, then
+            # re-reads as NULL. Only `result` is writable. So the history
+            # cannot be repaired and the ANALYSIS has to be robust instead -
+            # the label plus the matchup carry the side, and the same helper
+            # the writer now uses can recover it here.
+            from public_receipt import _side_for_receipt
+            side = str(_side_for_receipt({'label': x.get('pick_label'),
+                                          'game': x.get('matchup')},
+                                         str(x.get('market')), None)
+                       or '').upper()
+            if side not in ('HOME', 'AWAY'):
+                continue
         # our number for the side we took, in that side's own handicap terms
         close_ours = close_home if side == 'HOME' else -close_home
         # POSITIVE clv = we got a better number than the close, either side

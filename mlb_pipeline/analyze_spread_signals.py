@@ -416,7 +416,16 @@ def main() -> int:
             c2 = corr_ci(xs, ys)
             rte = c2[0] if c2 else 0.0
             same = (rtr > 0) == (rte > 0)
-            pairs = sorted(zip(xs, ys))
+            # ══ 2026-10-19 · SORT BY x ONLY ══
+            # sorted(zip(xs, ys)) orders by x THEN y, so inside a tie group at
+            # one x value the prefix/suffix picks the most extreme OUTCOMES -
+            # selection on the dependent variable. It manufactured a 79.0%
+            # "BEATS" on h2h_last5_home_wins, whose correlation had FLIPPED out
+            # of sample. Features with big tie groups (h2h counts, ATS-record
+            # integers) are exactly where it bites. Python's sort is stable, so
+            # keying on x alone leaves ties in their original order and the
+            # outcome cannot influence membership.
+            pairs = sorted(zip(xs, ys), key=lambda t: t[0])
             t3 = pairs[-max(6, len(pairs)//3):] if rtr > 0 else pairs[:max(6, len(pairs)//3)]
             w = sum(1 for _x, y in t3 if y > 0)
             nn = sum(1 for _x, y in t3 if y != 0)
