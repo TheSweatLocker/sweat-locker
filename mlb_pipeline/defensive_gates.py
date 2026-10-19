@@ -2259,6 +2259,123 @@ def apply_nhl_ml_confidence_gate(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+#: NFL spread picks on a favourite of this many points or more get demoted
+#: across the stake boundary. See apply_nfl_big_favourite_spread_cap.
+NFL_BIG_FAV_POINTS = float(os.environ.get('NFL_BIG_FAV_POINTS', '7.0'))
+
+
+def apply_nfl_big_favourite_spread_cap(pp: dict | None, ctx: dict) -> dict | None:
+    """Cut stake on NFL SPREAD picks. The 7+ favourite is the worst bucket.
+
+    == 2026-10-18 - JERRY WENT 2-8-1 ON NFL AND THIS IS THE MEASURABLE PART ==
+    ANDY: "2-8-1 is absolutely horrendous ... we need serious work on nfl".
+
+    FIRST, WHAT IS NOT THE ANSWER. Our NFL number does not beat the close.
+    Tested all six projection columns against the 91 graded 2026 games, each
+    against the market and against a CONSTANT control:
+
+        model        MAE   vs mkt   slope    95% CI             CONSTANT
+        projected  9.303   -0.081  +0.442  [-0.158,+1.041]        +0.198
+        v3         9.224   -0.161  +0.491  [-0.102,+1.083]        +0.198
+        panel      9.311   +0.029  +0.201  [-0.599,+1.002]        +0.159
+        proj_v2    9.255   +0.289  +0.104  [-0.488,+0.696]        +0.239
+        model      9.678   +0.293  -0.024  [-0.555,+0.508]        +0.198
+        v4        11.097   +0.901  -0.255  [-0.935,+0.424]        -0.162
+
+    Market MAE is 9.385. NOT ONE slope CI excludes zero, and every MAE sits
+    within 0.3 of the market on a 9.4 baseline - our number IS the close plus
+    noise. So there is no model-side reason to believe a big favourite has
+    earned conviction, and the all-time 42-38 (52.5%) against a 52.38%
+    breakeven is exactly what a no-edge book looks like.
+
+    WHAT IS MEASURABLE, on the book itself:
+        Jerry NFL spread (rl)   19-30   38.8%   42/49 priced   ROI -22.0%
+        Jerry NFL ml            22-5    81.5%   11/27 priced   ROI unmeasurable
+        Jerry FAV, |line| >= 7   3-9    25.0%   n=12
+        slate-wide |line| >= 7   6-15   28.6%   CI[13.8,50.0]  n=21
+        slate-wide big DOGS     15-6    71.4%   n=21
+
+    The spread book is where the money goes, and inside it the 7+ favourite is
+    the worst bucket on both our picks and the raw slate.
+
+    CAVEAT, STATED PLAINLY: n=12 on our own slice and n=21 slate-wide. On its
+    own that does NOT survive Bonferroni across the eight controls tested. It
+    is acted on because it REPRODUCES a pattern already documented three times
+    from independent slices - the heavy-favourite ML trap (29% cover on -1.5),
+    NFL favourite-ML price discipline, and the projection measured 15.8 points
+    light on 14+ favourites - and because the book it sits inside is
+    measurably -22% ROI, not merely unproven.
+
+    WHY ALL SPREADS AND NOT ONLY THE 7+ FAVOURITE. Split by surface, the
+    damage is in the curated spread book itself, not just its worst slice:
+
+        sweat_card rl    2-11   15.4%   ROI -58.2%
+        sharp_card rl    2-11   15.4%   ROI -58.2%
+        curated NFL     13-35   27.1%   CI[16.6,41.0]   ROI -45.9%   n=48
+        game_read  ml   26-12   68.4%   ROI +10.7%
+        prop_jerry      52.3%   ROI  -1.6%   n=2229
+
+    The curated CI upper bound is 41.0%, below the 52.38% breakeven, so the
+    spread book is a measured loser rather than an unlucky one. The MONEYLINE
+    read is PROFITABLE over the same period and is deliberately left alone -
+    this caps one market, it does not stop NFL publishing.
+
+    DEMOTES TO LEAN, NOT ONE TIER DOWN. PRIME and STRONG are BOTH 2 units, so
+    a one-tier demotion would change the label and not the exposure. Crossing
+    to LEAN is what actually takes it from 2u to 1u. The pick still publishes.
+    Reversible by deleting the call in apply_all_defensive_gates.
+    """
+    if not pp or not isinstance(pp, dict):
+        return pp
+    try:
+        if str(pp.get('type') or '').lower() not in ('rl', 'spread', 'ats'):
+            return pp
+        if str(pp.get('tier') or '').upper() not in ('PRIME', 'STRONG'):
+            return pp
+        side = str(pp.get('side') or '').upper()
+        if side not in ('HOME', 'AWAY'):
+            return pp
+        cs = ctx.get('close_spread')
+        cs = float(cs) if cs is not None else None
+        if cs is None or cs == 0:
+            return pp
+        # nflverse convention on nfl_game_results/context: POSITIVE close_spread
+        # = HOME favoured. Verified corr(close_spread, actual margin) = +0.328
+        # on the 91 graded 2026 games, so the sign is not assumed here.
+        took_favourite = (side == 'HOME' and cs > 0) or (side == 'AWAY' and cs < 0)
+        big_fav = took_favourite and abs(cs) >= NFL_BIG_FAV_POINTS
+        pp = dict(pp)
+        prior_tier = str(pp.get('tier') or '').upper()
+        pp['tier'] = 'LEAN'
+        if isinstance(pp.get('conviction'), (int, float)):
+            pp['conviction'] = min(int(pp['conviction']), 55)
+        why = (f'laying {abs(cs):.1f} as the favourite, the worst sub-bucket '
+               f'(3-9, 25.0%)' if big_fav else f'spread line {cs:+.1f}')
+        note = (f'NFL spread tier cap: {why}. Curated NFL spreads are 2-11 '
+                f'(15.4%, ROI -58.2%) and curated NFL overall is 13-35 '
+                f'(27.1%, CI[16.6,41.0]) - an upper bound BELOW breakeven, so '
+                f'this is a measured loser, not variance. No NFL projection '
+                f'beats the close (all six slope CIs include 0), so the tier '
+                f'was never earned. Our NFL MONEYLINE reads are +10.7% and '
+                f'are deliberately untouched. Demoted {prior_tier} -> LEAN to '
+                f'cross the 2u/1u stake boundary.')
+        pr = pp.get('audit_note') or ''
+        pp['audit_note'] = (note + (' | ' + str(pr) if pr else ''))[:900]
+        if not pp.get('sub'):
+            pp['sub'] = (f'LEAN (capped from {prior_tier} - NFL spread book '
+                         f'2-11)')
+        # ASCII only. A defensive gate that THROWS is worse than the bias it
+        # was added to fix.
+        print(f"  [gate] NFL spread capped {prior_tier} -> LEAN "
+              f"({'7+ fav, ' if big_fav else ''}line {cs:+.1f}) "
+              f"({pp.get('label') or side})")
+        return pp
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  [gate] NFL spread cap SKIPPED (fail-open): '
+              f'{type(_e).__name__}: {_e}')
+        return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2312,6 +2429,27 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # been possible (no spread stored), and in that case the ML must still be
     # demoted rather than ship untouched at a trap price.
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
+    # ══ 2026-10-18 · AFTER THE OVERRIDE AND THE REROUTE, DELIBERATELY ══
+    # First attempt placed this with the other sport gates, BEFORE
+    # apply_ml_lr_override — and the trace showed the override throwing the
+    # demotion away: ('PRIME',79) -> cap -> ('LEAN',55) -> override ->
+    # ('PRIME',74) as a fresh ML. Exactly the trap documented 15 lines above
+    # for the juice gate. A spread pick can also ARRIVE here from
+    # apply_heavy_ml_spread_reroute, which turns a trap-priced moneyline into a
+    # spread; placed earlier, those rerouted spreads would never be capped.
+    # Every spread that survives to this line has passed through it.
+    # ══ 2026-10-18 · THE OVERRIDE'S OWN ML WAS NEVER PRICE-CHECKED EITHER ══
+    # apply_unpriced_market_gate runs FOURTH, but apply_ml_lr_override builds a
+    # FRESH ML pick later — so an override moneyline on a market with no price
+    # on file reached PRIME unchecked. Traced live: an rl pick with no ML price
+    # in ctx came out ('PRIME', 74, 'ml'), a 2-unit tier asserting an edge over
+    # a line that does not exist. This is measured, not hypothetical: 16 of 27
+    # graded NFL ML reads carry NO price, which is why that book's ROI cannot
+    # be computed at all. The gate is idempotent, non-destructive and restores
+    # itself when a price lands, so re-running it here is safe.
+    pp = apply_unpriced_market_gate(pp, ctx, sport=sport)
+    if sport == 'NFL':
+        pp = apply_nfl_big_favourite_spread_cap(pp, ctx)
     # 2026-09-03 MLB TOTAL LR OVERRIDE — supervised total model.
     # Test acc 59.8%, PRIME_OVER 69% n=71, PRIME_UNDER 62% n=111.
     if sport == 'MLB':
