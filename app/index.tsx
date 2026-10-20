@@ -6249,7 +6249,7 @@ const fetchPotdHistory = async () => {
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     const {data, error} = await supabase
       .from('daily_best_bet_history')
-      .select('bet_date,sport,game,lean,result,sweat_score')
+      .select('bet_date,sport,game,lean,result,sweat_score,odds_american,resolved_at')
       .gte('bet_date', cutoffStr)
       .order('bet_date', {ascending: true});
     if (error) console.warn('[Receipts] potd history fetch error:', error.message);
@@ -17277,9 +17277,105 @@ setJerryHistory(prev => {
                           </View>
                         ) : (
                           <Text style={{color:THEME.textDim,fontSize:10,textAlign:'center',marginTop:10,fontStyle:'italic'}}>
-                            All-time: {potdW}-{potdL}{potdP > 0 ? `-${potdP}` : ''} ({potdPct}%) · {potdRows.length} graded POTD{potdRows.length===1?'':'s'}
+                            All-time: {potdW}-{potdL}{potdP > 0 ? `-${potdP}` : ''} ({potdPct}%) · {potdW+potdL+potdP} graded POTD{potdW+potdL+potdP===1?'':'s'} of {potdRows.length} day{potdRows.length===1?'':'s'}
                           </Text>
                         )}
+                      </View>
+                    );
+                  })()}
+
+                  {/* ══ 2026-10-20 · POTD AUDIT ══
+                      ANDY: "Add OTD audit in recipets tab as well", right
+                      after catching a POTD that published
+                      "Boston Celtics @ Detroit Pistons" as its own PLAY on
+                      NBA opening night, with a past-tense narrative about a
+                      game that had not tipped.
+
+                      These are the same checks the server-side guard
+                      (potd_lean_is_a_play in play_of_day.py) now enforces at
+                      write time, surfaced so the record can be inspected
+                      instead of trusted. A zero reads green; anything above
+                      zero reads amber and names itself.
+
+                      Derived from potdHistory, which is already fetched for
+                      the strip above - no new query. */}
+                  {(() => {
+                    const rows = filterSport === 'ALL'
+                      ? potdHistory
+                      : potdHistory.filter((r:any) => r.sport === filterSport);
+                    if (!rows.length) return null;
+                    const norm = (v:any) => String(v ?? '').trim();
+                    const low = (v:any) => norm(v).toLowerCase();
+                    const isNoPlay = (r:any) =>
+                      low(r.result) === 'no-pick' || low(r.result) === 'no play'
+                      || low(r.lean).includes('no play');
+                    const isGraded = (r:any) =>
+                      ['win','loss','push'].includes(low(r.result));
+                    // Mirror of the server guard: a play names a side or a
+                    // direction AND carries a market or a number.
+                    const MKT = /\b(ml|moneyline|ats|rl|run line|puck ?line|spread|over|under|o\/u|total|outs|hits|strikeouts|ks|er|bb|reception|rush|pass|td|points|rebounds|assists)\b/i;
+                    const leanIsPlay = (r:any) => {
+                      const t = norm(r.lean);
+                      if (!t) return false;
+                      if (t.includes(' @ ')) return false;
+                      if (r.game && t.toLowerCase() === low(r.game)) return false;
+                      if (!(MKT.test(t) || /[+-]?\d/.test(t))) return false;
+                      if (['over','under'].includes(t.toLowerCase())) return false;
+                      return true;
+                    };
+                    const graded = rows.filter(isGraded);
+                    const noPlay = rows.filter(isNoPlay);
+                    const pending = rows.filter((r:any) =>
+                      !isGraded(r) && !isNoPlay(r));
+                    // Integrity: a published play that is not a play, a grade
+                    // with nothing to grade, and a grade with no price (which
+                    // on a moneyline cannot become ROI).
+                    const notAPlay = rows.filter((r:any) =>
+                      !isNoPlay(r) && !leanIsPlay(r));
+                    const gradedNoPlay = graded.filter((r:any) => !leanIsPlay(r));
+                    const gradedNoPrice = graded.filter((r:any) =>
+                      r.odds_american == null);
+                    const checks = [
+                      {label: 'Published a non-play', n: notAPlay.length,
+                       hint: 'lean was a matchup, blank, or had no market'},
+                      {label: 'Graded with no play', n: gradedNoPlay.length,
+                       hint: 'carries a W/L but names no bet'},
+                      {label: 'Graded with no price', n: gradedNoPrice.length,
+                       hint: 'cannot be converted to units'},
+                    ];
+                    return (
+                      <View style={{marginBottom:14}}>
+                        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,marginHorizontal:2}}>
+                          <Text style={{color:THEME.textMuted,fontSize:10,fontWeight:'800',letterSpacing:1.2}}>POTD AUDIT</Text>
+                          <Text style={{color:THEME.textMuted,fontSize:9}}>{rows.length} day{rows.length===1?'':'s'} · last 120</Text>
+                        </View>
+                        <View style={{backgroundColor:THEME.surface,borderRadius:10,padding:12,gap:8}}>
+                          <View style={{flexDirection:'row',justifyContent:'space-between'}}>
+                            {[{k:'Graded',v:graded.length},
+                              {k:'No Play',v:noPlay.length},
+                              {k:'Pending',v:pending.length}].map(x=>(
+                              <View key={x.k} style={{alignItems:'center',flex:1}}>
+                                <Text style={{color:THEME.text,fontSize:16,fontWeight:'900'}}>{x.v}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:9,letterSpacing:0.4}}>{x.k.toUpperCase()}</Text>
+                              </View>
+                            ))}
+                          </View>
+                          <View style={{height:1,backgroundColor:THEME.border}}/>
+                          {checks.map(c=>(
+                            <View key={c.label} style={{flexDirection:'row',alignItems:'flex-start'}}>
+                              <Text style={{color:c.n===0?THEME.accent:'#f0b34a',fontSize:11,fontWeight:'900',width:20}}>
+                                {c.n===0?'✓':String(c.n)}
+                              </Text>
+                              <View style={{flex:1}}>
+                                <Text style={{color:THEME.textDim,fontSize:11}}>{c.label}</Text>
+                                <Text style={{color:THEME.textMuted,fontSize:9,lineHeight:13}}>{c.hint}</Text>
+                              </View>
+                            </View>
+                          ))}
+                          <Text style={{color:THEME.textMuted,fontSize:9,lineHeight:13,fontStyle:'italic'}}>
+                            A no-play day is a decision, not a gap — it is excluded from the record rather than counted as a loss.
+                          </Text>
+                        </View>
                       </View>
                     );
                   })()}
