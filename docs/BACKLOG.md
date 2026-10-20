@@ -3741,3 +3741,52 @@ now reports "left VOID (not re-graded)" and changes nothing.
 
 Still a losing book - the void removed a double-counted loss, it did not make
 the surface profitable.
+
+
+### B86 - NBA game cards rendered EMPTY on opening night - **CLOSED** `3cd5295f`, needs the build
+
+ANDY, 2026-10-20: "NBA game card are emty with no precitions or write up, also
+... we need nba surfacing to usrer why isnt it?"
+
+THE DATA WAS NEVER THE PROBLEM. All three opening-night games carried
+projected_spread, projected_total, projected_home_wp, 10,000-sim
+mc_probabilities and Elo, and their jerry_reads carried 276-320 char
+short_reads, 598-830 char long_reads AND prices.
+
+Two id-namespace misses, both the same shape as bugs already documented in
+these files for NHL on 09-28:
+
+  * the ctx prop chain in app/index.tsx ran MLB -> NFL -> NCAAF -> NHL ->
+    `null` with NO NBA branch, so ctx was null and EVERY ctx-driven section
+    rendered empty
+  * `_jerryFor` tried `reads[game.id]` and an NHL-specific key only, while
+    jerry_reads(NBA).game_id is an ESPN id (401909088) and selectedGame.id is
+    an Odds-API hash - zero overlap, so no write-up ever resolved
+  * GameDetailV2's own ctx-table fallback also omitted NBA
+
+THE PATTERN WORTH REMEMBERING: a per-sport chain ending in `: null` fails
+silently and looks exactly like missing data. This is the third sport to pay
+for it. NCAAB opens 2026-11-03 with no map at all - it will be the fourth
+unless its branch lands with the season.
+
+### B87 - the NBA "in review" banner must be REMOVED when the build ships - OPEN
+
+`sport_registry.NBA.state_message` was set 2026-10-20 so users could see WHY
+the NBA cards were vacant:
+
+    "Opening night is live. Per-game predictions and write-ups are not
+     displaying on NBA game cards yet - that fix is built and in review for
+     the next app update. The models are running normally behind it, so any
+     NBA play that clears the tier gate still posts to the Sweat Card and The
+     Sharp in the meantime."
+
+It is TRUE today and becomes a LIE the moment the build carrying `3cd5295f`
+reaches users. Nothing expires it automatically.
+
+FIX: clear `state_message` for NBA (`UPDATE sport_registry SET state_message
+= NULL WHERE sport = 'NBA'`) as part of shipping the build, and confirm an NBA
+game card renders a predicted score and a write-up before clearing it.
+Backend-only either way - no release needed to change or remove the copy.
+
+Also corrected while there: NBA `return_date` read 2026-10-21, the day AFTER
+the opener, against `season_start` 2026-10-20.
