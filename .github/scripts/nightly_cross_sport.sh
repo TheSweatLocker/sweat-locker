@@ -453,6 +453,23 @@ bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
 bash "$RUN_STEP" --label "compute_points_per_game.py (NFL + NCAAF points for/against)" \
   python compute_points_per_game.py
 
+# 2026-10-20 · THE CALIBRATION BANNER MAINTAINS ITSELF NOW.
+# ANDY: "its annoying having to update that everyday becaue i walwyas have to
+# tell you can we make ti where it updates uatomaticlaly or at what point is
+# it pulled and consider callibrated."
+#
+# It was hand-written and had drifted into quoting 139 picks (79-60) while the
+# published NHL record was 67-51 (118) - and into calling 56.8% "ahead of
+# break-even" when the price-aware return is -2.8%. A hand-maintained banner
+# always drifts toward the flattering version, because nobody re-reads it on a
+# day the number got worse.
+#
+# MUST run AFTER compute_surface_records so it reads today's records rather
+# than yesterday's. It pulls the banner by itself once a sport clears 250
+# graded reads AND 45 days live, so there is a defined end to it.
+bash "$RUN_STEP" --label "refresh_calibration_notes.py (auto NHL/UFC banners)" \
+  python refresh_calibration_notes.py
+
 # 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
 # never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
 # had price_american NULL — ungradeable for ROI, permanently — and the 15 that
