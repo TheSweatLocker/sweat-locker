@@ -2274,6 +2274,16 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // (tickets >= 65% on a spread or total), with a running record like The
   // Sharp. Server: generate_the_fade.py -> jerry_cache 'fade_<date>' and
   // public_receipts surface='fade'; rolled up by pick_fade.
+  // ══ 2026-10-20 · THE MODEL PANEL ══
+  // ANDY: "I want eavh model to wrok as an indepenedtent opinion ... As if it
+  // was a panel of broadcaster with opinions based on real data, maybe model X
+  // favors homefield advantage over model Y ... THis shoudl eb for evey sport"
+  //
+  // Written nightly by compute_model_voices.py into jerry_cache under
+  // voices_<date>: for every upcoming game, each voice's own margin plus the
+  // track record it earned that seat with (corr / MAE / n). One fetch covers
+  // every sport and game, same shape as the Fade fetch below.
+  const [modelVoices, setModelVoices] = useState<any>(null);
   const [fadeData, setFadeData] = useState<{
     plays: any[],
     record: {wins:number, losses:number, pushes:number, graded:number,
@@ -10157,6 +10167,17 @@ setJerryHistory(prev => {
           setFadeData({plays:[], record:null, backtest:null, filter:null});
         }
       } catch { setFadeData({plays:[], record:null, backtest:null, filter:null}); }
+
+      // The model panel for the upcoming slate (see modelVoices above).
+      try {
+        const todayET2 = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+        const {data: vRows} = await supabase.from('jerry_cache')
+          .select('data')
+          .eq('cache_key', `voices_${todayET2}`)
+          .limit(1);
+        const vd: any = vRows && vRows[0]?.data;
+        setModelVoices(vd && vd.sports ? vd.sports : null);
+      } catch { setModelVoices(null); }
 
     } catch (e) { setSteamFlags([]); }
     setSteamLoading(false);
@@ -19137,6 +19158,15 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       : null
                 }
                 gamesSport={gamesSport}
+                // 2026-10-20: the independent model panel for this game, keyed
+                // by the sport's own game_id in voices_<date>.
+                modelVoices={
+                  (modelVoices?.[gamesSport]?.games?.[String(selectedGame?.id)])
+                  || Object.values(modelVoices?.[gamesSport]?.games || {}).find((g: any) =>
+                       g?.away_team === selectedGame?.away_team
+                       && g?.home_team === selectedGame?.home_team)
+                  || null
+                }
                 externalPicks={[]}
                 gameProps={[]}
                 historicalOdds={historicalOdds?.[selectedGame.id]}

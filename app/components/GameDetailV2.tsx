@@ -271,7 +271,7 @@ const prettyCohortTag = (raw: any): string => {
 
 // ─── Main component ─────────────────────────────────────────────────────
 export default function GameDetailV2({
-  game, ctx, gamesSport, externalPicks: externalPicksProp, gameProps: gamePropsProp,
+  game, ctx, gamesSport, modelVoices, externalPicks: externalPicksProp, gameProps: gamePropsProp,
   historicalOdds, jerryNarrative, jerrySynthesis, jerryLoading, onClose, onAddParlayLeg, onLogPick,
   isPro, onUpgrade,
 }: Props) {
@@ -737,7 +737,7 @@ export default function GameDetailV2({
           // (v3/v4/panel/sp+/mc) alongside probability tiles (LR) and
           // composite tiles (GOAT). Tap any tile → glossary tooltip.
           <Section title="Model Consensus" hint="each model's read · tap for detail">
-            <LensGrid ctx={ctx} gamesSport={gamesSport} />
+            <LensGrid ctx={ctx} gamesSport={gamesSport} modelVoices={modelVoices} />
           </Section>
         )}
 
@@ -2249,6 +2249,8 @@ function groupVoices(rows: any[]): {voices: number; label: Record<string, string
     // 'Conf' is a signal-balance, not a point margin, so it shares no scale
     // with the model tiles and can never be a duplicate of one.
     if (String(r.name) === 'Conf') continue;
+    // A voice that fitted to a constant is not a read - see the panel note.
+    if ((r as any)._voiceWeak) continue;
     const hit = leaders.find(l => Math.abs(l.m - Number(m)) <= VOICE_EPS);
     if (hit) {
       label[String(r.name)] = hit.name;
@@ -2259,7 +2261,7 @@ function groupVoices(rows: any[]): {voices: number; label: Record<string, string
   return {voices: leaders.length, label};
 }
 
-function LensGrid({ctx, gamesSport}: any) {
+function LensGrid({ctx, gamesSport, modelVoices}: any) {
   // Lenses deliberately omitted this card, with the reason. Rendered as a
   // footnote so the tile count is never silently different between games.
   const _hiddenLenses: string[] = [];
@@ -2591,6 +2593,35 @@ function LensGrid({ctx, gamesSport}: any) {
   // Scoped to the sports that reach the fallback branch. MLB, NCAAF and NFL
   // already curate their own lens lists, and re-filtering them here could
   // remove a tile one of them deliberately shows.
+  // ══ 2026-10-20 · THE PANEL JOINS THE GRID ══
+  // Each voice in voices_<date> is a model that argued from its OWN data
+  // family - NHL strength vs goaltending vs chance quality, NFL pass vs run
+  // vs yards - fitted on history with its own home-field intercept. They are
+  // appended as tiles so the grid shows opinions that were separately
+  // derived, which is the whole point of the panel.
+  //
+  // A voice whose |corr| came in under 0.10 arrives flagged `weak`: it fit to
+  // a constant rather than to the game, so it renders dimmed with its
+  // correlation shown and groupVoices() never lets it stand in as a distinct
+  // read. Andy asked that models not be REMOVED, so it is shown, labelled.
+  if (modelVoices && modelVoices.voices) {
+    const vs = modelVoices.voices;
+    for (const vname of Object.keys(vs).sort()) {
+      const v = vs[vname];
+      if (v == null || v.margin == null) continue;
+      rows.push({
+        name: vname.length > 8 ? vname.slice(0, 8) : vname,
+        m: Number(v.margin),
+        t: null,
+        _voiceAngle: v.angle,
+        _voiceCorr: v.corr,
+        _voiceN: v.n,
+        _voiceWeak: !!v.weak,
+        smallText: true,
+      });
+    }
+  }
+
   if (!['MLB', 'NCAAF', 'NFL'].includes(String(gamesSport))) {
     const _dead = rows.filter((r: any) => r.m == null && r.t == null);
     if (_dead.length) {
@@ -2671,6 +2702,14 @@ function LensGrid({ctx, gamesSport}: any) {
                   <Text style={{color: (isOpen ? C.accent : C.textMuted) + 'CC', fontSize:8, fontWeight:'700'}}>ⓘ</Text>
                 )}
               </View>
+              {/* A panel voice carries the record that earned it the seat, so
+                  a weak seat reads as weak instead of as a fifth opinion. */}
+              {(r as any)._voiceCorr != null && (
+                <Text style={{color: (r as any)._voiceWeak ? C.textMuted : C.textDim,
+                              fontSize: 7, fontWeight: '700', marginTop: -1}}>
+                  {(r as any)._voiceWeak ? 'flat' : `r ${(r as any)._voiceCorr}`}
+                </Text>
+              )}
               {/* Same read as another tile: the model stays visible, and the
                   tile says whose number it is repeating. */}
               {_vg.label[String(r.name)] && (

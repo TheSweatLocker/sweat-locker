@@ -470,6 +470,23 @@ bash "$RUN_STEP" --label "compute_points_per_game.py (NFL + NCAAF points for/aga
 bash "$RUN_STEP" --label "refresh_calibration_notes.py (auto NHL/UFC banners)" \
   python refresh_calibration_notes.py
 
+# 2026-10-20 · THE MODEL PANEL.
+# ANDY: "I want eavh model to wrok as an indepenedtent opinion ... As if it
+# was a panel of broadcaster with opinions based on real data".
+#
+# Refits every voice's slope and home-field intercept from history on each
+# run and publishes a per-game opinion for the upcoming slate. It REFITS
+# rather than carrying constants on purpose: a hardcoded slope is a number
+# nobody re-checks, which is how the calibration banner drifted into quoting
+# a record that did not exist.
+#
+# Each voice travels with its own corr/MAE/n, and a voice whose |corr| falls
+# under 0.10 is published FLAGGED WEAK rather than dropped - it fits to a
+# constant (NCAAF EXPLOSIVE is +15.1 on every game) so it is not a seat on
+# the panel, but Andy asked that models not be removed.
+bash "$RUN_STEP" --label "compute_model_voices.py (independent model panel)" \
+  python compute_model_voices.py
+
 # 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
 # never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
 # had price_american NULL — ungradeable for ROI, permanently — and the 15 that
