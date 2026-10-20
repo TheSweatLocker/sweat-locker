@@ -12725,13 +12725,17 @@ setJerryHistory(prev => {
               <View style={{alignItems:'center'}}>
                 <Text style={{fontSize:44,marginBottom:12}}>💨</Text>
                 <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>The Steam Room</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Where the sharps live. Four sub-tabs, each with its own edge.</Text>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Where the sharps live. Four sub-tabs, each with its own published record.</Text>
                 <View style={{width:'100%',gap:8,marginBottom:12}}>
                   {[
-                    {ic:'📊', label:'THE SPLIT',      desc:'Public splits + sharp signals across sources — reverse-line-move alerts + triple-source agreement badges'},
-                    {ic:'🎯', label:'THE SHARP',      desc:'A disciplined sharp-money list. Smaller, higher bar than the daily Sweat Card'},
-                    {ic:'🪜', label:'LADDER',         desc:'1 play per day. Winnings compound. Highest-conviction pick only'},
-                    {ic:'📚', label:'LEDGER',         desc:'Auto-generated parlays and teasers from tonight\'s highest-agreement picks'},
+                    /* 2026-10-19: the THE SPLIT row is gone with the tab. It
+                       taught vocabulary for a surface that rendered permanent
+                       zeros (agg_split is MLB-only and MLB has ended). Order
+                       below matches the real sub-tab order in the Steam Room. */
+                    {ic:'🎯', label:'THE FADE',       desc:'Plays against the public. When the tickets pile onto one side, we take the other — spreads and totals only, because that is where fading is measurable. Graded nightly, running record on the tab'},
+                    {ic:'🪜', label:'THE LADDER',     desc:'1 play per day. Winnings roll into the next one. Highest-conviction pick only'},
+                    {ic:'🎯', label:'THE SHARP',      desc:'A disciplined composed slate — flat stakes, a higher bar than the daily Sweat Card'},
+                    {ic:'🧾', label:'THE LEDGER',     desc:'Daily P/L, plus combos and teasers built from tonight\'s highest-agreement picks'},
                   ].map(t=>(
                     <View key={t.label} style={{flexDirection:'row',alignItems:'flex-start',backgroundColor:THEME.surface,borderRadius:10,padding:10}}>
                       <Text style={{fontSize:18,marginRight:10}}>{t.ic}</Text>
@@ -12751,19 +12755,36 @@ setJerryHistory(prev => {
               <View style={{alignItems:'center'}}>
                 <Text style={{fontSize:44,marginBottom:12}}>🔍</Text>
                 <Text style={{color:THEME.text,fontWeight:'900',fontSize:26,textAlign:'center',marginBottom:8}}>Every Game Has a Story</Text>
-                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:16,paddingHorizontal:10}}>Tap any game to open the full breakdown — every angle in one view.</Text>
-                <View style={{width:'100%',gap:6,marginBottom:12}}>
+                <Text style={{color:THEME.textDim,fontSize:13,textAlign:'center',lineHeight:20,marginBottom:14,paddingHorizontal:10}}>Tap any game to open the full breakdown. Here is what each section is telling you, top to bottom.</Text>
+                {/* 2026-10-19: was six generic feature bullets. Andy asked for the
+                    card walked section by section, so these labels are the ACTUAL
+                    <Section title=...> strings GameDetailV2 renders, in render order,
+                    so a user can match them one to one. TEAM STATS carries the
+                    no-implied-edge caveat on purpose (B68): our own measurements say
+                    team stats do not beat the close, so this ships as comprehension. */}
+                <View style={{width:'100%',gap:7,marginBottom:12}}>
                   {[
-                    'Six analytical lenses (Panel · Jerry · V3 · V4 · MC · Confluence)',
-                    'Public betting splits from 4 sources with triple-agreement badges',
-                    'External handicapper picks WITH their graded record (not just cherry-picked winners)',
-                    'Team-level rollups: recent form, situational records, per-stat ranks — cross-sport',
-                    'Cohort signals (which historical bucket this game lives in)',
-                    'Jerry\'s full read — every number traceable to a source',
-                  ].map((line,i)=>(
-                    <View key={i} style={{flexDirection:'row',alignItems:'flex-start'}}>
-                      <Text style={{color:HRB_COLOR,fontSize:12,fontWeight:'900',marginRight:8,lineHeight:18}}>✓</Text>
-                      <Text style={{color:THEME.textDim,fontSize:12,flex:1,lineHeight:18}}>{line}</Text>
+                    {n:'1', label:'MARKET', desc:'The closing spread, total and moneyline. Free on every game.'},
+                    {n:'2', label:'THE PLAY', desc:'Our side, its tier, and the market it sits in. A LOW CONVICTION pill means we are showing you the read, not asking you to bet it.'},
+                    {n:'3', label:'JERRY\'S READ', desc:'The full write-up. Every number in it traces back to a source you can check.'},
+                    {n:'4', label:'PREDICTED SCORE', desc:'A range across models, never one blind average. A wide range means the models disagree — read that as lower conviction.'},
+                    {n:'5', label:'MONEY FLOW', desc:'Tickets versus handle. Tickets are the public; handle is the bigger money. The gap between them is the signal, and it points different ways in different sports.'},
+                    {n:'6', label:'LINE MOVEMENT', desc:'Opening number to now. A line moving toward the side the public is NOT on is the classic reverse line move.'},
+                    {n:'7', label:'MODEL CONSENSUS', desc:'Each model\'s own read, tap for detail. Agreement only counts when the models are looking at different inputs.'},
+                    {n:'8', label:'EXTERNAL HANDICAPPERS', desc:'Other services\' picks, shown with their graded record. We publish the sources that lose too — the record is the context, not an endorsement.'},
+                    {n:'9', label:'SPORT BREAKDOWN', desc:'QB matchup, goalie and special teams, four factors, efficiency, starting pitchers — whichever applies to the sport.'},
+                    {n:'10', label:'RECENT SCHEDULE', desc:'Last 5 for both teams, against the spread and over/under.'},
+                    {n:'11', label:'SITUATIONAL RECORDS', desc:'The ATS trends that actually apply: home/away, favourite/dog, off rest, divisional, primetime. Colour marks a clear edge; thin samples stay grey on purpose.'},
+                    {n:'12', label:'TEAM STATS', desc:'Percentile-ranked, with ▲ on the better side of each matchup. Built for understanding the game — team stats on their own do not beat the closing line.'},
+                    {n:'13', label:'GAME PROPS', desc:'Player props for this game with the real book price attached.'},
+                    {n:'14', label:'SPORTSBOOK ODDS', desc:'The market across books. We do not take bets and we do not link out to any.'},
+                  ].map(r=>(
+                    <View key={r.label} style={{flexDirection:'row',alignItems:'flex-start',backgroundColor:THEME.surface,borderRadius:9,padding:9}}>
+                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'900',marginRight:9,lineHeight:14,minWidth:14,textAlign:'right'}}>{r.n}</Text>
+                      <View style={{flex:1}}>
+                        <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:10,letterSpacing:0.5,marginBottom:2}}>{r.label}</Text>
+                        <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>{r.desc}</Text>
+                      </View>
                     </View>
                   ))}
                 </View>
@@ -17445,12 +17466,12 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
           <PaywallPreview
             icon="💨"
             title="The Steam Room is Pro"
-            body="The disciplined sub-tabs: The Sharp curated ~4 sides + 3-5 props, Ladder streak-chase, Ledger daily P/L, and The Split showing sharp vs public across every source."
+            body="The disciplined sub-tabs: The Fade going against heavy public tickets, The Sharp curated ~4 sides + 3-5 props, Ladder streak-chase, and Ledger daily P/L."
             bullets={[
+              'The Fade — plays against the public · spreads + totals · graded nightly',
               'The Sharp — curated 4 sides + 3-5 props · juice-adjusted',
               'The Ladder — 1 pick/day · compound the wins',
               'Ledger — daily P/L + teaser builder',
-              'The Split — sharp $ vs public bets across every source',
               'Receipts on every sport — every pick graded nightly',
             ]}
             onUnlock={() => openPaywall('steam_tab')}
