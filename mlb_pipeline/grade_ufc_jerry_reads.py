@@ -277,6 +277,17 @@ def run(game_date: str | None = None, backfill_days: int = 60,
                 'fighter_b': (fight or {}).get('fighter_b'),
             } if fight else None
             prior = str(read.get('result') or '')
+            # ── 2026-10-19 · A VOID IS A JUDGEMENT, NOT A PENDING GRADE ──
+            # A row is voided because the BET should not count - here, a
+            # duplicate read minted when a re-scrape renumbered the card
+            # (see _existing_gid_for_fight in generate_ufc_fight_synthesis).
+            # The fight still has a winner, so grade_one will happily settle
+            # it again and --regrade would quietly restore the loss that was
+            # deliberately removed. Automation does not get to overrule a
+            # void; clearing result back to NULL is how you re-open one.
+            if prior.upper() == 'VOID':
+                print(f'  = {gd} id={read["id"]} left VOID (not re-graded)')
+                continue
             if regrade and prior and prior == result:
                 continue                      # already correct, leave it
             if regrade and prior and prior != result:

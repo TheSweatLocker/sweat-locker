@@ -3710,7 +3710,7 @@ ALSO RETRACTS the 12-7 -> 13-6 correction in `f33b9ca5`, which used the
 grader's own by-name path and inherited this defect. Never validate a grader
 with the grader.
 
-### B85 - one UFC duplicate read is still double-counting a loss - OPEN, needs Andy
+### B85 - one UFC duplicate read is still double-counting a loss - **CLOSED 2026-10-19**
 
 `ufc_2026-10-10_8` (generated 10-04, when Meerschaert vs Walker was fight 8) and
 `ufc_2026-10-10_7` (generated 10-08, after the card was renumbered) are the SAME
@@ -3721,5 +3721,23 @@ Recurrence is now PREVENTED (`_existing_gid_for_fight` in `7594d829` reuses an
 existing read's game_id when the snapshot names the same pair), but the existing
 row is untouched.
 
-FIX: void `ufc_2026-10-10_8`. NOT DONE because it moves the record 11-8 -> 11-7,
-in our favour, and that is Andy's call.
+DONE, on Andy's go-ahead. `ufc_2026-10-10_8` (id 7490) is now `result = Void`
+with the reason written into `audit_notes`, and the NEWER row
+(`ufc_2026-10-10_7`, generated 10-08) is retained.
+
+Guarded before writing: same fighter pair, same `call_side`, and the kept row
+is the newer of the two - all three asserted, so a non-duplicate could not have
+been voided by accident.
+
+AND THE GRADER NOW RESPECTS A VOID. The fight still has a winner, so
+`grade_one` would happily settle it again and the next `--regrade` would have
+quietly restored the loss. `grade_ufc_jerry_reads.py` now skips any row whose
+result is already Void and prints that it did; clearing `result` back to NULL is
+how a void gets re-opened. Verified: a full `--regrade --dry-run` over 91 dates
+now reports "left VOID (not re-graded)" and changes nothing.
+
+    11-8 (57.9%) · -3.14u on 19 · ROI -16.5%
+    ->  11-7 (61.1%) · -2.14u on 18 · ROI -11.9%   CI [38.6, 79.7]
+
+Still a losing book - the void removed a double-counted loss, it did not make
+the surface profitable.
