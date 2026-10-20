@@ -7217,6 +7217,9 @@ function NBASlot({ctx, game}: any) {
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
     <>
+      {/* Chips first: they say what is unusual about the game before the
+          cards give the numbers, matching NFL/NCAAF ordering. */}
+      <NBASituationalCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NBATeamSnapshotCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NBARestB2BCard      ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NBAInjuriesCard     ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
@@ -7257,6 +7260,77 @@ function NBATeamSnapshotCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 // Rest days + back-to-back (huge NBA signal).
+// ══ 2026-10-20 · NBA SITUATION CHIPS ══
+// ANDY asked twice: "add to list nba badegs" / "also add to list nba
+// badegs". NFL and NCAAF carry a SitChip row and NBA carried none, so the
+// onboarding copy naming NBA badges was describing something that did not
+// exist on the NBA card.
+//
+// EVERY FIELD HERE WAS CHECKED POPULATED FIRST, over 16 forward NBA
+// contexts (today + the next three days), 16/16 on all of them:
+//
+//   home_is_b2b / away_is_b2b        false today, fires as the season runs
+//   home_rest_days / away_rest_days  5 on opening night
+//   home_starters_out / away_*       REAL arrays - ['Jimmy Butler III',
+//                                    'Moses Moody'] tonight
+//   home_pace / away_pace            97.6 - 101.4
+//   season_type                      'regular'
+//
+// A chip that can never fire is worse than no chip, which is why pace and
+// rest carry explicit thresholds rather than rendering on every game.
+function NBASituationalCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'situational', true);
+  if (!isEnabled) return null;
+
+  const hB2B = ctx?.home_is_b2b === true;
+  const aB2B = ctx?.away_is_b2b === true;
+  const hRest = ctx?.home_rest_days;
+  const aRest = ctx?.away_rest_days;
+  // 2+ days is the gap worth flagging in a sport that plays every other
+  // night; 1 day apart is the normal state, not a situation.
+  const restEdge = (hRest != null && aRest != null && Math.abs(Number(hRest) - Number(aRest)) >= 2)
+    ? (Number(hRest) > Number(aRest) ? homeTeam : awayTeam) : null;
+  const restEdgeDays = restEdge ? Math.abs(Number(hRest) - Number(aRest)) : 0;
+
+  const outList = (v: any) => Array.isArray(v) ? v.filter(Boolean) : [];
+  const hOut = outList(ctx?.home_starters_out);
+  const aOut = outList(ctx?.away_starters_out);
+
+  // Combined pace sets how many possessions the game gets, so it is the
+  // total environment. It is ADDITIVE across both teams, not a contest -
+  // same reasoning as the Team Stats "both teams" group.
+  const paceAvg = (ctx?.home_pace != null && ctx?.away_pace != null)
+    ? (Number(ctx.home_pace) + Number(ctx.away_pace)) / 2 : null;
+  const paceHigh = paceAvg != null && paceAvg >= 101.5;
+  const paceLow  = paceAvg != null && paceAvg <= 98.0;
+
+  const preseason = ctx?.season_type != null
+    && String(ctx.season_type).toLowerCase() !== 'regular';
+
+  const anyChip = hB2B || aB2B || restEdge || hOut.length || aOut.length
+    || paceHigh || paceLow || preseason;
+  if (!anyChip) return null;
+
+  return (
+    <Section title="Situation" hint="what is unusual about this game">
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {preseason && <SitChip label="Preseason — not a betting slate" kind="warn" />}
+        {aB2B && <SitChip label={`${abbrev3(awayTeam)} 2nd of a back-to-back`} kind="warn" />}
+        {hB2B && <SitChip label={`${abbrev3(homeTeam)} 2nd of a back-to-back`} kind="warn" />}
+        {restEdge && <SitChip label={`Rest edge · ${abbrev3(restEdge)} +${restEdgeDays}d`} kind="info" />}
+        {aOut.length > 0 && (
+          <SitChip label={`${abbrev3(awayTeam)} out · ${aOut.slice(0, 2).join(', ')}${aOut.length > 2 ? ` +${aOut.length - 2}` : ''}`} kind="warn" />
+        )}
+        {hOut.length > 0 && (
+          <SitChip label={`${abbrev3(homeTeam)} out · ${hOut.slice(0, 2).join(', ')}${hOut.length > 2 ? ` +${hOut.length - 2}` : ''}`} kind="warn" />
+        )}
+        {paceHigh && <SitChip label={`Fast pace · ${paceAvg!.toFixed(1)} combined`} kind="info" />}
+        {paceLow && <SitChip label={`Slow pace · ${paceAvg!.toFixed(1)} combined`} kind="info" />}
+      </View>
+    </Section>
+  );
+}
+
 function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled('NBA', 'game_detail', 'rest_b2b', true);
   if (!isEnabled) return null;
