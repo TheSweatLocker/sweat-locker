@@ -801,7 +801,28 @@ def fetch_football_picks(today: str) -> list:
             rows = sb_get(tbl, {
                 'game_date': f'in.({today},{_tomorrow_str})',
                 'primary_play': 'not.is.null',
-                'select': 'game_id,home_team,away_team,primary_play,kickoff_utc,game_date',
+                # ══ 2026-10-20 · THIS SELECT SILENTLY DROPPED THREE SPORTS ══
+                # ANDY, on NBA opening night: "we dont have POTD or anythign
+                # on seeat card? Seems unsat".
+                #
+                # `kickoff_utc` exists on nfl_game_context and
+                # ncaaf_game_context ONLY. Measured today:
+                #
+                #   nhl_game_context  400  column ... kickoff_utc does not exist
+                #   nba_game_context  400  same
+                #   mlb_game_context  400  same
+                #
+                # PostgREST answers an explicit SELECT naming a missing column
+                # with a 400, sb_get turns that into [], and the loop below
+                # reads zero rows - so NHL, NBA and MLB contributed NO side
+                # plays to the Sweat Card at all, with no error anywhere. The
+                # card was not empty because the slate was thin; it was empty
+                # because three of its sports could not be read. Tonight that
+                # hid 11 NHL games carrying two STRONG plays.
+                #
+                # `*` cannot go stale as the schemas drift apart, which is the
+                # whole failure mode here.
+                'select': '*',
             })
         except Exception as e:
             print(f'  {sport} fetch failed: {e}')
@@ -810,7 +831,13 @@ def fetch_football_picks(today: str) -> list:
         _skipped_wrong_et_date = 0
         _skipped_preseason = 0
         for row in rows or []:
-            ks = row.get('kickoff_utc')
+            # Per-sport start-time column. NFL/NCAAF use kickoff_utc, NHL
+            # commence_time, NBA commence_time_utc, and MLB carries none of
+            # them - so this tries each and falls through to the game_date
+            # check below when none is present, which is what MLB has always
+            # relied on.
+            ks = (row.get('kickoff_utc') or row.get('commence_time')
+                  or row.get('commence_time_utc'))
             if ks:
                 try:
                     ko = _dt.fromisoformat(str(ks).replace('Z','+00:00'))
@@ -829,7 +856,8 @@ def fetch_football_picks(today: str) -> list:
                         continue
                 except Exception: pass
             elif row.get('game_date') != today:
-                # No kickoff_utc + game_date isn't today = not tonight's game
+                # No start time on this row at all + game_date isn't today
+                # = not tonight's game
                 _skipped_wrong_et_date += 1
                 continue
             # 2026-09-22 NHL PRESEASON GATE (Andy directive: never bet
