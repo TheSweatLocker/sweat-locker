@@ -487,6 +487,24 @@ bash "$RUN_STEP" --label "refresh_calibration_notes.py (auto NHL/UFC banners)" \
 bash "$RUN_STEP" --label "compute_model_voices.py (independent model panel)" \
   python compute_model_voices.py
 
+# 2026-10-20 · EVERY MODEL GRADED PER MARKET, AND WEIGHTED ON ITS RECORD.
+# ANDY: "i want to keep allmodel records and have engine weigh them
+# approatley by how they perfom if one model is great at getting spreads or
+# totals rigth it shoudl be wieghed accordingly vice a mdoel that ahs a bad
+# track record".
+#
+# ensemble_scorer already weights every signal by its hit rate above
+# breakeven, per sport, per market_scope - the MODELS were simply not in
+# signal_registry except on junk samples (jerry_pred_spread n=8,
+# mc_strong_home_ml n=6, nba_elo_edge_home_spread n=1). This grades each
+# model's own number as a real bet on ml / rl / total and writes an earned
+# weight, with a 30-pick floor so no weight is ever set off n=6.
+#
+# Runs after compute_model_voices so the panel and its grades refresh
+# together.
+bash "$RUN_STEP" --label "grade_model_panel.py (per-market model weights)" \
+  python grade_model_panel.py
+
 # 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
 # never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
 # had price_american NULL — ungradeable for ROI, permanently — and the 15 that
