@@ -17789,97 +17789,24 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   </View>
                 )}
 
-              <LineMovementTab
-                loading={steamLoading}
-                flags={steamFlags}
-                historySample={steamHistorySample}
-                picksIdx={steamPicksIdx}
-                sourceRecords={steamSourceRecords}
-                rawSigsIdx={steamRawSigsIdx}
-                onTapGame={(matchup, sport, gid) => {
-                  // 2026-08-18: robust deep-link to the flagged game.
-                  //   1. Switch sport tab if needed (async — needs gamesData to reload)
-                  //   2. Switch to Games tab
-                  //   3. Try to open modal at 250ms, 800ms, 2000ms — one of these
-                  //      should catch gamesData once it's loaded, even on cold start
-                  //   4. Match by game_id first (guaranteed), fall back to team names
-                  //      with normalization (strips accents / extra spaces)
-                  if (sport && sport !== gamesSport) setGamesSport(sport);
-                  setActiveTab('games');
-                  const normalize = (s: string) => (s || '').toLowerCase()
-                    .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
-                  // 2026-09-01: also strip common team-name qualifier prefixes
-                  // that vary between Split (uses short name from flag detail)
-                  // and games list (uses full display name). e.g. "Diamondbacks"
-                  // vs "Arizona Diamondbacks", "STL" vs "St. Louis Cardinals".
-                  // Match on the LAST word of each team name — always the city
-                  // or nickname, guaranteed to match if same team.
-                  const lastWord = (s: string) => {
-                    const n = normalize(s);
-                    const parts = n.split(' ').filter(Boolean);
-                    return parts[parts.length - 1] || '';
-                  };
-                  const [awayTeam, homeTeam] = matchup.includes(' @ ')
-                    ? matchup.split(' @ ').map((s: string) => s.trim())
-                    : ['', ''];
-                  const awayN = normalize(awayTeam);
-                  const homeN = normalize(homeTeam);
-                  const awayLW = lastWord(awayTeam);
-                  const homeLW = lastWord(homeTeam);
-                  let opened = false;
-                  const tryOpen = () => {
-                    if (opened) return true;
-                    const list = (gamesData || []);
-                    // Match by game_id first (most reliable)
-                    let target = gid ? list.find((g: any) => g.id === gid || g.game_id === gid) : null;
-                    // Full-name normalized match
-                    if (!target && awayN && homeN) {
-                      target = list.find((g: any) =>
-                        normalize(g.away_team) === awayN && normalize(g.home_team) === homeN);
-                    }
-                    // Last-word match — handles "Diamondbacks" vs "Arizona Diamondbacks"
-                    if (!target && awayLW && homeLW) {
-                      target = list.find((g: any) =>
-                        lastWord(g.away_team) === awayLW && lastWord(g.home_team) === homeLW);
-                    }
-                    // 2026-09-03: startsWith / includes fallback — catches cases
-                    // where one side has a modified prefix (e.g. Athletics moved
-                    // to Sacramento but Split flag still uses just "Athletics",
-                    // gamesData now has "Sacramento Athletics"). Team names are
-                    // rarely fully substring of another team so false-match risk is
-                    // low; last resort before poll times out.
-                    if (!target && awayN && homeN) {
-                      target = list.find((g: any) => {
-                        const ga = normalize(g.away_team);
-                        const gh = normalize(g.home_team);
-                        return (ga.includes(awayN) || awayN.includes(ga)) &&
-                               (gh.includes(homeN) || homeN.includes(gh));
-                      });
-                    }
-                    if (target) { openGameDetail(target); opened = true; return true; }
-                    return false;
-                  };
-                  // 2026-09-01 fix: persistent-retry pattern replaces the
-                  // 3-shot timing lottery. User report: "clicking on game
-                  // just goes to games tab, not specific game." On cold
-                  // starts gamesData took >2s to load and all 3 tries missed.
-                  // Now: poll every 300ms up to 8s, exit as soon as opened
-                  // OR max attempts hit.
-                  let attempts = 0;
-                  const MAX_ATTEMPTS = 27; // ~8s at 300ms
-                  const poll = setInterval(() => {
-                    attempts += 1;
-                    if (tryOpen() || attempts >= MAX_ATTEMPTS) {
-                      clearInterval(poll);
-                      if (!opened) {
-                        console.warn('[Split deep-link] game not found after 8s', {gid, matchup, sport, gamesDataLen: (gamesData||[]).length});
-                      }
-                    }
-                  }, 300);
-                  // Also try immediately (fast case: gamesData already loaded)
-                  tryOpen();
-                }}
-              />
+              {/* ══ 2026-10-20 · THE SPLIT WAS STILL MOUNTED HERE ══
+                  ANDY, repeatedly: "the information that was inside the split
+                  is still showing and shouldnt liek the stingest signals right
+                  now and the other signals with minority dissent. IT IS FUCKED
+                  UP".
+                  He was describing <LineMovementTab/> — the ENTIRE old Split
+                  component — still rendering underneath the new Fade card. It
+                  is the source of "STRONGEST SIGNALS RIGHT NOW", the
+                  minority-dissent buckets, and the "Reading line drift..."
+                  loading line he saw on first tap.
+                  On 10-19 I replaced the Split's RECORD CARD, added the play
+                  list, renamed the tab — and left the Split's whole body
+                  mounted below it. That is not a conversion, and it is why he
+                  had to tell me four times that Split data was still in the
+                  Fade.
+                  The component file stays in the repo (its line-movement
+                  fetches are still used elsewhere); it is simply no longer
+                  rendered in this tab. */}
               </>
             )}
 
