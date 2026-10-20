@@ -2699,7 +2699,7 @@ defense ot see both teams of each ... this will be discussion. Other thing i
 wnated to bring up is abetter filtering process for prop jerry or better way of
 surfcing in game prop loko in game details"*
 
-### B68 · Stat display: matchup pairing instead of Offense/Defense sub-tabs
+### B68 · Stat display: matchup pairing instead of Offense/Defense sub-tabs — **SHIPPED 2026-10-19** `56651d86`
 
 **Today:** `TeamStatsCard` in `app/components/GameDetailV2.tsx` holds
 `side: 'off'|'def'` and renders rows as *stat label | away cell | home cell*.
@@ -3601,3 +3601,29 @@ So the finding is not "six penalty signals read a stale column", it is
 ratings and projections as well as the signals. This is the real size of
 B79 and it should be fixed at the enrichment, once, rather than per
 consumer.
+
+
+### B80 · 7 FBS teams have NO row in either NCAAF stats table — OPEN
+
+Found 2026-10-19 while restricting the points/G ranking universe. These teams
+appear in `ncaaf_game_results` with 3+ completed games but have ZERO rows in
+`ncaaf_team_stats` (267 teams) AND zero in `ncaaf_team_defense_stats` (228):
+
+    Appalachian State · Connecticut · FIU · Hawaii  (+3 more)
+
+Checked for the STL-name-mismatch shape first — it is NOT a spelling variant;
+the only near-match in the defence table is a different school (Central
+Connecticut). The CFBD pull simply does not cover them for 2026.
+
+CONSEQUENCE: their Team Stats card is blank, and they are excluded from every
+NCAAF percentile pool, so the ranks the other 133 teams carry are computed over
+a universe that is missing real FBS sides.
+
+NOT introduced by the points/G work — pre-existing, and that script correctly
+drops them rather than ranking them in a 140-team pool while every other row on
+the same card ranks over 133.
+
+FIX: find why the CFBD team-stats pull misses them (conference filter? a
+`division` predicate?) before trusting any NCAAF percentile.
+VERIFY: compare the team set in `ncaaf_game_results` (3+ games) against
+`ncaaf_team_stats` for the season.
