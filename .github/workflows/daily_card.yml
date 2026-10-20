@@ -260,7 +260,19 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
-          for S in MLB NFL NCAAF NHL; do
+          # ══ 2026-10-20 · A HARDCODED SPORT LIST, AGAIN ══
+          # NBA and UFC were absent, so neither produced a single
+          # game_read receipt. Measured over the last 7 days:
+          #
+          #   reads -> receipts   NFL 29->29  NCAAF 79->79  NHL 79->79
+          #                       MLB  7->7   NBA 37->0     UFC 15->0
+          #
+          # So NBA went into opening night with reads publishing and no
+          # record behind any of them, and UFC has never had one. Same
+          # shape as the kickoff_utc SELECT and the ctx chain that ended
+          # at NHL: a per-sport list that someone has to remember to
+          # extend. NCAAB added now rather than on 11-03.
+          for S in MLB NFL NCAAF NHL NBA NCAAB UFC; do
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "backfill_public_receipts.py ($S)"               python backfill_public_receipts.py --sport "$S" || true
           done
 

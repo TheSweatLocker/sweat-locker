@@ -436,6 +436,7 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
         if not gd or not team:
             continue
         _side = _side_from_matchup(team, rec.get('matchup'))
+        _cs = _num_or_none(rec.get('close_spread'))
         out.append({
             'pick_side': _side,
             # The line FROM THE PICKED SIDE, not the home handicap.
@@ -445,9 +446,18 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
             # -1.5 are the two halves of one market). The Dawg is usually
             # the AWAY dog, so storing close_spread unflipped pointed at the
             # FAVOURITE's run line — a real price for the opposite bet.
-            'pick_line': (-_num_or_none(rec.get('close_spread'))
-                          if _side == 'AWAY'
-                          else _num_or_none(rec.get('close_spread'))),
+            # 2026-10-20 · GUARD THE NEGATION. This was
+            #     -_num_or_none(rec.get('close_spread')) if _side == 'AWAY'
+            # and `-None` is a TypeError, so ONE row with a NULL close_spread
+            # (2026-07-09 Cubs @ Orioles, the only one of 132) raised inside
+            # this list comprehension and took the ENTIRE dawg backfill down
+            # on every run since the flip was added on 10-06:
+            #     x dawg failed: bad operand type for unary -: 'NoneType'
+            # Nothing was lost only because MLB's last dawg was 10-13 and the
+            # upsert ignores duplicates; the next dawg pick in any sport would
+            # have written no receipt at all. A row with no line now yields a
+            # null pick_line, which is honest, instead of killing 131 others.
+            'pick_line': (-_cs if (_side == 'AWAY' and _cs is not None) else _cs),
             'sport': str(rec.get('sport') or 'MLB').upper(),
             'surface': 'dawg',
             'game_date': gd,
