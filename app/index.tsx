@@ -12764,23 +12764,27 @@ setJerryHistory(prev => {
                     team stats do not beat the close, so this ships as comprehension. */}
                 <View style={{width:'100%',gap:7,marginBottom:12}}>
                   {[
-                    {n:'1', label:'MARKET', desc:'The closing spread, total and moneyline. Free on every game.'},
-                    {n:'2', label:'THE PLAY', desc:'Our side, its tier, and the market it sits in. A LOW CONVICTION pill means we are showing you the read, not asking you to bet it.'},
-                    {n:'3', label:'JERRY\'S READ', desc:'The full write-up. Every number in it traces back to a source you can check.'},
-                    {n:'4', label:'PREDICTED SCORE', desc:'A range across models, never one blind average. A wide range means the models disagree — read that as lower conviction.'},
-                    {n:'5', label:'MONEY FLOW', desc:'Tickets versus handle. Tickets are the public; handle is the bigger money. The gap between them is the signal, and it points different ways in different sports.'},
-                    {n:'6', label:'LINE MOVEMENT', desc:'Opening number to now. A line moving toward the side the public is NOT on is the classic reverse line move.'},
-                    {n:'7', label:'MODEL CONSENSUS', desc:'Each model\'s own read, tap for detail. Agreement only counts when the models are looking at different inputs.'},
-                    {n:'8', label:'EXTERNAL HANDICAPPERS', desc:'Other services\' picks, shown with their graded record. We publish the sources that lose too — the record is the context, not an endorsement.'},
-                    {n:'9', label:'SPORT BREAKDOWN', desc:'QB matchup, goalie and special teams, four factors, efficiency, starting pitchers — whichever applies to the sport.'},
-                    {n:'10', label:'RECENT SCHEDULE', desc:'Last 5 for both teams, against the spread and over/under.'},
-                    {n:'11', label:'SITUATIONAL RECORDS', desc:'The ATS trends that actually apply: home/away, favourite/dog, off rest, divisional, primetime. Colour marks a clear edge; thin samples stay grey on purpose.'},
-                    {n:'12', label:'TEAM STATS', desc:'Percentile-ranked, with ▲ on the better side of each matchup. Built for understanding the game — team stats on their own do not beat the closing line.'},
-                    {n:'13', label:'GAME PROPS', desc:'Player props for this game with the real book price attached.'},
-                    {n:'14', label:'SPORTSBOOK ODDS', desc:'The market across books. We do not take bets and we do not link out to any.'},
-                  ].map(r=>(
+                    /* 2026-10-19: numbered by map index, not a hardcoded
+                       n: field, so inserting a row cannot leave the list
+                       numbered 1,2,3,3,4. */
+                    {label:'MARKET', desc:'The closing spread, total and moneyline. Free on every game.'},
+                    {label:'THE PLAY', desc:'Our side, its tier, and the market it sits in. A LOW CONVICTION pill means we are showing you the read, not asking you to bet it.'},
+                    {label:'JERRY\'S READ', desc:'The full write-up. Every number in it traces back to a source you can check.'},
+                    {label:'PREDICTED SCORE', desc:'A range across models, never one blind average. A wide range means the models disagree — read that as lower conviction.'},
+                    {label:'MONEY FLOW', desc:'Tickets versus handle. Tickets are the public; handle is the bigger money. The gap between them is the signal, and it points different ways in different sports.'},
+                    {label:'LINE MOVEMENT', desc:'Opening number to now. A line moving toward the side the public is NOT on is the classic reverse line move.'},
+                    {label:'MODEL CONSENSUS', desc:'Each model\'s own read, tap for detail. Agreement only counts when the models are looking at different inputs.'},
+                    {label:'EXTERNAL HANDICAPPERS', desc:'Other services\' picks, shown with their graded record. We publish the sources that lose too — the record is the context, not an endorsement.'},
+                    {label:'SPORT BREAKDOWN', desc:'The cards only that sport has. NFL: QB matchup, injuries, team matchup. College football: efficiency, rosters and continuity, weather. NBA: four factors, rest and back-to-back, injuries. NHL: starting goalie, special teams, shot quality, rest.'},
+                    {label:'SITUATION BADGES', desc:'Small chips above those cards flag what is unusual about this game. NFL: primetime, divisional, short week, rest edge, roof, cold, wind. College football: time slot, conference game, cold, wind, and a notice when the opponent is FCS. NBA: 2nd of a back-to-back and days of rest. NHL: back-to-back, days since the last game, confirmed goalie. Where a badge carries a number, that is how the situation has actually graded — not a hunch.'},
+                    {label:'RECENT SCHEDULE', desc:'Last 5 for both teams, against the spread and over/under.'},
+                    {label:'SITUATIONAL RECORDS', desc:'The ATS trends that actually apply: home/away, favourite/dog, off rest, divisional, primetime. Colour marks a clear edge; thin samples stay grey on purpose.'},
+                    {label:'TEAM STATS', desc:'One team\'s offence against the other\'s defence — tap the pill to switch which team has the ball. Percentile-ranked. Built for understanding the game: team stats on their own do not beat the closing line.'},
+                    {label:'GAME PROPS', desc:'Player props for this game with the real book price attached.'},
+                    {label:'SPORTSBOOK ODDS', desc:'The market across books. We do not take bets and we do not link out to any.'},
+                  ].map((r,i)=>(
                     <View key={r.label} style={{flexDirection:'row',alignItems:'flex-start',backgroundColor:THEME.surface,borderRadius:9,padding:9}}>
-                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'900',marginRight:9,lineHeight:14,minWidth:14,textAlign:'right'}}>{r.n}</Text>
+                      <Text style={{color:HRB_COLOR,fontSize:10,fontWeight:'900',marginRight:9,lineHeight:14,minWidth:14,textAlign:'right'}}>{i+1}</Text>
                       <View style={{flex:1}}>
                         <Text style={{color:HRB_COLOR,fontWeight:'800',fontSize:10,letterSpacing:0.5,marginBottom:2}}>{r.label}</Text>
                         <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>{r.desc}</Text>
