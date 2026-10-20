@@ -2206,6 +2206,59 @@ function hasAnyLensValue(ctx: any, gamesSport: string): boolean {
   return candidates.some(v => v != null);
 }
 
+// ══ 2026-10-20 · A VOICE, NOT A TILE ══
+// ANDY, for the third time: "We have dosicsusued the concneus and how it was
+// just one vote and i have asked to fix this and yet it reamins why? ... i
+// dont want to remove them, we need to fix this".
+//
+// He is right that it was never fixed. Both earlier passes only hid a tile
+// (the NCAAF SP+ drop on 09-26, the duplicated totals on 09-20), which
+// removes a model the user asked to keep AND leaves every other duplicate
+// pair counted twice. Measured 2026-10-20 on the deviations from the close:
+//
+//   NFL     projected <-> v3   1.00    the same model under two names
+//           v4 <-> projected   0.96
+//           v4 <-> v3          0.95
+//           model_pts <-> v4   0.90
+//           MC <-> everything  0.04-0.28   the only independent voice
+//   NCAAF   model_pts <-> sp_plus_pts  1.00
+//           epa <-> model_pts          0.87
+//
+// So "4 of 5 models agree" is frequently one model agreeing with itself.
+//
+// THE FIX, and why it is at the VALUE level rather than a hardcoded pair
+// list: two models that print the same number ARE one observation, whatever
+// they are called, and a list of known-duplicate pairs goes stale the moment
+// a model is retuned. Grouping on the rendered margin is self-maintaining —
+// if SP+ ever becomes a genuine second opinion it separates on its own,
+// which the 09-26 note already wanted.
+//
+// EVERY MODEL KEEPS ITS TILE. Duplicates are marked with the name of the
+// voice they share, and the header states how many DISTINCT reads back the
+// pick, so six tiles can never be read as six opinions.
+const VOICE_EPS = 0.26;   // a quarter point; 5.66 and 5.7 are one forecast
+
+function groupVoices(rows: any[]): {voices: number; label: Record<string, string>} {
+  const label: Record<string, string> = {};
+  const leaders: Array<{name: string; m: number}> = [];
+  for (const r of rows) {
+    const m = r?.m;
+    // A tile with no number is not a voice either way - it is excluded from
+    // the count rather than counted as agreement with anything.
+    if (m == null || !isFinite(Number(m))) continue;
+    // 'Conf' is a signal-balance, not a point margin, so it shares no scale
+    // with the model tiles and can never be a duplicate of one.
+    if (String(r.name) === 'Conf') continue;
+    const hit = leaders.find(l => Math.abs(l.m - Number(m)) <= VOICE_EPS);
+    if (hit) {
+      label[String(r.name)] = hit.name;
+    } else {
+      leaders.push({name: String(r.name), m: Number(m)});
+    }
+  }
+  return {voices: leaders.length, label};
+}
+
 function LensGrid({ctx, gamesSport}: any) {
   // Lenses deliberately omitted this card, with the reason. Rendered as a
   // footnote so the tile count is never silently different between games.
@@ -2280,14 +2333,20 @@ function LensGrid({ctx, gamesSport}: any) {
     //
     // Dropped only WHEN IT DUPLICATES, so this self-heals: if SP+ ever
     // becomes a real second model the tile returns on its own.
+    // ══ 2026-10-20 · KEEP THE MODEL, COLLAPSE THE VOTE ══
+    // ANDY: "i dont want to remove them, we need to fix this".
+    //
+    // This used to DROP the SP+ tile when it duplicated v3, which answered
+    // the wrong half of the problem: it hid a model instead of fixing the
+    // count. The tile is back, and the duplication is now handled once, for
+    // every sport, by groupVoices() below — the tile renders, it is labelled
+    // as the same read, and the CONSENSUS COUNTS IT ONCE.
     const _v3m = ctx?.projected_spread;
     const _spm = ctx?.sp_plus_pred_spread;
-    const _spDupe = (_v3m != null && _spm != null
-                     && Math.abs(Number(_v3m) - Number(_spm)) < 0.005);
     return [
       {name: 'v3', m: _v3m, t: ctx?.projected_total},
       {name: 'v4', m: _v4Margin, t: null},
-      ...(_spDupe ? [] : [{name: 'SP+', m: _spm, t: null}]),
+      {name: 'SP+', m: _spm, t: null},
       {name: 'MC',  m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
       ...(lrTile ? [lrTile] : []),
       {name: 'Conf', m: ctx?.signal_confluence_net, t: null},
@@ -2550,11 +2609,27 @@ function LensGrid({ctx, gamesSport}: any) {
   const hasAnyValue = rows.some((r: any) => r.m != null || r.t != null);
   if (!hasAnyValue) return null;
 
+  // How many of these tiles are actually separate opinions? See groupVoices.
+  const _vg = groupVoices(rows);
+  const _modelTiles = rows.filter((r: any) => String(r.name) !== 'Conf'
+    && r.m != null && isFinite(Number(r.m))).length;
+
   return (
     <View>
       {_hiddenLenses.length > 0 && (
         <Text style={{color: C.textDim, fontSize: 9, fontStyle: 'italic', marginBottom: 4}}>
           {_hiddenLenses.join(' · ')}
+        </Text>
+      )}
+      {/* The headline number of the whole section: a reader counts tiles to
+          judge how much agreement is behind a pick, so when tiles outnumber
+          distinct reads, say so before they count. */}
+      {_modelTiles > 0 && (
+        <Text style={{color: _vg.voices < _modelTiles ? C.warn : C.textDim,
+                      fontSize: 9, fontWeight: '700', marginBottom: 4}}>
+          {_vg.voices < _modelTiles
+            ? `${_modelTiles} models · only ${_vg.voices} distinct read${_vg.voices === 1 ? '' : 's'} — matching tiles are one opinion, not several`
+            : `${_modelTiles} models · ${_vg.voices} distinct reads`}
         </Text>
       )}
       <View style={styles.lensGrid}>
@@ -2596,6 +2671,14 @@ function LensGrid({ctx, gamesSport}: any) {
                   <Text style={{color: (isOpen ? C.accent : C.textMuted) + 'CC', fontSize:8, fontWeight:'700'}}>ⓘ</Text>
                 )}
               </View>
+              {/* Same read as another tile: the model stays visible, and the
+                  tile says whose number it is repeating. */}
+              {_vg.label[String(r.name)] && (
+                <Text style={{color: C.warn, fontSize: 7.5, fontWeight: '800',
+                              letterSpacing: 0.2, marginTop: -1}}>
+                  = {_vg.label[String(r.name)].toUpperCase()}
+                </Text>
+              )}
 
               <Text numberOfLines={2}
                     style={[styles.lensMargin,
