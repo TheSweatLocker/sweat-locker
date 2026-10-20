@@ -3650,7 +3650,7 @@ game_id embeds it.
 FIX: make one of the two feeds adopt the other's ordering, or stop embedding
 `fight_order` in the UFC game_id so there is no index to be tempted by.
 
-### B82 - UFC reads carry NO price, so the record cannot become ROI - OPEN
+### B82 - UFC reads carry NO price, so the record cannot become ROI - **CLOSED** `7594d829`
 
 All **103** `jerry_reads` rows for UFC have `price_american` NULL, across every
 event from 08-01 to the upcoming 10-24. `ufc_picks` DOES carry odds
@@ -3690,3 +3690,36 @@ OPEN QUESTION for Andy: is near-total abstention the intended posture given the
 model loses at price in every tier, or did a gate move in late August? Either
 way the app should say which, because a tab that publishes nothing reads as
 broken.
+
+### B84 - UFC FADE reads were graded on the MODEL's pick - **CLOSED** `7594d829`
+
+`upsert_read` encodes the verdict in `call_side` (BACK = model's side, FADE =
+the OPPOSITE), but `grade_one` resolved the picked fighter as
+`snap['model_pick_fighter'] or <fighter at call_side>` - and
+`model_pick_fighter` is always the fighter at `recommended_side`. So every FADE
+was scored on the model's fighter while the app had published the other corner.
+
+4 of 19 graded reads are FADEs; ALL FOUR were stored backwards. All 15 BACKs
+were correct, which is why it hid - and the error FLATTERED us, because a fade
+opposes a favourite and the favourite usually wins.
+
+    13-6 (68.4%)  ->  11-8 (57.9%)  CI [36.3, 76.9]
+    priced: avg implied 61.6% · -3.14u on 19 · ROI -16.5%
+
+ALSO RETRACTS the 12-7 -> 13-6 correction in `f33b9ca5`, which used the
+grader's own by-name path and inherited this defect. Never validate a grader
+with the grader.
+
+### B85 - one UFC duplicate read is still double-counting a loss - OPEN, needs Andy
+
+`ufc_2026-10-10_8` (generated 10-04, when Meerschaert vs Walker was fight 8) and
+`ufc_2026-10-10_7` (generated 10-08, after the card was renumbered) are the SAME
+fight. Both graded Loss, both priced +250, so one fight books a full unit of
+loss twice.
+
+Recurrence is now PREVENTED (`_existing_gid_for_fight` in `7594d829` reuses an
+existing read's game_id when the snapshot names the same pair), but the existing
+row is untouched.
+
+FIX: void `ufc_2026-10-10_8`. NOT DONE because it moves the record 11-8 -> 11-7,
+in our favour, and that is Andy's call.
