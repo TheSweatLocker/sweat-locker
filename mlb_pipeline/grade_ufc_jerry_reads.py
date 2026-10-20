@@ -6,9 +6,43 @@ UFC calls in `jerry_reads` use:
   call_market = 'fight' | 'pass'
   call_side  = 'A' (fighter_a wins) | 'B' (fighter_b wins)
 
-Join key to `ufc_fight_results` is (event_date, fight_order) parsed from
-game_id. `winner` column in fight_results is 'A', 'B', 'draw', or null
-(no-contest / pending). We only grade rows with a decisive winner.
+Join key to `ufc_fight_results` is (event_date, FIGHTER NAMES) taken from
+the read's own input_snapshot. `winner` in fight_results is 'A', 'B',
+'draw' or null (no-contest / pending). We only grade decisive winners.
+
+== 2026-10-19 - WHY THE JOIN IS BY NAME AND NOT BY fight_order ==
+It used to be (event_date, fight_order) parsed out of the game_id, and
+THE TWO FEEDS DO NOT NUMBER A CARD THE SAME WAY. Measured today over 95
+joinable UFC reads, 16 disagree. Examples:
+
+    2026-09-26 order 3   read: Alatengheili / Castaneda
+                      results: Montel Jackson / Ricky Simon
+    2026-10-10 order 8   read: Meerschaert / Julius Walker
+                      results: Wellmaker / Tanzilovi
+
+THE 09-22 NAME FIX COULD NOT CATCH THIS. That fix stopped comparing
+call_side ('A'/'B') to results.winner ('a'/'b') because those letters
+index different orderings, and graded by fighter NAME instead. But the
+name it compared against came from whatever row fight_order returned -
+so on a wrong row, the picked name is checked against the wrong fight's
+winner and the comparison agrees with itself. A name check is only as
+good as the row it reads.
+
+COST: ufc_2026-10-10_8 is the read for Julius Walker. fight_order 8 in
+the results table is Wellmaker vs Tanzilovi, so Walker was checked
+against Tanzilovi and booked a LOSS. Walker won his actual fight. One
+graded pick in nineteen, recorded backwards, and the published read
+record was 12-7 when it was 13-6.
+
+The 15 others were `pass` reads, which return NO_ACTION before any
+lookup happens, so they were never affected.
+
+Names have no ordering, and a fight is identified by WHO IS IN IT, so
+this is the same lesson as the STL feed join: never join two feeds on a
+raw index or a raw string either side can renumber. When the names
+cannot resolve to exactly one fight the grader REFUSES and leaves the
+row ungraded and visible, rather than falling back to the index that is
+already known to be wrong.
 
 Coverage audit 2026-08-09 found 11 ungraded UFC jerry_reads from 8/1
 and 8/8 events, and no automated grader path — this fills that gap.
@@ -75,16 +109,56 @@ def _same_fighter(a: str, b: str) -> bool:
     return bool(sa and sb and len(sa[-1]) >= 4 and sa[-1] == sb[-1])
 
 
-def grade_one(read: dict, results_by_key: dict) -> str | None:
+def _snapshot_names(read: dict) -> tuple[str, str] | None:
+    """The two fighters this read is actually about, from its own snapshot."""
+    snap = read.get('input_snapshot') or {}
+    if isinstance(snap, str):
+        try:
+            snap = json.loads(snap)
+        except (ValueError, TypeError):
+            snap = {}
+    a, b = snap.get('fighter_a'), snap.get('fighter_b')
+    return (a, b) if a and b else None
+
+
+def resolve_fight(read: dict, fights: list) -> tuple[dict | None, str]:
+    """Find the fight a read is about BY NAME. Returns (fight, how).
+
+    `how` is one of 'name', 'order-fallback' or a refusal reason, so the
+    caller can report which path a grade came from instead of this being
+    invisible.
+    """
+    names = _snapshot_names(read)
+    if names:
+        a, b = names
+        hits = [f for f in fights
+                if (_same_fighter(a, f.get('fighter_a'))
+                    and _same_fighter(b, f.get('fighter_b')))
+                or (_same_fighter(a, f.get('fighter_b'))
+                    and _same_fighter(b, f.get('fighter_a')))]
+        if len(hits) == 1:
+            return hits[0], 'name'
+        if len(hits) > 1:
+            return None, f'ambiguous: {a} vs {b} matched {len(hits)} fights'
+        return None, f'no fight on this card matches {a} vs {b}'
+    # No names to match on. Only then fall back to the index, and say so.
+    parsed = parse_gid(read.get('game_id', ''))
+    if not parsed:
+        return None, 'no snapshot names and an unparseable game_id'
+    for f in fights:
+        if (f.get('event_date'), f.get('fight_order')) == parsed:
+            return f, 'order-fallback'
+    return None, 'no snapshot names and fight_order not on this card'
+
+
+def grade_one(read: dict, fight: dict | None) -> str | None:
     market = (read.get('call_market') or '').lower()
     if market == 'pass':
+        # Before any lookup: a pass has no side, so a wrong-row join can
+        # never reach it.
         return 'NO_ACTION'
     if market != 'fight':
         return None
-    parsed = parse_gid(read.get('game_id', ''))
-    if not parsed: return None
-    key = parsed
-    fight = results_by_key.get(key)
     if not fight:
         return None
     winner = (fight.get('winner') or '').strip().upper()
@@ -159,14 +233,24 @@ def run(game_date: str | None = None, backfill_days: int = 60,
                     'select': 'event_date,fight_order,fighter_a,fighter_b,winner,method'},
             timeout=15)
         fights = rr.json() if rr.status_code == 200 else []
-        by_key = {(f['event_date'], f['fight_order']): f for f in fights if f.get('fight_order') is not None}
 
         graded = 0
         for read in reads:
-            result = grade_one(read, by_key)
+            market = (read.get('call_market') or '').lower()
+            fight, how = resolve_fight(read, fights)
+            if market == 'fight' and not fight:
+                print(f'  ! {gd} id={read["id"]} ungraded - {how}')
+            # Make a renumbered card VISIBLE rather than silent: the index
+            # in the game_id is what the old join trusted.
+            if fight is not None and how == 'name':
+                parsed = parse_gid(read.get('game_id', ''))
+                if parsed and parsed[1] != fight.get('fight_order'):
+                    print(f'  ~ {gd} id={read["id"]} game_id says fight '
+                          f'{parsed[1]}, results say {fight.get("fight_order")} '
+                          f'({fight.get("fighter_a")} vs {fight.get("fighter_b")}) '
+                          f'- graded by name')
+            result = grade_one(read, fight)
             if not result: continue
-            parsed = parse_gid(read.get('game_id',''))
-            fight = by_key.get(parsed) if parsed else None
             actual = {
                 'winner': (fight or {}).get('winner'),
                 'method': (fight or {}).get('method'),
