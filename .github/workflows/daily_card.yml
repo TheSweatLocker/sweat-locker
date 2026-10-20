@@ -375,6 +375,34 @@ jobs:
             echo "skip: model scorecard runs on the 05/06 UTC slot (now ${HOUR} UTC)"
           fi
 
+      # ══ 2026-10-20 · THE FADE WAS NEVER SCHEDULED ══
+      # ANDY, mid-QA: "HWy does the fade still have the split information
+      # it says the fade but still has the sopkits data in it".
+      #
+      # Because generate_the_fade.py was in NO workflow. It shipped on
+      # 10-19 and only ever ran because I invoked it by hand that day, so
+      # jerry_cache held exactly one fade_<date> row (10-19) while the
+      # legacy fade_public_<date> keys kept being written daily. The client
+      # reads `fade_${todayET}`, found nothing for today, and the tab
+      # rendered as the old Split surface under the new name.
+      #
+      # Third instance of the same failure shape today, after the
+      # kickoff_utc SELECT and the receipt-capture sport loop: a thing that
+      # works when run by hand and is in no cron.
+      #
+      # Placed with the other Steam Room surfaces, which is where it
+      # belongs - The Fade is a Steam Room tab - and BEFORE the receipts
+      # capture above would be wrong: this writes its own receipts.
+      - name: Steam Room — The Fade
+        working-directory: mlb_pipeline
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "generate_the_fade.py" python generate_the_fade.py
+
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline
         env:
