@@ -127,52 +127,138 @@ def fit(xs, ys):
     return b, a, r, mae, n
 
 
+# ══ 2026-10-20 · FOOTBALL NEEDED A SOURCE OUTSIDE THE CONTEXT ROW ══
+# The first fit gave NFL one voice (EFF) and NCAAF one (SPPLUS), because
+# <sport>_game_context carries almost no per-team stats - it holds model
+# OUTPUTS. team_stats_rolling holds the per-team INPUTS, one row per
+# (sport, team, season, stat_key), including the points_pg that
+# compute_points_per_game.py added today. Each stat family there is a
+# separate argument a voice can be built from.
+#
+# Loaded once per sport and indexed by (team, stat_key), preferring the
+# current season and borrowing the prior one per stat_key - the same
+# per-stat fallback the app's Team Stats card uses, so a voice is not
+# silently blank in the first weeks of a season.
+def load_team_stats(sport, season):
+    idx = {}
+    seasons = [season, season - 1]
+    try:
+        rows = page('team_stats_rolling',
+                    {'select': 'team,season,stat_key,raw_value',
+                     'sport': f'eq.{sport}',
+                     'season': f'in.({seasons[0]},{seasons[1]})'},
+                    'season.desc')
+    except RuntimeError as e:
+        print(f'  !! team_stats_rolling({sport}): {e}')
+        return idx
+    for r in rows:
+        k = (str(r.get('team')), str(r.get('stat_key')))
+        cur = int(r.get('season') or 0) == season
+        if k not in idx or cur:
+            idx[k] = f(r.get('raw_value'))
+    return idx
+
+
+def ts_gap(stats, home, away, off_key, def_key):
+    """(home offence vs away defence) minus (away offence vs home defence).
+
+    This is the matchup form of a stat pair, not a raw team-vs-team diff:
+    points are produced by one side's offence against the other's defence,
+    which is the same reasoning the Team Stats matchup view is built on.
+    Returns None unless all four numbers exist - a half-populated gap is a
+    different measurement, not a smaller one.
+    """
+    ho, hd = stats.get((home, off_key)), stats.get((home, def_key))
+    ao, ad = stats.get((away, off_key)), stats.get((away, def_key))
+    if None in (ho, hd, ao, ad):
+        return None
+    return (ho - ad) - (ao - hd)
+
+
 #: Each voice is (name, angle, extractor -> raw home-minus-away gap).
 #: The ANGLE is the editorial stance - what this broadcaster actually argues
 #: from. Two voices may use the same sport but never the same family.
 VOICES = {
     'NHL': [
         ('ELO', 'pure strength rating, ignores how goals are made',
-         lambda c, m: (f(c.get('elo_home')) - f(c.get('elo_away')))
+         lambda c, m, t: (f(c.get('elo_home')) - f(c.get('elo_away')))
          if f(c.get('elo_home')) is not None and f(c.get('elo_away')) is not None else None),
         ('GOALIE', 'the two men in net, nothing else',
-         lambda c, m: (f(c.get('home_goalie_gsaa')) - f(c.get('away_goalie_gsaa')))
+         lambda c, m, t: (f(c.get('home_goalie_gsaa')) - f(c.get('away_goalie_gsaa')))
          if f(c.get('home_goalie_gsaa')) is not None and f(c.get('away_goalie_gsaa')) is not None else None),
         ('XG', 'chance quality - who should score, not who did',
-         lambda c, m: ((f(c.get('home_xgf_per60')) - f(c.get('home_xga_per60')))
+         lambda c, m, t: ((f(c.get('home_xgf_per60')) - f(c.get('home_xga_per60')))
                        - (f(c.get('away_xgf_per60')) - f(c.get('away_xga_per60'))))
          if all(f(c.get(k)) is not None for k in
                 ('home_xgf_per60', 'home_xga_per60', 'away_xgf_per60', 'away_xga_per60')) else None),
         ('REST', 'schedule and fatigue alone',
-         lambda c, m: (f(c.get('home_rest_days')) - f(c.get('away_rest_days')))
+         lambda c, m, t: (f(c.get('home_rest_days')) - f(c.get('away_rest_days')))
          if f(c.get('home_rest_days')) is not None and f(c.get('away_rest_days')) is not None else None),
     ],
     'NBA': [
         ('ELO', 'pure strength rating',
-         lambda c, m: (f(c.get('elo_home')) - f(c.get('elo_away')))
+         lambda c, m, t: (f(c.get('elo_home')) - f(c.get('elo_away')))
          if f(c.get('elo_home')) is not None and f(c.get('elo_away')) is not None else None),
         ('NETRTG', 'points per 100 possessions, both ends',
-         lambda c, m: (f(c.get('home_net_rating')) - f(c.get('away_net_rating')))
+         lambda c, m, t: (f(c.get('home_net_rating')) - f(c.get('away_net_rating')))
          if f(c.get('home_net_rating')) is not None and f(c.get('away_net_rating')) is not None else None),
         ('OFFRTG', 'offence only - who can score on anybody',
-         lambda c, m: (f(c.get('home_off_rating')) - f(c.get('away_off_rating')))
+         lambda c, m, t: (f(c.get('home_off_rating')) - f(c.get('away_off_rating')))
          if f(c.get('home_off_rating')) is not None and f(c.get('away_off_rating')) is not None else None),
         ('REST', 'rest and back-to-backs alone',
-         lambda c, m: (f(c.get('home_rest_days')) - f(c.get('away_rest_days')))
+         lambda c, m, t: (f(c.get('home_rest_days')) - f(c.get('away_rest_days')))
          if f(c.get('home_rest_days')) is not None and f(c.get('away_rest_days')) is not None else None),
     ],
     'NFL': [
         ('EFF', 'EPA-based offensive rating differential',
-         lambda c, m: (f(c.get('home_off_rating')) - f(c.get('away_off_rating')))
+         lambda c, m, t: (f(c.get('home_off_rating')) - f(c.get('away_off_rating')))
          if f(c.get('home_off_rating')) is not None and f(c.get('away_off_rating')) is not None else None),
+        ('SCORING', 'what they actually put on the board, and concede',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'points_pg', 'points_allowed_pg')),
+        ('YARDS', 'moving the ball - volume, not points',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'total_yds_pg', 'yds_allowed_pg')),
+        # 2026-10-20: was off_pass_epa vs def_pass_epa, which produced
+        # corr -0.29 - because those two columns are on DIFFERENT SCALES
+        # (off is per-play, def is per-GAME, the ~30x mismatch found this
+        # morning). A voice built on mismatched units is noise with a
+        # confident sign. Pass YARDS share a scale on both halves.
+        ('PASSGAME', 'the passing matchup only',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'pass_yds_pg', 'pass_yds_allowed_pg')),
+        ('RUNGAME', 'the running matchup only',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'rush_yds_pg', 'rush_yds_allowed_pg')),
         ('REST', 'rest edge and short weeks alone',
-         lambda c, m: (f(c.get('home_rest')) - f(c.get('away_rest')))
+         lambda c, m, t: (f(c.get('home_rest')) - f(c.get('away_rest')))
          if f(c.get('home_rest')) is not None and f(c.get('away_rest')) is not None else None),
     ],
     'NCAAF': [
         ('SPPLUS', 'the composite power rating',
-         lambda c, m: (f(c.get('home_sp_plus')) - f(c.get('away_sp_plus')))
+         lambda c, m, t: (f(c.get('home_sp_plus')) - f(c.get('away_sp_plus')))
          if f(c.get('home_sp_plus')) is not None and f(c.get('away_sp_plus')) is not None else None),
+        ('EXPLOSIVE', 'big plays - can they score from anywhere',
+         lambda c, m, t: ((t.get((str(c.get('home_team')), 'off_explosiveness')) or 0)
+                          - (t.get((str(c.get('away_team')), 'off_explosiveness')) or 0))
+         if (t.get((str(c.get('home_team')), 'off_explosiveness')) is not None
+             and t.get((str(c.get('away_team')), 'off_explosiveness')) is not None) else None),
+        ('BALLSECURITY', 'turnovers - the fastest way to lose a game you outplayed',
+         lambda c, m, t: ((t.get((str(c.get('away_team')), 'turnovers_pg')) or 0)
+                          - (t.get((str(c.get('home_team')), 'turnovers_pg')) or 0))
+         if (t.get((str(c.get('home_team')), 'turnovers_pg')) is not None
+             and t.get((str(c.get('away_team')), 'turnovers_pg')) is not None) else None),
+        ('EFFICIENCY', 'per-play EPA, which ignores garbage-time volume',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'off_epa_per_play', 'def_epa_per_play')),
+        ('SUCCESS', 'how often a play simply works',
+         lambda c, m, t: ts_gap(t, str(c.get('home_team')), str(c.get('away_team')),
+                                'off_success_rate', 'def_success_rate_allowed')),
+        ('SCHEDULE', 'who they played to earn those numbers',
+         lambda c, m, t: ((t.get((str(c.get('home_team')), 'sos')) or 0)
+                          - (t.get((str(c.get('away_team')), 'sos')) or 0))
+         if (t.get((str(c.get('home_team')), 'sos')) is not None
+             and t.get((str(c.get('away_team')), 'sos')) is not None) else None),
     ],
 }
 
@@ -222,10 +308,22 @@ def main() -> int:
         fitted = {}
         print(f'\n  {"voice":<9}{"n":>5}{"slope":>9}{"HFA":>8}{"corr":>7}'
               f'{"MAE":>8}  angle')
+        _season = None
+        for r in rows:
+            sv = r['ctx'].get('season')
+            if sv:
+                try:
+                    _season = int(sv)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        tstats = load_team_stats(sport, _season or 2026)
+        print(f'  team_stats_rolling rows indexed: {len(tstats)}')
+
         for name, angle, fn in VOICES.get(sport, []):
             pts = []
             for r in rows:
-                raw = fn(r['ctx'], r['mc'])
+                raw = fn(r['ctx'], r['mc'], tstats)
                 if raw is None:
                     continue
                 pts.append((raw, r['actual']))
@@ -252,7 +350,7 @@ def main() -> int:
                 b, a0, fn = fitted[nm]
                 preds[nm] = {}
                 for i, r in enumerate(rows):
-                    raw = fn(r['ctx'], r['mc'])
+                    raw = fn(r['ctx'], r['mc'], tstats)
                     if raw is not None:
                         preds[nm][i] = a0 + b * raw
             print(f'\n  PAIRWISE CORRELATION OF THE FITTED OPINIONS')
