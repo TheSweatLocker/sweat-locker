@@ -119,6 +119,19 @@ def build_fight_struct(fight: dict, fighter_stats: dict | None = None) -> dict:
 
     def pct(v): return round((v or 0) * 100, 1)
 
+    # 2026-10-19 · A SUPPRESSED FIELD IS NOT ZERO.
+    # SUPPRESS_DISTANCE went True on 2026-09-25 because the method/distance
+    # model measured WORSE than a constant (56.4% against a 67.0%
+    # always-not-distance benchmark, and -33.8pp biased in the 0.50-0.60
+    # bucket), so ufc_score_card writes p_method_* and p_distance as NULL.
+    # That decision is right. The bug was downstream: pct() turned those
+    # NULLs into 0.0, so from 09-26 every prompt asserted "KO 0% · SUB 0% ·
+    # DEC 0%" and "Distance probability: 0%" — a fabricated claim that no
+    # method can happen — while the CONVICTION rule below simultaneously
+    # asked Jerry to weigh "method dominance". Five events shipped that way.
+    def pct_or_none(v):
+        return None if v is None else round(float(v) * 100, 1)
+
     struct = {
         'event': fight.get('event_name'),
         'date': fight.get('event_date'),
@@ -131,9 +144,9 @@ def build_fight_struct(fight: dict, fighter_stats: dict | None = None) -> dict:
         'win_probability_pct': round(win_prob * 100, 1),
         'conviction_winner': fight.get('conviction_winner'),
         'tier_winner': fight.get('tier_winner'),
-        'method_prob_ko': pct(fight.get('p_method_ko')),
-        'method_prob_sub': pct(fight.get('p_method_sub')),
-        'method_prob_dec': pct(fight.get('p_method_dec')),
+        'method_prob_ko': pct_or_none(fight.get('p_method_ko')),
+        'method_prob_sub': pct_or_none(fight.get('p_method_sub')),
+        'method_prob_dec': pct_or_none(fight.get('p_method_dec')),
         'round_distribution': {
             'r1': pct(fight.get('p_round_1')),
             'r2': pct(fight.get('p_round_2')),
@@ -141,7 +154,7 @@ def build_fight_struct(fight: dict, fighter_stats: dict | None = None) -> dict:
             'r4': pct(fight.get('p_round_4')),
             'r5': pct(fight.get('p_round_5')),
         },
-        'distance_prob_pct': pct(fight.get('p_distance')),
+        'distance_prob_pct': pct_or_none(fight.get('p_distance')),
         'odds_picked_side_median': picked_odds,
         'edge_method': fight.get('edge_method'),
         'edge_distance': fight.get('edge_distance'),
@@ -196,6 +209,41 @@ def render_prompt(struct: dict) -> str:
     """
     fa_stats_block = _render_fighter_stats(struct['fighter_a'], struct.get('fighter_a_stats') or {})
     fb_stats_block = _render_fighter_stats(struct['fighter_b'], struct.get('fighter_b_stats') or {})
+
+    # Build the method/distance block from what actually exists. When the
+    # model is suppressed Jerry is told it is WITHHELD rather than shown
+    # zeros, because "0% chance of a decision" is a false statement and he
+    # is under instruction to cite only what this prompt contains.
+    _mk, _ms, _md = (struct.get('method_prob_ko'), struct.get('method_prob_sub'),
+                     struct.get('method_prob_dec'))
+    _has_method = any(v is not None for v in (_mk, _ms, _md))
+    _has_distance = struct.get('distance_prob_pct') is not None
+    if _has_method:
+        method_block = (f"  Method distribution: KO {_mk}% · SUB {_ms}% · "
+                        f"DEC {_md}%")
+    else:
+        method_block = ('  Method distribution: WITHHELD — this model is '
+                        'suppressed because it measured worse than a '
+                        'constant. Do NOT cite, estimate or infer a method '
+                        'split, and do NOT read its absence as a signal '
+                        'either way.')
+    if _has_distance:
+        distance_block = (f"  Distance probability: "
+                          f"{struct['distance_prob_pct']}%")
+    else:
+        distance_block = ('  Distance probability: WITHHELD — same '
+                          'suppression. Do not estimate it.')
+    # Only ask for method dominance when there is a method distribution.
+    short_cite = ('the win probability, method dominance, and the strongest edge'
+                  if _has_method else
+                  'the win probability and the strongest edge (there is no method '
+                  'distribution available — do not invent one)')
+    # Letters renumber when the method clause drops out - a list that reads
+    # "(a) ... (c) ..." tells the model an instruction was removed and
+    # invites it to guess what (b) was.
+    conv_method_clause = ('(b) method dominance clarity (>60% in one method = '
+                          'high conviction), ' if _has_method else '')
+    conv_tier_letter = '(c)' if _has_method else '(b)'
     return f"""You are Jerry — combat sports analyst for The Sweat Locker. Read the model output for this UFC fight and deliver ONE actionable synthesis.
 
 ═══════════════════════════════════════════════════════════════════════
@@ -222,8 +270,8 @@ Fighter profiles (cite only what's here):
 Model output:
   Recommended pick: {struct['model_pick_fighter']} at {struct['win_probability_pct']}% win probability
   Tier: {struct.get('tier_winner','?')} · Conviction {struct.get('conviction_winner','?')}
-  Method distribution: KO {struct['method_prob_ko']}% · SUB {struct['method_prob_sub']}% · DEC {struct['method_prob_dec']}%
-  Distance probability: {struct['distance_prob_pct']}%
+{method_block}
+{distance_block}
   Round distribution: R1 {struct['round_distribution']['r1']}% · R2 {struct['round_distribution']['r2']}% · R3 {struct['round_distribution']['r3']}%
   Odds (picked side): {struct.get('odds_picked_side_median','n/a')}
   Edge angles: method={struct.get('edge_method','none')} · distance={struct.get('edge_distance','none')}
@@ -232,14 +280,14 @@ Model output:
 Return EXACTLY this format:
 
 ---SHORT---
-<40-60 words. Lead with BACK / FADE / PASS + one-line reason. Cite the win probability, method dominance, and the strongest edge. Reference odds/EV if relevant. End with what would kill the pick (opponent adjustment, weight cut concern, etc — general MMA principles ok, no fabricated stats).>
+<40-60 words. Lead with BACK / FADE / PASS + one-line reason. Cite {short_cite}. Reference odds/EV if relevant. End with what would kill the pick (opponent adjustment, weight cut concern, etc — general MMA principles ok, no fabricated stats).>
 
 ---LONG---
 <180-260 words. Deeper synthesis: pathway to victory (which method has the model behind it), how the round distribution supports the read, what the odds imply vs model probability, EV framing. Analytical voice — no hype. If EV tier or edge angles are populated, work them in. Do NOT invent fighter records, camp changes, weight cut history, or head-to-head results.>
 
 ---CALL---
 VERDICT: <BACK | FADE | PASS>
-CONVICTION: <integer 0-100. Anchor on conviction_winner but adjust for: (a) EV tier, (b) method dominance clarity (>60% in one method = high conviction), (c) tier_winner label. If model win_prob <55% → CALL PASS.>
+CONVICTION: <integer 0-100. Anchor on conviction_winner but adjust for: (a) EV tier, {conv_method_clause}{conv_tier_letter} tier_winner label. If model win_prob <55% → CALL PASS.>
 CALL_TEXT: <human-readable e.g. "Rakic ML" or "Stirling by KO/TKO" or "Pass">
 """
 
