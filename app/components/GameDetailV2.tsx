@@ -4532,8 +4532,13 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
     'points_pg', 'net_pts_pg', 'pace',
     'efg_pct', 'tov_pct', 'orb_pct', 'ft_rate',
   ];
+  // 2026-10-19: 'opp_orb_pct' removed - it has ZERO rows in
+  // team_stats_rolling (checked across 15,753 rows; NBA 2025 carries
+  // opp_efg_pct, opp_tov_pct and opp_ft_rate but no opponent ORB), so it
+  // was a dead key that the both-empty guard quietly swallowed. opp_ft_rate
+  // exists and is now paired in MATCHUP_PAIRS instead.
   const NBA_DEFENSE = [
-    'points_allowed_pg', 'opp_efg_pct', 'opp_tov_pct', 'opp_orb_pct',
+    'points_allowed_pg', 'opp_efg_pct', 'opp_tov_pct',
   ];
   // NHL — expected-goal + special teams + possession
   const NHL_OFFENSE = [
@@ -4840,6 +4845,42 @@ function advantage(aRank: any, bRank: any,
 // leaving the user to infer it from the colour.
 const INFO_GLYPH = 'ⓘ';
 const STAT_INFO: Record<string, {name: string; what: string; read: string}> = {
+  // == 2026-10-19 - INFO FOR THE SPORT-SLOT CARDS, NOT JUST THE STAT TABLE ==
+  // Andy: "add info toggels for nhl stats explaining what they are. ensure
+  // all sports exlain stat meanings."
+  //
+  // The 09-26 pass got this to 75 entries, but it only covered the Team Stats
+  // TABLE. Every sport-specific slot card has its own renderer and NONE of
+  // them carried an affordance - audited today, NHLGoalieMatchup /
+  // NHLSpecialTeams / NHLShotQuality / NHLRest, NBA and NCAAB Four Factors,
+  // NFL QB Matchup, NCAAF Efficiency and Team Tendencies all returned 0 for
+  // Explainer|INFO_GLYPH|STAT_INFO. So "5v5 Corsi for %", "xG against /60"
+  // and "High-danger diff" rendered as bare jargon.
+  //
+  // Most of those metrics ALREADY had an entry here under their
+  // team_stats_rolling key (corsi_5v5, xgf_per60, pp_pct, efg_pct, ...), so
+  // the work was wiring. These are the ones with no key to borrow.
+  gf_per60: {name: 'Goals For /60',
+    what: 'Goals scored per 60 minutes of play, so teams compare evenly regardless of overtime or games played.',
+    read: 'League average sits near 2.4. Read it against the opponent\'s Goals Against /60 - that pairing is the scoring matchup.'},
+  ga_per60: {name: 'Goals Against /60',
+    what: 'Goals conceded per 60 minutes of play.',
+    read: 'Lower is better. Near 2.4 is average; under 2.0 across a real sample is strong defence rather than luck.'},
+  elo_rating: {name: 'Elo Rating',
+    what: 'A single strength number that moves after every game - up for a win, down for a loss, and by more when the result was an upset.',
+    read: 'Only the GAP means anything. Roughly 25 points of difference is about one goal of expectation; a gap under 25 is close to a coin flip.'},
+  rest_days: {name: 'Days Since Last Game',
+    what: 'Days ELAPSED since this team last played - not days of rest. A team that played Monday and plays Wednesday shows 2 here but had one full day off.',
+    read: 'A 1 means a back-to-back. The label says elapsed because that is what the number counts; the Back-to-back row carries the flag itself.'},
+  back_to_back: {name: 'Back-to-Back',
+    what: 'Whether this is the second game on consecutive days.',
+    read: 'In hockey it usually means the backup goalie, which matters more than tired legs. Check the Goalie Matchup card before assuming either.'},
+  hd_diff: {name: 'High-Danger Differential',
+    what: 'High-danger chances created minus those conceded, per 60 minutes. High-danger means shots from the areas goals actually come from.',
+    read: 'Positive means a team creates more quality looks than it allows. It tracks future scoring better than shot COUNT, because not all shots are equal.'},
+  pp_vs_pk: {name: 'Power Play vs Opposing Kill',
+    what: 'This team\'s power play measured against the specific penalty kill it will face, not against a league average.',
+    read: 'Positive favours the team with the man advantage. It only matters in proportion to how many penalties the game actually produces.'},
   // 2026-09-26: SOS and SOR are the two people conflate most, so the copy
   // leads with the difference rather than a definition.
   // 2026-09-26 · ⓘ COVERAGE FOR EVERY SPORT.
@@ -5539,6 +5580,42 @@ function NHLSlot({ctx, game}: any) {
 // The loser keeps C.text rather than an undefined key: `{color: C.win}` with
 // win undefined does not inherit, it clears the colour and RN paints black on
 // a near-black ground, which is how 28 stats went invisible on 2026-09-25.
+// 2026-10-19 - ONE row used by every compare-style slot card, so the info
+// affordance cannot be present on one card and missing on the next. This was
+// three near-identical renderers (NHLCompareRows, NBA Four Factors, NCAAB
+// Four Factors) and none of them had one.
+//
+// `infoKey` indexes STAT_INFO. When the key has no entry the row renders
+// exactly as before - plain label, no dead tap target - so adding a row
+// without copy degrades quietly instead of promising an explanation that is
+// not there.
+function InfoCompareRow({label, infoKey, away, home, awayColor, homeColor,
+                         labelFlex = 1.5}: any) {
+  const [open, setOpen] = React.useState(false);
+  const info = infoKey ? STAT_INFO[infoKey] : null;
+  return (
+    <View>
+      <View style={{flexDirection: 'row', paddingVertical: 5}}>
+        {info ? (
+          <TouchableOpacity style={{flex: labelFlex}} activeOpacity={0.6}
+                            onPress={() => setOpen(v => !v)}>
+            <Text style={{color: C.textDim, fontSize: 12}} numberOfLines={2}>
+              {label} <Text style={{color: C.accent, fontSize: 10}}>{INFO_GLYPH}</Text>
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={{flex: labelFlex, color: C.textDim, fontSize: 12}}>{label}</Text>
+        )}
+        <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
+                      color: awayColor || C.text}}>{away}</Text>
+        <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
+                      color: homeColor || C.text}}>{home}</Text>
+      </View>
+      {open && info ? <StatInfoRow info={info} onClose={() => setOpen(false)} /> : null}
+    </View>
+  );
+}
+
 function NHLCompareRows({rows, awayTeam, homeTeam}: any) {
   return (
     <>
@@ -5558,13 +5635,10 @@ function NHLCompareRows({rows, awayTeam, homeTeam}: any) {
           edge = awayWins ? 'away' : 'home';
         }
         return (
-          <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
-            <Text style={{flex: 1.5, color: C.textDim, fontSize: 12}}>{r.label}</Text>
-            <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
-                          color: edge === 'away' ? C.accent : C.text}}>{r.away}</Text>
-            <Text style={{flex: 1, fontSize: 12, fontWeight: '700', textAlign: 'center',
-                          color: edge === 'home' ? C.accent : C.text}}>{r.home}</Text>
-          </View>
+          <InfoCompareRow key={i} label={r.label} infoKey={r.info}
+                          away={r.away} home={r.home} labelFlex={1.5}
+                          awayColor={edge === 'away' ? C.accent : C.text}
+                          homeColor={edge === 'home' ? C.accent : C.text} />
         );
       })}
     </>
@@ -5609,8 +5683,11 @@ function NHLGoalieMatchupCard({ctx, homeTeam, awayTeam}: any) {
       </View>
       {anyGsaa && (
         <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>
-          GSAA is goals prevented versus a league-average goalie on the same
-          shots — above zero is better than average, below zero is worse.
+          SV% is the share of shots stopped — about .905 is average, and the
+          spread is narrow enough that .890 is a weak night and .920 elite.
+          GSAA is goals prevented versus a league-average goalie on the SAME
+          shots, so it adjusts for shot quality where SV% does not: above
+          zero is better than average, below zero is worse.
         </Text>
       )}
     </Section>
@@ -5636,11 +5713,11 @@ function NHLSpecialTeamsCard({ctx, homeTeam, awayTeam}: any) {
   return (
     <Section title="Special Teams" hint="each power play vs the kill it faces">
       <NHLCompareRows awayTeam={awayTeam} homeTeam={homeTeam} rows={[
-        {label: 'Power play %', away: p(aPP), home: p(hPP),
+        {label: 'Power play %', info: 'pp_pct', away: p(aPP), home: p(hPP),
          awayRaw: aPP, homeRaw: hPP, better: 'high'},
-        {label: 'Penalty kill %', away: p(aPK), home: p(hPK),
+        {label: 'Penalty kill %', info: 'pk_pct', away: p(aPK), home: p(hPK),
          awayRaw: aPK, homeRaw: hPK, better: 'high'},
-        {label: 'PP vs opp PK', away: fmtNet(nA), home: fmtNet(nH),
+        {label: 'PP vs opp PK', info: 'pp_vs_pk', away: fmtNet(nA), home: fmtNet(nH),
          awayRaw: nA, homeRaw: nH, better: 'high'},
       ]} />
       <Text style={{color: C.textDim, fontSize: 10, marginTop: 6}}>
@@ -5671,19 +5748,19 @@ function NHLShotQualityCard({ctx, homeTeam, awayTeam}: any) {
   const dH = hdDiff(ctx?.home_high_danger_for, ctx?.home_high_danger_against);
   const rows: any[] = [];
   if (ctx?.elo_home != null || ctx?.elo_away != null) rows.push(
-    {label: 'Elo rating', away: n0(ctx?.elo_away), home: n0(ctx?.elo_home),
+    {label: 'Elo rating', info: 'elo_rating', away: n0(ctx?.elo_away), home: n0(ctx?.elo_home),
      awayRaw: ctx?.elo_away, homeRaw: ctx?.elo_home, better: 'high'});
   if (ctx?.away_5v5_cf != null || ctx?.home_5v5_cf != null) rows.push(
-    {label: '5v5 Corsi for %', away: cf(ctx?.away_5v5_cf), home: cf(ctx?.home_5v5_cf),
+    {label: '5v5 Corsi for %', info: 'corsi_5v5', away: cf(ctx?.away_5v5_cf), home: cf(ctx?.home_5v5_cf),
      awayRaw: ctx?.away_5v5_cf, homeRaw: ctx?.home_5v5_cf, better: 'high'});
   if (ctx?.away_xgf_per60 != null || ctx?.home_xgf_per60 != null) rows.push(
-    {label: 'xG for /60', away: n2(ctx?.away_xgf_per60), home: n2(ctx?.home_xgf_per60),
+    {label: 'xG for /60', info: 'xgf_per60', away: n2(ctx?.away_xgf_per60), home: n2(ctx?.home_xgf_per60),
      awayRaw: ctx?.away_xgf_per60, homeRaw: ctx?.home_xgf_per60, better: 'high'});
   if (ctx?.away_xga_per60 != null || ctx?.home_xga_per60 != null) rows.push(
-    {label: 'xG against /60', away: n2(ctx?.away_xga_per60), home: n2(ctx?.home_xga_per60),
+    {label: 'xG against /60', info: 'xga_per60', away: n2(ctx?.away_xga_per60), home: n2(ctx?.home_xga_per60),
      awayRaw: ctx?.away_xga_per60, homeRaw: ctx?.home_xga_per60, better: 'low'});
   if (dA != null || dH != null) rows.push(
-    {label: 'High-danger diff', away: dA == null ? '—' : `${dA > 0 ? '+' : ''}${n0(dA)}`,
+    {label: 'High-danger diff', info: 'hd_diff', away: dA == null ? '—' : `${dA > 0 ? '+' : ''}${n0(dA)}`,
      home: dH == null ? '—' : `${dH > 0 ? '+' : ''}${n0(dH)}`,
      awayRaw: dA, homeRaw: dH, better: 'high'});
   if (!rows.length) return null;
@@ -5720,11 +5797,11 @@ function NHLRestCard({ctx, homeTeam, awayTeam}: any) {
     // Renaming is the safe fix: rest_days also drives back_to_back
     // (elapsed == 1) and the long-road-trip signal, so changing the stored
     // arithmetic would silently move those too.
-    {label: 'Days since last game', away: days(aR), home: days(hR),
+    {label: 'Days since last game', info: 'rest_days', away: days(aR), home: days(hR),
      awayRaw: aR, homeRaw: hR, better: 'high'},
     // Back-to-back is a yes/no, so there is no "better" number to colour —
     // a false/false row must not paint one side green for tying.
-    {label: 'Back-to-back', away: b2b(aB), home: b2b(hB), better: null},
+    {label: 'Back-to-back', info: 'back_to_back', away: b2b(aB), home: b2b(hB), better: null},
   ];
   // Road trips are NOT a compare row. away_consecutive_road_games is
   // populated on all 25 games but home_consecutive_road_games is populated on
@@ -7291,10 +7368,10 @@ function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
   const pct = (v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`;
   const num = (v: any) => v == null ? '—' : Number(v).toFixed(2);
   const factors = [
-    {label: 'eFG%',  away: pct(stats.away?.efg_pct),  home: pct(stats.home?.efg_pct)},
-    {label: 'TOV%',  away: pct(stats.away?.tov_pct),  home: pct(stats.home?.tov_pct)},
-    {label: 'ORB%',  away: pct(stats.away?.orb_pct),  home: pct(stats.home?.orb_pct)},
-    {label: 'FT Rate', away: num(stats.away?.ft_rate), home: num(stats.home?.ft_rate)},
+    {label: 'eFG%',  info: 'efg_pct', away: pct(stats.away?.efg_pct),  home: pct(stats.home?.efg_pct)},
+    {label: 'TOV%',  info: 'tov_pct', away: pct(stats.away?.tov_pct),  home: pct(stats.home?.tov_pct)},
+    {label: 'ORB%',  info: 'orb_pct', away: pct(stats.away?.orb_pct),  home: pct(stats.home?.orb_pct)},
+    {label: 'FT Rate', info: 'ft_rate', away: num(stats.away?.ft_rate), home: num(stats.home?.ft_rate)},
   ];
   if (!isEnabled) return null;
   return (
@@ -7304,12 +7381,9 @@ function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
         <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
         <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
       </View>
-      {factors.map((f, i) => (
-        <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
-          <Text style={{flex: 1.3, color: C.textDim, fontSize: 12}}>{f.label}</Text>
-          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.away}</Text>
-          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.home}</Text>
-        </View>
+      {factors.map((f: any, i: number) => (
+        <InfoCompareRow key={i} label={f.label} infoKey={f.info}
+                        away={f.away} home={f.home} labelFlex={1.3} />
       ))}
     </Section>
   );
@@ -7420,10 +7494,10 @@ function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
   const pct = (v: any) => v == null ? '—' : `${Number(v).toFixed(1)}%`;
   const num = (v: any) => v == null ? '—' : Number(v).toFixed(2);
   const factors = [
-    {label: 'eFG%', away: pct(a.efg), home: pct(h.efg)},
-    {label: 'TO%',  away: pct(a.to),  home: pct(h.to)},
-    {label: 'OR%',  away: pct(a.or),  home: pct(h.or)},
-    {label: 'FTR',  away: num(a.ftr), home: num(h.ftr)},
+    {label: 'eFG%', info: 'efg_pct', away: pct(a.efg), home: pct(h.efg)},
+    {label: 'TO%',  info: 'tov_pct', away: pct(a.to),  home: pct(h.to)},
+    {label: 'OR%',  info: 'orb_pct', away: pct(a.or),  home: pct(h.or)},
+    {label: 'FTR',  info: 'ft_rate', away: num(a.ftr), home: num(h.ftr)},
   ];
   return (
     <Section title="Four Factors" hint="ordered by predictive weight">
@@ -7432,12 +7506,9 @@ function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
         <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
         <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
       </View>
-      {factors.map((f, i) => (
-        <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
-          <Text style={{flex: 1.3, color: C.textDim, fontSize: 12}}>{f.label}</Text>
-          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.away}</Text>
-          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700', textAlign: 'center'}}>{f.home}</Text>
-        </View>
+      {factors.map((f: any, i: number) => (
+        <InfoCompareRow key={i} label={f.label} infoKey={f.info}
+                        away={f.away} home={f.home} labelFlex={1.3} />
       ))}
     </Section>
   );
