@@ -3627,3 +3627,66 @@ FIX: find why the CFBD team-stats pull misses them (conference filter? a
 `division` predicate?) before trusting any NCAAF percentile.
 VERIFY: compare the team set in `ncaaf_game_results` (3+ games) against
 `ncaaf_team_stats` for the season.
+
+
+### B81 - UFC: two feeds number a card differently - **GRADER FIXED** `f33b9ca5`, source still OPEN
+
+Measured 2026-10-19 over 95 joinable UFC reads: `fight_order` disagrees between
+the picks/reads feed and `ufc_fight_results` on **16**. Root cause is two
+independent enumerations of the same card - `ufc_resolve_fights.py:196` and
+`ufc_score_card.py:205` both assign `fight_order: i + 1` from their own scrape
+order, while the results feed numbers by the results page.
+
+FIXED in the grader: `grade_ufc_jerry_reads.py` now resolves a fight by the
+read's own snapshot fighter NAMES and refuses rather than falling back to the
+index. That corrected one grade (ufc_2026-10-10_8, Julius Walker: Loss -> Win;
+record 12-7 -> 13-6).
+
+STILL OPEN: the numbering itself. Anything that joins these two tables on
+`fight_order` is wrong 17% of the time. Audited today, nothing else does -
+`ufc_grader.py` matches ESPN by name, and its `order: fight_order.asc` is only
+an iteration sort - but a future consumer will reach for the index because the
+game_id embeds it.
+FIX: make one of the two feeds adopt the other's ordering, or stop embedding
+`fight_order` in the UFC game_id so there is no index to be tempted by.
+
+### B82 - UFC reads carry NO price, so the record cannot become ROI - OPEN
+
+All **103** `jerry_reads` rows for UFC have `price_american` NULL, across every
+event from 08-01 to the upcoming 10-24. `ufc_picks` DOES carry odds
+(`odds_a_median`, `odds_b_median`, `odds_a_best`, `odds_b_best`,
+`odds_book_count`) - they are simply never joined through to the read.
+
+WHY IT MATTERS MORE HERE THAN ANYWHERE: UFC is a moneyline market, so breakeven
+moves with the price. The read record is 13-6 (68.4%) and that number cannot be
+converted into profit or loss. For comparison, the model's own PRIME tier hits
+63.2% at an average decimal price of 1.43 - 69.7% implied - which is a **-13.5%
+ROI**. A hit rate without a price is not a record.
+
+FIX: join `ufc_picks.odds_{a,b}_median` onto the read at synthesis time, same
+as `price_picks.py` does elsewhere.
+
+### B83 - the UFC engine has stopped making picks - OPEN
+
+Conviction and pick rate both collapsed in late August and have not recovered:
+
+    date        reads  picks  conviction min/med/max
+    2026-08-01     3      3        68 /  72 /  78
+    2026-08-15    10      6         8 /  60 /  79
+    2026-08-29     6      0         0 /  28 /  28
+    2026-10-03    13      0        18 /  22 /  38
+    2026-10-17     7      1        12 /  22 /  38
+    2026-10-24     8      0         8 /  20 /  28
+
+Every PASS is `call_market='pass'`, so this is the engine declining, not a
+grading gap - and the grader is confirmed correct. 10-24 is an 8-fight card
+with zero picks. Read coverage is also thin: 7 reads for a 13-fight card on
+10-17, 13 for a 14-fight card on 10-03.
+
+ALSO: `public_receipts` holds **0** UFC rows, so UFC appears in no
+receipt-based record anywhere (this is B73d's UFC half).
+
+OPEN QUESTION for Andy: is near-total abstention the intended posture given the
+model loses at price in every tier, or did a gate move in late August? Either
+way the app should say which, because a tab that publishes nothing reads as
+broken.
