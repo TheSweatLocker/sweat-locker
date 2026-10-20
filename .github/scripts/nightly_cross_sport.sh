@@ -437,6 +437,22 @@ bash "$RUN_STEP" --label "collect_pace_stats.py (pace floor, all sports)" \
 bash "$RUN_STEP" --label "recompute_nfl_epa_units.py (off/def EPA units)" \
   python recompute_nfl_epa_units.py
 
+# 2026-10-19 · POINTS SCORED, so the Team Stats matchup view has a points row.
+# Neither nfl_team_stats nor ncaaf_team_stats carries a points column at all —
+# only def_ppg on the defence side — so the card could show what a football
+# team CONCEDES and not what it SCORES. B68 called the asymmetry "probably
+# just an omission"; it blocked the one pair Andy asked for by name.
+#
+# DAILY, not weekly like the NCAAF volumetric recompute above, because the
+# numerator comes from <sport>_game_results rather than a weekly provider
+# pull: the moment Sunday's scores land, points/G is stale until this runs.
+# It is the same idempotent upsert into team_computed_stats, and it REFUSES
+# to write when its own points_allowed disagrees with the upstream def_ppg by
+# more than 1.5 pts/g — a disagreement means the two sides of the pair came
+# from different game sets, which is a finding, not a row to publish.
+bash "$RUN_STEP" --label "compute_points_per_game.py (NFL + NCAAF points for/against)" \
+  python compute_points_per_game.py
+
 # 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
 # never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
 # had price_american NULL — ungradeable for ROI, permanently — and the 15 that

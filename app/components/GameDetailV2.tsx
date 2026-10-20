@@ -827,7 +827,16 @@ export default function GameDetailV2({
                    // as drift. Pool size varies by stat in every sport — NFL
                    // offense ranks over 32 while several computed rows rank
                    // over a filtered subset — so the qualifier is universal.
-                   hint={'▲ = better matchup side · color = percentile strength · pool size varies by stat'}>
+                   // 2026-10-19: the legend now has to describe TWO row
+                   // shapes. A paired row is one team's offence against the
+                   // other's defence and carries NO ▲, because comparing an
+                   // offence rank to a defence rank does not name a better
+                   // side. The ▲ survives only on the like-for-like rows
+                   // below the matchup. Saying otherwise is the same drift
+                   // the 09-25 note below was written about.
+                   hint={MATCHUP_PAIRS[gamesSport]
+                     ? 'offence vs the opponent’s defence · colour = that team’s own percentile · ▲ only on same-side rows · pool size varies by stat'
+                     : '▲ = better matchup side · color = percentile strength · pool size varies by stat'}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
                            statsSource={ctx?.stats_source} />
           </Section>
@@ -4247,10 +4256,137 @@ const sitStyles = StyleSheet.create({
 //   - SP+ overall shown as a header banner above the sub-tabs (composite
 //     rating that spans offense + defense)
 //   - Silent hide when team_stats_rolling returns 0 for both teams
+// ══ 2026-10-19 · WHICH TEAM HAS THE BALL, NOT OFFENSE vs OFFENSE (B68) ══
+//
+// ANDY: "altering team stats to more offensive rushing yards listed next to
+// opponent defensive rushing yards allowed, poit allowed vs point against, do
+// i need to name all or you catch ddrift?"
+//
+// The Offense sub-tab compared AWAY OFFENCE to HOME OFFENCE — two units that
+// never line up against each other. Answering "can the home team move the
+// ball" meant holding four numbers across a tab switch. Points are produced
+// by one team's offence against the other's defence, which is also the exact
+// form of our own rating model (perf = off_i - def_j + home in
+// opponent_adjusted_rating.py), so this makes the display mirror the engine
+// instead of cutting across it.
+//
+// EVERY KEY BELOW WAS VERIFIED AGAINST team_stats_rolling BEFORE BEING PAIRED
+// (2026-10-19, 15,753 rows), and a pair had to clear two tests: both sides
+// measure the SAME THING, and both sides are on the SAME SCALE. Five
+// candidate pairs failed and are deliberately absent:
+//
+//   * NFL Pass EPA and Rush EPA — THE SCALES DIFFER BY ~30x. Measured:
+//       off_pass_epa  -0.222 .. 0.405  label "Off Pass EPA"     (per play)
+//       def_pass_epa  -1.491 .. 6.215  label "Def Pass EPA/G"   (per GAME)
+//     recompute_nfl_epa_units.py put offence on a per-play footing in
+//     September and deliberately LEFT defence per-game with an explicit
+//     "/G" label, because nfl_team_defense_stats carries no opponent play
+//     counts and inventing a denominator would present a guess as a
+//     measurement. Pairing them under one "Pass EPA" label would erase the
+//     distinction that script exists to preserve. They stay like-for-like
+//     below, with their own labels.
+//   * NCAAF EPA/Play — same thing measured differently, not a scale issue:
+//     off_epa_per_play is ALL plays, while def_epa_per_play is mapped from
+//     def_pass_epa_allowed and is PASS ONLY (its label even reads "Def Pass
+//     EPA"). Total offence against pass defence is not a matchup row.
+//   * NBA orb_pct has NO opp_orb_pct — the old NBA_DEFENSE list named one,
+//     so that row has been rendering empty all along.
+//   * NCAAF has no yards-allowed columns at all, so rush_yds_pg cannot pair;
+//     pairing it with def_rush_epa_allowed would compare yards to EPA.
+//
+// AND ONE PAIR HAD TO BE BUILT. NFL and NCAAF had NO points-scored key
+// anywhere — only def_ppg — which is the pair Andy named by name. So
+// compute_points_per_game.py now writes points_pg, and recomputes
+// points_allowed_pg from the SAME games so the two sides share one
+// denominator; it cross-checked to within 0.02 pts/g of the upstream def_ppg
+// and refuses to write if that gap exceeds 1.5.
+//
+// NO EDGE COLOURING ON A PAIR. advantage() compares two ranks, which is valid
+// for like-for-like but not here: a 5th-ranked offence against a 5th-ranked
+// defence is a neutral matchup, not a tie to be flagged. Each side keeps its
+// own percentile RankChip — that is comprehension — and nothing asserts an
+// edge, because our own measurements say team stats do not beat the close
+// (project_models_dont_beat_the_close_1005).
+//
+// MLB IS DELIBERATELY NOT PAIRED. Batting (OBP/SLG/wOBA) against pitching
+// (ERA/WHIP/K9) are different units; MLB's real matchup is the lineup against
+// the STARTING PITCHER, which PitcherCard already shows. MLB keeps
+// Offense/Defense.
+const MATCHUP_PAIRS: Record<string, Array<{label: string; off: string; def: string}>> = {
+  NFL: [
+    {label: 'Points',        off: 'points_pg',     def: 'points_allowed_pg'},
+    {label: 'Total Yards',   off: 'total_yds_pg',  def: 'yds_allowed_pg'},
+    {label: 'Pass Yards',    off: 'pass_yds_pg',   def: 'pass_yds_allowed_pg'},
+    {label: 'Rush Yards',    off: 'rush_yds_pg',   def: 'rush_yds_allowed_pg'},
+  ],
+  NCAAF: [
+    {label: 'Points',        off: 'points_pg',        def: 'points_allowed_pg'},
+    {label: 'Success Rate',  off: 'off_success_rate', def: 'def_success_rate_allowed'},
+    {label: 'Efficiency',    off: 'sp_offense',       def: 'sp_defense'},
+  ],
+  NBA: [
+    {label: 'Points',        off: 'points_pg', def: 'points_allowed_pg'},
+    {label: 'Effective FG%', off: 'efg_pct',   def: 'opp_efg_pct'},
+    {label: 'Turnover %',    off: 'tov_pct',   def: 'opp_tov_pct'},
+    {label: 'Free-Throw Rate', off: 'ft_rate', def: 'opp_ft_rate'},
+  ],
+  NHL: [
+    {label: 'Expected Goals /60', off: 'xgf_per60',       def: 'xga_per60'},
+    {label: 'Goals /60',          off: 'gf_per60',        def: 'ga_per60'},
+    {label: 'High-Danger Chances', off: 'high_danger_for', def: 'high_danger_against'},
+    // pp_pct / pk_pct are NOT percentages despite the key names — the labels
+    // read "PP xG /60" and "PK xGA /60", i.e. expected goals per 60 of
+    // special-teams time. Same scale (5.3-10.2 vs 4.3-12.5) and a textbook
+    // matchup: this team's power play against that team's kill.
+    {label: 'Power Play / Kill',  off: 'pp_pct',          def: 'pk_pct'},
+  ],
+  NCAAB: [
+    {label: 'Points',     off: 'ppg_for',    def: 'ppg_against'},
+    {label: 'Efficiency', off: 'off_rating', def: 'def_rating'},
+  ],
+};
+
+// One row of a matchup: the ball-carrying team's offensive number on the
+// left, the defending team's matching allowed number on the right. Reuses
+// StatCell so the value/rank rendering is identical to a like-for-like row.
+function MatchupStatRow({pair, offRow, defRow}: any) {
+  const [showInfo, setShowInfo] = React.useState(false);
+  const info = STAT_INFO[pair.off] || STAT_INFO[pair.def];
+  const unit = offRow?.unit || defRow?.unit || '';
+  const dp = rowDecimals(offRow?.raw_value, defRow?.raw_value, pair.off);
+  return (
+    <View>
+      <View style={tsStyles.statRow}>
+        {/* no `edge` on either side — see the EDGE COLOURING note above */}
+        <StatCell row={offRow} unit={unit} align="right" decimals={dp}
+                  edge={null} strong={false} />
+        {info ? (
+          <TouchableOpacity style={{flex: 1}} activeOpacity={0.6}
+                            onPress={() => setShowInfo(v => !v)}>
+            <Text style={tsStyles.statLabel} numberOfLines={2}>
+              {pair.label} <Text style={{color: C.accent, fontSize: 10}}>{INFO_GLYPH}</Text>
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={tsStyles.statLabel} numberOfLines={2}>{pair.label}</Text>
+        )}
+        <StatCell row={defRow} unit={unit} align="left" decimals={dp}
+                  edge={null} strong={false} />
+      </View>
+      {showInfo && info ? (
+        <StatInfoRow info={info} onClose={() => setShowInfo(false)} />
+      ) : null}
+    </View>
+  );
+}
+
 function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   const [awayStats, setAwayStats] = React.useState<any[]>([]);
   const [homeStats, setHomeStats] = React.useState<any[]>([]);
   const [side, setSide] = React.useState<'off'|'def'>('off');
+  // Which team has the ball. Defaults to the away side so the first view
+  // matches the away-first column order used everywhere else on the card.
+  const [ball, setBall] = React.useState<'away'|'home'>('away');
   const [loading, setLoading] = React.useState(true);
   const seasonForQuery = Number(season) || new Date().getFullYear();
 
@@ -4408,6 +4544,23 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
     ? (OFFENSE_BY_SPORT[sport] || [])
     : (DEFENSE_BY_SPORT[sport] || []);
 
+  // ── 2026-10-19 · matchup view (B68) ───────────────────────────────────
+  const pairs = MATCHUP_PAIRS[sport] || [];
+  const hasPairs = pairs.length > 0;
+  const offTeam = ball === 'away' ? awayTeam : homeTeam;
+  const defTeam = ball === 'away' ? homeTeam : awayTeam;
+  const offByKey = ball === 'away' ? awayByKey : homeByKey;
+  const defByKey = ball === 'away' ? homeByKey : awayByKey;
+  // Keys no pair consumes still matter — penalties, pace, turnovers,
+  // schedule context — but they are not a contest between two units, so
+  // they keep the like-for-like treatment below the matchup. NCAAF's
+  // yardage lands here because the sport has no yards-allowed columns at
+  // all: offence-vs-offence is the honest reading of it, not a pair.
+  const pairedKeys = new Set(pairs.flatMap(p => [p.off, p.def]));
+  const restKeys = [...(OFFENSE_BY_SPORT[sport] || []),
+                    ...(DEFENSE_BY_SPORT[sport] || [])]
+    .filter((k, i, arr) => arr.indexOf(k) === i && !pairedKeys.has(k));
+
   // Header SP+ overall banner (composite rating)
   const spOvrH = homeByKey['sp_overall'];
   const spOvrA = awayByKey['sp_overall'];
@@ -4478,29 +4631,89 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
         </View>
       )}
 
-      {/* Offense / Defense toggle */}
-      <View style={rsStyles.tabBar}>
-        <TabPill label="Offense" active={side==='off'} onPress={() => setSide('off')} />
-        <TabPill label="Defense" active={side==='def'} onPress={() => setSide('def')} />
-      </View>
+      {/* 2026-10-19 (B68): the sub-tab stops meaning Offense/Defense and
+          starts meaning WHICH TEAM HAS THE BALL, for every sport whose keys
+          actually pair. MLB does not pair (batting vs pitching are different
+          units) and keeps the original toggle. */}
+      {hasPairs ? (
+        <View style={rsStyles.tabBar}>
+          <TabPill label={`${abbrev3(awayTeam)} OFFENSE`} active={ball==='away'}
+                   onPress={() => setBall('away')} />
+          <TabPill label={`${abbrev3(homeTeam)} OFFENSE`} active={ball==='home'}
+                   onPress={() => setBall('home')} />
+        </View>
+      ) : (
+        <View style={rsStyles.tabBar}>
+          <TabPill label="Offense" active={side==='off'} onPress={() => setSide('off')} />
+          <TabPill label="Defense" active={side==='def'} onPress={() => setSide('def')} />
+        </View>
+      )}
 
-      {/* Team header */}
-      <View style={sitStyles.teamHead}>
-        <Text style={sitStyles.teamHeadName}>{abbrev3(awayTeam)}</Text>
-        <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>{abbrev3(homeTeam)}</Text>
-      </View>
+      {hasPairs ? (
+        <>
+          {/* Who is on which side of the ball, so the two columns cannot be
+              mistaken for the usual away | home pair. */}
+          <View style={sitStyles.teamHead}>
+            <Text style={sitStyles.teamHeadName}>{abbrev3(offTeam)} OFF</Text>
+            <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>
+              {abbrev3(defTeam)} DEF
+            </Text>
+          </View>
+          {pairs.map(p => {
+            const o = offByKey[p.off]; const d = defByKey[p.def];
+            const bothEmpty = (!o || o.raw_value == null)
+                           && (!d || d.raw_value == null);
+            if (bothEmpty) return null;
+            return <MatchupStatRow key={p.off} pair={p} offRow={o} defRow={d} />;
+          })}
+          {restKeys.some(k => (awayByKey[k]?.raw_value != null)
+                           || (homeByKey[k]?.raw_value != null)) ? (
+            <View style={{paddingTop: 10}}>
+              {/* These are not a contest between two units — pace and
+                  schedule strength are ADDITIVE, and a stat with no
+                  opponent counterpart has nothing to sit opposite. So they
+                  stay away | home rather than being forced into a "vs". */}
+              <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '700',
+                            letterSpacing: 0.06, paddingBottom: 4}}>
+                BOTH TEAMS · SAME SIDE OF THE BALL
+              </Text>
+              <View style={sitStyles.teamHead}>
+                <Text style={sitStyles.teamHeadName}>{abbrev3(awayTeam)}</Text>
+                <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>
+                  {abbrev3(homeTeam)}
+                </Text>
+              </View>
+              {restKeys.map(k => {
+                const a = awayByKey[k]; const h = homeByKey[k];
+                const bothEmpty = (!a || a.raw_value == null)
+                               && (!h || h.raw_value == null);
+                if (bothEmpty) return null;
+                return <StatRow key={k} statKey={k} awayRow={a} homeRow={h} />;
+              })}
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <>
+          {/* Team header */}
+          <View style={sitStyles.teamHead}>
+            <Text style={sitStyles.teamHeadName}>{abbrev3(awayTeam)}</Text>
+            <Text style={[sitStyles.teamHeadName, {textAlign: 'right'}]}>{abbrev3(homeTeam)}</Text>
+          </View>
 
-      {/* Stat rows — 2026-09-16: hide rows where BOTH teams have no value
-          (raw_value null on both sides). Prevents a stack of "— label —"
-          empty rows on games where CFBD hasn't populated volumetric stats
-          yet. Row still renders if at least one team has data — asymmetric
-          info (e.g., FBS opponent stat vs FCS blank) still surfaces. */}
-      {statKeys.map(k => {
-        const a = awayByKey[k]; const h = homeByKey[k];
-        const bothEmpty = (!a || a.raw_value == null) && (!h || h.raw_value == null);
-        if (bothEmpty) return null;
-        return <StatRow key={k} statKey={k} awayRow={a} homeRow={h} />;
-      })}
+          {/* Stat rows — 2026-09-16: hide rows where BOTH teams have no value
+              (raw_value null on both sides). Prevents a stack of "— label —"
+              empty rows on games where CFBD hasn't populated volumetric stats
+              yet. Row still renders if at least one team has data — asymmetric
+              info (e.g., FBS opponent stat vs FCS blank) still surfaces. */}
+          {statKeys.map(k => {
+            const a = awayByKey[k]; const h = homeByKey[k];
+            const bothEmpty = (!a || a.raw_value == null) && (!h || h.raw_value == null);
+            if (bothEmpty) return null;
+            return <StatRow key={k} statKey={k} awayRow={a} homeRow={h} />;
+          })}
+        </>
+      )}
 
       {loading && <Text style={rsStyles.empty}>Loading…</Text>}
     </View>
