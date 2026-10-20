@@ -6,6 +6,7 @@ and stores it in jerry_cache for the app to read.
 import requests
 import os
 import json
+import re   # 2026-10-20: module-scope, for the POTD lean validator
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
@@ -2738,6 +2739,61 @@ def score_mlb_game(ctx, game_props=None, track=None):
 
     return (headline_score, dimensions)
 
+# ══ 2026-10-20 · A MATCHUP IS NOT A PLAY ══
+#
+# ANDY, on the live POTD: "POTD doesn make sens, it doesn t even ahve a play
+# juts a matchup".
+#
+# He was looking at this, written 11:08 ET today:
+#
+#     game   Boston Celtics @ Detroit Pistons
+#     lean   Boston Celtics @ Detroit Pistons     <- the "play"
+#     narrative  NULL
+#     sweat_score 35
+#
+# POTD is the single most prominent thing in the app and it published a
+# fixture list. Worse, it picked the WEAKEST of the three NBA games
+# (sweat_score 55 against 87 and 81) and recorded a score of 35 that matches
+# no game on the slate.
+#
+# WHY A GUARD AND NOT JUST A FIX TO THE NBA PATH. The lean is assembled in
+# several places (build_lean, score_nba_game, the dimensional override at
+# ~4200, the resolver branch) and every one of them can return None or a
+# bare fragment. jerry_anchor_potd has its own separate composer. Patching
+# whichever one produced today's row leaves the other four able to do it
+# again - the same "a guard one writer honours is a convention, not a lock"
+# lesson the publish-lock comment below was written about.
+#
+# So the WRITE is gated instead: a POTD must name a side or a direction AND
+# carry a market or a number. Anything else is refused and the day is
+# published as an explicit No Play, which is a state the app already renders
+# honestly (see 2026-10-19: "REST DAY - no Play of the Day tonight").
+_POTD_MARKET_TOKENS = re.compile(
+    r'\b(ml|moneyline|ats|rl|run line|puck ?line|spread|over|under|o/u|'
+    r'total|outs|hits|strikeouts|ks|hits allowed|earned runs|er|bb|'
+    r'reception|rush|pass|td|points|rebounds|assists)\b', re.I)
+_POTD_NUMBER = re.compile(r'[+-]?\d+(?:\.\d+)?')
+
+
+def potd_lean_is_a_play(lean, matchup) -> tuple[bool, str]:
+    """True when `lean` names an actual bet. Returns (ok, why_not)."""
+    t = str(lean or '').strip()
+    if not t:
+        return False, 'lean is empty'
+    if ' @ ' in t or ' at ' in t.lower():
+        return False, f'lean looks like a matchup, not a play: {t!r}'
+    if matchup and t.lower() == str(matchup).strip().lower():
+        return False, f'lean is identical to the matchup: {t!r}'
+    has_mkt = bool(_POTD_MARKET_TOKENS.search(t))
+    has_num = bool(_POTD_NUMBER.search(t))
+    if not (has_mkt or has_num):
+        # "Pistons" or "Under" alone - score_nba_game returns exactly these
+        return False, f'lean names no market and no number: {t!r}'
+    if t.lower() in ('over', 'under'):
+        return False, f'direction with no line: {t!r}'
+    return True, ''
+
+
 def score_nba_game(game, nba_teams):
     """Score an NBA game for Play of the Day candidacy — playoff-enhanced"""
     score = 25  # base
@@ -3527,8 +3583,43 @@ def run():
             '_ctx': ctx,
         })
 
+    # 2026-10-20: score_nba_game composes its lean from team ratings and
+    # returns a BARE fragment - 'Pistons', 'Under', or None when the ratings
+    # lookup misses (which is every game on opening night, before any rating
+    # rows exist). nba_game_context.primary_play already carries a complete,
+    # priced play for the same games - "Detroit Pistons +1.5", side HOME,
+    # type rl, line 1.5 - so prefer it and keep the rating-based lean only as
+    # a fallback. Verified on tonight's slate: all three games have one.
+    _nba_pp = {}
+    try:
+        _pr = requests.get(
+            f"{SUPABASE_URL}/rest/v1/nba_game_context",
+            headers=HEADERS,
+            params={'select': '*', 'game_date': f'eq.{today}'}, timeout=15)
+        for _row in (_pr.json() if _pr.status_code in (200, 206) else []):
+            _pp = _row.get('primary_play')
+            if isinstance(_pp, str):
+                try:
+                    _pp = json.loads(_pp)
+                except (ValueError, TypeError):
+                    _pp = None
+            if isinstance(_pp, dict) and _pp.get('label'):
+                _nba_pp[(str(_row.get('away_team')), str(_row.get('home_team')))] = _pp
+    except Exception as _e:                                    # noqa: BLE001
+        print(f"  ⚠ NBA primary_play lookup failed ({_e}) — falling back to ratings lean")
+
     for game in nba_games:
         game_score, nba_lean, nba_lean_type = score_nba_game(game, nba_teams)
+        _pp = _nba_pp.get((str(game.get('away_team')), str(game.get('home_team'))))
+        if _pp:
+            nba_lean = _pp.get('label')
+            nba_lean_type = str(_pp.get('type') or nba_lean_type or 'ml')
+            _conv = _pp.get('conviction')
+            if _conv is not None:
+                # Rank on the same conviction the rest of the app shows,
+                # instead of a ratings heuristic that scored tonight's best
+                # game 35 while the slate carried an 87.
+                game_score = int(_conv)
         candidates.append({
             'sport': 'NBA',
             'home_team': game.get('home_team'),
@@ -4929,6 +5020,35 @@ def run():
             print(f"  ⚠ POTD price resolution threw: {e} — defaulting -110")
         return -110
     potd_odds = _potd_odds_american(pick)
+
+    # ── 2026-10-20 · REFUSE TO PUBLISH A NON-PLAY (see potd_lean_is_a_play) ──
+    _ok, _why = potd_lean_is_a_play(expected_lean, expected_game)
+    if not _ok:
+        print(f"  ✖ POTD REFUSED for {today}: {_why}")
+        print(f"      candidate was {expected_game} (score {pick.get('score')})")
+        print("      publishing an explicit No Play instead - a fixture list "
+              "presented as a play is worse than no play.")
+        try:
+            nr = requests.post(
+                f"{SUPABASE_URL}/rest/v1/daily_best_bet_history"
+                f"?on_conflict=bet_date",
+                headers={**HEADERS, "Content-Type": "application/json",
+                         "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"bet_date": today,
+                      "sport": pick.get('sport'),
+                      "game": None,
+                      "lean": "No Play (discipline pass)",
+                      "narrative": ("No qualified Play of the Day surfaced on "
+                                    "tonight's slate. The gate held rather than "
+                                    "forcing a play."),
+                      "sweat_score": None,
+                      "odds_american": None,
+                      "result": "no-pick"},
+                timeout=15)
+            print(f"      no-play row: {nr.status_code}")
+        except Exception as _e:                                # noqa: BLE001
+            print(f"      ⚠ could not write the no-play row: {_e}")
+        return
 
     # ══ 2026-10-16 · THE PUBLISH LOCK, FINALLY ASKED ══
     # ANDY: "Guardians should of stayed as POTD and it would of won, i want to
