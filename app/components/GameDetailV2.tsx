@@ -4449,6 +4449,27 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
     return m;
   }, [homeStats]);
 
+  // ══ 2026-10-19 · SAY WHICH SEASON THE ROWS ARE FROM, IN EVERY SPORT ══
+  //
+  // The fetch above borrows a prior-season row per stat_key when this season
+  // has none — correct behaviour, and the card already said so… but only on
+  // NCAAF, because the "LAST SEASON" badge lives inside the SP+ banner and
+  // sp_overall is an NCAAF-only key. Every other sport borrows silently.
+  //
+  // That is live tonight. NBA opens 2026-10-21 and its 2026 rows are
+  // sor/sos/sweat_rating ONLY — every four-factor and both points rows come
+  // from season 2025 — so on opening night the card would have shown last
+  // season's numbers with nothing saying so. NCAAB (opens 11-03) is the same
+  // shape.
+  //
+  // Counted rather than asserted: "some figures are old" and "all of them
+  // are" are different claims, and the badge makes the weaker one when that
+  // is what is true. Counted over the keys the card RENDERS, not over
+  // everything fetched — awayByKey also holds sweat_rating, wins and the
+  // sor_/sos_ components, which would inflate both halves of the ratio and
+  // make "n of m figures below" name figures that are not below.
+  // Not a hook, so it can sit after the key lists without touching hook order.
+
   if (!loading && awayStats.length === 0 && homeStats.length === 0) return null;
 
   // Stat groups per sport. All keys resolve to rows in team_stats_rolling
@@ -4561,6 +4582,27 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
                     ...(DEFENSE_BY_SPORT[sport] || [])]
     .filter((k, i, arr) => arr.indexOf(k) === i && !pairedKeys.has(k));
 
+  // Prior-season vintage over the keys actually rendered — see the note above
+  // the early return.
+  const _renderedKeys = hasPairs
+    ? [...pairs.flatMap(p => [p.off, p.def]), ...restKeys]
+    : statKeys;
+  const _vintage = (() => {
+    let borrowed = 0, total = 0, prior = 0;
+    for (const k of _renderedKeys) {
+      for (const r of [awayByKey[k], homeByKey[k]]) {
+        if (!r || r.raw_value == null) continue;
+        total += 1;
+        const s = Number(r.season);
+        if (isFinite(s) && s > 0 && s < seasonForQuery) {
+          borrowed += 1;
+          prior = Math.max(prior, s);
+        }
+      }
+    }
+    return {borrowed, total, prior};
+  })();
+
   // Header SP+ overall banner (composite rating)
   const spOvrH = homeByKey['sp_overall'];
   const spOvrA = awayByKey['sp_overall'];
@@ -4630,6 +4672,27 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
           </View>
         </View>
       )}
+
+      {/* Prior-season vintage, for every sport — see the _vintage note. The
+          NCAAF SP+ banner has its own badge above; this one covers the stat
+          rows themselves, which is what the numbers below actually are. */}
+      {_vintage.borrowed > 0 && _vintage.prior > 0 ? (
+        <View style={{flexDirection: 'row', alignItems: 'center', gap: 6,
+                      paddingBottom: 6}}>
+          <View style={{backgroundColor: C.warnDim, borderRadius: 4,
+                        paddingVertical: 2, paddingHorizontal: 6}}>
+            <Text style={{color: C.warn, fontSize: 9, fontWeight: '700',
+                          letterSpacing: 0.04}}>
+              {_vintage.prior} SEASON
+            </Text>
+          </View>
+          <Text style={{color: C.textDim, fontSize: 10}}>
+            {_vintage.borrowed === _vintage.total
+              ? `not enough games yet — every figure below is ${_vintage.prior}`
+              : `${_vintage.borrowed} of ${_vintage.total} figures below are ${_vintage.prior}`}
+          </Text>
+        </View>
+      ) : null}
 
       {/* 2026-10-19 (B68): the sub-tab stops meaning Offense/Defense and
           starts meaning WHICH TEAM HAS THE BALL, for every sport whose keys
