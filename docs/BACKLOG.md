@@ -3790,3 +3790,67 @@ Backend-only either way - no release needed to change or remove the copy.
 
 Also corrected while there: NBA `return_date` read 2026-10-21, the day AFTER
 the opener, against `season_start` 2026-10-20.
+
+
+### B88 - MODEL RECORD ACROSS SPORTS: spreads and totals lose, moneylines hold - **MEASURED 2026-10-20**
+
+ANDY: "add to list audit of model record across sports". Built
+`audit_model_record.py` and ran it over 1,453 graded `game_read` receipts.
+
+THE POOLED NUMBER HID THE WHOLE STORY. surface_records publishes
+`ALL 792-602-17, 56.8%`, but a moneyline, a spread and a total do NOT share a
+breakeven - flat 52.38% on a spread/total, price-dependent on a moneyline - so
+pooling them produces a rate comparable to nothing. Split:
+
+    sport  market      W-L-P      hit%     ROI@price   breakeven  verdict
+    MLB    ml        201-153-0    56.8%      +19.7%      56.7%    inconclusive
+    MLB    total     230-144-13   61.5%      -17.4%      52.4%    LOSES
+    NCAAF  ml         71-40-0     64.0%       +6.9%      59.8%    inconclusive
+    NCAAF  spread    136-142-3    48.9%      -11.4%      52.4%    LOSES
+    NCAAF  total      14-17-0     45.2%      -15.8%      52.4%    LOSES
+    NFL    ml         26-12-0     68.4%      +10.7%      58.3%    inconclusive
+    NFL    spread     18-23-0     43.9%      -16.2%      52.4%    LOSES
+    NHL    ml         90-68-0     57.0%       -2.7%      57.2%    inconclusive
+    UFC    fight      11-7-0      61.1%       -5.2%      45.2%    n<30
+
+THE PATTERN IS CONSISTENT ACROSS EVERY SPORT WITH VOLUME: the moneyline read
+is positive or break-even; the spread and total reads lose at the price. That
+generalises project_nfl_curated_spread_is_the_leak_1018 (NFL spread 27.1% ROI
+-45.9% while its ML read was +10.7%) from one sport to four.
+
+THE SHARPEST SINGLE LINE IS MLB TOTALS: a 61.5% hit rate on n=374 that returns
+-17.4%. Hitting three in five and still losing a sixth of the stake is the
+juice, and it is the clearest argument in the dataset that a hit rate without a
+price is not a record.
+
+CAVEAT THAT HAS TO TRAVEL WITH THESE NUMBERS: only 582 of 1,453 graded
+receipts carry a price at all (871 unpriced). So every ROI above rests on a
+subset - MLB ml on 76 of 354, MLB total on 60 of 374 - and that subset is not
+known to be random. The hit rates use the full n; the ROIs do not.
+
+NEXT: decide whether the spread/total reads should keep publishing at all, or
+route through the Fade filter (the one football spread edge that survived a
+holdout). That is a product call, not a measurement.
+
+### B89 - two receipts hold raw LLM markdown in their identity columns - OPEN (cannot be repaired)
+
+Found by B88's auditor refusing to classify them. Receipts 9878 and 9879
+(2026-08-02, MLB, game_read, capture_mode=reconstructed) have the model's raw
+output smeared across `market`, `pick_side` AND `pick_label`:
+
+    market      '** ml  \n**side:** home  \n**line:** null  \n**call_text:** cleveland guardians ml ...'
+    pick_side   '** HOME  \n**LINE:** NULL  \n**CALL_TEXT:** CLEVELAND GUARDIANS ML ...'
+
+A parse that split on `**FIELD:**` labels and appended the remainder to every
+field. 9879 carries `result = WIN`, so it counts in the POOLED record while
+being unclassifiable by market.
+
+CANNOT BE FIXED IN PLACE, and that is correct. A PATCH to those columns returns
+HTTP 200 and changes nothing - `trg_freeze_receipt_identity` makes a published
+receipt's identity immutable and only `result` writable. Verified again today.
+The trigger is right; a published pick must not be rewritable.
+
+OPTIONS, both needing a decision: void the two rows (removing one WIN from the
+pooled MLB count), or leave them and accept that two of 1,453 are
+unclassifiable. Volume is negligible; it is recorded so the next person who
+sees the auditor skip them knows why.
