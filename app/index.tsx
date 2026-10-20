@@ -2263,8 +2263,6 @@ const [altLinesLoading, setAltLinesLoading] = useState({});
   // first place, so it goes in the same commit as the replacement.
   // 2026-09-03: dynamic beta notice for The Split (jerry_cache row so we
   // can update message/hide without an App Store ship). Row key is
-  // 'section_note_split' — insert/update via SQL to change.
-  const [splitBetaNotice, setSplitBetaNotice] = useState<{enabled:boolean, message:string, tone?:string} | null>(null);
   // ══ 2026-10-19 · THE FADE replaces The Split ══
   // The Split's record was BLANK: aggregate_daily_records::agg_split carries
   // `if not mlb_gids: return []` and MLB has ended, so surface_records held
@@ -10125,25 +10123,6 @@ setJerryHistory(prev => {
         setSteamSourceRecords(normalized);
       } catch { setSteamSourceRecords([]); }
 
-      // 2026-09-03: dynamic beta notice for the Split section.
-      // jerry_cache row 'section_note_split' — server-controlled so we
-      // can change message or hide notice without an App Store ship.
-      try {
-        const {data: noteRows} = await supabase.from('jerry_cache')
-          .select('data')
-          .eq('cache_key', 'section_note_split')
-          .limit(1);
-        const noteData: any = noteRows && noteRows[0]?.data;
-        if (noteData && noteData.enabled && noteData.message) {
-          setSplitBetaNotice({
-            enabled: true,
-            message: String(noteData.message),
-            tone: String(noteData.tone || 'info'),
-          });
-        } else {
-          setSplitBetaNotice(null);
-        }
-      } catch { setSplitBetaNotice(null); }
 
       // 2026-10-19: The Fade — today's anti-public plays + its running
       // record. Read from the jerry_cache row the generator writes, so the
@@ -17657,18 +17636,21 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                     see if triple / confirmed / lean actually cash. Matches
                     3-col glance idiom used across Ladder / Sharp / Ledger
                     (dividers, big number, small label + secondary line). */}
-                {/* 2026-09-03: Split beta notice — dynamic message from
-                    jerry_cache.section_note_split so we can update the
-                    text (or hide it entirely) without an App Store ship.
-                    Renders above the record card. Enabled flag lets us
-                    turn it off from DB when the section graduates from beta. */}
-                {splitBetaNotice?.enabled && splitBetaNotice?.message ? (
-                  <View style={{backgroundColor:THEME.hrb + '14', borderWidth:1, borderColor:THEME.hrb + '55', borderRadius:12, padding:12, marginBottom:14, flexDirection:'row', alignItems:'center', gap:8}}>
-                    <Text style={{fontSize:14}}>🧪</Text>
-                    <Text style={{color:THEME.text, fontSize:12, fontWeight:'600', flex:1, lineHeight:17}}>{splitBetaNotice.message}</Text>
-                  </View>
-                ) : null}
-
+                {/* ══ 2026-10-20 · THE SPLIT'S BANNER WAS STILL HERE ══
+                    ANDY, three times, while QAing: "the plsit data is still in
+                    the dafe in expo", "the is sports registry not in the fade
+                    that sats data collection ongoing that was formt he split",
+                    "The fade tab was done very sloppy".
+                    He was right. When The Split became The Fade on 10-19 I
+                    replaced the RECORD CARD and left this block in place, so
+                    the tab still rendered the Split's beta notice —
+                    "Data collection ongoing for performance optimization ·
+                    Beta" — straight out of jerry_cache.section_note_split.
+                    Renaming a tab is not converting it.
+                    The jerry_cache row is now retired (enabled=false) so it is
+                    gone for users without a build, and the block is removed so
+                    it cannot come back. splitBetaNotice's state and fetch go
+                    with it. */}
                 {/* ══ 2026-10-19 · THE FADE · replaces the tier record ══
                     The old card showed one bucket (TRIPLE) because the other
                     two were quarantined on 2026-08-31 for running below
@@ -17731,10 +17713,43 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                       ? `Public tickets ≥ ${fadeData.filter.min_public_pct}% on spreads and totals.`
                       : 'Public tickets ≥ 65% on spreads and totals.'}
                   </Text>
+                  {/* ══ 2026-10-20 · THE BACKTEST WAS INVISIBLE ══
+                      ANDY: "Why is the record 1-1 and we dont see the
+                      backtested record".
+                      It WAS rendering - at fontSize 9, muted, italic, under
+                      the filter line - while a 1-1 live record sat above it at
+                      28px. The live record is two games; the backtest is 107.
+                      Showing the smaller number larger is backwards, so the
+                      backtest now gets its own block with the same weight as
+                      the live one.
+                      They stay LABELLED and SEPARATE: the live record counts
+                      only what published from 10-19 forward, and calling a
+                      backtest a record is the retroactive-record mistake. */}
                   {fadeData.backtest ? (
-                    <Text style={{color:THEME.textMuted, fontSize:9, marginTop:4, fontStyle:'italic', lineHeight:14}}>
-                      Backtested {fadeData.backtest.record} ({fadeData.backtest.roi_pct > 0 ? '+' : ''}{fadeData.backtest.roi_pct}%) on {fadeData.backtest.n} football spreads — a backtest, not a live record.
-                    </Text>
+                    <View style={{marginTop:10, paddingTop:10, borderTopWidth:1, borderTopColor:THEME.border}}>
+                      <View style={{flexDirection:'row', alignItems:'baseline', justifyContent:'space-between', marginBottom:4}}>
+                        <Text style={{color:THEME.textMuted, fontSize:9, fontWeight:'800', letterSpacing:0.8}}>
+                          BACKTEST · NOT A LIVE RECORD
+                        </Text>
+                        <Text style={{color:THEME.textMuted, fontSize:9}}>n={fadeData.backtest.n}</Text>
+                      </View>
+                      <View style={{flexDirection:'row', alignItems:'center', gap:14}}>
+                        <Text style={{color:THEME.text, fontSize:20, fontWeight:'800'}}>
+                          {fadeData.backtest.record}
+                        </Text>
+                        <Text style={{color:THEME.textDim, fontSize:12}}>
+                          {fadeData.backtest.hit_rate}% hit
+                        </Text>
+                        <Text style={{color:(fadeData.backtest.roi_pct > 0 ? THEME.win : THEME.loss), fontSize:13, fontWeight:'700'}}>
+                          {fadeData.backtest.roi_pct > 0 ? '+' : ''}{fadeData.backtest.roi_pct}%
+                        </Text>
+                      </View>
+                      {fadeData.backtest.caveat ? (
+                        <Text style={{color:THEME.textMuted, fontSize:9, marginTop:4, lineHeight:13}}>
+                          {fadeData.backtest.caveat}
+                        </Text>
+                      ) : null}
+                    </View>
                   ) : null}
                 </View>
 
