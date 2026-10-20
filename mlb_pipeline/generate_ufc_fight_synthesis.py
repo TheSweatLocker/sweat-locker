@@ -18,6 +18,9 @@ Usage:
 import argparse, os, re, sys
 from datetime import datetime, timedelta, timezone
 
+import json
+import unicodedata
+
 import requests
 from dotenv import load_dotenv
 
@@ -52,7 +55,12 @@ def fetch_upcoming_fights(game_date: str | None = None):
                   'p_round_1,p_round_2,p_round_3,p_round_4,p_round_5,'
                   'conviction_winner,tier_winner,recommended_side,'
                   'edge_method,edge_distance,odds_a_median,odds_b_median,'
-                  'odds_a_best,odds_b_best,ev_recommended_side,ev_tier',
+                  'odds_a_best,odds_b_best,ev_recommended_side,ev_tier,'
+                  # 2026-10-19: needed to stamp the read's price provenance.
+                  # Both verified present in ufc_picks before adding - an
+                  # explicit SELECT naming a missing column 400s, and the
+                  # helper reads that as zero fights and writes no reads.
+                  'odds_book_count,odds_pulled_at',
         'order': 'event_date.asc,fight_order.asc',
         'limit': '100',
     }
@@ -331,9 +339,95 @@ def parse_synthesis(raw: str) -> dict:
             'call_text': call_text}
 
 
-def upsert_read(fight: dict, parsed: dict, struct: dict) -> bool:
-    # Composite game_id for UFC: event_date + fight_order (unique per event)
-    gid = f"ufc_{fight['event_date']}_{fight['fight_order']}"
+# 2026-10-19 · PRICE THE READ. All 103 UFC jerry_reads carried
+# price_american NULL, every event from 08-01 to 10-24, so the read record
+# could never be turned into profit or loss. That is worse here than in any
+# other sport: UFC is a moneyline market, so breakeven MOVES with the price.
+# The read book sits at 13-6 (68.4%) and that number is unevaluable, while
+# the model's own PRIME tier hits 63.2% at an average 1.43 - 69.7% implied -
+# which is a -13.5% ROI. A hit rate without a price is not a record.
+#
+# ufc_picks already holds the odds (odds_{a,b}_median, odds_{a,b}_best,
+# odds_book_count); they were simply never carried onto the read.
+#
+# Stored in AMERICAN because that is what jerry_reads.price_american means
+# everywhere else in this schema, and the surface/ROI code converts from it.
+# ufc_picks stores DECIMAL (verified: 1.11 to 8.00 across 105 rows, no
+# negatives), which is why this converts rather than copying.
+def _decimal_to_american(dec) -> int | None:
+    try:
+        d = float(dec)
+    except (TypeError, ValueError):
+        return None
+    if not (d > 1.0) or d != d:
+        return None
+    return int(round((d - 1.0) * 100)) if d >= 2.0 else int(round(-100.0 / (d - 1.0)))
+
+
+# ══ 2026-10-19 · THE UFC game_id EMBEDS A VOLATILE INDEX ══
+#
+# gid is f"ufc_{event_date}_{fight_order}", and fight_order is NOT stable:
+# ufc_score_card / ufc_resolve_fights assign it as `i + 1` from their own
+# scrape order, so a re-scrape renumbers the card. Caught in the data:
+#
+#   ufc_2026-10-10_8  generated 10-04 18:02   Meerschaert vs Walker
+#   ufc_2026-10-10_7  generated 10-08 19:46   Meerschaert vs Walker
+#
+# One fight, two reads, because the upsert key is (sport, game_id,
+# game_date) and the id moved underneath it. Both got graded and both got
+# priced at +250, so a single fight booked a full unit of loss TWICE.
+# ufc_picks for that date now reads 1,2,4,6,7,9,10,11,12 - the gaps are the
+# renumbering.
+#
+# Changing the game_id scheme would orphan every existing read and every
+# receipt keyed to one, so instead: before writing, look for a read on this
+# DATE whose snapshot names this same pair, and reuse ITS game_id so the
+# upsert updates that row instead of minting a twin. Names identify a fight;
+# an ordinal does not.
+def _existing_gid_for_fight(fight: dict) -> str | None:
+    """game_id of a read already covering this fight on this date, or None."""
+    a, b = fight.get('fighter_a'), fight.get('fighter_b')
+    if not (a and b):
+        return None
+    try:
+        r = requests.get(
+            f'{SUPABASE_URL}/rest/v1/jerry_reads', headers=H_READ,
+            params={'sport': 'eq.UFC',
+                    'game_date': f"eq.{fight['event_date']}",
+                    'select': 'game_id,input_snapshot'}, timeout=15)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+    except Exception:                                          # noqa: BLE001
+        return None
+
+    def _nz(n):
+        n = unicodedata.normalize('NFKD', str(n or ''))
+        n = ''.join(c for c in n if not unicodedata.combining(c))
+        return ''.join(c for c in n.lower() if c.isalnum())
+
+    want = {_nz(a), _nz(b)}
+    for row in rows if isinstance(rows, list) else []:
+        snap = row.get('input_snapshot') or {}
+        if isinstance(snap, str):
+            try:
+                snap = json.loads(snap)
+            except (ValueError, TypeError):
+                continue
+        got = {_nz(snap.get('fighter_a')), _nz(snap.get('fighter_b'))}
+        if '' in got:
+            continue
+        if got == want:
+            return row.get('game_id')
+    return None
+
+
+def upsert_read(fight: dict, parsed: dict, struct: dict,
+                gid: str | None = None) -> bool:
+    # Composite game_id for UFC: event_date + fight_order. fight_order is
+    # volatile (see _existing_gid_for_fight), so the caller may pass the
+    # game_id of a read that already covers this fight.
+    gid = gid or f"ufc_{fight['event_date']}_{fight['fight_order']}"
     pick_side = (fight.get('recommended_side') or '').upper()
     verdict = (parsed.get('call_verdict') or '').upper()
     # jerry_reads doesn't have call_verdict — encode via call_market:
@@ -363,6 +457,25 @@ def upsert_read(fight: dict, parsed: dict, struct: dict) -> bool:
         'prompt_version': PROMPT_VERSION,
         'input_snapshot': struct,
     }
+
+    # The price must be for the side we are BACKING, which on a FADE verdict
+    # is the OPPOSITE of the model's recommended_side - so this keys off
+    # call_side, not recommended_side. Getting that backwards would price a
+    # fade at the favourite's number and flatter every fade in the book.
+    if call_side in ('A', 'B'):
+        _med = fight.get('odds_a_median') if call_side == 'A' else fight.get('odds_b_median')
+        _best = fight.get('odds_a_best') if call_side == 'A' else fight.get('odds_b_best')
+        _am = _decimal_to_american(_med)
+        if _am is not None:
+            payload['price_american'] = _am
+            payload['price_implied'] = round(1.0 / float(_med), 4)
+            payload['priced_at'] = (fight.get('odds_pulled_at')
+                                    or datetime.now(timezone.utc).isoformat())
+            if fight.get('odds_book_count') is not None:
+                payload['price_books_n'] = fight.get('odds_book_count')
+            _am_best = _decimal_to_american(_best)
+            if _am_best is not None:
+                payload['price_best'] = _am_best
     r = requests.post(
         f'{SUPABASE_URL}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
         headers=H_WRITE, json=payload, timeout=20)
@@ -392,7 +505,10 @@ def main(game_date: str | None = None, force: bool = False, limit: int | None = 
     done = 0
     for f in fights:
         if limit and done >= limit: break
-        gid = f"ufc_{f['event_date']}_{f['fight_order']}"
+        # Reuse the game_id of an existing read for this same fight, so a
+        # renumbered card updates that row instead of adding a duplicate.
+        gid = (_existing_gid_for_fight(f)
+               or f"ufc_{f['event_date']}_{f['fight_order']}")
         if not force:
             check = requests.get(
                 f'{SUPABASE_URL}/rest/v1/jerry_reads',
@@ -412,7 +528,7 @@ def main(game_date: str | None = None, force: bool = False, limit: int | None = 
         if not parsed.get('short_read'):
             print(f'  ⚠ {f["fighter_a"]} vs {f["fighter_b"]}: parse missing short')
             continue
-        if upsert_read(f, parsed, struct):
+        if upsert_read(f, parsed, struct, gid=gid):
             v = parsed.get('call_verdict') or '?'; c = parsed.get('conviction') or '?'
             print(f'  ✓ {f["fighter_a"][:16]:<16} vs {f["fighter_b"][:16]:<16} → {v} {c} ({parsed.get("call_text","?")})')
             done += 1

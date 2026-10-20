@@ -191,9 +191,28 @@ def grade_one(read: dict, fight: dict | None) -> str | None:
         except (ValueError, TypeError):
             snap = {}
     side = (read.get('call_side') or '').strip().upper()
-    picked = (snap.get('model_pick_fighter')
-              or (snap.get('fighter_a') if side == 'A' else
-                  snap.get('fighter_b') if side == 'B' else None))
+    # ── 2026-10-19 · GRADE THE SIDE WE PUBLISHED, NOT THE MODEL'S PICK ──
+    #
+    # This preferred snap['model_pick_fighter'], which is ALWAYS the fighter
+    # at ufc_picks.recommended_side. But upsert_read encodes the verdict in
+    # call_side: BACK keeps the model's side, FADE sets the OPPOSITE. So on
+    # every FADE read the grader scored the model's fighter while the app had
+    # published the other one.
+    #
+    # Measured over all 19 graded UFC reads: 4 are FADEs, and ALL FOUR were
+    # stored backwards. The 15 BACK reads were all correct, which is why this
+    # hid for so long - and the error flattered us, because a fade usually
+    # opposes a favourite and the favourite usually wins.
+    #
+    #     stored 13-6  ->  11-8 graded on the side we actually published
+    #
+    # The backed fighter is therefore the snapshot's fighter AT call_side.
+    # model_pick_fighter is only a fallback for a snapshot with no names, and
+    # only when the call was a BACK - otherwise it names the wrong corner.
+    picked = (snap.get('fighter_a') if side == 'A' else
+              snap.get('fighter_b') if side == 'B' else None)
+    if not picked and side and side == str(snap.get('model_pick_side') or '').upper():
+        picked = snap.get('model_pick_fighter')
     won_name = fight.get('fighter_a') if winner == 'A' else                fight.get('fighter_b') if winner == 'B' else None
     if picked and won_name:
         return 'Win' if _same_fighter(picked, won_name) else 'Loss'
