@@ -340,8 +340,12 @@ const _nhlNameKey = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9]
 // in the jerry_reads fetch for why.
 const _jerryFor = (reads: any, game: any) => {
   if (!reads || !game) return null;
+  // 2026-10-20: the plain away@home key was added for NBA, whose ids are
+  // ESPN's and never match an Odds-API hash. Order matters - game.id first,
+  // because an id is unique and team names are not.
   return reads[game.id]
     || reads[`nk:${_nhlNameKey(game.away_team)}@${_nhlNameKey(game.home_team)}`]
+    || reads[`${game.away_team}@${game.home_team}`]
     || null;
 };
 
@@ -5780,23 +5784,38 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // Fixed by aliasing NHL reads under the same punctuation-insensitive
         // away@home key the NHL context map already uses, so both resolve the
         // same way. One extra query, only when NHL reads exist.
-        try {
-          const nhlIds = jRes.data
-            .filter((r: any) => r.sport === 'NHL' && r.game_id)
-            .map((r: any) => r.game_id);
-          if (nhlIds.length) {
-            const {data: nctx} = await supabase
-              .from('nhl_game_context')
+        // 2026-10-20 · NBA HAS THE IDENTICAL PROBLEM, and on opening night
+        // it meant every NBA game card had no write-up at all. Measured
+        // today: nba_game_context.game_id and jerry_reads(NBA).game_id are
+        // ESPN ids (401909088), while selectedGame.id is an Odds-API hash
+        // (2b042ddad3d3...). Zero overlap, so reads[game.id] never hit — the
+        // same shape this NHL block was written for, arriving through the
+        // same door one sport later. Aliased the same way.
+        const _aliasSports: Array<[string, string]> = [
+          ['NHL', 'nhl_game_context'],
+          ['NBA', 'nba_game_context'],
+        ];
+        for (const [sp, tbl] of _aliasSports) {
+          try {
+            const ids = jRes.data
+              .filter((r: any) => r.sport === sp && r.game_id)
+              .map((r: any) => r.game_id);
+            if (!ids.length) continue;
+            const {data: sctx} = await supabase
+              .from(tbl)
               .select('game_id,away_team,home_team')
-              .in('game_id', nhlIds);
-            (nctx || []).forEach((g: any) => {
+              .in('game_id', ids);
+            (sctx || []).forEach((g: any) => {
               const rd = jMap[g.game_id];
               if (rd && g.away_team && g.home_team) {
+                // Both key shapes: the punctuation-insensitive one NHL uses,
+                // and the plain away@home the context maps are keyed by.
                 jMap[`nk:${_nhlNameKey(g.away_team)}@${_nhlNameKey(g.home_team)}`] = rd;
+                jMap[`${g.away_team}@${g.home_team}`] = rd;
               }
             });
-          }
-        } catch (e) { /* alias is best-effort; id lookup still works */ }
+          } catch (e) { /* alias is best-effort; id lookup still works */ }
+        }
         setJerryReads(jMap);
       } else {
         setJerryReads({});
@@ -19073,6 +19092,42 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                            const aRaw = String(selectedGame.away_team||'').toLowerCase();
                            const hRaw = String(selectedGame.home_team||'').toLowerCase();
                            for (const [k, v] of Object.entries(nhlGameContextMap || {})) {
+                             if (!k.includes('@')) continue;
+                             const [ctxAway, ctxHome] = k.split('@');
+                             if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
+                           }
+                           return null;
+                         })())
+                    : gamesSport === 'NBA'
+                      // ══ 2026-10-20 · NBA WAS FALLING THROUGH TO null ══
+                      // ANDY, on opening night: "NBA game card are emty with
+                      // no precitions or write up, also ... we need nba
+                      // surfacing to usrer why isnt it?"
+                      //
+                      // Because this chain stopped at NHL. With ctx null the
+                      // ENTIRE NBA detail screen is empty - predicted score,
+                      // model consensus, money flow, four factors, rest/B2B,
+                      // every ctx-driven section - which is word for word the
+                      // symptom the NHL comment above describes from 09-28.
+                      //
+                      // The data was never the problem. Measured today: all
+                      // three games carry projected_spread, projected_total,
+                      // projected_home_wp, 10k-sim mc_probabilities and Elo,
+                      // and their jerry_reads carry 276-320 char short_reads,
+                      // 598-830 char long_reads AND prices.
+                      //
+                      // nbaCtxMap is keyed by game_id AND away@home (see the
+                      // build), and Odds-API NBA names carry the mascot just
+                      // as nba_game_context stores it, so the direct key
+                      // hits. game_id is tried first because it is unique;
+                      // the substring pass is the same safety net the other
+                      // sports use.
+                      ? (nbaGameContextMap?.[selectedGame.id] ||
+                         nbaGameContextMap?.[`${selectedGame.away_team}@${selectedGame.home_team}`] ||
+                         (() => {
+                           const aRaw = String(selectedGame.away_team||'').toLowerCase();
+                           const hRaw = String(selectedGame.home_team||'').toLowerCase();
+                           for (const [k, v] of Object.entries(nbaGameContextMap || {})) {
                              if (!k.includes('@')) continue;
                              const [ctxAway, ctxHome] = k.split('@');
                              if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
