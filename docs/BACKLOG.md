@@ -4170,7 +4170,7 @@ TWO OPEN QUESTIONS this raises, not yet done:
   graded on those weeks. Do not backfill a current reading onto a past game -
   that is the 10-13 NULL-backfill-with-the-price mistake in another costume.
 
-### B108 - ~400 workflow steps can fail GREEN, and nothing checks the outcome - **PARTLY CLOSED** `97a4c644`
+### B108 - ~400 workflow steps can fail GREEN, and nothing checks the outcome - **CLOSED** `97a4c644` + `916cffee`
 
 Opened by B107, which hid for five weeks behind exactly this. Count of steps
 carrying `continue-on-error: true`:
@@ -4228,12 +4228,49 @@ THREE MISTAKES IT MADE FIRST, kept because each is a trap for the next check:
 3. Weather must be asserted on OUTDOOR rows only, per sport's own column, and
    skipped for MLB/NHL/NBA which have no weather columns at all.
 
-STILL OPEN, which is why this is only PARTLY closed:
-- **Coverage, as distinct from population.** The script proves the rows present
-  are filled; it cannot prove the right NUMBER of rows exist. A slate missing
-  half its games reads clean. That needs each sport's upstream schedule (MLB
-  statsapi, CFBD, the Odds API) and is a separate check.
-- **NHL / NBA / MLB / UFC pipelines** have no hard assertion step yet - only
-  the two football ones and the nightly detector.
-- The ~400 `continue-on-error` steps are untouched. The flag is right; this
-  just means a dark OUTCOME is now visible even when the step lies.
+CLOSED OUT in `916cffee` - Andy: "parlty closed is unaccetable". Both gaps:
+
+**COVERAGE, not just population.** Each next slate is counted against an
+INDEPENDENT upstream schedule - statsapi.mlb.com and api-web.nhle.com
+(keyless), the Odds API for NFL/NCAAF/NBA/NCAAB:
+
+    0 rows while upstream lists games  -> FAIL (the builder did not run)
+    short of upstream                  -> WARN with both counts
+    upstream unavailable               -> said out loud; population still runs
+
+The old "no rows in the window" shrug is now a FAIL when there was a slate to
+build, and still names a real dead week correctly: MLB has no rows today and
+statsapi agrees (ALCS ended 10-19, World Series opens 10-23).
+
+PROVEN, not asserted - pointed at 2026-11-15 where api-web.nhle.com lists 5
+games and nhl_game_context has none:
+    `NHL: nhl_game_context has NO rows for 2026-11-15, but the upstream
+     schedule lists 5 game(s) - the context builder did not run`
+
+**AND COVERAGE'S FIRST VERSION WAS WRONG** - the part worth remembering. It
+reported NHL "3/11 SHORT 8" and NBA "3/2", both artefacts of comparing two
+different populations: our side had started games removed (correct - a started
+game's row can no longer be written), while MLB/NHL upstream counts the whole
+day and **the Odds API drops games once they begin**. A number nobody can act
+on is worse than no number. Coverage now runs only on a slate with nothing
+underway, counts every row held for that date, and where there is no
+start-time column at all (MLB, NBA) it says so rather than printing a figure.
+
+**ALL SIX PIPELINES ASSERT**, every one without continue-on-error: ncaaf, nfl,
+nhl, nba, mlb, ufc. Verified each `--sport` invocation exits 0 as the workflows
+call it.
+
+**UFC needed a different check and got one.** No `*_game_context` exists -
+only `ufc_fight_results`, resolved fights, zero forward rows - so the next
+card's `jerry_reads` are asserted instead. Price is deliberately NOT asserted:
+all 8 forward reads on the 10-24 card are `call_market='pass'`, and a pass
+carries no side and no price by design. The 8-of-8 pass rate is reported as a
+note - that is **B83's symptom**, independently corroborated here, not this
+script's failure.
+
+REMAINING EXPOSURE, stated in the file so a green run is not overread: the
+~400 `continue-on-error` steps are untouched (the flag is right - one scraper
+outage must not kill a slate; what changed is that a dark OUTCOME is now
+visible even when the step lies), and nothing here proves a row's VALUES are
+correct rather than merely present. **A wrong close_spread passes every check
+in this file** - that is B51/B71 territory and a different kind of test.
