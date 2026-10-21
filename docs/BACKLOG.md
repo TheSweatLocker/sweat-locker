@@ -4802,3 +4802,139 @@ Same lesson as the 10-13 ledger backlog, opposite direction (that one skewed
 to WINs). **A record quoted with picks still pending is not a record.** Any
 surface summary should state the pending count beside it, which the perf query
 now does.
+
+---
+
+## 2026-10-21 · RLS, disk IO, and the prop scoring layer
+
+### B1 · **CLOSED — verified stale, and the residual is now safe**
+The grep in the original entry returns nothing: `EXPO_PUBLIC_KENPOM_KEY` and
+`EXPO_PUBLIC_BDL_API_KEY` are gone, and all four balldontlie call sites were
+emptied 09-22 ("I dont pay for it anymore lets just delete it"). The only
+`EXPO_PUBLIC_*` values still bundled are the Supabase URL + anon key and the
+RevenueCat key — all three of which must ship to work.
+
+What made the anon key dangerous was not that it ships, it is that **RLS was
+disabled schema-wide, so it could WRITE**. Closed today — see B118.
+
+### B2 · **CLOSED — verified stale**
+`season: 2025` and the literal `player_ids` went with the BDL removal.
+`fetchPlayerStats` is now a no-op comment block.
+
+### B118 · 🚨 The shipped anon key could rewrite `public_receipts` — **CLOSED**
+RLS was disabled across all 190 public tables. The anon key ships in the app
+bundle and is extractable, and it was not limited to reading: verified from
+outside with that key via DELETE/PATCH filtered to zero rows (nothing
+altered), returning 200 instead of 401 on `public_receipts`,
+`prompt_templates`, `feature_flags`, `sweat_tier_config` and
+`user_note_dispatch_log`.
+
+Anyone with a key pulled from an installed copy could have silently rewritten
+the graded record.
+
+Closed over `20261021c` through `g`: RLS on all 190 tables, read policies
+derived from the client's own `.from()` calls (plus `ufc_picks`, reachable
+only through a SECURITY INVOKER RPC), write-only policies for the two tables
+the client writes and never reads, and the 21 vestigial
+`FOR ALL USING (true)` "write anon" policies dropped — justified by
+measurement: 149 pipeline scripts use the service-role key, exactly 1 used
+the anon key and that was the verifier written to test this.
+
+`verify_rls.py --verify` returns **PASS**: 190/190 RLS, **0 anon-writable
+policies**, 0 client reads broken, all 4 RPCs answering. `get_rls_audit()`
+reports posture from the catalog, because RLS state cannot be read off HTTP
+codes — a zero-row DELETE returns 200 whether RLS denied it or it matched
+nothing.
+
+### B119 · Disk IO budget — top consumer halved, cause was a double read
+Supabase warned of IO budget depletion. `get_io_audit()` (new, read-only,
+service-role only) named it: one shape at **694.69 GiB / 129,297 calls**,
+five times the next.
+
+Cause: `detect_steam` and `detect_rlm_and_limit` each paginated
+`line_history` over the **same sport, same window, same ordering**, ~18 pages
+apiece, and `main()` calls both per sport. 37 poller runs/day x 5 sports x 2
+reads x 18 pages is about 6,660/day, against 129,297 measured — roughly 17
+days. Closes.
+
+Fixed by fetching the window once and sharing it: **18 requests per sport
+where it was 36**, flags identical (21 steam, 1 rlm). Plus 160 MB of
+genuinely duplicate indexes dropped (`20261021k`).
+
+**Three wrong theories, recorded in-file so they are not retried:**
+1. *Missing index* — wrong, `idx_line_history_sport_captured` already
+   existed. I checked what the migrations created, not what the table has.
+   `20261021j`'s index was redundant and `20261021m` drops it.
+2. *Deep OFFSET* — wrong, keyset measured **0.7-0.9x (slower)**: ordering by
+   `id` while filtering `(sport, captured_at)` cannot use that index for
+   both. Reverted. Kept in `market_line._page`, where it measured 0.95x and
+   fixes pagination that had **no ORDER BY at all**.
+3. *Narrow the 6h window to 2h* — wrong, and would have cost product: **94
+   steam flags became 48**. The 15-minute window is not the constraint,
+   having two snapshots per key is, and `write_line_history` only records a
+   line *change*, so a stable line is sparse by design.
+
+**STILL OPEN:** 225 never-scanned indexes (84 MB) — assessable because
+`stats_reset` is NULL so the counters are all-time, but each needs a check
+for a nightly-only caller. And the client's Steam Room fires **30 parallel
+`line_history` queries per visit** (`app/index.tsx:10058`).
+
+### B120 · NHL/NBA props: the enrichment was being thrown away — **FIXED**
+Both boards sat at 100% COVERAGE, conviction 0. `on_conflict` includes
+`prop_line`, so a line move **inserts** a new row; the order is generate then
+backfill then score, so every generator pass orphaned the L5/L10 enrichment.
+L5/L10 was fed on 0 of 420 NHL and 0 of 3,222 NBA rows, while running the
+backfill by hand fed 418/420 immediately.
+
+- `prop_slot_reconcile.py` collapses a slot to its newest row (ungraded +
+  COVERAGE only — 56,569 of NHL's 62,007 rows are graded history). Removed
+  2,252 NBA rows, 49% of its live board. Wired into both workflows
+  **between** generate and backfill.
+- `nba_player_log.py` — NBA's ESPN endpoints return **404**, and that 404 was
+  masking worse: the label fallback would have read **MIN as points**. Now
+  1,756/2,188 NBA rows carry L10.
+
+### B121 · 🚨 Every measurable NHL prop signal loses to its own price — **OPEN (product call)**
+`calibrate_prop_signals.py`, 25,478 graded rows, inside the publishable
+-300..+150 band:
+
+| signal | hit | its b/e | n | edge |
+|---|---|---|---|---|
+| `nhl_prop_l10_extreme` | 59.9% | 60.4% | 3,511 | -0.5 |
+| `nhl_prop_l5_cold` | 59.9% | 60.0% | 2,331 | -0.0 |
+| `nhl_player_l10_extreme` | 58.9% | 61.0% | 2,142 | -2.0 |
+| `nhl_prop_season_hit_pct_high` | 47.1% | 53.5% | 1,919 | -6.4 |
+| `nhl_prop_l5_hot` | 46.2% | 53.3% | 769 | -7.1 |
+
+**Zero VALIDATED.** The registry had been claiming 67-77% on these, because
+it averaged over props nobody would publish (a `points_under` at -650) and
+compared to a flat -110 bar. Three were running at **0.91-0.98 weight**.
+
+Fixed at the mechanism: `signal_registry.baseline_pct` carries the measured
+breakeven and the prop scorer passes it to `edge_weight(baseline=...)`, a
+parameter that existed and no caller had ever used. Result on the same slate:
+**PRIME 64 to 0, STRONG 4 to 0, LEAN 184 to 17.**
+
+Also fixed: `PROP_TIER_THRESHOLDS` demands 4 signals / 3 classes for PRIME,
+but two legacy rules (`l10>=8`, and `l5>=4 and l10>=8`) assigned tiers
+**after** the gate and after the conviction demote. A sampled PRIME had 1
+signal, 1 class, score 0.409 and conviction 67 — failed every criterion.
+Dormant until the enrichment fix switched it on. One structural floor now
+clamps after all promotions; regression-checked at **0 demotions on MLB (97
+props) and NFL (173)**.
+
+**THE OPEN QUESTION IS PRODUCT, NOT CODE:** NHL props have no demonstrable
+edge to publish. Either keep NHL as the graded information board it already
+is, or build genuinely new inputs (TOI, and the goalie/PK data that is
+already collected but read off the prop row where the columns do not exist —
+4 dead signals) and re-measure. NBA carries real depth (3-7 signals a row)
+but its L5/L10 leans on last season until mid-November.
+
+### Next, in order
+1. **B5 — ship a build.** Still no `expo-updates`; a dozen-plus client fixes
+   are queued behind it and it is the only true blocker.
+2. **Calibrate NFL props** — 3,754 graded rows, a live surface, same method.
+   NBA has 0 graded prop rows and cannot be calibrated yet.
+3. **B119 residuals** — the 225 unused indexes and the Steam Room's 30-query
+   client fan-out.
+4. **B121 product call** on NHL props.
