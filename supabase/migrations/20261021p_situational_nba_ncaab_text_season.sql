@@ -88,7 +88,7 @@ WITH all_games AS (
   SELECT
     'MLB' AS sport,
     home_team AS team,
-    season,
+    season::TEXT AS season,
     game_id,
     game_date,
     TRUE AS is_home,
@@ -580,11 +580,13 @@ GRANT EXECUTE ON FUNCTION public.refresh_team_situational_records() TO authentic
 
 COMMENT ON MATERIALIZED VIEW public.team_situational_records_full IS
   'Long-format W-L-P per (sport, team, season, filter, market). SIX sports: '
-  'MLB, NCAAF, NFL and NHL. NHL excludes preseason via game-id type digits. '
-  'NBA and NCAAB are ABSENT on purpose: their season column is text '
-  '(2024-25) while this column is integer, and nba_game_context.season is '
-  'text too, so neither a cast nor a column-type change is correct until that '
-  'is settled. WARNING: every migration here does a FULL CREATE, which '
+  'MLB, NCAAF, NFL, NHL, NBA and NCAAB. season is TEXT for all of them: the '
+  'integer sports emit 2026 as text, which is what PostgREST compares a '
+  'season=eq.2026 query against, and NBA/NCAAB match their native 2026-27 '
+  'label. NHL excludes preseason via game-id type digits; NBA excludes the '
+  'current season preseason via sport_registry.season_start and excludes '
+  'All-Star and international opponents by requiring a nba_team_stats row. '
+  'WARNING: every migration here does a FULL CREATE, which '
   'replaces the whole definition - 20260905a and 20260906c each dropped '
   'NHL/NBA/NCAAB without mentioning them. Count the sports in any new '
   'definition against this list before shipping it.';
