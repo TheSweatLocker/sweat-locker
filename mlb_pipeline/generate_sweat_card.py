@@ -41,6 +41,62 @@ HEADERS = {
 }
 
 
+# ══ 2026-10-20 · B104 · A MARKET MEASURED DEAD WAS STILL ON THE CARD ══
+# ANDY: "Todays Sweat Card NHL spreads, how do we do woth those? why are those
+# p[lays on sweat card".
+#
+# Fair question. Graded from public_receipts at the prices we actually took:
+#
+#     NHL ml      96-74   56.5%   ROI  -4.3%  (124 priced)
+#     NHL rl       5-10   33.3%   ROI -29.7%  ( 14 priced)   <- on the card
+#     NHL total     3-1   75.0%   ROI +33.6%  (  3 priced)
+#
+# The puckline is the worst NHL market we have, and this is not news:
+# project_nhl_rl_market_not_viable_1003 concluded "NHL rl dead on merits" on
+# 10-03, and this composer had no gate anywhere to act on it.
+#
+# ⚠ READ THIS BEFORE ASSUMING THE GATE IS FREE. Measured on rows from 10-10,
+# of NHL primary_play rows that reach PRIME or STRONG - the only tiers the
+# cross-sport builder accepts:
+#
+#     NHL card-eligible picks:  rl 20,  ml 0,  total 0
+#
+# EVERY card-eligible NHL pick is a puckline. Zero NHL moneylines reach
+# PRIME/STRONG. So this gate does not swap NHL onto a better market - it
+# removes NHL FROM THE SWEAT CARD ENTIRELY until the engine starts tiering the
+# market that actually works. That is the deeper defect (the NHL engine tiers
+# its worst market; see project_nhl_picks_no_market_1001 and
+# project_nhl_engine_one_sided_1001) and it is not fixed here.
+#
+# Showing no NHL pick beats showing a -29.7% one, so the gate stands - but it
+# is a product consequence, not a silent cleanup, and it is called out in the
+# commit and to Andy rather than buried.
+#
+# SCOPED TO CARD COMPOSITION, NOT TO PUBLISHING. The Sweat Card is the curated
+# top-8 and already carries rules stricter than the engine's (cap of 4, sides
+# over totals, no NRFI/YRFI without an extreme edge). This is one more: NHL rl
+# is not CARD-eligible. It still generates, still gets a read, still appears in
+# the Steam Room and still accrues a record - which matters, because n=14
+# priced is far too thin to retire a market outright.
+#
+# NBA rl is deliberately NOT gated: 3 of its 4 card-eligible picks are
+# pucklines too, but NBA has no graded prop or side history at all yet, so
+# there is no evidence to gate on. Do not add a sport here without the table.
+#
+# EXIT CONDITION: if the puckline record turns, delete the entry. One constant.
+CARD_INELIGIBLE_MARKETS = {('NHL', 'rl')}
+
+
+def _card_market_blocked(pick):
+    """True when this (sport, market) must not reach the curated card."""
+    sp = str(pick.get('sport') or '').upper()
+    pt = str(pick.get('type') or '').lower()
+    mk = ('rl' if pt in ('rl', 'spread', 'runline', 'puckline')
+          else 'total' if pt in ('total', 'over/under')
+          else 'ml' if pt == 'ml' else pt)
+    return (sp, mk) in CARD_INELIGIBLE_MARKETS
+
+
 def today_et():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
 
@@ -883,6 +939,14 @@ def fetch_football_picks(today: str) -> list:
             # Early-season tier cap
             if today < EARLY_SEASON_TIER_CAP_UNTIL and tier == 'PRIME':
                 tier = 'STRONG'
+            # B104: this is the path NHL game-side picks actually take - the
+            # add() gate below never sees them, so the check has to be here
+            # too. Found by counting add() call sites: only POTD, DotD and
+            # props go through it.
+            if _card_market_blocked({'sport': sport, 'type': pp.get('type')}):
+                print(f"    [card] {sport} {pp.get('type')} not card-eligible "
+                      f"- see CARD_INELIGIBLE_MARKETS")
+                continue
             picks.append({
                 'sport': sport,
                 'game_id': row.get('game_id'),
@@ -1956,6 +2020,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
         # Dedupe by a stable identifier
         key = f"{pick['source_table']}:{pick['source_key']}"
         if key in seen_keys:
+            return False
+        # B104: a market measured dead does not get the curated surface.
+        if _card_market_blocked(pick):
+            print(f'    [card] blocked {pick.get("sport")} '
+                  f'{pick.get("type")} — market not card-eligible '
+                  f'(see CARD_INELIGIBLE_MARKETS)')
             return False
         # Play-signature dedup — same bet should never appear twice even
         # when surfaced by different paths.
