@@ -303,6 +303,19 @@ WITH all_games AS (
                      to_char(sr.season_start + INTERVAL '1 year', 'YY')
       AND r.game_date < sr.season_start
     )
+    -- Exclude games against opponents that are not NBA teams. Measured in
+    -- nba_game_results: Team Stars, Team Stripes and World (Rising Stars /
+    -- All-Star), plus Guangzhou Loong-Lions, Hapoel Jerusalem, Melbourne
+    -- United and Melbourne Pnx (international exhibitions) - 14 games whose
+    -- opponents have no row in nba_team_stats. The All-Star ones are played
+    -- in FEBRUARY, so the preseason gate above cannot catch them, and a
+    -- team's "road underdog ATS" record should not include the All-Star
+    -- game. Keyed on presence in nba_team_stats rather than a name
+    -- blocklist, so a future exhibition opponent is excluded automatically.
+    AND EXISTS (SELECT 1 FROM public.nba_team_stats t
+                 WHERE t.team_name = r.home_team)
+    AND EXISTS (SELECT 1 FROM public.nba_team_stats t
+                 WHERE t.team_name = r.away_team)
   UNION ALL
   SELECT
     'NBA', r.away_team,
@@ -337,6 +350,19 @@ WITH all_games AS (
                      to_char(sr.season_start + INTERVAL '1 year', 'YY')
       AND r.game_date < sr.season_start
     )
+    -- Exclude games against opponents that are not NBA teams. Measured in
+    -- nba_game_results: Team Stars, Team Stripes and World (Rising Stars /
+    -- All-Star), plus Guangzhou Loong-Lions, Hapoel Jerusalem, Melbourne
+    -- United and Melbourne Pnx (international exhibitions) - 14 games whose
+    -- opponents have no row in nba_team_stats. The All-Star ones are played
+    -- in FEBRUARY, so the preseason gate above cannot catch them, and a
+    -- team's "road underdog ATS" record should not include the All-Star
+    -- game. Keyed on presence in nba_team_stats rather than a name
+    -- blocklist, so a future exhibition opponent is excluded automatically.
+    AND EXISTS (SELECT 1 FROM public.nba_team_stats t
+                 WHERE t.team_name = r.home_team)
+    AND EXISTS (SELECT 1 FROM public.nba_team_stats t
+                 WHERE t.team_name = r.away_team)
   UNION ALL
   SELECT
     'NCAAB' AS sport, home_team AS team,
