@@ -150,8 +150,56 @@ def preserve_published(sport: str, table: str, context: dict,
     morning's pick before the lock ever ran.
     """
     gid = context.get('game_id')
-    if not gid or not lock_active(sport):
+    if not gid:
         return False
+    # ══ 2026-10-21 · A RECEIPT IS PUBLICATION. THE CLOCK IS ONLY A PROXY ══
+    # Found by rescoring the NBA slate at 9:30am ET, before NBA's daily lock
+    # hour. lock_active('NBA') was correctly False — picks are still being
+    # formed in the morning — so the rebuild was free to rewrite
+    # primary_play, and on Indiana @ New Orleans it changed the chosen market
+    # from `rl/HOME` to `total/UNDER`.
+    #
+    # Except that pick was ALREADY PUBLISHED. public_receipts row 3005502,
+    # "New Orleans Pelicans +3.5", published 2026-10-19 and still ungraded,
+    # and the jerry_read written 10-20 agreed with it. So a user had been
+    # shown a spread pick for two days while the card silently became a
+    # total — the exact "card and receipt disagree with no record of the
+    # change" failure the 09-21 lock comment describes, arriving through the
+    # one door the lock does not watch.
+    #
+    # The hour-based window assumes publication happens at the lock hour.
+    # Receipts are written by other surfaces on their own schedules, so that
+    # assumption is wrong whenever anything publishes early. A PUBLISHED
+    # RECEIPT IS THE FACT; the clock was only ever standing in for it.
+    #
+    # So the lock is now the OR of the two: locked if the time window says
+    # so, OR if this game already has a receipt. Fails OPEN on a lookup
+    # error — refusing to write because a check failed would be worse than
+    # the drift it prevents.
+    #
+    # SCOPED TO THE CURRENT SLATE, and the number is why. Applied to any
+    # receipt at all, this locked 22 of 33 forward NBA games — a pick
+    # published on Wednesday for a Saturday game would freeze for three days
+    # while lines moved, which is heavier than the hour-based lock it
+    # supplements and would stop the engine improving a pick nobody has seen
+    # today. The failure this fixes is a card a user is looking at NOW
+    # disagreeing with a receipt they were shown; a future slate still has
+    # its normal lock hour ahead of it. So: receipt + game today or earlier.
+    if not lock_active(sport):
+        gd = str(context.get('game_date') or '')[:10]
+        today = _et_now().date().isoformat()
+        if not gd or gd > today:
+            return False          # future slate — normal lock hour governs
+        try:
+            rr = requests.get(
+                f'{supabase_url}/rest/v1/public_receipts', headers=headers,
+                params={'game_id': f'eq.{gid}', 'select': 'id', 'limit': '1'},
+                timeout=10)
+            if rr.status_code != 200 or not rr.json():
+                return False          # genuinely unpublished — writable
+        except Exception:                                  # noqa: BLE001
+            return False
+
     try:
         sel = ','.join([field, *also_keep]) or field
         r = requests.get(f'{supabase_url}/rest/v1/{table}', headers=headers,
@@ -187,10 +235,29 @@ def preserve_published(sport: str, table: str, context: dict,
         new = context.get(field)
         old_lbl = published.get('label') if isinstance(published, dict) else published
         new_lbl = new.get('label') if isinstance(new, dict) else new
-        if old_lbl != new_lbl:
-            print(f"  🔒 {sport} PICK LOCKED — keeping published "
-                  f"'{old_lbl}' (rebuild wanted '{new_lbl}') for {str(gid)[:14]}")
+
+        # ══ 2026-10-21 · APPLY THE LOCK BEFORE ANNOUNCING IT ══
+        # This assignment used to sit AFTER the print below, and the print
+        # carried a lock emoji. On a cp1252 console (Windows, any run without
+        # PYTHONIOENCODING=utf-8) that print raises UnicodeEncodeError, which
+        # jumps to the handler at the bottom — so the lock SILENTLY FAILED
+        # OPEN at the exact moment it had decided to hold a published pick,
+        # and the handler's own warning then crashed on its warning glyph too.
+        #
+        # Caught while verifying the receipt-aware lock above: the traceback
+        # proved the lock had already found the receipt and the published
+        # value, and was one line from applying it.
+        #
+        # Nothing cosmetic may sit between a decision and its application.
+        # The write happens first and the message is best-effort.
         context[field] = published
+        if old_lbl != new_lbl:
+            try:
+                print(f"  [LOCK] {sport} PICK LOCKED - keeping published "
+                      f"'{old_lbl}' (rebuild wanted '{new_lbl}') "
+                      f"for {str(gid)[:14]}")
+            except Exception:                              # noqa: BLE001
+                pass
         for k in also_keep:
             if rows[0].get(k) is not None:
                 context[k] = rows[0][k]
@@ -198,8 +265,11 @@ def preserve_published(sport: str, table: str, context: dict,
     except Exception as e:
         # Never fail the write over the lock. A missed lock costs one
         # overwritten pick; a raised exception costs the whole context row.
-        print(f'  ⚠ {sport} pick-lock check failed ({type(e).__name__}) — '
-              f'write proceeding unlocked')
+        try:
+            print(f'  [WARN] {sport} pick-lock check failed '
+                  f'({type(e).__name__}) - write proceeding unlocked')
+        except Exception:                                  # noqa: BLE001
+            pass
         return False
 
 
