@@ -845,7 +845,7 @@ export default function GameDetailV2({
                    // below the matchup. Saying otherwise is the same drift
                    // the 09-25 note below was written about.
                    hint={MATCHUP_PAIRS[gamesSport]
-                     ? 'offence vs the opponent’s defence · colour = that team’s own percentile · ▲ only on same-side rows · pool size varies by stat'
+                     ? 'offense vs the opponent’s defense · color = that team’s own percentile · rank 1 = best · ▲ only on same-side rows · pool size varies by stat · pace and SOS are neutral, so they carry no color'
                      : '▲ = better matchup side · color = percentile strength · pool size varies by stat'}>
             <TeamStatsCard sport={gamesSport} homeTeam={homeTeam} awayTeam={awayTeam} season={ctx?.season}
                            statsSource={ctx?.stats_source} />
@@ -4578,6 +4578,28 @@ const sitStyles = StyleSheet.create({
 // (ERA/WHIP/K9) are different units; MLB's real matchup is the lineup against
 // the STARTING PITCHER, which PitcherCard already shows. MLB keeps
 // Offense/Defense.
+// ══ 2026-10-21 · SOME STATS HAVE NO GOOD END ══
+// QA: "Color on neutral stats. Pace (and SOS) shouldn't be red or green,
+// since faster isn't 'bad'."
+//
+// Correct. team_stats_rolling stores a `direction` on every stat and offers
+// only 'higher' or 'lower' — there is no 'neutral' — so pace is recorded as
+// higher-is-better and a fast team renders GREEN while a slow one renders
+// RED. Pace is a style, not a quality: the league's best and worst teams both
+// contain fast and slow ones.
+//
+// Strength of schedule is the same shape. A hard schedule is not a virtue or
+// a flaw of the team, it is a fact about its opponents. Strength of RECORD
+// stays coloured, because that one does measure the team.
+//
+// Fixed client-side rather than in the data: `direction` drives rank
+// computation as well as colour, and adding a third value would change how
+// those ranks are produced for every consumer. The rank still means what it
+// always did; it simply stops being painted as praise or blame.
+const NEUTRAL_STATS = new Set<string>([
+  'pace', 'sos', 'sos_margin', 'sos_winpct',
+]);
+
 const MATCHUP_PAIRS: Record<string, Array<{label: string; off: string; def: string}>> = {
   NFL: [
     {label: 'Points',        off: 'points_pg',     def: 'points_allowed_pg'},
@@ -5519,10 +5541,20 @@ function StatCell({row, unit, align, edge, strong, decimals}: any) {
             one. */}
         <Text style={[
           tsStyles.statValue,
-          _pctileColor(row.rank, row.league_size),
+          // 2026-10-21: a neutral stat keeps the default text colour. See
+          // NEUTRAL_STATS — pace and SOS describe style and opposition, not
+          // quality, so painting them green or red asserts a judgement the
+          // number does not carry.
+          NEUTRAL_STATS.has(String(row.stat_key))
+            ? null
+            : _pctileColor(row.rank, row.league_size),
           strong && edge ? {fontWeight: '800' as const} : null,
         ]}>{fmtStatValue(row.raw_value, decimals)}</Text>
-        {edge === 'good' ? (
+        {/* 2026-10-21: the head-to-head triangle marks a BETTER side, which
+            a neutral stat does not have either. Suppressed with the colour so
+            the two channels stay consistent. */}
+        {NEUTRAL_STATS.has(String(row.stat_key)) ? null
+          : edge === 'good' ? (
           <Text style={{color: C.win, fontSize: 10, fontWeight: '800'}}>{'\u25B2'}</Text>
         ) : edge === 'bad' ? (
           <Text style={{color: C.textMuted, fontSize: 10, fontWeight: '800'}}>{'\u25BC'}</Text>
