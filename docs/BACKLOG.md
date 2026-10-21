@@ -3958,7 +3958,7 @@ mounted. Same shape of question as B91 - which chip conditions can fire on a
 real row. Suspect temp/wind/conference fields unpopulated for FBS rows. NEXT:
 same per-field dump for `ncaaf_game_context`.
 
-### B96 - The Fade's loading text still says "reading line drift" - OPEN
+### B96 - The Fade's loading text still says "reading line drift" - **CLOSED** `e5e9d2eb` + `dee1ad2e`
 
 "when it loads when you first clik into the fade the loading things says
 reading line drift (form the split)." Cosmetic, one string, same family as B94.
@@ -3987,14 +3987,14 @@ honest without looking like a gate.
 workign as designed." Not yet checked. Note B93 means any filter verification
 done on NCAAF before `e549ce1f` was testing against a broken game list.
 
-### B100 - NBA line movement has no opening line - OPEN
+### B100 - NBA line movement has no opening line - **CLOSED** `dee1ad2e`
 
 "invertgate no open line in nba line movmeent in game detail, do toher sport
 record opening lines as well?" Second half is the real question: which sports
 actually run `freeze_opening_lines()` into `*_game_context`. NBA likely never
 had the step wired at launch.
 
-### B101 - NBA Recent Schedule is missing ATS and O/U - OPEN
+### B101 - NBA Recent Schedule is missing ATS and O/U - **NOT A BUG, explained** `dee1ad2e`
 
 "Recvent shceudle in NBA is missing ATS and O/U why?" Expect the same cause as
 B100 - no stored closing number to grade against on opening night.
@@ -4274,3 +4274,67 @@ outage must not kill a slate; what changed is that a dark OUTCOME is now
 visible even when the step lies), and nothing here proves a row's VALUES are
 correct rather than merely present. **A wrong close_spread passes every check
 in this file** - that is B51/B71 territory and a different kind of test.
+
+## 2026-10-20 night - B96 / B100 / B101 resolved, and one bug retracted before filing
+
+**B96** was already fixed. "Reading line drift..." exists only in
+`LineMovementTab.tsx`, so unmounting it (`e5e9d2eb`) took the string. The note
+left behind claimed the component's fetches were "still used elsewhere" -
+wrong, nothing renders it, so the dead import is gone too. File kept.
+
+**B100 was real and is two different problems wearing one symptom.** Measured
+on rows from 10-10:
+
+    MLB     open_spread  12/12    open_total  12/12
+    NFL     open_spread 207/207   open_total 207/207
+    NCAAF   open_spread 128/128   open_total 128/128
+    NHL     open_spread   0/118   open_total  83/118
+    NBA     open_spread   0/70    open_total   0/70
+
+- **NBA never wrote one.** The columns exist; `nba_game_context.py` had zero
+  references to them. `preserve_opens()` added, copied from NFL rather than
+  invented, because the naive version fails invisibly: this builder
+  reassembles every row from live event data each run, so a plain
+  `open = close` mirror overwrites the true opener with today's close on every
+  pull and the column looks populated while meaning nothing. Mirrors only into
+  an empty slot, always prefers the stored value, and REFUSES to mirror if the
+  lookup fails - `freeze_opening_lines` silently discards the repair and
+  returns 200, so a bad first write is permanent.
+- **NHL was never missing one.** It records the opener as `open_puckline`;
+  `open_spread` is a dead column there. The strip already fell back to it, but
+  `movedSpread`/`movedTotal`/`movedML` did not, so the "line moved" badge was
+  permanently undefined for NHL and read as "no opener on file".
+
+**B101 is NOT a bug.** Detroit's one regular-season row renders
+`sp=-1.5/won  tot=227.5/over` correctly; the other four are OCTOBER PRESEASON
+games with no closing line, so there is nothing to grade. On the regular
+season's first day, four of every team's last five games are preseason. Ruled
+out along the way: team names match exactly, `seq=1` really is most recent, and
+the season filter does not apply to NBA. Self-resolves - today's slate has a
+line on 3 of 3. The card now names the reason instead of showing five blanks.
+
+### THE RETRACTION, recorded because the shape was convincing
+
+Past NBA dates had `close_spread` on **6 of 59** rows while forward dates were
+full. That looks exactly like a later pull nulling a stored line, and the
+mechanism is real: the builder sends the whole row and the odds feed drops
+games once they start. **Checked before writing it up - no wipe exists.** Every
+one of those rows is `season_type='preseason'`, `nba_game_results` shows the
+same sparse pattern, so they never had a line to lose. MLB/NFL/NCAAF are 100%
+on past dates, NHL 97%. The guard added for opens makes the overwrite
+impossible for open_* regardless.
+
+### B109 - preseason games appear in user-facing L5 records - OPEN, needs a decision
+
+Surfaced by B101. `team_recent_games` has NO `season_type`, and neither
+`nba_game_results` nor `nhl_game_results` carries the column, so preseason
+cannot be excluded from an L5 without ADDING AND BACKFILLING it.
+
+It should be excluded. A preseason game inside a user-facing record is exactly
+what made the NHL record read **100% preseason** on 09-30
+(`project_nhl_preseason_record_930`), and that cost trust. Right now an NBA L5
+is four preseason games and one playoff game from last May.
+
+Not done unilaterally because it is a migration plus a backfill on two results
+tables, and Andy already has 19a waiting. VERIFY once done: an NBA Recent
+Schedule L5 should list only games on or after 2026-10-20.
