@@ -125,6 +125,13 @@ H = {'apikey': SB_KEY, 'Authorization': f'Bearer {SB_KEY}'}
 HORIZON_DAYS = {'NFL': 9, 'NCAAF': 9, 'NCAAB': 9,
                 'MLB': 2, 'NHL': 3, 'NBA': 3}
 
+#: How far ahead each builder actually WRITES rows. A missing row beyond this
+#: is not a gap — it is work that has not happened yet, and must not be
+#: reported as a failure. MLB is 0 because game_context.py takes the ET window
+#: ending 03:59Z tomorrow; football genuinely builds a week out.
+BUILD_HORIZON = {'NFL': 9, 'NCAAF': 9, 'NCAAB': 9,
+                 'MLB': 0, 'NHL': 3, 'NBA': 3}
+
 # Candidate columns per sport. Intersected with the live schema before use.
 #   market   — the number every published pick is priced against
 #   engine   — what the engine decided
@@ -306,7 +313,18 @@ def check_sport(sport: str) -> tuple:
         # that never ran. Now the upstream schedule decides, and an empty table
         # against a real slate is a FAIL: 0 rows read is a wiring error, not a
         # finding.
-        hz = HORIZON_DAYS.get(sport, 7)
+        # ══ 2026-10-21 · PROBE ONLY AS FAR AS THE BUILDER REACHES ══
+        # First run of the coverage branch reported "MLB has NO rows for
+        # 2026-10-23, upstream lists 1 game" — World Series Game 1. True, and
+        # a FALSE ALARM: game_context.py is same-day by construction, so a
+        # game two days out is not missing, it is not built yet. Left as-is
+        # this would have fired every day until the Series started, which is
+        # how a check earns a mute.
+        #
+        # HORIZON_DAYS says how far to LOOK for a slate; BUILD_HORIZON says
+        # how far the builder actually WRITES. Only the second is grounds for
+        # calling a gap a failure.
+        hz = min(HORIZON_DAYS.get(sport, 7), BUILD_HORIZON.get(sport, 7))
         for i in range(hz + 1):
             d = (today + dt.timedelta(days=i)).isoformat()
             up = upstream_count(sport, d)
@@ -470,6 +488,84 @@ def check_ufc() -> tuple:
     return fails, notes
 
 
+#: Feeds that silently going quiet would not show up as a missing COLUMN.
+#: (table, timestamp column, max age in hours, sport or None for cross-sport)
+#:
+#: Ages are deliberately generous — roughly twice the expected cadence — so a
+#: late cron does not trip this. It fires on a feed that has genuinely stopped,
+#: which is the only thing it is for.
+_FEEDS = [
+    ('nba_injuries',       'updated_at',       40, 'NBA'),
+    ('nfl_injuries',       'updated_at',       72, 'NFL'),
+    ('ncaaf_injuries',     'updated_at',       72, 'NCAAF'),
+    ('nba_team_stats',     'updated_at',       72, 'NBA'),
+    ('line_snapshot',      'snapshot_ts',      40, None),
+    ('team_stats_rolling', 'refreshed_at',     72, None),
+    ('jerry_reads',        'generated_at',     40, None),
+    ('signal_registry',    'last_computed_at', 72, None),
+    ('external_picks',     'pulled_at',        60, None),
+]
+
+
+def check_feed_recency(in_season: list) -> tuple:
+    """Has each feed table been WRITTEN recently enough to be trusted.
+
+    ══ 2026-10-21 · POPULATION IS NOT FRESHNESS ══
+    The slate check above proves the rows present are filled in. It cannot
+    prove they are CURRENT, and that gap has now cost twice:
+
+      * nba_injuries went SEVEN DAYS stale while nba_pipeline ran daily, so
+        the card rendered "won't play in Thursday's PRESEASON game" under a
+        regular-season matchup. Every ctx column it feeds was populated, so
+        nothing upstream noticed.
+      * NCAAF weather was dark in CI for five weeks (B107) for the same
+        reason — the step was green, the table had rows, the rows were old.
+
+    Both were invisible because the workflow steps carry continue-on-error AND
+    do not run through run_step.sh, so a failure writes no step_failed
+    heartbeat either. A sweep found 311 steps with that exact shape. Fixing
+    311 steps is not the answer; asking whether the OUTPUT moved is, because
+    one check covers every one of them and every one added later.
+
+    Only in-season sports are asserted — an NHL feed in July is correctly
+    quiet, and a check that fires all summer gets muted by August.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    fails, notes = [], []
+    for table, col, max_h, sport in _FEEDS:
+        if sport and sport not in in_season:
+            continue
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
+                         params={'select': col, 'order': f'{col}.desc',
+                                 'limit': '1'}, timeout=30)
+        if r.status_code != 200:
+            # A 404/400 here means the table or the column is not what this
+            # list claims. That is a defect in the list, and silently skipping
+            # it is how the list rots — say so.
+            notes.append(f'    {table:<20} HTTP {r.status_code} on {col} '
+                         f'— cannot check, fix _FEEDS')
+            continue
+        rows = r.json()
+        if not rows or not rows[0].get(col):
+            notes.append(f'    {table:<20} empty — nothing written ever')
+            continue
+        raw = str(rows[0][col])
+        try:
+            t = dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            notes.append(f'    {table:<20} unparseable timestamp {raw[:24]}')
+            continue
+        age = (now - t).total_seconds() / 3600.0
+        mark = 'ok  ' if age <= max_h else 'STALE'
+        notes.append(f'    {table:<20} {age:7.1f}h old  (limit {max_h}h)  {mark}')
+        if age > max_h:
+            fails.append(f'{table}: last written {age:.0f}h ago, limit {max_h}h '
+                         f'— the step that writes it is failing silently')
+    return fails, notes
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--sport')
@@ -492,8 +588,16 @@ def main() -> int:
         all_fails += fails
         print()
 
+    # Feeds: population above proves rows are filled, this proves they moved.
+    print('feed recency')
+    _ffails, _fnotes = check_feed_recency(sports)
+    for line in _fnotes:
+        print(line)
+    all_fails += _ffails
+    print()
+
     if all_fails:
-        print('*** DARK COLUMNS — something returned early and went green ***')
+        print('*** DARK COLUMNS OR STALE FEEDS — something is failing green ***')
         for f in all_fails:
             print(f'  {f}')
         print('\n  This is the B107 shape. Check the step that writes that '
