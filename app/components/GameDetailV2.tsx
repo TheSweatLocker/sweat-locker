@@ -7732,8 +7732,23 @@ function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
       </View>
     </View>
   );
+  // ══ 2026-10-21 · A HINT MUST DESCRIBE THIS GAME, NOT THE TOPIC ══
+  // QA: "'Rest: 5 days each' marked as a big signal. For an opener, collapse
+  // this to 'Even rest' in neutral gray."
+  // Right. "big NBA signal" is true of rest AS A SUBJECT and false of a game
+  // where both sides had five days. A card that shouts on every game teaches
+  // the reader to stop hearing it - the same reason the Situational chips
+  // carry explicit thresholds and stay silent on an ordinary game. The hint
+  // now describes THIS matchup: the edge when there is one, and plainly
+  // "even rest" when there is not.
   return (
-    <Section title="Rest &amp; B2B" hint="big NBA signal">
+    <Section title="Rest &amp; B2B"
+             hint={(aB2B || hB2B)
+                     ? 'back-to-back — the big one'
+                     : (aRest != null && hRest != null
+                        && Math.abs(Number(aRest) - Number(hRest)) >= 2)
+                       ? `rest edge · ${Math.abs(Number(aRest) - Number(hRest))} days`
+                       : 'even rest — no edge either way'}>
       <View style={{flexDirection: 'row', gap: 8}}>
         {row(awayTeam, aRest, !!aB2B, C.away)}
         {row(homeTeam, hRest, !!hB2B, C.home)}

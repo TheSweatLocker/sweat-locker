@@ -1388,8 +1388,51 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             _tier_after = 'STRONG'
             _edge_reason = ((_edge_reason + ' · ') if _edge_reason else '') +                            'lr_v1 PRIME unproven in NCAAF (5-10, n=15) — capped'
 
-        _sub = (f'Model conviction on {team_short} · {conviction}%'
-                if not _phrase else f'{team_short} · {_phrase}')
+        # ══ 2026-10-21 · THAT NUMBER IS A WIN PROBABILITY, NOT A CONVICTION ══
+        # QA on GSW @ LAL: "Win probability is being used as cover confidence.
+        # 'Model conviction 62%' is the LR win probability. A 62% win
+        # probability is roughly a 4-4.5 point favorite, and -225 implies
+        # about 69%. Your own model is saying the Lakers are overpriced."
+        #
+        # Correct, and the label is the cause. Twenty lines above:
+        #
+        #     conviction = int(round((p if side == 'HOME' else 1 - p) * 100))
+        #
+        # It IS p_win for the picked side, renamed. Calling it "conviction"
+        # invites reading it as strength of the pick, when it is an estimate
+        # of one outcome — and against a price it can mean the OPPOSITE of
+        # strength. The 09-06 note says the rename was for warmth; warmth is
+        # not worth a number that misleads.
+        #
+        # So: say what it is, and where the price is known, print the market's
+        # own number beside it so 62 vs 69 is visible instead of implied. When
+        # our number is below the market's we are backing a side our model
+        # calls short, and the sub-line now says so in words.
+        _imp = None
+        try:
+            _px = (ctx.get('home_ml_close') if pred['suggested_side'] == 'HOME'
+                   else ctx.get('away_ml_close'))
+            if _px is None:
+                _px = (ctx.get('close_home_ml') if pred['suggested_side'] == 'HOME'
+                       else ctx.get('close_away_ml'))
+            if _px is not None:
+                _a = float(_px)
+                if _a != 0:
+                    _imp = int(round((abs(_a) / (abs(_a) + 100.0) if _a < 0
+                                      else 100.0 / (_a + 100.0)) * 100))
+        except (TypeError, ValueError, KeyError):
+            _imp = None
+
+        if _phrase:
+            _sub = f'{team_short} · {_phrase}'
+        elif _imp is None:
+            _sub = f'Model win probability on {team_short} · {conviction}%'
+        elif conviction < _imp - 2:
+            _sub = (f'Model win probability on {team_short} · {conviction}% '
+                    f'vs {_imp}% implied — the market is shorter than we are')
+        else:
+            _sub = (f'Model win probability on {team_short} · {conviction}% '
+                    f'vs {_imp}% implied')
 
         new_pp = {
             'type': 'ml',
