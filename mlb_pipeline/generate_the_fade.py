@@ -98,6 +98,48 @@ TRACKING_MIN_N = 150
 #: against line_history on games captured within 2h of kickoff (NFL 93% exact,
 #: NCAAF 89%). A sport absent here cannot have its spread graded or displayed,
 #: so it is skipped rather than guessed at.
+#:
+#: ══ 2026-10-20 · B97 · "The Fade shoudl be elginble in every sports also" ══
+#: Both signs above INDEPENDENTLY CONFIRMED today by two further methods on the
+#: *_game_results tables, which is worth recording because the sign is the one
+#: thing here that can invert a published pick:
+#:
+#:   method 1, lower MAE wins (expected margin = -cs vs +cs)
+#:   method 2, home win% split by the sign of cs
+#:
+#:     sport    n      MAE -cs / +cs     home win% cs<0 / cs>0   convention
+#:     MLB    2132     3.52 / 3.89       58.0% / 45.5%           HANDICAP  (+1)
+#:     NFL    7338    14.60 / 10.26      35.4% / 67.4%           HOME-MARGIN(-1)
+#:     NCAAF  6546    11.97 / 28.73      78.7% / 29.4%           HANDICAP  (+1)
+#:     NBA    2398    10.85 / 17.51      68.8% / 33.1%           HANDICAP  (+1)
+#:
+#: Both methods agree with each other and with the line_history verification
+#: above. NFL genuinely stores the OPPOSITE convention to every other sport -
+#: project_close_spread_sign_bug_914 called this out and it is still true.
+#:
+#: SO WHY IS MLB/NBA/NHL STILL NOT HERE. The sign is no longer the blocker; the
+#: DIRECTION is. Tonight's money-flow grading (grade_money_flow.py, 2,869
+#: graded splits) measured the fade direction per sport AND per market:
+#:
+#:     MLB   spread  FADE    54-55%, both halves clear   <- the only candidate
+#:     MLB   total   FOLLOW  55-58% FOLLOWING the money  <- opposite direction
+#:     NCAAF spread  FADE    already live
+#:     NCAAF total   nothing at or under breakeven
+#:     NHL/NBA       n < 30, not gradeable at all
+#:
+#: Adding MLB TOTALS to a surface called The Fade would publish the side the
+#: data says to take the other way round. That is not a widening, it is an
+#: inversion with a friendly name. And NHL/NBA cannot be graded yet at all.
+#:
+#: MLB SPREAD (the runline) is the one legitimate addition, and it is blocked on
+#: something mundane: the Fade reads *_game_context, and mlb_game_context
+#: retains only ~28 rows, so its sign cannot be verified on the table this
+#: script actually reads. The results-table sign above is NOT transferable - the
+#: whole reason this constant exists is that two tables in one sport can
+#: disagree. When MLB context retention is fixed, verify there and add
+#: 'MLB': 1.0.
+#:
+#: DO NOT add a sport here from the results-table column alone.
 _HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}
 
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
