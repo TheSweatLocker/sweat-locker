@@ -15055,9 +15055,20 @@ setJerryHistory(prev => {
     // when primary_play isn't populated (non-MLB or pre-ensemble games).
     const tierWt = (t: string) => t==='PRIME'?3:t==='STRONG'?2:t==='LEAN'?1:0;
     // 2026-10-20 B99: was mlbGameContext only — see the note at the top of
-    // this sort. _ppFor is sport-aware and also parses a JSONB string, which
-    // the old getPP did not, so an NFL row storing primary_play as text came
-    // back as a string and every property read undefined.
+    // this sort. _ppFor is sport-aware and also tolerates primary_play
+    // arriving as a JSON string, which the old getPP did not. MEASURED
+    // today: every row on all five tables comes back as an object, so that
+    // branch is defensive only - NOT a bug that was firing. Said precisely
+    // because a comment asserting a measurement nobody took is its own
+    // class of defect here.
+    //
+    // WHAT THE FIX UNLOCKS, counted on rows from 10-14:
+    //   NFL    179 tiered rows (2 PRIME, 10 STRONG, 59 LEAN, 102 COVERAGE)
+    //   NCAAF   80 (37 STRONG, 22 LEAN)
+    //   NHL     82 (11 STRONG, 7 LEAN)
+    //   NBA     25 (4 STRONG, 3 LEAN)
+    // All of it was invisible to this sort, which tied the whole slate at
+    // tierWt 0 and silently fell through to the client score.
     const ppA = _ppFor(a); const ppB = _ppFor(b);
     // Convert ensemble score (0-2+ range) to 0-100 scale for tiebreak sanity
     const scoreA = ppA?.score != null ? Math.round(ppA.score * 50) :
