@@ -15583,9 +15583,31 @@ setJerryHistory(prev => {
   // before click — bare "Chiefs @ Chargers · 4:25pm ET" with no signal.
   // Now looks up the sport's own context map so users see PRIME/STRONG/
   // LEAN + pick label before opening the detail modal.
+  // 2026-10-21 · NBA AND NHL WERE FALLING THROUGH TO AN EMPTY MAP.
+  // The ternary below listed NFL, NCAAF and MLB and ended in `{}`, so on the
+  // NBA and NHL games tabs every card looked up its context in an empty
+  // object and rendered with no tier chip at all — the exact complaint the
+  // 2026-08-31 note above describes for NFL/NCAAF, one layer along. Both
+  // maps exist and are populated (nhlGameContextMap, nbaGameContextMap, two
+  // setters each); they were simply never consulted here.
+  //
+  // Verified in the DB before wiring, because an empty map and absent data
+  // look identical from the card: every upcoming game in all four sports
+  // carries primary_play — NFL 14/14, NCAAF 16/16, NHL 47/47, NBA 33/33.
+  //
+  // Expect badges to stay SPARSE on NBA and NHL even so, and that is
+  // correct rather than a second bug: those tiers are COVERAGE on 46 of 47
+  // NHL and 28 of 33 NBA games, and COVERAGE is not a publishable tier. One
+  // NHL game and five NBA games earn a chip today.
+  //
+  // NCAAB is deliberately absent: there is no ncaabGameContextMap in this
+  // component (zero setters), so adding a branch for it would read an
+  // undefined variable rather than fix anything.
   const sportMap: any =
     gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
     gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
+    gamesSport === 'NHL'   ? (nhlGameContextMap || {}) :
+    gamesSport === 'NBA'   ? (nbaGameContextMap || {}) :
     gamesSport === 'MLB'   ? (mlbGameContext || {}) :
     {};
   // Lookup order: game_id, home_team key, away_team key, then value scan

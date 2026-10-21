@@ -86,7 +86,11 @@ H_W = dict(H, **{'Content-Type': 'application/json',
 # with the one that actually fires, and the registry would describe a signal
 # nobody runs.
 from prop_ensemble_scorer import (  # noqa: E402
-    PROPS_TABLE, _coerce_prop, _CtxProxy, _matches_market, _safe_eval,
+    CTX_TABLE, PROPS_TABLE, _coerce_prop, _CtxProxy, _matches_market,
+    _safe_eval,
+)
+from prop_ctx_resolve import (  # noqa: E402
+    build_ctx_index, derive_side_fields, resolve_ctx,
 )
 from ensemble_scorer import SAMPLE_MIN_N  # noqa: E402
 
@@ -172,6 +176,30 @@ def evaluate(sport: str, guard_from: str,
         'subject_scope': 'in.(prop,player_prop)'})
     print(f'  {len(signals)} enabled prop signals for {sport}')
 
+    # ══ 2026-10-21 · LOAD THE GAME CONTEXT. EMPTY ctx IS NOT "NO SIGNAL" ══
+    # The first version of this evaluated every signal with _CtxProxy({}),
+    # an EMPTY context, so any expression reading ctx.* was false by
+    # construction. It then reported 17 of 25 NFL signals as "never fired on
+    # any graded row", which I nearly wrote up as 17 dead signals. Nine of
+    # them read ctx -- six QB-vs-defense, two weather, one situational -- and
+    # the live scorer resolves ctx for NFL at 271 of 271 props with zero
+    # misses. They were not dead; the measurement was blind.
+    #
+    # prop_ctx_resolve's own docstring names this exact failure: "a caller
+    # that cannot tell an empty context from a resolved one reports 'signal
+    # did not fire' for what is really 'I never had the data'". It is also
+    # the house rule that 0 rows read is a wiring error, not a finding.
+    #
+    # Resolved the same way the scorer does -- by game_id, then by
+    # (date, team) -- and derive_side_fields is applied so own/opponent
+    # orientation matches what the live path sees. How many resolved is
+    # reported, because a calibration run against mostly-missing context
+    # would understate every ctx signal in exactly the same way.
+    ctx_table = CTX_TABLE.get(sport)
+    ctx_rows = _paginate(ctx_table, {'select': '*'}) if ctx_table else []
+    ctx_index = build_ctx_index(ctx_rows)
+    print(f'  {len(ctx_rows)} {ctx_table} rows for context resolution')
+
     params = {'select': '*', 'result': 'in.(Win,Loss)'}
     if guard_from:
         params['player_lookback_updated_at'] = f'gte.{guard_from}'
@@ -199,9 +227,12 @@ def evaluate(sport: str, guard_from: str,
     sig_class: dict = {}
     fired_any = defaultdict(int)
 
+    ctx_how = defaultdict(int)
     for raw in rows:
-        p = _coerce_prop(raw)
-        env = {'ctx': _CtxProxy({}), 'p': p}
+        ctx_row, how = resolve_ctx(ctx_index, raw)
+        ctx_how[how] += 1
+        p = _coerce_prop({**derive_side_fields(ctx_row, raw), **raw})
+        env = {'ctx': _CtxProxy(ctx_row), 'p': p}
         for s in signals:
             if not _matches_market(s, p):
                 continue
@@ -276,7 +307,11 @@ def evaluate(sport: str, guard_from: str,
             'unevaluable': unevaluable.get(key, 0),
             'out_of_band': out_of_band.get(key, 0),
         }
+    print(f'  ctx resolved: by id={ctx_how.get("id", 0)}, '
+          f'by (date,team)={ctx_how.get("team_date", 0)}, '
+          f'MISS={ctx_how.get("miss", 0)}')
     meta = {'rows': len(rows), 'signals': len(signals),
+            'ctx_how': dict(ctx_how),
             'band': band, 'out_of_band_total': sum(out_of_band.values()),
             'fired': len(out), 'split': split,
             'never_fired': [s.get('signal_key') for s in signals
