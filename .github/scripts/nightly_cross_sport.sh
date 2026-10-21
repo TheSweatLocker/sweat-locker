@@ -505,6 +505,26 @@ bash "$RUN_STEP" --label "compute_model_voices.py (independent model panel)" \
 bash "$RUN_STEP" --label "grade_model_panel.py (per-market model weights)" \
   python grade_model_panel.py
 
+# 2026-10-20 · MONEY FLOW WAS THE ONE SIGNAL FAMILY CARRYING NO WEIGHT.
+# Andy asked for the engine to weigh "all of these ad external records, with
+# modney flow data, ATS sitatyionals, cohrots". Models, externals, situational,
+# cohort and team_form were already in signal_registry; money flow was not,
+# and it is the most dangerous family to leave unweighted because its DIRECTION
+# FLIPS BY SPORT (MLB fades the public on spreads, MLB FOLLOWS the money on
+# totals, NCAAF fades on spreads, and nothing works on any moneyline). So this
+# grades both sides per sport/market/bucket and registers whichever one the
+# data chose.
+#
+# Scheduled on the first night it existed rather than run by hand, because
+# "works by hand, in no cron" has now been found eleven times in this repo -
+# five of them today, including the NCAAF weather pull that wrote nothing in
+# CI for five weeks (B107).
+#
+# Detector: a grading pass that finds no qualifying bucket is a legitimate
+# outcome, not a failure, so it must not fail the nightly.
+bash "$RUN_STEP" --detector --label "grade_money_flow.py (money-flow weights)" \
+  python grade_money_flow.py
+
 # 2026-10-02 · TENTH INSTANCE. price_picks.py was run ONCE by hand on 09-24 and
 # never scheduled. Measured tonight: of 160 jerry_reads for 10-02 onward, 145
 # had price_american NULL — ungradeable for ROI, permanently — and the 15 that
