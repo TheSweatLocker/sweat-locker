@@ -2761,21 +2761,29 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
               {/* A panel voice carries the record that earned it the seat, so
                   a weak seat reads as weak instead of as a fifth opinion. */}
               {(r as any)._voiceCorr != null && (
-                <Text style={{color: (r as any)._voiceWeak ? C.textMuted : C.textDim,
-                              fontSize: 7, fontWeight: '700', marginTop: -1}}>
+                <Text numberOfLines={1}
+                        style={{color: (r as any)._voiceWeak ? C.textMuted : C.textDim,
+                                fontSize: 8, fontWeight: '700'}}>
                   {(r as any)._voiceWeak ? 'flat' : `r ${(r as any)._voiceCorr}`}
                 </Text>
               )}
               {/* Same read as another tile: the model stays visible, and the
                   tile says whose number it is repeating. */}
               {_vg.label[String(r.name)] && (
-                <Text style={{color: C.warn, fontSize: 7.5, fontWeight: '800',
-                              letterSpacing: 0.2, marginTop: -1}}>
+                <Text numberOfLines={1}
+                        style={{color: C.warn, fontSize: 8, fontWeight: '800',
+                                letterSpacing: 0.2}}>
                   = {_vg.label[String(r.name)].toUpperCase()}
                 </Text>
               )}
 
-              <Text numberOfLines={2}
+              {/* 2026-10-21: ONE line. numberOfLines={2} is what ALLOWED
+                  the mid-word break Andy saw - it gave RN a second line to
+                  break into when the tile was ~38px wide. With a real
+                  minimum width the value fits on one line, and capping it
+                  at one means a future narrow case truncates cleanly
+                  instead of spelling itself vertically. */}
+              <Text numberOfLines={1}
                     style={[styles.lensMargin,
                             (r as any).smallText && styles.lensMarginSmall,
                             {color: confSplitLabel ? C.textMuted : (missing ? C.textDim : sideColor(mgnSide))}]}>
@@ -9470,7 +9478,15 @@ const styles = StyleSheet.create({
   lens: {
     flexGrow: 0, flexBasis: '31%', minWidth: 88,
     backgroundColor: C.surface2, borderRadius: 6, padding: 7,
-    alignItems: 'center', gap: 3, borderTopWidth: 2,
+    // minHeight + centred content so every tile in a row is the SAME height.
+    // Some tiles carry an extra micro-line (a panel voice's correlation, or
+    // the "= MC" duplicate marker) and some do not, so without a floor the
+    // row came out ragged - which is most of what still reads as "ill
+    // formatted" once the wrapping is fixed. 58 = name 11 + value 15 + one
+    // micro-line 10 + padding 14, so the common case fills it exactly and
+    // nothing jumps when a marker appears.
+    minHeight: 58, justifyContent: 'center',
+    alignItems: 'center', gap: 2, borderTopWidth: 2,
   },
   lensName: {fontSize: 9, fontWeight: '700', color: C.textMuted, letterSpacing: 0.6, textTransform: 'uppercase'},
   lensMargin: {fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums']},
