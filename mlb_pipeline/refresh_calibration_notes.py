@@ -287,14 +287,93 @@ def build_note(sport, records, season_start):
         f'calibrating ({n}/{CALIBRATION_MIN_N})'
 
 
+#: Phrases that mean a banner is making a promise about a FUTURE app build.
+#: A promise like that becomes a lie the moment the build ships, and nothing
+#: server-side can detect that it has.
+_PENDING_BUILD_PHRASES = ('in review for the next app update',
+                          'in the next app update',
+                          'fix is built and in review')
+
+
+def warn_pending_build_banners(rows):
+    """Say every night which banners promise a fix that may already have shipped.
+
+    ══ 2026-10-20 · B87 · THE NBA BANNER WILL BECOME A LIE ══
+    NBA's state_message currently reads "...that fix is built and in review for
+    the next app update." That is true today and false the hour the build
+    ships, and there is NO server-side signal for "the app on Andy's phone now
+    renders NBA cards" - no version telemetry reaches this pipeline.
+
+    So it cannot be automated honestly, and the two tempting options are both
+    wrong:
+      * auto-clearing on a date would remove the one thing NBA users need to
+        know if the build slips
+      * leaving it silent is how a stale promise sits in front of paying
+        users for weeks
+
+    What IS available is refusing to let it be forgotten: this prints a warning
+    every night the phrase is still there, and `--clear-build-promise NBA`
+    does the removal in one command the moment the build lands. A daily nag
+    plus a one-liner beats a checklist nobody reads.
+    """
+    hits = []
+    for row in rows:
+        msg = str(row.get('state_message') or '').lower()
+        if any(ph in msg for ph in _PENDING_BUILD_PHRASES):
+            hits.append(str(row.get('sport')))
+    if hits:
+        print('\n  ⚠ BANNER PROMISES A PENDING BUILD: ' + ', '.join(hits))
+        print('    If that build has shipped, this text is now FALSE to every '
+              'user who reads it.')
+        print('    Clear it with:  python refresh_calibration_notes.py '
+              '--clear-build-promise ' + hits[0])
+    return hits
+
+
+def clear_build_promise(sport, dry_run=False):
+    """Replace a shipped-build promise with the sport's normal banner."""
+    r = requests.get(f'{SB}/rest/v1/sport_registry', headers=H,
+                     params={'select': 'sport,state,state_message,season_start',
+                             'sport': f'eq.{sport}'}, timeout=30)
+    rows = r.json() if r.status_code == 200 else []
+    if not rows:
+        print(f'{sport}: no sport_registry row')
+        return 1
+    cur = str(rows[0].get('state_message') or '')
+    if not any(ph in cur.lower() for ph in _PENDING_BUILD_PHRASES):
+        print(f'{sport}: banner does not promise a build — nothing to clear')
+        return 0
+    print(f'{sport} current : {cur[:120]}')
+    if dry_run:
+        print('  (dry run — not cleared)')
+        return 0
+    # Blank it and let the nightly rebuild write the real calibrating note on
+    # its next pass, rather than inventing replacement copy here.
+    w = requests.patch(f'{SB}/rest/v1/sport_registry', headers=HW,
+                       params={'sport': f'eq.{sport}'},
+                       json={'state_message': None}, timeout=30)
+    print(f'  cleared: HTTP {w.status_code} — the next nightly run writes the '
+          f'normal banner for {sport}')
+    return 0 if w.status_code in (200, 204) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', action='append')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--clear-build-promise', metavar='SPORT',
+                    help='remove a shipped "fix is in review" banner (B87)')
     a = ap.parse_args()
 
     records = page('surface_records', {'select': '*'})
     reg = page('sport_registry', {'select': '*'})
+    # B87: shout about any banner still promising a pending app build.
+    # Checked over EVERY sport, not just the OWNED ones, because the NBA
+    # banner this exists for is deliberately operator-owned and therefore
+    # outside the refresh loop below.
+    warn_pending_build_banners(reg)
+    if a.clear_build_promise:
+        return clear_build_promise(a.clear_build_promise.upper(), a.dry_run)
     targets = [s for s in (a.sport or OWNED)]
     for sport in targets:
         row = next((r for r in reg if r.get('sport') == sport), None)
