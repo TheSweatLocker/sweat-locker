@@ -514,9 +514,22 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
     """Published picks that disagree with the numbers printed beside them."""
     problems = []
     for sport, tbl in _CTX_TABLE.items():
+        # 2026-10-21 DISK IO: was `select=*`, which pulls 334 columns on
+        # mlb_game_context to read eight. Columns are discovered per table
+        # because these tables disagree on ML naming and a phantom column is
+        # a 400 that reads back as an empty slate.
+        _want = ('game_id', 'game_date', 'home_team', 'away_team',
+                 'primary_play', 'projected_spread', 'close_spread',
+                 'home_ml_close', 'away_ml_close',
+                 'close_home_ml', 'close_away_ml')
+        _probe = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_R,
+                              params={'select': '*', 'limit': '1'}, timeout=20)
+        _have = set(_probe.json()[0].keys()) if (
+            _probe.status_code == 200 and _probe.json()) else set()
+        _sel = ','.join(c for c in _want if c in _have) or '*'
         r = requests.get(
             f'{SB}/rest/v1/{tbl}', headers=H_R,
-            params={'select': '*', 'game_date': f'eq.{date}', 'limit': '200'},
+            params={'select': _sel, 'game_date': f'eq.{date}', 'limit': '200'},
             timeout=20)
         if r.status_code != 200:
             continue

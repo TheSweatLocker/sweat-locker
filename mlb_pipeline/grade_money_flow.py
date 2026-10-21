@@ -249,15 +249,56 @@ def main() -> int:
             last[k] = s
     print(f'line_snapshot rows {len(snaps)} · unique (game, market) {len(last)}')
 
+    # ══ 2026-10-21 · DISK IO · SELECT THE COLUMNS, NOT THE TABLE ══
+    # Supabase warned the project was about to deplete its Disk IO budget.
+    # This nightly job was a prime offender: it paged `select=*` over five
+    # context tables AND five results tables. Measured widths —
+    #
+    #     mlb_game_context      28 rows x 334 columns
+    #     mlb_game_results   4,810 rows x 180 columns
+    #     ncaaf_game_results 15,699 rows x  33 columns
+    #     nfl_game_results    7,550 rows x  42 columns
+    #
+    # and the grader reads FOUR fields off a context row (game_id, game_date,
+    # home_team, away_team) and about a dozen off a results row. Every other
+    # column was read from disk, shipped over the wire and discarded.
+    #
+    # Columns are DISCOVERED per table before use, not declared: these tables
+    # genuinely disagree (MLB has home_ml_close, NFL has close_home_ml), and
+    # naming a column PostgREST does not know turns the whole read into a 400
+    # that this code would see as an empty table — the exact failure in
+    # feedback_explicit_select_silent_blanks. One `select=* limit 1` per table
+    # to learn the schema is cheap; paging 180 columns is not.
+    def _cols(table: str) -> set:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
+                         params={'select': '*', 'limit': '1'}, timeout=30)
+        rows = r.json() if r.status_code == 200 else []
+        return set(rows[0].keys()) if rows else set()
+
+    _CTX_WANT = ('game_id', 'game_date', 'home_team', 'away_team',
+                 'close_home_ml', 'home_ml_close',
+                 'close_away_ml', 'away_ml_close')
+    _RES_WANT = _CTX_WANT + ('home_score', 'away_score',
+                             'close_spread', 'close_total')
+
+    def _sel(table: str, want: tuple) -> str:
+        have = _cols(table)
+        keep = [c for c in want if c in have]
+        return ','.join(keep) if keep else '*'
+
     ctx_idx, res_idx, res_gid = {}, {}, {}
     for sport in CTX:
         try:
-            for c in page(CTX[sport], {'select': '*'}, 'game_date.desc'):
+            for c in page(CTX[sport],
+                          {'select': _sel(CTX[sport], _CTX_WANT)},
+                          'game_date.desc'):
                 ctx_idx[(sport, str(c.get('game_id')))] = c
         except RuntimeError as e:
             print(f'  !! ctx {sport}: {e}')
         try:
-            for g in page(RES[sport], {'select': '*'}, 'game_date.desc'):
+            for g in page(RES[sport],
+                          {'select': _sel(RES[sport], _RES_WANT)},
+                          'game_date.desc'):
                 if g.get('home_score') is None:
                     continue
                 res_idx[(sport, nz(g.get('away_team')), nz(g.get('home_team')),
