@@ -1428,6 +1428,51 @@ def backfill_nba_nhl(game_date: str, sport: str, dry_run: bool = False) -> int:
             if cache_key not in recent_cache:
                 recent_cache[cache_key] = []
 
+        # ══ 2026-10-21 · NBA'S ESPN PATH WAS 404 AND HID A WORSE BUG ══
+        #
+        # Same story as the NHL note above, one season later. Both
+        #   site.api.espn.com/.../basketball/nba/athletes            (ids)
+        #   site.api.espn.com/.../nba/athletes/{id}/gamelog          (logs)
+        # return **HTTP 404** (tested 2026-10-21). _espn_player_id returns
+        # None on any non-200 without logging, so every NBA player resolved
+        # to nothing and this job printed "updated 0 props with lookback"
+        # while exiting 0. Measured: L5/L10/season_hit_pct fed on 0 of 3,222
+        # NBA props -- which is why the NBA board cannot score. Of the 20
+        # enabled NBA prop signals, five read these three columns, and the
+        # scorer needs 3+ signals to clear its depth gate.
+        #
+        # AND THE 404 WAS MASKING SOMETHING WORSE than a gap. Below,
+        #   labels_cache[pid] = events[0].get('_labels') or
+        #                       ['points','rebounds','assists']
+        # No event carries '_labels', so labels ALWAYS fell back to that
+        # 3-item list, and _extract_stat resolves a stat by indexing that
+        # list against the stats array. NBA's array is [MIN, FG, FG%, 3PT,
+        # ...], so 'points' would have read index 0 = MINUTES and 'rebounds'
+        # index 1 = a "9-17" shooting string. Had ESPN kept the endpoint
+        # alive, this would have filled the board with confident, wrong
+        # L5/L10 numbers rather than none at all.
+        #
+        # nba_player_log uses the two endpoints that DO work, parses by stat
+        # NAME instead of assumed position, excludes PRESEASON (the gamelog
+        # returns it alongside the regular season, and on opening day that is
+        # 4 of 5 games), and never pools two seasons into one window.
+        if sport == 'NBA':
+            try:
+                from nba_player_log import recent_form as _nba_rf
+            except ImportError:
+                _nba_rf = None
+            cache_key = (pname, stat_field)
+            if cache_key not in recent_cache and _nba_rf is not None:
+                # before_date is the same leak guard the NHL path takes:
+                # without it the window includes the game being predicted and
+                # player_l5_hit_count partly encodes its own outcome
+                # (project_prop_l5_leak_922).
+                _rf = _nba_rf(pname, base, n=10, before_date=game_date)
+                recent_cache[cache_key] = (
+                    [float(x['value']) for x in _rf['rows']] if _rf else [])
+            if cache_key not in recent_cache:
+                recent_cache[cache_key] = []
+
         # Try exact + normalized name lookup
         cache_key = (pname, stat_field)
         if cache_key not in recent_cache:

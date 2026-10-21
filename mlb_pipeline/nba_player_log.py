@@ -1,235 +1,301 @@
 #!/usr/bin/env python3
-"""NBA player lookback — L5/L10/season form for the prop board.
+"""NBA player game logs for prop L5/L10/season lookback.
 
-Reads `nba_player_game_logs` (populated by nba_player_log_ingest.py from ESPN
-box scores) and answers the questions a prop card has to answer:
+Mirrors nhl_player_log.recent_form so backfill_prop_lookback can call either
+the same way.
 
-    how many of the last 10 cleared this line?
-    what is the average, and how volatile?
-    what has this player done against THIS opponent?
-    home vs road?
+══ WHY THIS EXISTS ══
+backfill_prop_lookback's NBA path went through
+    site.api.espn.com/apis/site/v2/sports/basketball/nba/athletes
+for ids and .../athletes/{id}/gamelog for logs. Both return **HTTP 404**
+(tested 2026-10-21, same as the hockey endpoints did on 09-27). A 404 made
+_espn_player_id return None silently, so every NBA player resolved to nothing
+and the job printed "updated 0 props with lookback" while exiting 0. Measured:
+player_l5_hit_count fed on 0 of 3,222 NBA props.
 
-THE LEAK GUARD IS NOT OPTIONAL
-------------------------------
-`before_date` excludes the game being predicted and everything after it, and
-the filter runs BEFORE the slice, not after. Slicing first and filtering after
-silently returns fewer than n games — or, worse, includes the game whose
-outcome you are trying to predict.
+AND THE 404 WAS HIDING SOMETHING WORSE. The caller set
 
-This is the same defect that invalidated every MLB prop PRIME number before
-2026-09-22: the L5 lookback included the game being scored, the published
-record read +21.6% ROI, and the clean number was -6.5%. It had to be fixed by
-hand in nhl_player_log.py afterwards. Building it in from the start here.
+    labels_cache[pid] = events[0].get('_labels') or ['points','rebounds','assists']
 
-Callers that are scoring a slate MUST pass before_date=<slate date>. The
-functions do not default to "today" on purpose — a silent default is how a
-leak gets reintroduced.
+No event carries '_labels', so labels always fell back to that 3-item list,
+and _extract_stat resolves a stat by INDEXING that list against the stats
+array. NBA's array is [MIN, FG, FG%, 3PT, ...], so 'points' would have read
+index 0 = MINUTES, 'rebounds' index 1 = a "9-17" field-goal string. Had the
+endpoint worked, the board would have filled with confident, wrong L5/L10
+numbers instead of none. Parsing here is by NAME, never by assumed position.
 
-    python nba_player_log.py --player "Jayson Tatum" --prop points --line 26.5
+══ WHAT WORKS, VERIFIED 2026-10-21 ══
+  ids : sports.core.api.espn.com/v3/sports/basketball/nba/athletes
+        ?limit=1000&active=true  -> 754 athletes, one call, full names + ids
+  log : site.web.api.espn.com/apis/common/v3/sports/basketball/nba/
+        athletes/{id}/gamelog  -> labels, names, events{id:{gameDate,...}},
+        seasonTypes[].categories[].events[].stats
+
+══ PRESEASON IS EXCLUDED, DELIBERATELY ══
+The gamelog returns seasonTypes for BOTH '2026-27 Regular Season' and
+'2026-27 Preseason'. On 2026-10-21, opening day, Wembanyama's log held 1
+regular-season game and 4 preseason games. Lumping them gives an "L5" that is
+80% preseason -- different rotations, different minutes, meaningless for a
+prop line. A season label does not exclude preseason
+(feedback_season_filter_does_not_exclude_preseason); the seasonType
+displayName is what separates them, so that is what is matched.
+
+══ WHAT THIS CANNOT DO ══
+NBA's regular season opened 2026-10-21. Until roughly mid-November there are
+not 5, let alone 10, regular-season games to look back on, so L5/L10 will be
+thin or empty no matter how correct this module is. It returns FEWER rows
+rather than padding with preseason, and the caller's compute_lookback already
+drops a prop whose l10 is None. That is the honest behaviour: an empty
+lookback gates a prop for missing data, a fabricated one prices a bet.
 """
 from __future__ import annotations
-import argparse, collections, os, statistics, sys
-from pathlib import Path
+
+import os
+import re
+from typing import Optional
 
 import requests
 
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-_HERE = Path(__file__).parent
-_env = _HERE / '.env'
-if _env.exists():
-    for _l in _env.read_text(encoding='utf-8').split('\n'):
-        if '=' in _l and not _l.startswith('#'):
-            k, v = _l.split('=', 1)
-            os.environ.setdefault(k.strip(), v.strip())
+UA = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.espn.com/'}
 
-SB = os.environ['SUPABASE_URL']
-KEY = os.environ['SUPABASE_KEY']
-H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
-TABLE = 'nba_player_game_logs'
+_ATHLETES = ('https://sports.core.api.espn.com/v3/sports/basketball/nba/'
+             'athletes')
+_GAMELOG = ('https://site.web.api.espn.com/apis/common/v3/sports/basketball/'
+            'nba/athletes/{pid}/gamelog')
 
-# prop_type -> the column(s) that produce its value. Combos are summed, which
-# is how the books define them (PRA = points + rebounds + assists).
-PROP_COLUMNS = {
-    'points': ('points',),
-    'rebounds': ('rebounds',),
-    'assists': ('assists',),
-    'threes': ('fg3m',),
-    'steals': ('steals',),
-    'blocks': ('blocks',),
-    'turnovers': ('turnovers',),
-    'pra': ('points', 'rebounds', 'assists'),
-    'pr': ('points', 'rebounds'),
-    'pa': ('points', 'assists'),
-    'ra': ('rebounds', 'assists'),
-    'stocks': ('steals', 'blocks'),
+# prop_type family (suffix already stripped) -> the semantic name ESPN uses in
+# the gamelog's `names` array, or a composite marker handled below.
+STAT_FIELD = {
+    'pts': 'points', 'points': 'points',
+    'reb': 'totalRebounds', 'rebounds': 'totalRebounds',
+    'ast': 'assists', 'assists': 'assists',
+    'stl': 'steals', 'steals': 'steals',
+    'blk': 'blocks', 'blocks': 'blocks',
+    'threes': 'threePointFieldGoalsMade',
+    'threes_made': 'threePointFieldGoalsMade',
+    'turnovers': 'turnovers', 'to': 'turnovers',
+    'minutes': 'minutes', 'min': 'minutes',
+    'pra': '_pra', 'pr': '_pr', 'pa': '_pa', 'ra': '_ra',
 }
 
+_NAME_INDEX: dict = {}
+_LOG_CACHE: dict = {}
 
-def _norm_prop(prop_type: str) -> str:
-    t = str(prop_type or '').strip().lower()
-    t = t.replace('player_', '')
+
+def _norm(name: str) -> str:
+    s = (name or '').lower().strip()
+    s = s.replace('.', '').replace("'", '').replace('-', ' ')
+    for suf in (' jr', ' sr', ' ii', ' iii', ' iv', ' v'):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return ' '.join(s.split())
+
+
+def build_name_index() -> dict:
+    """{normalised full name: espn id}. One call, cached for the process.
+
+    Built from the roster listing rather than a fuzzy search, for the reason
+    nhl_player_log documents: a search endpoint happily returns the WRONG
+    athlete, and a wrong athlete produces a plausible series for the wrong
+    player, which is worse than no series.
+    """
+    if _NAME_INDEX:
+        return _NAME_INDEX
+    try:
+        r = requests.get(_ATHLETES, headers=UA,
+                         params={'limit': 1000, 'active': 'true'}, timeout=40)
+        if r.status_code != 200:
+            return _NAME_INDEX
+        items = (r.json() or {}).get('items') or []
+    except Exception:
+        return _NAME_INDEX
+    dupes = 0
+    for it in items:
+        pid = it.get('id')
+        full = it.get('fullName') or (
+            f"{it.get('firstName', '')} {it.get('lastName', '')}".strip())
+        if not (pid and full):
+            continue
+        key = _norm(full)
+        if key in _NAME_INDEX and _NAME_INDEX[key] != pid:
+            # Two active players normalise to the same name. Refuse rather
+            # than pick: a coin-flip here attributes one player's form to
+            # another. Mark it so resolve_player returns None.
+            _NAME_INDEX[key] = None
+            dupes += 1
+            continue
+        _NAME_INDEX[key] = pid
+    if dupes:
+        print(f'  [nba_player_log] {dupes} ambiguous name(s) left '
+              f'unresolvable rather than guessed')
+    return _NAME_INDEX
+
+
+def resolve_player(name: str) -> Optional[str]:
+    idx = build_name_index()
+    return idx.get(_norm(name))
+
+
+def _num(raw) -> Optional[float]:
+    """ESPN gives '34', '7.7', or made-attempted like '0-4'. For a
+    made-attempted field only the MADE half is the prop stat."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s in ('', '-', '--'):
+        return None
+    if '-' in s and not s.startswith('-'):
+        s = s.split('-', 1)[0]
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _fetch_log(pid: str) -> Optional[dict]:
+    if pid in _LOG_CACHE:
+        return _LOG_CACHE[pid]
+    try:
+        r = requests.get(_GAMELOG.format(pid=pid), headers=UA, timeout=30)
+        data = r.json() if r.status_code == 200 else None
+    except Exception:
+        data = None
+    _LOG_CACHE[pid] = data
+    return data
+
+
+def recent_form(player_name: str, prop_type: str, season_year: int = 0,
+                n: int = 10,
+                before_date: Optional[str] = None) -> Optional[dict]:
+    """-> {rows:[{value, opp, home, date}], season_used, field} or None.
+
+    `rows` is most-recent-first, matching nhl_player_log.
+
+    before_date (YYYY-MM-DD) is the LEAK GUARD and keeps only games played
+    strictly before it. Without it the window includes the game being
+    predicted, so player_l5_hit_count partly encodes its own outcome -- the
+    MLB prop L5 leak (project_prop_l5_leak_922), which there moved PRIME from
+    -9.3% to +21.6% ROI. A row with no usable date is DROPPED when the guard
+    is set: an undated game cannot be proven to precede the one being
+    predicted, and keeping it is how the guard leaks anyway.
+
+    The slice comes after the filters, so the window is n USABLE games rather
+    than whatever survives n raw ones.
+    """
+    base = (prop_type or '').lower()
     for suf in ('_over', '_under'):
-        if t.endswith(suf):
-            t = t[: -len(suf)]
-    aliases = {'pts': 'points', 'reb': 'rebounds', 'ast': 'assists',
-               'fg3m': 'threes', 'three_pointers': 'threes', '3pt': 'threes',
-               'stl': 'steals', 'blk': 'blocks', 'to': 'turnovers',
-               'points_rebounds_assists': 'pra',
-               'points_rebounds': 'pr', 'points_assists': 'pa',
-               'rebounds_assists': 'ra'}
-    return aliases.get(t, t)
-
-
-def fetch_log(player_name: str = None, player_id: str = None,
-              before_date: str = None, limit: int = 400) -> list[dict]:
-    """Raw rows for one player, newest first, strictly before `before_date`.
-
-    The date bound is applied in the QUERY, so a leaked row cannot reach the
-    caller even if the caller forgets to filter.
-    """
-    if not (player_name or player_id):
-        raise ValueError('need player_name or player_id')
-    params = {'select': '*', 'order': 'game_date.desc', 'limit': limit}
-    if player_id:
-        params['player_id'] = f'eq.{player_id}'
-    else:
-        params['player_name'] = f'eq.{player_name}'
-    if before_date:
-        params['game_date'] = f'lt.{str(before_date)[:10]}'
-    r = requests.get(f'{SB}/rest/v1/{TABLE}', headers=H, timeout=60, params=params)
-    if r.status_code not in (200, 206):
-        return []
-    return r.json()
-
-
-def _value(row: dict, cols) -> float | None:
-    tot = 0.0
-    for c in cols:
-        v = row.get(c)
-        if v is None:
-            return None            # a missing component makes the combo unknown
-        tot += float(v)
-    return tot
-
-
-def recent_form(prop_type: str, player_name: str = None, player_id: str = None,
-                n: int = 10, line: float = None, before_date: str = None,
-                opponent: str = None, home: bool = None,
-                rows: list = None) -> dict | None:
-    """L-n form for a player/prop. Pass before_date when scoring a slate.
-
-    `rows` lets a caller fetch once and compute several windows without
-    re-querying; it must already be newest-first and date-bounded.
-    """
-    key = _norm_prop(prop_type)
-    cols = PROP_COLUMNS.get(key)
-    if not cols:
-        return None
-    log = rows if rows is not None else fetch_log(
-        player_name=player_name, player_id=player_id, before_date=before_date)
-    if not log:
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    field = STAT_FIELD.get(base)
+    if not field:
         return None
 
-    # FILTER FIRST, THEN SLICE. Reversing these two lines is the leak.
-    elig = log
-    if before_date:
-        bd = str(before_date)[:10]
-        elig = [g for g in elig
-                if str(g.get('game_date') or '')[:10] and
-                str(g.get('game_date'))[:10] < bd]
-    if opponent:
-        elig = [g for g in elig
-                if g.get('opponent_abbrev')
-                and str(g['opponent_abbrev']).upper() == opponent.upper()]
-    if home is not None:
-        # is_home arrives with migration 20261004a and is NULL until a row has
-        # been re-ingested. bool(None) is False, so a naive comparison
-        # classified EVERY game as a road game and made the home split vanish
-        # while the road split silently reported the full season. A column we
-        # do not have must yield NO answer, never a wrong one.
-        elig = [g for g in elig
-                if g.get('is_home') is not None
-                and bool(g['is_home']) == bool(home)]
+    pid = resolve_player(player_name)
+    if not pid:
+        return None
+    data = _fetch_log(pid)
+    if not data:
+        return None
 
-    vals, mins, dates = [], [], []
-    for g in elig[:n]:
-        v = _value(g, cols)
-        if v is None:
+    names = [str(x) for x in (data.get('names') or [])]
+    events_meta = data.get('events') or {}
+
+    def _idx(semantic: str) -> Optional[int]:
+        """Index of a semantic field in the stats array, BY NAME.
+
+        ESPN writes combined fields as 'threePointFieldGoalsMade-
+        threePointFieldGoalsAttempted', so an exact match misses the one we
+        want; a prefix match on the made half is correct and still unique.
+        """
+        if semantic in names:
+            return names.index(semantic)
+        for i, nm in enumerate(names):
+            if nm.split('-', 1)[0] == semantic:
+                return i
+        return None
+
+    def _val(stats: list, semantic: str) -> Optional[float]:
+        i = _idx(semantic)
+        if i is None or i >= len(stats):
+            return None
+        return _num(stats[i])
+
+    COMPOSITE = {'_pra': ('points', 'totalRebounds', 'assists'),
+                 '_pr': ('points', 'totalRebounds'),
+                 '_pa': ('points', 'assists'),
+                 '_ra': ('totalRebounds', 'assists')}
+
+    # Rows are collected PER SEASON, never pooled across seasons.
+    #
+    # The gamelog can carry several seasonTypes at once -- on 2026-10-21
+    # Wembanyama's held only '2026-27 Regular Season' while Jokic's also held
+    # '2025-26 Regular Season'. Matching every label containing "regular
+    # season" and appending into one list silently mixes October 2026 games
+    # with March 2026 ones and calls the result "L5". Prior-season fallback is
+    # legitimate -- nhl_player_log does exactly that when the current season
+    # is empty -- but only if it is one season at a time and the caller is
+    # TOLD which, so old form is never captioned as current.
+    per_season: dict = {}
+    for st in (data.get('seasonTypes') or []):
+        label = str(st.get('displayName') or '')
+        # Regular season ONLY. See the preseason note in the module docstring.
+        if 'regular season' not in label.lower():
             continue
-        vals.append(v)
-        if g.get('minutes') is not None:
-            mins.append(float(g['minutes']))
-        dates.append(str(g.get('game_date'))[:10])
-    if not vals:
-        return None
+        rows = per_season.setdefault(label, [])
+        for cat in (st.get('categories') or []):
+            for ev in (cat.get('events') or []):
+                stats = ev.get('stats') or []
+                if field in COMPOSITE:
+                    parts = [_val(stats, p) for p in COMPOSITE[field]]
+                    value = None if any(p is None for p in parts) else sum(
+                        parts)
+                else:
+                    value = _val(stats, field)
+                if value is None:
+                    continue
+                meta = events_meta.get(str(ev.get('eventId'))) or {}
+                gdate = str(meta.get('gameDate') or '')[:10]
+                if before_date:
+                    if not re.match(r'^\d{4}-\d{2}-\d{2}$', gdate):
+                        continue
+                    if gdate >= before_date:
+                        continue
+                rows.append({
+                    'value': value,
+                    'date': gdate or None,
+                    'opp': ((meta.get('opponent') or {}) or {}).get(
+                        'abbreviation'),
+                    'home': (meta.get('atVs') == 'vs'),
+                })
 
-    out = {
-        'prop': key, 'n': len(vals), 'values': vals, 'dates': dates,
-        'avg': round(statistics.mean(vals), 2),
-        'median': round(statistics.median(vals), 2),
-        'sd': round(statistics.pstdev(vals), 2) if len(vals) > 1 else 0.0,
-        'min': min(vals), 'max': max(vals),
-        'avg_minutes': round(statistics.mean(mins), 1) if mins else None,
-    }
-    if line is not None:
-        over = sum(1 for v in vals if v > float(line))
-        push = sum(1 for v in vals if abs(v - float(line)) < 1e-9)
-        out.update({'line': float(line), 'hit_over': over,
-                    'hit_under': len(vals) - over - push, 'push': push,
-                    'hit_over_pct': round(100 * over / len(vals), 1)})
-    return out
-
-
-def full_profile(prop_type: str, line: float, player_name: str = None,
-                 player_id: str = None, before_date: str = None,
-                 opponent: str = None) -> dict:
-    """Every lens the prop card shows, from ONE fetch."""
-    log = fetch_log(player_name=player_name, player_id=player_id,
-                    before_date=before_date)
-    kw = dict(prop_type=prop_type, line=line, before_date=before_date, rows=log)
-    prof = {
-        'player': player_name or player_id,
-        'games_available': len(log),
-        'l5': recent_form(n=5, **kw),
-        'l10': recent_form(n=10, **kw),
-        'season': recent_form(n=400, **kw),
-        'home': recent_form(n=400, home=True, **kw),
-        'road': recent_form(n=400, home=False, **kw),
-    }
-    if opponent:
-        prof['vs_opp'] = recent_form(n=400, opponent=opponent, **kw)
-    return prof
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--player', required=True)
-    ap.add_argument('--prop', default='points')
-    ap.add_argument('--line', type=float)
-    ap.add_argument('--before')
-    ap.add_argument('--opponent')
-    a = ap.parse_args()
-
-    prof = full_profile(a.prop, a.line, player_name=a.player,
-                        before_date=a.before, opponent=a.opponent)
-    print(f'\n=== {prof["player"]} · {_norm_prop(a.prop)} '
-          f'{"@ " + str(a.line) if a.line is not None else ""} ===')
-    print(f'    {prof["games_available"]} games in the log'
-          f'{" strictly before " + a.before if a.before else ""}\n')
-    print('%-8s %4s %7s %7s %6s %6s %8s %s'
-          % ('window', 'n', 'avg', 'median', 'sd', 'mins', 'over%', 'recent'))
-    for k in ('l5', 'l10', 'season', 'home', 'road', 'vs_opp'):
-        f = prof.get(k)
-        if not f:
+    # Newest season that actually has games wins; no pooling. Labels sort
+    # correctly as strings because they are '2026-27 Regular Season' style.
+    for label in sorted(per_season, reverse=True):
+        rows = per_season[label]
+        if not rows:
             continue
-        print('%-8s %4d %7.2f %7.2f %6.2f %6s %8s %s'
-              % (k, f['n'], f['avg'], f['median'], f['sd'],
-                 f['avg_minutes'] if f['avg_minutes'] is not None else '-',
-                 f'{f["hit_over_pct"]}%' if 'hit_over_pct' in f else '-',
-                 f['values'][:8]))
-    print()
-    return 0
+        # Most-recent-first, then slice. Dateless rows sort last so a usable,
+        # dated game is never dropped for one we cannot place in time.
+        rows.sort(key=lambda r: (r['date'] or ''), reverse=True)
+        rows = rows[:n]
+        if rows:
+            return {'rows': rows, 'season_used': label, 'field': field}
+    return None
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    import sys
+    nm = sys.argv[1] if len(sys.argv) > 1 else 'Victor Wembanyama'
+    pt = sys.argv[2] if len(sys.argv) > 2 else 'pts_over'
+    bd = sys.argv[3] if len(sys.argv) > 3 else None
+    print(f'index size: {len(build_name_index())}')
+    print(f'{nm} -> id {resolve_player(nm)}')
+    out = recent_form(nm, pt, n=10, before_date=bd)
+    if not out:
+        print('no rows')
+    else:
+        print(f"field={out['field']}")
+        for r in out['rows']:
+            print(f"   {r['date']}  {r['value']:>6}  "
+                  f"{'vs' if r['home'] else '@'} {r['opp']}")
