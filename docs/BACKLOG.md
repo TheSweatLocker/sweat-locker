@@ -4169,3 +4169,39 @@ TWO OPEN QUESTIONS this raises, not yet done:
   10-03 and 10-17 (171 games) will never have it, so the wind lens cannot be
   graded on those weeks. Do not backfill a current reading onto a past game -
   that is the 10-13 NULL-backfill-with-the-price mistake in another costume.
+
+### B108 - ~400 workflow steps can fail GREEN, and nothing checks the outcome - OPEN
+
+Opened by B107, which hid for five weeks behind exactly this. Count of steps
+carrying `continue-on-error: true`:
+
+    mlb_pipeline.yml        140 of 177
+    nfl_pipeline.yml         69 of  88
+    ncaaf_pipeline.yml       55 of  66
+    nba_pipeline.yml         37 of  39
+    ncaab_pipeline.yml       32 of  44
+    nhl_pipeline.yml         32 of  36
+    daily_card.yml           10 of  19
+    ufc_pipeline.yml         11 of  22
+    multisport_line_poller    7 of  11
+    mlb_grade_overnight        6 of  10
+    mlb_oddscrowd_refresh      5 of   9
+
+The flag itself is right - one scraper outage must not kill a slate. The gap is
+that **nothing downstream checks whether the step actually wrote anything**, so
+a step that returns early is indistinguishable from one that succeeded.
+`workflow_heartbeat` answers "did the workflow run", which was green through all
+five weeks of B107, and says nothing about what any step produced.
+
+The sweep for B107's exact shape came back CLEAN, and that is worth recording:
+26 scripts return early on a missing key, and in every other case the key gates
+the ONLY path (an LLM call needs ANTHROPIC_API_KEY, an odds pull needs
+ODDS_API_KEY), so returning is correct. The weather pair was unique in having a
+keyless PRIMARY source behind a key-gated guard. So the remaining exposure is
+not "guards in the wrong place" - it is **no outcome assertions**.
+
+PROPOSED, not built: one freshness assertion per sport per night, run after the
+pipeline, that checks the handful of columns a slate cannot ship without
+(close_spread, kickoff_utc, temp on outdoor games, primary_play) and reports
+row counts, not exit codes. Cheap, and it is the only thing that would have
+caught B107 on 09-26 instead of 10-20.
