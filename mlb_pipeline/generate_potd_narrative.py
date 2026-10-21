@@ -337,26 +337,82 @@ def build_mlb_prompt(potd):
     return "\n".join(parts)
 
 
+_SPORT_CTX_TABLE = {
+    'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
+    'NCAAB': 'ncaab_game_context', 'NFL': 'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+}
+
+
+def _load_sport_ctx(potd) -> dict:
+    """Fetch the real context row for a non-MLB POTD.
+
+    ══ 2026-10-21 · THE NBA POTD'S FACTS BLOCK WAS BASEBALL ══
+    QA caught the 10-21 POTD claiming Toronto "consistently exploited
+    opponents over their last five games" on the SECOND DAY of the season.
+    Those games do not exist. It is the same hallucination class as the
+    fictitious head coach and invented DVOA that build_football_prompt was
+    written for on 09-13 — and it happened because NBA never got that
+    treatment, in two compounding ways.
+
+    First, build_prompt routed everything except MLB/NFL/NCAAF to a fallback
+    whose own comment said "minimal fallback (still tighten later)". It handed
+    the model two team names, a pick and a score, then asked for
+    "sport-specific metrics" — a vacuum, filled from training-data recall.
+
+    Second, and worse, potd["context"] is built MLB-shaped regardless of
+    sport. Dumped for the 10-21 NBA POTD it held:
+
+        away_pitcher, away_sp_xera, home_pitcher, home_sp_xera,
+        nrfi_score, temperature, venue,
+        projected_spread = None, projected_total = None
+
+    Baseball fields on a basketball game, and the two numbers that ARE
+    sport-neutral were both null. So even the hardened prompt would have been
+    given nothing to cite. Tightening the prompt alone would have produced a
+    narrative with no content rather than one with invented content.
+
+    This loads the sport's own row by team + date and returns the real
+    numbers. Returns {} on any failure — the caller merges, so a miss leaves
+    the facts block thinner but never wrong.
+    """
+    sport = (potd.get('sport') or '').upper()
+    tbl = _SPORT_CTX_TABLE.get(sport)
+    game = potd.get('game') or {}
+    home, away = game.get('home_team'), game.get('away_team')
+    if not tbl or not home or not away:
+        return {}
+    gd = str(game.get('commence_time') or '')[:10]
+    try:
+        q = (f"{SB}/rest/v1/{tbl}?select=*"
+             f"&home_team=eq.{urllib.parse.quote(str(home))}"
+             f"&away_team=eq.{urllib.parse.quote(str(away))}")
+        if gd:
+            q += f"&game_date=eq.{gd}"
+        rows = json.loads(urllib.request.urlopen(
+            urllib.request.Request(q, headers=H_READ), timeout=15).read())
+        return rows[0] if rows else {}
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
 def build_prompt(potd):
     sport = (potd.get("sport") or "MLB").upper()
     if sport == "MLB":
         return build_mlb_prompt(potd)
-    if sport in ("NFL", "NCAAF"):
-        return build_football_prompt(potd, sport)
-    # Other sports: minimal fallback (still tighten later)
-    game = potd.get("game") or {}
-    home = game.get("home_team") or "Home"
-    away = game.get("away_team") or "Away"
-    lean = potd.get("leanDisplay") or "Model Edge"
-    score = potd.get("score") or {}
-    return (
-        f"You are Jerry, sports analyst for The Sweat Locker app.\n"
-        f"Write 2-3 sentences explaining the Play of the Day.\n\n"
-        f"Sport: {sport}\nGame: {away} @ {home}\nPlay: {lean}\n"
-        f"Sweat Score: {score.get('total', 'N/A')}/100\n\n"
-        f"Rules: Use sport-specific metrics only. Lead with bold play title. "
-        f"End with a one-line conviction stamp."
-    )
+    # 2026-10-21: EVERY sport now goes through the hardened builder. The
+    # "minimal fallback (still tighten later)" that used to live here gave the
+    # model a vacuum and got "their last five games" on day 2 of the NBA
+    # season. The builder's football-specific facts are all conditional on ctx
+    # keys, so a basketball game simply omits roof/temp/wind.
+    #
+    # The sport's REAL context is merged in first, because potd["context"] is
+    # MLB-shaped for every sport (see _load_sport_ctx).
+    merged = dict(potd)
+    real = _load_sport_ctx(potd)
+    if real:
+        merged['context'] = {**(potd.get('context') or {}), **real}
+    return build_football_prompt(merged, sport)
 
 
 def build_football_prompt(potd, sport):
@@ -415,6 +471,32 @@ def build_football_prompt(potd, sport):
     if ctx.get("temp") is not None: facts.append(f"Temp: {ctx['temp']}°F")
     if ctx.get("wind") is not None: facts.append(f"Wind: {ctx['wind']} mph")
     if ctx.get("div_game"): facts.append("Division game: yes")
+    # 2026-10-21 · sport-neutral facts, so basketball and hockey have
+    # something REAL to argue from instead of an empty block. All conditional:
+    # a sport without the column simply contributes nothing.
+    if ctx.get("home_net_rating") is not None and ctx.get("away_net_rating") is not None:
+        facts.append(f"Net rating — {home}: {ctx['home_net_rating']}, "
+                     f"{away}: {ctx['away_net_rating']}")
+    if ctx.get("home_pace") is not None and ctx.get("away_pace") is not None:
+        facts.append(f"Pace — {home}: {ctx['home_pace']}, {away}: {ctx['away_pace']}")
+    if ctx.get("elo_home") is not None and ctx.get("elo_away") is not None:
+        facts.append(f"Elo — {home}: {ctx['elo_home']}, {away}: {ctx['elo_away']}")
+    if ctx.get("home_rest_days") is not None and ctx.get("away_rest_days") is not None:
+        facts.append(f"Rest days — {home}: {ctx['home_rest_days']}, "
+                     f"{away}: {ctx['away_rest_days']}")
+    for _side, _team in (("home", home), ("away", away)):
+        _out = ctx.get(f"{_side}_starters_out")
+        if isinstance(_out, list) and [x for x in _out if x]:
+            # These ARE citable player names: they come from the context row,
+            # not from the model. Rule 1 below allows only names in this block.
+            facts.append(f"{_team} starters OUT: {', '.join(x for x in _out if x)}")
+        _imp = ctx.get(f"{_side}_injury_impact")
+        if _imp not in (None, 0):
+            facts.append(f"{_team} scoring lost to players listed OUT: "
+                         f"{_imp} ppg")
+    if ctx.get("sweat_score") is not None:
+        facts.append(f"Sweat score: {ctx['sweat_score']}")
+
     # Cohort / confluence
     tags = ctx.get("cohort_tags") or []
     if tags: facts.append(f"Cohort tags: {', '.join(tags)}")
@@ -442,6 +524,18 @@ STRICT RULES — violating any of these ships a broken card:
    the pick (confluence lens, cohort tag, market side) — do not invent supporting narrative.
 6. Numbers you cite MUST appear verbatim in the FACTS block. If you can't ground a claim in
    a listed fact, cut the claim.
+7. NEVER describe recent form, streaks, or "last N games" unless a record or streak appears
+   in the FACTS block. This rule exists because a live POTD claimed a team had "consistently
+   exploited opponents over their last five games" on the SECOND DAY of the season, when no
+   such games existed. If the block lists no form data, the team has no form you may cite.
+8. NEVER describe a venue, crowd, travel or altitude effect that is not a listed fact.
+9. A listed stat that FAVOURS THE OTHER SIDE may not be presented as support for the pick.
+   Compare the two numbers before citing one. The first run of this prompt wrote "a -4.3 net
+   rating anchors this pick" when the opponent's was -1.7 — i.e. it dressed the WORSE number
+   as the reason. If the strongest listed facts favour the other side, say what the pick
+   actually rests on (the confluence lenses, the market, the price) or write a shorter,
+   flatter read. An honest thin read beats a confident wrong one.
+10. Never repeat a word immediately ("60 conviction conviction level"). Read the sentence back.
 
 FORMAT:
 - Lead with the pick in bold: **{lean}**
