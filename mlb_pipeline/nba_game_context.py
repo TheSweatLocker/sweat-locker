@@ -321,14 +321,53 @@ def compute_sweat_score(projected_spread, close_spread, confluence_net,
     """0-100 composite. Ported from ncaab_game_context so basketball
     scores the same way in both leagues; NFL/NCAAF carry the same shape.
 
-    close_spread is home-perspective NEGATIVE = home favored, and
-    projected_spread is positive = home favored, so the edge is their
-    SUM. This is the convention that has been inverted three separate
-    times in this codebase — do not "simplify" it to a subtraction.
+    ══ 2026-10-21 · THE SUM WAS WRONG FOR NBA, AND IT INVERTED THE SCORE ══
+    This docstring used to read: "close_spread is home-perspective NEGATIVE =
+    home favored, and projected_spread is positive = home favored, so the edge
+    is their SUM ... do not simplify it to a subtraction."
+
+    The first half is right. The second half is FALSE FOR NBA, and the warning
+    made it worse by telling the next reader not to touch it.
+
+    This function says it was "ported from ncaab_game_context", and for NCAAB
+    the sum IS correct: ncaab computes projected_spread = adj_em_gap / 3.0,
+    positive = home favored (ncaab_game_context.py:168), opposite to
+    close_spread, so adding them cancels when model and market agree.
+
+    NBA does not use that writer. It takes projected_spread from
+    nba_elo.elo_to_spread, whose own docstring is explicit — "Convert Elo diff
+    to home-perspective spread. NEGATIVE = home fav" — and which returns
+    `-diff / ELO_PER_POINT`. Verified by calling it: with the Lakers at home on
+    1574.2 against Golden State on 1480.9 it returns -7.7, i.e. the HOME team
+    favoured by 7.7. So on NBA both columns use the SAME convention and the
+    edge is their DIFFERENCE. The port copied the formula and the warning
+    without re-checking NBA's own elo module.
+
+    WHAT IT DID, measured across every NBA row holding both columns:
+
+        GSW @ LAL   ps -7.7  cs -6.5   sum 14.2 -> +25     true 1.2 -> +6
+        CHI @ TOR   ps -9.6  cs -9.5   sum 19.1 -> +25     true 0.1 -> +0
+        HOU @ SAS   ps -7.4  cs -7.5   sum 14.9 -> +25     true 0.1 -> +0
+        ATL @ ORL   ps -3.6  cs -3.5   sum  7.1 -> +25     true 0.1 -> +0
+
+        46% of rows scored TOO HIGH, several by the full 25 points.
+
+    It is not merely inflated, it is INVERTED: the games where the model and
+    the market agree most closely - where there is no edge at all - collected
+    the MAXIMUM edge score, while genuine disagreements (IND @ NO, ps -6.9 vs
+    cs +3.5, a real 10.4-point gap) were scored as small.
+
+    CHI @ TOR above was the 2026-10-21 Play of the Day.
+
+    The sum stays correct for NCAAB and must not be changed there. NFL already
+    subtracts and says why ("both nflverse convention, so subtract").
     """
     score = 45
     if projected_spread is not None and close_spread is not None:
-        edge = abs(float(projected_spread) + float(close_spread))
+        # DIFFERENCE, because NBA's projected_spread and close_spread share the
+        # negative-is-home convention. See the note above before changing this,
+        # and check nba_elo.elo_to_spread rather than trusting either comment.
+        edge = abs(float(projected_spread) - float(close_spread))
         if edge >= 4.0:
             score += 25
         elif edge >= 3.0:

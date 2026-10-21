@@ -2467,7 +2467,40 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
   })() : [
     // Fallback for NHL / NBA / NCAAB / UFC — keep MC slot since those
     // sports may still populate mc_probabilities via their own simulators.
-    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    //
+    // ══ 2026-10-21 · THE V3 TILE NAMED THE WRONG TEAM ON NBA ══
+    // QA on GSW @ LAL: the tile read "GSW 7.7" while Jerry's read said the
+    // model projects the Lakers at -7.7. Jerry was right and the TILE was
+    // wrong.
+    //
+    // This grid renders a margin as
+    //     abbrev3(r.m > 0 ? home_team : away_team)
+    // i.e. POSITIVE = HOME. That holds for NFL/NCAAF, whose projected_spread
+    // is written positive-is-home. It does NOT hold for NBA:
+    // nba_elo.elo_to_spread returns `-diff / ELO_PER_POINT` and says so in
+    // its own docstring — "Convert Elo diff to home-perspective spread.
+    // NEGATIVE = home fav." Called directly with the Lakers at home on 1574.2
+    // against Golden State on 1480.9, it returns -7.7, meaning the HOME team
+    // by 7.7.
+    //
+    // So on every NBA game this tile has been naming the OPPOSITE team, and
+    // on a card where the pick is the home side it reads as the model
+    // contradicting the pick when it agrees with it.
+    //
+    // Normalised here rather than at the renderer so the "positive = home"
+    // contract the whole grid depends on stays true for every row that
+    // reaches it. The constant is per sport and deliberately explicit:
+    // do not add a sport to it without checking that sport's own writer,
+    // which is how this got wrong in the first place.
+    //
+    // NHL is left at +1 and NOT assumed: its projected_spread comes from a
+    // different writer, its puckline is a fixed +/-1.5 so the spread tile is
+    // secondary there, and no measurement has settled it yet. Left as-is on
+    // purpose rather than guessed at.
+    {name: 'v3',
+     m: (ctx?.projected_spread == null ? null
+         : Number(ctx.projected_spread) * (gamesSport === 'NBA' ? -1 : 1)),
+     t: ctx?.projected_total},
     // ══ 2026-09-29 · THE NUMBER THE PICK IS BUILT ON WAS INVISIBLE ══
     // Andy: "Jerry write ups are bad." Once the NHL read lookup was fixed the
     // reads became reachable, and MTL @ TOR read: "The model has Toronto at
