@@ -17101,18 +17101,61 @@ setJerryHistory(prev => {
                             <Text style={{color:THEME.textMuted,fontSize:11,fontWeight:'700',letterSpacing:0.5}}>{sfc.label.toUpperCase()}</Text>
                             <Text style={{color:THEME.textDim,fontSize:9,backgroundColor:THEME.surfaceAlt,paddingHorizontal:5,paddingVertical:1,borderRadius:4}}>{sfc.badge}</Text>
                           </View>
-                          <Text style={{color: hitColor, fontSize: thinSample ? 15 : 24, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:28}}>
-                            {!d.hasData ? '—' : thinSample ? `n=${dN}` : `${d.hitPct.toFixed(0)}%`}
+                          {/* ══ 2026-10-20 · B98 · ANDY INVITED THE ARGUMENT ══
+                              "YEah as mentioned dont love the bbuidling sampel
+                              thoguths? dont be afreaid to figth abck on this
+                              just dont love it peronally."
+
+                              SO HERE IS THE FIGHT, AND HE IS HALF RIGHT.
+
+                              THE RULE STAYS. A rate on a thin sample is noise
+                              wearing a verdict's clothes: at n=16 a 2SE band is
+                              about +/-25pp. Right now the withheld rates
+                              include 37%, 36% and 46% on 27-28 picks. Printing
+                              those big and coloured would tell a paying user
+                              that a surface is bad when we simply have not
+                              measured it, and that is the opposite of "we show
+                              the receipts". The n>=30 floor is not negotiable
+                              and it is the same floor the engine uses.
+
+                              HE IS RIGHT ABOUT THE PRESENTATION, AND THE SCALE
+                              OF IT IS THE ARGUMENT. 128 of 352 tiles with data
+                              - 36% - currently replace their hero number with
+                              "n=29 / building sample". A third of the Receipts
+                              tab reads as unfinished, and "building sample"
+                              sounds like we have not started. Worse, it is a
+                              CLIFF: 16-13 at n=29 shows a non-number, then one
+                              more graded pick flips it to a confident "55%".
+                              Nothing about the evidence changed.
+
+                              THE FIX IS TO CHANGE WHICH NUMBER IS THE HERO,
+                              not to lower the floor. The record IS data - 16-13
+                              is a fact, fully honest at any n, and it never
+                              overstates. So a thin tile leads with the RECORD
+                              at full size and says what unlocks the rate. The
+                              tile looks finished because it IS finished; there
+                              is just no rate yet. And the cliff goes away,
+                              because the record was always the thing on both
+                              sides of it.
+                          */}
+                          <Text style={{color: hitColor, fontSize: thinSample ? 20 : 24, fontWeight:'800', letterSpacing:-0.4, fontVariant:['tabular-nums'], lineHeight:28}}>
+                            {!d.hasData ? '—'
+                              : thinSample ? `${d.wins}-${d.losses}`
+                              : `${d.hitPct.toFixed(0)}%`}
                           </Text>
                           {thinSample && (
                             <Text style={{color:THEME.textDim,fontSize:9,marginTop:-2}}>
-                              building sample
+                              {`rate at ${30 - dN} more`}
                             </Text>
                           )}
                           <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'baseline',marginTop:4}}>
                             <Text style={{color:THEME.textMuted,fontSize:11,fontVariant:['tabular-nums']}}>
+                              {/* B98: on a thin tile the record is now the hero
+                                  above, so repeating it here would print the
+                                  same number twice. Show the sample size
+                                  instead - it is the thing the hint refers to. */}
                               {d.hasData
-                                 ? `${d.wins}-${d.losses}`
+                                 ? (thinSample ? `${dN} graded` : `${d.wins}-${d.losses}`)
                                  : (isPreLaunch(receiptsSport)
                                     ? '0-0'
                                     : (sfc.key === 'ladder' || sfc.key === 'ledger' ? 'v1.1' : 'no data'))}
