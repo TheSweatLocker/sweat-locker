@@ -7745,17 +7745,49 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
       const homeAbbr = ctx?.home_abbrev; const awayAbbr = ctx?.away_abbrev;
       const abbrs = [homeAbbr, awayAbbr].filter(Boolean);
       if (abbrs.length === 0) return;
+      // ══ 2026-10-21 · THE LIST SHOWED ONE TEAM, AND STALE ROWS ══
+      // QA on GSW @ LAL: "The list shows only LAL players... the LAL notes are
+      // stale preseason blurbs (Oct 8/13, 'Tuesday's preseason')... GSW's
+      // Butler and Moody appear only in Situation."
+      //
+      // Three causes, all here:
+      //
+      //  1. nba_injuries APPENDS a new row per player per scrape by design
+      //     ("dedupe is downstream" says the puller). Nothing downstream was
+      //     deduping. 138 of 213 players held multiple rows across four
+      //     snapshot dates, so one player could occupy several of the slots.
+      //  2. `.limit(20)` is a budget shared by BOTH teams across ALL dates.
+      //     Order by updated_at desc and one team's stale rows can crowd the
+      //     other team out entirely — which is exactly what "only LAL" was.
+      //  3. The table itself had gone seven days stale, so the newest rows
+      //     available WERE preseason blurbs. That half is fixed in
+      //     nba_injuries_pull.py, which no longer exits 0 having written
+      //     nothing.
+      //
+      // Fixed by taking a generous window, then deduping to ONE row per
+      // player (newest wins), then slicing per team — so each side gets its
+      // own four and a repeated player can never consume them.
       const {data} = await client.from('nba_injuries')
-        .select('team_abbrev,player_name,status,reason')
+        .select('team_abbrev,player_name,status,reason,updated_at')
         .in('team_abbrev', abbrs)
         .in('status', ['OUT', 'DOUBTFUL', 'QUESTIONABLE', 'GTD'])
         .order('updated_at', {ascending: false})
-        .limit(20);
+        .limit(200);
       if (data) {
-        setInjuries({
-          home: data.filter((r: any) => r.team_abbrev === homeAbbr).slice(0, 4),
-          away: data.filter((r: any) => r.team_abbrev === awayAbbr).slice(0, 4),
-        });
+        const newestPerPlayer = new Map<string, any>();
+        for (const r of (data as any[])) {
+          // rows arrive newest-first, so the first sighting wins
+          const key = `${r.team_abbrev}|${r.player_name}`;
+          if (!newestPerPlayer.has(key)) newestPerPlayer.set(key, r);
+        }
+        const fresh = Array.from(newestPerPlayer.values());
+        // OUT is the status that actually moves a line, so it leads.
+        const rank = (r: any) => (String(r?.status || '').toUpperCase() === 'OUT' ? 0 : 1);
+        const forTeam = (ab: any) => fresh
+          .filter((r: any) => r.team_abbrev === ab)
+          .sort((a: any, b: any) => rank(a) - rank(b))
+          .slice(0, 4);
+        setInjuries({home: forTeam(homeAbbr), away: forTeam(awayAbbr)});
       }
     })();
   }, [homeTeam, awayTeam, ctx?.home_abbrev, ctx?.away_abbrev]);

@@ -257,22 +257,50 @@ def upsert_batch(rows: list, dry_run: bool = False) -> int:
     return written
 
 
-def run(dry_run: bool = False) -> None:
+def run(dry_run: bool = False) -> int:
+    """Returns a process exit code: 0 wrote rows, 1 wrote nothing.
+
+    ══ 2026-10-21 · THIS EXITED 0 HAVING WRITTEN NOTHING ══
+    nba_injuries went SEVEN DAYS stale — newest updated_at 2026-10-14 while
+    nba_pipeline ran every day in between — and nothing anywhere said so. The
+    card kept rendering the 10-13/10-14 rows, which is why a user on 10-21 was
+    reading "won't play in Thursday's PRESEASON game" under a regular-season
+    matchup.
+
+    Two reasons it was invisible, both fixed here:
+      * every early return above was a bare `return`, so a failed fetch or a
+        changed ESPN layout exited 0 and looked identical to success
+      * the workflow step runs this with `continue-on-error: true` and NOT
+        through run_step.sh, so a failure writes no step_failed heartbeat
+        either — it is invisible in telemetry as well as in the log
+
+    Same shape as B107 (NCAAF weather, five weeks dark). A scraper that cannot
+    fail loudly will eventually go quiet and nobody will know.
+    """
     print('== NBA injuries pull (ESPN) ==')
     html = fetch_html()
     if not html:
-        return
+        print('  *** FAILED: no HTML from ESPN — nothing written ***')
+        return 1
     rows = parse_injuries(html)
     print(f'  {len(rows)} injury rows parsed')
     if not rows:
-        print('  (ESPN layout may have changed — inspect parse selectors)')
-        return
+        print('  *** FAILED: 0 rows parsed — ESPN layout may have changed, '
+              'inspect the parse selectors. Nothing written. ***')
+        return 1
     written = upsert_batch(rows, dry_run=dry_run)
     print(f'\nSummary: {written}/{len(rows)} rows persisted')
+    if not written:
+        print('  *** FAILED: parsed rows but persisted none ***')
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(dry_run=args.dry_run)
+    # 2026-10-21: propagate the code. Changing run() to return one and
+    # leaving this as a bare call would have made the whole 'fail loudly'
+    # change inert - the script would still have exited 0 on a no-op.
+    sys.exit(run(dry_run=args.dry_run))
