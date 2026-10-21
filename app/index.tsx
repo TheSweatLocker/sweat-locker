@@ -2097,6 +2097,29 @@ const [nbaGameContextMap, setNbaGameContextMap] = useState({});
 // cannot be string-indexed, and that is where 136 of this file's TS7053 errors
 // come from. Typing the new one keeps this change from adding to that pile.
 const [nhlGameContextMap, setNhlGameContextMap] = useState<Record<string, any>>({});
+// 2026-10-21 · NCAAB game context. Added BEFORE the season opens on
+// 2026-11-03 on purpose: there is no expo-updates in this project (B5), so a
+// map that is not in this build cannot appear until the next App Store
+// submission, and NCAAB would launch with blank cards.
+//
+// ncaab_game_context currently holds ZERO rows, so the column list in the
+// fetch could not be read off a row. It was probed column by column instead
+// (a select naming a missing column returns 400 even on an empty table),
+// because an explicit select of a column that does not exist makes this app
+// read 400 as "no context" and would blank the sport rather than fix it.
+// VERIFIED PRESENT: game_id, game_date, home_team, away_team, primary_play,
+// sweat_score, sweat_tier, projected_spread, projected_total, close_spread,
+// close_total, home_tempo, away_tempo, home_adj_em, away_adj_em,
+// home_adj_oe, away_adj_de, align_status, splits_summary,
+// signal_confluence_net.
+// VERIFIED ABSENT, so no badge may reference them: home/away_abbrev,
+// home/away_rest_days, home/away_is_b2b, neutral_site, conference_game,
+// home/away_rank, cohort_tags, sweat_tier_current.
+//
+// Until the pipeline starts writing rows this fetch returns none, the map
+// stays empty and the chips are simply absent — the same silent-hide every
+// other sport's chips already do. No crash, and nothing to ship again later.
+const [ncaabGameContextMap, setNcaabGameContextMap] = useState<Record<string, any>>({});
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -5831,9 +5854,19 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         // (2b042ddad3d3...). Zero overlap, so reads[game.id] never hit — the
         // same shape this NHL block was written for, arriving through the
         // same door one sport later. Aliased the same way.
+        // 2026-10-21 · NCAAB added ahead of its 2026-11-03 opener, for the
+        // same no-OTA reason as its context map. Whether NCAAB files reads
+        // under an Odds-API id or a provider's own cannot be checked today
+        // (jerry_reads has no NCAAB rows yet and ncaab_game_context is
+        // empty), and that is exactly why it belongs here: if the ids match,
+        // the direct lookup already worked and this alias is a harmless
+        // no-op; if they do not, this is the only thing that makes the pick
+        // chip resolve, and discovering that in November would need another
+        // build.
         const _aliasSports: Array<[string, string]> = [
           ['NHL', 'nhl_game_context'],
           ['NBA', 'nba_game_context'],
+          ['NCAAB', 'ncaab_game_context'],
         ];
         for (const [sp, tbl] of _aliasSports) {
           try {
@@ -6219,6 +6252,38 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           }
         });
         setNhlGameContextMap(nhlCtxMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // 2026-10-21 · NCAAB game context — shipped ahead of the 2026-11-03
+    // opener because there is no OTA path, so anything missing from this
+    // build cannot reach users until the next App Store submission.
+    //
+    // Column list probed one at a time against the empty table rather than
+    // read off a row (see the state declaration for the verified present /
+    // verified absent lists). Nothing here is guessed.
+    try {
+      const ncaabCtxResult = await supabase
+        .from('ncaab_game_context')
+        .select('game_id,game_date,home_team,away_team,'
+          + 'primary_play,sweat_score,sweat_tier,'
+          + 'projected_spread,projected_total,close_spread,close_total,'
+          + 'home_tempo,away_tempo,home_adj_em,away_adj_em,'
+          + 'home_adj_oe,away_adj_de,'
+          + 'align_status,splits_summary,signal_confluence_net')
+        .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
+        .limit(500);
+      if(ncaabCtxResult?.data && ncaabCtxResult.data.length > 0) {
+        const ncaabCtxMap: Record<string, any> = {};
+        (ncaabCtxResult.data as any[]).forEach((g: any) => {
+          if(g.game_id) ncaabCtxMap[g.game_id] = g;
+          if(g.home_team && g.away_team) {
+            // Both key shapes the other sports use, so a card resolves
+            // whether its id matches or only its team names do.
+            ncaabCtxMap[`${g.away_team}@${g.home_team}`] = g;
+            ncaabCtxMap[`nk:${_nhlNameKey(g.away_team)}@${_nhlNameKey(g.home_team)}`] = g;
+          }
+        });
+        setNcaabGameContextMap(ncaabCtxMap);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -15600,14 +15665,17 @@ setJerryHistory(prev => {
   // NHL and 28 of 33 NBA games, and COVERAGE is not a publishable tier. One
   // NHL game and five NBA games earn a chip today.
   //
-  // NCAAB is deliberately absent: there is no ncaabGameContextMap in this
-  // component (zero setters), so adding a branch for it would read an
-  // undefined variable rather than fix anything.
+  // NCAAB is included even though its season opens 2026-11-03 and
+  // ncaab_game_context is empty today. With no OTA path, a branch missing
+  // from this build cannot appear until the next submission, and the map
+  // simply stays empty until the pipeline writes rows — at which point the
+  // chips start resolving with no further build.
   const sportMap: any =
     gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
     gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
     gamesSport === 'NHL'   ? (nhlGameContextMap || {}) :
     gamesSport === 'NBA'   ? (nbaGameContextMap || {}) :
+    gamesSport === 'NCAAB' ? (ncaabGameContextMap || {}) :
     gamesSport === 'MLB'   ? (mlbGameContext || {}) :
     {};
   // Lookup order: game_id, home_team key, away_team key, then value scan
@@ -16084,6 +16152,55 @@ setJerryHistory(prev => {
       } else if (_aPK <= 75 && _hPK > 75) {
         _sweatBadges.push(<StatusChip key="pk" variant="custom" color={THEME.hrb}
                                        icon="⚡" label={`PP EDGE ${_hAb}`} />);
+      }
+    }
+  }
+
+  if (gamesSport === 'NCAAB') {
+    // Shipped ahead of the 2026-11-03 opener (no OTA). Only the two columns
+    // probed as PRESENT on ncaab_game_context are read: tempo and adj_em.
+    // There are no abbrevs, no rest/b2b, no ranks and no cohort_tags on that
+    // table, so no chip here may reference them — naming an absent column is
+    // what turns a fetch into a 400 and blanks a sport.
+    const _short = (t: any) => {
+      const s = String(t || '').trim();
+      if (!s) return '';
+      // No abbrev column exists, so shorten the name: last word for a
+      // multi-word school ("Michigan State" -> "STATE" reads wrong), so take
+      // the FIRST word, which is the school in almost every case.
+      return s.split(/\s+/)[0].slice(0, 8).toUpperCase();
+    };
+    // Combined tempo. KenPom tempo is possessions per 40 minutes and a
+    // 2026-27 team runs roughly 63-73, so a combined 140+ is a genuinely
+    // fast game and 130 or under a genuinely slow one.
+    const _hT = Number(ctxAny?.home_tempo);
+    const _aT = Number(ctxAny?.away_tempo);
+    if (isFinite(_hT) && isFinite(_aT) && _hT > 0 && _aT > 0) {
+      const _sum = _hT + _aT;
+      if (_sum >= 140) {
+        _sweatBadges.push(<StatusChip key="tm" variant="custom" color={THEME.accent}
+                                       icon="🏃" label={`FAST ${_sum.toFixed(0)}`} />);
+      } else if (_sum <= 130) {
+        _sweatBadges.push(<StatusChip key="tm" variant="custom" color={THEME.sharp}
+                                       icon="🐢" label={`SLOW ${_sum.toFixed(0)}`} />);
+      }
+    }
+    // Efficiency mismatch. adj_em is KenPom's adjusted efficiency margin;
+    // a gap of 20+ is a two-possessions-a-minute talent difference and the
+    // single most useful thing to flag on a college basketball card.
+    const _hE = Number(ctxAny?.home_adj_em);
+    const _aE = Number(ctxAny?.away_adj_em);
+    if (isFinite(_hE) && isFinite(_aE)) {
+      const _gap = _hE - _aE;
+      if (Math.abs(_gap) >= 20) {
+        // Read the team off ctxAny, not off `game`. `game` is inferred as
+        // `never` in this scope and indexing it is where 136 of this file's
+        // TS7053 errors come from; ctxAny is already `any` and carries
+        // home_team/away_team, so this reads the same value without adding
+        // two more to that pile.
+        const _fav = _gap > 0 ? _short(ctxAny?.home_team) : _short(ctxAny?.away_team);
+        _sweatBadges.push(<StatusChip key="em" variant="custom" color={THEME.hrb}
+                                       icon="📊" label={`MISMATCH ${_fav} +${Math.abs(_gap).toFixed(0)}`} />);
       }
     }
   }
