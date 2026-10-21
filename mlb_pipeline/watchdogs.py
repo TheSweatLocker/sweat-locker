@@ -1068,32 +1068,66 @@ def check_line_poller_landing_rate() -> Optional[dict]:
     # minutes — enough snapshots to price a slate — rather than a ratio
     # against a schedule that keeps changing.
     day = _days_ago(1)
-    rows, off = [], 0
+    # A slate needs roughly hourly coverage to price picks and show movement.
+    # Below 12 distinct minutes in a day the collector is effectively not
+    # running; below 6 it is dead. Defined here because the walk below stops
+    # AT the floor rather than counting past it.
+    FLOOR = 12
+    # ══ 2026-10-21 · DISK IO · DO NOT READ 60,000 ROWS TO COUNT TO TWELVE ══
+    # This used to page line_history in 1,000-row chunks up to a 60,000 row
+    # cap, pulling every captured_at for the day, purely to compute
+    # len(distinct minute) and compare it to a floor of 12.
+    #
+    # Supabase flagged the project was about to exhaust its Disk IO budget and
+    # pg_stat_statements put line_history at the top by orders of magnitude.
+    # Up to sixty paged reads per watchdog run, discarding ~99.98% of what
+    # they fetched, is a meaningful part of that — and deep OFFSET makes it
+    # worse than linear, because the server scans and throws away every row
+    # before the offset on each page.
+    #
+    # The question is a FLOOR, not a count: "did the poller land at least 12
+    # distinct minutes". So walk the minutes with a keyset cursor and stop at
+    # the floor. Each step asks for ONE row at or after the next minute
+    # boundary, which the captured_at index answers directly:
+    #
+    #     old: up to 60 requests x 1000 rows   = up to 60,000 rows
+    #     new: at most 13 requests x 1 row     = at most 13 rows
+    #
+    # Still EXACT for the decision. When the poller is healthy it stops at 12
+    # and returns; when it is not, the walk exhausts and `landed` is the true
+    # count, which the alert text below needs.
+    landed = 0
+    cursor = f'{day}T00:00:00Z'
+    end = f'{day}T23:59:59.999Z'
     try:
-        while True:
+        while landed < FLOOR:
             r = requests.get(f'{SB}/rest/v1/line_history',
                 params={'select': 'captured_at', 'sport': 'eq.MLB',
-                        'captured_at': f'gte.{day}T00:00:00Z',
-                        'limit': '1000', 'offset': str(off)},
+                        'captured_at': [f'gte.{cursor}', f'lte.{end}'],
+                        'order': 'captured_at.asc', 'limit': '1'},
                 headers=H_READ, timeout=30)
             if r.status_code not in (200, 206):
                 return None
             batch = r.json()
             if not isinstance(batch, list):
                 return None
-            rows += batch
-            if len(batch) < 1000 or len(rows) >= 60000:
+            if not batch:
                 break
-            off += 1000
+            ts = str(batch[0].get('captured_at') or '')
+            if len(ts) < 16:
+                break
+            landed += 1
+            # Jump to the start of the NEXT minute. Parsing rather than string
+            # arithmetic because 23:59 must roll the hour and the day.
+            try:
+                t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            except ValueError:
+                break
+            nxt = (t.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            cursor = nxt.astimezone(timezone.utc).isoformat().replace(
+                '+00:00', 'Z')
     except Exception:
         return None
-    # Distinct capture MINUTE == one landed poller run, same day only.
-    landed = len({str(x.get('captured_at'))[:16] for x in rows
-                  if str(x.get('captured_at', ''))[:10] == day})
-    # A slate needs roughly hourly coverage to price picks and show
-    # movement. Below 12 distinct minutes in a day the collector is
-    # effectively not running; below 6 it is dead.
-    FLOOR = 12
     if landed >= FLOOR:
         return None
     return {
