@@ -174,7 +174,39 @@ def fetch_ufc_fights(days: int) -> list[dict]:
     for c in rows:
         winner = c.get('winner_actual')
         if not winner: continue
-        c['_winner'] = 'A' if str(winner).strip().lower() == str(c.get('fighter_a') or '').strip().lower() else 'B'
+        # ══ 2026-10-21 · THIS COMPARED A SIDE CODE TO A NAME ══
+        # ufc_picks.winner_actual holds 'a' / 'b', NOT a fighter name —
+        # measured across all 140 graded rows: 65 'a', 75 'b', and ZERO
+        # matching fighter_a by name. So the equality was false on every row
+        # and _winner was 'B' for all 140 fights.
+        #
+        # What that produced, live in signal_registry with WEIGHT 0.50:
+        #     ufc_pipeline_pick_b  100.0%  n=20  edge +47.6  DISCOVERY
+        #     ufc_pipeline_pick_a    0.0%  n=24  edge -52.4
+        # A fabricated perfect signal and its mirror, and 65 of 140 fights
+        # (46%) graded backwards — every one where A actually won.
+        #
+        # Same trap as feedback_a_name_check_needs_the_right_row, and the same
+        # one that made a throwaway audit report "0-95 at exactly 0.0%" this
+        # morning. A 0% or 100% rate on a binary outcome is a wiring error
+        # until proven otherwise.
+        #
+        # Accepts the side code and a name, and returns None rather than
+        # guessing when it is neither - an ungradeable row must not silently
+        # become a loss for side A.
+        _w = str(winner).strip().lower()
+        _na = str(c.get('fighter_a') or '').strip().lower()
+        _nb = str(c.get('fighter_b') or '').strip().lower()
+        if _w in ('a', _na) and _na:
+            c['_winner'] = 'A'
+        elif _w in ('b', _nb) and _nb:
+            c['_winner'] = 'B'
+        elif _w == 'a':
+            c['_winner'] = 'A'
+        elif _w == 'b':
+            c['_winner'] = 'B'
+        else:
+            continue          # draw / no_contest / unrecognised - not gradeable
         for suffix, name in (('a', c.get('fighter_a')), ('b', c.get('fighter_b'))):
             fs = _lookup_by_name(name)
             for k, v in fs.items():
