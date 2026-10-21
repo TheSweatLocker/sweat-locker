@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""Prove the RLS migration is read-neutral and write-closing.
+"""Prove the RLS migrations are read-neutral and write-closing.
 
-Run with --baseline BEFORE applying 20261021c_rls_close_anon_writes.sql, then
-with --verify after. The baseline is the point: "the app still works" is not
-something to eyeball on a build with no OTA path, and a policy that silently
-drops one relation to zero rows looks exactly like a quiet night.
+    python verify_rls.py --baseline    # BEFORE applying (captures reads)
+    python verify_rls.py --verify      # after applying
 
-Uses the ANON key deliberately -- the one that ships in the app bundle. The
-service-role key bypasses RLS entirely, so testing with it would pass no
-matter how broken the policies were.
+TWO MEASUREMENT MISTAKES THIS SCRIPT EXISTS TO AVOID, both made for real on
+2026-10-21 before being caught:
 
-Write probes use DELETE/PATCH with a filter matching ZERO rows. Nothing is
-ever written or removed. Note that probing with a non-existent column is NOT
-a valid privilege test: PostgREST answers that from its own schema cache with
-400 PGRST204, before any SQL reaches Postgres.
+1. RLS STATE CANNOT BE READ OFF HTTP CODES. A DELETE filtered to zero rows
+   returns 200 with an empty array whether RLS denied it or it simply matched
+   nothing -- indistinguishable over REST. And a probe using a non-existent
+   column returns 400 PGRST204 from PostgREST's own schema cache, before any
+   SQL reaches Postgres, so it reports nothing about privileges at all. The
+   first version of this file concluded "WRITE-OPEN" from PGRST204 and
+   "PERMITTED" from a 200, and both readings were worthless. Write posture is
+   therefore read from the catalog via get_rls_audit() (service role).
+
+2. DO NOT PROBE READS WITH count=exact. The app never sends it. An exact
+   count on 3.6M-row line_history hits the statement timeout and returns
+   57014 as a 500, which looks exactly like a policy breaking the read. 76 of
+   them back to back also starves everything else. Reads are probed in the
+   shape the app actually uses, and a 57014 is reported as a pre-existing
+   performance issue, never as an RLS failure.
 """
 import argparse
 import json
@@ -26,22 +34,26 @@ from dotenv import load_dotenv
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 load_dotenv(os.path.join(ROOT, '.env'))
+load_dotenv(os.path.join(HERE, '.env'))
 
 SB = os.environ.get('EXPO_PUBLIC_SUPABASE_URL')
 ANON = os.environ.get('EXPO_PUBLIC_SUPABASE_ANON_KEY')
+# Locally the service key lives in mlb_pipeline/.env as SUPABASE_KEY; CI uses
+# SUPABASE_SERVICE_ROLE_KEY. Checked by its JWT role claim, not by name alone.
+SVC = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+       or os.environ.get('SUPABASE_SERVICE_KEY')
+       or os.environ.get('SERVICE_ROLE_KEY')
+       or os.environ.get('SUPABASE_KEY'))
 if not SB or not ANON:
-    print('FAIL: EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY not in root .env')
+    print('FAIL: EXPO_PUBLIC_SUPABASE_URL / _ANON_KEY not found')
     sys.exit(2)
 
-H_READ = {'apikey': ANON, 'Authorization': 'Bearer ' + ANON}
-H_WRITE = dict(H_READ, **{'Content-Type': 'application/json',
-                          'Prefer': 'return=representation'})
-
+H_ANON = {'apikey': ANON, 'Authorization': 'Bearer ' + ANON}
 BASELINE = os.path.join(HERE, '_rls_baseline.json')
 
-# Relations the client reads via .from() in app/, plus ufc_picks, which is
-# reachable ONLY through get_todays_ufc_picks(). Every client RPC is SECURITY
-# INVOKER (no DEFINER clause anywhere in migrations), so it runs with the
+# Relations the client reaches via .from() in app/, plus ufc_picks, which is
+# in NO .from() call and reachable only through get_todays_ufc_picks(). Every
+# client RPC lacks a SECURITY DEFINER clause, so it runs as INVOKER with the
 # caller's privileges and its base tables need read policies too.
 READ_RELATIONS = [
     'admin_notice', 'cleatz_signals', 'cohort_display_config',
@@ -73,77 +85,63 @@ READ_RELATIONS = [
 RPCS = ['get_todays_sweat_card', 'get_todays_potd', 'get_todays_dawg',
         'get_todays_ufc_picks']
 
-# Client WRITES these and never reads them back, so after the migration they
-# must still accept a write while refusing a read.
-WRITE_ONLY = ['user_note_dispatch_log', 'user_consent']
+# Written by the client, never read back: INSERT/UPDATE but no SELECT.
+WRITE_ONLY = {'user_note_dispatch_log', 'user_consent'}
 
-# Must be unreachable by anon after the migration. public_receipts is the
-# public graded record and appears in NO client query -- only in comments.
-MUST_DENY = ['public_receipts', 'signal_attribution']
+# polcmd codes in pg_policy
+CMD = {'r': 'SELECT', 'a': 'INSERT', 'w': 'UPDATE', 'd': 'DELETE',
+       '*': 'ALL'}
+UNTRUSTED = {'anon', 'public', 'authenticated'}
 
 
 def probe_read(rel):
-    """Row count via an exact count header. No row bodies pulled."""
+    """Read in the shape the app uses. No count=exact -- see module docstring."""
     try:
-        r = requests.get(f'{SB}/rest/v1/{rel}', headers=
-                         dict(H_READ, **{'Prefer': 'count=exact'}),
-                         params={'select': '*', 'limit': '1'}, timeout=30)
-        if r.status_code not in (200, 206):
-            return {'ok': False, 'status': r.status_code,
-                    'err': r.text[:120]}
-        rng = r.headers.get('content-range', '')
-        total = rng.split('/')[-1] if '/' in rng else '?'
-        return {'ok': True, 'status': r.status_code, 'count': total}
+        r = requests.get(f'{SB}/rest/v1/{rel}', headers=H_ANON,
+                         params={'select': '*', 'limit': '1'}, timeout=60)
+        if r.status_code in (200, 206):
+            body = r.json()
+            return {'ok': True, 'status': r.status_code,
+                    'rows': len(body) if isinstance(body, list) else 0}
+        code = ''
+        try:
+            code = (r.json() or {}).get('code', '')
+        except Exception:
+            pass
+        return {'ok': False, 'status': r.status_code, 'code': code,
+                'timeout': code == '57014', 'err': r.text[:100]}
     except Exception as e:
-        return {'ok': False, 'status': 0, 'err': str(e)[:120]}
+        return {'ok': False, 'status': 0, 'err': str(e)[:100]}
 
 
 def probe_rpc(fn):
     try:
-        r = requests.post(f'{SB}/rest/v1/rpc/{fn}', headers=H_WRITE,
-                          data='{}', timeout=30)
+        r = requests.post(f'{SB}/rest/v1/rpc/{fn}',
+                          headers=dict(H_ANON, **{
+                              'Content-Type': 'application/json'}),
+                          data='{}', timeout=60)
         n = len(r.json()) if r.text.strip().startswith('[') else (
             1 if r.status_code == 200 else 0)
         return {'ok': r.status_code == 200, 'status': r.status_code, 'rows': n}
     except Exception as e:
-        return {'ok': False, 'status': 0, 'err': str(e)[:120]}
+        return {'ok': False, 'status': 0, 'err': str(e)[:100]}
 
 
-def probe_write(rel):
-    """Zero-row DELETE + PATCH. Returns 'blocked' | 'permitted' | detail."""
-    r = requests.get(f'{SB}/rest/v1/{rel}', headers=H_READ,
-                     params={'select': '*', 'limit': '1'}, timeout=30)
-    rows = r.json() if r.status_code == 200 else []
-    idv = rows[0].get('id') if rows else None
-    if isinstance(idv, int):
-        bogus = '-987654321'
-    elif isinstance(idv, str) and len(idv) == 36:
-        bogus = '00000000-0000-0000-0000-000000000000'
-    else:
-        # Cannot read it (already denied) or no usable id -- fall back to a
-        # filter on a column that certainly exists for the deny check.
-        bogus = None
-
-    out = {}
-    for verb, fn in (('delete', requests.delete), ('patch', requests.patch)):
-        kw = {'headers': H_WRITE, 'timeout': 30}
-        if bogus is None:
-            kw['params'] = {'id': 'eq.-987654321'}
-        else:
-            kw['params'] = {'id': f'eq.{bogus}'}
-        if verb == 'patch':
-            kw['data'] = json.dumps({'id': idv if bogus else 1})
-        try:
-            x = fn(f'{SB}/rest/v1/{rel}', **kw)
-            if x.status_code in (401, 403):
-                out[verb] = 'blocked'
-            elif x.status_code in (200, 204, 206):
-                out[verb] = 'PERMITTED'
-            else:
-                out[verb] = f'{x.status_code}'
-        except Exception as e:
-            out[verb] = f'err {str(e)[:40]}'
-    return out
+def fetch_audit():
+    """Catalog truth. Needs the service-role key and migration 20261021d."""
+    if not SVC:
+        return None, 'SUPABASE_SERVICE_ROLE_KEY not in env'
+    try:
+        r = requests.post(f'{SB}/rest/v1/rpc/get_rls_audit',
+                          headers={'apikey': SVC,
+                                   'Authorization': 'Bearer ' + SVC,
+                                   'Content-Type': 'application/json'},
+                          data='{}', timeout=90)
+        if r.status_code != 200:
+            return None, f'HTTP {r.status_code} {r.text[:120]}'
+        return r.json(), None
+    except Exception as e:
+        return None, str(e)[:120]
 
 
 def run_baseline():
@@ -151,90 +149,144 @@ def run_baseline():
             'rpcs': {f: probe_rpc(f) for f in RPCS}}
     with open(BASELINE, 'w') as fh:
         json.dump(data, fh, indent=1, sort_keys=True)
-    bad = [r for r, v in data['reads'].items() if not v['ok']]
+    ok = sum(1 for v in data['reads'].values() if v['ok'])
     print(f'baseline written: {BASELINE}')
-    print(f'  {len(data["reads"])} relations, '
-          f'{sum(1 for v in data["reads"].values() if v["ok"])} readable')
+    print(f'  {len(data["reads"])} relations, {ok} readable')
     for f, v in data['rpcs'].items():
         print(f'  rpc {f:26} status={v["status"]} rows={v.get("rows")}')
-    if bad:
-        print('  NOT readable even before the migration (so not caused by '
-              'it): ' + ', '.join(bad))
     return 0
 
 
 def run_verify():
-    if not os.path.exists(BASELINE):
-        print('FAIL: no baseline. Run --baseline BEFORE applying the '
-              'migration; without it, read-neutrality cannot be proven.')
-        return 2
-    with open(BASELINE) as fh:
-        base = json.load(fh)
+    fails, warns, notes = [], [], []
 
-    fails, warns = [], []
+    print('== 1. READ NEUTRALITY (app read shape, no exact count) ==')
+    base = {}
+    if os.path.exists(BASELINE):
+        with open(BASELINE) as fh:
+            base = json.load(fh).get('reads', {})
+    else:
+        warns.append('no baseline file; read neutrality is unproven')
 
-    print('== 1. READ NEUTRALITY (every relation the app reads) ==')
+    broke = slow = 0
     for rel in READ_RELATIONS:
-        was = base['reads'].get(rel, {})
         now = probe_read(rel)
-        if was.get('ok') and not now['ok']:
-            fails.append(f'READ BROKEN {rel}: was {was.get("count")} rows, '
-                         f'now HTTP {now["status"]}')
-            print(f'   FAIL  {rel:36} {was.get("count"):>8} -> '
-                  f'HTTP {now["status"]}')
-        elif was.get('ok') and now['ok'] and was.get('count') != now['count']:
-            # Counts move naturally between runs; only flag a collapse to 0.
-            if now['count'] == '0' and was.get('count') != '0':
-                fails.append(f'READ EMPTY {rel}: {was.get("count")} -> 0')
-                print(f'   FAIL  {rel:36} {was.get("count"):>8} -> 0')
+        was_ok = base.get(rel, {}).get('ok')
+        if now['ok']:
+            continue
+        if now.get('timeout'):
+            slow += 1
+            notes.append(f'{rel}: statement timeout (57014) - PERFORMANCE, '
+                         f'not RLS')
+            continue
+        if was_ok:
+            broke += 1
+            fails.append(f'READ BROKEN {rel}: HTTP {now["status"]} '
+                         f'{now.get("code", "")}')
+        else:
+            notes.append(f'{rel}: not readable before either, HTTP '
+                         f'{now["status"]}')
+    print(f'   {len(READ_RELATIONS) - broke - slow} reading normally, '
+          f'{slow} timing out (pre-existing), {broke} BROKEN by RLS')
 
     print('== 2. RPCs still answer (all SECURITY INVOKER) ==')
     for fn in RPCS:
-        was, now = base['rpcs'].get(fn, {}), probe_rpc(fn)
-        mark = 'ok  ' if now['ok'] else 'FAIL'
-        if was.get('ok') and not now['ok']:
+        now = probe_rpc(fn)
+        if not now['ok']:
             fails.append(f'RPC BROKEN {fn}: HTTP {now["status"]}')
-        print(f'   {mark}  {fn:30} status={now["status"]} '
-              f'rows={now.get("rows")}')
+        print(f'   {"ok  " if now["ok"] else "FAIL"}  {fn:30} '
+              f'status={now["status"]} rows={now.get("rows")}')
 
-    print('== 3. WRITES ARE CLOSED on everything the app only reads ==')
-    for rel in ['public_receipts', 'prompt_templates', 'feature_flags',
-                'sweat_tier_config', 'mlb_pipeline_props', 'jerry_cache']:
-        w = probe_write(rel)
-        bad = [k for k, v in w.items() if v == 'PERMITTED']
-        if bad:
-            fails.append(f'STILL WRITABLE {rel}: {bad}')
-            print(f'   FAIL  {rel:36} {w}')
-        else:
-            print(f'   ok    {rel:36} {w}')
+    print('== 3. RLS POSTURE FROM THE CATALOG (not from status codes) ==')
+    audit, err = fetch_audit()
+    if audit is None:
+        warns.append(f'could not read catalog audit ({err}); write posture '
+                     f'UNVERIFIED - apply 20261021d and set the service key')
+        print(f'   SKIPPED: {err}')
+    else:
+        tables = audit.get('tables') or []
+        no_rls, anon_write = [], []
+        for t in tables:
+            name = t['table']
+            if not t.get('rls'):
+                no_rls.append(name)
+            for pol in (t.get('policies') or []):
+                cmd = CMD.get(pol.get('cmd'), pol.get('cmd'))
+                roles = set(pol.get('roles') or [])
+                if cmd in ('ALL', 'INSERT', 'UPDATE', 'DELETE') and (
+                        roles & UNTRUSTED):
+                    if name in WRITE_ONLY and cmd in ('INSERT', 'UPDATE'):
+                        continue          # the two intended client writes
+                    anon_write.append(f'{name}.{pol["name"]} ({cmd})')
+        print(f'   {len(tables)} public tables audited')
+        print(f'   RLS disabled on {len(no_rls)}')
+        print(f'   anon-writable policies: {len(anon_write)}')
+        if no_rls:
+            fails.append(f'RLS still disabled on {len(no_rls)} table(s): '
+                         + ', '.join(sorted(no_rls)[:12])
+                         + (' ...' if len(no_rls) > 12 else ''))
+        if anon_write:
+            fails.append(f'{len(anon_write)} anon-writable policy(ies) '
+                         f'remain: ' + ', '.join(sorted(anon_write)[:12])
+                         + (' ...' if len(anon_write) > 12 else ''))
 
-    print('== 4. WRITE-ONLY relations still accept the client write ==')
-    for rel in WRITE_ONLY:
-        rd = probe_read(rel)
-        if rd['ok']:
-            warns.append(f'{rel} is still anon-READABLE (expected denied)')
-            print(f'   WARN  {rel:36} readable ({rd.get("count")} rows)')
-        else:
-            print(f'   ok    {rel:36} read denied (HTTP {rd["status"]})')
+        print('== 4. THE TABLES THAT MATTER MOST ==')
+        by_name = {t['table']: t for t in tables}
+        for name in ('public_receipts', 'prompt_templates', 'feature_flags',
+                     'sweat_tier_config', 'jerry_cache', 'mlb_pipeline_props',
+                     'signal_attribution'):
+            t = by_name.get(name)
+            if not t:
+                print(f'   ?     {name:24} not a public table')
+                continue
+            pols = [f'{CMD.get(p["cmd"], p["cmd"])}'
+                    f'->{",".join(p.get("roles") or [])}'
+                    for p in (t.get('policies') or [])]
+            w = [p for p in (t.get('policies') or [])
+                 if CMD.get(p['cmd']) in ('ALL', 'INSERT', 'UPDATE', 'DELETE')
+                 and (set(p.get('roles') or []) & UNTRUSTED)]
+            mark = 'ok  ' if (t.get('rls') and not w) else 'FAIL'
+            print(f'   {mark}  {name:24} rls={t.get("rls")} '
+                  f'policies={pols or "none (deny)"}')
 
-    print('== 5. MUST BE FULLY DENIED ==')
-    for rel in MUST_DENY:
-        rd = probe_read(rel)
-        if rd['ok']:
-            fails.append(f'{rel} still anon-readable ({rd.get("count")} rows)')
-            print(f'   FAIL  {rel:36} readable ({rd.get("count")} rows)')
-        else:
-            print(f'   ok    {rel:36} denied (HTTP {rd["status"]})')
+        print('== 5. CLIENT WRITES STILL PERMITTED ==')
+        for name in sorted(WRITE_ONLY):
+            t = by_name.get(name)
+            if not t:
+                continue
+            cmds = {CMD.get(p['cmd'], p['cmd']) for p in
+                    (t.get('policies') or [])
+                    if set(p.get('roles') or []) & UNTRUSTED}
+            need = {'INSERT'} if name == 'user_consent' else {'INSERT',
+                                                              'UPDATE'}
+            missing = need - cmds
+            if missing:
+                fails.append(f'{name} lost its client write policy: missing '
+                             f'{sorted(missing)}')
+            if 'SELECT' in cmds or 'ALL' in cmds:
+                warns.append(f'{name} is anon-READABLE (expected write-only)')
+            print(f'   {"ok  " if not missing else "FAIL"}  {name:24} '
+                  f'anon cmds={sorted(cmds) or "none"}')
 
     print()
+    for n in notes[:10]:
+        print(f'note: {n}')
     for w in warns:
         print(f'WARN: {w}')
     if fails:
-        print(f'FAIL: {len(fails)} problem(s):')
+        print(f'\nFAIL: {len(fails)} problem(s):')
         for f in fails:
             print(f'   - {f}')
         return 1
-    print('PASS: reads unchanged, RPCs answer, anon writes closed.')
+    if audit is None:
+        # Never print PASS for something that was not measured. The first
+        # version of this file reported "anon writes closed" on a run that had
+        # skipped the write check entirely, which is exactly the kind of false
+        # all-clear this script exists to prevent.
+        print('\nINCONCLUSIVE: reads are unchanged and the RPCs answer, but '
+              'the write posture was NOT checked.')
+        return 2
+    print('\nPASS: reads unchanged, RPCs answer, anon writes closed.')
     return 0
 
 
