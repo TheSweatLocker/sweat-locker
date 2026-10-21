@@ -6281,28 +6281,83 @@ const fetchNBAInjuries = async () => {
   }
 };
 
+// ══ 2026-10-21 · "POTD has NBA playoffs up top on it why? fix now" ══
+// Because this gate had a START date and NO END DATE:
+//
+//     const playoffStart = new Date('2026-04-19');
+//     if (today < playoffStart) { setIsPlayoffMode(false); return; }
+//     setIsPlayoffMode(true);          // <- true forever after 19 April
+//
+// So from 2026-04-19 onward every single day was playoff mode, and the badge
+// at the top of the Play of the Day renders on
+// `isPlayoffMode && dailyBestBet?.sport === 'NBA'`. Today's POTD is NBA, so a
+// "🏆 NBA PLAYOFFS" banner sat over a game on the SECOND DAY of the 2026-27
+// regular season. It has been wrong for six months and only became visible
+// when NBA started producing a POTD.
+//
+// It also queried `.eq('season', 2024)`, two seasons stale, which is why the
+// series map was always empty — that emptiness is the only reason the more
+// detailed playoff copy did not render too.
+//
+// FIXED BY REMOVING THE DATE LOGIC ENTIRELY. A calendar window cannot know
+// when a postseason starts or ends; the series table does. Playoff mode is now
+// simply "do we hold a playoff series row for the CURRENT season":
+//
+//   * no rows  -> not the playoffs. `nba_playoff_series` is EMPTY today
+//                 (0 rows, no seasons at all), so this correctly reads false.
+//   * rows for this season -> playoffs, and the series map populates from the
+//                 same fetch, so the banner and the series copy can never
+//                 disagree again.
+//   * rows for an OLD season only -> still false. Without the season check a
+//                 stale 2024 row would resurrect the banner, which is exactly
+//                 the failure being fixed.
+//
+// Defaults to FALSE on any error or empty result. A badge claiming the
+// playoffs when it is October is worse than no badge.
 const fetchPlayoffSeries = async () => {
   try {
-    const today = new Date();
-    const playoffStart = new Date('2026-04-19');
-    if(today < playoffStart) {
-      setIsPlayoffMode(false);
-      return;
+    // Current NBA season leading year, from the authority rather than a
+    // literal: sport_registry.season_start is 2026-10-20 for the 2026-27
+    // season, so the leading year is what a `season` column holds.
+    let seasonYear = null;
+    try {
+      const { data: reg } = await supabase.from('sport_registry')
+        .select('season_start').eq('sport', 'NBA').limit(1);
+      const ss = reg?.[0]?.season_start;
+      if (ss) seasonYear = Number(String(ss).slice(0, 4));
+    } catch {}
+    if (seasonYear == null) {
+      // Fallback: an NBA season is named for the year it STARTS, so Jan-Jun
+      // belongs to the previous calendar year.
+      const n = new Date();
+      seasonYear = n.getMonth() >= 6 ? n.getFullYear() : n.getFullYear() - 1;
     }
-    setIsPlayoffMode(true);
+
     const { data } = await supabase
       .from('nba_playoff_series')
-      .select('*')
-      .eq('season', 2024);
-    if(data && data.length > 0) {
-      const seriesMap = {};
-      data.forEach(s => {
-        seriesMap[s.home_team] = s;
-        seriesMap[s.away_team] = s;
-      });
-      setPlayoffSeries(seriesMap);
+      .select('*');
+    const rows = Array.isArray(data) ? data : [];
+    // Keep rows for this season. A row with no season field is accepted
+    // rather than guessed against.
+    const live = rows.filter((r) =>
+      r?.season == null || Number(r.season) === seasonYear);
+
+    if (live.length === 0) {
+      setIsPlayoffMode(false);
+      setPlayoffSeries({});
+      return;
     }
-  } catch(e) {}
+    const seriesMap = {};
+    live.forEach(s => {
+      if (s?.home_team) seriesMap[s.home_team] = s;
+      if (s?.away_team) seriesMap[s.away_team] = s;
+    });
+    setPlayoffSeries(seriesMap);
+    setIsPlayoffMode(true);
+  } catch(e) {
+    setIsPlayoffMode(false);
+    setPlayoffSeries({});
+  }
 };
 
 const fetchDawgOfDay = async () => {
