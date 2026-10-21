@@ -563,9 +563,9 @@ def upsert_context(rows):
         _locked = sum(1 for _r in rows
                       if preserve_published('NCAAB', 'ncaab_game_context', _r, SUPABASE_URL, WRITE_HEADERS))
         if _locked:
-            print(f'  🔒 NCAAB publish lock: preserved {{_locked}} published pick(s)')
+            print(f'  [LOCK] NCAAB publish lock: preserved {_locked} published pick(s)')
     except Exception as _e:
-        print(f'  ⚠ NCAAB publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
+        print(f'  [WARN] NCAAB publish lock unavailable ({type(_e).__name__}) - writing unlocked')
 
     from pgrst_strip_retry import post_with_strip_retry
     _warned_once = False

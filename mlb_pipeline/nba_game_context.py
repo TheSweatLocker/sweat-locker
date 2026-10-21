@@ -215,8 +215,29 @@ def enrich_team_stats(rows: list) -> None:
     """
     r = requests.get(f'{SB}/rest/v1/nba_team_stats',
                      headers=H_READ,
-                     params={'select': 'team_name,team_abbrev,net_rating,'
-                                       'off_rating,def_rating,pace,efg_pct'},
+                     # ══ 2026-10-21 · THE SORT KEY WAS NEVER FETCHED ══
+                     # `season` is missing from this list, so the merge below
+                     # sorts on `t.get('season')` == None for EVERY row. The
+                     # key is constant, the sort is a no-op, and whichever row
+                     # PostgREST happens to return first wins — which has been
+                     # the 2024-25 one.
+                     #
+                     # So every NBA rating on every context row has been TWO
+                     # SEASONS OLD: GSW carried net 2.5 / pace 98.7 (2024-25)
+                     # while the complete 2025-26 row said net -0.5 / pace
+                     # 99.0. Verified that 2025-26 is fully populated — 30 of
+                     # 30 teams, no NULL net_rating, no NULL pace — so the
+                     # gap-filling the comment below describes was not even
+                     # needed; the sort simply never ran.
+                     #
+                     # That fed the Team Snapshot card, compute_confluence's
+                     # net_rating and pace signals, and the POTD narrative,
+                     # which is why the card showed pace 98.7 beside Team
+                     # Stats' 99.0 for the same team. Not two sources
+                     # disagreeing — one source, two seasons.
+                     params={'select': 'team_name,team_abbrev,season,'
+                                       'net_rating,off_rating,def_rating,'
+                                       'pace,efg_pct'},
                      timeout=20)
     if r.status_code != 200:
         print(f'  ⚠ nba_team_stats fetch {r.status_code} — ratings stay NULL')
@@ -701,9 +722,9 @@ def upsert(rows: list[dict], dry_run: bool = False) -> int:
         _locked = sum(1 for _r in rows
                       if preserve_published('NBA', 'nba_game_context', _r, SB, H_WRITE))
         if _locked:
-            print(f'  🔒 NBA publish lock: preserved {{_locked}} published pick(s)')
+            print(f'  [LOCK] NBA publish lock: preserved {_locked} published pick(s)')
     except Exception as _e:
-        print(f'  ⚠ NBA publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
+        print(f'  [WARN] NBA publish lock unavailable ({type(_e).__name__}) - writing unlocked')
 
     all_keys = set()
     for row in rows: all_keys.update(row.keys())

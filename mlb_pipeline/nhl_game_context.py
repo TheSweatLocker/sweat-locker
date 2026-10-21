@@ -1020,9 +1020,9 @@ def upsert_context(rows: list[dict], dry_run: bool = False) -> int:
         _locked = sum(1 for _r in rows
                       if preserve_published('NHL', 'nhl_game_context', _r, SB, H_WRITE))
         if _locked:
-            print(f'  🔒 NHL publish lock: preserved {_locked} published pick(s)')
+            print(f'  [LOCK] NHL publish lock: preserved {_locked} published pick(s)')
     except Exception as _e:
-        print(f'  ⚠ NHL publish lock unavailable ({type(_e).__name__}) — writing unlocked')
+        print(f'  [WARN] NHL publish lock unavailable ({type(_e).__name__}) - writing unlocked')
 
     # Union keys for batch upsert (PostgREST)
     all_keys = set()
