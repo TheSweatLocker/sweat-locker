@@ -38,7 +38,11 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 ODDS_API_BASE = 'https://api.the-odds-api.com/v4/sports'
 ODDS_SPORT = 'basketball_ncaab'
-SEASON = '2025-26'
+# 2026-10-21: season DERIVED, not pinned. This was hardcoded to last
+# season and the 2026-27 opener is 2026-11-03, so every NCAAB card
+# would have launched on 2025-26 final ratings. See ncaab_season.py.
+from ncaab_season import season_label  # noqa: E402
+SEASON = season_label()
 
 
 def _et_now() -> datetime:

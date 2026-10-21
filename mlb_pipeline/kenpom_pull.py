@@ -238,7 +238,13 @@ def run(season: int, fanmatch_days: int, dry: bool,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--season', type=int, default=2026)
+    # 2026-10-21: derived, was pinned to 2026 (= the 2025-26 season).
+    # KenPom names a season by the year it ENDS, so the 2026-27 campaign is
+    # 2027. See ncaab_season.py.
+    from ncaab_season import season_end_year
+    ap.add_argument('--season', type=int, default=season_end_year(),
+                    help='KenPom season end-year, e.g. 2027 for 2026-27. '
+                         'Default: derived from today.')
     # KenPom refuses future dates outright — "d (date) parameter cannot be
     # beyond <today>" — so asking for tomorrow is a guaranteed 400. Today, and
     # optionally days BACK.

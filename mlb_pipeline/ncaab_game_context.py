@@ -45,7 +45,11 @@ READ_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}
 WRITE_HEADERS = {**READ_HEADERS, "Content-Type": "application/json",
                  "Prefer": "resolution=merge-duplicates,return=minimal"}
 
-SEASON = "2025-26"
+# 2026-10-21: season DERIVED, not pinned. This was hardcoded to last
+# season and the 2026-27 opener is 2026-11-03, so every NCAAB card
+# would have launched on 2025-26 final ratings. See ncaab_season.py.
+from ncaab_season import season_label  # noqa: E402
+SEASON = season_label()
 ODDS_SPORT_KEY = "basketball_ncaab"
 
 

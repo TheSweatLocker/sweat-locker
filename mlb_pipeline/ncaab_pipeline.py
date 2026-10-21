@@ -99,7 +99,13 @@ def upsert_team_stats(rows):
     return True
 
 
-def run(season: str = "2025-26"):
+def run(season: str = None):
+    # 2026-10-21: the default was pinned to "2025-26". The CLI now derives
+    # it, but a direct `run()` import would still have written last season,
+    # so the fallback derives too. None means "ask the date".
+    if season is None:
+        from ncaab_season import season_label
+        season = season_label()
     season_key, season_year = parse_season(season)
     print(f"=== NCAAB Phase 1 — KenPom snapshot ({season_key}, y={season_year}) ===")
     ratings = fetch_kenpom("ratings", season_year)
@@ -170,7 +176,13 @@ def run(season: str = "2025-26"):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--season", default="2025-26",
-                    help="Season like '2025-26'. Default: current 2025-26.")
+    # 2026-10-21: default DERIVED from the date. It was pinned to
+    # "2025-26" while this script is what WRITES ncaab_team_stats, so the
+    # table would have carried last season's ratings into the 2026-27
+    # opener on 11-03 and never rolled over. See ncaab_season.py.
+    from ncaab_season import season_label
+    ap.add_argument("--season", default=season_label(),
+                    help="Season like '2026-27'. Default: derived from "
+                         "today's date; pass explicitly to backfill.")
     args = ap.parse_args()
     run(season=args.season)

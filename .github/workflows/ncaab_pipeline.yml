@@ -83,26 +83,64 @@ jobs:
           fi
 
       # ────── KENPOM (Monday 11am ET only — paid API discipline) ──────
-      # Gated to kenpom_only mode (Monday cron or manual dispatch) — NOT full.
-      # KenPom ratings converge slowly during season; weekly refresh is
-      # sufficient. This halves paid-API usage (previously 2 calls/day
-      # via full mode). Torvik + Haslam continue daily as free scrapers.
-      - name: KenPom weekly refresh
-        if: steps.mode.outputs.mode == 'kenpom_only'
+      # ══ 2026-10-21 · DAILY IN NOV/DEC, WEEKLY AFTER ══
+      #
+      # ANDY: "Should ingestion of data be more frequent since there are
+      # games every day enalry in season to update stat rankings"
+      #
+      # Yes, early. The note this replaces said "ratings converge slowly
+      # during season" and that is true in February and wrong in November.
+      # KenPom recomputes nightly, and the convergence argument is a
+      # statement about SAMPLE SIZE: in late season a team has 25+ games and
+      # two more move adj_em barely at all, while in the first month a team
+      # has 3-5 games and each one is 20-30% of the sample. A weekly refresh
+      # means the rating a card shows can be six days and two games stale
+      # exactly while it is moving fastest.
+      #
+      # So the gate is now date-aware: daily through November and December,
+      # weekly from January. Cost is small and this is a paid API, not a
+      # scrape — ncaab_pipeline.py plus kenpom_pull.py --no-fanmatch is 4
+      # endpoint calls, so the early-season window runs about 28 calls a week
+      # against 17 today. Nothing near a rate concern.
+      #
+      # Torvik + Haslam stay daily as free scrapers either way, and fanmatch
+      # stays daily below because it IS the day's slate.
+      # The month gate lives in bash below, not in this `if:`. A GitHub
+      # expression cannot read the clock without an extra step to publish it,
+      # and a date condition that silently evaluates false is the kind of
+      # thing that looks like a working weekly cron for a month.
+      - name: KenPom refresh (daily early season, weekly after)
+        if: steps.mode.outputs.mode == 'kenpom_only' || steps.mode.outputs.mode == 'full'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           KENPOM_KEY:   ${{ secrets.KENPOM_KEY }}
         run: |
           cd mlb_pipeline
-          # Debug probe (temporary — remove after first successful Monday cron confirms key)
-          if [ -n "$KENPOM_KEY" ]; then echo "KENPOM_KEY length: ${#KENPOM_KEY}"; else echo "KENPOM_KEY not set"; fi
+          if [ -z "$KENPOM_KEY" ]; then
+            echo "KENPOM_KEY not set — skipping (verified working 2026-10-21, 365 teams)"
+            exit 0
+          fi
+          # Daily in Nov/Dec while each game is a large share of a team's
+          # sample; weekly (Monday = kenpom_only) from January, when 25+
+          # games in means two more barely move adj_em.
+          MONTH=$(date -u +%m)
+          if [ "${{ steps.mode.outputs.mode }}" = "full" ] \
+             && [ "$MONTH" != "11" ] && [ "$MONTH" != "12" ]; then
+            echo "month $MONTH: outside the early-season window — ratings refresh is weekly (Monday) now"
+            exit 0
+          fi
+          echo "month $MONTH mode=${{ steps.mode.outputs.mode }} — refreshing KenPom ratings"
+          # --season is NOT passed. Both scripts derive it from the date via
+          # ncaab_season.py. It used to be pinned here to `--season 2026`,
+          # which is the 2025-26 campaign: with the 2026-27 opener on 11-03,
+          # every NCAAB card would have launched on last season's final
+          # ratings and never rolled over.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_pipeline.py" python ncaab_pipeline.py
           # 2026-09-28: fills kenpom_cache for the APP. The client used to do
           # this itself with the key bundled in the IPA; it now reads cache
-          # only. Weekly, alongside the existing ratings refresh, because the
-          # paid-API discipline above applies to exactly these two endpoints.
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "kenpom_pull.py (ratings+FF)"             python kenpom_pull.py --season 2026 --no-fanmatch
+          # only.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "kenpom_pull.py (ratings+FF)"             python kenpom_pull.py --no-fanmatch
 
       # ══ 2026-09-28 · FANMATCH IS DAILY, RATINGS ARE WEEKLY ══
       # Split deliberately. Ratings converge slowly and the step above keeps
