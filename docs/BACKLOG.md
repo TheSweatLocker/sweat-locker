@@ -3854,3 +3854,205 @@ OPTIONS, both needing a decision: void the two rows (removing one WIN from the
 pooled MLB count), or leave them and accept that two of 1,453 are
 unclassifiable. Volume is negligible; it is recorded so the next person who
 sees the auditor skip them knows why.
+
+---
+
+# 2026-10-20 — ANDY'S QA PASS, LOGGED PROPERLY
+
+He asked: "Are you keeping trakc of all the issues i bring so we can resolve
+them?" Honest answer at the time: the backlog was current through B89, but this
+day's QA list was being held in-session and nowhere else. That is the exact
+failure mode this file exists to prevent, so every item he raised today is
+below with a status, whether or not it is fixed.
+
+Rule going forward: an item he reports gets a B-number in this file **in the
+same turn he reports it**, before any work starts on it.
+
+## Fixed today, waiting on a build
+
+### B90 - NHL had no situational badges - **CLOSED** `e549ce1f`
+
+"NHL doesnt have abdges, also." Not a rendering fault: NFL, NCAAF and NBA each
+have a `*SituationalCard` and NHL had four stat cards and no chip row, so there
+was nothing to render. `NHLSituationalCard` now renders first in `NHLSlot`.
+Fields checked populated over 40 forward contexts before building on them:
+back-to-back 40/40, rest_days 40/40, goalie 40/40, goalie_confirmed 40/40,
+goalie_gsaa 38/40, pp/pk 40/40, away_consecutive_road_games 40/40. Chips:
+back-to-back, rest edge (>=2d), goalie unconfirmed, elite/weak goalie (GSAA
++/-8), special-teams cross edge (>=8pp), road trip (>=4).
+
+### B93 - NCAAF Games tab showed ONE game - **CLOSED** `e549ce1f`
+
+"why only one game new mexico state is showing in ncaaf games tab". The 10-07
+week-map fix was correct and the map loads fine; the KEY that read it did not
+survive Hermes:
+
+    new Date(t.toLocaleString('en-US', {timeZone:'America/New_York'}))
+
+round-trips a Date through "10/21/2026, 8:00:00 PM" and re-parses it. V8
+accepts that format so it works in node and in a browser; Hermes parses only
+ISO 8601 and returns Invalid Date, so every component was NaN, the key read
+"NaN-NaN-NaN", `_weekByDate` never hit, and every game fell through to the
+7-day arithmetic that the comment directly above it says cannot reproduce CFB
+weeks.
+
+Measured today with 56 games live on the feed:
+
+    thisSeasonWk = 8         (from the map - that call does not use this key)
+    weekTodayLow = Wed 10-21 (Tue roll)  -> hides Tuesday's 3 games
+    arithmetic:  10-21 -> wk 8  PASSES   -> NMSU @ Sam Houston   1 game
+                 10-22 -> wk 9  hidden                           3
+                 10-23 -> wk 9  hidden                           5
+                 10-24 -> wk 9  hidden                          44
+
+Exactly one game, and it is the one he named. 53 games were hidden by a string
+parse. Fixed with `toLocaleDateString('en-CA')`, which returns YYYY-MM-DD with
+no re-parse and is what the other ~20 ET-date call sites in the file already
+use. This was the only round-trip in `app/index.tsx`.
+
+LESSON WORTH KEEPING: `new Date(x.toLocaleString(...))` is a V8-only idiom. It
+cannot be caught by a node check, a type-check or a lint - only on device. Grep
+for it before shipping any date logic.
+
+### B94 - The Fade still rendered the Split - **CLOSED** `b65a2a7d` + `e5e9d2eb`
+
+He reported this FOUR times before it was found ("the plsit data is still in
+the dafe in expo", "DO YOU NEED A PICTURE?"). Two separate leftovers: the
+`section_note_split` beta banner, and the entire `<LineMovementTab/>` component
+still mounted under the Fade tab - which is where "strongest signals right now"
+and "minority dissent" were coming from. Renaming a tab is not converting it.
+
+### B95 - The Fade's backtest record was invisible - **CLOSED** `e5e9d2eb`
+
+"Why is the record 1-1 and we dont see the backtested record". It WAS
+rendering - 9px, muted, italic, below the filter line - while a 1-1 live record
+sat above it at 28px. Live n=2, backtest n=107. Now its own block at equal
+weight, still labelled BACKTEST / NOT A LIVE RECORD so the two never merge.
+
+### B105 - migration 19a could not be applied - **CLOSED** `c554166b`
+
+`ERROR 42P17: generation expression is not immutable`. My bug:
+`checked_date date GENERATED ALWAYS AS (checked_at::date) STORED`. Casting
+timestamptz to date depends on the session TimeZone, so the expression is only
+STABLE, and a stored generated column requires IMMUTABLE. `AT TIME ZONE` does
+not rescue it either - DST rules can change under it. Replaced with a DEFAULT,
+which is evaluated once at INSERT and has no such restriction.
+**ANDY STILL NEEDS TO RUN IT** - the fix is committed, the table is not created.
+
+## Open - diagnosed, not fixed
+
+### B91 - NBA situational badges do not show - OPEN
+
+Asked twice ("why dont i see nba badges", "NBA badegs arent showing hence why i
+asked"). `NBASituationalCard` EXISTS and is mounted, so unlike B90 this is a
+data or field-name question, not a missing component. Leading suspect: the NBA
+ctx select does not request `home_starters_out` / `away_starters_out`, so the
+chips that depend on them can never fire. NEXT: dump one `nba_game_context` row
+field-by-field against the chip conditions and find which conditions can fire
+at all.
+
+### B92 - NCAAF situational badges do not show - OPEN
+
+"also dont see ncaaf badges either." `NCAAFSituationalCard` exists and is
+mounted. Same shape of question as B91 - which chip conditions can fire on a
+real row. Suspect temp/wind/conference fields unpopulated for FBS rows. NEXT:
+same per-field dump for `ncaaf_game_context`.
+
+### B96 - The Fade's loading text still says "reading line drift" - OPEN
+
+"when it loads when you first clik into the fade the loading things says
+reading line drift (form the split)." Cosmetic, one string, same family as B94.
+
+### B97 - The Fade must be eligible in EVERY sport - OPEN
+
+"The Fade shoudl be elginble in every sports also." Currently football-only
+because the backtested edge (+12.4pp, n=107) is football spreads. Blocker to
+check first: `close_spread` ORIENTATION per sport - B71 found Red River's sign
+inverted, and a fade keyed off the wrong sign publishes the wrong side. Verify
+MLB/NHL/NBA sign before widening, and publish any non-football leg as its own
+labelled line so the football record stays clean.
+
+### B98 - "building sample" blocks in Receipts - OPEN, product decision
+
+"YEah as mentioned dont love the bbuidling sampel thoguths? dont be afreaid to
+figth abck on this just dont love it peronally." Pushback owed: the block is
+what keeps a 3-5 record off the screen as if it meant something, and hiding the
+surface entirely would read as us concealing a loser. Middle option worth
+proposing: show the raw W-L with no rate and no tier until n>=30, which is
+honest without looking like a gate.
+
+### B99 - verify the Games tab filters across all sports - OPEN
+
+"time the conviction best edge and the prime only and strong only one, verify
+workign as designed." Not yet checked. Note B93 means any filter verification
+done on NCAAF before `e549ce1f` was testing against a broken game list.
+
+### B100 - NBA line movement has no opening line - OPEN
+
+"invertgate no open line in nba line movmeent in game detail, do toher sport
+record opening lines as well?" Second half is the real question: which sports
+actually run `freeze_opening_lines()` into `*_game_context`. NBA likely never
+had the step wired at launch.
+
+### B101 - NBA Recent Schedule is missing ATS and O/U - OPEN
+
+"Recvent shceudle in NBA is missing ATS and O/U why?" Expect the same cause as
+B100 - no stored closing number to grade against on opening night.
+
+### B102 - verify NFL stat accuracy in the new build - OPEN
+
+"want to verify accuracy of nfl stats in new buidld." Nothing done. Should be
+done against a primary source, not against our own derived tables, and should
+cover the B68 matchup rows (off rush yds vs opp def rush yds allowed, points
+scored vs points allowed) since those are new.
+
+### B103 - NHL and NBA props are not live in Prop Jerry - OPEN
+
+"Add to list NHL and NBA props radiness why arent they live in propp jerry
+yet?" Known context: NHL props carry a documented over-bias and are marked
+info-only, and NHL props could not join their game (10-03). Needs a readiness
+call per sport, not a blanket switch.
+
+### B104 - today's Sweat Card: NHL spreads, and no NBA - OPEN
+
+"Todays Sweat Card NHL spreads, how do we do woth those? why are those p[lays
+on sweat card... we definitly should one prop and one nba jerry pick." Two
+parts: justify NHL spreads on the card against their own record, and whether
+the composer can reach NBA at all on opening week.
+
+### B106 - grade_money_flow.py is written but never run or committed - OPEN
+
+Written today, the vig bug in it fixed (it had used `100 - favourite_implied`
+as the fade breakeven, which is the vig-free complement, not the price of the
+side taken - that flatters every fade). It has not been run to completion, has
+no row in `signal_registry`, and is not in git. Until it is, "rolling stats x
+money flow" is unanswered.
+
+## Resolved today, logged so they are not re-opened
+
+- **The Sharp is bleeding** - he was right. -16.48u over the last three weeks.
+  Also found: the published record is flat-110 (+79.91u) while real prices give
+  +3.25u. Those are two different numbers and only one is real.
+- **POTD showed 5 pending** - now 0. Root cause was the partial grade mirror:
+  it drops None fields, so `result` wrote while `game` and `lean` did not.
+- **NHL registry note was stale** - `refresh_calibration_notes.py` now rewrites
+  the NHL and UFC banners nightly and graduates a sport out of "calibrating" on
+  a rule (n>=250 and >=45 days), so he never has to ask again. Scheduled in
+  `nightly_cross_sport.sh` as of `3178cd81` - the first commit shipped it
+  unscheduled, which is the "works by hand, in no cron" failure again.
+- **Records pooled spreads/ML/totals** - split per market in B88. Spreads and
+  totals lose, moneylines hold.
+- **The model panel was one voice** - 27 duplicate pairs, NHL and NCAAF totals
+  at 100% side agreement. Each model now derives its own number from its own
+  inputs, refit nightly into `jerry_cache voices_<date>`, and duplicate tiles
+  collapse to one voice at VOICE_EPS 0.26.
+- **Engine weighting by track record** - 49 model/market rows now carry an
+  earned weight in `signal_registry`, graded per market with price-implied
+  breakeven on moneylines (flat 52.38% credited favourite-picking as skill).
+
+## The build is the bottleneck
+
+B90, B93, B94, B95 and B86 are all fixed in the repo and invisible on his
+device. There is no OTA path (`expo-updates` is not installed), so every one of
+them needs a binary. That is now five user-facing fixes queued behind one
+build.
