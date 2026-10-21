@@ -3769,7 +3769,7 @@ silently and looks exactly like missing data. This is the third sport to pay
 for it. NCAAB opens 2026-11-03 with no map at all - it will be the fourth
 unless its branch lands with the season.
 
-### B87 - the NBA "in review" banner must be REMOVED when the build ships - OPEN
+### B87 - the NBA "in review" banner must be REMOVED when the build ships - **CLOSED** `112fd145`
 
 `sport_registry.NBA.state_message` was set 2026-10-20 so users could see WHY
 the NBA cards were vacant:
@@ -3832,7 +3832,7 @@ NEXT: decide whether the spread/total reads should keep publishing at all, or
 route through the Fade filter (the one football spread edge that survived a
 holdout). That is a product call, not a measurement.
 
-### B89 - two receipts hold raw LLM markdown in their identity columns - OPEN (cannot be repaired)
+### B89 - two receipts hold raw LLM markdown in their identity columns - **CLOSED, nothing to repair**
 
 Found by B88's auditor refusing to classify them. Receipts 9878 and 9879
 (2026-08-02, MLB, game_read, capture_mode=reconstructed) have the model's raw
@@ -3963,7 +3963,7 @@ same per-field dump for `ncaaf_game_context`.
 "when it loads when you first clik into the fade the loading things says
 reading line drift (form the split)." Cosmetic, one string, same family as B94.
 
-### B97 - The Fade must be eligible in EVERY sport - OPEN
+### B97 - The Fade must be eligible in EVERY sport - **ANSWERED, blocked with a named unblock** `e111f893`
 
 "The Fade shoudl be elginble in every sports also." Currently football-only
 because the backtested edge (+12.4pp, n=107) is football spreads. Blocker to
@@ -4013,7 +4013,7 @@ yet?" Known context: NHL props carry a documented over-bias and are marked
 info-only, and NHL props could not join their game (10-03). Needs a readiness
 call per sport, not a blanket switch.
 
-### B104 - today's Sweat Card: NHL spreads, and no NBA - OPEN
+### B104 - today's Sweat Card: NHL spreads, and no NBA - **CLOSED** `d3c4cecf`
 
 "Todays Sweat Card NHL spreads, how do we do woth those? why are those p[lays
 on sweat card... we definitly should one prop and one nba jerry pick." Two
@@ -4506,3 +4506,90 @@ in this file.
 basis on which to set a gate at all. Recommendation: neither goes live now; NBA
 becomes viable once it has graded history, NHL only after the over-bias is
 fixed.
+
+## 2026-10-20 night · B104 / B97 / B87 / B89
+
+### B104 — NHL pucklines off the card, and that removes NHL from the card
+
+    NHL ml      96-74   56.5%   ROI  -4.3%  (124 priced)
+    NHL rl       5-10   33.3%   ROI -29.7%  ( 14 priced)   <- was on the card
+    NHL total     3-1   75.0%   ROI +33.6%  (  3 priced)
+
+`project_nhl_rl_market_not_viable_1003` called the puckline dead on 10-03 and
+the composer had NO market gate to act on it. One added,
+`CARD_INELIGIBLE_MARKETS = {('NHL','rl')}`.
+
+**⚠ CONSEQUENCE, not buried:** of NHL primary_play rows reaching PRIME/STRONG —
+the only tiers the cross-sport builder takes — it is **rl 20, ml 0, total 0**.
+Every card-eligible NHL pick is a puckline, so this removes NHL from the Sweat
+Card entirely until the engine starts tiering the market that works. That is
+the deeper defect (`project_nhl_picks_no_market_1001`) and is NOT fixed here.
+No NHL pick beats a -29.7% one, so the gate stands. Scoped to the card only —
+NHL rl still generates, reads, shows in the Steam Room and accrues a record,
+which matters at n=14.
+
+NBA rl deliberately NOT gated: 3 of 4 card-eligible NBA picks are pucklines
+too, but NBA has no graded side history, so there is nothing to gate on.
+
+TWO IMPLEMENTATION MISTAKES WORTH KEEPING: the gate first sat only in `add()`,
+which turned out to receive ONLY POTD, DotD and props — NHL game-side picks
+take a separate cross-sport builder and would have sailed past it. **A gate
+that cannot fire is worse than none**, because it reads as covered. And a skip
+counter using `'_skipped_market' in dir()` to self-initialise in a nested scope
+was removed — that is the UnboundLocalError class that cost a full NFL Sunday.
+
+### B97 — the Fade's sign is fine; the DIRECTION blocks it
+
+The Fade is already sport-aware and already correct: `_HOME_HANDICAP_SIGN`
+verified against line_history, and it SKIPS unlisted sports rather than
+guessing. Both signs independently re-confirmed by two more methods:
+
+    sport    n      MAE -cs/+cs     home win% cs<0/cs>0   convention
+    MLB    2132     3.52 / 3.89     58.0% / 45.5%         HANDICAP   (+1)
+    NFL    7338    14.60 / 10.26    35.4% / 67.4%         HOME-MARGIN(-1)
+    NCAAF  6546    11.97 / 28.73    78.7% / 29.4%         HANDICAP   (+1)
+    NBA    2398    10.85 / 17.51    68.8% / 33.1%         HANDICAP   (+1)
+
+NFL genuinely stores the OPPOSITE convention to every other sport
+(`project_close_spread_sign_bug_914`, still true). NCAAF also confirmed on the
+CONTEXT table the Fade reads: cs<0 → home wins 84.4%, cs>0 → 26.4%, n=492.
+
+**It still cannot be widened, because of direction not sign.** Tonight's
+money-flow grading: MLB spread FADE (the only candidate), **MLB total FOLLOW**,
+NCAAF total nothing, NHL/NBA n<30. Putting MLB totals on a surface called The
+Fade publishes the side the data says to take the other way — an inversion with
+a friendly name.
+
+UNBLOCK CONDITION, named: MLB runline is legitimate once
+`mlb_game_context` retention is fixed so its sign can be verified **on the
+table the Fade actually reads**. The results-table sign is NOT transferable —
+that is the entire reason the constant exists, and how B71 inverted Red River.
+
+### B87 — it nags nightly instead of going stale
+
+The banner says a fix is "in review for the next app update": true today, FALSE
+the hour the build ships, and no version telemetry reaches the pipeline. Auto-
+clearing on a date would delete the one thing NBA users need if the build slips;
+silence is how a stale promise sits in front of paying users. So the nightly
+scans EVERY registry row for build-promise phrasing and prints a warning, and
+`--clear-build-promise NBA` does it in one command. Scanned across all sports,
+not just the three the refresher OWNS — a scan limited to OWNED would have
+missed the only row it was written for.
+
+### B89 — nothing to repair, and the record is RIGHT
+
+B89 proposed voiding one WIN or accepting two unclassifiable rows. Both halves
+of the premise were wrong:
+
+* **9878 is already `NO_ACTION`** — it was a PASS, so it correctly counts for
+  nothing.
+* **9879's pick is recoverable from the smeared text** ("cleveland guardians ml
+  / home / conviction 66") and its WIN is **VERIFIED CORRECT**: on 2026-08-02,
+  ARI 0 @ CLE 5. It picked Cleveland ML at home. The grade is right.
+* The garbled columns are **not user-facing**: the app renders `surface_records`
+  rollups, never raw `public_receipts` rows.
+
+So the record is accurate, identity is immutable by design, and the only cost
+is that an auditor must skip two rows — which B88's auditor already does. **Do
+not "fix" these.** Changing a correct WIN to UNGRADEABLE would have made the
+record wrong in the name of tidiness.
