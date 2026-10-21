@@ -75,6 +75,11 @@ from prop_ctx_resolve import build_ctx_index, resolve_ctx, derive_side_fields
 # keeping the strong 0.70+ zone tiering as PRIME. Below-0.60 winners
 # fall to STRONG (still actionable) — user still gets exposure but at
 # lower unit size. Reweight after 30d of the tightened cohort.
+# Set PROP_TIER_FLOOR_DEBUG=1 to print every tier the structural floor pulls
+# back. Off by default so a normal run is not 60 lines of demotions, on when
+# auditing what the legacy promotion rules were doing.
+_TIER_FLOOR_DEBUG = os.environ.get('PROP_TIER_FLOOR_DEBUG') == '1'
+
 PROP_TIER_THRESHOLDS = {
     'PRIME':  {'min_score': 0.60, 'min_classes': 3, 'min_margin': 0.20, 'min_signals': 4},
     'STRONG': {'min_score': 0.18, 'min_classes': 2, 'min_margin': 0.10, 'min_signals': 3},
@@ -763,6 +768,66 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
                 tier = 'STRONG'
     except (TypeError, ValueError):
         pass  # any bad row silently passes through unchanged
+
+    # ══ 2026-10-21 · STRUCTURAL FLOOR — PROMOTIONS CANNOT OUTRANK EVIDENCE ══
+    #
+    # PROP_TIER_THRESHOLDS requires 4 unique signals and 3 classes for PRIME,
+    # and the gate that applies it is correct. But the legacy R3/R4 rules
+    # above run AFTERWARDS and assign tiers directly:
+    #
+    #   R3  l10 >= 8                      -> COVERAGE->LEAN->STRONG->PRIME
+    #   R4  l5 >= 4 and l10 >= 8          -> PRIME if conviction >= 60
+    #
+    # Neither consults min_signals, min_classes, min_score or min_margin, and
+    # both run after the `conviction < 75 -> STRONG` demote, so they also
+    # escape that. Measured on the 2026-10-21 NHL board: 64 PRIME decisions
+    # where a sampled row carried score 0.409 (PRIME needs 0.60), margin
+    # 0.031 (needs 0.20), ONE unique signal (needs 4), ONE class (needs 3)
+    # and conviction 67 (needs 75). It failed every criterion and was PRIME.
+    #
+    # This was dormant until today. The rules key on player_l10_hit_count,
+    # which was NULL on every NHL and NBA prop because the lookback
+    # enrichment was being orphaned by the generator's conflict key. Fixing
+    # the enrichment ACTIVATED them, which is why PRIME went from 0 to 64 in
+    # one run.
+    #
+    # Worse, for NHL the thing being promoted on is measured worthless:
+    # calibrate_prop_signals puts nhl_prop_l10_extreme -- the same l10 >= 8 /
+    # <= 2 information -- at 59.9% against a 60.4% breakeven inside the
+    # publishable band, n=3,511. A promotion ladder built on MLB backtests
+    # ("stack_alert hits 68.5% n=343") is being applied to a sport where the
+    # underlying signal does not beat its own price, and was never
+    # re-validated there.
+    #
+    # Rather than patch each rule, clamp once at the end: a prop may not
+    # HOLD a tier whose structural bar it does not meet. One place to audit,
+    # and it covers promotion paths added later too. Demotions are
+    # unaffected, and nothing here can raise a tier.
+    _floor_order = ('PRIME', 'STRONG')
+    for _t in _floor_order:
+        if tier != _t:
+            continue
+        _th = PROP_TIER_THRESHOLDS[_t]
+        if not (win_score >= _th['min_score']
+                and win_classes >= _th['min_classes']
+                and win_unique_signals >= _th.get('min_signals', 1)
+                and margin >= _th['min_margin']):
+            # Fall to the best tier it DOES satisfy.
+            _demoted = 'LEAN'
+            if _t == 'PRIME':
+                _s = PROP_TIER_THRESHOLDS['STRONG']
+                if (win_score >= _s['min_score']
+                        and win_classes >= _s['min_classes']
+                        and win_unique_signals >= _s.get('min_signals', 1)
+                        and margin >= _s['min_margin']):
+                    _demoted = 'STRONG'
+            if _TIER_FLOOR_DEBUG:
+                print(f'    [floor] {prop.get("player_name")} '
+                      f'{prop.get("prop_type")}: {tier} -> {_demoted} '
+                      f'(score={win_score:.3f} classes={win_classes} '
+                      f'signals={win_unique_signals} margin={margin:.3f})')
+            tier = _demoted
+        break
 
     return PropDecision(
         sport=sport, game_date=prop.get('game_date',''),
