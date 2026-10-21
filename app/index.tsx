@@ -15007,6 +15007,46 @@ setJerryHistory(prev => {
   return game.away_team.toLowerCase().includes(gamesSearch.toLowerCase()) ||
     game.home_team.toLowerCase().includes(gamesSearch.toLowerCase());
 }).sort((a, b) => {
+  // ══ 2026-10-20 · B99 · THE FILTERS WORK, THE SORTS WERE SPORT-BLIND ══
+  // ANDY: "we need to take a look at game tab filters across all sport i.e
+  // the time conviction best edge and the prime only and strong only one,
+  // verify workign as designed."
+  //
+  // Verified by reading every branch against the ctx maps that exist:
+  //
+  //   time          correct — commence_time only, no ctx involved
+  //   Prime Only    correct — sport-aware map, fixed 08-25 and again 09-28
+  //   Strong+       correct — same path
+  //   CONVICTION    BROKEN on five sports. getPP() read mlbGameContext ONLY,
+  //                 so every NFL/NCAAF/NHL/NBA/NCAAB game resolved pp =
+  //                 undefined, tier '' and tierWt 0. The whole slate tied at
+  //                 zero and fell through to the client score, which means
+  //                 "sort by conviction" was not sorting by conviction in any
+  //                 sport but MLB.
+  //   BEST EDGE     BROKEN on NHL and NBA. Its map handled NFL and NCAAF then
+  //                 fell back to mlbGameContext, so NHL/NBA never saw their
+  //                 own primary_play and the LR signal was always 0 for them.
+  //
+  // This is the SAME sport-blind-map defect already fixed twice in this file
+  // (the 08-25 and 09-28 notes in the Prime Only filter above say so in as
+  // many words). It kept coming back because each call site carried its own
+  // copy of the map chain. One resolver now, used by both sorts, so the next
+  // sport is a one-line change in one place instead of three that drift.
+  const _ctxMapFor = (sp: string): any =>
+    sp === 'NFL'   ? (nflGameContextMap || {}) :
+    sp === 'NCAAF' ? (ncaafGameContextMap || {}) :
+    sp === 'NHL'   ? (nhlGameContextMap || {}) :
+    sp === 'NBA'   ? (nbaGameContextMap || {}) :
+    (mlbGameContext || {});
+  const _ppFor = (g: any): any => {
+    const m = _ctxMapFor(gamesSport);
+    const ctxAny: any = m[g.id]
+      || Object.values(m).find((c: any) =>
+           c && (c.home_team === g.home_team || c.away_team === g.away_team));
+    let pp: any = ctxAny?.primary_play;
+    if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
+    return pp;
+  };
   if(gamesSort === 'time') return new Date(a.commence_time) - new Date(b.commence_time);
   if(gamesSort === 'score') {
     // 2026-08-20: Conviction now driven by primary_play (ensemble output),
@@ -15014,13 +15054,11 @@ setJerryHistory(prev => {
     // score is the tiebreak within tier. Falls back to sweatScore only
     // when primary_play isn't populated (non-MLB or pre-ensemble games).
     const tierWt = (t: string) => t==='PRIME'?3:t==='STRONG'?2:t==='LEAN'?1:0;
-    const getPP = (g: any) => {
-      const ctxAny: any = mlbGameContext[g.id]
-        || Object.values(mlbGameContext).find((c: any) =>
-             c.home_team === g.home_team || c.away_team === g.away_team);
-      return ctxAny?.primary_play;
-    };
-    const ppA = getPP(a); const ppB = getPP(b);
+    // 2026-10-20 B99: was mlbGameContext only — see the note at the top of
+    // this sort. _ppFor is sport-aware and also parses a JSONB string, which
+    // the old getPP did not, so an NFL row storing primary_play as text came
+    // back as a string and every property read undefined.
+    const ppA = _ppFor(a); const ppB = _ppFor(b);
     // Convert ensemble score (0-2+ range) to 0-100 scale for tiebreak sanity
     const scoreA = ppA?.score != null ? Math.round(ppA.score * 50) :
                    (sweatScores[a.id]?.total || getSweatScoreForGame(a, gamesSport)?.total || 0);
@@ -15055,16 +15093,10 @@ setJerryHistory(prev => {
         spreadEdge = Math.min(100, Math.abs(sc.projectedSpread - sc.marketSpread) * 10);
       }
 
-      // (2) LR conviction signal (from primary_play, sport-aware ctx lookup)
-      const sportMap: any =
-        gamesSport === 'NFL'   ? (nflGameContextMap || {}) :
-        gamesSport === 'NCAAF' ? (ncaafGameContextMap || {}) :
-        mlbGameContext;
-      const ctxAny: any = sportMap[g.id]
-        || Object.values(sportMap).find((c: any) =>
-             c && (c.home_team === g.home_team || c.away_team === g.away_team));
-      let pp: any = ctxAny?.primary_play;
-      if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
+      // (2) LR conviction signal. 2026-10-20 B99: this had its own map chain
+      // that stopped at NCAAF, so NHL and NBA fell back to mlbGameContext and
+      // their LR signal was permanently 0. Uses the shared resolver now.
+      const pp: any = _ppFor(g);
       let lrEdge = 0;
       if (pp?._lr_p_home_win != null) {
         lrEdge = Math.min(100, Math.abs(Number(pp._lr_p_home_win) - 0.5) * 200);
