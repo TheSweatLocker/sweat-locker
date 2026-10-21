@@ -4020,7 +4020,7 @@ on sweat card... we definitly should one prop and one nba jerry pick." Two
 parts: justify NHL spreads on the card against their own record, and whether
 the composer can reach NBA at all on opening week.
 
-### B106 - grade_money_flow.py is written but never run or committed - OPEN
+### B106 - grade_money_flow.py is written but never run or committed - **CLOSED** `6f2d8aef`
 
 Written today, the vig bug in it fixed (it had used `100 - favourite_implied`
 as the fade breakeven, which is the vig-free complement, not the price of the
@@ -4373,3 +4373,45 @@ changes the key.
 
 VERIFY after the build: an NBA Recent Schedule L5 lists only games on or after
 2026-10-20, and NHL's is unchanged.
+
+## 2026-10-20 · B106 CLOSED - money flow graded, and nothing in it is a fact
+
+Three things were wrong with the first pass, all caught before anything reached
+the registry the engine reads:
+
+1. **68% of every split was being discarded.** "no context row: 1967" was NOT a
+   join bug - snapshot ids match context at NFL 100%, NCAAF 99%, NHL 100%, NBA
+   100%. MLB matched **3%** because `mlb_game_context` retains only 28 rows
+   against 675 MLB games in line_snapshot. `mlb_game_results` keeps 4,833 rows
+   with the closing line AND final score and matches on **99%**. Falling back
+   to it took gradeable rows 921 -> **2,869** and MLB 48 -> **1,993 games**.
+2. **The early/late split was printed and ignored.** The docstring says the
+   halves are shown so a one-half bucket "is visible as such", then the tier
+   used the pooled edge alone - handing weight 1.00 to NCAAF public_heavy_65 rl
+   at 58.5% with halves **51% / 66%**. VALIDATED now needs both halves to clear.
+3. **`wilson()` was defined in the file and never called.** NCAAF
+   public_heavy_70 rl still passed at 1.00 on 33-20: 62.3%, n=53, lower bound
+   **49.3%** vs a 52.4% breakeven. VALIDATED now needs the LOWER BOUND to clear.
+
+**RESULT: nothing is VALIDATED.** Every bucket in every sport has a CI spanning
+breakeven, so the ceiling is **0.50** - shadow weight, not fact. 28 rows
+written. The interval prints on every line and is stored in every description,
+so a tier can be checked rather than trusted.
+
+WHAT THE DATA SAYS, direction never assumed:
+
+    MLB   spread  FADE the public   54-55%  n=248-453, both halves clear
+    MLB   total   FOLLOW the money  55-58%  n=157/100 on money_vs_bets
+    MLB   ml      NOTHING WORKS     every bucket REJECTED on price-implied
+                                    breakeven - independent confirmation of
+                                    "never test public money on the ML"
+    NCAAF spread  FADE the public   54-62%, but one half or the CI fails
+    NCAAF total   NOTHING           at or under breakeven everywhere
+    NFL/NHL/NBA   n too small to grade
+
+**MLB fading on the spread while FOLLOWING on the total** is the sharpest
+version yet of `project_split_flags_opposite_by_sport_1012`: the direction
+flips not just by sport but by MARKET WITHIN a sport. No global money-flow
+treatment can be right.
+
+Scheduled in the nightly as a detector on the first night it existed.
