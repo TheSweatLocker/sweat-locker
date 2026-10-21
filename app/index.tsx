@@ -3101,8 +3101,41 @@ setEvData(evOpps.slice(0,20));
         if (isNaN(t.getTime())) return null;
         // Backend first — it is the authority and the arithmetic cannot match
         // it in general.
-        const etDay = new Date(t.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-        const key = `${etDay.getFullYear()}-${String(etDay.getMonth() + 1).padStart(2, '0')}-${String(etDay.getDate()).padStart(2, '0')}`;
+        // ══ 2026-10-20 · THIS LOOKUP KEY WAS NEVER MATCHING ON DEVICE ══
+        // ANDY: "why only one game new mexico state is showing in ncaaf games
+        // tab if you said ythere are otheres".
+        //
+        // The 10-07 fix (read the date->week map from the table that knows)
+        // was correct and the map loads fine. The KEY built to read it did
+        // not survive Hermes:
+        //
+        //   new Date(t.toLocaleString('en-US', {timeZone:'America/New_York'}))
+        //
+        // round-trips a Date through the string "10/21/2026, 8:00:00 PM" and
+        // re-parses it. V8 accepts that format, so it works in node and in a
+        // browser; Hermes parses only ISO 8601 and returns **Invalid Date**,
+        // so every component came back NaN, the key read "NaN-NaN-NaN",
+        // _weekByDate never hit, and EVERY game fell through to the 7-day
+        // arithmetic the comment above says cannot reproduce CFB weeks.
+        //
+        // That is why only ONE game showed. Measured for today, Tue 10-20,
+        // with 56 games live on the feed:
+        //
+        //   thisSeasonWk  = 8   (from the map - that call does not use this key)
+        //   weekTodayLow  = Wed 10-21   (Tue roll) -> hides Tue's 3 games
+        //   arithmetic wk: 10-21 -> 8 PASSES      <- NMSU @ Sam Houston, 1 game
+        //                  10-22 -> 9 hidden      (3)
+        //                  10-23 -> 9 hidden      (5)
+        //                  10-24 -> 9 hidden      (44)
+        //
+        // One game, and it is the one he named. The map has all of 10-20..
+        // 10-24 at week 8, so the filter was right and only the key was wrong.
+        //
+        // en-CA returns YYYY-MM-DD directly - no re-parse, nothing for an
+        // engine to disagree about. It is also what the other ~20 ET-date
+        // call sites in this file already use; line 3104 was the only
+        // round-trip. DO NOT reintroduce new Date(toLocaleString(...)).
+        const key = t.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
         if (_weekByDate[key] != null) return _weekByDate[key];
         const anchor = _seasonWeekAnchors[sportKey];
         if (!anchor) return null;

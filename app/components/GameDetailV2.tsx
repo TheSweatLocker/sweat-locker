@@ -162,6 +162,12 @@ type Props = {
   game: any;
   ctx: any;                 // sport's game_context row (nullable when not loaded)
   gamesSport: SportCode;
+  // 2026-10-20 · the nightly-refit model panel for this date, out of
+  // jerry_cache `voices_<date>`. Each entry is one model's OWN number for
+  // this game, so the panel can show genuinely separate opinions instead of
+  // one number restated five times. Optional: a day with no refit renders
+  // no panel rather than an empty one.
+  modelVoices?: any;
   externalPicks?: any[];    // rows from external_picks (non-oddscrowd) — if omitted, fetched inside
   gameProps?: any[];        // rows from mlb_pipeline_props / nfl_props etc. — if omitted, fetched inside
   historicalOdds?: any;     // {opening_spread, opening_total, opening_ml_home, opening_ml_away}
@@ -5692,6 +5698,9 @@ function NHLSlot({ctx, game}: any) {
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
     <>
+      {/* Chips first: what is unusual, before the cards give the numbers -
+          matching NFL/NCAAF/NBA ordering. */}
+      <NHLSituationalCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NHLGoalieMatchupCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NHLSpecialTeamsCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NHLShotQualityCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
@@ -5779,6 +5788,90 @@ function NHLCompareRows({rows, awayTeam, homeTeam}: any) {
 // leaving the user to guess: on the 9/29 VGK game A. Hill sits at -14.17 on
 // a .8705 save percentage against S. Knight at +10.9 and .902, which is a
 // real edge the card previously showed nowhere.
+// ══ 2026-10-20 · NHL SITUATION CHIPS ══
+// ANDY: "NHL doesnt have abdges, also."
+//
+// He is right and it is not a rendering problem: NHL never had a chip card.
+// NFL, NCAAF and NBA each have a *SituationalCard; NHL had four stat cards and
+// no chip row, so there was nothing to show.
+//
+// EVERY FIELD CHECKED POPULATED FIRST, over 40 forward NHL contexts:
+//   home/away_back_to_back        40/40
+//   home/away_rest_days           40/40   (days ELAPSED - see NHLRestCard)
+//   home/away_goalie              40/40   named
+//   home/away_goalie_confirmed    40/40
+//   home/away_goalie_gsaa         38/40
+//   home_pp_pct / away_pk_pct     40/40
+//   away_consecutive_road_games   40/40
+//
+// THE CHIPS ARE THE ONES THAT MOVE A HOCKEY GAME, in that order: a
+// back-to-back usually means the backup, an unconfirmed starter means the
+// whole goalie read is provisional, and GSAA is the number that actually
+// separates goalies. Thresholds are explicit so the row stays silent on an
+// ordinary game instead of decorating every card.
+function NHLSituationalCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NHL', 'game_detail', 'situational', true);
+  if (!isEnabled) return null;
+
+  const hB2B = ctx?.home_back_to_back === true;
+  const aB2B = ctx?.away_back_to_back === true;
+  const hR = ctx?.home_rest_days, aR = ctx?.away_rest_days;
+  // 2+ days apart in a sport that plays every other night; 1 is normal.
+  const restEdge = (hR != null && aR != null && Math.abs(Number(hR) - Number(aR)) >= 2)
+    ? (Number(hR) > Number(aR) ? homeTeam : awayTeam) : null;
+  const restDays = restEdge ? Math.abs(Number(hR) - Number(aR)) : 0;
+
+  // An unconfirmed starter makes the goalie matchup provisional, which is
+  // worth flagging precisely because the Goalie card below looks definitive.
+  const hUnconf = ctx?.home_goalie_confirmed === false;
+  const aUnconf = ctx?.away_goalie_confirmed === false;
+
+  // GSAA is goals saved above average. +8 over a season is a real edge and
+  // -8 is a real hole; inside that band it is noise and gets no chip.
+  const hG = ctx?.home_goalie_gsaa != null ? Number(ctx.home_goalie_gsaa) : null;
+  const aG = ctx?.away_goalie_gsaa != null ? Number(ctx.away_goalie_gsaa) : null;
+  const eliteSide = (hG != null && hG >= 8) ? homeTeam : (aG != null && aG >= 8) ? awayTeam : null;
+  const eliteVal = eliteSide === homeTeam ? hG : aG;
+  const weakSide = (hG != null && hG <= -8) ? homeTeam : (aG != null && aG <= -8) ? awayTeam : null;
+  const weakVal = weakSide === homeTeam ? hG : aG;
+
+  // Special teams as the CROSS matchup - a power play is only as good as the
+  // kill it faces. Same reasoning as NHLSpecialTeamsCard below.
+  const hPPvsAPK = (ctx?.home_pp_pct != null && ctx?.away_pk_pct != null)
+    ? Number(ctx.home_pp_pct) - (100 - Number(ctx.away_pk_pct)) : null;
+  const aPPvsHPK = (ctx?.away_pp_pct != null && ctx?.home_pk_pct != null)
+    ? Number(ctx.away_pp_pct) - (100 - Number(ctx.home_pk_pct)) : null;
+  const stEdge = (hPPvsAPK != null && aPPvsHPK != null
+                  && Math.abs(hPPvsAPK - aPPvsHPK) >= 8)
+    ? (hPPvsAPK > aPPvsHPK ? homeTeam : awayTeam) : null;
+
+  // A long road trip is a real fatigue signal and only the away column is
+  // populated (see the note in NHLRestCard), so only the away side is shown.
+  const roadTrip = ctx?.away_consecutive_road_games != null
+    && Number(ctx.away_consecutive_road_games) >= 4
+    ? Number(ctx.away_consecutive_road_games) : null;
+
+  const any = hB2B || aB2B || restEdge || hUnconf || aUnconf || eliteSide
+    || weakSide || stEdge || roadTrip;
+  if (!any) return null;
+
+  return (
+    <Section title="Situation" hint="what is unusual about this game">
+      <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 6}}>
+        {aB2B && <SitChip label={`${abbrev3(awayTeam)} 2nd of a back-to-back`} kind="warn" />}
+        {hB2B && <SitChip label={`${abbrev3(homeTeam)} 2nd of a back-to-back`} kind="warn" />}
+        {restEdge && <SitChip label={`Rest edge · ${abbrev3(restEdge)} +${restDays}d`} kind="info" />}
+        {aUnconf && <SitChip label={`${abbrev3(awayTeam)} goalie unconfirmed`} kind="warn" />}
+        {hUnconf && <SitChip label={`${abbrev3(homeTeam)} goalie unconfirmed`} kind="warn" />}
+        {eliteSide && <SitChip label={`Elite goalie · ${abbrev3(eliteSide)} ${eliteVal! > 0 ? '+' : ''}${eliteVal!.toFixed(1)} GSAA`} kind="info" />}
+        {weakSide && <SitChip label={`Weak goalie · ${abbrev3(weakSide)} ${weakVal!.toFixed(1)} GSAA`} kind="warn" />}
+        {stEdge && <SitChip label={`Special teams · ${abbrev3(stEdge)}`} kind="info" />}
+        {roadTrip && <SitChip label={`${abbrev3(awayTeam)} on a ${roadTrip}-game road trip`} kind="warn" />}
+      </View>
+    </Section>
+  );
+}
+
 function NHLGoalieMatchupCard({ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled('NHL', 'game_detail', 'goalie_matchup', true);
   const hG = ctx?.home_goalie, aG = ctx?.away_goalie;
