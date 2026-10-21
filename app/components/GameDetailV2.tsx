@@ -9430,9 +9430,46 @@ const styles = StyleSheet.create({
   lineMoveDelta: {fontSize: 10, fontVariant: ['tabular-nums']},
 
   // Lens grid
-  lensGrid: {flexDirection: 'row', gap: 5},
+  // ══ 2026-10-21 · THE LENS ROW HAS TO WRAP ══
+  //
+  // ANDY: "model concensus in nfl games are not formatted correct, indiual
+  // boxes not wide enough but vertically stretcehded with one lietter in
+  // each row. NHL not wide neough either i woudlnchekc all sport it
+  // currenlty loks sloppy".
+  //
+  // This was `flexDirection: 'row'` with no wrap, and every tile at
+  // `flex: 1`. So N tiles divided ONE row between them: the 2026-09-28 note
+  // in LensGrid already worked out that seven tiles leaves ~38px of content
+  // width each, against ~46px for "STRONG" at 12px bold. More lenses have
+  // been added since (MC joined the NFL row, GOAT, LR, SP+, panel, v3, v4),
+  // so each is narrower still. With no whitespace to break on, React Native
+  // breaks INSIDE the word - one character per line - and the tile grows
+  // vertically instead of horizontally. That is the "vertically stretched
+  // with one letter in each row" exactly.
+  //
+  // The earlier fix shrank the font on the single widest tile (smallText on
+  // GOAT), which treated the symptom on one tile and left the cause. Fixed
+  // at the cause now: the row WRAPS, and a tile has a real minimum width.
+  //
+  // flexBasis 31% + wrap gives three per row on a phone. minWidth 88 is the
+  // floor that actually matters: 88 - 14 padding = 74px of content against
+  // ~46px for the widest value ("STRONG", "DAL 5.7"), so there is whitespace
+  // for a wrap to land on and no reason to break a word.
+  //
+  // flexGrow is 0, NOT 1, so every tile keeps the same width. With grow the
+  // leftover tile on a final row - seven lenses wrap to 3/3/1 - would
+  // stretch to the full width and read as a different kind of element rather
+  // than the last of a set. Uniform tiles and a left-aligned short row is
+  // the grid a reader can count, which is the whole job of this section.
+  //
+  // One shared style, used in exactly one place (the tile in LensGrid), so
+  // this fixes every sport at once rather than per-sport - which is what
+  // Andy asked for, and the right shape anyway since the bug is geometric,
+  // not sport-specific.
+  lensGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 5},
   lens: {
-    flex: 1, backgroundColor: C.surface2, borderRadius: 6, padding: 7,
+    flexGrow: 0, flexBasis: '31%', minWidth: 88,
+    backgroundColor: C.surface2, borderRadius: 6, padding: 7,
     alignItems: 'center', gap: 3, borderTopWidth: 2,
   },
   lensName: {fontSize: 9, fontWeight: '700', color: C.textMuted, letterSpacing: 0.6, textTransform: 'uppercase'},
