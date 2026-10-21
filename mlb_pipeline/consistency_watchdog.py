@@ -450,6 +450,281 @@ def check_prop_direction_flip_drift(date: str) -> Optional[dict]:
     }
 
 
+# ══ 2026-10-21 · THE CARD CONTRADICTED ITSELF AND EVERY GATE PASSED ══
+# QA on GSW @ LAL found a card arguing with itself: the headline said Lakers
+# -5.5 while the market strip said -6.5, the model tile named Golden State, the
+# predicted score favoured Golden State, the Monte Carlo had the Lakers by only
+# 2.6 against a -6.5 line, and Jerry wrote that a 62% win probability was
+# "clean enough to price out the heavy ML" when -225 implies 69.2%.
+#
+# Every one of those passed. consistency_watchdog ran the same morning and
+# reported 0/7 tripped, because none of its seven checks look at whether a
+# published pick agrees with the numbers printed beside it.
+#
+# These are those checks. Two of them are SIGN-FREE and therefore run on every
+# sport; the third needs a spread convention and runs ONLY where that
+# convention has been proven from the writer, because a watchdog that is itself
+# wrong about a sign is worse than no watchdog.
+#
+#   A. PRICE vs MODEL  (sign-free, every sport)
+#      If we take a side at a price whose implied probability EXCEEDS our own
+#      model's win probability for that side, we are laying a number our model
+#      says is too short. That is the GSW @ LAL error exactly: 62% model
+#      against 69.2% implied. CRITICAL, because it is a direct bet-quality
+#      statement and it is unambiguous.
+#
+#   B. PICK LINE vs MARKET  (sign-free, every sport)
+#      Reports the gap between the line we published and the line now on the
+#      board, AND which way it runs. This is deliberately a WARNING, not an
+#      error: holding -5.5 while the market moves to -6.5 is the pick lock
+#      working and is GOOD closing-line value. The defect is that the card
+#      shows both numbers and explains neither, so a reader sees a
+#      contradiction where there is a held number.
+#
+#   C. PROJECTION vs PICK SIDE  (needs a sign; NBA and NCAAF only)
+#      Whether the model's own projected_spread favours the side we picked.
+#      NBA is negative-is-home (nba_elo.elo_to_spread, verified by call);
+#      NCAAF is positive-is-home. NFL's context game_ids do not join its
+#      results, NHL's writer is unsettled and MLB's retention is 24 rows, so
+#      those are SKIPPED by name rather than assumed.
+
+#: projected_spread orientation, from each sport's WRITER. Positive value means
+#: "positive = home favoured". Absent = not proven, do not check.
+_PROJ_HOME_POSITIVE = {'NCAAF': True, 'NBA': False}
+
+#: close_spread orientation, proven 2026-10-20 by two methods on n=2132-7338.
+_CLOSE_HOME_POSITIVE = {'NFL': True, 'NCAAF': False, 'NBA': False, 'MLB': False}
+
+_CTX_TABLE = {'NBA': 'nba_game_context', 'NCAAF': 'ncaaf_game_context',
+              'NFL': 'nfl_game_context', 'NHL': 'nhl_game_context',
+              'MLB': 'mlb_game_context'}
+
+
+def _implied(american) -> Optional[float]:
+    try:
+        a = float(american)
+    except (TypeError, ValueError):
+        return None
+    if a == 0:
+        return None
+    return (abs(a) / (abs(a) + 100.0)) if a < 0 else (100.0 / (a + 100.0))
+
+
+def check_card_self_contradiction(date: str) -> Optional[dict]:
+    """Published picks that disagree with the numbers printed beside them."""
+    problems = []
+    for sport, tbl in _CTX_TABLE.items():
+        r = requests.get(
+            f'{SB}/rest/v1/{tbl}', headers=H_R,
+            params={'select': '*', 'game_date': f'eq.{date}', 'limit': '200'},
+            timeout=20)
+        if r.status_code != 200:
+            continue
+        for g in (r.json() or []):
+            pp = g.get('primary_play')
+            if isinstance(pp, str):
+                try:
+                    pp = json.loads(pp)
+                except Exception:                              # noqa: BLE001
+                    pp = None
+            if not isinstance(pp, dict):
+                continue
+            side = str(pp.get('side') or '').upper()
+            if side not in ('HOME', 'AWAY'):
+                continue
+            # 2026-10-21 refinement: only judge picks that can REACH a
+            # surface. The first run flagged eight, six of them COVERAGE tier
+            # — a tier the card never shows. Judging rows nobody publishes is
+            # how a check earns a mute.
+            if str(pp.get('tier') or '').upper() not in ('PRIME', 'STRONG', 'LEAN'):
+                continue
+            market = str(pp.get('type') or '').lower()
+            match = f"{g.get('away_team')} @ {g.get('home_team')}"
+            tier = str(pp.get('tier') or '')
+
+            # ── A. price vs model win probability ──────────────────────
+            wp = pp.get('_lr_p_home_win')
+            if wp is None:
+                lr = pp.get('_lr_ml_shadow') or {}
+                wp = lr.get('p_home_win') if isinstance(lr, dict) else None
+            # 2026-10-21 refinement: a win probability priced against the
+            # MONEYLINE says nothing direct about a SPREAD bet — a team can be
+            # a 62% favourite and still be good value at -5.5. The first run
+            # fired this on three spread picks, which is apples to oranges and
+            # exactly the kind of false positive that gets a gate ignored. So
+            # the price test now runs ONLY on moneyline picks, and spreads get
+            # the test that actually applies to them (below).
+            if wp is not None and market == 'ml':
+                try:
+                    p_home = float(wp)
+                    p_side = p_home if side == 'HOME' else 1.0 - p_home
+                    price = (g.get('home_ml_close') if side == 'HOME'
+                             else g.get('away_ml_close'))
+                    if price is None:
+                        price = (g.get('close_home_ml') if side == 'HOME'
+                                 else g.get('close_away_ml'))
+                    imp = _implied(price)
+                    if imp is not None and p_side < imp - 0.03:
+                        problems.append({
+                            'sport': sport, 'game': match, 'kind': 'PRICE',
+                            'tier': tier,
+                            'detail': (f'ML pick: model {p_side*100:.0f}% on '
+                                       f'{side} vs {imp*100:.0f}% implied by '
+                                       f'{price} — laying a price our own '
+                                       f'model calls too short'),
+                        })
+                except (TypeError, ValueError):
+                    pass
+
+            # ── A2. SPREAD picks: does our projection cover the line ──
+            # The right question for a spread bet, and it needs the same
+            # proven sign table as check C.
+            hp0 = _PROJ_HOME_POSITIVE.get(sport)
+            ps0 = g.get('projected_spread')
+            pl0 = pp.get('line')
+            if (market in ('rl', 'spread') and hp0 is not None
+                    and ps0 is not None and pl0 is not None):
+                try:
+                    norm = float(ps0) * (1.0 if hp0 else -1.0)   # +ve = home
+                    # margin the pick needs: a -6.5 home pick needs home +6.5
+                    need = abs(float(pl0))
+                    got = norm if side == 'HOME' else -norm
+                    # 2026-10-21: require a MEANINGFUL shortfall. The first
+                    # run flagged "laying -7.5, projection has 7.3" — a 0.2
+                    # gap on a model with multi-point error. Anything under a
+                    # point is agreement, not contradiction.
+                    if float(pl0) < 0 and (need - got) >= 1.0:
+                        problems.append({
+                            'sport': sport, 'game': match, 'kind': 'COVER',
+                            'tier': tier,
+                            'detail': (f'laying {float(pl0):+g} on {side} but '
+                                       f'our projection has that side by only '
+                                       f'{got:.1f} — our own number does not '
+                                       f'cover the line we published'),
+                        })
+                except (TypeError, ValueError):
+                    pass
+
+            # ── B. published line vs the board ─────────────────────────
+            pl, cs = pp.get('line'), g.get('close_spread')
+            if pl is not None and cs is not None:
+                try:
+                    # ══ 2026-10-21 · MY OWN CHECK HAD A CONVENTION BUG ══
+                    # First refined run reported FLIP on BYU @ UCF, LSU @
+                    # Auburn and Iowa @ Minnesota — every one of them an AWAY
+                    # pick, and every one a FALSE POSITIVE.
+                    #
+                    # primary_play.line is written from the PICKED SIDE's
+                    # perspective ("LSU -7.5"), while close_spread is always
+                    # HOME-perspective. On an away favourite those read as
+                    # opposite signs while describing the SAME bet: board
+                    # +7.5 means home Auburn is a 7.5 underdog, i.e. LSU -7.5.
+                    #
+                    # Normalise to the home perspective before comparing. The
+                    # irony is not lost: a check written to catch cards that
+                    # contradict themselves nearly shipped contradicting
+                    # itself, in exactly the side-vs-home convention family it
+                    # was built to police.
+                    a = float(pl) if side == 'HOME' else -float(pl)
+                    # ══ SECOND CONVENTION BUG IN THE SAME CHECK ══
+                    # The run after the fix above reported FLIP on five NFL
+                    # games. Also false. _CLOSE_HOME_POSITIVE was DEFINED at
+                    # the top of this file and never applied: NFL stores
+                    # close_spread as a HOME MARGIN (positive = home favoured,
+                    # proven 2026-10-20 at MAE 10.26 vs 14.60 and home win%
+                    # 67.4 vs 35.4 on n=7338), while every other sport stores
+                    # a HANDICAP. `a` above is a handicap, so NFL's board has
+                    # to be negated before the two are comparable.
+                    #
+                    # A sport whose convention is NOT in that table is skipped
+                    # rather than assumed — NHL is unproven, and guessing is
+                    # what produced both of these false alarms.
+                    _chp = _CLOSE_HOME_POSITIVE.get(sport)
+                    if _chp is None:
+                        raise ValueError('close_spread convention unproven')
+                    b = float(cs) * (-1.0 if _chp else 1.0)
+                    # 2026-10-21 refinement: do not flag every move. Four of
+                    # the first five hits were the lock HOLDING A BETTER
+                    # NUMBER, which is good closing-line value and not a
+                    # defect. Only two cases deserve a reader's attention:
+                    #   * the sign flipped — the published side is no longer
+                    #     the side the board describes
+                    #   * the board moved far enough that the published number
+                    #     is stale rather than favourable
+                    if (a < 0) != (b < 0) and abs(a - b) >= 1.0:
+                        problems.append({
+                            'sport': sport, 'game': match, 'kind': 'FLIP',
+                            'tier': tier,
+                            'detail': (f'published {a:+g} but the board is '
+                                       f'{b:+g} — the SIGN differs, so the '
+                                       f'published pick and the board do not '
+                                       f'describe the same bet'),
+                        })
+                    else:
+                        # ══ THIRD CONVENTION SLIP, SAME CHECK ══
+                        # This compared MAGNITUDES, which is wrong for a dog.
+                        # It flagged NFL LA @ LV "published +5.5 vs board
+                        # +4.5 — laying MORE than the market asks". Taking
+                        # +5.5 when the board offers +4.5 is a BETTER number,
+                        # not a worse one. Magnitude only tracks quality for
+                        # favourites.
+                        #
+                        # Compare the PICKED SIDE's own number instead: higher
+                        # is always better for whoever holds it, favourite or
+                        # dog. Flag only when we hold a WORSE number than the
+                        # board currently offers, which is the only version of
+                        # this that costs anything.
+                        board_side = b if side == 'HOME' else -b
+                        if float(pl) < board_side - 1.0:
+                            problems.append({
+                                'sport': sport, 'game': match,
+                                'kind': 'STALE', 'tier': tier,
+                                'detail': (f'published {float(pl):+g} on '
+                                           f'{side} but the board now offers '
+                                           f'{board_side:+g} — we are holding '
+                                           f'a WORSE number than is available'),
+                            })
+                except (TypeError, ValueError):
+                    pass
+
+            # ── C. does our own projection favour the side we took ─────
+            hp = _PROJ_HOME_POSITIVE.get(sport)
+            ps = g.get('projected_spread')
+            if hp is not None and ps is not None:
+                try:
+                    norm = float(ps) * (1.0 if hp else -1.0)   # +ve = home
+                    proj_side = 'HOME' if norm > 0 else 'AWAY'
+                    if abs(norm) >= 1.0 and proj_side != side:
+                        problems.append({
+                            'sport': sport, 'game': match, 'kind': 'SIDE',
+                            'tier': tier,
+                            'detail': (f'pick {side} but projected_spread '
+                                       f'favours {proj_side} by '
+                                       f'{abs(norm):.1f}'),
+                        })
+                except (TypeError, ValueError):
+                    pass
+
+    if not problems:
+        return None
+    # FLIP, SIDE, COVER and PRICE are all "the pick argues with its own
+    # numbers". STALE is a value complaint, not a contradiction.
+    hard = [x for x in problems
+            if x['kind'] in ('PRICE', 'SIDE', 'COVER', 'FLIP')]
+    kinds = ', '.join(sorted({x['kind'] for x in problems}))
+    return {
+        'check_name': 'card_self_contradiction',
+        # A pick that argues with its own numbers is a publish-quality
+        # problem, not a cosmetic one — but a held line on its own is not.
+        'severity': 'CRITICAL' if hard else 'WARNING',
+        'message': (f'{len(problems)} published pick(s) disagree with the '
+                    f'numbers shown beside them ({kinds}).'),
+        'detail': {'problems': problems[:25],
+                   'fix_hint': 'card_self_contradiction — see the note above '
+                               'this check for what each kind means'},
+    }
+
+
 CHECKS = {
     'potd_grade_mirror':           check_potd_grade_mirror,
     'sharp_card_props_synthesis':  check_sharp_card_props_have_synthesis,
@@ -458,6 +733,7 @@ CHECKS = {
     'lr_shadow_coverage':          check_lr_shadow_coverage,
     'ncaaf_sides_over_sharp_card': check_ncaaf_sides_over_sharp_card,
     'prop_direction_flip_drift':   check_prop_direction_flip_drift,
+    'card_self_contradiction':     check_card_self_contradiction,
 }
 
 
