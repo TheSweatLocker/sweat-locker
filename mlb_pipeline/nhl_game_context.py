@@ -1188,6 +1188,29 @@ def compute_sweat_score(projected_spread, close_line, confluence_net,
         elif ml_edge >= 0.02:
             score += 6
     elif projected_spread is not None and close_line is not None:
+        # ══ 2026-10-21 · VERIFIED CORRECT — DO NOT MAKE THIS A SUBTRACTION ══
+        # NBA carried this same `abs(ps + cs)` shape and it was WRONG there,
+        # scoring market AGREEMENT as maximum edge on 46% of rows (fixed in
+        # b356569b). NHL was checked the same day by the same method and is
+        # RIGHT, because its two columns use OPPOSITE conventions:
+        #
+        #   projected_spread  POSITIVE = home favoured.
+        #                     nhl_projection.py:253 computes margin = hg - ag,
+        #                     and 187 of 187 stored rows satisfy
+        #                     projected_spread == projected_home_goals -
+        #                     projected_away_goals.
+        #   close_puckline    NEGATIVE = home favoured (a handicap).
+        #                     Home win rate 64.7% when < 0 (n=102) against
+        #                     41.7% when > 0 (n=48).
+        #
+        # Opposite conventions, so the SUM cancels on agreement, which is what
+        # an edge measure has to do. Worked example: puckline -1.5 with the
+        # model at +0.5 gives |0.5 - 1.5| = 1.0, i.e. the model is a goal
+        # short of the line it is being asked to cover.
+        #
+        # The lesson from the NBA bug is NOT "sums are wrong" — it is that the
+        # convention belongs to whoever WRITES each column, and the two columns
+        # in a pair can differ. Check both writers before changing this.
         edge = abs(float(projected_spread) + float(close_line))
         if edge >= 1.5:
             score += 25
