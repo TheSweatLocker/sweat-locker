@@ -4324,7 +4324,7 @@ same sparse pattern, so they never had a line to lose. MLB/NFL/NCAAF are 100%
 on past dates, NHL 97%. The guard added for opens makes the overwrite
 impossible for open_* regardless.
 
-### B109 - preseason games appear in user-facing L5 records - OPEN, needs a decision
+### B109 - preseason games appear in user-facing L5 records - **CLOSED** `b7aff6e6`
 
 Surfaced by B101. `team_recent_games` has NO `season_type`, and neither
 `nba_game_results` nor `nhl_game_results` carries the column, so preseason
@@ -4335,6 +4335,41 @@ what made the NHL record read **100% preseason** on 09-30
 (`project_nhl_preseason_record_930`), and that cost trust. Right now an NBA L5
 is four preseason games and one playoff game from last May.
 
-Not done unilaterally because it is a migration plus a backfill on two results
-tables, and Andy already has 19a waiting. VERIFY once done: an NBA Recent
-Schedule L5 should list only games on or after 2026-10-20.
+**CLOSED `b7aff6e6`, and it needed NO migration at all** - the first read of
+this was wrong on both counts.
+
+THE TRAP: a season filter does not exclude preseason. The matview stamps NBA
+preseason games with season **2026**, the same season as the regular games, so
+filtering on season keeps every one. Boston's 10-16 preseason game and tonight's
+opener are both season=2026.
+
+**The boundary is a DATE, and it was already in the table.**
+`sport_registry.season_start` is populated on every sport - NBA 2026-10-20,
+NHL 2026-09-29, NCAAB 2026-11-03 - so no heuristic, no 45-day window, no
+season_type column and no backfill.
+
+MEASURED BOTH WAYS, which is what shows it is surgical:
+
+    NBA  Boston    before 5 rows / 1 graded  [10-16,10-14,10-10,10-08,05-02]
+                   after  0 rows
+         Detroit   before 5 rows / 2 graded  [10-16,10-14,10-10,10-05,05-17]
+                   after  0 rows
+    NHL  Carolina  before 5 rows / 5 graded  ->  after IDENTICAL
+         Washington                          ->  after IDENTICAL
+
+NHL costs nothing (its L5 was already all regular season). NBA correctly
+empties to "No games logged yet this season" on opening day and fills from
+tomorrow - an honest empty state beats five rows of blanks reading as broken.
+
+Scoped to NBA/NHL/NCAAB; NFL and NCAAF already filter by season, MLB has no
+preseason in results. Team tabs only. FAILS OPEN if season_start is missing.
+
+**The cache key moved to `sport_registry_v2` with the column.** `withCache`
+holds that row set for 30 minutes with staleWhileRevalidate, so adding
+`season_start` under the old key would have served rows lacking it and the
+field would read undefined for half an hour on every warmed device -
+indistinguishable from the feature not working. Any change to that select list
+changes the key.
+
+VERIFY after the build: an NBA Recent Schedule L5 lists only games on or after
+2026-10-20, and NHL's is unchanged.
