@@ -3304,6 +3304,48 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
     ? (Number(season) || (new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1))
     : null;
 
+  // ══ 2026-10-20 · B109 · KEEP PRESEASON OUT OF A USER-FACING RECORD ══
+  // Found while answering B101. On the NBA regular season's first day, a
+  // team's "last 5" was four OCTOBER PRESEASON games plus one playoff game
+  // from last May. Preseason in a record is what made the NHL record read
+  // 100% preseason on 09-30 (project_nhl_preseason_record_930), and that cost
+  // trust rather than accuracy.
+  //
+  // A SEASON FILTER DOES NOT FIX THIS, which is the trap. The matview stamps
+  // NBA preseason games with season 2026 - the same season as the regular
+  // games - so filtering on season keeps every one of them. The boundary is a
+  // DATE, and sport_registry.season_start already holds the authoritative one
+  // (NBA 2026-10-20, NHL 2026-09-29, NCAAB 2026-11-03). No heuristic, no
+  // 45-day window, no new column, no migration: just the date the league says
+  // the season starts.
+  //
+  // Applied to NBA / NHL / NCAAB only. NFL and NCAAF already filter by season
+  // under the 09-16 directive, and MLB rolls forward continuously with no
+  // preseason games in the results table.
+  //
+  // FAILS OPEN on purpose. If season_start is missing or the lookup fails the
+  // filter is skipped, because hiding real games is worse than showing a
+  // labelled preseason row - the unpriced-rows note under this table already
+  // explains those.
+  const PRESEASON_SPORTS = ['NBA', 'NHL', 'NCAAB'];
+  const [seasonStart, setSeasonStart] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!PRESEASON_SPORTS.includes(sport)) { setSeasonStart(null); return; }
+    const client = sb();
+    if (!client) return;
+    let dead = false;
+    (async () => {
+      try {
+        const {data} = await client.from('sport_registry')
+          .select('season_start').eq('sport', sport).limit(1);
+        if (!dead && Array.isArray(data) && data[0]?.season_start) {
+          setSeasonStart(String(data[0].season_start).slice(0, 10));
+        }
+      } catch { /* fail open — see the note above */ }
+    })();
+    return () => { dead = true; };
+  }, [sport]);
+
   React.useEffect(() => {
     const client = sb();
     if (!client || !sport || !homeTeam || !awayTeam) return;
@@ -3316,6 +3358,12 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
         .select('*').eq('sport', sport).eq('team', homeTeam);
       const h2h  = client.from('team_recent_games')
         .select('*').eq('sport', sport).eq('team', homeTeam).eq('opp', awayTeam);
+      if (seasonStart) {
+        // B109: team tabs only. H2H stays cross-season by the same reasoning
+        // as the season filter below - a non-divisional pairing would empty.
+        away.gte('game_date', seasonStart);
+        home.gte('game_date', seasonStart);
+      }
       if (seasonFilter != null) {
         away.eq('season', seasonFilter);
         home.eq('season', seasonFilter);
@@ -3335,7 +3383,7 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [sport, homeTeam, awayTeam, seasonFilter]);
+  }, [sport, homeTeam, awayTeam, seasonFilter, seasonStart]);
 
   // Silent hide when we have nothing to show for either team AND no H2H
   if (!loading && awayRows.length === 0 && homeRows.length === 0 && h2hRows.length === 0) {

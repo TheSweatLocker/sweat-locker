@@ -6713,9 +6713,18 @@ const fetchSportRegistry = async () => {
     // flipped). Every mount + tab-switch used to re-query. Cache wraps
     // only the network call — setState still runs on cache hit so all
     // downstream deps re-render as before.
-    const data = await withCache('sport_registry_v1', async () => {
+    // 2026-10-20 · +season_start, and the cache key goes to _v2 WITH it.
+    // B109 needs the regular-season boundary (NBA 2026-10-20,
+    // NHL 2026-09-29) to keep preseason out of a user-facing record. The
+    // column already exists and is populated on every sport.
+    // THE KEY BUMP IS THE POINT: withCache holds this for 30 minutes with
+    // staleWhileRevalidate, so adding a column under the OLD key serves rows
+    // that lack it and the new field reads undefined for half an hour on
+    // every device that had warmed the cache — which looks exactly like the
+    // feature not working. Any change to this select list changes the key.
+    const data = await withCache('sport_registry_v2', async () => {
       const r = await supabase.from('sport_registry')
-        .select('sport,emoji,display_order,active,state,state_message,today_note,tomorrow_note,tab_scope,return_date,ladder_eligible')
+        .select('sport,emoji,display_order,active,state,state_message,today_note,tomorrow_note,tab_scope,return_date,ladder_eligible,season_start')
         .eq('active', true)
         .order('display_order', {ascending: true});
       return r.data;
