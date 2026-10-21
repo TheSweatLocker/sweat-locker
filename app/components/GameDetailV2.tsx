@@ -3855,6 +3855,43 @@ const rsStyles = StyleSheet.create({
 // Uses the matview's `filter` dimension without any per-sport branches.
 // When a filter has 0 games for a team (e.g. NCAAF team never played as
 // underdog), renders "—" gracefully.
+// == 2026-10-21 - SEASON KEYS ARE NOT ALWAYS NUMBERS ==
+//
+// `Number(season) || new Date().getFullYear()` was used at BOTH situational
+// call sites. For MLB/NFL/NCAAF/NHL season is an integer (2026) and that is
+// fine. For NBA and NCAAB it is a LABEL - '2026-27' - so Number() returns
+// NaN, the `||` swallows it, and the query went out as season=eq.2026 while
+// team_situational_records holds '2026-27'. Zero match, silently: the card
+// read as "no situational history" rather than as a failed lookup, which is
+// exactly what Andy saw as "starts 0-0 essentially".
+//
+// It compounded. The prior-season fallback computed `seasonForQuery - 1`,
+// which for a label is NaN, so the one mechanism that would show a
+// thin-sample team its previous season could not fire for the two sports
+// that need it most in October and November - when the current season has
+// three games in it.
+//
+// So: keep the integer for integer sports, keep the LABEL for label sports,
+// and decrement each in its own terms.
+const _seasonKey = (season: any): number | string => {
+  const n = Number(season);
+  if (isFinite(n) && n > 1900) return n;
+  if (/^\d{4}-\d{2}$/.test(String(season || ''))) return String(season);
+  return new Date().getFullYear();
+};
+const _priorSeasonKey = (key: number | string): number | string | null => {
+  if (typeof key === 'number') return key > 2020 ? key - 1 : null;
+  const m = String(key).match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]) - 1;
+  if (y <= 2020) return null;
+  return `${y}-${String(y + 1).slice(-2)}`;
+};
+// Same season, whichever form it arrived in.
+const _sameSeason = (a: any, b: any): boolean =>
+  String(a) === String(b) ||
+  (isFinite(Number(a)) && Number(a) === Number(b));
+
 function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: any) {
   const [awayRecs, setAwayRecs] = React.useState<any[]>([]);
   const [homeRecs, setHomeRecs] = React.useState<any[]>([]);
@@ -3873,7 +3910,7 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
   // than prop-drilling the featureFlags map through GameDetailV2.
   const [usingPriorSeason, setUsingPriorSeason] = React.useState<number | null>(null);
   const [badgeEnabled, setBadgeEnabled] = React.useState<boolean>(true);
-  const seasonForQuery = Number(season) || new Date().getFullYear();
+  const seasonForQuery = _seasonKey(season);
 
   // Feature-flag check for the prior-season badge (one-time on mount)
   React.useEffect(() => {
@@ -3929,9 +3966,13 @@ function SituationalCard({sport, homeTeam, awayTeam, season, homeML, awayML}: an
       };
       const awayGames = _gamesFor(ar);
       const homeGames = _gamesFor(hr);
-      const priorNeeded = (awayGames < 5 || homeGames < 5) && seasonForQuery > 2020;
+      // _priorSeasonKey returns null when there is no sensible prior, which
+      // replaces the old `seasonForQuery > 2020` guard - that comparison is
+      // false for a '2026-27' label and silently disabled the fallback.
+      const _prevKey = _priorSeasonKey(seasonForQuery);
+      const priorNeeded = (awayGames < 5 || homeGames < 5) && _prevKey !== null;
       if (priorNeeded) {
-        const prev = seasonForQuery - 1;
+        const prev = _prevKey as any;
         const [aP, hP] = await Promise.all([
           client.from('team_situational_records')
             .select('*').eq('sport', sport).eq('team', awayTeam).eq('season', prev),
@@ -4684,7 +4725,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // matches the away-first column order used everywhere else on the card.
   const [ball, setBall] = React.useState<'away'|'home'>('away');
   const [loading, setLoading] = React.useState(true);
-  const seasonForQuery = Number(season) || new Date().getFullYear();
+  const seasonForQuery = _seasonKey(season);
 
   React.useEffect(() => {
     const client = sb();
@@ -4702,7 +4743,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
       // silently missing from the card. Now: pull both seasons, prefer
       // current-season row per stat_key, borrow prior-season row for
       // stats missing this season. Same season pool label shows in hint.
-      const prevSeason = seasonForQuery > 2020 ? seasonForQuery - 1 : null;
+      const prevSeason = _priorSeasonKey(seasonForQuery);
       const seasonsToFetch = prevSeason ? [seasonForQuery, prevSeason] : [seasonForQuery];
       const [awayR, homeR] = await Promise.all([
         client.from('team_stats_rolling')
@@ -4715,7 +4756,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
         const byKey: Record<string, any> = {};
         for (const r of (rows || [])) {
           const k = r.stat_key;
-          const isCurrent = Number(r.season) === seasonForQuery;
+          const isCurrent = _sameSeason(r.season, seasonForQuery);
           if (!byKey[k] || isCurrent) byKey[k] = r;
         }
         return Object.values(byKey);
