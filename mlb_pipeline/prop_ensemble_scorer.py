@@ -195,9 +195,30 @@ def _load_signal_registry() -> dict:
         # erroring, so proven signals quietly ran at the blind weight.
         # Shares one paginated fetch with the game scorer instead of
         # keeping a second copy of the same loop.
-        rows = fetch_all_rows(
-            'signal_registry',
-            {'select': 'signal_name,sport,market_scope,hit_rate,sample_n,tier'})
+        # 2026-10-21 baseline_pct joins this SELECT. It has to be named
+        # explicitly or it reads back as NULL on every row and the
+        # price-aware bar silently reverts to a flat -110
+        # (feedback_explicit_select_silent_blanks).
+        #
+        # But naming a column PostgREST does not know turns the whole read
+        # into a 400, which fetch_all_rows would surface as an EMPTY
+        # registry -- and an empty registry does not fail loudly, it makes
+        # every signal blind and hands them all the 0.15-0.20 no-record
+        # prior. That is strictly worse than the bug being fixed. So the
+        # column is requested, and if the database has not had
+        # 20261021e applied yet the read is retried without it.
+        _COLS = 'signal_name,sport,market_scope,hit_rate,sample_n,tier'
+        try:
+            rows = fetch_all_rows(
+                'signal_registry', {'select': _COLS + ',baseline_pct'})
+        except Exception:
+            rows = []
+        if not rows:
+            rows = fetch_all_rows('signal_registry', {'select': _COLS})
+            if rows:
+                print('  [prop-ensemble] signal_registry has no baseline_pct '
+                      'column yet (migration 20261021e); signals judged '
+                      'against flat -110 breakeven')
     except Exception:
         rows = []
     collisions = 0
@@ -218,9 +239,35 @@ def _load_signal_registry() -> dict:
     return _REGISTRY_CACHE
 
 
-def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[str]]:
-    """Return (hit_rate_fraction, sample_n, tier) from registry lookup
-    with inline row fallback. Same logic as game ensemble."""
+def _resolve_weight(source_row: dict):
+    """Return (hit_rate_fraction, sample_n, tier, baseline) from the registry
+    with inline row fallback.
+
+    ══ 2026-10-21 · BASELINE: JUDGE A SIGNAL AGAINST ITS OWN PRICE ══
+    The fourth element is new. edge_weight compares a hit rate to
+    BREAKEVEN = 0.524, the -110 breakeven, but props trade from -300 to +150,
+    where breakeven runs 75% down to 40%. Measured on NHL prop history inside
+    the publishable band:
+
+        nhl_prop_l10_extreme          59.9% hit, 60.4% breakeven  -> loses
+        nhl_prop_l5_cold              59.9% hit, 60.0% breakeven  -> even
+        nhl_player_l10_extreme        58.9% hit, 61.0% breakeven  -> loses
+        nhl_prop_season_hit_pct_high  47.1% hit, 53.5% breakeven  -> loses
+        nhl_prop_l5_hot               46.2% hit, 53.3% breakeven  -> loses
+
+    Against 52.4% the first three read as +6 to +7pp edges and earn real
+    weight. Against the price they actually faced, not one is above water.
+    That is how the board produced 52 PRIME decisions on signals with no
+    demonstrable edge.
+
+    edge_weight has always accepted `baseline` and floors the bar at
+    max(baseline, BREAKEVEN); its own comment notes no caller passed one.
+    signal_registry.baseline_pct now carries the mean breakeven of the prices
+    each signal actually fired on, from the side the signal implies, so this
+    returns it and score_prop passes it through. NULL stays None, which
+    edge_weight already treats as plain BREAKEVEN -- an unmeasured signal is
+    not silently given a friendlier bar.
+    """
     reg = _load_signal_registry()
     key = source_row.get('signal_key')
     sport = source_row.get('sport') or 'MLB'
@@ -229,13 +276,15 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
         hr = float(r['hit_rate']) / 100.0
         n = int(r.get('sample_n') or 0)
         tier = r.get('tier')
-        return hr, n, tier
+        base = r.get('baseline_pct')
+        base = (float(base) / 100.0) if base is not None else None
+        return hr, n, tier, base
     # Fallback to inline row fields (backfill_signal_tiers pattern)
     inline_hr = source_row.get('hit_rate_pct')
     inline_n = source_row.get('sample_n') or 0
     if inline_hr is not None:
-        return float(inline_hr) / 100.0, int(inline_n), None
-    return None, 0, None
+        return float(inline_hr) / 100.0, int(inline_n), None, None
+    return None, 0, None, None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -321,8 +370,11 @@ def _evaluate_signal(source_row: dict, ctx: dict, p: dict) -> Optional[PropContr
     except (TypeError, ValueError): return None
     if strength <= 0: return None
 
-    hr, n, reg_tier = _resolve_weight(source_row)
-    w = edge_weight(hr, n, reg_tier)
+    hr, n, reg_tier, reg_baseline = _resolve_weight(source_row)
+    # baseline = the price this signal historically had to beat. None until
+    # calibrate_prop_signals has measured it, and edge_weight then uses plain
+    # BREAKEVEN exactly as before.
+    w = edge_weight(hr, n, reg_tier, baseline=reg_baseline)
     if w <= 0: return None
 
     # Render prose from template.
