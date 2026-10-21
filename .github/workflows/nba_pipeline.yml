@@ -473,6 +473,38 @@ jobs:
           cd mlb_pipeline
           python nba_generate_props.py
 
+      # ══ 2026-10-21 · COLLAPSE SUPERSEDED PROP ROWS ══
+      #
+      # MUST run after the generator and BEFORE backfill_prop_lookback.
+      #
+      # nba_generate_props upserts with prop_line inside the conflict key, so
+      # a book moving the number between runs INSERTS a new row rather than
+      # updating one. It also writes slates several days out, so a slate is
+      # written once early and again on game day at a different line and both
+      # rows persist. Measured 2026-10-21: 4,585 live rows across 2,333 slots
+      # for one week of games, one slot holding 16 rows at 16 distinct lines.
+      #
+      # That is not just row bloat. The order here is generate -> backfill ->
+      # score, so the backfill writes L5/L10 onto the rows that exist when it
+      # runs, and the next generator pass leaves those enriched rows as
+      # orphans. L5/L10 was fed on 0 of 3,222 NBA props while running the
+      # backfill by hand fed 1,756 of 2,188 immediately. The enrichment was
+      # never broken; it was being discarded.
+      #
+      # Collapsing here, before the backfill, means the backfill enriches the
+      # row that will still be current when the scorer reads it.
+      #
+      # Deletes ONLY rows with result IS NULL and tier COVERAGE. Graded rows
+      # are history feeding the records surfaces and are never touched.
+      - name: Collapse superseded NBA prop rows
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_slot_reconcile.py --sport NBA --apply
+
       # ─── Sleeper NBA projections (2026-08-17) ─────────────────────
       # Weekly refresh good enough — projections update slowly. Runs
       # here for cheap on daily cron. Requires no API key.

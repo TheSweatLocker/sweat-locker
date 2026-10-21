@@ -301,6 +301,31 @@ jobs:
           cd mlb_pipeline
           python nhl_generate_props.py
 
+      # ══ 2026-10-21 · COLLAPSE SUPERSEDED PROP ROWS ══
+      #
+      # MUST run after the generator and BEFORE backfill_prop_lookback. Same
+      # defect and same reasoning as the NBA workflow's copy of this step.
+      #
+      # nhl_generate_props upserts with prop_line inside the conflict key, so
+      # a line move between runs INSERTS rather than updates, and the order
+      # here is generate -> backfill -> score. The backfill therefore enriched
+      # rows that the next generator pass orphaned: L5/L10 was fed on 0 of 420
+      # props, while running the backfill by hand fed 418 of 420 immediately.
+      # nhl_pipeline_props is the largest table in the system at 62,007 rows
+      # and this is why.
+      #
+      # Deletes ONLY rows with result IS NULL and tier COVERAGE. 56,569 of
+      # those 62,007 rows carry a result -- graded history feeding the records
+      # surfaces -- and records are not rewritten to tidy up a key.
+      - name: Collapse superseded NHL prop rows
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python prop_slot_reconcile.py --sport NHL --apply
+
       # 2026-10-03 · PROP IDENTITY. Prerequisite 1 of the scoring layer.
       # nhl_generate_props above is a faithful mirror of the book and writes
       # no identity, so team_abbrev / opp_abbrev / player_position sat NULL
