@@ -3972,7 +3972,7 @@ inverted, and a fade keyed off the wrong sign publishes the wrong side. Verify
 MLB/NHL/NBA sign before widening, and publish any non-football leg as its own
 labelled line so the football record stays clean.
 
-### B98 - "building sample" blocks in Receipts - OPEN, product decision
+### B98 - "building sample" blocks in Receipts - **CLOSED** `68ce6b23`
 
 "YEah as mentioned dont love the bbuidling sampel thoguths? dont be afreaid to
 figth abck on this just dont love it peronally." Pushback owed: the block is
@@ -4593,3 +4593,45 @@ So the record is accurate, identity is immutable by design, and the only cost
 is that an auditor must skip two rows — which B88's auditor already does. **Do
 not "fix" these.** Changing a correct WIN to UNGRADEABLE would have made the
 record wrong in the name of tidiness.
+
+## 2026-10-20 · B98 CLOSED — floor kept, hero number changed. And B110 opened.
+
+Andy invited the fight. He is half right, and the half he is right about is
+bigger than it looked.
+
+**THE n>=30 FLOOR STAYS.** At n=16 a 2SE band is ~+/-25pp. The rates currently
+withheld include **37%, 36% and 46% on 27-28 picks**. Printing those big and
+colour-coded tells a paying user a surface is BAD when we have not measured it
+— the opposite of "we show the receipts". Same floor the engine uses.
+
+**HE IS RIGHT ABOUT THE PRESENTATION, and the scale is the argument:**
+**128 of 352 tiles with data (36%)** replaced their hero number with
+`n=29 / building sample`. A third of the Receipts tab read as unfinished, and
+the phrase sounds like we have not started rather than that we are being
+careful. Worse it was a **CLIFF** — 16-13 at n=29 showed a non-number, then one
+more graded pick flipped the same tile to a confident "55%" with no change in
+evidence.
+
+**FIX: change which number is the hero, not the floor.** The record IS data;
+16-13 is a fact at any n and cannot overstate. A thin tile now leads with the
+RECORD at 20px, the hint reads "rate at 1 more" instead of "building sample",
+and the secondary line shows "29 graded" rather than repeating the record. The
+tile looks finished because it is — there is just no rate yet, and the cliff is
+gone because the record was always the honest number on both sides of it.
+
+### B110 - the `ledger` surface reports ONE record for EIGHT sports - OPEN
+
+Found while measuring B98, not fixed. `surface_records` returns the **identical
+16-13 / n=29** for `ledger` under MLB, NFL, NCAAF, NHL, NBA, NCAAB, UFC **and
+ALL**. One record repeated eight times is not eight records — a user switching
+sports sees the same Ledger line every time and reads it as that sport's.
+
+Same shape as B64 (surface_records cross-sport contamination), which was
+partially corrected on 10-09. `window_key` is also NULL on every row, which is
+B64's other half.
+
+VERIFY: `select sport,wins,losses from surface_records where surface='ledger'`
+should not return one repeated tuple. Decide whether the Ledger is inherently
+cross-sport (parlays can mix sports, so ONE row keyed ALL may be correct and
+the per-sport rows should simply not exist) or genuinely needs partitioning.
+That distinction matters before anyone "fixes" the numbers.
