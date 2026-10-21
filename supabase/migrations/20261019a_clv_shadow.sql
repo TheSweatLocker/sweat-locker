@@ -47,8 +47,23 @@ CREATE TABLE IF NOT EXISTS clv_shadow (
     live_captured_at timestamptz,
     checked_at       timestamptz NOT NULL DEFAULT now(),
     -- one row per pick per DAY, so repeated runs update rather than pile up,
-    -- while still leaving a day-by-day trail of how the line moved
-    checked_date     date GENERATED ALWAYS AS (checked_at::date) STORED,
+    -- while still leaving a day-by-day trail of how the line moved.
+    --
+    -- 2026-10-20 · WAS A GENERATED COLUMN AND POSTGRES REFUSED IT:
+    --   ERROR 42P17: generation expression is not immutable
+    -- `checked_at::date` casts timestamptz to date, which depends on the
+    -- session TimeZone, so it is STABLE rather than IMMUTABLE and a stored
+    -- generated column may only use immutable expressions. Naming a zone does
+    -- not help: `AT TIME ZONE 'America/New_York'` is also only STABLE, because
+    -- DST rules can change under it.
+    --
+    -- A DEFAULT has no such restriction - it is evaluated once at INSERT - so
+    -- the same thing is expressed as a defaulted column. UTC is used
+    -- deliberately rather than ET: this is a dedupe key for "did this run
+    -- already write this pick today", not a slate date a user ever sees, so it
+    -- needs to be deterministic, not localised.
+    checked_date     date        NOT NULL
+                                 DEFAULT ((now() AT TIME ZONE 'UTC')::date),
     CONSTRAINT clv_shadow_once_per_day UNIQUE (receipt_id, checked_date)
 );
 
