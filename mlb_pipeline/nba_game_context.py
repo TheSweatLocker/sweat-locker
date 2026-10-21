@@ -539,8 +539,92 @@ def _apply_ensemble(row: dict) -> None:
         pass  # ensemble unavailable — leave primary_play alone
 
 
+def preserve_opens(rows: list[dict]) -> None:
+    """Record an opening line, and never let a later pull overwrite it.
+
+    ══ 2026-10-20 · NBA HAD NO OPENER AT ALL ══
+    Andy: "invertgate no open line in nba line movmeent in game detail, do
+    toher sport record opening lines as well?"
+
+    Measured across every sport's context table on rows from 10-10:
+
+        MLB     open_spread 12/12    open_total 12/12
+        NFL     open_spread 207/207  open_total 207/207
+        NCAAF   open_spread 128/128  open_total 128/128
+        NHL     open_spread   0/118  open_total  83/118   <- stores it as
+                                                             open_puckline
+        NBA     open_spread   0/70   open_total   0/70    <- nothing, ever
+
+    The columns exist on nba_game_context; this builder had zero references
+    to them, so nothing was ever written. NHL is a different thing entirely -
+    it DOES record the opener, under `open_puckline`, and `open_spread` is a
+    dead column there (handled on the client side instead).
+
+    THE PATTERN IS NFL'S, COPIED RATHER THAN INVENTED (nfl_game_context.py
+    ~1547 and ~2065), because the naive version is wrong in a way that is
+    invisible: this builder reassembles each row from live event data on every
+    run, so a plain `open = close` mirror would overwrite the true opener with
+    today's close every single pull, and the column would look populated while
+    meaning nothing. So:
+
+      * mirror close -> open ONLY when no opener is on file yet
+      * fetch existing open_* per game_id first and always prefer those
+
+    There is also a DB trigger, `freeze_opening_lines`, which silently
+    discards an UPDATE to an opening line and still returns 200 (see
+    watchdog_market_sanity.py). That makes the first write the one that counts
+    and means a wrong first write cannot be repaired here - another reason to
+    mirror only when the slot is genuinely empty.
+    """
+    if not rows:
+        return
+    gids = [r['game_id'] for r in rows if r.get('game_id')]
+    existing = {}
+    if gids:
+        try:
+            ids_csv = ','.join(f'"{g}"' for g in gids)
+            r = requests.get(
+                f'{SB}/rest/v1/nba_game_context',
+                params={'game_id': f'in.({ids_csv})',
+                        'select': 'game_id,open_spread,open_total'},
+                headers=H_READ, timeout=20)
+            if r.status_code == 200:
+                for row in r.json():
+                    existing[row['game_id']] = row
+            else:
+                # Do NOT mirror on a failed lookup: without knowing what is
+                # already stored, a mirror can overwrite a real opener with
+                # today's close, and the freeze trigger makes that permanent.
+                print(f'  ⚠ open-preserve lookup {r.status_code} — '
+                      f'skipping the mirror this run rather than risk '
+                      f'overwriting a real opener')
+                return
+        except Exception as e:                              # noqa: BLE001
+            print(f'  ⚠ open-preserve lookup failed ({e}) — skipping the '
+                  f'mirror this run')
+            return
+
+    mirrored = kept = 0
+    for row in rows:
+        prev = existing.get(row.get('game_id')) or {}
+        for open_key, close_key in (('open_spread', 'close_spread'),
+                                    ('open_total', 'close_total')):
+            if prev.get(open_key) is not None:
+                row[open_key] = prev[open_key]      # the real opener wins
+                kept += 1
+            elif row.get(close_key) is not None:
+                row[open_key] = row[close_key]      # first sighting = opener
+                mirrored += 1
+    if mirrored or kept:
+        print(f'  opens: {mirrored} newly recorded, {kept} preserved')
+
+
 def upsert(rows: list[dict], dry_run: bool = False) -> int:
     if not rows: return 0
+    # Opens BEFORE the ensemble/date pass so the row carries them into the
+    # same upsert. Must run after the market pull, which is where
+    # close_spread/close_total are set.
+    preserve_opens(rows)
     # Ensemble scoring pass — writes primary_play in-place. Placed BEFORE
     # date normalization so scorer sees typed date objects. Runs per-row
     # so a bad row doesn't kill the whole slate (each _apply_ensemble is

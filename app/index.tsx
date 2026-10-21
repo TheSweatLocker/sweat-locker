@@ -35,7 +35,6 @@ import GameDetailV2 from './components/GameDetailV2';
 import UfcFightDetail from './components/UfcFightDetail';
 import Explainer from './components/Explainer';
 import TierChip from './components/TierChip';
-import LineMovementTab from './components/LineMovementTab';
 import AdminNoticeBanner from './components/AdminNoticeBanner';
 import { HomeStreakBanner } from './components/HomeStreakBanner';
 import { dbFetchCached } from './lib/db';
@@ -17865,9 +17864,20 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                   mounted below it. That is not a conversion, and it is why he
                   had to tell me four times that Split data was still in the
                   Fade.
-                  The component file stays in the repo (its line-movement
-                  fetches are still used elsewhere); it is simply no longer
-                  rendered in this tab. */}
+                  2026-10-20 · B96 CLOSED BY THIS REMOVAL, and a correction.
+                  Andy's remaining Fade complaint was the loading line: "when
+                  it loads when you first clik into the fade the loading
+                  things says reading line drift (form the split)." That
+                  string lives in LineMovementTab.tsx and nowhere else, so
+                  unmounting the component took it with it — there is no
+                  separate loading state left in this tab to fix.
+                  The note here previously said the component's "line-movement
+                  fetches are still used elsewhere". That was wrong: grepping
+                  every .tsx finds no <LineMovementTab/> anywhere, so the
+                  import was dead and is now gone too. The FILE stays — the
+                  Split's line-movement view may be wanted somewhere again,
+                  and deleting a working component nobody asked to delete is
+                  not cleanup. It is simply not mounted. */}
               </>
             )}
 

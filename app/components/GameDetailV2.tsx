@@ -1780,9 +1780,17 @@ function MoneyFlow({ctx, sport}: any) {
     if (!isFinite(a) || !isFinite(b)) return undefined;
     return Math.abs(a - b) >= 0.5;
   };
-  const movedSpread = _moved(ctx?.open_spread, ctx?.close_spread);
+  // 2026-10-20: open_spread is NULL on every NHL row — NHL records its
+  // opener as `open_puckline`. The strip further down this file already
+  // falls back to it (see the 2026-10-20 note there); this trio did not, so
+  // the "line moved" badge was permanently undefined for NHL and silently
+  // read as "no opener on file". Same fallback, same order, one place each.
+  const movedSpread = _moved(ctx?.open_spread ?? ctx?.open_puckline,
+                             ctx?.close_spread ?? ctx?.close_puckline);
   const movedTotal  = _moved(ctx?.open_total,  ctx?.close_total);
-  const movedML     = _moved(ctx?.home_ml_open, ctx?.close_home_ml);
+  // ML opens are named *_ml_open on NHL/MLB and open_*_ml on NFL/NCAAF.
+  const movedML     = _moved(ctx?.home_ml_open ?? ctx?.open_home_ml,
+                             ctx?.close_home_ml ?? ctx?.home_ml_close);
 
   // ══ 2026-09-27 · MONEY SHARE IS INFLATED BY PRICE, NOT ONLY BY SHARPS ══
   //
@@ -3392,6 +3400,42 @@ function RecentScheduleCard({sport, homeTeam, awayTeam, season}: any) {
                 : `Early season — ${rowsSorted.length} games logged so far`}
             </Text>
           )}
+          {/* ══ 2026-10-20 · B101 · "NBA IS MISSING ATS AND O/U" ══
+              ANDY: "Recvent shceudle in NBA is missing ATS and O/U why?"
+              NOT a bug in this card, and the evidence says so plainly: on
+              Detroit's one regular-season row it renders sp=-1.5/won and
+              tot=227.5/over correctly. The other four rows are OCTOBER
+              PRESEASON games, which carry no closing line in our data (the
+              odds feed barely covers NBA preseason), so there is nothing to
+              grade ATS or O/U against. On 10-20, the NBA regular season's
+              first day, four of every team's last five games are preseason.
+
+              What was actually wrong is that the card said nothing about it
+              and showed five rows of blanks, which reads as broken. Same
+              recurring-QA shape as the Situational Records colour hint added
+              09-25, and the same answer: name the reason so a grey column
+              becomes "not gradable yet" instead of "it is busted". It
+              self-resolves as regular-season games accumulate — today's
+              slate has a closing line on 3 of 3.
+
+              NOT FIXED HERE, and it needs Andy's call: the matview has no
+              season_type at all (neither nba_game_results nor
+              nhl_game_results carries the column), so preseason games cannot
+              be EXCLUDED from an L5 without adding and backfilling it. They
+              should be — a preseason game in a user-facing record is exactly
+              what made the NHL record read 100% preseason on 09-30. Logged
+              rather than guessed at. */}
+          {tab !== 'h2h' && (() => {
+            const unpriced = rowsSorted.filter(
+              (r: any) => r?.spread_line == null && r?.total_line == null).length;
+            if (unpriced === 0) return null;
+            return (
+              <Text style={rsStyles.empty}>
+                {unpriced} of {rowsSorted.length} have no closing line on file
+                {' '}— preseason and exhibition games are not graded ATS or O/U.
+              </Text>
+            );
+          })()}
         </>
       )}
 
