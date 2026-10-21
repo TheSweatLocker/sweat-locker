@@ -192,6 +192,11 @@ def evaluate(sport: str, guard_from: str,
     agg = defaultdict(lambda: [0, 0, 0.0, 0, 0, 0, 0])
     unevaluable = defaultdict(int)
     out_of_band = defaultdict(int)
+    # signal_registry.category is NOT NULL and mirrors signal_sources.class
+    # (prop_form, prop_matchup, prop_model ...). Carried through rather than
+    # defaulted, so a calibrated row keeps the same category the hand-written
+    # row had and the scorer's class-confluence maths is unaffected.
+    sig_class: dict = {}
     fired_any = defaultdict(int)
 
     for raw in rows:
@@ -201,6 +206,7 @@ def evaluate(sport: str, guard_from: str,
             if not _matches_market(s, p):
                 continue
             key = (s.get('signal_key'), s.get('market_scope') or '*')
+            sig_class.setdefault(key, s.get('class'))
             try:
                 if not _safe_eval(s.get('condition_expr') or '', env):
                     continue
@@ -266,6 +272,7 @@ def evaluate(sport: str, guard_from: str,
             'n_first': n1, 'hit_first': h1,
             'n_second': n2, 'hit_second': h2,
             'tier': _tier(hit, n, be, lo, hi, first_ok, second_ok),
+            'category': sig_class.get(key) or 'prop_signal',
             'unevaluable': unevaluable.get(key, 0),
             'out_of_band': out_of_band.get(key, 0),
         }
@@ -285,6 +292,7 @@ def write_registry(sport: str, results: dict) -> int:
         payload.append({
             'signal_name': r['signal'],
             'sport': sport,
+            'category': r['category'],
             'market_scope': r['market_scope'],
             'hit_rate': round(r['hit'] * 100.0, 2),
             'sample_n': r['n'],

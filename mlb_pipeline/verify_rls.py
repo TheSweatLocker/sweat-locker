@@ -263,8 +263,18 @@ def run_verify():
             if missing:
                 fails.append(f'{name} lost its client write policy: missing '
                              f'{sorted(missing)}')
-            if 'SELECT' in cmds or 'ALL' in cmds:
-                warns.append(f'{name} is anon-READABLE (expected write-only)')
+            # A SELECT policy EXISTING is not the same as anon getting rows.
+            # user_consent keeps user_consent_owner_read scoped to
+            # `authenticated`, and with zero supabase.auth calls in the app an
+            # anon read returns 200 with an EMPTY array -- effectively closed.
+            # Warning on the policy alone cried wolf on it. Confirm with a
+            # real read and warn only when rows actually come back, which is
+            # how user_note_dispatch_log's misleadingly-named `user_read_own`
+            # was caught handing over 5 rows.
+            _rd = probe_read(name)
+            if _rd.get('ok') and (_rd.get('rows') or 0) > 0:
+                warns.append(f'{name} returns rows to the anon key '
+                             f'(expected write-only)')
             print(f'   {"ok  " if not missing else "FAIL"}  {name:24} '
                   f'anon cmds={sorted(cmds) or "none"}')
 
