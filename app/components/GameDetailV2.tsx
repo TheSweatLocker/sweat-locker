@@ -899,6 +899,15 @@ export default function GameDetailV2({
             homeTeam={homeTeam}
             awayTeam={awayTeam}
             primaryPlay={ctx?.primary_play}
+            // 2026-10-21: the closing juice the pipeline now stores
+            // (migration 20261021a), passed explicitly - this component takes
+            // props and has no ctx of its own.
+            closePrices={{
+              spreadHome: ctx?.close_spread_home_price,
+              spreadAway: ctx?.close_spread_away_price,
+              totalOver:  ctx?.close_total_over_price,
+              totalUnder: ctx?.close_total_under_price,
+            }}
             bookmakers={game.bookmakers || []}
             onAddParlayLeg={onAddParlayLeg}
             onLogPick={onLogPick}
@@ -8305,7 +8314,7 @@ function GamePropsPanel({props: propsList}: {props: any[]}) {
 // Default selected = primary_play if it maps to a tile, else no selection.
 function YourBookTiles({
   closeSpread, closeTotal, homeML, awayML, homeTeam, awayTeam, primaryPlay,
-  bookmakers = [], onAddParlayLeg, onLogPick,
+  closePrices = {}, bookmakers = [], onAddParlayLeg, onLogPick,
 }: any) {
   const hrb = (bookmakers || []).find((b: any) =>
     (b.key || '').toLowerCase().includes('hardrock') || (b.title || '').toLowerCase().includes('hard rock'),
@@ -8373,13 +8382,29 @@ function YourBookTiles({
   const _homeConsensus = (_mag != null && _homeIsFav != null)
     ? (_homeIsFav ? -_mag : _mag) : null;
   const spreadHomeLine = _pick(_homeConsensus, homeSpreadOutcome?.point);
-  const spreadHomeOdds = homeSpreadOutcome?.price;
+  // ══ 2026-10-21 · THE DASH WAS REAL, BUT WE HAD A PRICE ELSEWHERE ══
+  // QA: "Odds tiles are missing prices. The spread and total tiles show '—'
+  // where the juice (-110) should be."
+  //
+  // These read the LIVE book outcome, so a dash means that outcome arrived
+  // without a price — honest, but we need not show nothing. As of migration
+  // 20261021a the context row stores the closing juice the pipeline had
+  // already fetched and been discarding, so it is used as a fallback.
+  //
+  // NOT defaulted to -110 anywhere. A missing price must read as missing:
+  // assuming -110 is exactly what makes a flat-priced record (+79.91u)
+  // disagree with the real-priced one (+3.25u).
+  //
+  // The ML tiles having "no third line" is NOT a defect and is left alone —
+  // a moneyline tile's VALUE is already its price, so a third line would
+  // print the same number twice.
+  const spreadHomeOdds = homeSpreadOutcome?.price ?? closePrices?.spreadHome;
   const spreadAwayLine = _pick(_homeConsensus != null ? -_homeConsensus : null,
                                awaySpreadOutcome?.point);
-  const spreadAwayOdds = awaySpreadOutcome?.price;
+  const spreadAwayOdds = awaySpreadOutcome?.price ?? closePrices?.spreadAway;
   const totalLine = _pick(closeTotal, overOutcome?.point);
-  const overOdds = overOutcome?.price;
-  const underOdds = underOutcome?.price;
+  const overOdds = overOutcome?.price ?? closePrices?.totalOver;
+  const underOdds = underOutcome?.price ?? closePrices?.totalUnder;
   // Surfaced so the user is told when their book is off the consensus
   // rather than silently shown one number here and another in the header.
   const _bookTotal = overOutcome?.point;

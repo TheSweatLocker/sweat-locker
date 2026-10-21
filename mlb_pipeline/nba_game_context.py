@@ -155,9 +155,24 @@ def enrich_market(rows: list[dict]) -> None:
                     if name == home_full: row['home_ml_close'] = int(price)
                     elif name == away_full: row['away_ml_close'] = int(price)
                 elif key == 'spreads':
-                    if name == home_full and point is not None: row['close_spread'] = float(point)
+                    # 2026-10-21: the PRICE was parsed two lines up and
+                    # dropped for this market and the next, so every spread
+                    # and total ROI in the app was computed at an assumed
+                    # -110. Captured now (migration 20261021a). Left NULL
+                    # when absent - a missing price must never read as -110.
+                    if name == home_full and point is not None:
+                        row['close_spread'] = float(point)
+                        if price is not None:
+                            row['close_spread_home_price'] = int(price)
+                    elif name == away_full and price is not None:
+                        row['close_spread_away_price'] = int(price)
                 elif key == 'totals':
-                    if name == 'Over' and point is not None: row['close_total'] = float(point)
+                    if name == 'Over' and point is not None:
+                        row['close_total'] = float(point)
+                        if price is not None:
+                            row['close_total_over_price'] = int(price)
+                    elif name == 'Under' and price is not None:
+                        row['close_total_under_price'] = int(price)
 
 
 def enrich_rest(rows: list[dict]) -> None:
