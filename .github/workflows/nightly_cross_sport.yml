@@ -57,7 +57,31 @@ jobs:
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dotenv beautifulsoup4
+          # ══ 2026-10-21 · numpy ADDED — IT WAS 60 OF 73 STEP FAILURES ══
+          # Four scripts in this workflow's sequence `import numpy as np`:
+          # voter_rolling_form, voter_pace_efficiency, voter_goalie_special
+          # and audit_duplicate_votes. numpy was never in this install line,
+          # so all four died with an ImportError at rc=1 in ZERO SECONDS, on
+          # every single run, in both workflows that run the nightly
+          # sequence.
+          #
+          # Measured over 72h: 73 step_failed events, 60 of them these four
+          # scripts (15 runs x 4). They succeed by hand because the dev box
+          # has numpy — the exact works-by-hand-fails-in-cron shape this repo
+          # keeps paying for.
+          #
+          # WHAT IT COST, and it is not cosmetic: three of the four are PANEL
+          # VOTERS. The model panel has been running without rolling-form,
+          # pace-efficiency and goalie-special voices since they were
+          # scheduled, so "consensus of N" was computed from fewer voices
+          # than intended. The fourth is the duplicate-vote detector, so the
+          # guard against duplicate voices was also dead — which is exactly
+          # the failure it exists to catch.
+          #
+          # Pinned major to keep the wheel resolution deterministic; numpy 2.x
+          # changed enough API surface that an unpinned jump is a silent risk
+          # on scripts nobody runs interactively.
+          pip install requests python-dotenv beautifulsoup4 'numpy<3'
 
       - name: Heartbeat — start
         continue-on-error: true
