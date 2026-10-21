@@ -4170,7 +4170,7 @@ TWO OPEN QUESTIONS this raises, not yet done:
   graded on those weeks. Do not backfill a current reading onto a past game -
   that is the 10-13 NULL-backfill-with-the-price mistake in another costume.
 
-### B108 - ~400 workflow steps can fail GREEN, and nothing checks the outcome - OPEN
+### B108 - ~400 workflow steps can fail GREEN, and nothing checks the outcome - **PARTLY CLOSED** `97a4c644`
 
 Opened by B107, which hid for five weeks behind exactly this. Count of steps
 carrying `continue-on-error: true`:
@@ -4200,8 +4200,40 @@ ODDS_API_KEY), so returning is correct. The weather pair was unique in having a
 keyless PRIMARY source behind a key-gated guard. So the remaining exposure is
 not "guards in the wrong place" - it is **no outcome assertions**.
 
-PROPOSED, not built: one freshness assertion per sport per night, run after the
-pipeline, that checks the handful of columns a slate cannot ship without
-(close_spread, kickoff_utc, temp on outdoor games, primary_play) and reports
-row counts, not exit codes. Cheap, and it is the only thing that would have
-caught B107 on 09-26 instead of 10-20.
+**BUILT** `97a4c644` - `mlb_pipeline/assert_slate_freshness.py`. Checks the
+NEXT SLATE of every in_season sport and fails on a DARK COLUMN: zero populated
+rows out of N on a slate that HAS rows. Partial fill is reported and does NOT
+fail, because football context fills across the week on purpose (14 of 44 on
+the Tuesday, 52/52 by Saturday) and failing on partials would get it muted.
+
+Wired two ways on purpose: a **detector** in the nightly (6:30am ET, before the
+daily sports build, so "no rows" is expected then and must not fail it), and a
+**hard step with NO continue-on-error** at the end of ncaaf_pipeline and
+nfl_pipeline. This is the check that catches the advisory ones failing
+silently, so making it advisory would defeat it.
+
+VERIFY: `python assert_slate_freshness.py` - exit 1 and a DARK line on the
+pre-fix weather state, exit 0 clean now across MLB/NBA/NFL/NHL/NCAAF.
+
+THREE MISTAKES IT MADE FIRST, kept because each is a trap for the next check:
+1. It flagged NCAAF temp 0/3 - a FALSE POSITIVE worth more than the catch.
+   Those games had already kicked off and the weather window is
+   `kickoff_utc >= now`. A started game's row can never be written, so
+   asserting on one only teaches us to ignore the script. Started rows are now
+   dropped via each sport's own time column.
+2. MLB at 3 days said "no rows" (true: ALCS ended 10-19, World Series opens
+   10-23). Raising to 6 was ALSO wrong - MLB has no rows 6 days out and should
+   not, because `game_context.py` is same-day by construction. **A horizon
+   longer than the builder's reach manufactures a permanent warning.**
+3. Weather must be asserted on OUTDOOR rows only, per sport's own column, and
+   skipped for MLB/NHL/NBA which have no weather columns at all.
+
+STILL OPEN, which is why this is only PARTLY closed:
+- **Coverage, as distinct from population.** The script proves the rows present
+  are filled; it cannot prove the right NUMBER of rows exist. A slate missing
+  half its games reads clean. That needs each sport's upstream schedule (MLB
+  statsapi, CFBD, the Odds API) and is a separate check.
+- **NHL / NBA / MLB / UFC pipelines** have no hard assertion step yet - only
+  the two football ones and the nightly detector.
+- The ~400 `continue-on-error` steps are untouched. The flag is right; this
+  just means a dark OUTCOME is now visible even when the step lies.
