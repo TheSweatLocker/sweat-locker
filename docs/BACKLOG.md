@@ -4635,3 +4635,99 @@ should not return one repeated tuple. Decide whether the Ledger is inherently
 cross-sport (parlays can mix sports, so ONE row keyed ALL may be correct and
 the per-sport rows should simply not exist) or genuinely needs partitioning.
 That distinction matters before anyone "fixes" the numbers.
+
+## 2026-10-21 · THE QA CARD REVIEW — ROOT CAUSES, NOT SYMPTOMS
+
+### B111 - NBA sweat score was INVERTED - **CLOSED** `b356569b`
+
+`compute_sweat_score` used `abs(projected_spread + close_spread)` under a
+docstring claiming projected_spread is positive-is-home and warning "do not
+simplify it to a subtraction". True for NCAAB (where it was ported from),
+FALSE for NBA: `nba_elo.elo_to_spread` returns `-diff / ELO_PER_POINT` and
+says "NEGATIVE = home fav". Verified by calling it — LAL 1574.2 at home vs GSW
+1480.9 returns -7.7.
+
+Not inflation, **inversion** — the games where model and market agreed most
+collected the MAXIMUM edge score:
+
+    CHI @ TOR   ps -9.6  cs -9.5   sum 19.1 -> +25     true 0.1 -> +0
+    GSW @ LAL   ps -7.7  cs -6.5   sum 14.2 -> +25     true 1.2 -> +6
+    46% of rows too high; CHI @ TOR was the 10-21 Play of the Day
+
+RESCORED on Andy's instruction: 13 of 15 games changed. CLE @ PHI fell from
+**86 PRIME on a 1.4-pt edge** to 68 STRONG; MIL @ WAS rose from 73 to **86
+PRIME on a genuine 7.0**; HOU @ SAS and NYK @ BOS fell to PASS.
+
+FULL SIX-SPORT AUDIT, every value from the WRITER or the stored data:
+
+    sport   projected_spread   market column                formula      verdict
+    MLB     positive = home    close_spread   neg = home    SUM          correct
+    NFL     positive = home    close_spread   POS = home    DIFFERENCE   correct
+    NCAAF   positive = home    close_spread   neg = home    SUM          correct
+    NHL     positive = home    close_puckline neg = home    SUM          correct
+    NCAAB   positive = home    close_spread   neg = home    SUM          correct
+    NBA     NEGATIVE = home    close_spread   neg = home    was SUM      FIXED
+
+NBA was the only one wrong — the only sport whose projected_spread comes from
+`nba_elo`. NHL verified and DOCUMENTED IN PLACE (`f2a252ee`) so nobody "fixes"
+it into the mirror-image bug: 187/187 rows satisfy `margin == hg - ag`, and
+close_puckline is a handicap (home win 64.7% when <0 vs 41.7% when >0).
+
+### B112 - the V3 tile named the wrong team on every NBA game - **CLOSED** `b356569b`
+
+Same root. The lens grid renders `abbrev3(r.m > 0 ? home : away)`. Correct for
+NFL/NCAAF, wrong for NBA — the tile read "GSW 7.7" while Jerry's read said
+Lakers -7.7. **Jerry was right.** Normalised at the row builder.
+
+### B113 - numpy missing from two workflows - **CLOSED** `a8da3546`
+
+60 of 73 step failures in 72h, one line. Three panel VOTERS plus
+`audit_duplicate_votes` import numpy; `nightly_cross_sport.yml` and
+`mlb_grade_overnight.yml` installed only requests/dotenv/bs4. All four died at
+rc=1 in **0 seconds** every run. Exact correlation: the two workflows that
+already installed numpy show zero voter failures. The panel has been running
+without three voices, and the duplicate-vote guard was dead.
+
+### B114 - a card that argues with itself now fails the run - **CLOSED** `6bfc6e3c`
+
+The QA's headline ask was "add a pre-render consistency gate". The gate ALREADY
+EXISTED and already fails the run on exit 2 — it reported 0/7 clean that same
+morning because none of its checks compare a pick to the numbers beside it.
+Added PRICE / COVER / FLIP / STALE to `consistency_watchdog`.
+
+**I wrote three convention bugs into that check and caught all three by running
+it** — FLIP firing on every away pick (side-relative vs home-relative line),
+then on all five NFL games (`_CLOSE_HOME_POSITIVE` defined and never applied),
+then STALE comparing magnitudes so `+5.5` against a `+4.5` board read as worse
+when it is better. Zero false positives now, three real findings over 7 days.
+
+### B115 - a published receipt did not lock the pick - **CLOSED** `f66da57c`
+
+The rescore ran at 09:30 ET with `lock_active('NBA')` correctly False, and
+rewrote IND @ NO from rl/HOME to total/UNDER — a pick **already published**
+(receipt 3005502, "New Orleans Pelicans +3.5", 10-19, ungraded). The hour
+window assumes publication happens at the lock hour; receipts are written by
+other surfaces on their own schedules. **A receipt is the fact; the clock was a
+proxy.** Lock is now the OR of the two, scoped to the current slate — any
+receipt at all froze 22 of 33 forward games; receipt + game-today gives 11
+locked / 22 writable.
+
+**And the lock failed open on its own success message.** `context[field] =
+published` sat AFTER a print carrying a lock emoji; on a cp1252 console that
+print raises, control jumps to the handler, and the handler crashes on its own
+warning glyph — so the lock silently failed open at the moment it had decided
+to hold a published pick. Nothing cosmetic may sit between a decision and its
+application.
+
+Repair: IND @ NO restored from the same run's `_ensemble_all_markets.rl` entry
+(the engine still rates it at conviction 52; total merely outranked it 54-52).
+Blast radius checked across every forward NBA game — that was the only one.
+`consistency_watchdog` now 0/8.
+
+### STILL OPEN from the QA review
+
+Injuries render two sources for opposite teams (list = LAL from stale
+preseason `nba_injuries`, impact line = GSW from ctx) · four confidence scales
+(Sweat 78 / Conviction 62 / CONF +1 / POTD 60) · stale-stat labelling and
+source disagreement (pace 98.7 vs 99.0, net 2.5 vs -0.500) · hallucinated POTD
+prose ("last five games" on day 2 of a season) · P2 layout items.
