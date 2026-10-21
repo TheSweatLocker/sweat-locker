@@ -35,6 +35,40 @@ on:
     # Keeping the 12 UTC run too: it builds context/reads for the day, and
     # a second pass also re-resolves.
     - cron: '0 18 * * *'   # ~4:54pm ET actual — post-market, pre-tip
+    # ══ 2026-10-21 · A THIRD SLOT, AND IT CORRECTS THE NOTE ABOVE ══
+    # ANDY, 9:06am ET: "Also bot seeing moeny flwo data on nba games tighr
+    # now." He was right: nba_game_context had splits_summary on 3 of 28 rows
+    # and all three were YESTERDAY's games. line_snapshot's newest NBA row was
+    # 2026-10-20T21:38 — nothing at all for today's 11-game slate.
+    #
+    # THE NOTE ABOVE ASSUMES SPLITS DO NOT EXIST IN THE MORNING. Measured
+    # today, that is not true. Running the chain by hand at 13:06 UTC
+    # (9:06am ET) returned:
+    #
+    #     pull_scoresandodds --sport NBA   116 rows across 25 games
+    #     splits_v2_pipeline --sport NBA   splits_summary on 11/11 contexts
+    #     write_line_snapshot --sport NBA   29 line_snapshot rows
+    #
+    # with real divergence already posted (Brooklyn ML money 70 vs bets 39,
+    # +31pp). The 12:04pm ET measurement on 10-13 established that 07:02 ET
+    # was too early; it did not establish that 9am is. So the data was there
+    # and we were not asking for it.
+    #
+    # WHY THE GAP EXISTS. The 12 UTC slot is scheduled for 8am ET but the
+    # measured median lateness for early slots is +4.4h, so it actually lands
+    # around 12:30pm ET. Between midnight and then, NBA game cards have no
+    # fresh money flow even though the source has published it — which is
+    # exactly the window Andy was looking at.
+    #
+    # 13 UTC is chosen so BOTH outcomes are useful, which is the lesson of the
+    # lateness table above: on time it lands 9am ET, where splits were just
+    # proven to exist; at the +4.4h median it lands ~1:24pm ET, still well
+    # ahead of the earliest tip. The 18 UTC slot stays as the pre-tip
+    # authority and 12 UTC stays for context/reads.
+    #
+    # Every step is idempotent and upserts, so a third pass costs an odds
+    # pull and nothing else.
+    - cron: '0 13 * * *'   # 9:00am ET on time, ~1:24pm ET at median lateness
   workflow_dispatch:
     inputs:
       date:
