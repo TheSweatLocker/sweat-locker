@@ -15620,7 +15620,27 @@ setJerryHistory(prev => {
   if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
   const al = ctxAny?.align_status;
   const alML: any = al?.ml;
-  const jr = game.id ? jerryReads[game.id] : null;
+  // ══ 2026-10-21 · THE CARD LOOKED UP JERRY BY id ONLY ══
+  //
+  // ANDY: "Also the badge of the play like NFL does on every game CHI -1.5".
+  //
+  // The pick chip fires on EITHER a publishable tier OR jr.call_text (see
+  // hasPickSignal below), and jerry_reads has a call_text for every sport:
+  // NBA 33/33, NCAAF 16/16, NFL 14/14, NHL 26 of 47 non-pass. So the chip
+  // should already have rendered on NBA and NCAAF cards.
+  //
+  // It did not, because this line resolved `jerryReads[game.id]` and nothing
+  // else. NHL files its reads under the league's own game id (2026020001)
+  // and NBA under ESPN's (401909088), while game.id here is an Odds-API
+  // hash — zero overlap, as the alias block in the jerry_reads fetch
+  // measured. That block already writes `away@home` and `nk:` aliases for
+  // exactly this reason, and _jerryFor (line ~340) already tries all three
+  // keys in the right order. The detail modal uses it. The card did not,
+  // so it missed every aliased sport.
+  //
+  // Same defect shape as the context map two screens up: the data was
+  // fetched, aliased and correct, and one call site resolved it the old way.
+  const jr = _jerryFor(jerryReads, game);
   const chips: React.ReactNode[] = [];
   // 2026-09-15 NFL EARLY-WEEK GATE — hide primary_play tier chip + Jerry
   // pick chip + model-aligned chip during Tue/Wed and Thu-before-8am.
@@ -15948,6 +15968,126 @@ setJerryHistory(prev => {
   }
 
   // Cap: max 2 sweat badges per card. Priority order (Vault > weather > sharp > sport-unique).
+  // ══ 2026-10-21 · NBA AND NHL HAD NO SITUATION BADGES ON THE CARD ══
+  //
+  // ANDY: "still dont see games tab badges in NCAAF, NBA, NHL like mLB and
+  // NFL ... for mlb we have Ace H, NFL we have Home div Dog Etc."
+  //
+  // Every chip above is gated by sport: NFL gets HOME DIV DOG / REST EDGE /
+  // PRIME-TIME, NCAAF gets the ranked matchup and TRAP GAME, MLB gets ACE
+  // DUEL / ACE H. NHL and NBA appear in none of them, so their cards carried
+  // no situational chip at all.
+  //
+  // The 2026-10-20 note on the NBA select is a DIFFERENT fix: it restored
+  // the NBA cards inside the detail modal (situational, injuries, four
+  // factors). The games-tab preview was never touched, which is why this
+  // reads as the same complaint twice.
+  //
+  // Every field below was verified to exist AND be populated on the forward
+  // slate before being used, the rule that note sets out — an explicit
+  // select naming a missing column returns 400 and this app reads a 400 as
+  // "no context", which would blank the sport rather than fix it:
+  //   NBA, 33 games: is_b2b 33/33, rest_days 33/33, pace 33/33,
+  //                  starters_out 16/33
+  //   NHL, 47 games: goalie + goalie_confirmed 47/47, sv_pct 45/47,
+  //                  pk_pct 47/47
+  //
+  // `*_injury_impact` is deliberately NOT used here. It is points-per-game
+  // lost, not a percentage, and it was being rendered x100 in the detail
+  // card until today (it would have printed "4470%"). starters_out is a
+  // plain list of names and cannot be misread.
+  if (gamesSport === 'NBA') {
+    const _hAb = ctxAny?.home_abbrev || 'HOME';
+    const _aAb = ctxAny?.away_abbrev || 'AWAY';
+    // 2nd of a back-to-back is the single most predictive NBA situation.
+    const _hB2B = ctxAny?.home_is_b2b === true;
+    const _aB2B = ctxAny?.away_is_b2b === true;
+    if (_hB2B !== _aB2B) {
+      _sweatBadges.push(<StatusChip key="b2b" variant="custom" color={THEME.warn}
+                                     icon="😴" label={`B2B ${_hB2B ? _hAb : _aAb}`} />);
+    } else if (_hB2B && _aB2B) {
+      _sweatBadges.push(<StatusChip key="b2b" variant="custom" color={THEME.warn}
+                                     icon="😴" label="BOTH B2B" />);
+    }
+    // Rest edge, but only when it is not already said by the B2B chip.
+    const _hR = Number(ctxAny?.home_rest_days);
+    const _aR = Number(ctxAny?.away_rest_days);
+    if (!_hB2B && !_aB2B && isFinite(_hR) && isFinite(_aR)) {
+      const _d = _hR - _aR;
+      if (Math.abs(_d) >= 2) {
+        _sweatBadges.push(<StatusChip key="nre" variant="custom" color={THEME.sharp}
+                                       icon="😴" label={`REST +${Math.abs(_d)} ${_d > 0 ? _hAb : _aAb}`} />);
+      }
+    }
+    // Starters ruled out. Counted per side so the chip names who is short.
+    const _hOut = Array.isArray(ctxAny?.home_starters_out) ? ctxAny.home_starters_out.length : 0;
+    const _aOut = Array.isArray(ctxAny?.away_starters_out) ? ctxAny.away_starters_out.length : 0;
+    if (_hOut || _aOut) {
+      const _lbl = _hOut && _aOut ? `${_hOut} OUT ${_hAb} · ${_aOut} ${_aAb}`
+                 : _hOut ? `${_hOut} OUT ${_hAb}` : `${_aOut} OUT ${_aAb}`;
+      _sweatBadges.push(<StatusChip key="so" variant="custom" color={THEME.hrb}
+                                     icon="🚑" label={_lbl} />);
+    }
+    // Combined pace. Thresholds from the league's own spread, not round
+    // numbers: a 2026-27 team runs roughly 96-102, so a combined 202+ is a
+    // genuinely fast game and 193 or under a genuinely slow one.
+    const _hP = Number(ctxAny?.home_pace);
+    const _aP = Number(ctxAny?.away_pace);
+    if (isFinite(_hP) && isFinite(_aP) && _hP > 0 && _aP > 0) {
+      const _sum = _hP + _aP;
+      if (_sum >= 202) {
+        _sweatBadges.push(<StatusChip key="pc" variant="custom" color={THEME.accent}
+                                       icon="🏃" label={`FAST ${_sum.toFixed(0)}`} />);
+      } else if (_sum <= 193) {
+        _sweatBadges.push(<StatusChip key="pc" variant="custom" color={THEME.sharp}
+                                       icon="🐢" label={`SLOW ${_sum.toFixed(0)}`} />);
+      }
+    }
+  }
+
+  if (gamesSport === 'NHL') {
+    const _hAb = ctxAny?.home_team_abbrev || 'HOME';
+    const _aAb = ctxAny?.away_team_abbrev || 'AWAY';
+    // An UNCONFIRMED starter is the most actionable thing on an NHL card:
+    // every goalie-dependent read is provisional until it lands, so it
+    // leads. Both flags are populated on 47 of 47, so a false here is a
+    // real "not announced" rather than missing data.
+    const _hC = ctxAny?.home_goalie_confirmed === true;
+    const _aC = ctxAny?.away_goalie_confirmed === true;
+    if (!_hC || !_aC) {
+      _sweatBadges.push(<StatusChip key="gtbd" variant="custom" color={THEME.warn}
+                                     icon="🥅" label={!_hC && !_aC ? 'GOALIES TBD'
+                                       : `G TBD ${!_hC ? _hAb : _aAb}`} />);
+    } else {
+      // Elite starter. .920 is the same bar nhl_prop_facing_elite_goalie
+      // uses, so the card and the signal layer agree on the word "elite".
+      const _hS = Number(ctxAny?.home_goalie_sv_pct);
+      const _aS = Number(ctxAny?.away_goalie_sv_pct);
+      const _hE = isFinite(_hS) && _hS >= 0.920;
+      const _aE = isFinite(_aS) && _aS >= 0.920;
+      if (_hE && _aE) {
+        _sweatBadges.push(<StatusChip key="gl" variant="custom" color={THEME.accent}
+                                       icon="🥅" label="GOALIE DUEL" />);
+      } else if (_hE || _aE) {
+        _sweatBadges.push(<StatusChip key="gl" variant="custom" color={THEME.accent}
+                                       icon="🥅" label={`ELITE G ${_hE ? _hAb : _aAb}`} />);
+      }
+    }
+    // Power-play edge: one side's penalty kill is leaking. 75% is bottom of
+    // the league; the NHL average sits near 79-80.
+    const _hPK = Number(ctxAny?.home_pk_pct);
+    const _aPK = Number(ctxAny?.away_pk_pct);
+    if (isFinite(_hPK) && isFinite(_aPK) && _hPK > 0 && _aPK > 0) {
+      if (_hPK <= 75 && _aPK > 75) {
+        _sweatBadges.push(<StatusChip key="pk" variant="custom" color={THEME.hrb}
+                                       icon="⚡" label={`PP EDGE ${_aAb}`} />);
+      } else if (_aPK <= 75 && _hPK > 75) {
+        _sweatBadges.push(<StatusChip key="pk" variant="custom" color={THEME.hrb}
+                                       icon="⚡" label={`PP EDGE ${_hAb}`} />);
+      }
+    }
+  }
+
   chips.push(..._sweatBadges.slice(0, 2));
 
   if (!chips.length) return null;
