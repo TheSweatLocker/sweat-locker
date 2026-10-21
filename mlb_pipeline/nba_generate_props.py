@@ -116,9 +116,48 @@ def fetch_props_for_event(event_id: str) -> dict:
                 slot = by_key.setdefault(key, {
                     'display': player, 'line': float(line),
                     'over_odds': None, 'under_odds': None, 'book': book,
+                    # 2026-10-21: which books posted THIS line, so the
+                    # collapse below can keep the most widely posted one.
+                    '_books': set(),
                 })
+                slot['_books'].add(book)
                 slot[f'{direction}_odds'] = int(price)
-    return by_key
+
+    # ══ 2026-10-21 · ONE LINE PER PROP, NOT ONE ROW PER POSTED LINE ══
+    # Supabase flagged the Disk IO budget. Measured on 2026-10-22:
+    #
+    #     1,363 stored rows for THREE games  =  454 per game
+    #       296 unique (game, player, prop, direction)  =  4.60 lines each
+    #     tier: COVERAGE on 1,363 of 1,363
+    #
+    # Worse than NHL's 2.09, and against MLB — the one surface that actually
+    # publishes — at exactly 1.00 line per prop side on 97 rows a slate.
+    #
+    # Cause: `key` includes the LINE, so when books disagree about the number
+    # each becomes its own row. We request no _alternate markets; this is five
+    # books disagreeing, multiplied out.
+    #
+    # Keep the line the MOST BOOKS ACTUALLY POSTED — a real number somebody
+    # offered. Not a median: a computed consensus of a 24.5/25.5 split is
+    # 25.0, a line nobody posted, and a fake line makes a fake price
+    # (feedback_consensus_line_must_be_posted).
+    #
+    # Every dropped row is COVERAGE on a surface with no publishable view or
+    # RPC (B103), so this costs no product.
+    chosen, collapsed = {}, {}
+    for key, v in by_key.items():
+        _p, _pt, _dir, _line = key
+        slot = (_p, _pt, _dir)
+        score = len(v.get('_books') or ())
+        if slot not in chosen or score > chosen[slot]:
+            chosen[slot] = score
+            collapsed[slot] = key
+    keep = set(collapsed.values())
+    dropped = len(by_key) - len(keep)
+    if dropped:
+        print(f'    collapsed {dropped} alternate line(s) -> kept {len(keep)} '
+              f'prop line(s), one per player/market/side')
+    return {k: v for k, v in by_key.items() if k in keep}
 
 
 def upsert_prop(payload: dict, dry_run: bool = False) -> bool:

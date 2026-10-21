@@ -184,7 +184,49 @@ def fetch_props_for_event(event_id: str) -> dict:
             # Recorded so a one-sided row is distinguishable from a bug.
             'two_sided': bool(two_sided),
         }
-    return by_key
+
+    # ══ 2026-10-21 · ONE LINE PER PROP, NOT ONE ROW PER POSTED LINE ══
+    # Supabase flagged the project was about to exhaust its Disk IO budget.
+    # nhl_pipeline_props is the largest table in the system at ~62,000 rows in
+    # 22 days, and measured on 2026-10-20:
+    #
+    #     5,018 stored rows for ELEVEN games  =  456 per game
+    #     2,403 unique (game, player, prop, direction)  =  2.09 lines each
+    #     tier: COVERAGE on 5,018 of 5,018 — not one LEAN, STRONG or PRIME
+    #
+    # MLB, the mature surface that actually publishes, stores 97 rows for a
+    # slate at exactly 1.00 line per prop side.
+    #
+    # The cause is here: by_key is keyed (player, base, LINE), so when books
+    # disagree about the main number — DraftKings SOG 2.5, ESPN Bet 3.5 — each
+    # becomes its own row, and a goalie saves market ladders to thirteen
+    # (19.5 through 33.5 on one keeper). We never ask for _alternate markets;
+    # this is books disagreeing, multiplied by five books.
+    #
+    # Keep the line the MOST BOOKS ACTUALLY POSTED. That matters: it is a real
+    # number somebody offered, not a median of a split. A computed consensus
+    # of an even 2.5/3.5 disagreement would be 3.0 — a line no book posted,
+    # and a fake line makes a fake price (feedback_consensus_line_must_be_posted).
+    # Ties break toward a two-sided quote, because a pair from one book is the
+    # only honest no-vig market (see the note above).
+    #
+    # Roughly halves the table at zero product cost: every dropped row is
+    # COVERAGE tier on a surface with no publishable view or RPC (B103).
+    collapsed, chosen = {}, {}
+    for key, v in by_key.items():
+        _p, _base, _line = key
+        slot = (_p, _base)
+        # (books posting this line, prefers a two-sided quote)
+        score = (len(per_book.get(key, {})), 1 if v['two_sided'] else 0)
+        if slot not in chosen or score > chosen[slot]:
+            chosen[slot] = score
+            collapsed[slot] = key
+    keep = set(collapsed.values())
+    dropped = len(by_key) - len(keep)
+    if dropped:
+        print(f'    collapsed {dropped} alternate line(s) -> kept '
+              f'{len(keep)} prop line(s), one per player/market')
+    return {k: v for k, v in by_key.items() if k in keep}
 
 
 def upsert_prop(payload: dict, dry_run: bool = False) -> bool:
