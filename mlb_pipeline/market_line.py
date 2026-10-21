@@ -96,22 +96,67 @@ def _f(v):
 
 
 def _page(params, cap=120000):
-    out, off = [], 0
-    while off < cap:
+    """Fetch every matching row, walking by KEYSET rather than OFFSET.
+
+    ══ 2026-10-21 · DEEP OFFSET WAS A LARGE PART OF THE DISK IO BUDGET ══
+    This used to pass limit=1000 with offset=0,1000,...,119000. OFFSET is not
+    a seek: Postgres walks and discards every row before the offset on EVERY
+    page. So page N costs N×1000 reads, and the total is quadratic in page
+    count -- about 7.3 MILLION row-reads to return 120,000 rows at the cap.
+    get_io_audit measured one of this module's callers at 137 GiB read from
+    disk across 472 calls, 2.9 SECONDS mean.
+    Keyset makes each page a single index seek: ask for rows with id greater
+    than the last one seen. 120 pages become 120 seeks instead of 7.3M reads,
+    and the cost stops growing with depth.
+
+    IT ALSO FIXES A CORRECTNESS BUG. The old loop paginated with NO ORDER BY
+    (callers pass no `order`), and OFFSET without ORDER BY has no defined
+    row order -- Postgres may return a row twice across pages or skip one
+    entirely, silently. Sorting by `id` makes the walk total and stable, so
+    "every matching row" is now actually true.
+
+    `id` is the bigserial primary key, so it is unique and monotonic for
+    inserts, which is what a keyset cursor needs. A caller that passes its
+    own `order` is honoured as-is on a single page rather than being
+    silently re-sorted.
+    """
+    out, cursor, pages = [], None, 0
+    max_pages = max(1, cap // 1000)
+    want_id = 'id' not in str(params.get('select', ''))
+    while pages < max_pages:
         q = dict(params)
         q['limit'] = '1000'
-        q['offset'] = str(off)
+        q['order'] = 'id.asc'
+        # `id` must be SELECTed to be read back as the cursor; a column that
+        # is filtered or ordered on but never selected comes back absent, and
+        # the cursor would silently stay None and loop forever on page 1.
+        if want_id:
+            sel = str(params.get('select') or '*')
+            q['select'] = sel if sel == '*' else f'{sel},id'
+        if cursor is not None:
+            q['id'] = f'gt.{cursor}'
         r = requests.get(f'{SB}/rest/v1/line_history', headers=H, params=q,
                          timeout=180)
         if r.status_code not in (200, 206):
+            # Loud, because returning a PARTIAL set silently is how a median
+            # across books becomes a median across the books that happened to
+            # fit in the pages that succeeded. A transient statement timeout
+            # was observed doing exactly this during testing.
+            print(f'  [market_line] line_history page failed '
+                  f'{r.status_code} after {len(out)} rows — PARTIAL result')
             return out
         chunk = r.json()
-        if not isinstance(chunk, list):
+        if not isinstance(chunk, list) or not chunk:
             return out
         out += chunk
+        pages += 1
         if len(chunk) < 1000:
             return out
-        off += 1000
+        try:
+            cursor = chunk[-1]['id']
+        except (KeyError, TypeError):
+            # No id to continue from: stop rather than restart at page 1.
+            return out
     return out
 
 

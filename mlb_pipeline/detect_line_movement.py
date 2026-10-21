@@ -70,21 +70,70 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
     # `limit=5000` was truncated by the server; a full slate × 5 books ×
     # 3 markets × 2 sides × multi-snapshot easily blew past 1000, so
     # STEAM missed later-snapshot moves. Loop offset-based in 1k chunks.
-    rows = []
-    for off in range(0, 20000, 1000):
+    # ══ 2026-10-21 · THIS READ WAS THE DISK IO BUDGET ══
+    # get_io_audit measured this exact shape at
+    #     694.69 GiB read from disk · 129,297 calls · 202ms mean
+    # the single largest consumer in the database, by a factor of five.
+    #
+    # Two causes, both here.
+    #
+    # 1. NO INDEX COVERED IT. The filter is (sport, captured_at) and
+    #    20261021b had added (sport, market, side, commence_time) -- the
+    #    wrong column. commence_time is when the GAME starts; captured_at is
+    #    when the QUOTE was polled. Every call fell back to scanning.
+    #    20261021j adds (sport, captured_at), which serves the equality, the
+    #    range AND the ordering, so the sort disappears too.
+    #
+    # 2. DEEP OFFSET. offset=0,1000,...,19000 is not a seek -- Postgres walks
+    #    and discards every row before the offset on each page, so page N
+    #    costs N×1000 reads and the total is quadratic: ~210,000 row-reads to
+    #    return 20,000 rows. Keyset instead: ask for id greater than the last
+    #    one seen, which is one index seek per page.
+    #
+    # Ordering moved to id.asc for the walk, which is also what makes the
+    # pagination total -- OFFSET paging a result set is only safe if the sort
+    # is unique, and captured_at is NOT unique across books, so the old loop
+    # could repeat or skip a row at a page boundary. Each group is sorted by
+    # captured_at in Python below, so the comparison no longer depends on the
+    # database's row order at all.
+    rows, cursor = [], None
+    for _ in range(20):
+        q = {'sport': f'eq.{sport}',
+             'captured_at': f'gte.{since}',
+             'select': 'id,game_id,matchup,market,book,side,line,price,'
+                       'captured_at',
+             'order': 'id.asc', 'limit': 1000}
+        if cursor is not None:
+            q['id'] = f'gt.{cursor}'
         r = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
-            params={'sport': f'eq.{sport}',
-                    'captured_at': f'gte.{since}',
-                    'select': 'game_id,matchup,market,book,side,line,price,captured_at',
-                    'order': 'captured_at.asc', 'limit': 1000, 'offset': off},
-            timeout=30)
+                         params=q, timeout=30)
         if r.status_code != 200:
             print(f'  line_history read failed: {r.status_code}'); return []
         chunk = r.json()
-        if not isinstance(chunk, list): return []
+        if not isinstance(chunk, list):
+            print(f'  line_history read returned no list: {str(chunk)[:120]}')
+            return []
         rows.extend(chunk)
         if len(chunk) < 1000: break
+        cursor = chunk[-1].get('id')
+        if cursor is None:
+            print('  line_history page had no id to continue from — '
+                  'window TRUNCATED, steam flags may be incomplete')
+            break
+    else:
+        # Loop ran all 20 pages without a short page: there is more data than
+        # the window holds. Say so. A silently truncated window produces
+        # fewer flags and looks exactly like a quiet night
+        # (feedback_green_step_that_writes_nothing).
+        print(f'  WARNING: {sport} line_history window hit the 20-page cap '
+              f'({len(rows)} rows) — older snapshots not examined')
     if not rows:
+        # Distinguish "nothing moved" from "we read nothing". Observed during
+        # testing: a transient statement timeout returned zero rows while the
+        # table held 20,000, which would publish an empty Steam Room and exit
+        # 0.
+        print(f'  NOTE: 0 line_history rows for {sport} since {since} — '
+              f'either no quotes were polled or the read failed')
         return []
 
     # Group snapshots per (game, market, book, side) → time-ordered list
@@ -92,6 +141,13 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
     for row in rows:
         key = (row['game_id'], row['market'], row['book'], row['side'])
         grouped[key].append(row)
+    # Sort each group by captured_at EXPLICITLY. The walk above now orders by
+    # id, not captured_at, and the logic below takes the two most-recent
+    # snapshots -- so it needs real time order, not insertion order. Doing it
+    # here rather than in the query also removes the old silent dependency on
+    # the database returning rows in the order this code assumed.
+    for _snaps in grouped.values():
+        _snaps.sort(key=lambda r: str(r.get('captured_at') or ''))
 
     # For each (game, market, side), collect per-book directional moves.
     # Direction: +1 if line/price moved toward that side, -1 if against.
