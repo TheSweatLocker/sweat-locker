@@ -303,14 +303,16 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
                          if str(g.get('roof') or '').lower() not in
                          ('dome', 'closed', 'indoor', 'indoors'))
     outdoor_missed -= updated
+    # 2026-10-20: demoted from a failure to a note. Open-Meteo is the
+    # primary source and needs no key (see fetch_open_meteo), so a missing
+    # OPENWEATHER_API_KEY costs us only the fallback. This check used to
+    # return 1 even on a run that had just written every game. Its NCAAF
+    # twin had the same guard placed BEFORE the work, where it returned
+    # early and wrote nothing for weeks - see the note there. What matters
+    # is the outcome below, which this file already got right.
     if not OW_KEY:
-        print('\n  *** FAILING LOUDLY: OPENWEATHER_API_KEY is not set. ***')
-        print('  Domes still got their defaults, so a green run here means')
-        print('  NOTHING for outdoor games. Set the secret in GitHub Actions')
-        print('  (it exists in mlb_pipeline/.env, which is why local runs')
-        print('  look fine). Wind feeds the only positive totals lens we')
-        print('  have; without it that lens cannot fire.')
-        return 1
+        print('\n  note: OPENWEATHER_API_KEY not set — Open-Meteo served '
+              'this run and needs no key; only the fallback is unavailable.')
     if len(games) and updated == 0:
         print('\n  *** FAILING LOUDLY: 0 of '
               f'{len(games)} upcoming games got weather. ***')

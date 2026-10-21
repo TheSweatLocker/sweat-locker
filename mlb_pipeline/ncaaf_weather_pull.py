@@ -362,19 +362,45 @@ def patch_game(game_id: str, patch: dict, dry_run: bool = False) -> bool:
 
 def run(game_id: Optional[str] = None, dry_run: bool = False) -> int:
     print('== NCAAF weather pull ==')
+    # ══ 2026-10-20 · THIS GUARD WAS BLOCKING A PULL THAT NEEDS NO KEY ══
+    # Andy: "What are you talking about weather api key we talked baout this
+    # eysterday. Its in GH secret wtf are you talking about". He is right,
+    # and the key was never the problem.
+    #
+    # The 10-09 version of this guard returned 1 RIGHT HERE, before fetching
+    # anything. That was correct when OpenWeather was the only source. It
+    # stopped being correct the moment Open-Meteo became primary - which
+    # fetch_forecast's own docstring says outright: "free and with NO KEY,
+    # which also removes the missing-secret failure mode". The guard was left
+    # in front of it, so whenever OPENWEATHER_API_KEY resolved empty in
+    # Actions the script exited before calling the keyless source that would
+    # have worked, and `continue-on-error: true` painted it green.
+    #
+    # MEASURED, over ncaaf_game_context from 09-25:
+    #
+    #   date       rows  temp populated
+    #   10-09         5      5      <- local run
+    #   10-10        46     44      <- same local run's 7-day window
+    #   10-13         2      2      <- local run
+    #   10-15         3      1      <- local run
+    #   10-17        52      0      <- SATURDAY. CI ran. Wrote nothing.
+    #   10-24        14      0      <- until this was found
+    #
+    # Every populated row came from a hand run; CI has never written one.
+    # The workflow_heartbeat table shows ncaaf_pipeline started AND ended on
+    # every cron slot including Sat 10-17, so the pipeline was fine - this
+    # one step returned before doing anything. 52 Saturday games went out
+    # with no weather, and the wind-UNDER lens (55.6%, n=1,444) is the only
+    # positive totals lens we have.
+    #
+    # The guard now warns and keeps going, and the no-op check moved to the
+    # END where it belongs: judge the RESULT, not the precondition. That is
+    # the same shape as the NFL twin, which put its check after the work and
+    # therefore kept writing all along.
     if not OW_KEY:
-        # ══ 2026-10-09 · DO NOT EXIT 0 ON A NO-OP ══
-        # The workflow step carries continue-on-error, so returning
-        # quietly here made a completely empty pull look identical to a
-        # successful one in Actions. Measured consequence on the NFL
-        # twin: wind was populated on 3 of 207 upcoming games, and all
-        # three were domes (which need no API call). A local dry run
-        # patches 50/51 because the key lives in mlb_pipeline/.env.
-        print('  *** FAILING LOUDLY: OPENWEATHER_API_KEY missing — '
-              'cannot fetch forecasts. ***')
-        print('  Set it in GitHub Actions secrets. A green run without'
-              ' it means NO weather was written.')
-        return 1
+        print('  note: OPENWEATHER_API_KEY not set — Open-Meteo is the '
+              'primary source and needs no key, so the pull continues. '
+              'Only the fallback is unavailable.')
     if game_id:
         r = requests.get(f'{SB}/rest/v1/ncaaf_game_context?game_id=eq.{requests.utils.quote(str(game_id), safe="")}',
                          headers=H_READ, timeout=15)
@@ -383,7 +409,11 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> int:
         games = fetch_upcoming_games()
     print(f'  {len(games)} upcoming games (7-day window)')
 
-    if not games: return
+    if not games:
+        # Legitimate in the offseason and on a dead week, so not a failure -
+        # but it must not look like a successful pull either.
+        print('  no games in the 7-day kickoff window — nothing to pull')
+        return 0
     updated = 0; skipped_unknown = 0
     for g in games:
         home = g.get('home_team', '?')
@@ -419,12 +449,32 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> int:
             'temp': round(wx['temp']) if wx['temp'] is not None else None,
             'wind': w,
             'dome': False,
-            'weather_source': f'openweather_{wx.get("source","?")}',
+            # 2026-10-20: was f'openweather_{source}', which stamped
+            # "openweather_open_meteo" on rows Open-Meteo served. The
+            # column is there to say WHERE a number came from; prefixing
+            # every row with the fallback's name defeats that. Consumers
+            # only check it for presence (app/index.tsx, GameDetailV2
+            # both gate on non-null), so the value is free to be honest.
+            'weather_source': str(wx.get('source') or 'unknown'),
         }
         if patch_game(g['game_id'], patch, dry_run):
             updated += 1
 
     print(f'\nSummary: {updated}/{len(games)} patched · {skipped_unknown} skipped (unknown venue / neutral)')
+
+    # ══ 2026-10-20 · THE NO-OP CHECK, MOVED HERE FROM THE TOP ══
+    # 2026-10-09's instinct was right and its placement was wrong. A missing
+    # key is no longer a reason to fail (Open-Meteo needs none); games in the
+    # window that came away with nothing IS. `continue-on-error` still lets
+    # the pipeline move on, but the step now shows red in Actions instead of
+    # passing green on an empty pull - which is exactly how 52 Saturday games
+    # shipped with no weather and nobody saw it.
+    reachable = len(games) - skipped_unknown
+    if reachable > 0 and updated == 0:
+        print(f'\n  *** FAILING LOUDLY: 0 of {reachable} reachable games got '
+              'weather. ***')
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
