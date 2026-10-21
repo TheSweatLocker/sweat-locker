@@ -2120,6 +2120,14 @@ const [nhlGameContextMap, setNhlGameContextMap] = useState<Record<string, any>>(
 // stays empty and the chips are simply absent — the same silent-hide every
 // other sport's chips already do. No crash, and nothing to ship again later.
 const [ncaabGameContextMap, setNcaabGameContextMap] = useState<Record<string, any>>({});
+// 2026-10-21 · cohort_tag_records on the GAMES TAB. Until now this was
+// fetched only inside GameDetailV2, once per game on open, so the card had no
+// access to the graded record behind a cohort and could not show one. The
+// whole table is 10 rows, so it is one unfiltered fetch, not a per-game one.
+// Keyed tag -> row. See the badge block for why the record matters: the
+// in-app help promises "where a badge carries a number, that is how the
+// situation has actually graded - not a hunch".
+const [cohortRecords, setCohortRecords] = useState<Record<string, any>>({});
 const [umpireStats, setUmpireStats] = useState({});  // name(lower) -> {over_rate, k_rate_above_avg, nrfi_rate, games_sampled}
 const [modelEdgeLoading, setModelEdgeLoading] = useState(false);
   const [gameDetailModal, setGameDetailModal] = useState(false);
@@ -6302,6 +6310,28 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           }
         });
         setNcaabGameContextMap(ncaabCtxMap);
+      }
+    } catch(pe) { /* non-fatal */ }
+    // 2026-10-21 · cohort_tag_records, for the games-tab cohort chip. Ten
+    // rows in the whole table, so no filter and no per-game fetch.
+    try {
+      const cohRes = await supabase
+        .from('cohort_tag_records')
+        .select('tag,sport,market,side,wins,losses,pushes,hit_rate,sample_n')
+        .limit(200);
+      if (cohRes?.data && cohRes.data.length > 0) {
+        const m: Record<string, any> = {};
+        (cohRes.data as any[]).forEach((row: any) => {
+          // Keep the best-evidenced row per tag. The table's key includes
+          // market and side, and the chip does not know either, so picking
+          // arbitrarily would show whichever row came back last - the
+          // unordered-vintage trap. Largest graded sample wins, deterministically.
+          const t = row?.tag;
+          if (!t) return;
+          const prev = m[t];
+          if (!prev || Number(row.sample_n || 0) > Number(prev.sample_n || 0)) m[t] = row;
+        });
+        setCohortRecords(m);
       }
     } catch(pe) { /* non-fatal */ }
     // Umpire stats for the MLB Situational tab (audit-anchored cohort flags)
@@ -16220,6 +16250,88 @@ setJerryHistory(prev => {
         _sweatBadges.push(<StatusChip key="em" variant="custom" color={THEME.hrb}
                                        icon="📊" label={`MISMATCH ${_fav} +${Math.abs(_gap).toFixed(0)}`} />);
       }
+    }
+  }
+
+  // ══ 2026-10-21 · FOOTBALL COHORT + TIME SLOT — THE PROMISED CHIPS ══
+  //
+  // ANDY: "Why dont i see ncaaf pregame badge syet?"
+  //
+  // The NCAAF chips above were firing correctly and are simply RARE: only 2
+  // of 16 forward games have BOTH teams AP-ranked (ranks are fed 6/16 home
+  // and 8/16 away — a null means unranked, which is right), and only 2 of 16
+  // have severe weather, since late-October kickoffs are 64-79°F with winds
+  // of 3-11mph. So most NCAAF cards had nothing to show.
+  //
+  // Meanwhile the in-app help text already promises more than the card
+  // delivered: "College football: time slot, conference game, cold, wind,
+  // and a notice when the opponent is FCS". Of those, time slot and
+  // conference game were never implemented as card chips, and there is NO
+  // FCS field on ncaaf_game_context (probed: is_fcs_opponent, fcs_opponent,
+  // home/away_is_fcs, *_division all absent), so that one stays unpromised
+  // until a column exists.
+  //
+  // cohort_tags is the useful one and it was sitting unused on the card:
+  // fed on 10 of 16 NCAAF and 9 of 14 NFL games, and it is the same field
+  // GameDetailV2 already renders. Every tag has a large graded record in
+  // cohort_tag_records, all far past the n>=30 floor:
+  //
+  //   nfl_home_fav          2246-2411  48.23%  n=4657
+  //   nfl_div_home_cover    1076-1164  48.04%  n=2240
+  //   ncaaf_home_fav        2087-2103  49.81%  n=4190
+  //   ncaaf_heavy_home_dog   633-591   51.72%  n=1224
+  //   ncaaf_heavy_home_fav   618-571   51.98%  n=1189
+  //
+  // THE RECORD IS SHOWN, NOT HIDDEN, and it is deliberately the rate rather
+  // than a tier word: every one of these cohorts sits at or UNDER the 52.4%
+  // breakeven, so a chip reading "HOME FAV" alone would imply an edge that
+  // the history does not support. With the number attached it says what it
+  // is — a situation, and how it has actually graded.
+  //
+  // Appended AFTER the ranked/trap/weather chips on purpose. The cap below
+  // takes the first two, so the rare and specific signals keep priority and
+  // these only fill cards that would otherwise be bare.
+  if (gamesSport === 'NFL' || gamesSport === 'NCAAF') {
+    let _tags: any = ctxAny?.cohort_tags;
+    if (typeof _tags === 'string') { try { _tags = JSON.parse(_tags); } catch { _tags = null; } }
+    if (Array.isArray(_tags) && _tags.length) {
+      // Best-evidenced tag on this game, so a card with two cohorts shows
+      // the one with the most history rather than whichever came first.
+      let _best: any = null;
+      for (const t of _tags) {
+        const rec = cohortRecords?.[String(t)];
+        if (!rec || Number(rec.sample_n || 0) < 30) continue;
+        if (!_best || Number(rec.sample_n || 0) > Number(_best.rec.sample_n || 0)) {
+          _best = {tag: String(t), rec};
+        }
+      }
+      if (_best) {
+        const _label = _best.tag
+          .replace(/^(nfl|ncaaf|ncaab|nba|nhl|mlb)_/, '')
+          .replace(/_/g, ' ')
+          .toUpperCase();
+        const _rate = Number(_best.rec.hit_rate);
+        _sweatBadges.push(<StatusChip key="coh" variant="custom" color={THEME.sharp}
+                                       icon="📋" label={`${_label} ${isFinite(_rate) ? _rate.toFixed(0) + '%' : ''}`.trim()} />);
+      }
+    }
+    // Time slot, last resort so every football card carries something.
+    // Intl rather than new Date(d.toLocaleString(...)) — that reparse is a
+    // V8-only trick and returns Invalid Date on Hermes, which is what hid 53
+    // of 56 NCAAF games once already.
+    const _ko = ctxAny?.kickoff_utc;
+    if (_ko) {
+      try {
+        const _h = Number(new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York', hour: 'numeric', hour12: false,
+        }).format(new Date(_ko)));
+        if (isFinite(_h)) {
+          const _slot = _h < 12 ? 'MORNING' : _h < 16 ? 'AFTERNOON'
+                      : _h < 19 ? 'EVENING' : 'NIGHT';
+          _sweatBadges.push(<StatusChip key="slot" variant="custom" color={THEME.accent}
+                                         icon="🕐" label={_slot} />);
+        }
+      } catch { /* unparseable kickoff — skip rather than guess */ }
     }
   }
 

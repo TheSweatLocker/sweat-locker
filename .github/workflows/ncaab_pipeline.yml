@@ -211,6 +211,35 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_game_context.py" python ncaab_game_context.py
 
+      # ══ 2026-10-21 · LAUNCH READINESS, BECAUSE THERE IS NO OTA ══
+      #
+      # The same defect has shipped three times, once per sport, and a user
+      # found it every time: NHL 09-28 (ctx chain fell through to null), NBA
+      # 10-20 (five ctx fields the select never asked for, two whole cards
+      # dead), NCAAB 10-21 (chain still ended at NBA, so all four NCAAB cards
+      # would have gone down on opening night). The data existed every time;
+      # the client either never asked for the column or never resolved the
+      # row, so each card took its own "no data" path. Nothing fails and
+      # nothing logs — it just looks like a quiet sport.
+      #
+      # NCAAB cannot be verified against live data today: basketball_ncaab is
+      # not in the Odds API's active sports list yet, so ncaab_game_context is
+      # EMPTY and a manual run produces nothing. With no expo-updates (B5), a
+      # wiring mistake discovered after 11-03 needs another App Store review.
+      # So the check runs here and fails the moment a column the client reads
+      # stops existing — including the first run after rows appear.
+      #
+      # NOT continue-on-error: a missing column is the one failure that
+      # silently blanks a sport, which is exactly what should stop a run.
+      - name: NCAAB — verify client-read columns exist
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python verify_sport_launch_ready.py --sport NCAAB
+
       # 2026-08-17: teamrankings season aggregates for NCAAB. NCAAB is the
       # only sport where PER-GAME odds backfill is blocked (0/5911 games
       # have close_spread) — season aggregates are the practical
