@@ -6099,21 +6099,50 @@ function NCAAFSituationalCard({ctx, homeTeam, awayTeam}: any) {
   //   Sat 7-8           = Primetime
   //   Sat 10:30+        = Late night (west coast)
   //   Thu/Fri primetime = Weeknight
+  // ══ 2026-10-20 · TWO BUGS IN HERE, FOUND CHECKING ANDY'S "dont see ══
+  //                  ncaaf badges either"
+  //
+  // The badges themselves are fine: 16 of the 20 NCAAF rows with context
+  // this week would render a chip, almost all of them from this slot label.
+  // He saw none because the Games tab was showing exactly ONE game (B93) and
+  // that game - NMSU @ Sam Houston, a WEDNESDAY kickoff - hit both bugs.
+  //
+  // BUG 1, a fixed -4h offset for ET. Correct today and WRONG from Nov 1,
+  // when EDT becomes EST and the real offset is -5. A noon EST kickoff is
+  // 17:00Z, this read it as 13:00 ET, and 13 falls outside the 10-13 Big
+  // Noon window - so every slot chip would have quietly stopped matching for
+  // the last month of the season, bowl games included. Now derived with
+  // Intl in the America/New_York zone, which knows when DST ends. Note the
+  // deliberate choice NOT to round-trip through new Date(toLocaleString()):
+  // that idiom returns Invalid Date on Hermes and is what hid 53 NCAAF games
+  // earlier today. Format to a string, read the string, never re-parse it.
+  //
+  // BUG 2, no midweek slot. The comment above lists "Thu/Fri primetime =
+  // Weeknight" but the code only handled dow 4, 5 and 6, so Tue and Wed
+  // games - MACtion, which is the one CFB slot a fan can name without
+  // looking it up - got nothing. That is why the single game he could open
+  // showed an empty row.
   const kickoff = ctx?.kickoff_utc;
   let slotLabel: string | null = null;
   if (kickoff) {
     try {
       const dt = new Date(kickoff);
-      const et = new Date(dt.getTime() - 4 * 3600 * 1000);
-      const dow = et.getUTCDay(); // 0=Sun 5=Fri 6=Sat
-      const hr  = et.getUTCHours();
-      if (dow === 6) {
-        if (hr >= 10 && hr < 13) slotLabel = 'Big Noon';
-        else if (hr >= 15 && hr < 17) slotLabel = 'Afternoon';
-        else if (hr >= 19 && hr < 21) slotLabel = 'Primetime';
-        else if (hr >= 22 || hr < 3) slotLabel = 'Late Night';
-      } else if (dow === 5) slotLabel = 'Friday Night';
-      else if (dow === 4) slotLabel = 'Thursday Night';
+      if (!isNaN(dt.getTime())) {
+        const ET = 'America/New_York';
+        const dowName = dt.toLocaleDateString('en-US', {timeZone: ET, weekday: 'short'});
+        const hrStr = new Intl.DateTimeFormat('en-US',
+          {timeZone: ET, hour: 'numeric', hour12: false}).format(dt);
+        // some engines render midnight as "24"; fold it back to 0
+        const hr = Number(String(hrStr).replace(/[^0-9]/g, '')) % 24;
+        if (dowName === 'Sat' && !isNaN(hr)) {
+          if (hr >= 10 && hr < 13) slotLabel = 'Big Noon';
+          else if (hr >= 15 && hr < 17) slotLabel = 'Afternoon';
+          else if (hr >= 19 && hr < 21) slotLabel = 'Primetime';
+          else if (hr >= 22 || hr < 3) slotLabel = 'Late Night';
+        } else if (dowName === 'Fri') slotLabel = 'Friday Night';
+        else if (dowName === 'Thu') slotLabel = 'Thursday Night';
+        else if (dowName === 'Tue' || dowName === 'Wed') slotLabel = 'Weeknight';
+      }
     } catch {}
   }
 
@@ -7605,10 +7634,43 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
       }
     })();
   }, [homeTeam, awayTeam, ctx?.home_abbrev, ctx?.away_abbrev]);
-  const impact = ctx?.home_injury_impact;
-  const startersOut = ctx?.home_starters_out;
+  // ══ 2026-10-20 · THIS WAS ABOUT TO SHIP A WRONG NUMBER ══
+  // Unlocking the fields above would have made this line visible, and it
+  // was formatting a fraction:
+  //
+  //   Starter-out impact score: {(impact * 100).toFixed(0)}% of typical
+  //   starter value
+  //
+  // `*_injury_impact` is POINTS PER GAME LOST, summed over players listed
+  // OUT - enrich_nba_injuries_to_context.py says so explicitly ("a magnitude
+  // rather than a count, because two bench players out is not the same event
+  // as one star out"). Over tonight's board it runs 0 to 44.7 with a nonzero
+  // median of 11.8, so x100 would have rendered LAC as "4470% of typical
+  // starter value". The >= 0.2 threshold was written for a fraction too, so
+  // it fired on two tenths of a point.
+  //
+  // Now shown in its own units, per side, named. 5.0 ppg is the floor for
+  // saying anything (19 of 56 sides tonight); 15.0 ppg is the star-out line
+  // already used by shadow_nba_star_out.py, reused rather than reinvented so
+  // the UI and the signal cannot disagree about what a star is.
+  const impactH = ctx?.home_injury_impact != null ? Number(ctx.home_injury_impact) : null;
+  const impactA = ctx?.away_injury_impact != null ? Number(ctx.away_injury_impact) : null;
+  const outH = Array.isArray(ctx?.home_starters_out) ? ctx.home_starters_out.filter(Boolean) : [];
+  const outA = Array.isArray(ctx?.away_starters_out) ? ctx.away_starters_out.filter(Boolean) : [];
+  const IMPACT_FLOOR = 5.0;   // ppg lost worth mentioning
+  const STAR_OUT_PPG = 15.0;  // shadow_nba_star_out.py's own threshold
+  const impactRow = (side: string, v: number | null) =>
+    (v == null || v < IMPACT_FLOOR) ? null : (
+      <Text key={side} style={{color: C.fade, fontSize: 11, fontStyle: 'italic'}}>
+        {abbrev3(side)} down {v.toFixed(1)} ppg of listed-out scoring
+        {v >= STAR_OUT_PPG ? ' — star out' : ''} · the line already reflects it.
+      </Text>
+    );
   if (!isEnabled) return null;
-  if (injuries.home.length + injuries.away.length === 0 && !impact && !startersOut) return null;
+  if (injuries.home.length + injuries.away.length === 0
+      && !(impactH != null && impactH >= IMPACT_FLOOR)
+      && !(impactA != null && impactA >= IMPACT_FLOOR)
+      && outH.length === 0 && outA.length === 0) return null;
   const renderSide = (label: string, rows: any[]) => rows.length === 0 ? null : (
     <View>
       <Text style={styles.injSideLabel}>{label}</Text>
@@ -7625,11 +7687,13 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
       <View style={{gap: 6}}>
         {renderSide(abbrev3(awayTeam), injuries.away)}
         {renderSide(abbrev3(homeTeam), injuries.home)}
-        {impact != null && Math.abs(Number(impact)) >= 0.2 && (
-          <Text style={{color: C.fade, fontSize: 11, fontStyle: 'italic', marginTop: 4}}>
-            Starter-out impact score: {(Number(impact) * 100).toFixed(0)}% of typical starter value — line already reflects.
-          </Text>
-        )}
+        {(impactA != null && impactA >= IMPACT_FLOOR)
+          || (impactH != null && impactH >= IMPACT_FLOOR) ? (
+          <View style={{gap: 2, marginTop: 4}}>
+            {impactRow(awayTeam, impactA)}
+            {impactRow(homeTeam, impactH)}
+          </View>
+        ) : null}
       </View>
     </Section>
   );

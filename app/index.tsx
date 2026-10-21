@@ -6092,7 +6092,35 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           + 'home_def_rating,away_def_rating,home_pace,away_pace,'
           + 'home_rest_days,away_rest_days,home_is_b2b,away_is_b2b,'
           + 'elo_home,elo_away,mc_probabilities,oddscrowd_snapshot,'
-          + 'splits_summary,align_status,season,season_type')
+          + 'splits_summary,align_status,season,season_type,'
+          // ══ 2026-10-20 · FIVE NAMES KILLED TWO WHOLE CARDS ══
+          // ANDY, twice: "why dont i see nba badges" / "NBA badegs arent
+          // showing hence why i asked".
+          //
+          // Unlike NHL (which had no component at all), every NBA component
+          // exists and is mounted. They were reading ctx fields this select
+          // never asked for, so the fields arrived undefined and each card
+          // took its own "no data" path:
+          //
+          //   home/away_starters_out   NBASituationalCard  -> 15 chips across
+          //                            28 games could never fire
+          //   home/away_abbrev         NBAInjuriesCard     -> queries
+          //                            nba_injuries BY ABBREV; with none it
+          //                            returns before fetching, then returns
+          //                            null. THE CARD NEVER RENDERED.
+          //   home/away_abbrev         NBAFourFactorsCard  -> same, reads
+          //                            nba_team_stats by abbrev. ALSO DEAD.
+          //   home/away_injury_impact  the impact line under Injuries
+          //
+          // Every column verified to EXIST and be POPULATED before being
+          // added, because an explicit select naming a column that is not
+          // there returns 400 and this app reads a 400 as "no context" -
+          // which would have blanked all of NBA instead of fixing it.
+          // Over the 28 forward rows: abbrev 28/28, injury_impact 28/28,
+          // starters_out 15 non-empty sides of 56, and nba_injuries has rows.
+          + 'home_abbrev,away_abbrev,'
+          + 'home_starters_out,away_starters_out,'
+          + 'home_injury_impact,away_injury_impact')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nbaCtxResult?.data && nbaCtxResult.data.length > 0) {
