@@ -4104,9 +4104,10 @@ real bugs this commit fixes:
 
 NOT BUGS, measured so nobody re-investigates:
 
-- `temp` / `wind` / `dome` are **0/20** populated. OPENWEATHER_API_KEY is still
-  unset (logged 10-09). The cold and wind chips cannot fire for anyone until
-  Andy sets it - **his action, and it is the only thing blocking two chips**.
+- ~~`temp`/`wind`/`dome` 0/20 because OPENWEATHER_API_KEY is unset~~ **WRONG,
+  and corrected within the hour - see B107 below.** The key IS in GH secrets.
+  I repeated a stale memory note instead of checking. Real cause was my own
+  10-09 guard. Fixed `b14f0ffe`; 10-21/10-22/10-24 now fully populated.
 - `ncaaf_game_context` holds **14 of Saturday's 44** games on a Tuesday. That
   is the normal Wed-back/Thu-promote cadence, not a gap: last Saturday closed
   at 52/52. Forward dates past this week sit at 0 and fill in weekly.
@@ -4116,3 +4117,55 @@ field the SELECT does not name renders blank with no error anywhere. Grep every
 `ctx?.field` in a sport's components against that sport's select string before
 believing a card is broken. The NBA audit took one script and found two dead
 cards nobody had reported.
+
+### B107 - NCAAF CI wrote ZERO weather rows for five weeks - **CLOSED** `b14f0ffe`
+
+Andy: "What are you talking about weather api key we talked baout this
+eysterday. Its in GH secret wtf are you talking about."
+
+He was right and I was repeating a stale note. The key is in GH secrets and
+both workflows pass it. **Never ask for it again.**
+
+The 10-09 fix outlived its own premise. The source was migrated to
+**Open-Meteo, which is free and needs no key** - `fetch_forecast`'s docstring
+says so and names the 10-09 memory as the failure mode it removes. But
+`if not OW_KEY: return 1` was left at the TOP of `run()`, so in CI it exited
+before calling the keyless source, and `continue-on-error: true` made it green.
+
+    date       rows   temp populated
+    10-09         5        5     <- hand run
+    10-10        46       44     <- same run's 7-day window
+    10-13         2        2     <- hand run
+    10-15         3        1     <- hand run
+    10-17        52        0     <- SATURDAY. CI ran. Wrote nothing.
+    10-24        14        0     <- until today
+
+Every populated row came from a hand run. `workflow_heartbeat` shows
+`ncaaf_pipeline` start AND end on every cron slot including Sat 10-17 12:15Z,
+so the pipeline was healthy - one step returned early. 52 Saturday games
+shipped with no weather, and wind-UNDER (55.6%, n=1,444) is the only positive
+totals lens we have.
+
+Proven both ways: with the key stripped, before gave "FAILING LOUDLY" and 0
+games; after gives 16/16 and exit 0, every row `open_meteo`. The real run
+filled 10-21 1/1, 10-22 1/1, 10-24 14/14.
+
+FIX, and the generalisable part: **a precondition check must not sit in front
+of a path that does not need it.** Judge the RESULT - reachable games that came
+away with nothing exits 1 - which is the shape the NFL twin already had, and
+why NFL never broke (10-11 13/13, 10-18 12/12, 10-25 12/12 in-window). NFL's
+copy of the branch demoted to a note; it was returning 1 on runs that had just
+written every game.
+
+Also stopped stamping `weather_source='openweather_open_meteo'` on rows
+Open-Meteo served. VERIFY: `select game_date,count(temp)` on
+ncaaf_game_context for the coming Saturday after the Wed cron - it should be
+full, not 0.
+
+TWO OPEN QUESTIONS this raises, not yet done:
+- **Which other steps are green-on-no-op?** `continue-on-error: true` plus an
+  early `return` is invisible. Sweep every workflow step that carries it.
+- **Past Saturdays cannot be recovered.** Weather is a forecast; 09-26,
+  10-03 and 10-17 (171 games) will never have it, so the wind lens cannot be
+  graded on those weeks. Do not backfill a current reading onto a past game -
+  that is the 10-13 NULL-backfill-with-the-price mistake in another costume.
