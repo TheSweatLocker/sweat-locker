@@ -2534,7 +2534,10 @@ useEffect(() => {
     fetchMLBGameContext();  // ← sweat scores per game
     // 2026-09-02: fetch pipeline props for any sport in PROP_SPORT_REGISTRY
     // (MLB + NFL as of today). Was MLB-only.
-    if (['MLB', 'NFL'].includes(propJerrySport)) fetchPipelineProps(propJerrySport);
+    // 2026-10-21: was ['MLB','NFL'] hardcoded here too, which would have
+    // kept NBA/NHL dark even once registered. The registry plus the
+    // fail-closed flag are the only gate now, checked in one place.
+    if (PROP_SPORT_REGISTRY[String(propJerrySport || '').toUpperCase()] && isPropSurfaceOn(propJerrySport)) fetchPipelineProps(propJerrySport);
     // 2026-08-02 fix: also fire auto-resolver on foreground so bets grade
     // as soon as user returns to app (user placed Rangers ML 8/1, game
     // ended, app never re-fired resolver until this).
@@ -8828,11 +8831,50 @@ if(mkt.key === 'pitcher_props') {
     // branch below) — avoids rendering an anemic 4-prop screen early
     // Week 1 before nfl_generate_props cron has thickened data.
     NFL: {rpc: 'get_upcoming_nfl_pipeline_props', table: 'nfl_pipeline_props', propJerryFilter: 'NFL'},
-    // NBA: {rpc: 'get_todays_pipeline_props_nba', table: 'nba_pipeline_props', propJerryFilter: 'NBA'},
+    // ══ 2026-10-21 · NBA + NHL REGISTERED SO NO SECOND BUILD IS NEEDED ══
+    //
+    // ANDY: "For NBA props, and nhl willa nother build be necessary for
+    // tuning it on and live".
+    //
+    // It was. This registry is a CLIENT constant — NBA sat commented out
+    // and NHL was absent entirely, so turning either on meant an EAS build
+    // and an App Store review, with no OTA path (B5). Both are registered
+    // now, and the switch moved to the database.
+    //
+    // THEY ARE OFF UNTIL EXPLICITLY ENABLED. The gate is
+    // feature_flags(sport, 'pipeline_props') and it is read FAIL-CLOSED —
+    // deliberately unlike isFeatureOn(), which fails OPEN so a missing flag
+    // never hides a sport tab. That default is right for a tab and wrong
+    // here: the harm is publishing props, and today's calibration says
+    // neither sport has earned it. Every measurable NHL prop signal loses to
+    // its own price (best -0.5pp, worst -7.1pp, zero VALIDATED on 25,478
+    // graded rows), and NBA has ZERO graded prop rows so its tiers are
+    // uncalibrated by definition. A deleted flag row must mean OFF, not on.
+    //
+    // So: flip feature_flags to enabled = true when the evidence supports
+    // it and props appear. No build.
+    NBA: {rpc: 'get_todays_pipeline_props_nba', table: 'nba_pipeline_props', propJerryFilter: 'NBA'},
+    NHL: {rpc: 'get_todays_pipeline_props_nhl', table: 'nhl_pipeline_props', propJerryFilter: 'NHL'},
   };
+  // Fail-CLOSED prop gate. MLB and NFL are grandfathered on: they are live
+  // today and a missing flag row must not dark them.
+  const _PROP_GATE_DEFAULT_ON = new Set(['MLB', 'NFL']);
+  const isPropSurfaceOn = React.useCallback((sport: string) => {
+    const sp = String(sport || '').toUpperCase();
+    const key = `${sp}:pipeline_props`;
+    if (featureFlags[key] === true) return true;
+    if (featureFlags[key] === false) return false;
+    // No row: on only for the sports already shipped.
+    return _PROP_GATE_DEFAULT_ON.has(sp);
+  }, [featureFlags]);
   const fetchPipelineProps = async (sport: string = 'MLB') => {
     const cfg = PROP_SPORT_REGISTRY[sport.toUpperCase()];
     if (!cfg) { setPipelineMLBProps([]); return; }
+    // 2026-10-21: registered but not necessarily enabled. NBA and NHL ship
+    // in the registry so no build is needed to turn them on, and stay dark
+    // until feature_flags says otherwise. The list is cleared rather than
+    // left showing the previous sport's props.
+    if (!isPropSurfaceOn(sport)) { setPipelineMLBProps([]); return; }
     setPipelineMLBLoading(true);
     try {
       // 2026-09-03: MLB reads from v_mlb_props_publishable (server-side
@@ -8844,6 +8886,12 @@ if(mkt.key === 'pitcher_props') {
       const _VIEW_BY_SPORT: Record<string, {view: string; dateStrategy: 'today' | 'upcoming_week'}> = {
         MLB: {view: 'v_mlb_props_publishable', dateStrategy: 'today'},
         NFL: {view: 'v_nfl_props_publishable', dateStrategy: 'upcoming_week'},
+        // 2026-10-21: both daily sports, so 'today' like MLB rather than
+        // NFL's 8-day window. The views are created by migration; until then
+        // the feature flag keeps these sports off, and a missing view would
+        // only ever surface as an empty board, never a crash.
+        NBA: {view: 'v_nba_props_publishable', dateStrategy: 'today'},
+        NHL: {view: 'v_nhl_props_publishable', dateStrategy: 'today'},
       };
       const _viewCfg = _VIEW_BY_SPORT[sport.toUpperCase()];
       if (_viewCfg) {
@@ -10836,7 +10884,7 @@ setJerryHistory(prev => {
   // effect-above-this still fires on subsequent tab transitions.
   useEffect(()=>{
     // 2026-09-02: initial fetch on any wired sport (MLB + NFL).
-    if(['MLB', 'NFL'].includes(propJerrySport) && !pipelineMLBFetched) {
+    if(PROP_SPORT_REGISTRY[String(propJerrySport || '').toUpperCase()] && isPropSurfaceOn(propJerrySport) && !pipelineMLBFetched) {
       fetchPipelineProps(propJerrySport);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
