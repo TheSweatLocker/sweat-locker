@@ -127,22 +127,68 @@ def resolve_season() -> str:
         from datetime import datetime, timedelta, timezone
         d = datetime.now(timezone.utc) - timedelta(hours=4)
         cur = d.year if d.month >= 7 else d.year - 1
+    # ══ 2026-10-21 · THE COUNT MUST EXCLUDE PRESEASON ══
+    # This counted every finished game carrying the season label, and
+    # PRESEASON CARRIES THE SAME LABEL. Measured today, two days into the
+    # 2026-27 regular season: 68 finished games tagged '2026-27', of which
+    # 65 were played BEFORE the 2026-10-20 opener. Exhibitions.
+    #
+    # So the 200-game cliff would have tripped about 65 games - eight or
+    # nine days - early, and the evidence that flipped every NBA rating from
+    # last season to this one would have been mostly games where teams rest
+    # starters. That is the same trap the NHL situational matview refused on
+    # 09-28 ("rather than presenting exhibition records as fact"), and the
+    # house rule that a season filter does NOT exclude preseason: the
+    # boundary is sport_registry.season_start.
+    #
+    # Read from the registry rather than hardcoded, so the date cannot rot.
+    # If the lookup fails the gate stays CLOSED (no date filter applied means
+    # falling back a season, not counting exhibitions as evidence).
+    opener = None
+    try:
+        _sr = requests.get(f'{SB}/rest/v1/sport_registry',
+                           headers=H_READ,
+                           params={'select': 'season_start',
+                                   'sport': 'eq.NBA'}, timeout=15)
+        if _sr.status_code == 200 and _sr.json():
+            opener = (_sr.json()[0] or {}).get('season_start')
+    except Exception:
+        opener = None
+    if not opener:
+        print('  ⚠ sport_registry.season_start unavailable for NBA — '
+              'counting regular-season games is not possible, falling back')
+        return _season_str(cur - 1)
+
+    # The opener is PER SEASON. Applying the 2026-27 start date to the
+    # 2025-26 count returns 0 and the loop then reaches the right answer only
+    # via the final fallback - correct by accident, and wrong the moment the
+    # loop is asked to pick cur-1 on its own merits. The registry holds the
+    # CURRENT season's start, so the prior season's opener is the same
+    # month/day a year earlier, which keeps it derived rather than hardcoded.
+    def _opener_for(year: int) -> str:
+        md = str(opener)[5:10] if len(str(opener)) >= 10 else '10-20'
+        return f'{year}-{md}'
+
     for yr in (cur, cur - 1):
         season = _season_str(yr)
+        since = _opener_for(yr)
         try:
             r = requests.get(f'{SB}/rest/v1/nba_game_results',
                              headers={**H_READ, 'Prefer': 'count=exact'},
                              params={'select': 'game_id', 'limit': '1',
                                      'season': f'eq.{season}',
-                                     'home_score': 'not.is.null'},
+                                     'home_score': 'not.is.null',
+                                     'game_date': f'gte.{since}'},
                              timeout=20)
             n = int((r.headers.get('content-range') or '/0').split('/')[-1])
         except Exception:
             n = 0
         if n >= MIN_GAMES_FOR_SEASON:
-            print(f'  season resolved: {season} ({n} finished games)')
+            print(f'  season resolved: {season} '
+                  f'({n} finished REGULAR-season games since {since})')
             return season
-        print(f'  season {season}: only {n} finished games — looking back')
+        print(f'  season {season}: only {n} finished regular-season games '
+              f'since {since} — looking back')
     fallback = _season_str(cur - 1)
     print(f'  falling back to {fallback}')
     return fallback
