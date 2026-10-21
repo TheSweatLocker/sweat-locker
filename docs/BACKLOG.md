@@ -3666,7 +3666,7 @@ ROI**. A hit rate without a price is not a record.
 FIX: join `ufc_picks.odds_{a,b}_median` onto the read at synthesis time, same
 as `price_picks.py` does elsewhere.
 
-### B83 - the UFC engine has stopped making picks - OPEN
+### B83 - the UFC engine has stopped making picks - **ANSWERED, premise wrong** `c1875cec`
 
 Conviction and pick rate both collapsed in late August and have not recovered:
 
@@ -3981,7 +3981,7 @@ surface entirely would read as us concealing a loser. Middle option worth
 proposing: show the raw W-L with no rate and no tier until n>=30, which is
 honest without looking like a gate.
 
-### B99 - verify the Games tab filters across all sports - OPEN
+### B99 - verify the Games tab filters across all sports - **CLOSED** `69680b0c` + `fa7f8740`
 
 "time the conviction best edge and the prime only and strong only one, verify
 workign as designed." Not yet checked. Note B93 means any filter verification
@@ -3999,14 +3999,14 @@ had the step wired at launch.
 "Recvent shceudle in NBA is missing ATS and O/U why?" Expect the same cause as
 B100 - no stored closing number to grade against on opening night.
 
-### B102 - verify NFL stat accuracy in the new build - OPEN
+### B102 - verify NFL stat accuracy in the new build - **VERIFIED CLEAN**
 
 "want to verify accuracy of nfl stats in new buidld." Nothing done. Should be
 done against a primary source, not against our own derived tables, and should
 cover the B68 matchup rows (off rush yds vs opp def rush yds allowed, points
 scored vs points allowed) since those are new.
 
-### B103 - NHL and NBA props are not live in Prop Jerry - OPEN
+### B103 - NHL and NBA props are not live in Prop Jerry - **ANSWERED, by design**
 
 "Add to list NHL and NBA props radiness why arent they live in propp jerry
 yet?" Known context: NHL props carry a documented over-bias and are marked
@@ -4415,3 +4415,94 @@ flips not just by sport but by MARKET WITHIN a sport. No global money-flow
 treatment can be right.
 
 Scheduled in the nightly as a detector on the first night it existed.
+
+## 2026-10-20 · B83 / B99 / B102 / B103
+
+### B83 — the UFC premise was wrong, and the obvious fix would have lost money
+
+The engine has not stopped having opinions. On the 10-24 card 7 of 8 fights are
+genuine coin flips (p_winner_a 0.47-0.55, ev_tier SKIP). The 08-21 isotonic
+calibrator is NOT the cause either: October's median favoured-side probability
+is 0.667 with 21 of 33 fights at or above 55%.
+
+The synthesis layer DOES override: Volkanovski/Evloev came back p_a=0.3192,
+conviction 36, tier_winner STRONG, **ev_tier PRIME** — and shipped as a PASS.
+6 of 19 PRIME model picks produced no published play.
+
+**That looks like `project_jerry_override_costs_the_edge_1007` and it is the
+opposite.** All 95 gradeable picks at real median decimal prices:
+
+    ALL                51-44   53.7%   ROI  -4.7%
+    ev_tier PRIME       7-10   41.2%   ROI -37.5%   <- the override SAVED money
+    ev_tier STRONG      8-2    80.0%   ROI  +8.6%
+    tier_winner PRIME  19-10   65.5%   ROI -13.5%   <- wins often, loses money
+
+n=17 on PRIME is far too small to call proven; the honest claim is that there
+is NO evidence PRIME wins and the point estimate is -37.5%. **No gate changed.**
+The user-facing defect IS fixed: a fight-week card showed zero plays under a
+banner reporting 61.1%. The note now says "No play on the 2026-10-24 card: the
+model rates all 8 fights too close to price... A pass is a position."
+
+STILL ANDY'S CALL: whether UFC should publish at all. Also still true —
+`public_receipts` holds 0 UFC rows, and only 95 of 155 picks are gradeable (32
+have no result row, 28 no odds).
+
+### B99 — the filters were fine, the SORTS were sport-blind
+
+    time        CORRECT      Prime Only  CORRECT      Strong+  CORRECT
+    CONVICTION  BROKEN on 5 sports       BEST EDGE    BROKEN on NHL + NBA
+
+Conviction read `mlbGameContext` ONLY, so every non-MLB game resolved
+primary_play undefined, tier '' and tierWt 0 — the whole slate tied at zero and
+fell through to the client score. Hidden by that: NFL 179 tiered rows (2 PRIME,
+10 STRONG), NCAAF 80 (37 STRONG), NHL 82 (11 STRONG), NBA 25. Best Edge's own
+map chain stopped at NCAAF so NHL/NBA LR signal was permanently 0.
+
+**Same sport-blind-map defect already fixed TWICE in this file** (the 08-25 and
+09-28 notes inside Prime Only). It recurred because each call site kept its own
+copy of the map chain. One shared resolver now.
+
+### B102 — NFL stats verified against a primary source, clean
+
+Checked `team_stats_rolling` against **ESPN standings**, not our own tables:
+
+    30 of 32 teams match points/g and points-allowed/g EXACTLY
+    max difference 0.03 (one-decimal rounding)
+    teams off by more than 0.6 pts/g: ZERO
+
+All 8 matchup stats present on all 32 teams, none missing. The two apparent
+gaps (LAR, WSH) were MY comparison script: we store `LA`/`WAS`, ESPN uses
+`LAR`/`WSH`. Join keys also verified to match per sport — NFL abbrev-to-abbrev,
+NCAAF/NHL/NBA full-name-to-full-name.
+
+ONE LATENT RISK, not a current bug: the card queries by
+`ctx?.home_team || game?.home_team`. For NFL ctx gives `ATL` while the odds
+feed gives `Atlanta Falcons`, so on a game with NO ctx row the card would query
+a full name against abbreviation keys and come back empty.
+
+### B103 — not live by design, and it is not a one-line change
+
+Both tables exist and are CURRENT: `nhl_pipeline_props` latest game_date
+2026-10-20, `nba_pipeline_props` 2026-10-22. The app's `PROP_SPORT_REGISTRY`
+holds only MLB and NFL; NBA is commented out and NHL was never added.
+
+The registry comment claims adding a sport is "1 registry line". It is not —
+MLB and NFL both read a server-gated VIEW, and neither exists for the others:
+
+    v_mlb_props_publishable   HTTP 200        get_todays_pipeline_props        200
+    v_nfl_props_publishable   HTTP 200        get_upcoming_nfl_pipeline_props  200 (172 rows)
+    v_nba_props_publishable   HTTP 404        get_todays_pipeline_props_nba    404
+    v_nhl_props_publishable   HTTP 404        get_todays_pipeline_props_nhl    404
+
+So each needs a view, an RPC and a publishable gate.
+
+**AND FOR NHL THE EVIDENCE SAYS DO NOT.** `project_nhl_prop_over_bias_1009`
+(documented over-bias, marked info-only), `project_nhl_prop_inputs_lose_to_price_1003`
+(inputs lose to price), `project_nhl_props_cannot_join_their_game_1003`.
+Publishing a surface already measured to lose is the opposite of the discipline
+in this file.
+
+**For NBA it is opening week with zero graded prop history**, so there is no
+basis on which to set a gate at all. Recommendation: neither goes live now; NBA
+becomes viable once it has graded history, NHL only after the over-bias is
+fixed.
