@@ -3941,7 +3941,7 @@ which is evaluated once at INSERT and has no such restriction.
 
 ## Open - diagnosed, not fixed
 
-### B91 - NBA situational badges do not show - OPEN
+### B91 - NBA situational badges do not show - **CLOSED** `327743af`
 
 Asked twice ("why dont i see nba badges", "NBA badegs arent showing hence why i
 asked"). `NBASituationalCard` EXISTS and is mounted, so unlike B90 this is a
@@ -3951,7 +3951,7 @@ chips that depend on them can never fire. NEXT: dump one `nba_game_context` row
 field-by-field against the chip conditions and find which conditions can fire
 at all.
 
-### B92 - NCAAF situational badges do not show - OPEN
+### B92 - NCAAF situational badges do not show - **CLOSED** `327743af`
 
 "also dont see ncaaf badges either." `NCAAFSituationalCard` exists and is
 mounted. Same shape of question as B91 - which chip conditions can fire on a
@@ -4056,3 +4056,63 @@ B90, B93, B94, B95 and B86 are all fixed in the repo and invisible on his
 device. There is no OTA path (`expo-updates` is not installed), so every one of
 them needs a binary. That is now five user-facing fixes queued behind one
 build.
+
+## 2026-10-20 late - B91 and B92 closed, and they were bigger than badges
+
+Both were data questions rather than missing components (that was B90, NHL).
+The audit found more than the badges he asked about.
+
+**B91, NBA - five names absent from one SELECT killed two entire cards.**
+`home/away_starters_out`, `home/away_abbrev` and `home/away_injury_impact`
+were read by the cards and never fetched:
+
+    starters_out    NBASituationalCard   15 chips over 28 games, none could fire
+    abbrev          NBAInjuriesCard      queries nba_injuries BY ABBREV -> with
+                                         none it returned early, then returned
+                                         null. NEVER RENDERED.
+    abbrev          NBAFourFactorsCard   same, nba_team_stats by abbrev. DEAD.
+    injury_impact   the line under Injuries
+
+Each column was verified to EXIST and be POPULATED before being added, because
+an explicit select naming a missing column returns 400 and this app reads a 400
+as "no context" - the blind fix would have blanked all of NBA. abbrev 28/28,
+injury_impact 28/28, starters_out 15 non-empty sides of 56, nba_injuries has
+rows.
+
+**And unlocking it would have shipped a wrong number.** The impact line
+formatted `impact * 100` as a percentage, but `*_injury_impact` is POINTS PER
+GAME LOST summed over players listed OUT - 0 to 44.7 tonight, nonzero median
+11.8 - so LAC would have read "4470% of typical starter value", and the >= 0.2
+gate (written for a fraction) fired on two tenths of a point. Now per side, in
+ppg, named, floor 5.0, star-out call at 15.0 ppg reusing
+`shadow_nba_star_out.py`'s own threshold. `away_injury_impact` had never been
+read at all.
+
+**B92, NCAAF - the badges were never broken.** 16 of the 20 rows with context
+this week would render a chip. He saw none because B93 left exactly one game on
+the tab and that game, NMSU @ Sam Houston, is a Wednesday kickoff that hit two
+real bugs this commit fixes:
+
+1. ET came from a fixed `-4h` offset. Correct today, WRONG from Nov 1 when EDT
+   becomes EST - a noon EST kickoff is 17:00Z, read as 13:00 ET, outside the
+   10-13 Big Noon window. Every slot chip would have silently stopped matching
+   for the last month of the season and the bowls. Now Intl in
+   America/New_York. Verified: 10-24T16:00Z and 11-21T17:00Z both give Big Noon
+   now; the old code gave hour 13 and no chip for the second.
+2. No midweek slot at all. The comment lists "Thu/Fri primetime = Weeknight"
+   but only Thu/Fri/Sat were handled, so Tue/Wed MACtion got nothing.
+
+NOT BUGS, measured so nobody re-investigates:
+
+- `temp` / `wind` / `dome` are **0/20** populated. OPENWEATHER_API_KEY is still
+  unset (logged 10-09). The cold and wind chips cannot fire for anyone until
+  Andy sets it - **his action, and it is the only thing blocking two chips**.
+- `ncaaf_game_context` holds **14 of Saturday's 44** games on a Tuesday. That
+  is the normal Wed-back/Thu-promote cadence, not a gap: last Saturday closed
+  at 52/52. Forward dates past this week sit at 0 and fill in weekly.
+
+LESSON, the third instance today of the same class: a card that reads a ctx
+field the SELECT does not name renders blank with no error anywhere. Grep every
+`ctx?.field` in a sport's components against that sport's select string before
+believing a card is broken. The NBA audit took one script and found two dead
+cards nobody had reported.
