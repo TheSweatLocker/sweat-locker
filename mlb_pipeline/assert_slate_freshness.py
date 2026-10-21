@@ -44,12 +44,39 @@ intersects the candidate list with what is really there, and reports what it
 could not check instead of guessing. A phantom column here would make the
 guard itself the outage.
 
-WHAT THIS DOES NOT PROVE. It asserts POPULATION, not COVERAGE: it can tell
-that the rows present are filled in, and cannot tell that the right number of
-rows exist. A slate missing half its games looks clean here. Proving coverage
-needs each sport's upstream schedule (MLB statsapi, CFBD, the Odds API), which
-is a separate check and a separate set of credentials. Said plainly so nobody
-reads a green run as "the slate is complete".
+COVERAGE, as well as population (added 2026-10-20, second pass). Population
+alone could not tell that the right NUMBER of rows exist, so a slate missing
+half its games read clean. Each sport's next slate is now counted against an
+INDEPENDENT upstream schedule:
+
+    MLB      statsapi.mlb.com          keyless
+    NHL      api-web.nhle.com          keyless
+    NFL      the Odds API              ODDS_API_KEY
+    NCAAF    the Odds API              ODDS_API_KEY
+    NBA      the Odds API              ODDS_API_KEY
+    NCAAB    the Odds API              ODDS_API_KEY
+
+    context 0 rows while upstream has games  -> FAIL  (wiring error, not a
+                                                       finding - the builder
+                                                       did not run)
+    context short of upstream                -> WARN with both counts
+    upstream unavailable                     -> say so; population still runs
+
+That upgrades the old "no rows in the window" WARN into a FAIL when the
+upstream says there was a slate to build, which is the one case where an empty
+table is never acceptable.
+
+UFC IS CHECKED DIFFERENTLY, because it has no context table at all - only
+ufc_fight_results, which holds resolved fights. Its product is the read, so
+the next card's jerry_reads rows are asserted instead. Price is deliberately
+NOT asserted there: all 8 forward reads on the 10-24 card are call_market
+'pass', and a pass legitimately carries no side and no price. Asserting it
+would fail on correct behaviour. (The 8-of-8 pass rate is itself worth a look
+and belongs to B83, not here.)
+
+STILL NOT PROVEN: that the upstream itself is right, and that a row's VALUES
+are correct rather than merely present. A wrong close_spread passes every check
+in this file.
 
 Usage:
   python assert_slate_freshness.py              # every in_season sport
@@ -125,6 +152,74 @@ TIME_COL = {'NFL': 'kickoff_utc', 'NCAAF': 'kickoff_utc',
 TABLE = {s: f'{s.lower()}_game_context'
          for s in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA', 'NCAAB')}
 
+ODDS_KEY = (os.environ.get('ODDS_API_KEY')
+            or os.environ.get('THE_ODDS_API_KEY') or '')
+ODDS_SPORT = {'NFL': 'americanfootball_nfl', 'NCAAF': 'americanfootball_ncaaf',
+              'NBA': 'basketball_nba', 'NCAAB': 'basketball_ncaab'}
+_odds_cache: dict = {}
+
+
+def _et_date_of(iso: str) -> str:
+    """ET calendar date of a UTC timestamp. Fixed -4 is WRONG after Nov 1 and
+    a zone-aware conversion needs no extra dependency, so do it properly -
+    the NCAAF slot chips shipped that exact bug today (327743af)."""
+    try:
+        t = dt.datetime.fromisoformat(str(iso).replace('Z', '+00:00'))
+    except ValueError:
+        return ''
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return t.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+    except Exception:
+        return t.date().isoformat()
+
+
+def upstream_count(sport: str, day: str):
+    """How many games the OUTSIDE WORLD says exist on `day`.
+
+    Returns an int, or None when the source is unavailable - None must never
+    be read as zero, which is the whole reason this returns None rather than 0.
+    """
+    try:
+        if sport == 'MLB':
+            r = requests.get('https://statsapi.mlb.com/api/v1/schedule',
+                             params={'sportId': '1', 'date': day}, timeout=30)
+            if r.status_code != 200:
+                return None
+            return sum(len(d.get('games') or [])
+                       for d in (r.json().get('dates') or []))
+
+        if sport == 'NHL':
+            r = requests.get(f'https://api-web.nhle.com/v1/schedule/{day}',
+                             timeout=30)
+            if r.status_code != 200:
+                return None
+            for wk in (r.json().get('gameWeek') or []):
+                if str(wk.get('date')) == day:
+                    return len(wk.get('games') or [])
+            return 0
+
+        key = ODDS_SPORT.get(sport)
+        if not key or not ODDS_KEY:
+            return None
+        if key not in _odds_cache:
+            # One call per sport per run, reused across dates.
+            r = requests.get(
+                f'https://api.the-odds-api.com/v4/sports/{key}/odds',
+                params={'apiKey': ODDS_KEY, 'regions': 'us',
+                        'markets': 'spreads', 'oddsFormat': 'american'},
+                timeout=60)
+            _odds_cache[key] = r.json() if r.status_code == 200 else None
+        ev = _odds_cache[key]
+        if ev is None or not isinstance(ev, list):
+            return None
+        return sum(1 for e in ev
+                   if _et_date_of(e.get('commence_time')) == day)
+    except Exception:                                       # noqa: BLE001
+        return None
+
 
 def et_today() -> dt.date:
     return (dt.datetime.now(dt.timezone.utc)
@@ -149,7 +244,8 @@ def in_season_sports() -> list:
         return sorted(TABLE)
     return [str(x['sport']) for x in r.json()
             if str(x.get('state') or '').lower() == 'in_season'
-            and str(x.get('sport')) in TABLE]
+            and (str(x.get('sport')) in TABLE
+                 or str(x.get('sport')) == 'UFC')]
 
 
 def outdoor(row: dict) -> bool:
@@ -204,9 +300,30 @@ def check_sport(sport: str) -> tuple:
     rows = r.json()
     fails, notes = [], []
     if not rows:
+        # ══ 2026-10-20 · ASK THE OUTSIDE WORLD BEFORE SHRUGGING ══
+        # This used to be an unconditional WARN, which cannot tell a genuine
+        # dead week (MLB between the ALCS and the World Series) from a builder
+        # that never ran. Now the upstream schedule decides, and an empty table
+        # against a real slate is a FAIL: 0 rows read is a wiring error, not a
+        # finding.
+        hz = HORIZON_DAYS.get(sport, 7)
+        for i in range(hz + 1):
+            d = (today + dt.timedelta(days=i)).isoformat()
+            up = upstream_count(sport, d)
+            if up:
+                return ([f'{sport}: {table} has NO rows for {d}, but the '
+                         f'upstream schedule lists {up} game(s) — the context '
+                         f'builder did not run'], notes)
+            if up is None:
+                notes.append(f'{sport}: upstream schedule unavailable for {d}'
+                             ' — cannot confirm a dead week')
+                break
         return [], notes + [
-            f'{sport}: no rows in the next {HORIZON_DAYS.get(sport, 7)} days '
-            f'— dead week, or the context builder has not run']
+            f'{sport}: no rows in the next {hz} days, and the upstream '
+            f'schedule agrees there are no games — dead week']
+
+    rows_all = list(rows)       # before the started-game filter, for coverage
+    slate_underway = False
 
     # Drop anything already underway — see the TIME_COL note above.
     if tcol:
@@ -227,6 +344,7 @@ def check_sport(sport: str) -> tuple:
             if t > now:
                 kept.append(x)
         started = len(rows) - len(kept)
+        slate_underway = started > 0
         rows = kept
         if started:
             notes.append(f'{sport}: {started} game(s) already underway — '
@@ -241,6 +359,47 @@ def check_sport(sport: str) -> tuple:
     slate = [x for x in rows if str(x['game_date']) == slate_date]
 
     notes.append(f'{sport}: next slate {slate_date}, {len(slate)} games')
+
+    # ══ COVERAGE · ONLY WHERE THE TWO SIDES ARE COMPARABLE ══
+    # First version reported NHL "3/11 SHORT 8" and NBA "3/2", both artefacts
+    # of mixing two different populations:
+    #
+    #   our side      had started games REMOVED (correctly - a started game's
+    #                 row can no longer be written, so population must ignore
+    #                 it)
+    #   upstream      counts the whole day for MLB/NHL, and for the Odds API
+    #                 DROPS games once they begin
+    #
+    # So on a day already underway the comparison is meaningless in both
+    # directions, and a number nobody can act on is worse than no number.
+    # Coverage therefore runs only on a slate where nothing has started, and
+    # counts every row we hold for that date (rows_all), not the filtered
+    # slate. On an untouched future date the two sides mean the same thing.
+    held = sum(1 for x in rows_all if str(x['game_date']) == slate_date)
+    # And the same caution where we CANNOT tell what has started: MLB and NBA
+    # context carry no start-time column at all, so on today's date there is
+    # no way to know which games are in progress - and the Odds API has
+    # already dropped the ones that are. NBA read "3/2 upstream" for exactly
+    # that reason. Coverage on a future date is unaffected and is the case
+    # that matters, since that is where a builder gap shows up.
+    if slate_date == et_today().isoformat() and (slate_underway or not tcol):
+        why = ('slate already underway' if slate_underway
+               else 'no start-time column, so in-progress games cannot be '
+                    'identified')
+        notes.append(f'    coverage           {why} — not comparable, skipped')
+    else:
+        up = upstream_count(sport, slate_date)
+        if up is None:
+            notes.append('    coverage           upstream unavailable — '
+                         'population only')
+        elif up == 0:
+            notes.append(f'    coverage           upstream lists 0 while we '
+                         f'hold {held} — check for a game it has dropped')
+        elif held < up:
+            notes.append(f'    coverage           {held}/{up} upstream  '
+                         f'SHORT {up - held}')
+        else:
+            notes.append(f'    coverage           {held}/{up} upstream  ok')
 
     for group, names in CHECKS.items():
         if group == 'weather' and sport in NO_WEATHER:
@@ -264,6 +423,53 @@ def check_sport(sport: str) -> tuple:
     return fails, notes
 
 
+def check_ufc() -> tuple:
+    """UFC has no *_game_context. Its product is the read, so assert the read.
+
+    ufc_fight_results holds RESOLVED fights only (0 forward rows), so there is
+    no slate table to check. jerry_reads is what ships, and what a user sees.
+
+    PRICE IS NOT ASSERTED, deliberately. All 8 forward reads on the 10-24 card
+    are call_market 'pass', and a pass carries no side and no price by design -
+    asserting it would fail on correct behaviour. The pass RATE is reported
+    because 8 of 8 is worth a human look (B83), but it is a note, not a fail.
+    """
+    today = et_today()
+    r = requests.get(f'{SB}/rest/v1/jerry_reads', headers=H, params=[
+        ('select', 'game_date,game_id,short_read,call_market,conviction'),
+        ('sport', 'eq.UFC'),
+        ('game_date', f'gte.{today.isoformat()}'),
+        ('order', 'game_date.asc'),
+        ('limit', '200'),
+    ], timeout=60)
+    if r.status_code != 200:
+        return ([f'UFC: jerry_reads fetch {r.status_code} — {r.text[:160]}'],
+                [])
+    rows = r.json()
+    if not rows:
+        return [], ['UFC: no forward reads — no card inside the window, or '
+                    'the read generator has not run (no upstream card feed '
+                    'wired, so this cannot be told apart yet)']
+
+    card_date = min(str(x['game_date']) for x in rows)
+    card = [x for x in rows if str(x['game_date']) == card_date]
+    notes = [f'UFC: next card {card_date}, {len(card)} fights with reads']
+    fails = []
+    for col in ('short_read', 'call_market', 'conviction'):
+        n = sum(1 for x in card if x.get(col) not in (None, ''))
+        mark = 'ok  ' if n == len(card) else ('DARK' if n == 0 else 'part')
+        notes.append(f'    {col:<18} {n:3d}/{len(card):<3d} {mark}')
+        if n == 0:
+            fails.append(f'UFC {card_date}: {col} is 0 of {len(card)} — a '
+                         f'column that should be full is EMPTY')
+    passes = sum(1 for x in card
+                 if str(x.get('call_market') or '').lower() == 'pass')
+    notes.append(f'    passes             {passes:3d}/{len(card):<3d} '
+                 + ('— the engine has no opinion on this card (B83)'
+                    if passes == len(card) else ''))
+    return fails, notes
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--sport')
@@ -277,10 +483,10 @@ def main() -> int:
 
     all_fails = []
     for s in sports:
-        if s not in TABLE:
+        if s not in TABLE and s != 'UFC':
             print(f'{s}: no context table mapped — skipped')
             continue
-        fails, notes = check_sport(s)
+        fails, notes = check_ufc() if s == 'UFC' else check_sport(s)
         for line in notes:
             print(line)
         all_fails += fails

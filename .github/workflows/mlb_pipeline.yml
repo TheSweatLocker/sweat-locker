@@ -3250,3 +3250,27 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
+
+      # ══ 2026-10-20 · ASSERT THE SLATE, DO NOT ASSUME IT ══
+      # B107: ncaaf_pipeline ran start-to-end on every cron slot for five weeks
+      # while its weather step returned before doing any work. Heartbeat was
+      # green, the step was green (continue-on-error), the table had rows --
+      # and 171 games shipped with no weather. ~400 steps across these
+      # workflows carry continue-on-error, so a step's exit code cannot be the
+      # signal and heartbeat answers a different question.
+      #
+      # DELIBERATELY NO continue-on-error. This is the check that catches the
+      # advisory ones failing silently, so making it advisory defeats it. It
+      # fails on two things only, both near-impossible legitimately:
+      #   * a DARK COLUMN -- 0 populated rows of N on a slate that HAS rows
+      #   * NO ROWS at all while the upstream schedule lists games
+      # Partial fill is reported and does not fail, because context genuinely
+      # fills in over time.
+      - name: Assert MLB slate freshness
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python assert_slate_freshness.py --sport MLB
