@@ -153,6 +153,74 @@ def price_truth(sport):
     return (100.0 * w / n, implied, roi, n)
 
 
+def abstention_clause(sport):
+    """If the next card/slate has reads but NO play, say so.
+
+    ══ 2026-10-20 · B83 · "THE UFC ENGINE HAS STOPPED MAKING PICKS" ══
+    The premise turned out to be wrong, and the measurement is worth keeping
+    because it reverses the obvious fix.
+
+    WHAT IS ACTUALLY HAPPENING. On the 10-24 card, 7 of 8 fights are genuine
+    coin flips to the model (p_winner_a 0.47-0.55, ev_tier SKIP), so passing on
+    them is correct. The eighth is not: Volkanovski/Evloev came back
+    p_a=0.3192, conviction 36, tier_winner STRONG, ev_tier PRIME - and the
+    synthesis layer turned it into a PASS. Across every card, 6 of 19 PRIME
+    model picks produced no published play at all.
+
+    THAT LOOKS EXACTLY LIKE project_jerry_override_costs_the_edge_1007, AND IT
+    IS NOT. Grading all 95 gradeable picks at the real median decimal price:
+
+        ALL                51-44   53.7%   ROI  -4.7%
+        ev_tier PRIME       7-10   41.2%   ROI -37.5%   <- the override SAVED
+        ev_tier STRONG      8-2    80.0%   ROI  +8.6%
+        tier_winner PRIME  19-10   65.5%   ROI -13.5%   <- wins often, loses
+                                                           money: favourite
+                                                           picking at bad prices
+
+    So forcing PRIME picks through would have LOST money, and the abstention is
+    the engine behaving correctly on a tier that does not beat its price. n=17
+    on PRIME is far too small to call it proven - the honest statement is that
+    there is no evidence PRIME wins and the point estimate is -37.5%.
+
+    THE REAL DEFECT IS USER-FACING, and it is this: a fight-week card shows
+    ZERO plays while the banner above it reports 61.1%. That reads as broken.
+    So when the next card has reads and no play, the note says so. Stating a
+    measured fact, not a product decision - whether UFC should publish at all
+    is Andy's call and is recorded in B83.
+
+    THREE WIRING ERRORS WERE HIT GETTING THAT TABLE, all caught by the
+    0-rows-is-a-bug rule rather than shipped as findings:
+      * ufc_fight_results was capped at 1000 rows, so picks and results shared
+        ZERO dates (the documented PostgREST truncation trap)
+      * `winner` holds a SIDE CODE 'a'/'b', not a name, so a name comparison
+        matched nothing and reported 0-95 at 0.0%
+      * the results row's fighter_a is not necessarily the picks row's
+        fighter_a, so the side code has to be resolved to a name on its OWN
+        row first
+    """
+    try:
+        today = dt.date.today().isoformat()
+        reads = page('jerry_reads',
+                     {'select': 'game_date,call_market',
+                      'sport': f'eq.{sport}',
+                      'game_date': f'gte.{today}'}, 'game_date.asc')
+        if not reads:
+            return ''
+        nxt = min(str(r['game_date'])[:10] for r in reads)
+        card = [r for r in reads if str(r['game_date'])[:10] == nxt]
+        plays = [r for r in card
+                 if str(r.get('call_market') or '').lower() not in ('pass', '')]
+        if plays or not card:
+            return ''
+        unit = 'fights' if sport == 'UFC' else 'games'
+        return (f' No play on the {nxt} card: the model rates all '
+                f'{len(card)} {unit} too close to price, and its most '
+                f'confident tier has not beaten the prices we would have '
+                f'paid. A pass is a position.')
+    except Exception:                                          # noqa: BLE001
+        return ''
+
+
 def build_note(sport, records, season_start):
     read_life = wl(rec_for(records, sport, READ_SURFACE, 'lifetime'))
     read_d7 = wl(rec_for(records, sport, READ_SURFACE, 'd7'))
@@ -213,7 +281,10 @@ def build_note(sport, records, season_start):
     close = (f' {sport} is still inside its calibration window ({n} of '
              f'{CALIBRATION_MIN_N} graded reads), so treat a {sport} tier as a '
              f'lighter claim than the same tier in MLB or NFL.')
-    return (head + mid + tail + close), f'calibrating ({n}/{CALIBRATION_MIN_N})'
+    # B83: a card with reads and no play must say so, or the tab reads broken.
+    abst = abstention_clause(sport)
+    return (head + mid + tail + close + abst), \
+        f'calibrating ({n}/{CALIBRATION_MIN_N})'
 
 
 def main() -> int:
