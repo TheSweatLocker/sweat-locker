@@ -1077,3 +1077,26 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
+
+      # ══ 2026-10-20 · ASSERT THE SLATE, DO NOT ASSUME IT ══
+      # B107: this pipeline ran start-to-end on every cron slot for five weeks
+      # while the weather step returned before doing any work. Heartbeat was
+      # green, the step was green (continue-on-error), the table had rows --
+      # and 171 games shipped with no weather.
+      #
+      # DELIBERATELY NO continue-on-error. Every other check in this file can
+      # afford to be advisory; this is the check that catches the advisory ones
+      # failing silently, so making it advisory would defeat it. It fails ONLY
+      # on a dark column -- zero populated rows out of N on a slate that HAS
+      # rows -- which is close to impossible legitimately. Partial fill is
+      # reported and does not fail, because football context fills in across
+      # the week on purpose.
+      - name: Assert NCAAF slate freshness
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python assert_slate_freshness.py --sport NCAAF

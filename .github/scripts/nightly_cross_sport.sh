@@ -688,6 +688,21 @@ bash "$RUN_STEP" --detector --label "audit_duplicate_votes.py (nightly)" \
   python audit_duplicate_votes.py
 
 
+# 2026-10-20 · THE CHECK THAT WOULD HAVE CAUGHT B107 FIVE WEEKS EARLIER.
+# NCAAF weather was dark in CI from 09-26 to 10-20 -- 171 games -- and every
+# existing signal said the pipeline was healthy: heartbeat logged start AND
+# end on every cron slot, and the step was green because it carried
+# continue-on-error and returned before doing any work. Nothing anywhere
+# asked whether a column that should be full was EMPTY.
+#
+# DETECTOR here, deliberately. This runs at 6:30am ET, before the daily sports
+# have built the night's slate, so "no rows" for MLB/NBA/NHL is the expected
+# answer at this hour and must not fail the nightly. The HARD version lives at
+# the end of each sport's own pipeline, right after the steps that write --
+# which is where a dark column is actionable.
+bash "$RUN_STEP" --detector --label "assert_slate_freshness.py (nightly)" \
+  python assert_slate_freshness.py
+
 bash "$RUN_STEP" --label "watchdog_workflow_heartbeat.py (nightly)" \
   python watchdog_workflow_heartbeat.py
 echo ""
