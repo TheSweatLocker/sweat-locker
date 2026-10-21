@@ -6264,12 +6264,30 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
     try {
       const ncaabCtxResult = await supabase
         .from('ncaab_game_context')
+        // Widened to everything the four NCAAB cards in GameDetailV2
+        // actually read. My first pass selected 20 columns and was even
+        // asymmetric (home_adj_oe but not away_adj_oe), which is the NBA
+        // 10-20 failure exactly: a field the select omits arrives undefined
+        // and the card takes its own "no data" path, so the card is dead
+        // while the data sits in the table.
+        //
+        // The 27 fields were extracted from the card bodies and each probed
+        // against ncaab_game_context individually — the table is empty so
+        // there is no row to read a schema from, and a select naming a
+        // missing column 400s and blanks the sport. All 27 exist.
         .select('game_id,game_date,home_team,away_team,'
           + 'primary_play,sweat_score,sweat_tier,'
           + 'projected_spread,projected_total,close_spread,close_total,'
-          + 'home_tempo,away_tempo,home_adj_em,away_adj_em,'
-          + 'home_adj_oe,away_adj_de,'
-          + 'align_status,splits_summary,signal_confluence_net')
+          + 'align_status,splits_summary,signal_confluence_net,'
+          // efficiency + pace cards
+          + 'home_adj_em,away_adj_em,home_adj_oe,away_adj_oe,'
+          + 'home_adj_de,away_adj_de,home_tempo,away_tempo,pace_avg,'
+          // four factors
+          + 'home_efg_o,away_efg_o,home_to_o,away_to_o,'
+          + 'home_or_o,away_or_o,home_ftr_o,away_ftr_o,'
+          // form + rest
+          + 'home_record,away_record,home_l10,away_l10,'
+          + 'home_days_rest,away_days_rest')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(ncaabCtxResult?.data && ncaabCtxResult.data.length > 0) {
@@ -19591,6 +19609,47 @@ if(ncaabGames.length === 0 && modelEdgeSport === 'NCAAB' && gamesSport !== 'NCAA
                            const aRaw = String(selectedGame.away_team||'').toLowerCase();
                            const hRaw = String(selectedGame.home_team||'').toLowerCase();
                            for (const [k, v] of Object.entries(nbaGameContextMap || {})) {
+                             if (!k.includes('@')) continue;
+                             const [ctxAway, ctxHome] = k.split('@');
+                             if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
+                           }
+                           return null;
+                         })())
+                      : gamesSport === 'NCAAB'
+                      // ══ 2026-10-21 · NCAAB WAS FALLING THROUGH TO null ══
+                      //
+                      // The THIRD time this exact defect has shipped: NHL hit
+                      // it on 09-28, NBA on 10-20, and the chain still ended
+                      // at NBA. GameDetailV2 mounts four NCAAB cards
+                      // (efficiency, pace/tempo, four factors, form/rest) and
+                      // every one of them reads `ctx`, so with ctx null all
+                      // four would have been dead the moment the season
+                      // opened on 2026-11-03 — and with no OTA path that
+                      // could not be fixed without another App Store review.
+                      //
+                      // Caught before launch rather than after, by walking
+                      // the chain instead of the symptom. All 27 ctx fields
+                      // those cards read were probed against
+                      // ncaab_game_context one at a time (the table is empty,
+                      // so there is no row to read a schema off) and all 27
+                      // exist; the select that feeds this map was widened to
+                      // cover them, because a field the select omits arrives
+                      // undefined and each card takes its own "no data" path.
+                      // That is precisely how five names killed two NBA cards
+                      // on 10-20.
+                      //
+                      // Keyed the same way: game_id first because it is
+                      // unique, then away@home, then the substring pass every
+                      // other sport uses. College names carry mascots in the
+                      // Odds-API feed and bare school names in ctx, so the
+                      // substring net matters more here than anywhere.
+                      ? (ncaabGameContextMap?.[selectedGame.id] ||
+                         ncaabGameContextMap?.[`${selectedGame.away_team}@${selectedGame.home_team}`] ||
+                         ncaabGameContextMap?.[`nk:${_nhlNameKey(selectedGame.away_team)}@${_nhlNameKey(selectedGame.home_team)}`] ||
+                         (() => {
+                           const aRaw = String(selectedGame.away_team||'').toLowerCase();
+                           const hRaw = String(selectedGame.home_team||'').toLowerCase();
+                           for (const [k, v] of Object.entries(ncaabGameContextMap || {})) {
                              if (!k.includes('@')) continue;
                              const [ctxAway, ctxHome] = k.split('@');
                              if (aRaw.includes(ctxAway.toLowerCase()) && hRaw.includes(ctxHome.toLowerCase())) return v;
