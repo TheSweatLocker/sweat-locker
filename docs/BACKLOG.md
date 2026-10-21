@@ -4619,7 +4619,7 @@ and the secondary line shows "29 graded" rather than repeating the record. The
 tile looks finished because it is — there is just no rate yet, and the cliff is
 gone because the record was always the honest number on both sides of it.
 
-### B110 - the `ledger` surface reports ONE record for EIGHT sports - OPEN
+### B110 - the `ledger` surface reports ONE record for EIGHT sports - **RETRACTED, it is intentional**
 
 Found while measuring B98, not fixed. `surface_records` returns the **identical
 16-13 / n=29** for `ledger` under MLB, NFL, NCAAF, NHL, NBA, NCAAB, UFC **and
@@ -4731,3 +4731,74 @@ preseason `nba_injuries`, impact line = GSW from ctx) · four confidence scales
 (Sweat 78 / Conviction 62 / CONF +1 / POTD 60) · stale-stat labelling and
 source disagreement (pace 98.7 vs 99.0, net 2.5 vs -0.500) · hallucinated POTD
 prose ("last five games" on day 2 of a season) · P2 layout items.
+
+## 2026-10-21 · THREE FLAGS ASSESSED
+
+### B116 - a fabricated 100% UFC signal was carrying weight - **CLOSED** `b036b8bb`
+
+`ufc_pipeline_pick_b` sat in signal_registry at **100.0% on n=20, edge +47.6,
+DISCOVERY, WEIGHT 0.50**, beside `ufc_pipeline_pick_a` at 0.0% on n=24. Not
+reported as a finding, because a perfect rate and its mirror on a binary
+outcome is a wiring error until proven otherwise.
+
+One line:
+
+    c['_winner'] = 'A' if str(winner).lower() == str(c.get('fighter_a')).lower() else 'B'
+
+`ufc_picks.winner_actual` holds a SIDE CODE. Across all 140 graded rows: 65
+'a', 75 'b', and **ZERO** matching fighter_a by name — so the equality was
+false every time and the `else` made _winner 'B' for all 140. FIGHTER_B_ML
+always W, FIGHTER_A_ML always L, and **65 of 140 fights (46%) graded
+backwards** — every one where A actually won.
+
+Fixed to accept the side code, and to return None rather than guess when it is
+neither (a draw must not become a loss for A). Recomputed:
+
+    ufc_pipeline_pick_a    0.0% n=24 wt 0.30 -> 46.5% n=43  -5.9  wt 0.00
+    ufc_pipeline_pick_b  100.0% n=20 wt 0.50 -> 54.3% n=46  +1.9  wt 0.30
+
+Then swept the registry for the shape: **zero remaining rows at 0% or 100%
+with n>=10.**
+
+### B110 - RETRACTED. The shared ledger record is intentional.
+
+I filed this as cross-sport contamination. It is not — `compute_surface_records`
+names `ledger` in CROSS_SPORT_SURFACES and documents why: "The Ledger ships
+chalk parlays that intentionally pair, say, an NHL leg with an MLB leg; that
+combo belongs to no single sport. These report the ALL aggregate under every
+sport key so no caller can read a wrong-by-construction figure."
+
+A defensible choice, and I was wrong to call it a defect.
+
+**The residual question is Andy's, not a bug:** the premise holds for 34 of 267
+ledger receipts. The other 231 are MLB-only and 2 are NFL/NCAAF, so an NBA user
+is shown a 261-pick record that is 87% single-sport MLB parlays. The design
+avoids a wrong-by-construction split by substituting a different wrong
+impression. Worth a decision, not a unilateral change.
+
+### B117 - overnight results sat unresolved, and it is the cadence again
+
+Two NBA game-card picks from 10-20 were still ungraded ~17h after the games
+ended. `nba_game_results` held rows for both with NULL scores.
+
+NOT a missing resolver: `nba_resolve_results.py` IS scheduled
+(nba_pipeline.yml:131) and worked by hand immediately, finalising all three
+10-20 games. The cause is the same cadence gap found this morning for money
+flow — nba_pipeline last ran 10-20 at 21:39 UTC, BEFORE the 23:40 tips, and
+the 12 UTC cron lands ~4.4h late. **The 13 UTC slot added in `0d5e8325` covers
+this too**, since it resolves yesterday in the morning rather than
+mid-afternoon.
+
+**AND THE PENDING PICKS SKEWED THE RECORD OPTIMISTIC.** Both ungraded picks
+were losses, so yesterday's reported numbers were materially better than
+reality:
+
+                      reported (2 pending)      actual (fully graded)
+    NBA game_read     1-0   100.0%  +90.9%      1-2   33.3%  -36.4%
+    ALL game_read    10-5    66.7%  +19.5%     10-7   58.8%   +3.6%
+    market ml         7-3    70.0%  +17.2%      7-5   58.3%   -2.4%
+
+Same lesson as the 10-13 ledger backlog, opposite direction (that one skewed
+to WINs). **A record quoted with picks still pending is not a record.** Any
+surface summary should state the pending count beside it, which the perf query
+now does.
