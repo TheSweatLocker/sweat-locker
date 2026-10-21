@@ -1,0 +1,44 @@
+-- == 2026-10-21 - DROP THE INDEX I ADDED ON A WRONG PREMISE ==
+--
+-- 20261021j created line_history_sport_captured_idx (sport, captured_at) on
+-- the stated grounds that "nothing covered (sport, captured_at)". That was
+-- WRONG. An index on those exact columns already existed:
+--
+--   idx_line_history_sport_captured   btree (sport, captured_at DESC)   pre-existing, in use
+--   line_history_sport_captured_idx   btree (sport, captured_at)        mine, 25 MB, idx_scan = 0
+--
+-- The pre-existing one does not appear in get_io_audit's never-scanned list,
+-- so the planner has been choosing it. Mine has never been scanned once.
+-- A leading equality on `sport` plus a range on `captured_at` is served by
+-- either, and a btree is scannable backwards, so the declared DESC on the
+-- incumbent is not a reason to keep a second copy.
+--
+-- HOW I GOT IT WRONG, because it is worth not repeating: I checked which
+-- indexes the MIGRATIONS had created (20261021b's CREATE statements) and
+-- grepped the repo, but never listed the indexes that actually exist on the
+-- table. get_io_audit was already deployed and could have answered it in one
+-- call. I wrote the migration first and looked second.
+--
+-- The knock-on correction matters more than the wasted index. Because an
+-- index did exist, the 694.69 GiB on that query shape was NEVER a missing
+-- index. Nor was it deep OFFSET: converting the walk to keyset measured
+-- 0.7-0.9x, i.e. SLOWER, because ordering by `id` while filtering on
+-- (sport, captured_at) cannot use that index for both and heap-fetches more.
+-- That change was reverted.
+--
+-- What it actually was: the same 6-hour window being read TWICE per sport
+-- per run, once by detect_steam and once by detect_rlm_and_limit, 37 poller
+-- runs a day across 5 sports. 37 x 5 x 2 x ~18 pages ~ 6,660 page-requests a
+-- day, against 129,297 measured calls -- about 17 days' worth, which closes.
+-- Fixed in code by fetching the window once and sharing it: measured 18
+-- line_history requests per sport where it was 36, with flag output
+-- unchanged (21 steam, 1 rlm before and after).
+--
+-- Dropping an index needs no CONCURRENTLY: unlike building one it is a
+-- catalog update with no data rewrite, so the lock is held for milliseconds.
+-- lock_timeout so this fails rather than queueing writes behind itself if
+-- the pollers are mid-insert; re-run it if it times out.
+
+SET LOCAL lock_timeout = '5s';
+
+DROP INDEX IF EXISTS public.line_history_sport_captured_idx;

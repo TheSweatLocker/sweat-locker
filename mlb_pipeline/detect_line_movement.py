@@ -61,11 +61,85 @@ def _fmt(v):
     return f'{v:+.1f}' if isinstance(v, float) else str(v)
 
 
+# ══ 2026-10-21 · ONE READ OF THE WINDOW, NOT TWO ══
+# detect_steam and detect_rlm_and_limit each paginated line_history over the
+# SAME sport, the SAME captured_at window and the SAME ordering, 20 pages
+# apiece. main() calls both for every sport, so every poll read the window
+# twice and threw one copy away.
+#
+# The arithmetic, which closes against the measurement: the poller runs 37
+# times a day (*/30 through the busy hours, hourly overnight), loops 5
+# sports, and each sport did 2 reads x up to 20 pages = 40 page-requests.
+# 37 x 5 x 40 = 7,400 a day, and get_io_audit counted 129,297 calls on this
+# shape -- about 17 days' worth. Halving the reads halves that.
+#
+# Cached per (sport, since) for the life of the process. Both callers run
+# inside one invocation with the same lookback, so the second one is free.
+# The select is the UNION of what both needed. Width costs nothing in disk
+# IO here -- Postgres fetches the whole heap tuple whichever columns are
+# named -- so carrying `matchup` and `book` for both consumers is free.
+_WINDOW_CACHE: dict = {}
+
+
+def _fetch_window(sport: str, since: str) -> list:
+    key = (sport, since)
+    if key in _WINDOW_CACHE:
+        return _WINDOW_CACHE[key]
+    rows = []
+    for off in range(0, 20000, 1000):
+        r = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
+            params={'sport': f'eq.{sport}',
+                    'captured_at': f'gte.{since}',
+                    'select': 'game_id,matchup,market,book,side,line,price,'
+                              'captured_at',
+                    'order': 'captured_at.asc', 'limit': 1000,
+                    'offset': str(off)},
+            timeout=30)
+        if r.status_code != 200:
+            # Loud and NOT cached: a partial window silently produces fewer
+            # flags and looks exactly like a quiet market.
+            print(f'  line_history read failed: {r.status_code} after '
+                  f'{len(rows)} rows — PARTIAL, not cached')
+            return rows
+        chunk = r.json()
+        if not isinstance(chunk, list):
+            print(f'  line_history returned no list: {str(chunk)[:120]}')
+            return rows
+        rows.extend(chunk)
+        if len(chunk) < 1000:
+            break
+    else:
+        print(f'  WARNING: {sport} hit the 20-page cap ({len(rows)} rows) — '
+              f'older snapshots not examined')
+    _WINDOW_CACHE[key] = rows
+    return rows
+
+
 def detect_steam(sport: str, lookback_hours: int, now_iso: str,
                  dry_run: bool) -> list:
     """Compare each (game, market, book, side)'s two most-recent snapshots.
     When 2+ books shifted the same direction within STEAM_WINDOW_MIN, emit."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+    # ══ 2026-10-21 · DO NOT NARROW THIS WINDOW. MEASURED, REVERTED. ══
+    # This read is the largest IO consumer in the database -- 694.69 GiB
+    # across 129,297 calls -- and narrowing it looks obviously correct,
+    # because steam only fires when two snapshots land within
+    # STEAM_WINDOW_MIN = 15 minutes. Six hours to answer a fifteen-minute
+    # question. I cut it to two hours and measured the result:
+    #
+    #     6h lookback -> 94 steam flags
+    #     2h lookback -> 48 steam flags     (49 lost, 3 gained)
+    #
+    # HALF THE STEAM ROOM. The 15-minute window is not the binding
+    # constraint; having TWO SNAPSHOTS PER KEY is. write_line_history only
+    # records a quote when the line CHANGES, so a stable line is sparse by
+    # design, and inside two hours many (game, market, book, side) keys hold
+    # a single row -- the detector skips them for want of anything to
+    # compare against. The older snapshot is load-bearing.
+    #
+    # So the window stays at the caller's lookback_hours. The IO has to come
+    # out of call FREQUENCY or row WIDTH, not out of the window.
+    since = (datetime.now(timezone.utc)
+             - timedelta(hours=lookback_hours)).isoformat()
     # 2026-08-28: paginate — PostgREST caps at 1000/req. Prior client
     # `limit=5000` was truncated by the server; a full slate × 5 books ×
     # 3 markets × 2 sides × multi-snapshot easily blew past 1000, so
@@ -96,37 +170,7 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
     # could repeat or skip a row at a page boundary. Each group is sorted by
     # captured_at in Python below, so the comparison no longer depends on the
     # database's row order at all.
-    rows, cursor = [], None
-    for _ in range(20):
-        q = {'sport': f'eq.{sport}',
-             'captured_at': f'gte.{since}',
-             'select': 'id,game_id,matchup,market,book,side,line,price,'
-                       'captured_at',
-             'order': 'id.asc', 'limit': 1000}
-        if cursor is not None:
-            q['id'] = f'gt.{cursor}'
-        r = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
-                         params=q, timeout=30)
-        if r.status_code != 200:
-            print(f'  line_history read failed: {r.status_code}'); return []
-        chunk = r.json()
-        if not isinstance(chunk, list):
-            print(f'  line_history read returned no list: {str(chunk)[:120]}')
-            return []
-        rows.extend(chunk)
-        if len(chunk) < 1000: break
-        cursor = chunk[-1].get('id')
-        if cursor is None:
-            print('  line_history page had no id to continue from — '
-                  'window TRUNCATED, steam flags may be incomplete')
-            break
-    else:
-        # Loop ran all 20 pages without a short page: there is more data than
-        # the window holds. Say so. A silently truncated window produces
-        # fewer flags and looks exactly like a quiet night
-        # (feedback_green_step_that_writes_nothing).
-        print(f'  WARNING: {sport} line_history window hit the 20-page cap '
-              f'({len(rows)} rows) — older snapshots not examined')
+    rows = _fetch_window(sport, since)
     if not rows:
         # Distinguish "nothing moved" from "we read nothing". Observed during
         # testing: a transient statement timeout returned zero rows while the
@@ -179,9 +223,12 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
         if direction == 0: continue
         moves_by_gms[(gid, market, side)].append({
             'book': book, 'dir': direction, 'ts': last.get('captured_at'),
-            'matchup': last.get('matchup')
+            'matchup': last.get('matchup'),
         })
 
+    # One narrow lookup for the display names, keyed by game. Only the games
+    # that actually produced a move are asked for -- a few dozen rows rather
+    # than a string repeated across 20,000.
     # STEAM fires when 2+ books moved TOWARD same side within STEAM_WINDOW_MIN
     flags = []
     for (gid, market, side), books in moves_by_gms.items():
@@ -194,7 +241,10 @@ def detect_steam(sport: str, lookback_hours: int, now_iso: str,
         span = (times[-1] - times[0]).total_seconds() / 60
         if span > STEAM_WINDOW_MIN: continue
         book_list = ', '.join(b['book'] for b in toward)
-        matchup = toward[0]['matchup']
+        # matchup rides along in the shared window again, so no extra
+        # lookup. Falls back to the game_id rather than None: a flag with no
+        # name renders as an empty Steam Room card.
+        matchup = toward[0].get('matchup') or gid
         detail = f'{len(toward)} books shifted toward {side} within {span:.0f} min ({book_list})'
         flags.append({
             'sport': sport, 'game_id': gid, 'market': market, 'side': side,
@@ -233,19 +283,7 @@ def detect_rlm_and_limit(sport: str, lookback_hours: int, now_iso: str,
 
     # Also pull latest line_history to compare movement direction —
     # paginate for the same reason as detect_steam (server-side 1k cap).
-    lh_rows = []
-    for off in range(0, 20000, 1000):
-        lh = requests.get(f'{SB}/rest/v1/line_history', headers=H_READ,
-            params={'sport': f'eq.{sport}',
-                    'captured_at': f'gte.{since}',
-                    'select': 'game_id,matchup,market,side,line,price,captured_at',
-                    'order': 'captured_at.asc', 'limit': 1000, 'offset': off},
-            timeout=30)
-        if lh.status_code != 200: return []
-        chunk = lh.json()
-        if not isinstance(chunk, list): return []
-        lh_rows.extend(chunk)
-        if len(chunk) < 1000: break
+    lh_rows = _fetch_window(sport, since)
 
     # Per (game, market, side) compute first→last delta
     grouped: dict = defaultdict(list)
