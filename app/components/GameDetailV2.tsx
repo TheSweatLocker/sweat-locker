@@ -1056,6 +1056,50 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
           skipped italic disclaimer. Now the label reads as informational
           context, not a headline. */}
       <Text style={[styles.verdictPlay, isLowConviction && {color: C.textDim, fontWeight: '600'}]}>{label}</Text>
+      {/* ══ 2026-10-22 · SHOW THE MOVE, DO NOT HIDE IT ══
+          Andy: "Bears pick for tinight says -1.5 but looks like line moved
+          but play still says -1.5 Chicago ... In throity engine picked Bears
+          -1.5 the makret has shifted to -3 based on bettor taking the -1.5 so
+          the market corrected."
+
+          He is right, and this is the display that makes it legible. The
+          pick is frozen at the number we published (correct — the record
+          grades what we called), but rendering ONLY that number tells a user
+          to take a line no book still offers. The Bears read was generated
+          10-19 at -1.5; close_spread is now 3.0.
+
+          So print both. A move AGAINST the published number is a closing-line
+          win and the strongest thing we can show: it means the market came to
+          us after we called it. Hiding it made our own evidence look like a
+          stale-data bug.
+
+          Only rendered when the market has actually moved off our number and
+          both values exist — a matching line prints nothing rather than a
+          redundant "now -1.5". Spread/puckline only: an ML move is a price
+          change and belongs in the price strip, not here. */}
+      {(() => {
+        if (!['rl', 'spread', 'puckline', 'ats'].includes(rawType)) return null;
+        const ourLine = Number(play.line);
+        const mkt = Number(ctx?.close_spread ?? ctx?.close_puckline_home
+                           ?? ctx?.close_puckline);
+        if (!isFinite(ourLine) || !isFinite(mkt)) return null;
+        // Compare MAGNITUDES. close_spread's sign convention is inverted
+        // between NFL and NCAAF (project_close_spread_sign_bug_914), so a
+        // signed comparison is right in one sport and backwards in the
+        // other. The magnitude of the number is the same either way.
+        const ours = Math.abs(ourLine), now = Math.abs(mkt);
+        if (Math.abs(ours - now) < 0.25) return null;
+        const better = now > ours;   // market moved past our number
+        return (
+          <Text style={{color: better ? C.accent : C.textMuted, fontSize: 11,
+                        marginTop: 2, fontWeight: '600'}}>
+            {better ? '↗ ' : '↘ '}published at {ours % 1 === 0 ? ours : ours.toFixed(1)}
+            {' · market now '}{now % 1 === 0 ? now : now.toFixed(1)}
+            {better ? '  (we beat the close by ' + (now - ours).toFixed(1) + ')'
+                    : '  (line came back ' + (ours - now).toFixed(1) + ')'}
+          </Text>
+        );
+      })()}
       {sub ? <Text style={[styles.verdictWhy, isLowConviction && {color: C.textMuted}]}>{scrubSourceNames(sub)}</Text> : null}
       {isLowConviction && (
         <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
