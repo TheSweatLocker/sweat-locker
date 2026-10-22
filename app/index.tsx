@@ -10206,24 +10206,47 @@ setJerryHistory(prev => {
         .limit(120);
       const flags = data || [];
       setSteamFlags(flags);
-      // For each flagged game/market, fetch a small time-series sample from
-      // line_history so we can render a compact sparkline inline.
+      // Matchup + kickoff labels for the flagged games, in ONE round trip.
+      //
+      // 2026-10-21 — this was 30 separate line_history queries of 200 rows
+      // each, and the comment above them said they fed "a compact sparkline
+      // inline." There is no sparkline. Every use of this prop in
+      // LineMovementTab.tsx is `sample[0]?.matchup` (415, 590) and
+      // `sample[0]?.commence_time` (594) — nothing reads index 1 or beyond
+      // and nothing plots anything. So each visit fetched up to 6,000 rows
+      // across 30 round trips, discarded 199 of every 200, and used the
+      // survivor for a TEXT LABEL.
+      //
+      // get_steam_matchup_labels uses DISTINCT ON, which returns exactly one
+      // row per (game_id, market) by construction. Deliberately not a
+      // batched `.in('game_id', …)` with a bigger limit: PostgREST orders
+      // then truncates, so one limit across many series starves whichever
+      // series sorts last — that is what rendered a card titled `2026020164`
+      // earlier today.
+      //
+      // And `commence_time` is now actually fetched. The old select asked
+      // for side, book, line, price, captured_at, matchup, so
+      // `sample[0]?.commence_time` has always been undefined — the column
+      // exists on line_history and carries a real value. The 2026-08-22
+      // comment that used to sit here fixed its neighbour, `matchup`, for
+      // this exact reason and missed this one.
       const uniqueGameMarket = Array.from(new Set(flags.map((f:any) => `${f.game_id}::${f.market}`))).slice(0, 30);
       const samples: Record<string, any[]> = {};
-      await Promise.all(uniqueGameMarket.map(async (gm) => {
-        const [gid, market] = gm.split('::');
-        // 2026-08-22: added 'matchup' to select so sample[0].matchup
-        // fallback in LineMovementCard actually works. Prior select
-        // omitted matchup entirely — silent fallback failure.
-        const { data: hist } = await supabase
-          .from('line_history')
-          .select('side,book,line,price,captured_at,matchup')
-          .eq('game_id', gid).eq('market', market)
-          .gte('captured_at', new Date(Date.now() - 48*60*60*1000).toISOString())
-          .order('captured_at', {ascending: true})
-          .limit(200);
-        samples[gm] = hist || [];
-      }));
+      if (uniqueGameMarket.length) {
+        const pairs = uniqueGameMarket.map((gm) => {
+          const [game_id, market] = gm.split('::');
+          return {game_id, market};
+        });
+        const { data: labels, error: labelErr } = await supabase
+          .rpc('get_steam_matchup_labels', {p_pairs: pairs, p_hours: 48});
+        if (labelErr) console.warn('[steam] matchup labels', labelErr.message);
+        // Shape kept as an ARRAY per key. The cards read sample[0], so a
+        // one-element array is what they already expect and no component
+        // has to change.
+        for (const r of (labels || [])) {
+          samples[`${r.game_id}::${r.market}`] = [r];
+        }
+      }
       setSteamHistorySample(samples);
       // Pull our picks for the flagged games so we can render an
       // alignment tag on each Steam Room card (NEW 2026-08-15).
