@@ -506,6 +506,27 @@ def _sweep_ungraded_jerry_reads(cfbd_games: list, dry_run: bool = False) -> int:
     ncaaf_game_results row.
     """
     from collections import defaultdict
+    skipped_dupe = patched_twin = 0
+
+    def _existing_rows_for_date(day: str) -> list:
+        """Every ncaaf_game_results row on one date, teams included.
+
+        Needed because the duplicate guard has to find a game by its TEAM
+        PAIR, which the id-based `in.(...)` lookup above cannot do. One
+        request per date in the sweep window, and a failure returns [] -
+        which only means the guard cannot fire, never that a wrong row gets
+        written.
+        """
+        try:
+            rr = requests.get(f'{SB}/rest/v1/ncaaf_game_results',
+                              headers=H_READ,
+                              params={'game_date': f'eq.{day}',
+                                      'select': 'game_id,home_team,'
+                                                'away_team,home_score',
+                                      'limit': '200'}, timeout=30)
+            return rr.json() or [] if rr.status_code == 200 else []
+        except Exception:                                      # noqa: BLE001
+            return []
     # Pull ungraded NCAAF jerry_reads (up to last 30 days)
     r = requests.get(f'{SB}/rest/v1/jerry_reads',
                      headers=H_READ,
@@ -567,11 +588,79 @@ def _sweep_ungraded_jerry_reads(cfbd_games: list, dry_run: bool = False) -> int:
                     # Only skip if scores already populated
                     if row.get('home_score') is not None:
                         existing_ids.add(row.get('game_id'))
+        # ══ 2026-10-22 · THIS SWEEP WAS THE DUPLICATE FACTORY ══
+        # The idempotency check above is on the GAME_ID, not on the GAME.
+        # ncaaf_game_results.game_id is composed from the team names, so when
+        # a jerry_read carries one spelling and the odds pull already wrote
+        # the game under another, `gid not in existing_ids` is TRUE and this
+        # upserts a SECOND ROW for a game we already have.
+        #
+        # Measured on 2026 before this guard: 21 duplicate groups. Their cost
+        # was not only a double-counted denominator (Virginia Tech read 10
+        # completed games against 7 played). On 09-12 the engine published
+        # BOTH SIDES of Old Dominion / Virginia Tech - 'Virginia Tech -18.5'
+        # Win on one id and 'Old Dominion +14' Loss on the other - because the
+        # two rows carried different closing spreads (-18.5 and -14.0) and so
+        # it read one game twice and disagreed with itself.
+        #
+        # So: look the game up by DATE + FOLDED TEAM PAIR, unordered, before
+        # inserting. Unordered because the one genuinely dangerous duplicate
+        # was Oklahoma @ Texas - a neutral-site game the two feeds disagree
+        # about, where home and away are SWAPPED between the rows, and an
+        # ordered key would have missed exactly that case.
+        #
+        # When the game is already present under a different id this does NOT
+        # insert. It patches the score onto the row that exists and reports
+        # the id disagreement by name, because the read staying ungraded is
+        # visible and fixable while a duplicate row is neither.
+        _by_pair = {}
+        for _row in _existing_rows_for_date(d):
+            _h, _a = _row.get('home_team'), _row.get('away_team')
+            if not (_h and _a):
+                continue
+            _by_pair.setdefault(
+                frozenset((_fold_name(_h), _fold_name(_a))), []).append(_row)
+
         for gid in gids:
             if gid in existing_ids: continue
             parts = gid.split('_', 3)
             if len(parts) < 4: continue
             away_raw = parts[2]; home_raw = parts[3]
+            _pair = frozenset((_fold_name(away_raw), _fold_name(home_raw)))
+            _twins = [x for x in _by_pair.get(_pair, [])
+                      if x.get('game_id') != gid]
+            if _twins:
+                _t = _twins[0]
+                _msg = (f'  ! {gid} and {_t["game_id"]} are the SAME game '
+                        f'({away_raw} @ {home_raw}, {d}) under two spellings')
+                if _t.get('home_score') is not None:
+                    print(f'{_msg} - the existing row already has the score; '
+                          f'NOT inserting a duplicate. The read keyed on '
+                          f'{gid} will stay ungraded until the ids agree.')
+                    skipped_dupe += 1
+                    continue
+                # The twin exists but is scoreless: fill THAT row rather than
+                # minting a third id for the same game.
+                _cf = cfbd_lookup.get((_fold_name(away_raw),
+                                       _fold_name(home_raw)))
+                if _cf:
+                    _hp = _i(_cf.get('home_points') or _cf.get('homePoints'))
+                    _ap = _i(_cf.get('away_points') or _cf.get('awayPoints'))
+                    if _hp is not None and _ap is not None and not dry_run:
+                        requests.patch(
+                            f'{SB}/rest/v1/ncaaf_game_results',
+                            headers=H_WRITE,
+                            params={'game_id': f'eq.{_t["game_id"]}'},
+                            json={'home_score': _hp, 'away_score': _ap,
+                                  'total_points': _hp + _ap,
+                                  'home_win': _hp > _ap}, timeout=15)
+                    print(f'{_msg} - filled the EXISTING row instead of '
+                          f'inserting a duplicate')
+                    patched_twin += 1
+                    continue
+                print(f'{_msg} - no CFBD match either; left alone')
+                skipped_dupe += 1
+                continue
             key = (_fold_name(away_raw), _fold_name(home_raw))
             cfbd_g = cfbd_lookup.get(key)
             if not cfbd_g:
@@ -609,6 +698,14 @@ def _sweep_ungraded_jerry_reads(cfbd_games: list, dry_run: bool = False) -> int:
             print(f'      · {s}')
     print(f'  reverse-sweep: {upserts} upserts from {total_ungraded} ungraded jerry_reads '
           f'across {dates_processed} dates')
+    if patched_twin or skipped_dupe:
+        print(f'  duplicate guard: {patched_twin} score(s) written to the '
+              f'EXISTING row instead of a new id, {skipped_dupe} read(s) left '
+              f'ungraded rather than minting a duplicate game row')
+        print(f'    Each line above names two ids for one game. The id '
+              f'disagreement is the thing to fix - either repoint the '
+              f'jerry_read, or make grade_jerry_reads try the key variants '
+              f'this module already builds for lookups (see ~line 714).')
     return upserts
 
 
