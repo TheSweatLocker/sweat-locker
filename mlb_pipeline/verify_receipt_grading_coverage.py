@@ -200,6 +200,90 @@ def check_fade_consistency(days: int) -> int:
     return len(label_bad) + len(grade_bad)
 
 
+def check_receipt_matches_read(days: int) -> int:
+    """An ungraded game_read receipt must name the side its READ published.
+
+    == 2026-10-22 ==
+    Andy: "The record should grade the Chicago -1.5". He is right, and the
+    receipt said NE +2.5.
+
+    Measured: 156 of 1,746 game_read receipts disagree with their own read on
+    the SIDE, and ALL 156 carry capture_mode='reconstructed'. Not one
+    live-captured receipt is wrong. Tonight's Bears receipt was published
+    2026-10-13 - nine days before the game - with conviction 40 and NE +2.5,
+    then the read was regenerated on 10-19 as CHI -1.5 at conviction 58 and
+    the receipt never followed. A further 256 agree on the side but carry a
+    different LINE.
+
+    Only the UNGRADED ones are actionable: a graded receipt is a published
+    record and Andy's standing instruction is to leave the history alone. So
+    this checks ungraded rows only, which is also the ones that still matter
+    - fix them before they grade, not after.
+
+    == THESE CANNOT BE PATCHED, AND THAT IS CORRECT ==
+    I tried. The PATCH returns 200 and the row comes back unchanged, because
+    20260918b installs a trigger that FULLY FREEZES pick_side, pick_line and
+    pick_label - it restores OLD on every update. That freeze is the whole
+    integrity guarantee: a published receipt cannot be rewritten after the
+    fact. (And I walked into "a 204 is not a write" to learn it, on the same
+    day I wrote a guard about that trap.)
+
+    So the fix is never downstream. Measured on all 156:
+
+        receipt published BEFORE the read was (re)generated   126
+        published 2+ days before the game                     121
+        lead time: median 6 days, max 12
+
+    The reconstruction is not writing the wrong side - it faithfully copies
+    call_side as it stood. The bug is that we FREEZE A CLAIM FOR A GAME DAYS
+    OUT and then let the pick change underneath it. A frozen receipt must
+    only be created when the pick is final.
+
+    This check exists to catch the next one on the day it appears, while the
+    game is still ungraded and the WRITE path can be corrected - not to
+    suggest repairing the row, which the database will refuse.
+    """
+    try:
+        reads = {str(x['id']): x for x in page(
+            'jerry_reads', {'select': 'id,call_text,call_side,call_line'})}
+        recs = page('public_receipts',
+                    {'select': 'id,sport,surface,pick_label,pick_side,'
+                               'source_id,source_table,game_date,capture_mode',
+                     'result': 'is.null'})
+    except Exception as e:                                     # noqa: BLE001
+        print(f'\n  receipt/read check UNAVAILABLE ({type(e).__name__}: {e})')
+        return 0
+    bad = []
+    for r in recs:
+        if r.get('source_table') != 'jerry_reads':
+            continue
+        if r.get('surface') != 'game_read':
+            continue
+        s_ = reads.get(str(r.get('source_id')))
+        if not s_:
+            continue
+        ps = str(r.get('pick_side') or '').upper()
+        cs = str(s_.get('call_side') or '').upper()
+        if ps and cs and ps != cs:
+            bad.append((r, s_))
+    print(f'\n  ungraded game_read receipts vs their read: '
+          f'{len(bad)} disagree on the SIDE')
+    if bad:
+        print('    ** the app shows one side and the record will grade the '
+              'other. These are NOT patchable - pick_side/pick_label are '
+              'frozen by trigger (20260918b). Fix the WRITE path: do not '
+              'publish a receipt before the pick is final.')
+        for r, s_ in bad[:10]:
+            print(f"       {r['game_date']} {str(r.get('sport')):6s} "
+                  f"receipt={r['id']} {str(r.get('pick_label'))[:20]!r} "
+                  f"vs read {str(s_.get('call_text'))[:20]!r} "
+                  f"({r.get('capture_mode')})")
+    else:
+        print('    PASS - every ungraded game_read receipt names its '
+              'published side')
+    return len(bad)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--days', type=int, default=14)
@@ -270,6 +354,11 @@ def main() -> int:
     _fade = check_fade_consistency(a.days)
     if _fade:
         problems.append(('FADE-SIDE', _fade, 0.0, 'fade side/grade'))
+
+    _mismatch = check_receipt_matches_read(a.days)
+    if _mismatch:
+        problems.append(('RECEIPT-SIDE', _mismatch, 0.0,
+                         'receipt disagrees with its read'))
 
     if problems:
         print(f'\n  {len(problems)} sport(s) above threshold:')
