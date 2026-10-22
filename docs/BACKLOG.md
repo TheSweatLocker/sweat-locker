@@ -5074,3 +5074,55 @@ operator banner and hands NBA back to the auto-generated calibration note —
 which is the right copy then, because NBA will have a real (tiny) graded
 sample. Deliberately *not* done early: clearing it while the fix is still in
 review removes the one thing an NBA user currently needs to know.
+
+## B125 — NCAAF alias map: five teams the two feeds spell differently
+
+**Opened 2026-10-21** by `verify_team_stat_integrity.py`. Five FBS teams have
+a full season in `ncaaf_team_stats` and **zero rows** in
+`ncaaf_game_results`:
+
+| `ncaaf_team_stats` | `ncaaf_game_results` |
+|---|---|
+| App State | Appalachian State |
+| Hawai'i | Hawaii |
+| San José State | San Jose State |
+| UConn | Connecticut |
+| UL Monroe | Louisiana Monroe |
+
+**User-facing:** those five teams' game cards can show no team stats at all.
+Same family as the NHL STL mismatch (10-13), which cost STL all odds and all
+tendencies behind a silent `continue`.
+
+**No substring match will do it.** `Connecticut` also matches `Central
+Connecticut`, a different school in the same table, and `San José` carries an
+accent one feed drops. It needs an explicit two-way alias map, as the NHL fix
+did. Check whether the existing NHL alias mechanism generalises before adding
+a second one.
+
+Also open from the same check:
+- **2 FBS games unresolved**: Oklahoma @ Texas (week 6, 10-10, eleven days)
+  and Oklahoma State @ Colorado State (week 1, 09-05). A pick on either
+  cannot have graded.
+- **Florida International (7 stats / 2 completed) and Massachusetts (7 / 1)**
+  spell identically — results ingestion, not naming.
+- **25 FBS teams off by one** on `games`. The stats feed had not ingested the
+  most recent Saturday; self-corrects, but their per-game rates are currently
+  on a 7-game denominator against 8 played. Watch whether it clears.
+
+NFL passes clean on the same check — 32 of 32, every invariant held.
+
+### Open list, as of 2026-10-21 end of night
+1. **Apply `20261021q`** (prop signal field names — touches MLB, the live
+   surface), **`20261021r`** (ledger `sport_scope` labels), **`20261021s`**
+   (UFC operator note), **`20261021t`** (duplicate indexes), **`20261021u`**
+   (Steam Room label RPC).
+2. **B125** — NCAAF alias map, then re-run the verifier.
+3. **Ledger per-sport split** — product call. 95.9% of slips are
+   single-sport; NHL is 14-8 +11.83u while the tab shows the global
+   114-152 −1.94u.
+4. **B122** — the remaining ~65 `date.today()` call sites.
+5. **B121** — NHL/NBA prop publish flags. Both boards are now evaluable
+   (conviction promoted) and both still return 0 publishable rows.
+6. **B124** — clear NBA's "fix is in review" banner when 1.0.3 is approved.
+7. **B5** — add `expo-updates` so client fixes stop needing a review cycle.
+   Four client fixes are already queued behind this build.
