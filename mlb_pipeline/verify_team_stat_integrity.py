@@ -74,6 +74,41 @@ SPORTS = {
                   scope_col='sp_overall'),
 }
 
+#: Per sport, a table that bridges the two name spaces, and its two columns.
+#: WITHOUT THIS THE CHECK CRIES WOLF.
+#:
+#: 2026-10-22. The first version of this verifier compared
+#: ncaaf_team_stats.team directly against ncaaf_game_results.home/away_team
+#: and reported five FBS teams with "a full season of stats and ZERO rows in
+#: the results table" - App State/Appalachian State, Hawai'i/Hawaii, San José
+#: State/San Jose State, UConn/Connecticut, UL Monroe/Louisiana Monroe. I
+#: wrote that their game cards "can show no team stats at all."
+#:
+#: THAT WAS WRONG, and the measurement that settles it is the fill rate on
+#: ncaaf_game_context - which is what the cards actually read - split on the
+#: date the bridge was built:
+#:
+#:     the five, before 2026-09-10    sp_overall  0/9    ( 0.0%)
+#:     the five, after  2026-09-10               21/25   (84.0%)
+#:     control,  after  2026-09-10              761/841  (90.5%)
+#:
+#: So `ncaaf_team_name_aliases` (migration 20260910e) already bridges them
+#: and has since 09-10; the two name spaces differ by design and something
+#: else reconciles them. A checker that calls a BRIDGED difference a defect
+#: is worse than no checker: it would have reported five fake findings every
+#: night in ncaaf_pipeline.yml, and the real ones - two unresolved FBS games
+#: and 25 teams a week stale - would have been read as more of the same.
+#:
+#: NCAAF has FIVE name-resolution layers (this table, ncaaf_team_aliases,
+#: compute_margin_strength.NCAAF_ALIASES, resolve_ncaaf_results._NCAAF_ALIASES,
+#: and the client's own fuzzy matcher). This resolves through the one that
+#: owns the stats-to-context join, because that is the join being checked.
+ALIAS_BRIDGE = {
+    'NCAAF': dict(table='ncaaf_team_name_aliases',
+                  # ctx/results spelling -> the stats table's spelling
+                  from_col='ctx_name', to_col='cfbd_canonical'),
+}
+
 #: Rows that are not teams. ncaaf_team_stats carries a 'nationalAverages'
 #: row - the FBS mean, used as a comparison baseline - with sp_overall
 #: populated and games NULL, so every check treats it as a team with no
@@ -125,6 +160,54 @@ def _num(v):
         return None
 
 
+def _fold(s) -> str:
+    """Case/space/diacritic-insensitive key for a team name.
+
+    'Hawai'i' vs 'Hawaii' and 'San José State' vs 'San Jose State' are the
+    same school written by two feeds, and they are the two of the five that
+    no alias ROW can sensibly carry - they are not synonyms, they are the
+    same string with an accent and an apostrophe. Folding here means the
+    alias table only has to hold genuine synonyms (App State/Appalachian
+    State), which is what it is for.
+    """
+    import unicodedata
+    n = unicodedata.normalize('NFKD', str(s or ''))
+    n = ''.join(c for c in n if not unicodedata.combining(c))
+    for ch in ("'", '’', '.', '-'):
+        n = n.replace(ch, '')
+    return ' '.join(n.lower().split())
+
+
+def load_alias_bridge(sport: str) -> dict:
+    """{folded results/ctx name -> folded stats name}, or {} if none.
+
+    A missing table is NOT fatal - it means this sport has no bridge, and
+    then a name difference really is a finding. A failed REQUEST is
+    different: returning {} there would turn a transient error into five
+    fake defects, so it raises and the caller reports the sport as
+    unverified.
+    """
+    cfg = ALIAS_BRIDGE.get(sport)
+    if not cfg:
+        return {}
+    r = requests.get(f'{SB}/rest/v1/{cfg["table"]}', headers=H,
+                     params={'select': f'{cfg["from_col"]},{cfg["to_col"]}',
+                             'limit': '2000'}, timeout=30)
+    if r.status_code == 404:
+        print(f'  note: no {cfg["table"]} - name differences are real here')
+        return {}
+    if r.status_code != 200:
+        raise RuntimeError(f'{cfg["table"]} HTTP {r.status_code}: '
+                           f'{r.text[:160]}')
+    out = {}
+    for row in r.json() or []:
+        a, b = row.get(cfg['from_col']), row.get(cfg['to_col'])
+        if a and b:
+            out[_fold(a)] = _fold(b)
+    print(f'  alias bridge: {len(out)} pair(s) from {cfg["table"]}')
+    return out
+
+
 def check_sport(sport, season):
     cfg = SPORTS[sport]
     print('')
@@ -144,8 +227,15 @@ def check_sport(sport, season):
     print(f'  {len(stats)} stat row(s) across season(s) {seasons}')
 
     # -- the denominator ---------------------------------------------------
-    rp = {'select': 'home_team,away_team,home_score,away_score,season,'
-                    + cfg['results_type_col']}
+    bridge = load_alias_bridge(sport)
+    # game_date is in the select because the duplicate check groups on it.
+    # Without it every row grouped under the string 'None' and the whole
+    # season collapsed into one bucket, which reported two different dates'
+    # Georgia/Alabama games as a duplicate pair. The giveaway was the date
+    # printing as None in the output - a grouping key that is constant is a
+    # wiring error, not a finding.
+    rp = {'select': 'game_date,home_team,away_team,home_score,away_score,'
+                    'season,' + cfg['results_type_col']}
     if season:
         rp['season'] = f'eq.{season}'
     results = page(cfg['results'], rp)
@@ -160,13 +250,90 @@ def check_sport(sport, season):
             continue
         for t in (g.get('home_team'), g.get('away_team')):
             if t:
-                k = (g.get('season'), str(t))
+                # Key on the FOLDED, alias-resolved name, in the stats
+                # table's space. Both sides of the comparison end up in one
+                # vocabulary, so a difference the project deliberately
+                # bridges elsewhere no longer reads as a missing team.
+                k = (g.get('season'), bridge.get(_fold(t), _fold(t)))
                 played[k] = played.get(k, 0) + 1
     print(f'  {len(results)} result row(s); {skipped_type} excluded as '
           f'non-regular by {cfg["results_type_col"]}; '
           f'{len(played)} (season, team) pairs played')
 
-    problems = 0
+    # -- duplicate game rows ----------------------------------------------
+    # ══ 2026-10-22 · THE GAME_ID IS BUILT OUT OF THE TEAM NAMES ══
+    # ncaaf_game_results ids look like
+    # 'ncaaf_20260903_Akron_Wake Forest', so the SAME GAME gets a SECOND
+    # ROW the moment a feed sends a different spelling - that row's id
+    # differs, so the upsert cannot collapse it. Measured on 2026: 19 true
+    # duplicates, and they come in three flavours, in rising order of harm:
+    #
+    #   spelling      'Akron @ Wake Forest' and 'Akron @ Wake Forest Demon
+    #                 Deacons'. Both scored. Inflates a team's game count,
+    #                 which is the denominator of every per-game rate.
+    #   half-scored   'UMass @ Rutgers' NULL alongside 'Massachusetts @
+    #                 Rutgers' 21-37. The NULL twin reads as an ungraded
+    #                 game forever - this is what made 8 games look
+    #                 unresolved on 10-21.
+    #   INVERTED      'Oklahoma @ Texas' NULL alongside 'Texas @ Oklahoma'
+    #                 27-24. A neutral-site game (Red River, in Dallas) that
+    #                 two feeds disagree about, so home and away are
+    #                 SWAPPED between the rows. This is the dangerous one: a
+    #                 pick graded against the wrong orientation inverts the
+    #                 side.
+    #
+    # Checked by (date, unordered team PAIR) so an inversion is caught, not
+    # by (date, home) which would miss exactly the harmful case.
+    pair_groups = {}
+    for g in results:
+        h, a = g.get('home_team'), g.get('away_team')
+        if not (h and a):
+            continue
+        hk = bridge.get(_fold(h), _fold(h))
+        ak = bridge.get(_fold(a), _fold(a))
+        k = (str(g.get('game_date'))[:10], tuple(sorted((hk, ak))))
+        pair_groups.setdefault(k, []).append(g)
+    dupes = {k: v for k, v in pair_groups.items() if len(v) > 1}
+    if dupes:
+        inverted, half, plain = [], [], []
+        for k, v in sorted(dupes.items()):
+            homes = {bridge.get(_fold(x.get('home_team')),
+                                _fold(x.get('home_team'))) for x in v}
+            scored = [x for x in v if x.get('home_score') is not None]
+            if len(homes) > 1:
+                inverted.append((k, v))
+            elif 0 < len(scored) < len(v):
+                half.append((k, v))
+            else:
+                plain.append((k, v))
+        print(f'  ** {len(dupes)} duplicate game row group(s) in '
+              f'{cfg["results"]} - the game_id is built from team NAMES, so '
+              f'a second spelling creates a second row:')
+        for label, group in (('HOME/AWAY INVERTED', inverted),
+                             ('one twin unscored', half),
+                             ('both scored', plain)):
+            if not group:
+                continue
+            print(f'     {len(group)} {label}:')
+            for k, v in group[:6]:
+                print(f'       {k[0]}  {" / ".join(sorted(k[1]))}')
+                for x in v:
+                    print(f'          {str(x.get("away_team"))[:26]:26s} @ '
+                          f'{str(x.get("home_team"))[:26]:26s} '
+                          f'{x.get("home_score")}-{x.get("away_score")}')
+            if len(group) > 6:
+                print(f'       ... and {len(group) - 6} more')
+        # Inversions are counted as problems; the other two are reported but
+        # not counted, because they inflate a denominator rather than
+        # threatening to grade a bet the wrong way round.
+        problems_dupes = len(inverted)
+        if inverted:
+            print('     -> an INVERTED pair can grade a side backwards. '
+                  'Check receipts on those game_ids before trusting them.')
+    else:
+        problems_dupes = 0
+
+    problems = problems_dupes
     # Three buckets, not one count. Run unclassified on NCAAF this was "122
     # problems", which is unusable - 128 of those rows were FCS schools whose
     # full season sits in the stats table while the results table only carries
@@ -180,6 +347,7 @@ def check_sport(sport, season):
     lag = []        # off by one: the stats feed is a week behind
     name_gap = []   # ZERO overlap: the two feeds spell this team differently
     coverage = []   # in both, but the results table is missing games
+    inflated = []   # results has MORE than stats -> duplicate rows
     out_of_scope = 0
     scope_col = cfg.get('scope_col')
     sentinels = 0
@@ -190,7 +358,7 @@ def check_sport(sport, season):
             sentinels += 1
             continue
         in_scope = (scope_col is None) or (r.get(scope_col) is not None)
-        key = (r.get('season'), str(r.get('team')))
+        key = (r.get('season'), _fold(r.get('team')))
         got = _num(r.get('games'))
         want = played.get(key, 0)
         if not in_scope:
@@ -210,8 +378,21 @@ def check_sport(sport, season):
             name_gap.append((key[1], int(got)))
         elif abs(d) <= 1:
             lag.append((key[1], int(got), want))
-        else:
+        elif d > 0:
+            # stats claims MORE games than the results table has -> the
+            # results table is missing games.
             coverage.append((key[1], int(got), want))
+        else:
+            # 2026-10-22: the results table has MORE completed games than
+            # the stats table claims, which cannot be a coverage gap - you
+            # cannot play more games than you played. It is the duplicate
+            # rows above inflating the count: Virginia Tech reads 10
+            # completed against 7 because 'VMI Keydets @ Virginia Tech' and
+            # 'VMI @ Virginia Tech' are the same game under two spellings.
+            # Reported separately and pointed at the right table, because
+            # calling it "missing games from the results table" sent the
+            # reader to look for the opposite problem.
+            inflated.append((key[1], int(got), want))
 
     if sentinels:
         print(f'  {sentinels} sentinel row(s) skipped (not teams - e.g. '
@@ -228,6 +409,14 @@ def check_sport(sport, season):
               f'these stats can never join their games:')
         for team, got in sorted(name_gap):
             print(f'       {team:28s} stats.games={got}  results rows=0')
+
+    if inflated:
+        print(f'  {len(inflated)} in-scope team(s) whose COMPLETED count '
+              f'exceeds stats.games by 2+ - not a coverage gap, these are '
+              f'the duplicate rows above inflating the count:')
+        for team, got, want in sorted(inflated):
+            print(f'       {team:28s} stats={got}  counted={want}  '
+                  f'(+{want - got} duplicate row(s))')
 
     if coverage:
         problems += len(coverage)

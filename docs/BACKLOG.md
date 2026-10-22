@@ -5075,7 +5075,86 @@ which is the right copy then, because NBA will have a real (tiny) graded
 sample. Deliberately *not* done early: clearing it while the fix is still in
 review removes the one thing an NBA user currently needs to know.
 
-## B125 — NCAAF alias map: five teams the two feeds spell differently
+## B125 — CORRECTED 2026-10-22. Not an alias gap; duplicate rows keyed on names
+
+**The 10-21 version of this entry was wrong and is retained below struck
+through, because the mistake is the instructive part.**
+
+I compared `ncaaf_team_stats.team` against
+`ncaaf_game_results.home_team/away_team`, found five FBS teams with zero
+overlap, and concluded their game cards "can show no team stats at all."
+That is not the join the cards use. The cards read `ncaaf_game_context`, and
+`ncaaf_team_name_aliases` (migration 20260910e) has bridged those two name
+spaces since **2026-09-10**. Measured on the fill rate of what the cards
+actually read, split on that date:
+
+| | `sp_overall` present |
+|---|---|
+| the five, before 09-10 | 0 / 9 (**0.0%**) |
+| the five, after 09-10 | 21 / 25 (**84.0%**) |
+| control, after 09-10 | 761 / 841 (90.5%) |
+
+So the bridge works and the gap is 6.5pp, not a blackout. **A checker that
+calls a deliberately-bridged difference a defect is worse than no checker** —
+wired into `ncaaf_pipeline.yml` it would have produced five fake findings
+every night, and the real one would have read as more of the same.
+`verify_team_stat_integrity.py` now resolves through the bridge and folds
+diacritics, so `Hawai'i`/`Hawaii` and `San José State`/`San Jose State` need
+no alias row at all.
+
+NCAAF has **five** name-resolution layers: `ncaaf_team_name_aliases`,
+`ncaaf_team_aliases` (1,872 rows), `compute_margin_strength.NCAAF_ALIASES`,
+`resolve_ncaaf_results._NCAAF_ALIASES`, and the client's own fuzzy matcher.
+Consolidating them is worth doing, but it is a cleanup, not a defect.
+
+### The real defect underneath: game_id is built from team NAMES
+
+`ncaaf_game_results` ids look like `ncaaf_20260903_Akron_Wake Forest`. A feed
+sending a different spelling therefore creates a **second row for the same
+game**, with a different id, so the upsert cannot collapse it. **21 duplicate
+groups** on 2026, in three flavours:
+
+| | n | harm |
+|---|---|---|
+| both twins scored | 17 | inflates a team's game count — the denominator of every per-game rate. Virginia Tech counts **10** completed against 7 played |
+| one twin unscored | 3 | the NULL twin reads as an ungraded game forever. **This is what made 8 games look "unresolved" on 10-21** |
+| **home/away INVERTED** | **1** | a pick graded against the wrong orientation inverts the side |
+
+The inverted one is live and on the Receipts tab:
+
+```
+2026-10-10   Oklahoma @ Texas    None-None   <- jerry_reads result = 'Void'
+             Texas @ Oklahoma    27-24       <- the game, Oklahoma by 3
+```
+
+Red River is a **neutral-site** game in Dallas, so the two feeds disagree
+about who is home. `public_receipts` carries **two receipts on the same
+game_id with opposite lines** — `Texas +6.5` and `Texas -6.5` — both
+`result = NULL`, while `jerry_reads` says `Void` on a game that was played.
+
+**Not graded by hand, deliberately.** Texas lost by 3, so `-6.5` loses and
+`+6.5` wins — the two receipts disagree about the outcome and I cannot tell
+from the data which line was published. Grading the wrong one is exactly
+`feedback_grade_the_side_we_published`. Andy's call, and the fix belongs at
+the source anyway.
+
+### The fix
+1. **Stop keying `game_id` on names.** Resolve both team names through the
+   alias bridge *before* composing the id, so a spelling variant lands on the
+   existing row instead of creating a new one.
+2. **Order the pair** for neutral-site games, or key on the feed's event id,
+   so an inverted home/away cannot mint a second row.
+3. **Backfill**: merge the 21 existing groups, preferring the scored twin.
+4. Then settle Oklahoma @ Texas against the single surviving row.
+
+### <s>Original 10-21 entry (wrong)</s>
+
+<s>Five FBS teams have a full season in `ncaaf_team_stats` and zero rows in
+`ncaaf_game_results`, so their game cards can show no team stats. Needs a
+two-way alias map.</s>
+
+## B125-OLD — superseded, kept for the reasoning
+
 
 **Opened 2026-10-21** by `verify_team_stat_integrity.py`. Five FBS teams have
 a full season in `ncaaf_team_stats` and **zero rows** in
@@ -5116,7 +5195,7 @@ NFL passes clean on the same check — 32 of 32, every invariant held.
    surface), **`20261021r`** (ledger `sport_scope` labels), **`20261021s`**
    (UFC operator note), **`20261021t`** (duplicate indexes), **`20261021u`**
    (Steam Room label RPC).
-2. **B125** — NCAAF alias map, then re-run the verifier.
+2. **B125** — stop keying `ncaaf_game_results.game_id` on team names; merge the 21 duplicate groups; then settle Oklahoma @ Texas.
 3. **Ledger per-sport split** — product call. 95.9% of slips are
    single-sport; NHL is 14-8 +11.83u while the tab shows the global
    114-152 −1.94u.
