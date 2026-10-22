@@ -5126,3 +5126,72 @@ NFL passes clean on the same check — 32 of 32, every invariant held.
 6. **B124** — clear NBA's "fix is in review" banner when 1.0.3 is approved.
 7. **B5** — add `expo-updates` so client fixes stop needing a review cycle.
    Four client fixes are already queued behind this build.
+
+## B126 — positional defense as a prop weight (Andy's angle, half of it already built)
+
+**Opened 2026-10-22.** Andy: *"for props across sports, i want ot add into
+scorer so for TE yards props i wna tot wiegh the factor of opponets defense,
+how much that defense gives up to TEs ... same wiht NBA what teams egt
+dominated by PF ... just an angel we should liook at for props"*.
+
+### NFL: the data exists and the scorer is not reading it
+
+`nfl_positional_defense` is already populated — **128 rows, all 32 teams x
+QB/RB/WR/TE for 2026** — with `rec_yds_pg`, `rec_td_pg`, `targets_pg`,
+`rush_yds_pg`, `carries_pg`, `any_td_pg`, `games`. That is exactly "how much
+that defense gives up to TEs."
+
+The spread is not subtle. TE receiving yards allowed per game, 2026:
+
+| most generous | | stingiest | |
+|---|---|---|---|
+| DET | 109.0 (1.8 TE TD/g, 13.0 tgt/g) | SEA | 25.5 |
+| CIN | 90.2 | TEN | 29.2 |
+| BUF | 77.5 | LA | 29.8 |
+
+median 47.6 — a **4.3x** range from stingiest to most generous.
+
+Meanwhile every NFL prop's matchup signal reads
+`opp_col = 'def_pass_epa_allowed'` — a **team-wide** pass-defense number.
+Sampled 60 props from 10-19 onward: `opp_col` is that same team metric on
+60 of 60. So the scorer matches a TE against a blended team figure while a
+4.3x position-specific spread sits unused in the database.
+
+There is also already a slot for this. `nfl_opp_matchup_favorable` was
+**disabled on 10-21** because it tested `signals.opp_matchup`, a key that does
+not exist, and the note said it needs a measurement before being rewritten
+onto `opp_pct`/`def_top10`. This is that measurement, and position-level
+`rec_yds_pg` is a better input than either.
+
+### Two things that must not be skipped
+
+1. **`games` is 5-6.** DET's 109.0 could be one monster TE game. A raw rate
+   over five games is noise dressed as a signal — it needs shrinkage toward
+   the league mean (an empirical-Bayes prior on `targets_pg` and
+   `rec_yds_pg`), not direct use. Standing rule: every % shows n, gate n>=30.
+2. **Grade it before it gets weight.** Per
+   `feedback_slope_is_not_a_betting_rule`, state the side, the threshold and
+   the price and grade THAT: e.g. "TE reception_yds OVER where opponent
+   allows >= 1 sd above mean TE yds/g, inside -300..+150." Then
+   `signal_registry.baseline_pct` with a price-aware breakeven, Wilson CI,
+   and the both-halves gate — the same method that took the NHL board from
+   252 opinions to 17.
+
+### NBA: genuinely new, and the framing needs care
+
+No `nba_positional_defense` table exists. Two things to settle before
+building one:
+
+- **Position is fuzzy in the modern NBA.** A "PF" plays the 3 and the 5 on
+  the same night, so defense-allowed-to-PF mixes matchups that are not
+  alike. Likelier to work: opponent defensive rating allowed by **minutes-
+  weighted lineup role**, or by shot zone (allowed rim FG%, allowed corner
+  3PA) matched to the player's own shot profile, which is what actually drives
+  a points prop.
+- **NBA props are not calibrated at all yet** — zero graded rows as of
+  10-21, so there is nothing to validate a new input against until a graded
+  sample exists. Build the table and shadow it; do not weight it.
+
+Sequence: NFL first (data is there, a slot is open, and the sport has 3,754
+graded prop rows to validate against), NBA second once it has a graded
+sample.
