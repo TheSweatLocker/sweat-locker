@@ -45,13 +45,60 @@ SHARP_RECORD_EPOCH = dt.date(2026, 8, 20)   # jerry_reads sides record reset
 SPORTS = ['MLB', 'NFL', 'NCAAF', 'UFC', 'NBA', 'NHL', 'NCAAB']
 
 #: Surfaces whose unit of account spans sports, so a per-sport record is not a
-#: smaller true number — it is a meaningless one. The Ledger ships chalk
-#: parlays that intentionally pair, say, an NHL leg with an MLB leg; that
-#: combo belongs to no single sport. These report the ALL aggregate under
-#: every sport key so no caller can read a wrong-by-construction figure.
-#: Add to this set only when the SURFACE's bet itself crosses sports — not
-#: merely because a surface happens to cover several.
-CROSS_SPORT_SURFACES = {'ledger'}
+#: smaller true number — it is a meaningless one. Such a surface reports its
+#: ALL aggregate under every sport key, so no caller can read a
+#: wrong-by-construction figure. Add to this set only when the SURFACE's bet
+#: itself crosses sports — not merely because it happens to cover several.
+#:
+#: ══ 2026-10-22 · 'ledger' REMOVED. THE PREMISE WAS 4% TRUE ══
+#: Andy, 10-21: "findout why ledger says 3-3 in recupeiits for eveyr sport
+#: somehting is off there" — then "I just want the ledger accurate."
+#:
+#: The 10-08 reasoning was that a chalk parlay DELIBERATELY pairs an NHL leg
+#: with an MLB leg, so "the MLB ledger record" is a category error. Sound
+#: reasoning. Tested by reading the sport inside each LEG rather than the
+#: sport_scope label, across all 267 slips:
+#:
+#:     truly multi-sport (legs span 2+)     11   4.1%
+#:     single-sport                        256  95.9%
+#:        MLB 231 · NHL 22 · NBA 1 · NCAAF 1 · NFL 1
+#:
+#: So the per-sport record is well defined for 96% of slips. What made
+#: October look cross-sport is that 23 of the 34 rows labelled
+#: sport_scope='MULTI' were not multi-sport at all — 22 NHL-only, 1 NBA-only.
+#: Migration 20261021r corrected those labels; the conclusion drawn from them
+#: was narrower than it appeared.
+#:
+#: And the split is not a smaller version of the same number. It points the
+#: other way:
+#:     MLB    97-131  −10.68u
+#:     NHL     14-8   +11.83u
+#:     MULTI    2-9    −6.19u
+#: The one sport currently winning on the Ledger was showing a losing global
+#: record on its own tab.
+#:
+#: WHY THIS NEEDS NO BUILD, CHECKED RATHER THAN ASSUMED. The 10-08 note said
+#: the live build "hardcodes sport='MLB'", which would have made this change
+#: show those users MLB's ledger on the home card. That was already false
+#: when it was written: `git show 657496fc~1` — the shipped 1.0.2 — reads
+#: `.eq('sport', RECORD_SCOPE)` for the home Ledger card, changed on 10-04,
+#: four days before. RECORD_SCOPE is 'ALL'. So:
+#:   * home Ledger card, 1.0.2 and 1.0.3 — reads sport='ALL', UNCHANGED
+#:   * Receipts tab, both builds — keys on `${sport}|ledger|${winKey}`, so it
+#:     now shows that sport's real record instead of the global repeated
+#:
+#: The 11 genuinely multi-sport slips keep sport_scope='MULTI' and are
+#: aggregated under that key (see LEDGER_EXTRA_SCOPES). No tab reads it, so
+#: they appear only in ALL — which is correct: ALL is the total and the
+#: per-sport rows are subsets that do not sum to it. That is the honest shape
+#: for a surface where 4% of bets genuinely belong to no one sport.
+CROSS_SPORT_SURFACES: set[str] = set()
+
+#: Extra sport keys to aggregate for a given surface, beyond SPORTS + ALL.
+#: 'MULTI' is a real sport_scope value on ledger_snapshots and the only
+#: honest home for a parlay whose legs span sports. Written so the rows
+#: EXIST and can be audited, not because a client reads them.
+LEDGER_EXTRA_SCOPES = {'ledger': ('MULTI',)}
 WINDOWS = ['mtd', 'd7', 'd30', 'lifetime']
 TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}
 
@@ -1582,7 +1629,9 @@ def build_rows():
             continue
         computed_ok.add(surface_name)
         print(f'  {surface_name}: {len(rows)} graded picks', file=sys.stderr)
-        for sport in SPORTS + ['ALL']:
+        _scopes = (SPORTS + ['ALL']
+                   + list(LEDGER_EXTRA_SCOPES.get(surface_name, ())))
+        for sport in _scopes:
             for wname, wrange in windows.items():
                 # ══ 2026-10-08 · A CROSS-SPORT SURFACE HAS NO PER-SPORT SPLIT ══
                 # Andy: the app showed the Ledger as 1-0 / +1.15u for October
