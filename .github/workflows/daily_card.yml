@@ -168,6 +168,24 @@ jobs:
             --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "compute_surface_records.py" python compute_surface_records.py
+          # 2026-10-21 - Andy: "make sure it updates record by itself if we
+          # are going to put record". The UFC banner quotes a live W-L ("UFC
+          # reads are 11-7 (61.1%) across 18 graded picks") and
+          # refresh_calibration_notes.py builds that sentence out of
+          # surface_records - but it was in NO workflow. It ran only when
+          # someone ran it by hand, so the record in front of users was
+          # frozen at whenever that last was. A banner quoting a number
+          # nobody refreshes is worse than a banner with no number in it.
+          #
+          # Here rather than in ufc_pipeline.yml: the script owns NHL, NCAAB
+          # and UFC (OWNED in the module), so it belongs on the cross-sport
+          # cadence. Immediately AFTER compute_surface_records and in the
+          # same step, so it reads the records this run just wrote instead of
+          # yesterday's. It touches only sports in OWNED and leaves
+          # operator-written copy alone, so it cannot overwrite a
+          # hand-authored banner - NBA's "fix is in review" message is safe.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "refresh_calibration_notes.py" python refresh_calibration_notes.py
 
       # POTD first: generate_sweat_card reads best_bet_<date> out of
       # jerry_cache, so composing the card before the anchor runs gives a
