@@ -1,0 +1,62 @@
+-- == 2026-10-22 - THE LINE-STALENESS AUDITOR IS BLIND, AND I BLINDED IT ==
+--
+-- ANDY: "thoguths on Bears pick for tinight says -1.5 but looks like line
+-- moved but play still says -1.5 Chicago".
+--
+-- He is right, and the thing that exists to catch exactly this could not see
+-- it. audit_published_lines IS scheduled for NFL and NCAAF, and today it
+-- reports:
+--
+--     ALL SPORTS   ok 4 (2.4%)   no data 160 (97.6%)
+--     [market_line] line_history page failed 500 after 0 rows - PARTIAL
+--
+-- It can price 4 of 164 matchups. So the Bears line moving 1.5 -> 3.0 while
+-- the published pick stayed at -1.5 went unflagged.
+--
+-- ── THIS IS MY REGRESSION, FROM 10-21 ───────────────────────────────────
+-- market_line._page used to walk OFFSET 0,1000,...,119000. OFFSET is not a
+-- seek: Postgres discards every row before the offset on every page, so the
+-- total cost is quadratic in page count - get_io_audit measured one caller
+-- at 137 GiB read across 472 calls. I replaced it with a keyset cursor on
+-- `id`, which fixed that and introduced this.
+--
+-- Measured just now, walking the auditor's own query:
+--
+--     page 1  (no id filter)      1000 rows   0.5s
+--     page 2  (id > cursor)       1000 rows   4.7s
+--     page 3  (id > cursor)       1000 rows   4.6s
+--
+-- Page 1 is fast because `sport`/`market`/`commence_time` can be filtered
+-- and the 1000-row limit stops the scan early. Every later page adds
+-- `id > cursor` and orders by `id`, and there is NO index covering those
+-- filters together - so each page re-scans and deep pages reach the
+-- statement timeout, which PostgREST returns as a 500. The caller then
+-- prints PARTIAL and the auditor sees almost nothing.
+--
+-- The keyset was still the right call; what was missing is an index that
+-- makes the filter selective BEFORE the sort. The filter shape is fixed and
+-- identical in every caller of fetch_market:
+--
+--     sport = ? AND market = ? AND commence_time >= ?   ORDER BY id
+--
+-- so (sport, market, commence_time, id) serves the whole thing: equality on
+-- the first two, a range on the third, and `id` trailing so the ORDER BY is
+-- satisfied by the index rather than by a sort of the matched set.
+--
+-- ── WHY NOT JUST REVERT TO OFFSET ───────────────────────────────────────
+-- Because OFFSET was the single largest line_history consumer in the IO
+-- audit and the quadratic cost comes back with it. And it had a correctness
+-- bug on top: it paginated with NO ORDER BY, and OFFSET without ORDER BY has
+-- no defined row order, so a row could be returned twice or skipped
+-- silently. The fix is to make the keyset cheap, not to go back to a walk
+-- that was both slower and wrong.
+--
+-- CONCURRENTLY, so it cannot take a write lock on a 3.6M-row table that the
+-- pollers are writing to every few minutes. That is also why this file
+-- contains exactly ONE statement: more than one puts it in an implicit
+-- transaction, and CREATE INDEX CONCURRENTLY cannot run inside one (the
+-- error 20261021j hit). No NOTIFY either - an index is not a schema change
+-- PostgREST caches.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS line_history_sport_market_commence_id_idx
+    ON public.line_history (sport, market, commence_time, id);
