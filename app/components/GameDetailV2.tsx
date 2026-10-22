@@ -1502,10 +1502,49 @@ function ScoreRange({ctx, awayTeam, homeTeam}: any) {
     if (!isFinite(h) || !isFinite(a)) return;
     preds.push({name, a, h});
   };
+  // ══ 2026-10-22 · projected_spread's SIGN MEANS THE OPPOSITE BY SPORT ══
+  // Andy's CLE @ PHI QA. addPred treats its margin as HOME MINUS AWAY
+  // (h = (t+m)/2). That is right for NHL / NFL / NCAAF and BACKWARDS for
+  // NBA, measured, not assumed:
+  //
+  //   NBA    sign(projected_spread) vs projected_home_wp   109 of 109 rows
+  //          are NEGATIVE when the home team is favoured -> BETTING notation
+  //   NHL    (t+m)/2 == stored projected_home_goals on 202 of 202 rows
+  //          -> MARGIN notation, addPred already correct
+  //   NCAAF  corr(projected_spread, REAL home margin) +0.463 (n=392)
+  //   NFL    same test +0.300 (n=93)            -> both MARGIN notation
+  //
+  // Correlating against close_spread instead gives the OPPOSITE answer for
+  // NFL, because close_spread's own convention is inverted between NFL and
+  // NCAAF (project_close_spread_sign_bug_914). The market is not a usable
+  // reference for this; the real margin and the row's own win probability
+  // are.
+  //
+  // WHAT IT LOOKED LIKE. On CLE @ PHI, v3 (PHI by 1.8) and MC (CLE by 2.26)
+  // DISAGREE on the winner. Rendered through one formula they both became
+  // "CLE", and the card showed CLE 116.0-116.4 / PHI 114.1-114.2 — a tight
+  // range implying two models agreeing, which is the opposite of the truth.
+  // On DEN @ OKC the same bug put OKC at 111.3 and DEN at 118.7 with OKC a
+  // 7.4-point favourite.
+  //
+  // Rather than switch on sport (ctx has no `sport` column on NBA rows, so
+  // that switch would silently do nothing), the sign is DERIVED FROM THE ROW:
+  // the win probability says who is favoured and the spread supplies only the
+  // magnitude. Sports without projected_home_wp (NFL/NCAAF/MLB) keep the
+  // value untouched, which is already correct for them.
+  const _homeMargin = (mgn: any, wp: any) => {
+    const m = parseFloat(String(mgn));
+    if (!isFinite(m)) return mgn;
+    const p = wp == null ? NaN : parseFloat(String(wp));
+    if (!isFinite(p) || p === 0.5) return m;   // no opinion -> leave as stored
+    return p > 0.5 ? Math.abs(m) : -Math.abs(m);
+  };
+
   // MLB lens columns
   addPred('Panel', ctx?.panel_implied_total, ctx?.panel_implied_margin);
   addPred('Jerry', ctx?.jerry_pred_total, ctx?.jerry_pred_spread);
-  addPred('v3',    ctx?.projected_total,   ctx?.projected_spread);
+  addPred('v3',    ctx?.projected_total,
+                   _homeMargin(ctx?.projected_spread, ctx?.projected_home_wp));
   // 2026-09-16: v4 lens with fallback. MLB writes model_pred_spread /
   // model_pred_total; NFL + NCAAF write v4_spread / v4_total. Prior
   // MLB-only column read silently omitted the v4 lens from
@@ -8967,6 +9006,37 @@ function AllBookLinesPanel({bookmakers, homeTeam, awayTeam, onAddParlayLeg}: any
 // different column names; NCAAF has SP+ instead of Panel. MC + Jerry
 // numeric rows hidden for football (Jerry emits pick+read, not numbers;
 // MC is MLB-only).
+// Probe several key names for one quantity. The Monte Carlo writers were
+// built per sport and never agreed on a vocabulary, so a single hardcoded
+// name is blank on at least two sports out of three.
+// Home-minus-away margin derived from the row's own win probability. The
+// spread supplies magnitude only, so a sport that stores a betting spread and
+// a sport that stores a margin both come out meaning the same thing. Rows
+// without a win probability are returned untouched.
+function _normMargin(mgn: any, wp: any) {
+  const m = parseFloat(String(mgn));
+  if (!isFinite(m)) return mgn;
+  const w = wp == null ? NaN : parseFloat(String(wp));
+  if (!isFinite(w) || w === 0.5) return m;
+  return w > 0.5 ? Math.abs(m) : -Math.abs(m);
+}
+
+function _pick(obj: any, ...names: string[]) {
+  for (const n of names) {
+    const v = obj?.[n];
+    if (v != null && isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+// Complement of a probability, and null (not 1) when there is nothing to
+// complement - a missing input must stay missing rather than render 100%.
+function _comp(v: any) {
+  return v == null || !isFinite(Number(v)) ? null : 1 - Number(v);
+}
+function _pct(v: any) {
+  return v == null || !isFinite(Number(v)) ? '—' : `${(Number(v) * 100).toFixed(1)}%`;
+}
+
 function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
   const mc = safeJSON(ctx?.mc_probabilities) || {};
   const isFootball = sport === 'NFL' || sport === 'NCAAF';
@@ -9016,11 +9086,33 @@ function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
       ['Jerry', ctx?.jerry_pred_spread, ctx?.jerry_pred_total,
         p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'a'),
         p2(ctx?.jerry_pred_total, ctx?.jerry_pred_spread, 'h')],
-      ['v3', ctx?.projected_spread, ctx?.projected_total, null, null],
+      // ══ 2026-10-22 · THE MARGIN COLUMN HELD TWO OPPOSITE CONVENTIONS ══
+      // v3 writes a BETTING spread on NBA (negative = home favoured, 109 of
+      // 109 rows against projected_home_wp) while MC writes a true MARGIN
+      // (positive = home favoured, confirmed on DEN @ OKC: mc_expected_margin
+      // +7.18 with mc_p_home 0.669). Printed in one column under one "Margin"
+      // header, -1.80 and -2.23 looked like two models agreeing when they
+      // pick OPPOSITE SIDES. Normalised to home-minus-away using the row's
+      // own win probability, so the column means one thing.
+      ['v3', _normMargin(ctx?.projected_spread, ctx?.projected_home_wp),
+             ctx?.projected_total, null, null],
       ['v4', ctx?.model_pred_spread, ctx?.model_pred_total, null, null],
       ['MC', mc.mc_expected_margin, mc.mc_expected_total ?? mc.mc_mean_total, null, null],
     ];
   }
+
+  // ══ 2026-10-22 · A ROW THAT CAN NEVER HAVE A NUMBER IS NOISE ══
+  // Andy: "numbers model dump ... blank" and "why is v4 not reporting".
+  // v4 IS NOT REPORTING BECAUSE IT DOES NOT EXIST FOR NBA: nba_game_context
+  // has 116 columns and not one of model_pred_*, v4_*, panel_* or
+  // jerry_pred_* is among them. Panel, Jerry and v4 were therefore three
+  // permanent em-dashes on every NBA card, which reads as "our models are
+  // broken" rather than "this sport runs two models".
+  //
+  // Drop rows with no margin AND no total, so the table lists the models
+  // this sport actually has. A model that exists but has not run tonight
+  // still shows, because that is a real and different statement.
+  rows = rows.filter((r: any) => r && (r[1] != null || r[2] != null));
 
   return (
     <View style={{gap: 12}}>
@@ -9048,12 +9140,35 @@ function NumbersPanel({ctx, awayTeam, homeTeam, sport}: any) {
       {!isFootball && (
         <>
           <Text style={styles.numbersHeading}>MC Probabilities (10k sims)</Text>
+          {/* ══ 2026-10-22 · EVERY SIMULATOR NAMES ITS OUTPUT DIFFERENTLY ══
+              Andy's CLE @ PHI QA: "probabilities blank". They were blank on
+              EVERY sport, including MLB, because this grid read
+              `mc_home_win_prob` and NOTHING writes that name. Measured key
+              sets in mc_probabilities:
+
+                MLB   mc_p_home_win  mc_p_away_win  mc_p_over  mc_p_under
+                      mc_mean_total  mc_std_total   mc_expected_margin
+                NBA   mc_p_home      mc_p_away      mc_p_over_line
+                      mc_expected_total  mc_stddev_margin  mc_home_mu
+                NHL   mc_p_home      mc_p_over      mc_expected_total
+
+              So "Home win prob" was dead on all three, and NBA matched on
+              none of the six tiles while mc_p_home = 0.4473 sat in the row.
+
+              Each tile now probes the known names in order. Two deliberate
+              refusals:
+                * NBA's mc_stddev_margin is NOT mapped to "Std total" — it is
+                  the spread of the MARGIN, a different measure on a
+                  different scale, and pairing it under a total's label is
+                  the same error as the NFL off/def EPA pair.
+                * Under/Away are DERIVED from their complement only when the
+                  complement exists, never defaulted to 0. */}
           <View style={styles.numbersMCGrid}>
-            <MCTile label="Home win prob" value={mc.mc_home_win_prob != null ? `${(mc.mc_home_win_prob * 100).toFixed(1)}%` : '—'} />
-            <MCTile label="Away win prob" value={mc.mc_away_win_prob != null ? `${(mc.mc_away_win_prob * 100).toFixed(1)}%` : '—'} />
-            <MCTile label="Over prob" value={mc.mc_p_over != null ? `${(mc.mc_p_over * 100).toFixed(1)}%` : '—'} />
-            <MCTile label="Under prob" value={mc.mc_p_under != null ? `${(mc.mc_p_under * 100).toFixed(1)}%` : '—'} />
-            <MCTile label="Mean total" value={mc.mc_mean_total != null ? f(mc.mc_mean_total, 2) : '—'} />
+            <MCTile label="Home win prob" value={_pct(_pick(mc, 'mc_p_home_win', 'mc_p_home'))} />
+            <MCTile label="Away win prob" value={_pct(_pick(mc, 'mc_p_away_win', 'mc_p_away') ?? _comp(_pick(mc, 'mc_p_home_win', 'mc_p_home')))} />
+            <MCTile label="Over prob" value={_pct(_pick(mc, 'mc_p_over', 'mc_p_over_line'))} />
+            <MCTile label="Under prob" value={_pct(_pick(mc, 'mc_p_under') ?? _comp(_pick(mc, 'mc_p_over', 'mc_p_over_line')))} />
+            <MCTile label="Mean total" value={(() => { const v = _pick(mc, 'mc_mean_total', 'mc_expected_total'); return v != null ? f(v, 2) : '—'; })()} />
             <MCTile label="Std total" value={mc.mc_std_total != null ? f(mc.mc_std_total, 2) : '—'} />
             {sport === 'MLB' && <MCTile label="NRFI prob" value={mc.mc_p_nrfi != null ? `${(mc.mc_p_nrfi * 100).toFixed(1)}%` : '—'} />}
             {sport === 'MLB' && <MCTile label="YRFI prob" value={mc.mc_p_yrfi != null ? `${(mc.mc_p_yrfi * 100).toFixed(1)}%` : '—'} />}

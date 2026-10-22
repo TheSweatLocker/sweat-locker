@@ -6163,7 +6163,36 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
           // starters_out 15 non-empty sides of 56, and nba_injuries has rows.
           + 'home_abbrev,away_abbrev,'
           + 'home_starters_out,away_starters_out,'
-          + 'home_injury_impact,away_injury_impact')
+          + 'home_injury_impact,away_injury_impact,'
+          // ══ 2026-10-22 · FOUR MORE NAMES, SAME FAILURE AS THE FIVE ABOVE ══
+          // Andy's CLE @ PHI QA: "no opening line on line movement portion".
+          // The Line Movement strip rendered "— -> -2.5 / no open" three
+          // times while the row held open_spread -2.5, open_total 235.5 and
+          // home_ml_open -162 -> close -142. The total had MOVED a full point
+          // and the ML had moved 20 cents, and the card said there was no
+          // opener. GameDetailV2 reads these names correctly; this select
+          // simply never asked for them, so they arrived undefined and the
+          // strip took its "no opening line captured" path.
+          //
+          // That is the identical bug the comment above describes, five
+          // columns later. Adding a targeted name to a targeted select is not
+          // a fix for a class of bug that recurs every time a card learns to
+          // read a new column.
+          //
+          // Coverage verified before adding, because a name that does not
+          // exist 400s the WHOLE select and would blank all of NBA: over the
+          // 43 forward rows open_spread 23, open_total 23, home/away_ml_open
+          // 13, projected_home_wp 43. All four return 200. Partial coverage
+          // is fine - "no open" stays honest on the rows that genuinely have
+          // no opener.
+          //
+          // projected_home_wp comes along because the Predicted Score and
+          // Numbers panels now derive the v3 margin's SIGN from it: NBA
+          // stores projected_spread as a betting spread (negative = home
+          // favoured) while MC stores a true margin, and without the win
+          // probability the two cannot be put in one column.
+          + 'open_spread,open_total,home_ml_open,away_ml_open,'
+          + 'projected_home_wp')
         .gte('game_date', new Date(Date.now() - 3*24*3600*1000).toISOString().split('T')[0])
         .limit(500);
       if(nbaCtxResult?.data && nbaCtxResult.data.length > 0) {
