@@ -281,6 +281,133 @@ def sync_source(recv_source: str, apply: bool) -> dict:
     return {'stale': len(stale), 'conflict': len(conflict), 'patched': patched}
 
 
+# ══ 2026-10-22 · THE OTHER HALF OF public_receipts WAS NEVER SYNCED ══
+# Andy: "seeing Laker game on sweat card as undragded, when they covered the
+# 5.5".
+#
+# The Lakers read graded Win, refresh_card_grades wrote Win into the card,
+# and the Sweat Card RECEIPT still said NULL. Cause: public_receipts carries
+# five source_table values and SOURCES above covers three. The rest were
+# graded in their own home and the receipt never picked it up:
+#
+#   source_table                 10-21 ungraded   covered before?
+#   jerry_reads                        0           yes
+#   ledger_snapshots                   0           yes
+#   prop_jerry_reads                   0           yes
+#   jerry_cache.sweat_card             1           NO  <- the Lakers
+#   jerry_cache.sharp_card             1           NO
+#   daily_best_bet_history             2           NO  <- POTD, graded Win
+#   line_snapshot (fade)               1           NO
+#   daily_degen                        1           NO
+#
+# The comment above SOURCES says jerry_cache.* "is a cache blob rather than a
+# table", which is true and is why it needs its own pass rather than a row in
+# that dict: the grade lives inside a JSON list keyed by date, not in a
+# column.
+#
+# TWO LISTS IN ONE BLOB, ONE OF THEM STALE. sweat_card_<date>.data holds the
+# same pick in `football_picks` AND in `unified_top_picks`, and on 10-21 the
+# Lakers entry had result='Win' in the first and NO result in the second.
+# refresh_card_grades writes football_picks. Reading the wrong list would
+# have reported the pick as still ungraded and looked like this fix failed.
+# sharp_card is deliberately NOT here. Its blob
+# (jerry_cache.sharp_card_<date>.data) holds `items[]` with conviction, line,
+# odds, pick, tier - and NO result field at all. There is nothing to read, so
+# listing it would make this pass examine 300+ receipts and grade none,
+# looking like a working sync. Those receipts are filled by
+# reconcile_receipt_results copying the grade from a sibling surface that
+# published the same bet, which is how the 10-21 Memphis sharp_card receipt
+# got its WIN.
+BLOB_SOURCES = {
+    'jerry_cache.sweat_card': 'sweat_card',
+}
+
+
+def sync_blob_sources(apply: bool) -> dict:
+    """Grade card/POTD receipts from the places those grades actually live.
+
+    Keyed exactly as the receipt stores it, so no guessing:
+      * card receipts  source_id = '<market>:<game_id>'  e.g. 'rl:401909092'
+      * POTD receipts  source_id = 'potd:<bet_date>'
+    """
+    stale, conflict, patched = [], 0, 0
+    recs = [r for r in paged('public_receipts', {'select': '*'})
+            if r.get('source_table') in BLOB_SOURCES
+            or r.get('source_table') == 'daily_best_bet_history']
+    # One fetch per distinct date, not per receipt.
+    blobs: dict[str, dict] = {}
+    potd: dict[str, str] = {}
+    for r in recs:
+        gd = str(r.get('game_date'))[:10]
+        st = r.get('source_table')
+        if st in BLOB_SOURCES and (key := f'{BLOB_SOURCES[st]}_{gd}') not in blobs:
+            rows = paged('jerry_cache', {'select': 'data',
+                                         'cache_key': f'eq.{key}'})
+            blobs[key] = (rows[0].get('data') or {}) if rows else {}
+    for r in recs:
+        if r.get('source_table') == 'daily_best_bet_history':
+            sid = str(r.get('source_id') or '')
+            day = sid.split(':', 1)[1] if ':' in sid else str(
+                r.get('game_date'))[:10]
+            if day not in potd:
+                # select='*', not a named list. Naming 'graded_at' here
+                # returned 400 on EVERY POTD fetch - that column does not
+                # exist on this table - which is the exact trap the comment
+                # above sync_source warns about, and I walked into it the
+                # same day I read it.
+                rows = paged('daily_best_bet_history',
+                             {'select': '*', 'bet_date': f'eq.{day}'})
+                potd[day] = (rows[0].get('result') if rows else None)
+            src_result = potd.get(day)
+        else:
+            key = f'{BLOB_SOURCES[r["source_table"]]}_{str(r.get("game_date"))[:10]}'
+            blob = blobs.get(key) or {}
+            # football_picks ONLY - see the stale-list note above.
+            want = str(r.get('source_id') or '')
+            src_result = None
+            for x in (blob.get('football_picks') or []):
+                if not isinstance(x, dict):
+                    continue
+                if f'{x.get("type")}:{x.get("game_id")}' == want:
+                    src_result = x.get('result')
+                    break
+            if src_result is None:
+                for x in (blob.get('top_8') or []):
+                    if isinstance(x, dict) and str(x.get('label') or '') == \
+                            str(r.get('pick_label') or ''):
+                        src_result = x.get('result')
+                        break
+        exp = _RMAP.get(str(src_result or '').strip().lower())
+        if not exp:
+            continue
+        have = _RMAP.get(str(r.get('result') or '').strip().lower())
+        if have is None:
+            stale.append((r, exp))
+        elif have != exp:
+            conflict += 1
+            print(f'    ⚠ CONFLICT receipt {r["id"]} {r.get("game_date")} '
+                  f'{r.get("source_table")} {r.get("pick_label")!r} '
+                  f'receipt={have} source={exp} — NOT patched')
+    print(f'  blob/POTD sources: {len(recs)} receipt(s) examined, '
+          f'{len(stale)} stale, {conflict} conflict')
+    for r, exp in stale[-10:]:
+        print(f'    {r["game_date"]} receipt={r["id"]} '
+              f'{r.get("source_table")} {str(r.get("pick_label"))[:28]!r} '
+              f'NULL -> {exp}')
+    if apply:
+        for r, exp in stale:
+            pr = requests.patch(
+                f'{SB}/rest/v1/public_receipts?id=eq.{r["id"]}',
+                headers=H_WRITE, json={'result': exp}, timeout=30)
+            if pr.status_code in (200, 204):
+                patched += 1
+            else:
+                print(f'    ⚠ patch receipt {r["id"]} {pr.status_code}: '
+                      f'{pr.text[:200]}')
+        print(f'  patched {patched}/{len(stale)}')
+    return {'stale': len(stale), 'conflict': conflict, 'patched': patched}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--source', choices=list(SOURCES) + ['all'], default='all')
@@ -296,6 +423,13 @@ def main() -> None:
         r = sync_source(t, a.apply)
         for k in tot:
             tot[k] += r[k]
+    # 2026-10-22: the blob/POTD sources, which SOURCES cannot express.
+    # Runs on --source all only; naming one tabular source means you want
+    # that source.
+    if a.source == 'all':
+        rb = sync_blob_sources(a.apply)
+        for k in tot:
+            tot[k] += rb[k]
     print(f'\nTOTAL  stale={tot["stale"]}  conflict={tot["conflict"]}  '
           f'patched={tot["patched"]}')
     if tot['conflict']:

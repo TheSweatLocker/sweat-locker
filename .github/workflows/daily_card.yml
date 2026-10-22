@@ -342,9 +342,30 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
+          # 2026-10-22 · --source ledger_snapshots -> all.
+          # Andy: "seeing Laker game on sweat card as undragded, when they
+          # covered the 5.5". The Lakers read graded Win, refresh_card_grades
+          # wrote Win into the card, and the Sweat Card RECEIPT stayed NULL -
+          # because this step, the only scheduled caller, synced ONE source.
+          # jerry_reads, prop_jerry_reads and the card/POTD blob pass were
+          # never run on a schedule at all, so every surface except the
+          # Ledger depended on someone running this by hand.
+          #
+          # `all` covers the three tabular sources plus the blob/POTD pass
+          # (which only runs under `all`, deliberately - naming one tabular
+          # source means you want that source).
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
-            --label "sync_receipt_grades.py (ledger)" \
-            python sync_receipt_grades.py --source ledger_snapshots --apply || true
+            --label "sync_receipt_grades.py (all sources)" \
+            python sync_receipt_grades.py --source all --apply || true
+          # And the surfaces whose bets NOBODY else publishes. The Fade's
+          # whole point is taking a side no other surface took, so there is
+          # never a sibling receipt to copy a grade from and
+          # reconcile_receipt_results skips any group of one. These grade
+          # straight from the final score: 'Under 229.5' on a 128-110 game is
+          # a LOSS and needs no source row to say so.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "grade_game_market_receipts.py" \
+            python grade_game_market_receipts.py --days 30 --apply || true
 
       - name: Price the receipts just published
         continue-on-error: true
