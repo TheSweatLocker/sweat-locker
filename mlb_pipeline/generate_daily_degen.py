@@ -526,8 +526,25 @@ def extract_leg_candidates(games, props):
             except (TypeError, ValueError): pass
         # Odds label: use real if known, otherwise stamped placeholder
         emit_odds = int(real_odds) if real_odds is not None else -150
+        # ══ 2026-10-22 · STAMP THE SPORT ON EVERY LEG ══
+        # Andy: "how do we open up Daily Degne and Ladder to all sports".
+        # The Degen has built multi-sport slips since 10-08, but measured
+        # across the last 40 slips, 121 of 140 legs carried NO `sport` key -
+        # only the cross-sport game bridge (~line 363) stamped it. The prop,
+        # NRFI, ML and TOTAL constructors never did.
+        #
+        # That was survivable while every unstamped leg was MLB: the
+        # resolver defaults a sport-less leg to MLB and was right by
+        # accident. It stops being right the moment an unstamped NFL prop
+        # leg appears - resolve_daily_degen would look it up in
+        # mlb_pipeline_props, find nothing, and sit Pending forever, which
+        # is exactly the failure just fixed for the ML/RL legs.
+        #
+        # fetch_pipeline_props already sets row['sport'] per table, so the
+        # value is right here and was simply not carried onto the leg.
         candidates.append({
             'type': 'PROP',
+            'sport': (p.get('sport') or 'MLB'),
             'sub_type': p.get('prop_type'),
             'matchup': p.get('matchup'),
             'game_id': p.get('game_id'),
@@ -651,7 +668,11 @@ def extract_leg_candidates(games, props):
 
         seen_nrfi_games.add(gid)
         candidates.append({
+            # NRFI/YRFI is baseball by definition - there is no first
+            # inning anywhere else - so this is MLB, stated rather than
+            # left to a default.
             'type': 'NRFI',
+            'sport': 'MLB',
             'sub_type': sub_type,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'game_id': gid,
@@ -761,6 +782,7 @@ def extract_leg_candidates(games, props):
 
         candidates.append({
             'type': 'ML',
+            'sport': (g.get('sport') or 'MLB'),
             'sub_type': sub_type,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'game_id': g.get('game_id'),
@@ -824,6 +846,7 @@ def extract_leg_candidates(games, props):
         conviction = min(80, 55 + int(abs_d * 6))
         candidates.append({
             'type': 'TOTAL',
+            'sport': (g.get('sport') or 'MLB'),
             'sub_type': direction,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'game_id': g.get('game_id'),
