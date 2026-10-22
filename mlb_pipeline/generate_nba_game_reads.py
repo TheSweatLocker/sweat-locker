@@ -109,6 +109,73 @@ def sb_get(path, params=None):
     return r.json() if r.status_code == 200 else []
 
 
+#: Cache so one slate costs one request per team rather than one per game.
+_SIT_CACHE: dict = {}
+
+
+def situational_l10(team: str, season: str, market: str):
+    """Last-10 as a "W-L" STRING from the same table the app card reads.
+
+    ══ 2026-10-22 · THE READ AND THE CARD WERE QUOTING DIFFERENT NUMBERS ══
+    This payload used to pass ctx['home_ats_last10'] - a BARE WINS COUNT with
+    no losses beside it. Two things were wrong with that:
+
+      1. No denominator. The model received `4` under a key saying "last10"
+         and had to supply the rest itself, so it could write "4-6 ATS" when
+         the row's own losses column said 2. Measured over the 77 NBA context
+         rows, the ATS wins+losses pair sums to 10 on FOUR of them; the rest
+         sum to 0-9. The field is a last-N with a varying N, labelled last-10.
+
+      2. Wrong number. nba_game_context's own last-10 disagrees with
+         team_situational_records on 240 of 310 comparisons (77%) - e.g. the
+         Knicks at ctx 5-5 ML against the matview's 9-1.
+
+    The app's Situational Records card reads team_situational_records, and
+    every figure on it verified correct against that table. So the read now
+    sources the same place: the prose and the card under it cannot disagree,
+    and the model is handed a finished record instead of half of one.
+
+    EARLY SEASON. In October the current season has one or two games, so a
+    "last 10" from it is a last-1. The app card handles that by falling back
+    to the prior season and SAYING SO on screen ("2026-27 sample too thin -
+    prior season shown"). This does the same and carries the season in the
+    string itself, because a prior-season record handed over unlabelled would
+    be read as current form - the stat-integrity failure, not a rounding one.
+
+    Returns None when neither season has a row, so a thin sample is an ABSENT
+    key rather than a fabricated record.
+    """
+    def _fetch(seas):
+        key = (seas, market)
+        if key not in _SIT_CACHE:
+            rows = sb_get('team_situational_records',
+                          {'select': '*', 'sport': 'eq.NBA',
+                           'season': f'eq.{seas}', 'market': f'eq.{market}',
+                           'filter': 'eq.l10', 'limit': '400'})
+            _SIT_CACHE[key] = {r.get('team'): r for r in rows}
+        r = _SIT_CACHE[key].get(team)
+        if not r or r.get('wins') is None or r.get('losses') is None:
+            return None, 0
+        rec = f"{r['wins']}-{r['losses']}"
+        if r.get('pushes'):
+            rec += f"-{r['pushes']}"
+        return rec, (r['wins'] + r['losses'] + (r.get('pushes') or 0))
+
+    rec, n = _fetch(season)
+    if rec and n >= 10:
+        return f'{rec} (last 10, {season})'
+    # Thin or missing current season -> prior season, explicitly labelled.
+    try:
+        start = int(str(season).split('-')[0])
+        prior = f'{start - 1}-{str(start)[-2:]}'
+    except (ValueError, IndexError):
+        return f'{rec} (last {n}, {season})' if rec else None
+    prec, pn = _fetch(prior)
+    if prec and pn:
+        return f'{prec} (last 10, {prior} - {season} sample too thin)'
+    return f'{rec} (last {n}, {season})' if rec else None
+
+
 def load_templates():
     """NBA has its own active game_read_rules row — verified 2026-10-10, so
     unlike NCAAB this needs no cross-sport fallback."""
@@ -266,8 +333,13 @@ def build_struct(ctx):
             'away_is_b2b': ctx.get('away_is_b2b'),
             'home_record': ctx.get('home_record'),
             'away_record': ctx.get('away_record'),
-            'home_ats_last10': ctx.get('home_ats_last10'),
-            'away_ats_last10': ctx.get('away_ats_last10'),
+            # "W-L" strings from team_situational_records - the same table
+            # the app's Situational Records card reads - so the prose and the
+            # card cannot quote different records. See situational_l10().
+            'home_ats_last10': situational_l10(home, ctx.get('season'), 'spread'),
+            'away_ats_last10': situational_l10(away, ctx.get('season'), 'spread'),
+            'home_ml_last10': situational_l10(home, ctx.get('season'), 'ml'),
+            'away_ml_last10': situational_l10(away, ctx.get('season'), 'ml'),
             'home_covers_as_fav_pct': ctx.get('home_covers_as_fav_pct'),
             'away_covers_as_dog_pct': ctx.get('away_covers_as_dog_pct'),
         },
