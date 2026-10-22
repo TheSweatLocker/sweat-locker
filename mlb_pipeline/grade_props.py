@@ -311,9 +311,14 @@ def _norm_name(name) -> str:
     return ' '.join(n.replace('.', '').replace("'", '').lower().split())
 
 
-def fetch_player_stats_for_date(date_str: str) -> dict:
-    """Return {normalized_name: {ks, bb, er, h_pit, outs, h_bat}} for
-    every player who appeared in an MLB game on date_str."""
+def fetch_player_stats_for_date(date_str: str) -> tuple[dict, int, set]:
+    """Stats, game count and postponed matchups for an MLB date.
+
+    Returns THREE values: ({normalized_name: {ks, bb, er, h_pit, outs,
+    h_bat}}, n_games, postponed_matchups). The third was added 2026-09-23
+    and the annotation still said `-> dict`; grade_ledger_snapshots unpacked
+    two and failed silently for a month. Keep the signature and the
+    annotation in step, and prefer `a, b, *rest =` at call sites."""
     sched = json.load(urllib.request.urlopen(
         f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}', timeout=15))
     game_pks = []

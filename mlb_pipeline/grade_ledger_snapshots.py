@@ -109,12 +109,174 @@ _PROP_MARKET_STAT = {
 }
 
 
+#: Suffixes the boxscore and the odds feed disagree about. The MLB Stats API
+#: carries 'Rafael Flores Jr'; the props row that produced the ledger leg
+#: says 'Rafael Flores'. Stripping them is only safe behind a UNIQUENESS
+#: check, because a father and son can both be in the league.
+_NAME_SUFFIXES = {'jr', 'sr', 'ii', 'iii', 'iv', 'v'}
+
+
+def _strip_suffix(key: str) -> str:
+    parts = [w for w in key.split() if w]
+    while len(parts) > 2 and parts[-1] in _NAME_SUFFIXES:
+        parts.pop()
+    return ' '.join(parts)
+
+
+def _lookup_player_stats(player_stats: dict, player_name: str):
+    """Find a player in the boxscore map without joining on a raw name.
+
+    Three steps, each stricter than a substring match:
+
+      1. grade_props._norm_name on BOTH sides. That function already folds
+         accents, drops periods, apostrophes and the odds feed's '(2002)'
+         disambiguator - it was written for exactly this mismatch on
+         2026-09-23 and this module simply never used it. 'Victor Mesa Jr.'
+         -> 'victor mesa jr' matches the boxscore key that `.lower()` missed
+         by one period.
+      2. generational suffix stripped from both sides, accepted ONLY when it
+         resolves to a single candidate. 'Rafael Flores' finds 'rafael
+         flores jr' this way; a 'Smith Jr' with two Smiths in the map finds
+         nothing and falls through, which is the outcome we want.
+      3. give up. An unmatched name returns None and the leg grades 'NR',
+         which leaves the slip ungraded rather than guessing.
+
+    Never matches on last name alone. A wrong player grades a real bet the
+    wrong way round, and that is worse than an ungraded slip.
+    """
+    if not player_stats or not player_name:
+        return None
+    try:
+        from grade_props import _norm_name
+    except Exception:
+        _norm_name = lambda n: ' '.join(str(n or '').replace('.', '')
+                                        .replace("'", '').lower().split())
+    want = _norm_name(player_name)
+    if not want:
+        return None
+    normed = {}
+    for k, v in player_stats.items():
+        normed.setdefault(_norm_name(k), v)
+    hit = normed.get(want)
+    if hit is not None:
+        return hit
+    want_bare = _strip_suffix(want)
+    cands = [v for k, v in normed.items() if _strip_suffix(k) == want_bare]
+    if len(cands) == 1:
+        return cands[0]
+    if len(cands) > 1:
+        print(f'    {player_name}: {len(cands)} boxscore names collapse to '
+              f'"{want_bare}" - refusing to guess', file=sys.stderr)
+    return None
+
+# ── grading a prop leg from the row it came FROM (2026-10-21) ─────────────
+# Ledger prop legs are built by generate_ledger.fetch_picks, which reads the
+# per-sport *_pipeline_props tables. Those tables grade themselves nightly.
+# So the leg and its result live in the same row, and the honest way to grade
+# the leg is to go back and read it - not to re-derive the outcome from a
+# second source.
+#
+# The old path did the latter, and it had two holes that between them left
+# every prop parlay since 2026-09-10 ungraded:
+#
+#   1. It was MLB-ONLY. _PROP_MARKET_STAT has six baseball keys and the
+#      player map comes from statsapi.mlb.com, so an NFL leg returned 'NR'
+#      forever - and 'NR' makes the whole combo 'NR', which is `continue`d
+#      without a write. Slip 191 (two Seahawks/Patriots receiving props) has
+#      sat at result=NULL since 09-10 for exactly this reason. NBA and NHL
+#      prop legs would do the same.
+#   2. It matched players by `player_name.lower()` against the boxscore's
+#      spelling - a RAW-NAME JOIN across two feeds. Measured on slip 239:
+#      'Victor Mesa Jr.' lowercased keeps its period and the boxscore key is
+#      'victor mesa jr'; 'Rafael Flores' has no suffix at all where the
+#      boxscore says 'rafael flores jr'. Both missed, both returned 'NR'.
+#      Same defect as the STL name mismatch and the UFC fight_order grading.
+#
+# Reading the props row removes both: it is an identity join on the fields
+# the leg was copied from, it needs no name normalization, and it covers
+# every sport that has a props table. It also inherits the pipeline's own
+# 'Void' - a DNP'd player - which the stat path could only see as a miss.
+_PROP_RESULT_TABLE = {
+    'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',
+    'NHL': 'nhl_pipeline_props',
+    'NBA': 'nba_pipeline_props',
+}
+
+#: Void is a leg the book takes OFF the slip (scratched, DNP), so it behaves
+#: as a push: it stops being a loss and the combo re-prices without it.
+#: Treating it as 'L' would charge us for a bet that was never live.
+_PROP_RESULT_CODE = {
+    'win': 'W', 'w': 'W',
+    'loss': 'L', 'l': 'L', 'lose': 'L',
+    'push': 'P', 'p': 'P', 'void': 'P',
+}
+
+
+def _grade_prop_leg_from_table(leg: dict) -> str | None:
+    """The leg's own props row, or None if there is no single matching row.
+
+    Returns None - not 'NR' - when the lookup is inconclusive, so the caller
+    can still try the stat path. Only an unambiguous single row with a
+    recognised result decides the leg; two rows matching means the key did
+    not identify one bet, and guessing between them is how a win gets booked
+    as a loss.
+    """
+    sport = str(leg.get('sport') or '').upper()
+    table = _PROP_RESULT_TABLE.get(sport)
+    gid = leg.get('game_id')
+    name = leg.get('player_name')
+    ptype = leg.get('prop_type')
+    line = leg.get('teased_line')
+    if line is None:
+        line = leg.get('original_line')
+    if not (table and gid and name and ptype) or line is None:
+        return None
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/{table}',
+            headers=H_READ,
+            params={'game_id': f'eq.{gid}',
+                    'player_name': f'eq.{name}',
+                    'prop_type': f'eq.{ptype}',
+                    'prop_line': f'eq.{float(line)}',
+                    'select': 'result,player_name,prop_type,prop_line'},
+            timeout=15)
+        if r.status_code != 200:
+            print(f'    prop lookup {table} HTTP {r.status_code}: '
+                  f'{r.text[:160]}', file=sys.stderr)
+            return None
+        rows = r.json() or []
+    except Exception as e:
+        print(f'    prop lookup {table} failed: {type(e).__name__}: {e}',
+              file=sys.stderr)
+        return None
+    codes = {_PROP_RESULT_CODE.get(str(x.get('result') or '').strip().lower())
+             for x in rows}
+    codes.discard(None)
+    if len(rows) > 1 and len(codes) > 1:
+        # The same player/type/line graded two ways. Do not pick one.
+        print(f'    AMBIGUOUS: {name} {ptype} {line} has {len(rows)} rows '
+              f'with results {sorted(codes)} - not grading from table',
+              file=sys.stderr)
+        return None
+    return next(iter(codes)) if len(codes) == 1 else None
+
+
 def _grade_prop_leg(leg: dict, player_stats: dict | None) -> str:
     """Grade a prop leg using MLB Stats API player stats.
 
     player_stats: {player_name_lower: {ks, bb, er, h_pit, outs, h_bat}}
     Returns 'W', 'L', 'P', or 'NR'.
+
+    2026-10-21: the leg's own props row is consulted FIRST (see
+    _grade_prop_leg_from_table). The MLB stat path below stays as the
+    fallback for a leg whose props row was deleted or re-keyed, and it is
+    still the only path that can grade a leg with no prop_type.
     """
+    from_table = _grade_prop_leg_from_table(leg)
+    if from_table:
+        return from_table
     if not player_stats: return 'NR'
     market = str(leg.get('market') or '').lower()
     # 2026-09-11 chalk_prop_parlay writes market='prop' with detailed
@@ -134,7 +296,7 @@ def _grade_prop_leg(leg: dict, player_stats: dict | None) -> str:
                 player_name = pick.split(kw, 1)[0].strip()
                 break
     if not player_name: return 'NR'
-    stats = player_stats.get(player_name.lower())
+    stats = _lookup_player_stats(player_stats, player_name)
     if not stats: return 'NR'
     actual = stats.get(stat_key)
     if actual is None: return 'NR'
@@ -228,12 +390,26 @@ def grade_date(gd: str, dry_run: bool = False) -> tuple[int, int]:
         return m == 'prop' or m.startswith('prop_') or bool(l.get('prop_type'))
     needs_props = any(_is_prop_leg(l) for s in snaps for l in (s.get('legs') or []))
     if needs_props:
+        # 2026-10-21: this unpacked TWO values. fetch_player_stats_for_date
+        # started returning a THIRD (postponed_matchups) on 2026-09-23, so
+        # every call since has raised ValueError before touching the network,
+        # and the except below turned it into a one-line warning. Any ledger
+        # slip carrying a prop leg has been UNGRADEABLE for a month, sitting
+        # at result=NULL and counted in no record. Two slips (9/10, 9/11) are
+        # still stuck on it.
+        #
+        # Unpacking by * means the next field added here is absorbed instead
+        # of crashing, and the error below now names its TYPE so a signature
+        # drift never again reads like a flaky feed.
         try:
             from grade_props import fetch_player_stats_for_date
-            player_stats, _n_games = fetch_player_stats_for_date(gd)
+            player_stats, _n_games, *_rest = fetch_player_stats_for_date(gd)
             print(f'  loaded MLB player stats: {len(player_stats)} players from {_n_games} games')
         except Exception as e:
-            print(f'  ⚠ player stats fetch failed: {e}')
+            print(f'  ⚠ player stats fetch failed: {type(e).__name__}: {e}')
+            if isinstance(e, (ValueError, TypeError, ImportError, AttributeError)):
+                print('    ^ that is a CODE error, not a feed error - prop legs '
+                      'will not grade until it is fixed', file=sys.stderr)
 
     graded = skipped = 0
     now_iso = datetime.now(timezone.utc).isoformat()

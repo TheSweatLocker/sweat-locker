@@ -10762,12 +10762,21 @@ setJerryHistory(prev => {
         supabase.from('surface_records')
           .select('window_key,wins,losses,pushes,units_net')
           .eq('sport',RECORD_SCOPE).eq('surface','ledger'),
-        // Yesterday tally: raw ledger_snapshots filtered to MLB (matches the
-        // MTD source-of-truth — surface_records.ledger MLB row is derived
-        // from the same set). Sum W/L/P + unit_pnl for a one-line footer.
+        // Yesterday tally: raw ledger_snapshots, ALL sports.
+        //
+        // 2026-10-21 — this had `.eq('sport_scope','MLB')` on it, written
+        // when every slip was a baseball slip and the MLB surface_records
+        // row was the source of truth. The last MLB-labelled slip is
+        // 2026-10-03, so from 10-04 this filter matched ZERO rows and the
+        // footer has read 0-0 every night since — eighteen days of a dark
+        // "how did the Ledger do yesterday" line while the Ledger was in
+        // fact 14-8 (+11.8u) on hockey.
+        //
+        // No sport filter now, which also matches the record above it: that
+        // reads surface_records at RECORD_SCOPE ('ALL'), so filtering the
+        // footer to one sport made the two lines disagree by construction.
         supabase.from('ledger_snapshots')
           .select('result,unit_pnl')
-          .eq('sport_scope','MLB')
           .eq('game_date', yesterdayET),
       ]);
       setLedgerSuggestions(suggs || []);

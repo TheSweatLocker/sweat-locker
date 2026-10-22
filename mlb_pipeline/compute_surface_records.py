@@ -169,6 +169,39 @@ def _classify(result) -> str | None:
     return None
 
 
+def _et_today() -> dt.date:
+    """Today's date in ET, not on the runner's clock.
+
+    2026-10-21: every window here was built from the runner's local date,
+    which on a UTC runner is TOMORROW's date for the four-to-five hours a
+    night that UTC and ET disagree. Two of our crons land in that gap
+    (nfl_pipeline's `0 */6` fires at 00:00 UTC = 8pm ET; mlb_grade_overnight
+    at 04:10 UTC), and whichever of them ran last owned the stored numbers.
+
+    What it cost, measured on the row Andy saw: d7_start = today - 6 days
+    became 10-16 instead of 10-15, so the Ledger's seven-day record dropped
+    its earliest day and read 3-3 (+1.10u) when the slips in the real window
+    are 4-4 (+1.75u). Every surface shares `_windows_today`, so every d7 on
+    the Receipts tab was short a day whenever one of those runs went last.
+
+    The worse case is still ahead of it: `mtd_start = today.replace(day=1)`
+    means a 00:00-UTC run on the 1st - 8pm ET on the LAST day of the month -
+    resets month-to-date to near zero while the month still has four hours
+    to run.
+
+    zoneinfo handles the DST change on 2026-11-01 that a fixed -4 offset
+    would get wrong for the 04:00-05:00 UTC runs; the fallback only applies
+    if tzdata is missing, and it errs toward the previous ET day, which is
+    the safe direction for a window that must not reach past today.
+    """
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now_utc.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:
+        return (now_utc - dt.timedelta(hours=5)).date()
+
+
 def _iso(d: dt.date) -> str:
     return d.isoformat()
 
@@ -1535,7 +1568,7 @@ def build_rows():
     run_started_at stamps every row from this run with ONE timestamp, so the
     prune can delete exactly the rows this run did not refresh.
     """
-    today = dt.date.today()
+    today = _et_today()
     windows = _windows_today(today)
     run_started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     out_rows = []
@@ -1674,7 +1707,7 @@ def main():
     ap.add_argument('--json', action='store_true', help='print rows as JSON')
     args = ap.parse_args()
 
-    print(f'compute_surface_records @ {dt.date.today()}', file=sys.stderr)
+    print(f'compute_surface_records @ {_et_today()} ET', file=sys.stderr)
     rows, computed_ok, run_started_at = build_rows()
     print(f'built {len(rows)} rows', file=sys.stderr)
 
