@@ -63,6 +63,23 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 
 # ─── Paged read helper ─────────────────────────────────────────────
 
+def _et_today_str() -> str:
+    """Today's date in ET, as YYYY-MM-DD.
+
+    ET, not the runner's clock: on a UTC runner `date.today()` is TOMORROW
+    for the four-to-five hours a night the two disagree, which would let a
+    future-dated receipt through exactly when the nightly jobs run
+    (feedback_window_from_runner_clock_is_a_day_ahead).
+    """
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+    except Exception:                                          # noqa: BLE001
+        return (now - _dt.timedelta(hours=5)).strftime('%Y-%m-%d')
+
+
 def paged(url: str, page_size: int = 1000):
     offset = 0
     while True:
@@ -251,6 +268,7 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     written = 0
     scanned = 0
     skipped_no_call = 0
+    skipped_future = 0
     for row in paged(url):
         scanned += 1
         result = row.get('result')
@@ -294,6 +312,46 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
         if not market:
             skipped_no_call += 1
             continue
+        # ══ 2026-10-22 · NEVER FREEZE A CLAIM FOR A GAME THAT HAS NOT
+        #                 REACHED ITS OWN DATE ══
+        # Andy: "The record should grade the Chicago -1.5". It would not, and
+        # this is why.
+        #
+        # public_receipts.pick_side / pick_line / pick_label are FULLY FROZEN
+        # by the trigger in 20260918b - it restores OLD on every update, so a
+        # PATCH returns 200 and changes nothing. That freeze is the integrity
+        # guarantee and is correct: a receipt you can rewrite is not a
+        # receipt.
+        #
+        # This loop had no date window, so it reconstructed receipts for
+        # games days in the future. The upsert key is (sport, surface,
+        # game_date, source_id) and source_id is the READ's id, which does
+        # not change when the pick does - so a later run tries to UPDATE the
+        # frozen row and is silently refused. The receipt keeps the pick as
+        # it stood days ago.
+        #
+        # Measured across all 156 game_read receipts whose side disagrees
+        # with their read:
+        #     published BEFORE the read was (re)generated   126 of 156
+        #     published 2+ days before the game             121 of 156
+        #     lead time                        median 6 days, max 12
+        #
+        # Tonight's Bears receipt was frozen on 10-13 as 'NE +2.5' at
+        # conviction 40; the read was regenerated 10-19 as 'CHI -1.5' at 58.
+        # 148 of the 156 are already graded and permanently uncorrectable.
+        #
+        # So: game day or earlier only. FUTURE dates are skipped, which kills
+        # the 121 and leaves only same-day regeneration as exposure. Game day
+        # is chosen over "past games only" deliberately - today's pending
+        # picks stay visible on the Receipts surface, and by game day the
+        # pick is locked (NFL) or generated same-day (everything else).
+        #
+        # The "we called it early" evidence is NOT lost: it lives in
+        # jerry_reads.generated_at, which this very row is read from.
+        _gd = str(row.get('game_date') or '')[:10]
+        if _gd and _gd > _et_today_str():
+            skipped_future += 1
+            continue
         batch.append({
             'sport': sport,
             'game_id': row.get('game_id'),   # 2026-09-20: joinability
@@ -326,7 +384,10 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     written += upsert_batch(batch, dry_run)
     print(f'  scanned={scanned}  written={written}'
           + (f'  skipped_no_call={skipped_no_call}'
-             if skipped_no_call else ''))
+             if skipped_no_call else '')
+          + (f'  skipped_future={skipped_future} (pick not final yet — a '
+             f'frozen receipt for a future game cannot be corrected when the '
+             f'pick changes)' if skipped_future else ''))
     return written
 
 
