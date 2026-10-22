@@ -354,6 +354,22 @@ jobs:
           # `all` covers the three tabular sources plus the blob/POTD pass
           # (which only runs under `all`, deliberately - naming one tabular
           # source means you want that source).
+          # 2026-10-22 · RESOLVE THE DEGEN BEFORE SYNCING ITS GRADE.
+          # resolve_daily_degen ran ONLY in mlb_pipeline.yml, which was
+          # right when the Degen was an MLB parlay. It now builds legs
+          # across NCAAF, NBA and NHL, so its resolution hung off the MLB
+          # workflow firing - and sat behind MLB-only table lookups that
+          # left every non-MLB leg Pending forever (fixed today).
+          #
+          # Here it runs on the cross-sport cadence, and BEFORE the sync
+          # above, so the slip is graded by the time the sync looks for its
+          # grade. Ordered the other way the receipt stays NULL for a day
+          # even when the slip resolved - which is what Andy saw on the
+          # 10-21 degen row this morning. Idempotent: it only touches rows
+          # still Pending.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "resolve_daily_degen.py" \
+            python resolve_daily_degen.py --backfill || true
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "sync_receipt_grades.py (all sources)" \
             python sync_receipt_grades.py --source all --apply || true
@@ -366,6 +382,24 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "grade_game_market_receipts.py" \
             python grade_game_market_receipts.py --days 30 --apply || true
+          # 2026-10-22 - Andy, accepting the ~250 September MLB prop
+          # receipts as permanently ungraded: "as long as that many plays
+          # arent going ungrqdaed going foraard across any sport."
+          #
+          # That is a condition, so it gets a check rather than an
+          # intention. Measured that day: September ran 2.0% ungraded (the
+          # accepted backlog) while October ran 0.3%, and over 14 days MLB,
+          # NBA, NFL, NHL and UFC were all at ZERO. So the backlog was an
+          # anomaly, not a trend - and this makes that falsifiable daily
+          # instead of quarterly when someone notices a surface went dark.
+          #
+          # Runs AFTER the three graders above, so it measures what they
+          # left behind rather than racing them. --warn-only because a
+          # single stuck receipt must not stop the card being built; the
+          # value is that it is visible in the log every run.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "verify_receipt_grading_coverage.py" \
+            python verify_receipt_grading_coverage.py --days 14 --warn-only
 
       - name: Price the receipts just published
         continue-on-error: true
