@@ -5274,3 +5274,95 @@ building one:
 Sequence: NFL first (data is there, a slot is open, and the sport has 3,754
 graded prop rows to validate against), NBA second once it has a graded
 sample.
+
+## B127 — 🚨 FADE prop receipts show the side we DIDN'T take, and 282 are graded on it
+
+**Opened 2026-10-22**, found by decomposing the 506 receipt "conflicts" that
+`sync_receipt_grades` has been reporting.
+
+The conflicts were not evenly spread. By `prop_jerry_reads.call_verdict`:
+
+| verdict | agree | conflict | conflict % |
+|---|---|---|---|
+| BACK | 734 | 0 | **0.0%** |
+| **FADE** | 406 | **286** | **41.3%** |
+| LEAN | 2,836 | 69 | 2.4% |
+| PASS | 7,110 | 97 | 1.3% |
+| PRIME | 1,435 | 53 | 3.6% |
+| STRONG | 1,959 | 67 | 3.3% |
+
+BACK at 0.0% and FADE at 41.3% is not a data-quality gradient, it is a
+**side inversion**: 153 receipt=WIN/read=LOSS and 129 receipt=LOSS/read=WIN,
+a symmetric flip.
+
+### The read is right and the receipt is wrong
+
+Worked one end to end. `prop_jerry_reads` id 101795, 2026-09-20:
+
+```
+Rhett Lowder · Outs Recorded UNDER 14.5 @ 114
+  🔄 JERRY FADE — back Outs Recorded OVER instead
+  result: Loss
+```
+
+He recorded **9 outs**, so UNDER 14.5 hit. Our published play was the
+**OVER** — a loss. The read says `Loss`, correctly grading the side we took.
+
+The receipt says:
+
+```
+pick_label: 'Rhett Lowder UNDER 14.5 outs_under @ 114'
+pick_side:  'UNDER'
+result:     'WIN'
+```
+
+Wrong twice: it names the side we **faded** as our pick, and grades that
+side's outcome.
+
+This is `feedback_grade_the_side_we_published` exactly — *"a FADE inverts
+them; 4 of 4 UFC fades were stored backwards and it FLATTERED us, 13-6 →
+11-8."* Same defect, different surface.
+
+### Scale
+
+| | |
+|---|---|
+| graded FADE prop receipts | **692** |
+| `pick_side` equals the **faded** side, not the published one | **641 (92.6%)** |
+| grades agreeing with the read | 406 |
+| **graded on the wrong side** | **282** |
+| net effect on the receipts record | **+24 wins in our favour** |
+
+The 406 that agree are consistent with `settle_prop_receipts.py` — its
+docstring describes fade-aware settling, so some were settled correctly and
+some were not.
+
+**The label error is worse than the grade error.** 641 receipts on the
+Receipts tab name a side we did not publish. A user checking our work sees
+`Rhett Lowder UNDER 14.5` when we told them to take the OVER.
+
+### What is NOT yet established
+
+The published **prop record** (`compute_surface_records.pick_prop`) reads
+`*_pipeline_props`, not `public_receipts`, and counts PRIME+STRONG only. The
+props table also grades the prop **as written**, so a faded PRIME would be
+counted on the un-faded side there too.
+
+**Ceiling: 74** — of 482 FADE reads matched to an MLB prop row, 41 sit on a
+PRIME row and 33 on a STRONG row. That is the maximum exposure, not a
+confirmed error; whether `pick_prop` excludes them needs its own
+measurement. The other 408 are COVERAGE/LEAN/SKIP and are not in that record.
+
+### Fix, in order
+1. **The label.** `public_receipts.pick_label` / `pick_side` for a FADE
+   receipt must name the side we published. This is what users read.
+2. **The 282 grades.** Re-settle from the read, which is the surface that
+   already grades the fade side correctly. It moves the receipts record
+   against us by 24 net wins, which is the honest direction.
+3. **Then** measure whether the published prop record counts those 74.
+4. Add a standing check: a FADE receipt whose `pick_side` equals the prop's
+   `direction` is wrong by construction and can be detected without any
+   game result.
+
+**Not fixed in this pass.** It is 282 published grades and 641 published
+labels; re-settling them changes the record, which is Andy's call.
