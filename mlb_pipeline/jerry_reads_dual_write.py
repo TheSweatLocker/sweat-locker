@@ -21,6 +21,7 @@ not raise. Prose still lives in jerry_cache (legacy) via each caller's
 existing write_cache; this table adds structured pick data on top.
 """
 from __future__ import annotations
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -437,6 +438,57 @@ def derive_short_read(short: str | None, long: str | None,
     return ((narrative or '')[:500] or None)
 
 
+#: Per-sport context table, for re-reading primary_play at write time.
+#: Kept here rather than imported, because this module is the one place every
+#: sport's read passes through - a sport missing from this map silently loses
+#: the freshness guard, so the map lives beside the guard that needs it.
+_CTX_TABLE_BY_SPORT = {
+    'MLB': 'mlb_game_context',
+    'NFL': 'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'NHL': 'nhl_game_context',
+    'NBA': 'nba_game_context',
+    'NCAAB': 'ncaab_game_context',
+}
+
+
+def _fresh_primary_play(sport: str, game_id: str, game_date: str):
+    """primary_play as it stands NOW, or None if it cannot be read.
+
+    Returns None rather than {} on failure, so the caller can tell "could
+    not read" from "read it, there is no pick" and fall back to the struct's
+    copy instead of wrongly forcing a pass.
+    """
+    tbl = _CTX_TABLE_BY_SPORT.get(str(sport or '').upper())
+    if not (tbl and game_id):
+        return None
+    url = os.environ.get('SUPABASE_URL')
+    key = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+           or os.environ.get('SUPABASE_KEY'))
+    if not (url and key):
+        return None
+    hdr = {'apikey': key, 'Authorization': f'Bearer {key}'}
+    try:
+        r = requests.get(f'{url}/rest/v1/{tbl}', headers=hdr,
+                         params={'game_id': f'eq.{game_id}',
+                                 'select': 'primary_play', 'limit': '1'},
+                         timeout=15)
+        if r.status_code != 200:
+            return None
+        rows = r.json() or []
+        if not rows:
+            return None
+        pp = rows[0].get('primary_play')
+        if isinstance(pp, str):
+            try:
+                pp = json.loads(pp)
+            except Exception:                                  # noqa: BLE001
+                return None
+        return pp if isinstance(pp, dict) else None
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> dict:
     """Force parsed jerry_read call_* fields to match ensemble primary_play.
 
@@ -660,7 +712,52 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
         return False
     # ─── ENSEMBLE ALIGNMENT ENFORCER ───────────────────────────────
     # Runs BEFORE the truncation guard so the guard sees final prose.
+    #
+    # ══ 2026-10-22 · ALIGN AGAINST FRESH primary_play, NOT THE PROMPT'S ══
+    # Andy: "conflicting badges on nhl preg game and the actual read in game
+    # detail ... Clagary ML badge but Wild -1.5 in the read".
+    #
+    # The enforcer below is correct and has been since 09-10 — handed the
+    # real primary_play it turns the LLM's 'Calgary Flames ML' into
+    # 'Minnesota Wild -1.5', verified directly. The bug is the INPUT: `struct`
+    # is built once, before the LLM calls, and a generator makes one call per
+    # game. On 10-22 the MIN @ CGY ctx row was re-scored at 17:04:37 (an LR
+    # override rerouting ML -> spread) while the read wrote at 17:08:40 - so
+    # the enforcer compared against a primary_play that was already four
+    # minutes out of date, found nothing to correct, and shipped the writer's
+    # own pick.
+    #
+    # Measured before this fix: 76 of 876 comparable reads (8.7%) disagreed
+    # with their badge on the SIDE - NHL 1.2%, NBA 2.4%, NFL 6.0%, NCAAF
+    # 14.0%. The read-then-write race explains why NCAAF is worst: it has the
+    # most games, so the most wall-clock between loading ctx and writing.
+    #
+    # So re-read primary_play from the ctx table at WRITE time. A stale copy
+    # is exactly what the enforcer cannot see past, and no prompt rule or
+    # vigilance fixes a race. Falls back to the struct's copy when the fetch
+    # fails, which is strictly no worse than the old behaviour.
+    _llm_pick = {k: parsed.get(k) for k in
+                 ('call_market', 'call_side', 'call_line', 'call_text')}
+    _fresh = _fresh_primary_play(sport, game_id, game_date)
+    if _fresh is not None:
+        _old = (struct.get('primary_play') or {}) if isinstance(struct, dict) else {}
+        if isinstance(_old, dict) and _old.get('label') != _fresh.get('label'):
+            print(f'  ↻ {sport} {game_id}: primary_play moved while the read '
+                  f'was being written ({_old.get("label")!r} -> '
+                  f'{_fresh.get("label")!r}); aligning to the FRESH pick')
+        struct = {**(struct if isinstance(struct, dict) else {}),
+                  'primary_play': _fresh}
     parsed = enforce_primary_play_alignment(sport, parsed, struct)
+
+    # And say so when the writer's own pick had to be overruled, so the rate
+    # is visible in the log instead of accumulating unseen at 8.7%.
+    _llm_side = str((_llm_pick or {}).get('call_side') or '').upper()
+    _fin_side = str(parsed.get('call_side') or '').upper()
+    if _llm_side and _fin_side and _llm_side != _fin_side:
+        print(f'  ⚠ {sport} {game_id}: WRITER PICKED THE OTHER SIDE — '
+              f'{(_llm_pick or {}).get("call_text")!r} ({_llm_side}) '
+              f'overruled by primary_play {parsed.get("call_text")!r} '
+              f'({_fin_side})')
 
     # ══ 2026-10-07 · AN UNJUSTIFIED OVERRIDE CANNOT CARRY A HIGH TIER ══
     # Measured across MLB/NCAAF/NFL on graded games: when the published call

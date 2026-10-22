@@ -489,43 +489,74 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
     print(f'  ladder-eligible sports: {sports or "NONE (all off-season/preseason)"}')
     candidates = []
 
-    # 2026-08-20: pool props from playbook (shadow) + legacy tiers.
-    # Props are ladder-eligible per user request. Only run for MLB since
-    # other sports don't have prop_playbook_decisions rows yet.
-    if 'MLB' in sports:
+    # ══ 2026-10-22 · THE PROP PATH WAS MLB-ONLY AND THAT KILLED THE LADDER ══
+    # Andy: "how do we open up Daily Degne and Ladder to all sports and plays
+    # as long as theass through additioanl filter assesment".
+    #
+    # Measured: 57 of 57 rungs ever written are MLB, 38 of them PROPS, and
+    # the last rung is 2026-10-19. The ladder reported "waiting for the next
+    # qualifier" for three days and it looked like discipline. It was supply.
+    # The game-side scan below has been cross-sport for months; this prop
+    # scan was pinned to MLB with the comment "Only run for MLB since other
+    # sports don't have prop_playbook_decisions rows yet". Other sports have
+    # them now - the NHL and NBA boards both write playbook decisions - so
+    # the condition outlived its reason and nobody revisited it.
+    #
+    # Now it iterates every ladder-eligible sport that HAS a props table.
+    # NCAAF and NCAAB are absent from PROPS_TABLE on purpose: no props on
+    # college, anywhere (feedback_college_sports_no_props).
+    #
+    # This does NOT loosen a single gate. check_prop_qualifier still has to
+    # pass, which is the "additional filter assesment" - opening the supply
+    # and lowering the bar are different changes and only the first is here.
+    PROPS_TABLE = {
+        'MLB': 'mlb_pipeline_props',
+        'NFL': 'nfl_pipeline_props',
+        'NHL': 'nhl_pipeline_props',
+        'NBA': 'nba_pipeline_props',
+    }
+    for _sp in sports:
+        _tbl = PROPS_TABLE.get(_sp)
+        if not _tbl:
+            continue
         pb = requests.get(f'{SB}/rest/v1/prop_playbook_decisions', headers=H_READ,
-            params={'game_date': f'eq.{game_date}', 'sport': 'eq.MLB',
+            params={'game_date': f'eq.{game_date}', 'sport': f'eq.{_sp}',
                     'playbook_tier': 'in.(PRIME,STRONG)',
                     'select': '*'}, timeout=15).json()
-        if isinstance(pb, list):
-            # Join to mlb_pipeline_props to get book odds + refit_conviction
-            legacy = requests.get(f'{SB}/rest/v1/mlb_pipeline_props', headers=H_READ,
-                params={'game_date': f'eq.{game_date}',
-                        'select': 'player_name,prop_type,direction,prop_line,book_over_odds,book_under_odds,refit_conviction,tier,matchup,game_id,signals,lineup_state'},
-                timeout=15).json()
-            # 2026-09-09 snapshot lock overlay (shared helper).
-            try:
-                from prop_snapshot_overlay import overlay_from_snapshots
-                if isinstance(legacy, list):
-                    legacy = overlay_from_snapshots(legacy, game_date, sport='MLB')
-            except Exception:
-                pass
-            legacy_map = {}
+        if not isinstance(pb, list) or not pb:
+            continue
+        # select=* rather than a column list: nhl/nba_pipeline_props do NOT
+        # carry every column mlb_pipeline_props has (player_team is absent on
+        # both, checked), and an explicit SELECT naming a missing column
+        # returns 400, which a caller reads as "no rows".
+        legacy = requests.get(f'{SB}/rest/v1/{_tbl}', headers=H_READ,
+            params={'game_date': f'eq.{game_date}', 'select': '*'},
+            timeout=20).json()
+        try:
+            from prop_snapshot_overlay import overlay_from_snapshots
             if isinstance(legacy, list):
-                for p in legacy:
-                    k = (p.get('player_name'), p.get('prop_type'), p.get('direction'), p.get('prop_line'))
-                    legacy_map[k] = p
-            prop_qualifiers = 0
-            for pb_row in pb:
-                k = (pb_row.get('player_name'), pb_row.get('prop_type'), pb_row.get('direction'), pb_row.get('prop_line'))
-                lg = legacy_map.get(k, {})
-                merged = {**lg, **pb_row}  # playbook wins on shared keys
-                # Rename for check_prop_qualifier
-                if 'tier' in lg and 'legacy_tier' not in merged: merged['legacy_tier'] = lg['tier']
-                rung = check_prop_qualifier(merged, 'MLB')
-                if rung:
-                    candidates.append(rung); prop_qualifiers += 1
-            print(f'  props evaluated: {len(pb)} playbook PRIME/STRONG · {prop_qualifiers} qualified for ladder')
+                legacy = overlay_from_snapshots(legacy, game_date, sport=_sp)
+        except Exception:
+            pass
+        legacy_map = {}
+        if isinstance(legacy, list):
+            for p in legacy:
+                k = (p.get('player_name'), p.get('prop_type'),
+                     p.get('direction'), p.get('prop_line'))
+                legacy_map[k] = p
+        prop_qualifiers = 0
+        for pb_row in pb:
+            k = (pb_row.get('player_name'), pb_row.get('prop_type'),
+                 pb_row.get('direction'), pb_row.get('prop_line'))
+            lg = legacy_map.get(k, {})
+            merged = {**lg, **pb_row}  # playbook wins on shared keys
+            if 'tier' in lg and 'legacy_tier' not in merged:
+                merged['legacy_tier'] = lg['tier']
+            rung = check_prop_qualifier(merged, _sp)
+            if rung:
+                candidates.append(rung); prop_qualifiers += 1
+        print(f'  {_sp} props evaluated: {len(pb)} playbook PRIME/STRONG · '
+              f'{prop_qualifiers} qualified for ladder')
 
     for sport in sports:
         ctx_tbl = CTX_TABLE.get(sport)
@@ -543,26 +574,32 @@ def scan_and_maybe_qualify(game_date: str, dry_run: bool = False) -> Optional[di
         # sport, omit columns that don't exist. Downstream check_qualifier
         # reads via .get() with `or 0` defaults so missing values gate
         # to 0 without crashing.
-        # ML odds column names differ per sport. MLB: home_ml_close/away_ml_close.
-        # NFL+NCAAF: close_home_ml/close_away_ml. Coalesced downstream in
-        # check_qualifier via .get() fallback chain.
-        ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
-        # 2026-10-03 · consensus_fade_flag does NOT exist on
-        # nhl_game_context, so including it made the whole NHL query 400 and
-        # NHL never reached the ladder at all — a silent sport-wide exclusion
-        # visible only as "NHL query failed" in the log. Per-sport column
-        # dispatch, same shape as the ml_cols line above.
-        _fade_col = '' if sport == 'NHL' else 'consensus_fade_flag,'
-        base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
-                     'mc_probabilities,' + ml_cols + ','
-                     + _fade_col + 'signal_confluence_breakdown')
-        if sport == 'MLB':
-            select_cols = base_cols + ',signal_confluence_support'
-        else:
-            # NFL/NCAAF/NCAAB path — use net (which they DO have) as
-            # a confluence proxy so check_qualifier sees a real value
-            # instead of always defaulting to 0. Map at the row level below.
-            select_cols = base_cols + ',signal_confluence_net'
+        # ══ 2026-10-22 · STOP GUESSING THE COLUMN NAMES: SELECT * ══
+        # This file has now been patched three times for the same reason — a
+        # named column that one sport's context table does not have, which
+        # makes PostgREST 400 and reads downstream as "no rows":
+        #   09-15  per-sport ml_cols, because MLB names them one way
+        #   10-03  consensus_fade_flag, absent on nhl_game_context, which
+        #          excluded NHL from the ladder entirely and showed up only
+        #          as "NHL query failed" in a log nobody was reading
+        #   10-22  close_home_ml, absent on nba_game_context — so the NBA
+        #          GAME-SIDE scan has been failing since NBA went live and
+        #          no NBA side could ever reach the ladder
+        #
+        # The binary `if sport == 'MLB' else ...` was wrong the moment a
+        # fourth sport arrived: NBA uses MLB's naming, not "everything
+        # else's". Probed directly — mlb and nba carry home_ml_close, nfl
+        # and nhl and ncaab carry BOTH conventions.
+        #
+        # check_qualifier already coalesces every spelling at read time
+        # (`row.get('home_ml_close') or row.get('close_home_ml') or ...`), so
+        # the column list was only ever a bandwidth optimisation on one row
+        # per game. select=* costs nothing here and cannot 400. The next
+        # sport added needs no edit.
+        # select=* also means both signal_confluence_support (MLB) and
+        # signal_confluence_net (the others) arrive when present, so the
+        # row-level mapping below keeps working without a per-sport select.
+        select_cols = '*'
         r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
             params={'game_date': f'eq.{game_date}', 'select': select_cols},
             timeout=15).json()
@@ -675,16 +712,10 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
         for sport in sports:
             ctx_tbl = CTX_TABLE.get(sport)
             if not ctx_tbl: continue
-            # 2026-09-15: per-sport SELECT (same fix as scan_qualifiers).
-            ml_cols = 'home_ml_close,away_ml_close' if sport == 'MLB' else 'close_home_ml,close_away_ml'
-            # see the consensus_fade_flag note in scan_qualifiers — NHL
-            # lacks the column and its presence 400s the whole query.
-            _fade_col = '' if sport == 'NHL' else ',consensus_fade_flag'
-            base_cols = ('game_id,game_date,home_team,away_team,primary_play,'
-                         'mc_probabilities,' + ml_cols + _fade_col)
-            select_cols = (base_cols + ',signal_confluence_support'
-                           if sport == 'MLB'
-                           else base_cols + ',signal_confluence_net')
+            # select=* for the reason spelled out in scan_qualifiers: three
+            # separate 400s from named columns one sport lacks, the latest
+            # being close_home_ml on nba_game_context.
+            select_cols = '*'
             r = requests.get(f'{SB}/rest/v1/{ctx_tbl}', headers=H_READ,
                 params={'game_date': f'eq.{game_date}', 'select': select_cols},
                 timeout=15).json()

@@ -503,6 +503,22 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "steam_room_ladder.py" python steam_room_ladder.py
+          # 2026-10-22 · BADGE vs READ SAFETY NET.
+          # The real fix is in jerry_reads_dual_write: it now re-reads
+          # primary_play at WRITE time, because the old code aligned
+          # against a copy captured before the LLM calls and a mid-flight
+          # re-score left the writer's own pick standing. Measured before
+          # that fix: 76 of 876 reads (8.7%) disagreed with their badge on
+          # the SIDE - NCAAF 14%, NFL 6%, NBA 2.4%, NHL 1.2%.
+          #
+          # This is the net under it. Anything that still slips - a read
+          # written by a path that bypasses the dual-write, or a re-score
+          # that lands after the read - gets realigned to primary_play
+          # before users see it. --days 1 only: a past read has graded
+          # receipts behind it and realigning those changes the record.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "backfill_jerry_pick_alignment.py" \
+            python backfill_jerry_pick_alignment.py --days 1 || true
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "generate_ledger.py" python generate_ledger.py
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
