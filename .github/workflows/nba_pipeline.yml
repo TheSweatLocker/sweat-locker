@@ -548,6 +548,42 @@ jobs:
         run: |
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport NBA --refresh-existing
+      # 2026-10-21 PROMOTE THE SHADOW SCORE ONTO THE LIVE NBA ROWS.
+      #
+      # The scorer above is literally named "shadow mode" - it writes only to
+      # prop_playbook_decisions. Nothing then copied those convictions onto
+      # the live rows, because promote_playbook_conviction.PROPS_TABLE listed
+      # MLB and NFL only and exited 2 for anything else. Measured tonight,
+      # EVERY prop on this board is COVERAGE: nba_pipeline_props 5,151 of 5,151 rows for
+      # 10-20/10-21. A board that is entirely COVERAGE cannot be evaluated,
+      # and a board that cannot be evaluated can never earn a graded sample.
+      #
+      # THIS PUBLISHES NOTHING, and that is measured rather than assumed.
+      # Dry run on 10-21: 950 playbook decisions against 2,073 live props,
+      # 136 rows to promote, and ZERO of them move tier - every one reads
+      # "COVERAGE -> COVERAGE (tier held)". Tier only moves for a playbook
+      # PRIME (the script's default) and this board has none. What the rows
+      # gain is a real conviction (54-73) in place of 0, which is what makes
+      # the board orderable and evaluable at all.
+      #
+      # Two further gates sit in front of publishing regardless:
+      # v_nba_props_publishable requires PRIME or STRONG, and
+      # feature_flags(NBA, 'pipeline_props') is FALSE. Flipping that flag
+      # stays a product call - see B121.
+      #
+      # MUST RUN BEFORE any publish-lock step. Conviction is scoring, and
+      # scoring has to finish before the pick is frozen; running it after the
+      # lock is how MLB's first attempt patched rows and landed none.
+      - name: Promote playbook conviction to live NBA props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "promote_playbook_conviction.py (NBA)" \
+            python promote_playbook_conviction.py --sport NBA
 
       # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator (mirrors
       # NCAAF/NCAAB pattern). Silent no-op during offseason.

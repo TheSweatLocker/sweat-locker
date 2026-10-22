@@ -68,7 +68,22 @@ KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_W = {**H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
-PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props'}
+# 2026-10-21: NBA and NHL added. Both run prop_ensemble_scorer in the SAME
+# shadow mode as MLB, so their playbook decisions exist in
+# prop_playbook_decisions - but with no entry here this script exited 2 and
+# the live rows never received a conviction. Measured tonight, every prop on
+# both boards for 10-20/10-21 is COVERAGE: nba_pipeline_props 5,151 of 5,151
+# and nhl_pipeline_props 5,503 of 5,503. A board that is entirely COVERAGE
+# cannot be evaluated, which is also why neither sport can earn its way to a
+# graded sample.
+#
+# Being in this map does NOT publish anything. The step is not wired into
+# nba_pipeline.yml or nhl_pipeline.yml yet (that is a product call - see
+# B121), and v_nba/nhl_props_publishable are gated off in feature_flags
+# regardless. This only makes `--dry-run --sport NBA` able to answer what
+# promotion would do, instead of exiting 2 and telling us nothing.
+PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
+               'NBA': 'nba_pipeline_props', 'NHL': 'nhl_pipeline_props'}
 
 # PRIME only by default — see the evidence block in the docstring.
 DEFAULT_TIERS = ('PRIME',)
