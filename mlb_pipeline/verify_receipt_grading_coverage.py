@@ -118,6 +118,88 @@ def page(tbl, params):
         off += 1000
 
 
+def _norm(x):
+    return {'w': 'WIN', 'win': 'WIN', 'l': 'LOSS', 'loss': 'LOSS',
+            'p': 'PUSH', 'push': 'PUSH', 'void': 'VOID'}.get(
+        str(x or '').strip().lower())
+
+
+def check_fade_consistency(days: int) -> int:
+    """A FADE receipt must SHOW, and be GRADED ON, the side we backed.
+
+    == WHY THIS IS STRUCTURAL, NOT A BOX-SCORE CHECK ==
+    A FADE read backs the OPPOSITE side of the prop it is reading. Two things
+    must therefore be true of its receipt, and neither needs a game result:
+
+      1. pick_side must be the opposite of the prop's `direction`. A FADE
+         receipt whose pick_side EQUALS direction is displaying the side we
+         faded as though we backed it. Wrong by construction.
+      2. its result must match the read's, because prop_jerry_reads.result
+         grades the side we backed - verified from the box score (Dustin May
+         ha_under 3.5, final 3 hits: the under hit, so our OVER lost, and the
+         read says LOSS).
+
+    Both halves were broken, in opposite directions. The LABEL was fixed
+    mid-September (July+August: 0 of 559 right; October: 24 of 24). The GRADE
+    was not, which left receipts reading "Dustin May OVER 3.5 - WIN" when the
+    over lost: a correct label with a contradictory grade, worse than either
+    error alone because it looks right.
+
+    Andy on the history: "If it s props from a whiel ago leave record as is
+    and just make sure we wont have this problem going forward." So this
+    checks a WINDOW - the July-September rows stay as they are and are not
+    re-reported daily. What this catches is a regression.
+    """
+    today = _et_today()
+    start = (today - dt.timedelta(days=days)).isoformat()
+    cut = today.isoformat()
+    try:
+        reads = {str(x['id']): x for x in page(
+            'prop_jerry_reads', {'select': 'id,call_verdict,direction,result'})}
+        recs = page('public_receipts',
+                    {'select': 'id,source_id,source_table,pick_side,'
+                               'pick_label,result,game_date',
+                     'and': f'(game_date.gte.{start},game_date.lt.{cut})'})
+    except Exception as e:                                     # noqa: BLE001
+        print(f'\n  fade check UNAVAILABLE ({type(e).__name__}: {e}) - '
+              f'treat as unverified, not as a pass')
+        return 0
+    label_bad, grade_bad, n = [], [], 0
+    for r in recs:
+        if r.get('source_table') != 'prop_jerry_reads':
+            continue
+        s_ = reads.get(str(r.get('source_id')))
+        if not s_ or str(s_.get('call_verdict') or '').upper() != 'FADE':
+            continue
+        n += 1
+        d = str(s_.get('direction') or '').upper()
+        ps = str(r.get('pick_side') or '').upper()
+        if d and ps and d == ps:
+            label_bad.append(r)
+        a_, b_ = _norm(r.get('result')), _norm(s_.get('result'))
+        if a_ and b_ and a_ != b_:
+            grade_bad.append((r, a_, b_))
+    print(f'\n  FADE receipts in window: {n}')
+    if not n:
+        print('    none in window - nothing to check')
+        return 0
+    if label_bad:
+        print(f'    ** {len(label_bad)} show the side we FADED as our pick '
+              f'(pick_side == prop direction - wrong by construction):')
+        for r in label_bad[:8]:
+            print(f'       {r["game_date"]} {str(r.get("pick_label"))[:40]}')
+    if grade_bad:
+        print(f'    ** {len(grade_bad)} graded on the wrong side (receipt '
+              f'disagrees with its read, which grades OUR side):')
+        for r, a_, b_ in grade_bad[:8]:
+            print(f'       {r["game_date"]} '
+                  f'{str(r.get("pick_label"))[:34]:34s} '
+                  f'receipt={a_} read={b_}')
+    if not (label_bad or grade_bad):
+        print('    PASS - every FADE receipt shows and grades the backed side')
+    return len(label_bad) + len(grade_bad)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--days', type=int, default=14)
@@ -184,6 +266,10 @@ def main() -> int:
                       f"{tag}")
         if len(ungraded) > 20:
             print(f'     ... and {len(ungraded) - 20} more')
+
+    _fade = check_fade_consistency(a.days)
+    if _fade:
+        problems.append(('FADE-SIDE', _fade, 0.0, 'fade side/grade'))
 
     if problems:
         print(f'\n  {len(problems)} sport(s) above threshold:')

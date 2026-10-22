@@ -151,6 +151,36 @@ SOURCES: dict[str, tuple[str, str, object]] = {
     'jerry_reads':      ('jerry_reads', 'id', _ident_jerry_read),
 }
 
+# ══ 2026-10-22 · ON A FADE, THE READ IS THE AUTHORITY ══
+# Andy: "If it s props from a whiel ago leave record as is and just make sure
+# we wont have this problem going forward."
+#
+# A FADE read backs the OPPOSITE side of the prop it is reading. Two surfaces
+# then disagree about what happened, and only one of them is right:
+#
+#   prop_jerry_reads.result   grades the side we BACKED (the fade). Verified
+#                             from the box score: Dustin May ha_under 3.5,
+#                             final 3 hits - the under hit, so our OVER lost,
+#                             and the read says LOSS. Correct.
+#   public_receipts.result    graded the prop AS WRITTEN on those same rows,
+#                             so it says WIN. Wrong, and it flatters us.
+#
+# Measured by month, FADE receipts whose grade disagrees with their read:
+#   2026-07   10 of  64      2026-09   82 of 109
+#   2026-08  183 of 495      2026-10   11 of  24
+#
+# The LABEL half of this was fixed mid-September (October is 24 of 24 showing
+# our side, July/August 0 of 559). The GRADE half was not, which leaves the
+# worst possible state: a receipt reading "Dustin May OVER 3.5 — WIN" when
+# the over lost.
+#
+# So for a FADE row the read wins and the receipt is corrected, rather than
+# being filed as a conflict "needing a human" forever. Scoped to game_date >=
+# FADE_AUTHORITY_FROM because Andy's instruction is explicit: the old props
+# stay as they are. Everything before the cutoff is still REPORTED, so the
+# backlog is visible rather than hidden - it is just not rewritten.
+FADE_AUTHORITY_FROM = '2026-10-01'
+
 # Source tables spell the grade differently. Normalise to the receipt's
 # vocabulary. NOTE: `result` on public_receipts is TITLE case nowhere — it is
 # upper (WIN/LOSS/PUSH); see feedback_result_column_is_title_case for the
@@ -214,7 +244,7 @@ def sync_source(recv_source: str, apply: bool) -> dict:
     recs = paged('public_receipts', {'select': '*',
                                      'source_table': f'eq.{recv_source}'})
 
-    stale, conflict = [], []
+    stale, conflict, fade_fixed = [], [], []
     agree = both_null = orphan = drifted = 0
     for r in recs:
         s = src.get(str(r.get('source_id')))
@@ -239,7 +269,15 @@ def sync_source(recv_source: str, apply: bool) -> dict:
         elif got is None:
             stale.append((r, s, exp))
         elif exp is not None and exp != got:
-            conflict.append((r, exp, got))
+            _verdict = str((s or {}).get('call_verdict') or '').upper()
+            _gd = str(r.get('game_date') or '')[:10]
+            if (recv_source == 'prop_jerry_reads' and _verdict == 'FADE'
+                    and _gd >= FADE_AUTHORITY_FROM):
+                # The read grades the side we backed; the receipt graded the
+                # prop as written. Correct it.
+                fade_fixed.append((r, s, exp, got))
+            else:
+                conflict.append((r, exp, got))
         else:
             agree += 1
 
@@ -254,7 +292,25 @@ def sync_source(recv_source: str, apply: bool) -> dict:
               f'src={r["source_id"]} {str(r.get("pick_label"))[:34]!r} '
               f'receipt={got} source={exp} — NOT patched, needs a human')
 
+    if fade_fixed:
+        print(f'  FADE CORRECTIONS (read is authority, '
+              f'>= {FADE_AUTHORITY_FROM}) = {len(fade_fixed)}')
+        for r, _s, exp, got in fade_fixed[:15]:
+            print(f'    ↻ receipt {r["id"]} {r["game_date"]} '
+                  f'{str(r.get("pick_label"))[:34]!r} {got} -> {exp} '
+                  f'(FADE: the read grades the side we backed)')
+
     patched = 0
+    for r, _s0, exp, _got in fade_fixed:
+        if not apply:
+            continue
+        pr = requests.patch(f'{SB}/rest/v1/public_receipts?id=eq.{r["id"]}',
+                            headers=H_WRITE, json={'result': exp}, timeout=30)
+        if pr.status_code in (200, 204):
+            patched += 1
+        else:
+            print(f'    ⚠ fade patch {r["id"]} {pr.status_code}: '
+                  f'{pr.text[:160]}')
     for r, s, exp in stale:
         body = {'result': exp}
         if s.get('graded_at'):
