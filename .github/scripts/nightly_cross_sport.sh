@@ -278,6 +278,32 @@ for _sp in NCAAF NFL; do
     python populate_game_sor.py --sport "$_sp" || true
 done
 
+# 2026-10-22 - GRADE THE RANKING THAT WAS JUST WRITTEN. Andy asked for a spot
+# check of SOR/SOS across every live sport; it came back clean on all six, and
+# this keeps it that way without anyone re-deriving it by hand.
+#
+# Runs HERE, immediately after the fit and the join above, so it reads the
+# values this very run produced rather than yesterday's.
+#
+# It checks three separate things, because the first two can both pass while
+# the number is still wrong:
+#   1. the ranking inside ONE source snapshot - contiguous 1..N, no duplicate
+#      ranks, no team holding two rows (a surviving stale row shifts every
+#      rank below it), one season, one refresh vintage, and rank order
+#      consistent with value ALLOWING ties in the rounded stored value;
+#   2. schedule completeness - a ranking can be perfectly contiguous and
+#      still be fit on a partial schedule, which is exactly how a deleted
+#      opponent put Miami (OH) at SOS rank 2 of 137 with nothing to flag it
+#      until Andy eyeballed it;
+#   3. whether UPCOMING game rows still agree with the source. Past rows are
+#      never compared - they hold the as-of-kickoff snapshot on purpose, so
+#      comparing them to today is comparing two different weeks.
+#
+# --warn-only: a ranking problem must not abort the rest of the nightly, and
+# nothing downstream reads this step's output.
+bash "$RUN_STEP" --label "verify_sor_sos_integrity.py (all sports)" \
+  python verify_sor_sos_integrity.py --warn-only || true
+
 # 2026-10-03 · EXTERNAL SOR BENCHMARK. Andy: "add as weekly benchmark for
 # data." Records strengthofrecord.com's published FBS Strength of Record
 # beside ours. A reference point ONLY -- never an input to a pick, and

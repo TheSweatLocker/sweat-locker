@@ -111,8 +111,27 @@ def _f(v):
 
 
 def today_et():
-    return (dt.datetime.now(dt.timezone.utc)
-            - dt.timedelta(hours=4)).strftime('%Y-%m-%d')
+    """ET calendar date, from zoneinfo rather than a fixed offset.
+
+    2026-10-22. This was `now_utc - 4h`, which is ET only until 2026-11-01.
+    Ten days from now ET becomes -5 and the hardcoded -4 rolls the date over
+    an hour early, so for one hour every night `cutoff` would be TOMORROW
+    while tonight's games were still unplayed - and `game_date >= cutoff`
+    then excludes exactly those games from the write. No leak (the guard
+    errs toward writing less), but the games closest to kickoff are the ones
+    that silently stop getting a fresh SOR, which is the worst set to drop.
+
+    The fallback is -5, not -4: if zoneinfo is unavailable the safe error is
+    an EST-shaped cutoff that lags, because a cutoff that lags writes an
+    extra past day (refused anyway by the >= filter on the fetch) while a
+    cutoff that leads drops a live day.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+    except Exception:                                          # noqa: BLE001
+        return (dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(hours=5)).strftime('%Y-%m-%d')
 
 
 def main():
