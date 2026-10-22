@@ -82,12 +82,85 @@ if not SB or not KEY:
     sys.exit(0)
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
+# 2026-10-22: this script prints box-drawing and check/cross glyphs, and a
+# Windows console defaults to cp1252, so the FIRST finding it reports raises
+# UnicodeEncodeError and the run dies before printing the rest. The workflow
+# sets PYTHONIOENCODING=utf-8 so CI never saw it; running it by hand on
+# Andy's box crashed on the very line that was about to say what was wrong.
+# Same guard the other scripts in this folder already use.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:                                          # noqa: BLE001
+        pass
+
 PLAIN_KEY = re.compile(r'^best_bet_(\d{4}-\d{2}-\d{2})$')
 ANY_KEY = re.compile(r'^best_bet_(\d{4}-\d{2}-\d{2})(?:_(.+))?$')
 DECIDED = {'Win', 'Loss', 'Push'}
 # 'no-pick' is a legitimate outcome, not a gap: some days genuinely have no
 # qualifying play once the juice and conviction gates are applied.
-TERMINAL = DECIDED | {'no-pick'}
+#: 'Void' belongs here too. A scratched starter or a DNP'd player settles the
+#: bet - the book gives the stake back - and grade_potd has always treated it
+#: as settled (`_prior in ('Win','Loss','Push','Void')`). This checker did
+#: not, so it reported 2026-10-16 (Nick Martinez Over 3.5 Hits Allowed, Void)
+#: as "still ungraded after the games finished" and would have gone on
+#: reporting it forever: nothing can grade a bet that never ran. Void stays
+#: out of DECIDED, so it is still excluded from the W-L record.
+TERMINAL = DECIDED | {'no-pick', 'Void'}
+
+# ══ 2026-10-22 · 'no-pick' IS ONLY TERMINAL WHEN THERE IS NO PICK ══
+# Andy: "Why was POTD recoreded wrong, ensure that doesnt happen again."
+#
+# 10-21's POTD was 'Toronto Raptors -8.5' at 60 conviction. TOR won 135-92,
+# so -8.5 covered by 34.5. It was stored as 'no-pick' - the app's record of
+# a day we played and won said we never played.
+#
+# The parser hole that wrote it is fixed (grade_potd now matches a spread by
+# SHAPE, not by looking for the words rl/ats/spread, which a basketball line
+# does not carry). But THIS CHECKER WOULD NOT HAVE CAUGHT IT EITHER, and
+# that is the part that matters for "doesn't happen again": 'no-pick' is in
+# TERMINAL, so section 2 saw a settled row and said nothing. A wrong POTD
+# grade was invisible to the one script whose whole job is POTD integrity.
+#
+# The rule that makes it visible is the rule grade_potd already states in
+# its own guard: 'no-pick' is honest ONLY for a date with no pick. A row
+# carrying a `lean` that names a play is a FALSE terminal - the pick existed
+# and something failed to grade it.
+#
+# These lean values ARE genuine no-plays and must not be flagged. They are
+# what the discipline gates write when nothing clears, and they are the
+# reason 'no-pick' is in TERMINAL at all.
+NO_PLAY_LEANS = ('no play', 'no games', 'no pick', 'skip', 'pass',
+                 'no qualifying', 'none')
+
+
+def _is_real_pick(lean) -> bool:
+    """Does this lean name a PLAY, as opposed to recording a no-play?
+
+    Substring, not equality: the field carries decorated text like
+    'No Play (discipline pass)' and 'SKIP Away 1.5 (Jerry 87/100)'. Erring
+    toward "not a pick" is the safe direction - a false alarm on a genuine
+    no-play costs a line of log, while a missed one is a real result absent
+    from the record.
+    """
+    s = str(lean or '').strip().lower()
+    if not s:
+        return False
+    if any(k in s for k in NO_PLAY_LEANS):
+        return False
+    # A bare MATCHUP is not a pick either. play_of_day fell back to
+    # "<away> @ <home>" whenever lean_display was missing, so 2026-10-10
+    # reads 'Chicago White Sox @ Cleveland Guardians' - a string that names
+    # no side and no market and that no parser can grade. Flagging it as a
+    # recoverable no-pick would send someone to re-run grade_potd forever.
+    # Shape test rather than the new leanIsMatchupFallback flag, because the
+    # flag only exists on rows written from today on and this has to catch
+    # the history too.
+    if ' @ ' in s and not re.search(
+            r'(?:\bml\b|\brl\b|\bats\b|spread|puck\s*line|run\s*line'
+            r'|\bover\b|\bunder\b|[+-]\s*\d)', s):
+        return False
+    return True
 
 
 def _page(tbl, select, extra=None):
@@ -180,6 +253,25 @@ def main():
         for d, row in stale[:15]:
             print(f'      {d}  sport={row.get("sport")}  '
                   f'result={row.get("result")}  {str(row.get("lean"))[:34]}')
+
+    # ── 2b. FALSE 'no-pick': a settled row that names a real play ──
+    # See the NO_PLAY_LEANS block at the top. This is the check that would
+    # have caught 10-21's Raptors POTD, which was a Win stored as 'no-pick'.
+    false_nopick = [(d, row) for d, row in sorted(h_by_date.items())
+                    if str(row.get('result')) == 'no-pick'
+                    and _is_real_pick(row.get('lean'))]
+    if false_nopick:
+        problems += len(false_nopick)
+        print(f'\n  ✖ {len(false_nopick)} row(s) marked "no-pick" while the '
+              f'lean names a PLAY. A pick we published is recorded as a day '
+              f'we did not play, so a real result is missing from the '
+              f'denominator:')
+        for d, row in false_nopick[:15]:
+            print(f'      {d}  sport={row.get("sport")}  '
+                  f'lean={str(row.get("lean"))[:46]!r}')
+        print('      -> re-run: python grade_potd.py --date <date>. If it '
+              'still cannot read the pick, that is a PARSER defect; fix the '
+              'parser rather than accepting the no-pick.')
 
     # ── 3. SUPERSEDED ARCHIVES — informational, NOT a gap ───────────────
     # CORRECTION 2026-09-29: the first version of this check counted these as

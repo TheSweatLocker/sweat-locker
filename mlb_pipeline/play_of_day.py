@@ -4929,7 +4929,23 @@ def run():
                 'disagrees_strong': pick.get('_v5_disagrees_strong'),
             },
         },
+        # 2026-10-22: this fallback writes a MATCHUP into the field that is
+        # supposed to hold the PICK, and the matchup then propagates to
+        # daily_best_bet_history.lean, which is what the Receipts calendar
+        # renders and what grade_potd parses. "Chicago White Sox @ Cleveland
+        # Guardians" names no side and no market, so no parser can ever grade
+        # it - 2026-10-10 has sat unresolvable on the calendar ever since, and
+        # the narrative for that date DOES name the play ("...Guardians ML",
+        # "back the away side"), so the pick existed and only this string lost
+        # it.
+        #
+        # The fallback is kept, because a blank lean would render an empty row
+        # on the calendar, and a matchup is better to LOOK at than nothing.
+        # What is added is a flag saying the string is not a pick, so grading
+        # and the integrity checker can tell "we could not read the pick" from
+        # "we did not play" instead of inferring it from the text.
         'leanDisplay': pick.get('lean_display') or f"{pick['away_team']} @ {pick['home_team']}",
+        'leanIsMatchupFallback': not bool(pick.get('lean_display')),
         'generatedAt': today,
         'pipelineGenerated': True,
         'confidence': confidence,  # high, solid, standard

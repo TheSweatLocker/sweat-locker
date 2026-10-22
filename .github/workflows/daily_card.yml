@@ -200,6 +200,24 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "jerry_anchor_potd.py" python jerry_anchor_potd.py --threshold 70
+          # 2026-10-22 - Andy: "Why was POTD recoreded wrong, ensure that
+          # doesnt happen again."
+          #
+          # 10-21's POTD was 'Toronto Raptors -8.5'. TOR won 135-92 and it
+          # was stored as 'no-pick' - the record of a day we played and won
+          # said we never played. The parser hole is fixed, but the deeper
+          # problem was that NOTHING CHECKED. verify_potd_coverage.py existed
+          # and was in no workflow, and it treated 'no-pick' as a settled
+          # outcome, so it would have passed on that row anyway.
+          #
+          # Both fixed: 'no-pick' is now only terminal when the lean does not
+          # name a play, and the checker runs here, right after the anchor
+          # that writes the pick. --warn-only so an integrity report never
+          # stops the card being built; the point is that it is VISIBLE in
+          # the log every run instead of being discovered by Andy.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "verify_potd_coverage.py" \
+            python verify_potd_coverage.py --warn-only
 
       - name: Sweat Card
         working-directory: mlb_pipeline
