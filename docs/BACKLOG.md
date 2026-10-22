@@ -5010,3 +5010,67 @@ recorded cannot be graded by any parser, however good.
 3. **B119 residuals** — 225 unused indexes, Steam Room's 30-query fan-out.
 4. **B122 sweep** — the remaining ~65 `date.today()` call sites.
 5. **UFC** — registry note, and a self-updating record if a record is shown.
+
+## B119 residual — 222 never-scanned indexes, 80 MB
+
+**Measured 2026-10-21 from `get_io_audit()`**, not from an advisor report.
+
+`stats_reset IS NULL`, so `idx_scan = 0` means **zero scans since the
+database was created** — not "since a reset." That is strong evidence, and
+the audit query already excludes constraint-backed indexes
+(`NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = indexrelid)`), so
+none of the 222 is quietly enforcing a uniqueness rule.
+
+**Not dropped tonight, on purpose.** Two of these sports went live in the
+last three weeks. An index on `ncaab_*` showing zero scans in a preseason
+with no games is indistinguishable, in this data, from an index that is
+genuinely dead — and the same is true for anything a weekly or seasonal job
+reads. The last time an index decision was made from migration history
+rather than from the table's actual state, it added a redundant index that
+needed its own migration to remove.
+
+What would make the list safe to act on: the owning table's own `seq_scan`
+and `idx_scan`. An index that never served a scan **on a table that is read
+constantly** is dead. The same index on a table nothing has queried yet says
+only that the table is new. `get_io_audit` does not currently join that, and
+adding it is a small change to the `unused` CTE.
+
+Largest offenders for reference: `public_splits_v2_source_idx` 15 MB, then
+10 MB / 5.9 / 4.7 / 4.4 / 3.7 / 3.7 / 3.6 MB.
+
+Context on the priority: 80 MB of dead index is **not** what was burning the
+IO budget. That was read volume — the top consumer was halved on 10-21 by
+removing a double read in `detect_line_movement`, with identical flag output.
+This is housekeeping, not a fire.
+
+### Done in this pass
+`20261021t` drops the 4 duplicate index groups (8.4 MB). The win there is
+**write** cost, not disk: every INSERT maintained both copies, and
+`nba_player_game_logs` is ingested nightly per player. Done with a DO block
+that asks the catalog which member backs a constraint rather than guessing
+from the `_key` / `_unique` naming convention — and that drops **nothing**
+when both members are constraint-backed, because removing one then needs
+`ALTER TABLE DROP CONSTRAINT`, which changes what the table guarantees and
+could take an `on_conflict=game_id` target with it.
+
+## B124 — NBA's "fix is in review" banner goes false on release
+
+**Opened 2026-10-21.** `sport_registry.state_message` for NBA reads *"Per-game
+predictions and write-ups are not displaying on NBA game cards yet — that fix
+is built and in review for the next app update."*
+
+That is **true today**: 1.0.3 is in App Store review and carries the fix. It
+becomes false the moment 1.0.3 is approved and users update, and
+`refresh_calibration_notes.py` already warns about it on every run:
+
+```
+⚠ BANNER PROMISES A PENDING BUILD: NBA
+  If that build has shipped, this text is now FALSE to every user who reads it.
+  Clear it with:  python refresh_calibration_notes.py --clear-build-promise NBA
+```
+
+**Trigger, not a date:** when 1.0.3 goes live, run that command. It clears the
+operator banner and hands NBA back to the auto-generated calibration note —
+which is the right copy then, because NBA will have a real (tiny) graded
+sample. Deliberately *not* done early: clearing it while the fix is still in
+review removes the one thing an NBA user currently needs to know.
