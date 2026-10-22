@@ -425,6 +425,36 @@ def _extract_pick_from_potd(data: dict, date_str: str) -> dict:
                              r'|\s+[+-]\d', s, maxsplit=1,
                              flags=re.IGNORECASE)[0].strip()
             call_side_team = _team or None
+        elif re.match(r'^.+?\s[+-]\s*\d+(?:\.\d+)?$', s):
+            # ══ 2026-10-21 · THE THIRD PATCH TO THIS BRANCH, FIRST ON SHAPE ══
+            # Andy: "Raptors POTD hit today promising start to NBA season."
+            # It did. The stored result is 'no-pick'.
+            #
+            # Today's POTD was 'Toronto Raptors -8.5' - 60 conviction, a real
+            # published play with a narrative. _SPREAD_WORD_RE above needs a
+            # WORD (rl / ats / spread / puck line / run line) and a basketball
+            # spread is written without one, so it matched nothing, left
+            # call_market empty, and the branch below stamped the date
+            # 'no-pick': the app records that we made no play on a day we made
+            # one and won it.
+            #
+            # That branch has now been widened twice by adding vocabulary -
+            # 'rl' and 'spread' in September, 'ats' and 'puck line' on 10-04
+            # after 'BUF ATS -7' hit exactly this hole. Adding a fourth word
+            # would fail again on the fifth. The SHAPE is what identifies a
+            # spread: a team name followed by a signed number at the end of
+            # the string. Props are matched before this (they carry
+            # Over/Under plus a stat name) and totals after (they START with
+            # over/under and so have no leading team), so this is reachable
+            # only by a side with a line.
+            call_market = call_market or 'rl'
+            m_line = re.search(r'([+-]\s*\d+(?:\.\d+)?)\s*$', s)
+            if m_line:
+                try: call_line = float(m_line.group(1).replace(' ', ''))
+                except (TypeError, ValueError): call_line = None
+            call_side = '__PARSE_TEAM__'
+            _team = re.split(r'\s+[+-]\s*\d', s, maxsplit=1)[0].strip()
+            call_side_team = _team or None
         elif low.startswith('over'):
             call_market = call_market or 'total'
             call_side = 'OVER'
@@ -601,6 +631,22 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
                   f'market={pick["call_market"]!r}) — KEEPING existing grade '
                   f'{_prior!r}, not overwriting')
             return 'unparseable-kept'
+        # 2026-10-21: the comment above already states the rule - "'no-pick'
+        # is only honest for a date that has NO pick ... or the row carries a
+        # lean" - but only the first half was implemented. A date with no
+        # prior grade and a perfectly good pick text still got stamped
+        # 'no-pick', which is what happened to 'Toronto Raptors -8.5' today.
+        # A pick we can SEE but cannot PARSE is a parser defect; leaving the
+        # result NULL says "not graded yet", which is true, where 'no-pick'
+        # says "we never played", which is false and removes a real result
+        # from the denominator.
+        _lean_text = (data.get('leanDisplay') or data.get('pick')
+                      or data.get('call_text') or data.get('call_side') or '')
+        if str(_lean_text).strip():
+            print(f'  {date_str}: UNPARSEABLE but a pick IS present '
+                  f'({str(_lean_text).strip()!r}) - leaving result NULL, '
+                  f'NOT writing no-pick. Fix the parser.', file=sys.stderr)
+            return 'unparseable-has-pick'
         print(f'  {date_str}: cannot extract pick (game_id={pick["game_id"]!r}, '
               f'market={pick["call_market"]!r}) - marking as no-pick')
         result_payload = {'result': 'no-pick', 'graded_at': dt.datetime.now(dt.timezone.utc).isoformat()}

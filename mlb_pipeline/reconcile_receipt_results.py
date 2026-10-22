@@ -167,6 +167,24 @@ def truth_from_props(key, rows=None):
     return None, None
 
 
+def _et_today() -> dt.date:
+    """Today in ET, not on the runner's clock.
+
+    2026-10-21: backward windows across this project were built from the
+    runner's local date, which is TOMORROW in ET for the four-to-five hours
+    a night UTC and ET disagree. Measured on compute_surface_records the
+    same day, that silently dropped the oldest day of every d7 and d30 the
+    Receipts tab showed. zoneinfo so 2026-11-01's DST change does not
+    reintroduce it.
+    """
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now_utc.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:
+        return (now_utc - dt.timedelta(hours=5)).date()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--days', type=int, default=14)
@@ -182,7 +200,7 @@ def main():
                     help='also fill NULL results from a unanimous sibling '
                          'grade (authority rule 2). Moves displayed records.')
     args = ap.parse_args()
-    since = (dt.date.today() - dt.timedelta(days=args.days)).isoformat()
+    since = (_et_today() - dt.timedelta(days=args.days)).isoformat()
 
     recs = _page('public_receipts',
                  {'select': 'id,game_date,sport,surface,pick_label,result',

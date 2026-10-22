@@ -185,7 +185,11 @@ def run(game_date: str | None = None, days: int = 1, dry_run: bool = False):
     if game_date:
         dates = [game_date]
     else:
-        dates = [(date.today() - timedelta(days=d+1)).isoformat()
+        # 2026-10-21: this used date.today() while _et_today() sat forty
+        # lines above it — the one window in the file on the runner's clock,
+        # so the backfill lost its oldest day on every overnight run.
+        _t = date.fromisoformat(_et_today())
+        dates = [(_t - timedelta(days=d+1)).isoformat()
                  for d in range(days)]
     total_g = total_s = 0
     for gd in dates:

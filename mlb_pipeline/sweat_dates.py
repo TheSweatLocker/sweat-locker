@@ -33,10 +33,20 @@ date.today() is especially dangerous because it is LOCAL: it returns the
 ET date on Andy's Windows box and the UTC date on a GitHub runner, so the
 same code is correct in dev and wrong in CI for four hours a night.
 
-ET is UTC-4 here year-round on purpose. DST would make it -5 in winter,
-but the only thing these functions decide is which calendar day a game
-belongs to, and a one-hour error cannot move a game across midnight
-unless it kicks between 11pm and midnight ET — which no slate does.
+ET was UTC-4 here year-round on purpose. The reasoning was that these
+functions only decide which calendar day a game belongs to, and a
+one-hour error cannot move a game across midnight unless it kicks between
+11pm and midnight ET — which no slate does.
+
+2026-10-21: that holds for a GAME time and not for a JOB time. et_today()
+is asked what day it is from inside a cron, and mlb_grade_overnight fires
+at 04:10 UTC — which is 00:10 ET under the -4 offset and 23:10 the
+PREVIOUS day once EST starts on 2026-11-01. Precisely the 11pm-midnight
+case, every single night, on a job that writes grades.
+
+So et_now/et_today now use zoneinfo and get DST right; the -4 constant
+stays as the fallback for a box with no tzdata, and as the offset the
+game-date helpers below were measured against.
 """
 from __future__ import annotations
 
@@ -48,9 +58,20 @@ ET_OFFSET_HOURS = 4
 
 
 def et_now() -> _dt.datetime:
-    """Current wall-clock time in ET, naive."""
-    return _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-        hours=ET_OFFSET_HOURS)
+    """Current wall-clock time in ET, naive — DST-correct.
+
+    zoneinfo rather than ET_OFFSET_HOURS, because the hour this returns
+    decides the DATE for a 04:10 UTC cron and that flips on 2026-11-01.
+    Falls back to the constant only if tzdata is unavailable.
+    """
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now_utc.astimezone(ZoneInfo('America/New_York')).replace(
+            tzinfo=None)
+    except Exception:
+        return now_utc.replace(tzinfo=None) - _dt.timedelta(
+            hours=ET_OFFSET_HOURS)
 
 
 def et_today() -> str:

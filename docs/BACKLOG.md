@@ -4938,3 +4938,75 @@ but its L5/L10 leans on last season until mid-November.
 3. **B119 residuals** — the 225 unused indexes and the Steam Room's 30-query
    client fan-out.
 4. **B121 product call** on NHL props.
+
+---
+
+## B122 — the runner's clock decides what day it is, in ~70 files
+
+**Opened 2026-10-21.** Andy: *"findout why ledger says 3-3 in recupeiits for
+eveyr sport"*. It read 3-3 because `compute_surface_records._windows_today()`
+was built from `dt.date.today()`, which on a UTC runner is **tomorrow's date
+in ET** for the four-to-five hours a night the two disagree. Two crons fire
+in that gap — `nfl_pipeline`'s `0 */6` at 00:00 UTC (8pm ET) and
+`mlb_grade_overnight` at 04:10 — and whichever ran last owned the numbers.
+
+`d7_start = today - 6` became 10-16 instead of 10-15, so every seven- and
+thirty-day window on the Receipts tab dropped its oldest day:
+
+| | stored | true |
+|---|---|---|
+| ledger d7 | 3-3 +1.10u | 4-4 +1.75u |
+| ledger d30 | 25-19 +12.64u | 26-20 +12.04u |
+
+Every surface shares that function, so this was not a Ledger bug. And the
+worse case was still ahead: `mtd_start = today.replace(day=1)` would have
+reset month-to-date to near zero at 8pm ET on **10-31**.
+
+### Fixed
+`compute_surface_records`, `grade_pick_snapshots`, `grade_orphaned_receipts`,
+`refresh_card_grades`, `compute_external_source_records`,
+`reconcile_receipt_results` — the files that write a record or a grade —
+plus `sweat_dates.et_now()`, which used a fixed −4 offset and so returns the
+**wrong ET day** for the 04:10 UTC run once EST begins **2026-11-01**. All
+now zoneinfo with the constant as a no-tzdata fallback. Self-tested: six
+helpers return `2026-10-21` while the runner sits on `2026-10-22 02:4x UTC`.
+
+### Open
+About **65 remaining non-scratch files** call `date.today()`. They are
+audits, backfills, trainers and slate pickers, where a one-day shift is
+cosmetic or self-correcting on the next run — but that is an assumption per
+file, not a fact. `grade_pick_snapshots` is the warning: it *defined*
+`_et_today()` and still had one window on the runner's clock, forty lines
+below it.
+
+`sweat_dates` exists so there is something to import, and **2 files import
+it**. The sweep is mechanical — replace the call, confirm the module imports
+`datetime`/`timezone`, run the entrypoint — but it is ~65 entrypoints and
+belongs in a daylight session with a list, not at the end of a long one.
+
+## B123 — POTD "no-pick" is written where a pick exists
+
+**Opened 2026-10-21, parser fixed; the write path is the residue.**
+
+Today's `Toronto Raptors -8.5` (a Win, TOR 135-CHI 92) was stored as
+`no-pick` because the lean parser needs a market **word** and a basketball
+spread has none. Fixed on shape, all eight lean formats regression-tested,
+and a present-but-unparseable lean now leaves `result` NULL instead of
+claiming no play.
+
+What remains is upstream: **10-10 MLB** has
+`daily_best_bet_history.lean = 'Chicago White Sox @ Cleveland Guardians'` —
+the matchup written into the field where the side belongs. The pick text is
+gone and cannot be recovered from the row, so that date is permanently
+unresolvable. Worth finding what wrote it, because a POTD whose side is never
+recorded cannot be graded by any parser, however good.
+
+### Next, in order
+1. **Apply `20261021q`** (prop signal field names — touches MLB, the live
+   surface) and **`20261021r`** (ledger `sport_scope` labels).
+2. **Ledger per-sport split** — a product call now that the premise is
+   measured at 4.1% genuinely multi-sport. NHL 14-8 +11.83u is currently
+   displayed as the global 114-152 on its own tab.
+3. **B119 residuals** — 225 unused indexes, Steam Room's 30-query fan-out.
+4. **B122 sweep** — the remaining ~65 `date.today()` call sites.
+5. **UFC** — registry note, and a self-updating record if a record is shown.

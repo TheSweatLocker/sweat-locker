@@ -47,7 +47,7 @@ Pending.
 """
 from __future__ import annotations
 import argparse, json, os, re, sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -213,13 +213,31 @@ def resolve_pick(pick: dict, look: dict, side_look: dict | None = None) -> str |
     return look.get((player, stat))
 
 
+def _et_today_date() -> date:
+    """Today in ET, not on the runner's clock.
+
+    2026-10-21: backward windows across this project were built from the
+    runner's local date, which is TOMORROW in ET for the four-to-five hours
+    a night UTC and ET disagree. Measured on compute_surface_records the
+    same day, that silently dropped the oldest day of every d7 and d30 the
+    Receipts tab showed. zoneinfo so 2026-11-01's DST change does not
+    reintroduce it.
+    """
+    now_utc = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now_utc.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:
+        return (now_utc - timedelta(hours=5)).date()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--days', type=int, default=35)
     ap.add_argument('--apply', action='store_true')
     args = ap.parse_args()
 
-    today = date.today()
+    today = _et_today_date()
     changed_rows = 0
     changed_picks = 0
     print(f'=== refresh card grades · last {args.days} days ===\n')

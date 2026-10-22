@@ -143,7 +143,7 @@ def run(sport_filter: str | None = None) -> None:
         print(f'  deduped {before} -> {len(rows)} '
               f'({before - len(rows)} repeat row(s) of the same pick)')
 
-    today = date.today()
+    today = _et_today_date()
 
     # For each (source, sport, market, window) — compute
     groups = defaultdict(list)
@@ -257,6 +257,24 @@ def run(sport_filter: str | None = None) -> None:
                       f'(source/surface combos with no current graded picks)')
         except Exception as e:
             print(f'  ⚠ stale-key sweep failed: {type(e).__name__}: {e}')
+
+
+def _et_today_date() -> date:
+    """Today in ET, not on the runner's clock.
+
+    2026-10-21: backward windows across this project were built from the
+    runner's local date, which is TOMORROW in ET for the four-to-five hours
+    a night UTC and ET disagree. Measured on compute_surface_records the
+    same day, that silently dropped the oldest day of every d7 and d30 the
+    Receipts tab showed. zoneinfo so 2026-11-01's DST change does not
+    reintroduce it.
+    """
+    now_utc = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now_utc.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:
+        return (now_utc - timedelta(hours=5)).date()
 
 
 def main():
