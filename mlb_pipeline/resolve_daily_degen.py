@@ -46,6 +46,52 @@ def _yesterday_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4, days=1)).strftime('%Y-%m-%d')
 
 
+# ══ 2026-10-22 · THE DEGEN WENT MULTI-SPORT AND THIS FILE DID NOT ══
+# Andy: "Fix all pending eveything should be graded."
+#
+# Nine Daily Degen slips sat at result='Pending', and every stuck leg carried
+# the same note: "no game_results row". The rows exist. Yesterday's slip
+# names 'New Mexico State ML', 'Los Angeles Lakers -6.5' and 'Portland Trail
+# Blazers ML', all three of which I had resolved hours before the resolver
+# last ran at 11:18 UTC.
+#
+# The lookups were hardcoded to mlb_game_results and mlb_pipeline_props. The
+# Degen now builds legs across NCAAF, NBA and NHL, so every non-MLB leg
+# queried the MLB table by a game_id that table has never seen, got zero
+# rows, and reported the data as missing. It would have stayed Pending
+# forever - nothing about waiting longer makes an NBA game appear in
+# mlb_game_results.
+#
+# Same class as promote_playbook_conviction.PROPS_TABLE listing MLB and NFL
+# only, and as the sport-blind external handler: a table name that was
+# correct when one sport existed.
+RESULTS_TABLE = {
+    'MLB': 'mlb_game_results',
+    'NFL': 'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'NHL': 'nhl_game_results',
+    'NBA': 'nba_game_results',
+    'NCAAB': 'ncaab_game_results',
+}
+PROPS_TABLE = {
+    'MLB': 'mlb_pipeline_props',
+    'NFL': 'nfl_pipeline_props',
+    'NHL': 'nhl_pipeline_props',
+    'NBA': 'nba_pipeline_props',
+}
+
+
+def _results_table(leg: dict) -> str:
+    """The results table for this leg's sport.
+
+    Defaults to MLB when the leg carries no `sport`, which is what every
+    pre-multi-sport leg looks like - so old slips keep resolving exactly as
+    they did.
+    """
+    return RESULTS_TABLE.get(
+        str(leg.get('sport') or 'MLB').upper(), 'mlb_game_results')
+
+
 # ── Leg outcome resolvers ────────────────────────────────────────────────
 
 def _extract_player_from_pick(pick: str) -> str | None:
@@ -64,14 +110,27 @@ def _resolve_prop_leg(leg: dict) -> dict:
         return {'outcome': 'Pending', 'note': 'insufficient leg metadata'}
 
     # PostgREST ilike for player name (handles unicode dashes / whitespace)
-    r = requests.get(
-        f'{SB}/rest/v1/mlb_pipeline_props'
-        f'?game_id=eq.{game_id}&prop_type=eq.{sub_type}'
-        f'&player_name=ilike.{requests.utils.quote(player)}'
-        f'&select=result,final_value,prop_line,direction',
-        headers=H, timeout=15,
-    )
-    rows = r.json() if r.status_code == 200 else []
+    # Prop legs frequently carry NO `sport` (the 10-19 slip's Christian
+    # McCaffrey reception_yds_under leg is an NFL prop with none), so the
+    # sport cannot simply be read off the leg. Try each sport's props table
+    # and stop at the first hit. That is safe because the filter is an
+    # IDENTITY match - game_id AND prop_type AND player - and a game_id
+    # belongs to exactly one sport, so at most one table can answer.
+    _tables = ([PROPS_TABLE[str(leg.get('sport')).upper()]]
+               if str(leg.get('sport') or '').upper() in PROPS_TABLE
+               else list(PROPS_TABLE.values()))
+    rows = []
+    for _tbl in _tables:
+        r = requests.get(
+            f'{SB}/rest/v1/{_tbl}'
+            f'?game_id=eq.{game_id}&prop_type=eq.{sub_type}'
+            f'&player_name=ilike.{requests.utils.quote(player)}'
+            f'&select=result,final_value,prop_line,direction',
+            headers=H, timeout=15,
+        )
+        rows = r.json() if r.status_code == 200 else []
+        if rows:
+            break
     if not rows:
         return {'outcome': 'Pending', 'note': f'no matching prop row for {player} {sub_type}'}
     row = rows[0]
@@ -95,9 +154,17 @@ def _resolve_ml_leg(leg: dict) -> dict:
         return {'outcome': 'Pending', 'note': 'missing game_id'}
 
     r = requests.get(
-        f'{SB}/rest/v1/mlb_game_results'
+        # select=* DELIBERATELY. The explicit list here named
+        # spread_result and close_spread, which nhl_game_results does not
+        # have - its columns are close_puckline* - so PostgREST returned 400,
+        # the caller read `rows == []`, and the leg reported "no
+        # game_results row" for a game sitting right there (2026020138 =
+        # Colorado @ Philadelphia 2-3). Same trap documented in
+        # sync_receipt_grades: an explicit SELECT naming a column the table
+        # lacks returns 400, which callers here have read as "no rows".
+        f'{SB}/rest/v1/{_results_table(leg)}'
         f'?game_id=eq.{game_id}'
-        f'&select=home_team,away_team,home_score,away_score,home_win,spread_result,close_spread',
+        f'&select=*',
         headers=H, timeout=15,
     )
     rows = r.json() if r.status_code == 200 else []
@@ -129,25 +196,52 @@ def _resolve_ml_leg(leg: dict) -> dict:
 
     picked_side = 'home' if pick_home else 'away'
 
-    if sub_type == 'runline':
-        # Runline: use spread_result if present. Else derive from margin +/- 1.5.
-        sr = g.get('spread_result')
-        if sr in ('HOME_COV', 'AWAY_COV', 'PUSH'):
-            if sr == 'PUSH':
-                return {'outcome': 'Push'}
-            covered_side = 'home' if sr == 'HOME_COV' else 'away'
-            return {'outcome': 'Win' if covered_side == picked_side else 'Loss',
-                    'note': f'spread_result={sr}'}
-        # Derive
-        margin = g.get('home_score') - g.get('away_score')
-        # Assume standard -1.5 runline: home -1.5 needs margin > 1.5; away +1.5 needs margin > -1.5 (i.e. away loses by <2)
-        home_covers = margin > 1.5
-        away_covers = margin < 1.5 and not (margin == 1.5)
-        if margin == 1.5:
-            return {'outcome': 'Push'}
-        won = home_covers if picked_side == 'home' else away_covers
-        return {'outcome': 'Win' if won else 'Loss',
-                'note': f'margin {margin:+d} vs picked {picked_side} -1.5'}
+    # ══ 2026-10-22 · EVERY SPREAD LEG WAS GRADED AS A MONEYLINE ══
+    # This read `sub_type == 'runline'`. The legs carry sub_type='rl':
+    #
+    #   {'sport':'NBA','type':'RL','sub_type':'rl',
+    #    'pick':'Los Angeles Lakers -6.5'}
+    #
+    # So the branch never fired and every RL leg fell through to the straight
+    # ML branch below. The tell was in the stored note: yesterday's
+    # 'Los Angeles Lakers -6.5' resolved with note "home won", which is the
+    # ML branch's wording. LAL won by 22 so it happened to agree - a team
+    # that wins by LESS than its line would have been graded WIN on a spread
+    # that lost. feedback_ml_vs_rl_conflation: split WINS_ML from
+    # COVERS_SPREAD.
+    #
+    # The dead code was also wrong twice over. It expected spread_result in
+    # ('HOME_COV','AWAY_COV') while nba_game_results writes
+    # 'home_covered'/'away_covered', and its fallback hardcoded a 1.5 line
+    # ("Assume standard -1.5 runline") - MLB's run line, applied to an NBA
+    # -6.5 or an NCAAF -10.5.
+    #
+    # Now graded from the score and THE LEG'S OWN LINE, parsed from the pick
+    # text where the line is already signed for the named team. No
+    # convention to get wrong, and no dependence on spread_result, which is
+    # keyed to the CLOSE line rather than the line we took.
+    if str(sub_type or '').lower() in ('rl', 'runline', 'spread', 'puckline',
+                                       'ats'):
+        m_line = re.search(r'([+-]\s*\d+(?:\.\d+)?)', pick_txt)
+        if not m_line:
+            return {'outcome': 'Pending',
+                    'note': f'no line in "{pick_txt}" - cannot grade a '
+                            f'spread without one'}
+        try:
+            line = float(m_line.group(1).replace(' ', ''))
+        except (TypeError, ValueError):
+            return {'outcome': 'Pending', 'note': f'unparseable line in '
+                                                  f'"{pick_txt}"'}
+        hs, as_ = g.get('home_score'), g.get('away_score')
+        margin = (hs - as_) if picked_side == 'home' else (as_ - hs)
+        v = margin + line
+        if abs(v) < 1e-9:
+            return {'outcome': 'Push',
+                    'note': f'{picked_side} margin {margin:+g} with '
+                            f'{line:+g} lands on zero'}
+        return {'outcome': 'Win' if v > 0 else 'Loss',
+                'note': f'{hs}-{as_}, {picked_side} margin {margin:+g} '
+                        f'with {line:+g} = {v:+g}'}
     else:
         # Straight ML
         won = (picked_side == 'home' and home_win) or (picked_side == 'away' and not home_win)
@@ -184,9 +278,11 @@ def _resolve_total_leg(leg: dict) -> dict:
         return {'outcome': 'Pending', 'note': 'no game_id'}
 
     r = requests.get(
-        f'{SB}/rest/v1/mlb_game_results'
+        # select=* for the same reason as the ML/RL lookup above:
+        # total_result is not on every sport's results table.
+        f'{SB}/rest/v1/{_results_table(leg)}'
         f'?game_id=eq.{game_id}'
-        f'&select=home_score,away_score,total_result,close_total',
+        f'&select=*',
         headers=H, timeout=15,
     ).json()
     if not r:
