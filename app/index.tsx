@@ -15778,8 +15778,45 @@ setJerryHistory(prev => {
   // Lookup order: game_id, home_team key, away_team key, then value scan
   let ctxAny: any = sportMap[game.id] || sportMap[game.home_team] || sportMap[game.away_team];
   if (!ctxAny) {
+    // ══ 2026-10-21 · "LA Clippers" IS NOT "Los Angeles Clippers" ══
+    //
+    // ANDY: "the LAC and SAC Kings game card is empty ... other seem good".
+    //
+    // Exact equality here, and the two sources spell one team differently:
+    // the odds feed (which supplies game.home_team) says "Los Angeles
+    // Clippers" while every server table - nba_game_context, nba_team_stats,
+    // nba_game_results - says "LA Clippers". Measured: they are the ONLY NBA
+    // team that disagrees, which is exactly why one card was blank and the
+    // rest were fine.
+    //
+    // With no ctx row the chips all fail at once, so the card loses its tier
+    // chip AND its situation badges even though the data was there: that
+    // game had rest_days 7/5 (a REST +2 chip) and starters_out
+    // ['Bradley Beal','Brandon Ingram'] / ['Maxime Raynaud'] (a 2 OUT chip).
+    //
+    // Same family as the NHL St. Louis mismatch that cost one team all of
+    // its odds and tendencies: never join two feeds on a raw name. A
+    // substring pass does not save it either - "los angeles clippers" does
+    // not contain "la clippers".
+    //
+    // So match on the NICKNAME, the last word, after the exact attempt
+    // fails. Within a single league those are unique (all 30 NBA last words
+    // differ; same for NHL and NFL), and it survives LA/Los Angeles,
+    // St./Saint and punctuation without a per-team alias list to maintain.
+    const _nick = (t: any) => String(t || '').trim().toLowerCase()
+      .replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(-1)[0] || '';
+    const _gH = _nick(game.home_team), _gA = _nick(game.away_team);
     ctxAny = Object.values(sportMap).find((c: any) =>
       c && (c.home_team === game.home_team || c.away_team === game.away_team));
+    if (!ctxAny && (_gH || _gA)) {
+      ctxAny = Object.values(sportMap).find((c: any) => {
+        if (!c) return false;
+        const cH = _nick(c.home_team), cA = _nick(c.away_team);
+        // Both sides must agree, so a nickname shared across leagues cannot
+        // pull in the wrong game.
+        return !!cH && !!cA && cH === _gH && cA === _gA;
+      });
+    }
   }
   let pp = ctxAny?.primary_play;
   if (typeof pp === 'string') { try { pp = JSON.parse(pp); } catch { pp = null; } }
