@@ -323,6 +323,24 @@ BLOB_SOURCES = {
     'jerry_cache.sweat_card': 'sweat_card',
 }
 
+# ══ 2026-10-22 · SOURCES THAT ARE REAL TABLES BUT NOT KEYED ON `id` ══
+# The comment above SOURCES says "daily_degen / daily_dawg have no `id`
+# column at all", which is true and was treated as the end of the matter.
+# They do have a `result` column and they ARE keyed - just not on id:
+#
+#   daily_degen   receipt source_id = the GAME DATE   ('2026-10-21')
+#   daily_dawg    receipt source_id = 'dotd:<game_id>'
+#
+# Both tables are almost fully graded (daily_degen 165 of 166, daily_dawg
+# 132 of 132), and every one of the 29 ungraded receipts pointing at them
+# has a GRADED source row. They were never unreachable, only unmapped.
+#
+# (keycol, prefix to strip from source_id, label column or None)
+KEYED_SOURCES = {
+    'daily_degen': ('game_date', '', None),
+    'daily_dawg':  ('game_id', 'dotd:', 'team'),
+}
+
 
 def _same_bet(receipt_label, source_label) -> bool:
     """Do these two strings name the SAME bet?
@@ -350,11 +368,20 @@ def sync_blob_sources(apply: bool) -> dict:
     stale, conflict, patched, drift = [], 0, 0, 0
     recs = [r for r in paged('public_receipts', {'select': '*'})
             if r.get('source_table') in BLOB_SOURCES
+            or r.get('source_table') in KEYED_SOURCES
             or r.get('source_table') == 'daily_best_bet_history']
     # One fetch per distinct date, not per receipt.
     blobs: dict[str, dict] = {}
     potd: dict[str, str] = {}
     potd_lean: dict[str, str] = {}
+    keyed: dict[str, dict] = {}
+    for _st in {r.get('source_table') for r in recs} & set(KEYED_SOURCES):
+        _kc, _pfx, _lbl = KEYED_SOURCES[_st]
+        keyed[_st] = {}
+        for _row in paged(_st, {'select': '*'}):
+            _k = str(_row.get(_kc) or '')[:10] if _kc.endswith('date')                 else str(_row.get(_kc) or '')
+            if _k:
+                keyed[_st].setdefault(_k, _row)
     for r in recs:
         gd = str(r.get('game_date'))[:10]
         st = r.get('source_table')
@@ -363,7 +390,23 @@ def sync_blob_sources(apply: bool) -> dict:
                                          'cache_key': f'eq.{key}'})
             blobs[key] = (rows[0].get('data') or {}) if rows else {}
     for r in recs:
-        if r.get('source_table') == 'daily_best_bet_history':
+        if r.get('source_table') in KEYED_SOURCES:
+            st = r['source_table']
+            kc, pfx, lblcol = KEYED_SOURCES[st]
+            sid = str(r.get('source_id') or '')
+            if pfx and sid.startswith(pfx):
+                sid = sid[len(pfx):]
+            if kc.endswith('date'):
+                sid = sid[:10]
+            srow = (keyed.get(st) or {}).get(sid) or {}
+            src_result = srow.get('result')
+            # No label column means no identity check is possible. That is
+            # acceptable for daily_degen ONLY because its receipt is the
+            # whole slip ('daily_degen (3 legs)') keyed by date - there is
+            # one per day and nothing to confuse it with. daily_dawg DOES
+            # carry `team`, so it gets checked.
+            src_lean = srow.get(lblcol) if lblcol else r.get('pick_label')
+        elif r.get('source_table') == 'daily_best_bet_history':
             sid = str(r.get('source_id') or '')
             day = sid.split(':', 1)[1] if ':' in sid else str(
                 r.get('game_date'))[:10]
