@@ -3887,6 +3887,21 @@ const _priorSeasonKey = (key: number | string): number | string | null => {
   if (y <= 2020) return null;
   return `${y}-${String(y + 1).slice(-2)}`;
 };
+// ══ TWO TABLES, TWO SEASON FORMATS - MEASURED, NOT ASSUMED ══
+// team_situational_records stores NBA/NCAAB as a LABEL and the rest as a
+// year; team_stats_rolling stores a YEAR for every sport including NBA
+// ('2024','2025','2026') and NCAAB ('2025'). So the situational card needs
+// _seasonKey and the team-stats card needs this one. Applying the label to
+// both is what blanked NBA Team Stats: it had been matching 2025 through the
+// old Number() fallback, and sending '2026-27' matched nothing.
+const _seasonYear = (season: any): number => {
+  const n = Number(season);
+  if (isFinite(n) && n > 1900) return n;
+  const m = String(season || '').match(/^(\d{4})-\d{2}$/);
+  if (m) return Number(m[1]);
+  return new Date().getFullYear();
+};
+
 // Same season, whichever form it arrived in.
 const _sameSeason = (a: any, b: any): boolean =>
   String(a) === String(b) ||
@@ -4725,7 +4740,9 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
   // matches the away-first column order used everywhere else on the card.
   const [ball, setBall] = React.useState<'away'|'home'>('away');
   const [loading, setLoading] = React.useState(true);
-  const seasonForQuery = _seasonKey(season);
+  // team_stats_rolling keys by YEAR for every sport, so this card uses
+  // the numeric key. See _seasonYear for why the two differ.
+  const seasonForQuery = _seasonYear(season);
 
   React.useEffect(() => {
     const client = sb();
@@ -4743,7 +4760,7 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
       // silently missing from the card. Now: pull both seasons, prefer
       // current-season row per stat_key, borrow prior-season row for
       // stats missing this season. Same season pool label shows in hint.
-      const prevSeason = _priorSeasonKey(seasonForQuery);
+      const prevSeason = seasonForQuery > 2020 ? seasonForQuery - 1 : null;
       const seasonsToFetch = prevSeason ? [seasonForQuery, prevSeason] : [seasonForQuery];
       const [awayR, homeR] = await Promise.all([
         client.from('team_stats_rolling')
