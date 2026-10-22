@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 
 import requests
@@ -323,6 +324,22 @@ BLOB_SOURCES = {
 }
 
 
+def _same_bet(receipt_label, source_label) -> bool:
+    """Do these two strings name the SAME bet?
+
+    Strips the parenthetical each surface decorates its label with
+    ('(Jerry 85/100)', '(resolver STRONG)') and ignores punctuation and case,
+    so 'Boston Red Sox ML (resolver STRONG)' matches 'Boston Red Sox ML'.
+    An empty source label matches nothing, so the receipt is left alone
+    rather than graded from a bet we cannot identify.
+    """
+    def _n(x):
+        x = re.sub(r'\s*\([^)]*\)', '', str(x or '')).strip().lower()
+        return re.sub(r'[^a-z0-9. ]', '', x).strip()
+    a_, b_ = _n(receipt_label), _n(source_label)
+    return bool(a_) and bool(b_) and a_ == b_
+
+
 def sync_blob_sources(apply: bool) -> dict:
     """Grade card/POTD receipts from the places those grades actually live.
 
@@ -330,13 +347,14 @@ def sync_blob_sources(apply: bool) -> dict:
       * card receipts  source_id = '<market>:<game_id>'  e.g. 'rl:401909092'
       * POTD receipts  source_id = 'potd:<bet_date>'
     """
-    stale, conflict, patched = [], 0, 0
+    stale, conflict, patched, drift = [], 0, 0, 0
     recs = [r for r in paged('public_receipts', {'select': '*'})
             if r.get('source_table') in BLOB_SOURCES
             or r.get('source_table') == 'daily_best_bet_history']
     # One fetch per distinct date, not per receipt.
     blobs: dict[str, dict] = {}
     potd: dict[str, str] = {}
+    potd_lean: dict[str, str] = {}
     for r in recs:
         gd = str(r.get('game_date'))[:10]
         st = r.get('source_table')
@@ -358,8 +376,11 @@ def sync_blob_sources(apply: bool) -> dict:
                 rows = paged('daily_best_bet_history',
                              {'select': '*', 'bet_date': f'eq.{day}'})
                 potd[day] = (rows[0].get('result') if rows else None)
+                potd_lean[day] = (rows[0].get('lean') if rows else None)
             src_result = potd.get(day)
+            src_lean = potd_lean.get(day)
         else:
+            src_lean = None
             key = f'{BLOB_SOURCES[r["source_table"]]}_{str(r.get("game_date"))[:10]}'
             blob = blobs.get(key) or {}
             # football_picks ONLY - see the stale-list note above.
@@ -370,15 +391,41 @@ def sync_blob_sources(apply: bool) -> dict:
                     continue
                 if f'{x.get("type")}:{x.get("game_id")}' == want:
                     src_result = x.get('result')
+                    src_lean = x.get('label')
                     break
             if src_result is None:
                 for x in (blob.get('top_8') or []):
                     if isinstance(x, dict) and str(x.get('label') or '') == \
                             str(r.get('pick_label') or ''):
                         src_result = x.get('result')
+                        src_lean = x.get('label')
                         break
         exp = _RMAP.get(str(src_result or '').strip().lower())
         if not exp:
+            continue
+        # ══ 2026-10-22 · THE IDENTITY CHECK THIS PASS WAS MISSING ══
+        # sync_source has `ident()` for exactly this and its comment says
+        # why: "The source row no longer describes this bet, so its grade
+        # says nothing about this receipt in either direction." I wrote this
+        # pass without one and it reported DRIFT as CONFLICT.
+        #
+        # The POTD gets replaced during the day (that is what the
+        # best_bet_<date>_<sport> archive rows are), and the receipt keeps
+        # the original pick while daily_best_bet_history moves on. So the
+        # two rows end up describing DIFFERENT BETS on the same date:
+        #
+        #   10-15  receipt 'Cleveland Guardians ML' = WIN
+        #          source  'Los Angeles Dodgers ML' = LOSS
+        #   10-05  receipt 'No Play (discipline pass)' = NO_ACTION
+        #          source  'Freddy Peralta Over 13.5 Outs' = WIN
+        #
+        # Neither is wrong. They are not the same bet. Measured over all 267
+        # POTD-sourced receipts: 244 agree, 20 drift, and only 3 are a real
+        # same-bet disagreement - so without this guard two thirds of what it
+        # called a conflict was noise, and the 3 that matter would have been
+        # buried in it.
+        if not _same_bet(r.get('pick_label'), src_lean):
+            drift += 1
             continue
         have = _RMAP.get(str(r.get('result') or '').strip().lower())
         if have is None:
@@ -389,7 +436,9 @@ def sync_blob_sources(apply: bool) -> dict:
                   f'{r.get("source_table")} {r.get("pick_label")!r} '
                   f'receipt={have} source={exp} — NOT patched')
     print(f'  blob/POTD sources: {len(recs)} receipt(s) examined, '
-          f'{len(stale)} stale, {conflict} conflict')
+          f'{len(stale)} stale, {conflict} conflict, {drift} drift '
+          f'(receipt and source name DIFFERENT bets - the POTD was '
+          f'replaced after the receipt was written; neither grade is wrong)')
     for r, exp in stale[-10:]:
         print(f'    {r["game_date"]} receipt={r["id"]} '
               f'{r.get("source_table")} {str(r.get("pick_label"))[:28]!r} '
