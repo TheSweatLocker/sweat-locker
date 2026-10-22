@@ -661,7 +661,8 @@ def preserve_opens(rows: list[dict]) -> None:
             r = requests.get(
                 f'{SB}/rest/v1/nba_game_context',
                 params={'game_id': f'in.({ids_csv})',
-                        'select': 'game_id,open_spread,open_total'},
+                        'select': 'game_id,open_spread,open_total,'
+                                  'home_ml_open,away_ml_open'},
                 headers=H_READ, timeout=20)
             if r.status_code == 200:
                 for row in r.json():
@@ -682,8 +683,19 @@ def preserve_opens(rows: list[dict]) -> None:
     mirrored = kept = 0
     for row in rows:
         prev = existing.get(row.get('game_id')) or {}
+        # 2026-10-22 · THE MONEYLINE WAS NOT IN THIS LIST.
+        # Andy: "line moevemnt is improtant for nba so this should be
+        # showing". Spread and total were fixed on 10-20 and are working -
+        # 3 of 14 spreads and 6 of 14 totals have since moved off their
+        # open. The ML row of that strip, though, has shown "— no open" on
+        # every NBA card ever, because home_ml_open did not exist as a
+        # COLUMN on this table. NBA was the only sport missing it: MLB, NHL
+        # and NCAAB all have home_ml_open/away_ml_open and NFL has both
+        # conventions. Added in 20261022a, under the same freeze trigger.
         for open_key, close_key in (('open_spread', 'close_spread'),
-                                    ('open_total', 'close_total')):
+                                    ('open_total', 'close_total'),
+                                    ('home_ml_open', 'home_ml_close'),
+                                    ('away_ml_open', 'away_ml_close')):
             if prev.get(open_key) is not None:
                 row[open_key] = prev[open_key]      # the real opener wins
                 kept += 1
