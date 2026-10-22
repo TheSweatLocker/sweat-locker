@@ -924,6 +924,34 @@ jobs:
         run: |
           cd mlb_pipeline
           python prop_ensemble_scorer.py --sport NFL --refresh-existing
+      # 2026-10-21 - Andy: "Have we verigfied accuracy of dsiplayed stats
+      # forn nba and toher sports all updating properly week by week do a
+      # couple spot checks across sports?"
+      #
+      # NBA and NHL were checkable because their tables carry wins and
+      # losses, which cross-validate against graded games. NFL carries
+      # pass/rush/EPA/FG counters and nothing in it can be checked against a
+      # score, so the honest answer for football was that we had NOT.
+      #
+      # This checks the two things that do not need a second feed: the
+      # DENOMINATOR (stats.games against the completed-game count in
+      # nfl_game_results) and internal invariants (completions <= attempts, fg_made <=
+      # fg_att, a stored pct reproducing from its own parts, no negative
+      # counters). Almost every stat defect found in this project was a
+      # denominator defect, and a wrong `games` silently rescales every
+      # per-game rate derived from it.
+      #
+      # continue-on-error: this REPORTS, it does not gate. A stat problem
+      # should be visible in the log, not a reason the slate fails to build.
+      - name: Verify NFL team stat integrity
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python verify_team_stat_integrity.py --sport NFL
 
       # 2026-09-07: Prop Jerry synthesis for NFL — writes prop_jerry_reads
       # rows with input_snapshot.render_sections so the app renders the

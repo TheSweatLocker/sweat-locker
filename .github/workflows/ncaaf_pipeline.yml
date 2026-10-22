@@ -727,6 +727,34 @@ jobs:
           # emits sharp, prop, ladder, ledger, potd, dawg, ncaaf_sides, ...), so
           # there is nothing to filter; the flag was never real.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "compute_surface_records.py" python compute_surface_records.py
+      # 2026-10-21 - Andy: "Have we verigfied accuracy of dsiplayed stats
+      # forn nba and toher sports all updating properly week by week do a
+      # couple spot checks across sports?"
+      #
+      # NBA and NHL were checkable because their tables carry wins and
+      # losses, which cross-validate against graded games. NCAAF carries
+      # pass/rush/EPA/FG counters and nothing in it can be checked against a
+      # score, so the honest answer for football was that we had NOT.
+      #
+      # This checks the two things that do not need a second feed: the
+      # DENOMINATOR (stats.games against the completed-game count in
+      # ncaaf_game_results) and internal invariants (completions <= attempts, fg_made <=
+      # fg_att, a stored pct reproducing from its own parts, no negative
+      # counters). Almost every stat defect found in this project was a
+      # denominator defect, and a wrong `games` silently rescales every
+      # per-game rate derived from it.
+      #
+      # continue-on-error: this REPORTS, it does not gate. A stat problem
+      # should be visible in the log, not a reason the slate fails to build.
+      - name: Verify NCAAF team stat integrity
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python verify_team_stat_integrity.py --sport NCAAF
 
       - name: Recompute NCAAF cohort calibration
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'cohorts_only' || steps.mode.outputs.mode == 'resolver_only'
