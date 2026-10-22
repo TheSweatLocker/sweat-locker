@@ -5462,3 +5462,65 @@ to the engine.
    is a record change and Andy's call.
 4. Then decide what the game_read record means historically, given it mixes
    both.
+
+## B121 — RESOLVED 2026-10-22: NHL props are UNWIRED, not unprofitable
+
+Both flags stay **OFF**. But the reason for NHL is the opposite of what we
+had recorded, and it makes this a build with a known scope rather than a dead
+end.
+
+### What we believed
+"Every measurable NHL prop signal LOSES to its own price — best −0.5pp, worst
+−7.1pp, zero VALIDATED on 25,478 graded rows." Read as: the NHL prop model
+does not work.
+
+### What is actually true
+**8 of 15 NHL prop signals cannot fire, because their matchup inputs are
+never attached to the prop row.** The signals read fields off
+`nhl_pipeline_props`, and these are absent from it:
+
+`projection` · `opp_goalie_sv_pct` · `opp_pk_pct` · `pace` · `goalie_gsaa` ·
+`own_back_to_back`
+
+**Every one of those exists, populated, on `nhl_game_context`:**
+
+```
+away_goalie_sv_pct 0.8814   home_goalie_gsaa -3.71   away_pk_pct 78.8
+home_goalie_sv_pct 0.8834   away_goalie_gsaa  2.85   home_pk_pct 70.8
+away_back_to_back  False    home_back_to_back False  rest_days 2 / 2
+```
+
+So the data is collected on the GAME row every night and never reaches the
+PROP row. One signal (`nhl_prop_b2b_fade`) references nothing that exists at
+all.
+
+### What the board therefore runs on
+Only the history signals, which DO have data:
+`player_l5_hit_count` / `player_l10_hit_count` / `player_season_hit_pct`, all
+**77.3% populated** across 8,081 rows since 10-20. That is a board with its
+matchup half disconnected — and a pure hit-rate board losing to the price is
+the expected result, not a finding about NHL.
+
+Measured state: 64,650 NHL prop rows, **100% COVERAGE**, graded
+14,366-20,725 (40.9%). The publishable view returns **0 rows**, so flipping
+the flag today would publish nothing regardless.
+
+### The work, in order
+1. **One enrichment step**: attach the six fields above from
+   `nhl_game_context` to `nhl_pipeline_props` at generate time, keyed on
+   `ctx_game_id` (the column already exists on the prop row). Resolve
+   `opp_*` by the player's own team — `team_abbrev` and `opp_abbrev` are both
+   already on the row, so the home/away side is unambiguous.
+2. **Re-run the price-aware calibration** with the signals able to fire, and
+   let `baseline_pct` decide. Expect the board to produce real tiers or to
+   fail honestly for the first time.
+3. **Only then** decide the flag. Not before — a board that cannot score
+   cannot be evaluated.
+4. `nhl_prop_b2b_fade` either gets `own_back_to_back` derived in step 1 or
+   gets disabled; an enabled signal that can never fire inflates the signal
+   count a reader uses to judge a pick.
+
+### NBA — keep OFF, and it is simply too early
+5,495 prop rows, **zero graded**, `signals` blob empty on every row. Nothing
+to calibrate against by definition. 82 games a team means a usable graded
+sample arrives in roughly 2-3 weeks; revisit then rather than now.
