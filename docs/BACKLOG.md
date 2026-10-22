@@ -5366,3 +5366,99 @@ measurement. The other 408 are COVERAGE/LEAN/SKIP and are not in that record.
 
 **Not fixed in this pass.** It is 282 published grades and 641 published
 labels; re-settling them changes the record, which is Andy's call.
+
+## B128 — 🚨 The badge and the game-detail read show OPPOSITE SIDES on 76 games
+
+**Opened 2026-10-22.** Andy: *"conflicting badges on nhl preg game and the
+actual read in game detail for example Clagary ML badge but Wild -1.5 in the
+read whihc one is right? and why is that happening, also ahappening in other
+games"*.
+
+Reproduced on his example and two more on the same slate:
+
+| game | badge (`primary_play`) | detail (`jerry_reads`) |
+|---|---|---|
+| Minnesota @ Calgary | **Minnesota Wild −1.5** (STRONG, conv 61) | **Calgary Flames ML** (conv 61) |
+| NY Rangers @ Toronto | **Rangers RL** (55) | **Maple Leafs ML** (55) |
+| Winnipeg @ Dallas | Dallas −1.5 (STRONG, 62) | Dallas ML (62) |
+
+**The conviction is identical in every conflicting pair.** Same confidence
+number, opposite play. That is the signature of two consumers deriving a pick
+from one score rather than one of them being stale.
+
+### Scope — 8.7% of all comparable reads, and NCAAF is 1 in 7
+
+| sport | comparable | side differs | % |
+|---|---|---|---|
+| NHL | 245 | 3 | 1.2% |
+| NBA | 41 | 1 | 2.4% |
+| NFL | 134 | 8 | 6.0% |
+| **NCAAF** | **456** | **64** | **14.0%** |
+| **total** | **876** | **76** | **8.7%** |
+
+A further 18 agree on the side but differ on the market (ML vs spread).
+
+### Why: the detail read's pick is the LLM's, not the engine's
+
+`jerry_reads_dual_write.py` ~255 parses the pick straight out of the model's
+own output:
+
+```python
+market = (_field('MARKET') or '').lower()
+side   = (_field('SIDE') or '').upper()
+call_text = _field('CALL_TEXT')
+```
+
+The prompt passes `{model_lean}` = `primary_play.label` as context
+(`generate_nhl_game_reads` ~437), but nothing **binds** the writer to it. So
+the writer is free to pick its own side, echo the engine's conviction, and
+publish the pair as one read.
+
+This is the unfinished half of the 2026-09-29 fix. That one stopped the
+writer *quoting* shadow numbers it should not see ("the read argues against
+its own pick"). It left the writer free to *choose* a different side.
+
+### Which is right
+
+`primary_play` is the documented authority — `generate_sweat_card` states it
+outright (2026-10-06: *"primary_play IS THE AUTHORITY, NOT jerry_reads"*).
+So **the badge is the engine's actual pick** and the detail read's is an LLM
+artifact.
+
+**But neither is validated**, and the edge data says so. Every stated edge on
+today's NHL slate is NEGATIVE (4 of 4), including both STRONG promotions
+("LR override · p=0.39 · was COVERAGE/ml · rerouted ML → spread", stated
+−5.7pp). A negative edge means the model rates that side BELOW its price. Yet
+graded:
+
+| | record | n |
+|---|---|---|
+| negative stated edge | 36-27 (57.1%) | 63 |
+| positive stated edge | 2-5 (28.6%) | 7 |
+| STRONG + negative | 10-11 | 21 |
+
+So the sign is not predicting outcomes and the samples are far too small to
+call. **Do not "fix" the sign on this evidence** — that is
+feedback_slope_is_not_a_betting_rule. What is established is the
+contradiction, not which side wins.
+
+### The receipts angle, which is worse than the display
+
+`public_receipts.surface='game_read'` has `source_table='jerry_reads'`, so the
+**published game-read record is built on the LLM's side selection**, not the
+engine's. On the 76 games above, the record grades a pick the badge never
+showed. The game_read record is therefore a blend of two decision processes,
+and its 10-4 NBA / 284-262 NCAAF style figures cannot be attributed cleanly
+to the engine.
+
+### Fix, in order
+1. **Bind the side for FUTURE reads.** Take `call_market` / `call_side` /
+   `call_line` / `call_text` from `primary_play` and let the LLM write only
+   prose. The writer choosing the bet is the defect; it was never supposed to.
+2. **Reject, do not silently accept**, a read whose parsed side disagrees with
+   `primary_play` — log it loudly so the rate is visible instead of 8.7%
+   accumulating unseen.
+3. **Do NOT rewrite the 76 published reads.** They are graded receipts; that
+   is a record change and Andy's call.
+4. Then decide what the game_read record means historically, given it mixes
+   both.
