@@ -767,5 +767,23 @@ bash "$RUN_STEP" --label "watchdog_workflow_heartbeat.py (nightly)" \
 # fix in daylight, not a reason to abort the night's slate.
 bash "$RUN_STEP" --detector --label "schema_guard.py --audit" \
   python schema_guard.py --audit
+
+# B157 · THE UNRUN-WRITER DETECTOR (2026-10-23)
+# Our recurring failure mode is not missing code, it is code that exists and
+# never runs. Eight instances found by accident in three days, each one
+# surfaced because Andy opened a screen and saw a wrong number: a released QB
+# still starting, 1,469 NCAAF stat rows withheld, the Sharp breakdown frozen a
+# month in front of users. bridge_football_game_ids.py is the sharpest case --
+# it diagnoses the NFL context/results id split, measured "0 of 316" on
+# 2026-09-21, and has never run, so the bug it fixes is still open.
+# Same posture as schema_guard above: report, never fail the night.
+bash "$RUN_STEP" --detector --label "audit_unscheduled_writers.py"   python audit_unscheduled_writers.py
+
+# sweat_rating was 19.3 DAYS stale (2026-10-23)
+# compute_sweat_rating.py was in no workflow, so its 139 NCAAF rows aged past
+# matchup_story's 4-day freshness gate and were withheld from every read.
+# Internal only -- project_sweat_rating_surfacing_pinned_1004 still stands;
+# this refreshes the number without surfacing it.
+bash "$RUN_STEP" --label "compute_sweat_rating.py"   python compute_sweat_rating.py --all --write
 echo ""
 echo "══ nightly cross-sport complete ══"
