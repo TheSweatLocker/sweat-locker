@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B152**.
+- Next free ID: **B155**.
 
 ---
 
@@ -48,6 +48,9 @@ above — they are how the search stays honest enough to find something:
 
 | ID | Status | Item |
 |----|--------|------|
+| **B152** | OPEN | **🔥 SCHEMA GUARD — the prevention for today's outage.** Validate column/table names against the live schema once per run and fail LOUDLY on a miss. Today every dead query (`anytime_td`, `home_qb`, `ncaaf_pipeline_props`, `kickoff_utc`, `close_locked_at`, `close_spread_*_price`) was swallowed by `if r.status_code != 200: return []` and the step exited green. Fifth occurrence of that class. |
+| **B153** | OPEN | **Stop swallowing non-200s.** `if r.status_code != 200: return []` must log status + URL. A 400 is a bug in our code, not a quiet day. Paired with B152. |
+| **B154** | OPEN | **Request budget in the nightly.** Daily request count + 4xx rate, loud failure above threshold. Today the FIRST signal that we were issuing 214k requests/day was the app going down for paying users. |
 | **B142** | OPEN | **🔥 LIVE: a published pick with no line and no price.** Receipt 3278802 (NBA game_read, NOP @ UTA tonight) is `pick_label: 'Over'`, `pick_line: null`, `pick_odds: null` — a user cannot act on it. Forward-dated NBA reads have no price at all: 3/12 today, **8/8** on 10-24, **5/5** on 10-25, with conviction compressed to 50-54 vs 52-62 on graded days. Wrong data in front of users, so it leads. |
 | **B144** | OPEN | **🔥 We publish against our own read, silently.** 237 of 1,754 `game_read` receipts publish a **different market** than the `jerry_reads` row they cite; **64 publish the opposite side** of the same market (NCAAF 34, NHL 14, MLB 8, NFL 7). Last night's Bears game is one: read said CHI −1.5 and **won**, receipt said NE +2.5 and **lost**. Join verified sound (game_id 1754/1754, 1:1). The override is *not* losing (54.1% vs the read's 48.3%, n=61, CI ±12.5pp) — the defect is that the divergence is unlabelled and the read is graded as if it were the play. |
 | **B143** | OPEN | **🔥 `actual_value` is NULL on 98% of graded prop receipts** (2,458 of 2,507 since 09-23; MLB 41/986, NFL 8/1521). The user sees "Loss" and never learns what the player did. Directly undercuts "we show the receipts," which is the brand. |
