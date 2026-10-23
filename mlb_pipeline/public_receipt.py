@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -56,6 +57,56 @@ H_WRITE = {
 UNIQUE_KEY = 'sport,surface,game_date,source_id'
 _INT_FIELDS = ('conviction', 'pick_odds')
 _MARKET_MAX = 24
+
+# ══ 2026-10-23 · B142 · A PICK ON THESE MARKETS IS NOTHING WITHOUT A NUMBER ══
+# Measured since 09-01: 126 receipts carried one of these markets with
+# pick_line NULL, and 114 of them were GRADED into the published record
+# (60 WIN / 51 LOSS / 3 PUSH). "Over" with no number cannot be graded against
+# anything we showed, so those outcomes were scored against a line the user
+# never saw. Both write paths did it — 68 reconstructed, 58 live.
+#
+# Same family as feedback_consensus_line_must_be_posted: a missing line makes
+# a fake price, and here it also made a fake result.
+#
+# ml is deliberately absent: a moneyline has no line and a NULL is correct.
+_LINE_REQUIRED_MARKETS = ('total', 'rl', 'spread', 'puckline')
+
+# Anchored at the END of the label on purpose. A loose \d+ search picks the
+# 76 out of "Philadelphia 76ers -5.5" and stores a 76-point spread; the
+# trailing token is the line in every label shape we emit ("Under 6.5",
+# "Baylor -6", "Over 230.5"). A label with no trailing number ("Ottawa
+# Senators RL", "Over") correctly yields nothing and the row is refused.
+_TRAILING_LINE_RE = re.compile(r'(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$')
+_LINE_SANITY_MAX = 400.0
+
+
+def recover_line(row: dict):
+    """Fill pick_line from pick_label where the label carries the number.
+
+    Returns the row. Some live sweat_card rows store "Under 6.5" in
+    pick_label with pick_line NULL — the number was never missing, just
+    never parsed into the column the grader and the UI both read.
+    """
+    if row.get('pick_line') is not None:
+        return row
+    if str(row.get('market') or '').lower() not in _LINE_REQUIRED_MARKETS:
+        return row
+    m = _TRAILING_LINE_RE.search(str(row.get('pick_label') or ''))
+    if not m:
+        return row
+    try:
+        v = float(m.group(1))
+    except (TypeError, ValueError):
+        return row
+    if abs(v) <= _LINE_SANITY_MAX:
+        row['pick_line'] = v
+    return row
+
+
+def unactionable(row: dict) -> bool:
+    """True when this row claims a line-bearing market but carries no line."""
+    return (str(row.get('market') or '').lower() in _LINE_REQUIRED_MARKETS
+            and row.get('pick_line') is None)
 
 
 def sanitize(row: dict) -> dict:
@@ -136,6 +187,7 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         return out
     now = datetime.now(timezone.utc).isoformat()
     payload = []
+    refused = []
     for r in rows:
         if not r.get('sport') or not r.get('game_date') or not r.get('source_id'):
             out['skipped'] += 1
@@ -144,10 +196,25 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         r.setdefault('published_at', now)
         # The affirmative claim. Nothing else in the codebase sets this.
         r['capture_mode'] = 'live'
-        payload.append(sanitize(r))
+        r = sanitize(recover_line(r))
+        # B142: refuse a line-bearing market with no line. A receipt is the
+        # published record, and an ungradeable row in it becomes a fabricated
+        # W/L the moment a grader guesses the line. Loud, never silent.
+        if unactionable(r):
+            refused.append(r)
+            out['skipped'] += 1
+            continue
+        payload.append(r)
     if out['skipped'] and not quiet:
-        print(f'  ⚠ receipts ({surface}): {out["skipped"]} row(s) missing '
-              f'sport/game_date/source_id — not captured')
+        print(f'  ⚠ receipts ({surface}): {out["skipped"]} row(s) not captured')
+    if refused:
+        out['unactionable'] = len(refused)
+        print(f'  *** receipts ({surface}): REFUSED {len(refused)} row(s) — '
+              f'line-bearing market with no pick_line ***')
+        for r in refused[:8]:
+            print(f'      {r.get("sport")} {r.get("market")} '
+                  f'{r.get("game_date")} {r.get("matchup")} '
+                  f'label={r.get("pick_label")!r} src={r.get("source_id")}')
     if not payload:
         return out
     if dry_run:
