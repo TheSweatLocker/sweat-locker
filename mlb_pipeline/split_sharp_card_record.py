@@ -103,10 +103,14 @@ def american_payout(odds) -> float:
 # as feedback_result_column_is_title_case.
 #
 # Accept both vocabularies, and normalise once here rather than at each test.
+# VOID is deliberately NOT mapped. The headline's `pushes` column excludes
+# voids (a voided bet is refunded, not a push), and counting them here was the
+# last thing stopping reconciliation: W and L matched exactly in every window
+# while pushes ran 4 high — exactly the 4 VOID legs on the card.
 _VERDICT = {
     'W': 'W', 'WIN': 'W',
     'L': 'L', 'LOSS': 'L',
-    'P': 'P', 'PUSH': 'P', 'VOID': 'P',
+    'P': 'P', 'PUSH': 'P',
 }
 
 
@@ -148,10 +152,42 @@ def main():
     if not windows:
         raise SystemExit(f'no sharp_card surface_records rows for {args.sport}')
 
-    daily = page('daily_surface_records', surface='eq.sharp_card',
-                 sport=f'eq.{args.sport}',
-                 select='record_date,wins,losses,pushes,pick_count,detail')
-    by_date = {d['record_date']: d for d in daily}
+    # ══ 2026-10-23 · READ THE SAME POPULATION THE HEADLINE SUMS ════════════
+    # This asked daily_surface_records for sport='ALL' when splitting ALL. But
+    # compute_surface_records.pick_sharp_card deliberately SKIPS the ALL
+    # rollup rows and sums the PER-SPORT ones (see "THE DOUBLE COUNT" there) —
+    # so the two were reading different eras and could never agree:
+    #
+    #     per-sport rows   822-580-4   126 rows / 85 dates (back to 07-30)
+    #     ALL rollup rows  374-283-2    50 rows / 50 dates (only from 09-03)
+    #     the 35 dates with no ALL row  448-297-2
+    #     374 + 448 = 822 ✓   283 + 297 = 580 ✓
+    #
+    # The ALL rollup simply did not exist before agg_sharp_card_from_receipts
+    # started on 09-03. Summing the per-sport rows is the only basis that
+    # matches the headline.
+    # ══════════════════════════════════════════════════════════════════════
+    if str(args.sport).upper() == 'ALL':
+        every = page('daily_surface_records', surface='eq.sharp_card',
+                     select='sport,record_date,wins,losses,pushes,'
+                            'pick_count,detail')
+        daily = [d for d in every
+                 if str(d.get('sport') or 'MLB').upper() != 'ALL']
+        # Several sports can share a date, so merge their legs per date
+        # instead of letting one sport's row overwrite another's.
+        merged: dict = {}
+        for d in daily:
+            key = d['record_date']
+            tgt = merged.setdefault(key, {'record_date': key,
+                                          'detail': {'legs': []}})
+            tgt['detail']['legs'].extend(
+                ((d.get('detail') or {}).get('legs') or []))
+        by_date = merged
+    else:
+        daily = page('daily_surface_records', surface='eq.sharp_card',
+                     sport=f'eq.{args.sport}',
+                     select='record_date,wins,losses,pushes,pick_count,detail')
+        by_date = {d['record_date']: d for d in daily}
     print(f'{args.sport}: {len(windows)} windows, {len(daily)} daily card rows\n')
 
     out_rows = []

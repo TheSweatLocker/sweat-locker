@@ -1123,7 +1123,29 @@ def pick_ufc_sides() -> list[dict]:
 #     ever shown as the headline. NCAAF/NFL/NHL keep their receipt-based
 #     history untouched, which puts ALL near +96u.
 # Set SHARP_LEGACY_FREEZE = False to return to a single receipt-only basis.
-SHARP_LEGACY_FREEZE = True
+#
+# ══ 2026-10-23 · FLIPPED TO False, ON ANDY'S EXPLICIT CALL ═════════════════
+# Andy: "For the sharp record i want the sides and props record to match the
+# overall, that's what i want, so if changing it does that cool."
+#
+# It is the only way to get it. The frozen block is a single aggregate with NO
+# leg-level detail, so it cannot be split into sides and props — while the
+# freeze was on, sides+props could never equal the headline BY CONSTRUCTION,
+# no matter how the splitter was written.
+#
+# Measured cost of the flip, before making it:
+#     freeze ON   530-384-10   58.0%   +81.21u   ROI +8.89%
+#     freeze OFF  543-402-3    57.5%   +36.77u   ROI +3.20%
+# The W-L barely moves. What halves is units/ROI — exactly as the note above
+# predicts, because the frozen era was priced flat -110 and overstated every
+# favourite win. We are not reporting a worse record; we are reporting the
+# same record at the real prices.
+#
+# This also satisfies the HONESTY CONDITIONS above by removing the thing they
+# were protecting against: there is no longer a flat-priced portion that
+# "must never be cited as proven edge."
+# ══════════════════════════════════════════════════════════════════════════
+SHARP_LEGACY_FREEZE = False
 SHARP_LEGACY_CUTOVER = dt.date(2026, 10, 4)      # inclusive last legacy day
 SHARP_LEGACY_FROZEN = {'MLB': (455, 297, 9, 110.73)}
 
