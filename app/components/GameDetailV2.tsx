@@ -1918,6 +1918,11 @@ const RL_LABEL_BY_SPORT: Record<string,string> = {
 };
 const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
 
+//: Vendor projection sources, as a reader would name them.
+const SRC_LABEL: Record<string, string> = {
+  sleeper: 'Sleeper', espn_fantasy: 'ESPN',
+};
+
 // ══ 2026-10-22 · ONE SEASON, TWO SPELLINGS ON ONE SCREEN ══
 // QA on CLE @ PHI: the Team Stats banner read "2025 SEASON" while the
 // Situational Records chip directly below read "2025-26 RECORDS". Same
@@ -2529,6 +2534,30 @@ function hasAnyLensValue(ctx: any, gamesSport: string): boolean {
 // EVERY MODEL KEEPS ITS TILE. Duplicates are marked with the name of the
 // voice they share, and the header states how many DISTINCT reads back the
 // pick, so six tiles can never be read as six opinions.
+// ══ 2026-10-22 · THE THIRD SURFACE THAT READ THE SIGN RAW ══
+// ANDY: "For V3 and MC OKC game nba they both are 7.2 and 7.2 ... we
+// continue to circle back to this is not getting fixed."
+//
+// Because it WAS fixed — in two places out of three. Earlier tonight the
+// sign convention was normalised in ScoreRange (Predicted Score) and in
+// NumbersPanel (the model dump), but NOT here in the Model Consensus grid,
+// which is the surface he is actually looking at.
+//
+// The tile renders `abbrev3(r.m > 0 ? home : away)` with |r.m|, straight
+// off the raw column. v3 writes projected_spread as a BETTING spread on NBA
+// (negative = home favoured, 109 of 109 rows against projected_home_wp)
+// while MC writes mc_expected_margin as a true MARGIN (positive = home
+// favoured). On DEN @ OKC that is -7.40 and +7.18, so the grid rendered
+// "DEN 7.4" next to "OKC 7.2" — two models put on OPPOSITE SIDES of a game
+// they actually agree on.
+//
+// AND THEY ARE NOT DUPLICATES, measured across the 69 NBA rows carrying
+// both: IDENTICAL magnitude on 0 of 69, mean gap 2.26 points, median 1.73,
+// totals identical on 0 of 69. They agree on the SIDE 84% of the time,
+// which is what two models of the same game should look like.
+//
+// NCAAF is the opposite case and is still open: there v3 and SP+ are
+// byte-identical on 307 of 307, which is real duplication, not a sign.
 const VOICE_EPS = 0.26;   // a quarter point; 5.66 and 5.7 are one forecast
 
 function groupVoices(rows: any[]): {voices: number; label: Record<string, string>} {
@@ -2567,7 +2596,7 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
   let rows = gamesSport === 'MLB' ? [
     {name: 'Panel', m: ctx?.panel_implied_margin, t: ctx?.panel_implied_total},
     {name: 'Jerry', m: ctx?.jerry_pred_spread, t: ctx?.jerry_pred_total},
-    {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+    {name: 'v3', m: _normMargin(ctx?.projected_spread, ctx?.projected_home_wp), t: ctx?.projected_total},
     {name: 'v4', m: ctx?.model_pred_spread, t: ctx?.model_pred_total},
     {name: 'MC', m: mc.mc_expected_margin, t: mc.mc_expected_total ?? mc.mc_mean_total},
   ] : gamesSport === 'NCAAF' ? (() => {
@@ -2730,7 +2759,7 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
     const _mcMargin = _mcNfl.mc_expected_margin;
     const _mcTotal = _mcNfl.mc_expected_total ?? _mcNfl.mc_mean_total;
     return [
-      {name: 'v3', m: ctx?.projected_spread, t: ctx?.projected_total},
+      {name: 'v3', m: _normMargin(ctx?.projected_spread, ctx?.projected_home_wp), t: ctx?.projected_total},
       ...(_v4Live ? [{name: 'v4', m: _v4m, t: _v4t}] : []),
       ...(_mcMargin != null || _mcTotal != null
           ? [{name: 'MC', m: _mcMargin, t: _mcTotal}] : []),
@@ -7670,16 +7699,39 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
           .in('team', [homeTeam, awayTeam]);
         if (ctx?.week != null) vq = vq.eq('week', ctx.week);
         const {data: proj} = await vq.order('pulled_at', {ascending: false}).limit(40);
+        // ══ 2026-10-22 · NAME THE SOURCE; THEY ARE NOT EQUALS ══
+        // The first version showed an unlabelled range ("vendors 155-203").
+        // Measured over 82 QB games in weeks 4-6, those two numbers are not
+        // two opinions about this game:
+        //
+        //     espn_fantasy   MAE 85.1   bias -66.0
+        //     sleeper        MAE 61.5   bias  -8.3
+        //
+        // ESPN's figure is flat across weeks (155.11 in both wk7 and wk8), so
+        // it is a SEASON-LONG per-game projection, not a matchup one. Remove
+        // its -66 bias and it lands at MAE 67.0 - respectable - which proves
+        // the gap is a measurement basis, not an opinion.
+        //
+        // So a range implies a disagreement about tonight that neither
+        // source is actually having. Naming them lets the reader see that
+        // ESPN runs low on every card, which is the true and useful thing.
+        //
+        // Not de-biased here on purpose: it is their number, and silently
+        // adding 66 yards to a vendor's projection before showing it under
+        // their name misrepresents the source. Not dropped either - the
+        // disagreement is information once it is attributed.
         const grouped: any = {};
         for (const row of (proj || [])) {
           const v = row?.proj_pass_yds;
           if (v == null) continue;
-          (grouped[row.team] = grouped[row.team] || []).push(Number(v));
+          (grouped[row.team] = grouped[row.team] || []).push(
+            {src: String(row.source || '?'), v: Number(v)});
         }
         const summarise = (ab: any) => {
-          const xs: number[] = grouped[ab] || [];
+          const xs: any[] = grouped[ab] || [];
           if (!xs.length) return undefined;
-          return {lo: Math.min(...xs), hi: Math.max(...xs), n: xs.length};
+          xs.sort((a, b) => b.v - a.v);
+          return {items: xs, n: xs.length};
         };
         setVendor({home: summarise(homeTeam), away: summarise(awayTeam)});
       }
@@ -7771,14 +7823,13 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
           </View>
         ) : null}
 
-        {ven != null && (
+        {ven?.items?.length ? (
           <Text style={[styles.pitcherStats, {color: C.textMuted, fontSize: 10, marginTop: 4}]}>
-            {ven.lo === ven.hi
-              ? `vendor ${Math.round(ven.lo)} yds`
-              : `vendors ${Math.round(ven.lo)}–${Math.round(ven.hi)} yds`}
-            {ven.n > 1 ? ` (${ven.n} sources)` : ''}
+            {ven.items
+              .map((x: any) => `${SRC_LABEL[x.src] || x.src} ${Math.round(x.v)}`)
+              .join(' · ')}
           </Text>
-        )}
+        ) : null}
       </View>
     );
   };
