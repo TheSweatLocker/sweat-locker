@@ -1,4 +1,25 @@
--- == 2026-10-22 · NFL PLAYER STAT PROJECTIONS, PERSISTED ==
+-- == 2026-10-22 · NFL ENGINE PLAYER PROJECTIONS, PERSISTED ==
+--
+-- ── WHY "ENGINE" IS IN THE NAME ─────────────────────────────────────────
+-- The obvious name, nfl_player_projections, IS ALREADY TAKEN, and the first
+-- version of this migration collided with it: CREATE TABLE IF NOT EXISTS
+-- silently no-opped against the existing table, and then the unique index
+-- failed with "column game_id does not exist" - the index was the only
+-- statement that actually touched the schema.
+--
+-- That table is a live THIRD-PARTY FANTASY feed, not ours: 15,356 rows,
+-- 2026 week 8, sources `espn_fantasy` (456) and `sleeper` (544), pulled
+-- 2026-10-22T21:25. It is keyed by (source, season, week, player) with
+-- fantasy columns - proj_fantasy_pts, proj_fg_made, proj_def_sacks - and has
+-- no game_id at all, because a weekly fantasy projection is not attached to
+-- a matchup.
+--
+-- This table is a different thing and must not be confused with it: OUR
+-- engine'"'"'s per-GAME projection, keyed by game_id, carrying the multiplier
+-- chain that produced it. Keeping both is deliberate - a vendor projection
+-- beside ours is the benchmark that tells us whether our number is worth
+-- anything, the same reason sor_benchmark sits beside our SOR instead of
+-- replacing it.
 --
 -- ANDY: "in nfl game detail displaying stat projections for starting QBs like
 -- we [do for] starting pitcher in mlb ... what our engine assess stat line to
@@ -48,7 +69,7 @@
 -- claim of edge — the same discipline that keeps a slope from becoming a
 -- betting rule.
 
-CREATE TABLE IF NOT EXISTS public.nfl_player_projections (
+CREATE TABLE IF NOT EXISTS public.nfl_engine_player_projections (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     game_id         TEXT        NOT NULL,
     game_date       DATE        NOT NULL,
@@ -88,11 +109,11 @@ CREATE TABLE IF NOT EXISTS public.nfl_player_projections (
 --: One projection per player per game. The writer upserts on this, so a
 --: re-run after a line move or an injury update REPLACES rather than
 --: accumulating vintages - the `data[0]` unordered-vintage trap.
-CREATE UNIQUE INDEX IF NOT EXISTS nfl_player_projections_game_player_idx
-    ON public.nfl_player_projections (game_id, player_name, position);
+CREATE UNIQUE INDEX IF NOT EXISTS nfl_engine_player_proj_game_player_idx
+    ON public.nfl_engine_player_projections (game_id, player_name, position);
 
 --: The card reads by game, the grader reads by date.
-CREATE INDEX IF NOT EXISTS nfl_player_projections_date_idx
-    ON public.nfl_player_projections (game_date);
+CREATE INDEX IF NOT EXISTS nfl_engine_player_proj_date_idx
+    ON public.nfl_engine_player_projections (game_date);
 
 NOTIFY pgrst, 'reload schema';

@@ -49,6 +49,13 @@ NOT A BETTING SURFACE. These are displayed to explain our number, and
 before any of it is allowed to move a tier or a price. A projection is not
 an edge until it has been measured against the price.
 
+TABLE NAME. Writes `nfl_engine_player_projections`, not the obvious
+`nfl_player_projections` - that name is TAKEN by a live third-party fantasy
+feed (espn_fantasy + sleeper, 15,356 rows, refreshed nightly, keyed by
+source/season/week with no game_id). Keeping both is deliberate: a vendor
+projection sitting beside ours is the benchmark that says whether our number
+is worth anything.
+
 CLI
     python nfl_player_projection.py --date 2026-10-22 --dry-run
     python nfl_player_projection.py --date 2026-10-22
@@ -524,7 +531,7 @@ def main():
         return 0
     if not payload:
         return 0
-    r = requests.post(f'{SB}/rest/v1/nfl_player_projections',
+    r = requests.post(f'{SB}/rest/v1/nfl_engine_player_projections',
                       headers={**H_W,
                                'Prefer': 'resolution=merge-duplicates,'
                                          'return=minimal'},
@@ -534,7 +541,7 @@ def main():
     if r.status_code not in (200, 201, 204):
         return 1
     # A 204 is not a write. Read it back.
-    back = page('nfl_player_projections',
+    back = page('nfl_engine_player_projections',
                 {'select': '*',
                  'and': f'(game_date.gte.{start},game_date.lte.{end})'})
     print(f'  read-back: {len(back)} row(s) present for {start}..{end}')
