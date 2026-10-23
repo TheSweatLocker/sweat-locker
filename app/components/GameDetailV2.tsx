@@ -1146,20 +1146,56 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
         const mkt = Number(ctx?.close_spread ?? ctx?.close_puckline_home
                            ?? ctx?.close_puckline);
         if (!isFinite(ourLine) || !isFinite(mkt)) return null;
-        // Compare MAGNITUDES. close_spread's sign convention is inverted
-        // between NFL and NCAAF (project_close_spread_sign_bug_914), so a
-        // signed comparison is right in one sport and backwards in the
-        // other. The magnitude of the number is the same either way.
-        const ours = Math.abs(ourLine), now = Math.abs(mkt);
-        if (Math.abs(ours - now) < 0.25) return null;
-        const better = now > ours;   // market moved past our number
+        // ══ 2026-10-23 · THIS CLAIMED A CLOSING-LINE WIN ON A LOSING NUMBER ══
+        // ANDY: "for giants game it says Giants +7.5 but line is now +10.5,
+        // says we beat the market and have 3 point in CLV ... it is not true
+        // ... this is a smoking gun."
+        //
+        // He is right, and it was a false claim of edge shown to a paying
+        // subscriber. The old test was `Math.abs(mkt) > Math.abs(ourLine)`,
+        // chosen deliberately to dodge close_spread's per-sport sign
+        // convention (project_close_spread_sign_bug_914). But a magnitude
+        // comparison only answers the question for a FAVOURITE:
+        //
+        //   we laid -5.5, market closed -10.5  -> bigger magnitude, and we DID
+        //                                         get the better number
+        //   we took +7,   market closed +10.5  -> bigger magnitude, and we got
+        //                                         the WORSE number by 3.5
+        //
+        // NYG @ HOU was the second case: published NYG +7 against a close of
+        // +10.5, so the card announced "we beat the close by 3.5" about a
+        // number 3.5 points worse than the market's. Right for favourites,
+        // inverted for every dog.
+        //
+        // The sign convention is still not consulted, and does not need to be.
+        // Our OWN line is already signed from the side we took -- the grader
+        // relies on exactly that and measured it at 97.2% on 246 NCAAF
+        // receipts -- so its sign tells us whether we are taking points or
+        // laying them, and |close_spread| supplies the magnitude. One signed
+        // subtraction then answers it for both sides, which is what the
+        // server already does in check_live_clv.py (`ours - cur_ours`, where
+        // cur_ours is flipped for an AWAY pick). The card now agrees with the
+        // server instead of contradicting it.
+        //
+        // Both numbers are printed FROM OUR SIDE, not as bare magnitudes, so
+        // the strip reads in the same frame as the pick above it. The
+        // home-anchored Line Movement strip further down is a different frame
+        // on purpose and names its team.
+        const mag = Math.abs(mkt);
+        const weTakePoints = ourLine > 0;        // dog if we are given points
+        const closeForUs = weTakePoints ? mag : -mag;
+        if (Math.abs(ourLine - closeForUs) < 0.25) return null;
+        const better = ourLine > closeForUs;
+        const gap = Math.abs(ourLine - closeForUs).toFixed(1);
+        const sgn = (v: number) =>
+          (v > 0 ? '+' : '') + (v % 1 === 0 ? String(v) : v.toFixed(1));
         return (
           <Text style={{color: better ? C.accent : C.textMuted, fontSize: 11,
                         marginTop: 2, fontWeight: '600'}}>
-            {better ? '↗ ' : '↘ '}published at {ours % 1 === 0 ? ours : ours.toFixed(1)}
-            {' · market now '}{now % 1 === 0 ? now : now.toFixed(1)}
-            {better ? '  (we beat the close by ' + (now - ours).toFixed(1) + ')'
-                    : '  (line came back ' + (ours - now).toFixed(1) + ')'}
+            {better ? '↗ ' : '↘ '}published at {sgn(ourLine)}
+            {' · market now '}{sgn(closeForUs)}
+            {better ? `  (we beat the close by ${gap})`
+                    : `  (market moved ${gap} against this side)`}
           </Text>
         );
       })()}
