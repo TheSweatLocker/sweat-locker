@@ -104,6 +104,67 @@ SUPPRESS_RATE = 0.42     # below this and the cohort is faded out of the pool
 PROP_RATE_DEFAULT = 0.60 # props don't have a calibrated cohort yet; slight prior
 
 
+#: Stat stem -> how a human writes it. Keys are the prop_type with the
+#: trailing _over / _under removed.
+_PROP_STEM_LABEL = {
+    # NFL
+    'pass_yds': 'Pass Yds', 'pass_tds': 'Pass TDs',
+    'pass_attempts': 'Pass Att', 'pass_completions': 'Completions',
+    'pass_interceptions': 'INTs', 'rush_yds': 'Rush Yds',
+    'rush_attempts': 'Carries', 'rush_tds': 'Rush TDs',
+    'reception_yds': 'Rec Yds', 'receptions': 'Receptions',
+    'rec_tds': 'Rec TDs', 'anytime_td': 'Anytime TD',
+    # NBA
+    'points': 'Points', 'rebounds': 'Rebounds', 'assists': 'Assists',
+    'threes': '3-Pointers', 'pra': 'Pts+Reb+Ast', 'steals': 'Steals',
+    'blocks': 'Blocks', 'turnovers': 'Turnovers',
+    # NHL
+    'shots_on_goal': 'Shots', 'saves': 'Saves', 'goals': 'Goals',
+    'points_nhl': 'Points',
+    # MLB (the named branches above cover most of these already)
+    'ks': 'Ks', 'bb': 'BB', 'ha': 'Hits Allowed', 'outs': 'Outs',
+    'er': 'ER', 'hits': 'Hits', 'total_bases': 'Total Bases',
+    'rbis': 'RBIs', 'runs': 'Runs', 'stolen_bases': 'Stolen Bases',
+}
+
+
+def humanize_prop(ptype, line) -> str:
+    """Turn an internal prop_type into something a person would write.
+
+    ══ 2026-10-22 · THE RAW KEY WAS REACHING USERS ══
+    ANDY: "Daily degen prop of Caleb Williams is rendering like this
+    pass_tds_under_1.5 That looks sloppy."
+
+    It is, and the cause is that every named branch above this fallback is a
+    BASEBALL stat - ks, bb, ha, outs, er, hits. Daily Degen opened up to
+    every sport on 2026-10-21, so NFL, NBA and NHL props now reach a chain
+    written when the surface was MLB-only, fall through all of it, and hit
+    `f"{ptype} {line}"` - which prints the database column name.
+
+    Direction lives in the SUFFIX (pass_tds_under), not in a separate field,
+    so it is split off rather than looked up. An unmapped stem still reads
+    like English - 'kicking_points_over' becomes 'Over 7.5 Kicking Points' -
+    so a new market added upstream degrades to something presentable instead
+    of leaking a key.
+    """
+    t = str(ptype or '').strip().lower()
+    direction = ''
+    for suffix, word in (('_over', 'Over'), ('_under', 'Under')):
+        if t.endswith(suffix):
+            direction = word
+            t = t[: -len(suffix)]
+            break
+    name = _PROP_STEM_LABEL.get(t) or t.replace('_', ' ').title()
+    # A yes/no market has no meaningful line to show: "Over 0.5 Anytime TD"
+    # is noise, the bet is simply that he scores.
+    if t == 'anytime_td':
+        return name
+    if line is None:
+        return f'{direction} {name}'.strip()
+    ln = f'{float(line):g}' if isinstance(line, (int, float)) else str(line)
+    return f'{direction} {ln} {name}'.strip()
+
+
 def today_et():
     et = datetime.now(timezone.utc) - timedelta(hours=4)
     return et.strftime('%Y-%m-%d')
@@ -487,7 +548,7 @@ def extract_leg_candidates(games, props):
             elif ptype == 'er_under' and line is not None:
                 prop_label = f"Under {line} ER  ·  proj {proj_er}" if proj_er is not None else f"Under {line} ER"
             else:
-                prop_label = f"{ptype} {line}"
+                prop_label = humanize_prop(ptype, line)
         # 2026-08-11: use REAL book_odds when available, fall back to -150.
         # Also apply the same odds-range gate as sweat card ([-300, +150] per
         # feedback_prop_jerry_odds) and refit-trap check (skip if refit<30 on
