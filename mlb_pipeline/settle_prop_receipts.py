@@ -708,7 +708,20 @@ def run_one(args, sport):
     if not args.commit:
         print('\n  DRY RUN — add --commit to write.')
         return
-    ok = 0
+    # ══ BATCH BY VALUE, NOT ONE REQUEST PER ROW ══════════════════════════
+    # 2026-10-23: the first --backfill-actual run died 8,646 PATCHes into an
+    # 8,646-PATCH loop on a single 30s read timeout, leaving the fill
+    # half-applied with no report of how far it got. One row per request was
+    # the bug; the timeout was just what exposed it.
+    #
+    # Receipts share values heavily (a final_value of 0, 1, 2, 0.5 covers most
+    # of a slate), so grouping by the body and sending id=in.(...) collapses
+    # thousands of writes into dozens. Retries with backoff on top, because a
+    # bulk job that cannot survive one blip is not a bulk job.
+    #
+    # Re-running is safe and resumes: the row selector takes
+    # actual_value=is.null, so anything already filled is simply not selected.
+    groups: dict = {}
     for rid, res, actual in patches:
         body = {}
         if res is not None:
@@ -717,25 +730,64 @@ def run_one(args, sport):
             body['actual_value'] = actual
         if not body:
             continue
-        pr = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W,
-                            timeout=30, params={'id': f'eq.{rid}'},
-                            json=body)
-        ok += pr.status_code in (200, 204)
-    print(f'  patched {ok}/{len(patches)}')
+        groups.setdefault(tuple(sorted(body.items())), []).append(rid)
+    print(f'  {len(patches)} row(s) collapse to {len(groups)} distinct '
+          f'value group(s)')
+
+    ok, failed = 0, 0
+    CHUNK = 100
+    for key, ids in groups.items():
+        body = dict(key)
+        for j in range(0, len(ids), CHUNK):
+            chunk = ids[j:j + CHUNK]
+            sent = False
+            for attempt in range(4):
+                try:
+                    pr = requests.patch(
+                        f'{SB}/rest/v1/public_receipts', headers=H_W,
+                        timeout=90,
+                        params={'id': f'in.({",".join(str(i) for i in chunk)})'},
+                        json=body)
+                    if pr.status_code in (200, 204):
+                        ok += len(chunk)
+                        sent = True
+                        break
+                    print(f'  ⚠ PATCH {pr.status_code}: {pr.text[:160]}')
+                except requests.RequestException as e:
+                    print(f'  ⚠ PATCH {type(e).__name__} (attempt '
+                          f'{attempt+1}/4): {e}')
+                time.sleep(2 ** attempt * 3)
+            if not sent:
+                failed += len(chunk)
+                print(f'  *** gave up on {len(chunk)} row(s) after 4 tries ***')
+    print(f'  patched {ok}/{len(patches)}'
+          + (f'   FAILED {failed}' if failed else ''))
     # A 204 is not proof a row changed (feedback_204_is_not_a_write). Re-read
     # and count what is actually stored.
     if patches:
         ids = [str(p[0]) for p in patches]
-        filled = 0
+        filled, unread = 0, 0
         for j in range(0, len(ids), 150):
             chunk = ids[j:j + 150]
-            vr = requests.get(f'{SB}/rest/v1/public_receipts', headers=H,
-                              timeout=45,
-                              params={'select': 'id,actual_value',
-                                      'id': f'in.({",".join(chunk)})'})
-            if vr.status_code == 200:
-                filled += sum(1 for x in vr.json()
-                              if x.get('actual_value') is not None)
+            for attempt in range(3):
+                try:
+                    vr = requests.get(
+                        f'{SB}/rest/v1/public_receipts', headers=H, timeout=90,
+                        params={'select': 'id,actual_value',
+                                'id': f'in.({",".join(chunk)})'})
+                    if vr.status_code == 200:
+                        filled += sum(1 for x in vr.json()
+                                      if x.get('actual_value') is not None)
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(2 ** attempt * 3)
+            else:
+                # Could not confirm these. Say so rather than counting them
+                # either way — an unverified row is not a verified one.
+                unread += len(chunk)
+        if unread:
+            print(f'  ⚠ could not re-read {unread} row(s) to confirm')
         print(f'  VERIFIED by re-read: {filled}/{len(patches)} now carry '
               f'actual_value')
         if filled < len(patches):
