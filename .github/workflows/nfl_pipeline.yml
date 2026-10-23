@@ -738,6 +738,32 @@ jobs:
             --label "compute_nfl_positional_defense.py" \
             python compute_nfl_positional_defense.py
 
+      # 2026-10-22 · OUR OWN QB STAT LINE, PERSISTED PER GAME.
+      # Andy wanted NFL game detail to show projected QB stat lines the way
+      # MLB shows projected pitcher lines, "based on opponent defensive
+      # stats, performances at home/away, the whole nine yards".
+      #
+      # Runs HERE, immediately after compute_nfl_positional_defense, because
+      # the opponent-tendency factor reads exactly what that step just wrote.
+      # Running it earlier would silently project against yesterday's
+      # defensive numbers.
+      #
+      # NOT project_nfl_stats.py: that module sources nfl_data_py, which 404s
+      # for both 2025 and 2026, so its "last 5 games" are from 2024. It had
+      # Drake Maye at 163.6 passing yards against an actual 2026 L5 of ~257.
+      # This sources nfl_player_stats + nfl_positional_defense, both current.
+      - name: NFL engine QB projections
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "nfl_player_projection.py" \
+            python nfl_player_projection.py --days 7
+
       # 2026-08-13 · 5-model coverage rollout: NFL MC simulator.
       # Runs AFTER game_context so it can read team stats + close_total,
       # then writes mc_probabilities blob back. compute_primary_play

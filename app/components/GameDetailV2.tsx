@@ -7345,11 +7345,40 @@ function JerryLockNote({sport}: {sport: string}) {
 // Buffed from the prior "Starting QBs" name-only card. Now joins Sleeper
 // projections (nfl_player_projections, 802 rows live per 2026-08-25) so
 // each starter shows projected fantasy pts + season Y/A when available.
+// ══ 2026-10-22 · OUR NUMBER FIRST, THE VENDOR'S BESIDE IT ══════════════
+// ANDY: "in nfl game detail displaying stat projections for starting QBs
+// like we [do for] starting pitcher in mlb ... what our engine assess stat
+// line to be projected at based on opponent defensive stats, performances at
+// home/away, the whole nine yards."
+//
+// This card already existed and already showed a projection — but the number
+// was "Proj FP", a FANTASY POINTS total from nfl_player_projections, which is
+// a third-party feed (espn_fantasy + sleeper, 15,356 rows, refreshed
+// nightly). Fantasy points are the wrong unit for a betting card, and
+// somebody else's model is the wrong author for a card whose whole promise is
+// that we show our work.
+//
+// It now leads with nfl_engine_player_projections: our per-game line, built
+// baseline × opponent-tendency × home/away × environment × game-script, with
+// every one of those multipliers readable by tapping the line. The vendor
+// number stays underneath as a cross-check — more honest than hiding it, more
+// useful than leading with it.
+//
+// ── THE HOOK-ORDER BUG, WHICH WAS ALREADY FATAL ONCE ──────────────────
+// This component had `if (!isEnabled) return null;` sitting ABOVE its
+// useEffect. That is exactly the crash documented on NFLTeamMatchupCard on
+// 2026-09-10 — "Rendered fewer hooks than expected" — which took down every
+// NFL game detail when a config_ui_sections row was flipped. The same trap was
+// live here, waiting for anyone to toggle `qb_matchup`. Every hook now runs
+// before any conditional return.
 function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled('NFL', 'game_detail', 'qb_matchup', true);
   const [starters, setStarters] = useState<{home?: any; away?: any}>({});
-  const [projections, setProjections] = useState<{home?: any; away?: any}>({});
-  if (!isEnabled) return null;
+  const [vendor, setVendor] = useState<{home?: any; away?: any}>({});
+  const [engine, setEngine] = useState<{home?: any; away?: any}>({});
+  const [openSide, setOpenSide] = useState<string | null>(null);
+  const gameId = ctx?.game_id;
+
   React.useEffect(() => {
     const client = sb();
     if (!client || !homeTeam || !awayTeam) return;
@@ -7364,11 +7393,25 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
       const smap: any = {};
       for (const row of (st || [])) if (!smap[row.team]) smap[row.team] = row;
       setStarters({home: smap[homeTeam], away: smap[awayTeam]});
-      const starterNames = Object.values(smap).map((s: any) => s.player_name).filter(Boolean);
+
+      // Ours, keyed by THIS game: no name matching, and no chance of picking
+      // up last week's row for the same player.
+      if (gameId) {
+        const {data: eng} = await client.from('nfl_engine_player_projections')
+          .select('player_name,team,home_away,proj_pass_yds,proj_pass_att,proj_pass_cmp,proj_pass_tds,proj_ints,proj_rush_yds,inputs')
+          .eq('game_id', gameId)
+          .eq('position', 'QB');
+        const emap: any = {};
+        for (const row of (eng || [])) if (!emap[row.team]) emap[row.team] = row;
+        setEngine({home: emap[homeTeam], away: emap[awayTeam]});
+      }
+
+      const starterNames = Object.values(smap)
+        .map((x: any) => x.player_name).filter(Boolean);
       if (starterNames.length > 0) {
         const {data: proj} = await client.from('nfl_player_projections')
-          // 2026-09-19: was proj_pass_yards — no such column; the real one
-          // is proj_pass_yds. One bad name 400s the whole select, so the QB
+          // 2026-09-19: was proj_pass_yards — no such column; the real one is
+          // proj_pass_yds. One bad name 400s the whole select, so the QB
           // Matchup card lost its projections entirely (not just pass yards).
           .select('player_name,team,proj_fantasy_pts,proj_pass_yds,proj_pass_tds')
           .in('player_name', starterNames)
@@ -7377,36 +7420,93 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
           .limit(4);
         const pmap: any = {};
         for (const row of (proj || [])) if (!pmap[row.team]) pmap[row.team] = row;
-        setProjections({home: pmap[homeTeam], away: pmap[awayTeam]});
+        setVendor({home: pmap[homeTeam], away: pmap[awayTeam]});
       }
     })();
-  }, [homeTeam, awayTeam]);
+  }, [homeTeam, awayTeam, gameId]);
 
+  if (!isEnabled) return null;
   if (!starters.home && !starters.away) return null;
 
-  const renderQB = (side: 'home' | 'away', st: any, proj: any, team: string) => (
-    <View style={[styles.pitcherCard, {borderTopColor: side === 'home' ? C.home : C.away, padding: 12, gap: 4, flex: 1}]}>
-      <Text style={styles.pitcherName}>{st?.player_name || 'TBD'}</Text>
-      <Text style={styles.pitcherStats}>{abbrev3(team)} QB</Text>
-      {proj?.proj_fantasy_pts != null && (
-        <Text style={styles.pitcherStats}>
-          Proj FP: <Text style={styles.pitcherStatBold}>{Number(proj.proj_fantasy_pts).toFixed(1)}</Text>
-        </Text>
-      )}
-      {proj?.proj_pass_yds != null && (
-        <Text style={styles.pitcherStats}>
-          Pass Y: <Text style={styles.pitcherStatBold}>{Math.round(Number(proj.proj_pass_yds))}</Text>
-          {proj?.proj_pass_tds != null && ` · TD ${Number(proj.proj_pass_tds).toFixed(1)}`}
-        </Text>
-      )}
-    </View>
-  );
+  const n = (v: any, d = 0) => v == null ? null : Number(v).toFixed(d);
+
+  //: The factor trail, in the order the model applies it. A factor that was
+  //: NOT applied still shows, with its reason — a projection that silently
+  //: skipped half its inputs must not read the same as one that used them all.
+  const FACTORS = ['baseline', 'opponent', 'home_away', 'environment', 'game_script'];
+
+  const renderQB = (side: 'home' | 'away', st: any, eng: any, ven: any, team: string) => {
+    let inputs: any = eng?.inputs;
+    if (typeof inputs === 'string') {
+      try { inputs = JSON.parse(inputs); } catch (e) { inputs = null; }
+    }
+    const trail = inputs?.proj_pass_yds;
+    const open = openSide === side;
+    return (
+      <View style={[styles.pitcherCard, {borderTopColor: side === 'home' ? C.home : C.away, padding: 12, gap: 4, flex: 1}]}>
+        <Text style={styles.pitcherName}>{st?.player_name || 'TBD'}</Text>
+        <Text style={styles.pitcherStats}>{abbrev3(team)} QB</Text>
+
+        {eng ? (
+          <TouchableOpacity activeOpacity={trail ? 0.6 : 1}
+                            onPress={() => { if (trail) setOpenSide(open ? null : side); }}>
+            {n(eng.proj_pass_yds) != null && (
+              <Text style={styles.pitcherStats}>
+                Pass yds: <Text style={styles.pitcherStatBold}>{n(eng.proj_pass_yds)}</Text>
+                {trail ? <Text style={{color: C.accent, fontSize: 10}}>  {INFO_GLYPH}</Text> : null}
+              </Text>
+            )}
+            {(n(eng.proj_pass_cmp) != null || n(eng.proj_pass_att) != null) && (
+              <Text style={styles.pitcherStats}>
+                Cmp/Att: <Text style={styles.pitcherStatBold}>{n(eng.proj_pass_cmp)}/{n(eng.proj_pass_att)}</Text>
+              </Text>
+            )}
+            {n(eng.proj_pass_tds, 1) != null && (
+              <Text style={styles.pitcherStats}>
+                TD: <Text style={styles.pitcherStatBold}>{n(eng.proj_pass_tds, 1)}</Text>
+                {n(eng.proj_ints, 1) != null ? ` · INT ${n(eng.proj_ints, 1)}` : ''}
+              </Text>
+            )}
+            {n(eng.proj_rush_yds) != null && (
+              <Text style={styles.pitcherStats}>
+                Rush yds: <Text style={styles.pitcherStatBold}>{n(eng.proj_rush_yds)}</Text>
+              </Text>
+            )}
+          </TouchableOpacity>
+        ) : (
+          //: Absent is said out loud. A card that renders nothing where a
+          //: projection belongs reads as a broken card, not an honest one.
+          <Text style={[styles.pitcherStats, {color: C.textMuted}]}>
+            no projection — thin game log
+          </Text>
+        )}
+
+        {open && trail ? (
+          <View style={{marginTop: 6, gap: 3, borderTopWidth: 0.5, borderTopColor: C.border, paddingTop: 6}}>
+            <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800', letterSpacing: 0.5}}>HOW WE GOT THERE</Text>
+            {FACTORS.map((f) => trail[f] ? (
+              <Text key={f} style={{color: C.textDim, fontSize: 10, lineHeight: 14}}>
+                <Text style={{color: C.text, fontWeight: '700'}}>{f.replace('_', ' ')}</Text>
+                {`  ${trail[f]}`}
+              </Text>
+            ) : null)}
+          </View>
+        ) : null}
+
+        {ven?.proj_pass_yds != null && (
+          <Text style={[styles.pitcherStats, {color: C.textMuted, fontSize: 10, marginTop: 4}]}>
+            consensus {Math.round(Number(ven.proj_pass_yds))} yds
+          </Text>
+        )}
+      </View>
+    );
+  };
 
   return (
-    <Section title="QB Matchup" hint="starters + weekly projections">
+    <Section title="QB Matchup" hint="our projection · tap a line for the why">
       <View style={{flexDirection: 'row', gap: 8}}>
-        {renderQB('away', starters.away, projections.away, awayTeam)}
-        {renderQB('home', starters.home, projections.home, homeTeam)}
+        {renderQB('away', starters.away, engine.away, vendor.away, awayTeam)}
+        {renderQB('home', starters.home, engine.home, vendor.home, homeTeam)}
       </View>
     </Section>
   );
