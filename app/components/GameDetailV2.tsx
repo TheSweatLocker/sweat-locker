@@ -6759,6 +6759,50 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
     (async () => {
       const currentSeason = Number(ctx?.season) || new Date().getFullYear();
       const trySeasons = [currentSeason, currentSeason - 1];
+      // ══ 2026-10-22 · READ THE ALIAS TABLE THE SERVER ALREADY MAINTAINS ══
+      // ANDY: "app state football team stats still not populating."
+      //
+      // ncaaf_game_context says "Appalachian State"; ncaaf_team_stats says
+      // "App State". The fuzzy matcher below cannot bridge that, and not by
+      // accident — "appalachian state".includes("app state") is FALSE,
+      // because the string runs "app" then "alachian state". Exact fails,
+      // the >=2-word substring rule fails, the 1-word rule does not apply.
+      //
+      // Measured over the 120 teams on the upcoming slate, the matcher
+      // misses exactly four, and ncaaf_team_name_aliases resolves all four:
+      //
+      //     Appalachian State -> App State
+      //     Hawaii            -> Hawai'i
+      //     San Jose State    -> San José State
+      //     UMass             -> Massachusetts
+      //
+      // That table has existed since 2026-09-10 and the SERVER uses it —
+      // which is why ctx.home_team_stats_summary is populated for this game
+      // while the card's own fallback fetch comes back empty. The bridge was
+      // built on one side of the river.
+      //
+      // A server-side shim was the other option — writing alias-spelled
+      // duplicate rows into ncaaf_team_stats so the shipped build would work
+      // without a release. Rejected: that table feeds compute_margin_strength
+      // and the SOS/SOR ranks, and a duplicate team row would corrupt every
+      // rank in the league to paper over a display bug.
+      //
+      // Fetched once per card and applied BEFORE the fuzzy matcher, so an
+      // exact alias hit never has to survive the substring rules. Failure is
+      // silent: the matcher below is exactly as good as it was.
+      let aliasMap: Record<string, string> = {};
+      try {
+        const {data: al} = await client.from('ncaaf_team_name_aliases')
+          .select('ctx_name,cfbd_canonical');
+        for (const r of (al || [])) {
+          if (r?.ctx_name && r?.cfbd_canonical) {
+            aliasMap[String(r.ctx_name).toLowerCase().trim()] =
+              String(r.cfbd_canonical);
+          }
+        }
+      } catch (e) { /* non-fatal — fall through to the matcher */ }
+      const _alias = (n: string) =>
+        aliasMap[String(n || '').toLowerCase().trim()] || n;
       // 2026-08-29: when props' homeTeam/awayTeam are Odds-API mascot
       // names ("Virginia Cavaliers") that don't match CFBD short names
       // ("Virginia"), the exact `.in('team', [...])` misses. Do a
@@ -6769,8 +6813,8 @@ function NCAAFTeamMatchupCard({ctx, homeTeam, awayTeam}: any) {
           .select('*').eq('season', s);
         if (Array.isArray(data) && data.length > 0) {
           const _norm = (n: string) => (n || '').toLowerCase().replace(/\s+/g, ' ').trim();
-          const hNorm = _norm(homeTeam);
-          const aNorm = _norm(awayTeam);
+          const hNorm = _norm(_alias(homeTeam));
+          const aNorm = _norm(_alias(awayTeam));
           // 2026-09-13 FIX: prior substring-both-directions match caused
           // "Georgia State" query to grab "Georgia" (Bulldogs) row because
           // "georgia state".includes("georgia") === true. Same class breaks
