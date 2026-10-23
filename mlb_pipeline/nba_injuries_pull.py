@@ -110,17 +110,46 @@ def _norm_status(s: str) -> Optional[str]:
 def _clean_reason(comment: str) -> Optional[str]:
     """ESPN comments are long ('Jul 18: Gueye underwent surgery Tuesday to
     repair a fractured left foot...'). Extract the body part / injury type
-    for a compact stored value."""
+    for a compact stored value.
+
+    == 2026-10-22 - NO MATCH MUST RETURN NOTHING, NOT A HEADLINE ==
+    This used to fall back to `c[:60]`, storing the first 60 characters of
+    an ESPN news item as if it were an injury. On Andy's CLE @ PHI card that
+    rendered, under INJURIES:
+
+        [G] Cam Whitmore - Aug 19: Whitmore was traded to Cleveland on
+                           Wednesday, Shams
+        [O] Dominick Barlow - Oct 19: Barlow will miss at least the next
+                              two weeks of acti
+
+    A trade is not an injury, and the second is cut mid-word because 60
+    characters lands there. Measured: 91 of 434 rows (21%) held a blurb
+    rather than a reason.
+
+    An unparseable reason is now NULL. The card renders nothing, which is
+    honest, rather than a truncated headline, which is wrong AND looks
+    broken. `status` already carries the part that matters (OUT vs GTD).
+    """
     if not comment:
         return None
     c = comment.strip()
+    #: ESPN prefixes most comments with a short date ("Oct 19: ...").
+    #: It is never part of the reason and it crowds out the match.
+    c = re.sub(r'^[A-Z][a-z]{2}\s+\d{1,2}:\s*', '', c)
     # Common body parts / conditions ESPN mentions — keep it terse.
     body = re.search(r'\b(knee|ankle|hamstring|calf|shoulder|foot|hand|wrist|'
                      r'back|hip|elbow|thumb|finger|toe|neck|groin|'
                      r'concussion|illness|personal|rest|surgery|achilles|'
                      r'quad|thigh|abdominal|oblique|forearm)\b',
                      c, re.IGNORECASE)
-    return body.group(1).lower() if body else c[:60]
+    if body:
+        return body.group(1).lower()
+    #: A short clean phrase is a usable reason; a sentence is a news item.
+    #: The cut is by WORD COUNT, never characters, so nothing can be
+    #: truncated mid-word again.
+    if c and len(c.split()) <= 3 and len(c) <= 24:
+        return c.lower()
+    return None
 
 
 def fetch_html() -> Optional[str]:

@@ -8106,8 +8106,37 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
         .order('updated_at', {ascending: false})
         .limit(200);
       if (data) {
+        // ══ 2026-10-22 · NEWEST-PER-PLAYER IS NOT THE SAME AS CURRENT ══
+        // The 10-21 fix above deduped to the newest row per player, and that
+        // is still right — but it has no EXPIRY, and on Andy's CLE @ PHI card
+        // that showed as:
+        //
+        //     [G] Cam Whitmore — Aug 19: Whitmore was traded to Cleveland
+        //
+        // That row is from the 2026-08-25 scrape. It survived precisely
+        // BECAUSE it is his newest: Whitmore has not appeared on an injury
+        // report since August, so "newest per player" pins him there
+        // forever. 77 rows in the table are from that one August scrape.
+        //
+        // The puller writes the COMPLETE current report every scrape, so the
+        // latest scrape IS the report and a player absent from it is off it.
+        // Rows are therefore kept only if they belong to the most recent
+        // scrape, measured from the newest row we received rather than from
+        // the clock — if the puller has been down three days we should still
+        // show the last real report, not an empty card.
+        const stamps = (data as any[])
+          .map((r) => Date.parse(r.updated_at))
+          .filter((t) => !isNaN(t));
+        const newestTs = stamps.length ? Math.max(...stamps) : null;
+        const SCRAPE_WINDOW_MS = 36 * 3600 * 1000;
+        const inLatestScrape = (r: any) => {
+          if (newestTs == null) return true;
+          const t = Date.parse(r.updated_at);
+          return isNaN(t) ? false : (newestTs - t) <= SCRAPE_WINDOW_MS;
+        };
         const newestPerPlayer = new Map<string, any>();
         for (const r of (data as any[])) {
+          if (!inLatestScrape(r)) continue;
           // rows arrive newest-first, so the first sighting wins
           const key = `${r.team_abbrev}|${r.player_name}`;
           if (!newestPerPlayer.has(key)) newestPerPlayer.set(key, r);
@@ -8171,8 +8200,14 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
       ))}
     </View>
   );
+  // 2026-10-22 · the legend promised three tiers the feed does not have.
+  // Measured over all 434 rows, nba_injuries.status holds exactly two
+  // values: OUT (107) and GTD (327). ESPN's NBA report does not separate
+  // doubtful from questionable, it collapses both into a game-time
+  // decision. Naming tiers that can never appear teaches the reader that a
+  // tier is missing rather than that it does not exist.
   return (
-    <Section title="Injuries" hint="OUT / DOUBTFUL / QUESTIONABLE">
+    <Section title="Injuries" hint="OUT / game-time decision">
       <View style={{gap: 6}}>
         {renderSide(abbrev3(awayTeam), injuries.away)}
         {renderSide(abbrev3(homeTeam), injuries.home)}
