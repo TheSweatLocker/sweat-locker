@@ -1042,6 +1042,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_no_price = 0
     dropped_no_edge = 0
     dropped_ncaaf_total = 0
+    dropped_football_spread = 0
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -1090,6 +1091,32 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # evidence covers.
         if sport == 'NCAAF' and (pp.get('type') or '').lower() == 'total':
             dropped_ncaaf_total += 1
+            continue
+        # ══ 2026-10-23 · NO FOOTBALL SPREADS ON THE SHARP (B156) ═════════
+        # Measured on the reconciled receipt basis, per sport x market:
+        #
+        #   NFL   rl   2-11-1   15.4%   -5.24u
+        #   NCAAF rl  16-19     45.7%   -4.48u
+        #                       ------  ------
+        #   together  18-30-1           -9.72u  on n=49
+        #
+        # That is over HALF of every unit this surface has lost outside MLB
+        # (non-MLB lifetime: 55-66-1, -19.07u), from a single market. NFL rl
+        # at 15.4% is not variance at n=14 — it is the same signal as
+        # project_nfl_curated_spread_is_the_leak_1018, which measured the
+        # curated NFL spread at 27.1% CI[16.6,41.0] and ROI -45.9%, with NO
+        # projection beating the close on any of six slope tests.
+        #
+        # ML is deliberately left alone: NFL ml is 5-3 (-0.36u, essentially
+        # flat) and the 10-18 work found the NFL ML read at +10.7%. The
+        # instruction from that finding was "cap spreads, never ML", and this
+        # implements exactly that on the highest-conviction surface.
+        #
+        # Scoped to football only. NHL rl is also negative (6-11, -4.30u) but
+        # the puckline is a different market with a different distribution,
+        # and NHL belongs to the B141 assessment rather than this gate.
+        if is_football and (pp.get('type') or '').lower() in ('rl', 'spread'):
+            dropped_football_spread += 1
             continue
         # ══ 2026-09-29 · A PICK THAT SAYS "NO EDGE" IS NOT A PICK ══
         # Today's Sharp Card published, verbatim:
@@ -1306,6 +1333,12 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # NCAAF totals again and wants looking at, not silently discarding.
         print(f'  {sport} totals refused: {dropped_ncaaf_total} '
               f'(NCAAF over/under is 49.99% on 6,329 games — nothing to pick)')
+    if dropped_football_spread:
+        # Unlike the NCAAF totals guard, this one SHOULD fire — football
+        # spreads are a live market the engine keeps producing. Printed so the
+        # volume being refused is visible rather than silently absorbed.
+        print(f'  {sport} spreads refused: {dropped_football_spread} '
+              f'(NFL rl 2-11-1, NCAAF rl 16-19 = -9.72u on n=49)')
     if dropped_no_edge:
         # Printed unconditionally, not just for football: a pick refused for
         # declaring its own lack of edge is the engine contradicting itself,
