@@ -1,0 +1,145 @@
+name: Football Splits Refresh (game-day cadence)
+
+# ══ 2026-10-23 · WE COULD NOT ASSESS MONEY FLOW ON A FOOTBALL SLATE ══
+# ANDY: "Why can we assess money flow we should be able to do that at this
+# point and i know i have asked for that to haoppen."
+#
+# He had asked before, and the reason was a cadence gap on our side, not a
+# missing feed. Measured 2026-10-23 at 22:56 UTC:
+#
+#   write_line_snapshot.py --sport NCAAF  ->  wrote 15 rows, ALL for the five
+#   games kicking off that night, and 0 of the 44 Saturday games.
+#
+# The source only publishes splits for the imminent slate. Across 298 past
+# NCAAF games the FIRST spread split lands a median 3.2h before kickoff
+# (earliest 11.3h, and 10% arrive AFTER kickoff). Against that, the NCAAF
+# pipeline's only Saturday cron is 12:15 UTC — 8:15am ET. A noon-ET kickoff
+# gets its split around 9am ET, forty-five minutes after our one and only look
+# of the day, and an evening game publishes hours after we stopped looking. So
+# we were capturing almost none of the slate.
+#
+# MLB has had a six-shot daily cadence for this since August
+# (mlb_oddscrowd_refresh.yml). Football never got one. This is that, scoped to
+# the hours football actually plays.
+#
+# WHY IT MATTERS MORE THAN IT LOOKS: fading heavy public tickets on a football
+# spread is the ONE spread edge that has survived every control — 57-39,
+# 59.4%, ROI +13.4% on n=96 (project_the_fade_is_the_one_real_edge_1019,
+# re-measured 10-23). line_snapshot is its only input. No splits means that
+# edge is unusable on exactly the days it applies, and it also silently
+# removes three flags from audit_pick_vs_matchup.py.
+#
+# Cheap by design: each run is one scrape per sport, ~15-50 rows. The 10-21
+# outage was caused by per-row fetch loops, nothing like this, and the pull is
+# idempotent on (source, game_id, surface, pick_side, game_date).
+
+on:
+  schedule:
+    # Saturday NCAAF — games run noon ET to midnight. 10am/1pm/4pm/7pm ET.
+    - cron: '0 14,17,20,23 * * 6'
+    # Saturday night games bleeding past midnight UTC -> Sunday 02:00 UTC
+    - cron: '0 2 * * 0'
+    # Sunday NFL — 1pm ET to 11pm ET. 11am/2pm/5pm/8pm ET.
+    - cron: '0 15,18,21 * * 0'
+    - cron: '0 0 * * 1'
+    # Thursday + Friday night football (TNF, Friday NCAAF): 6pm/8pm ET
+    - cron: '0 22 * * 4,5'
+    - cron: '0 0 * * 5,6'
+    # Monday night football: 6pm/8pm ET
+    - cron: '0 22 * * 1'
+    - cron: '0 0 * * 2'
+  workflow_dispatch:
+
+concurrency:
+  group: football-splits-refresh
+  cancel-in-progress: false
+
+jobs:
+  splits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -q requests beautifulsoup4 python-dotenv lxml
+
+      # Writes line_snapshot (bets_pct / money_pct per game+market+side).
+      # continue-on-error per sport: a scrape failure on one sport must not
+      # stop the other, and a quiet day is not a failure.
+      - name: Capture NCAAF public splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NCAAF
+
+      - name: Capture NFL public splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NFL
+
+      # The archive is what the pattern miner reads; keeping it in step with
+      # line_snapshot means a trajectory, not a single late observation.
+      - name: Archive public splits (NCAAF + NFL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python archive_public_splits.py --sport NCAAF
+          python archive_public_splits.py --sport NFL
+
+      # Say what landed. A run that writes nothing on a game day is a finding,
+      # not a quiet success — feedback_green_step_that_writes_nothing.
+      - name: Report coverage
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python - <<'PY'
+          import os, requests, datetime as dt
+          SB = os.environ['SUPABASE_URL']
+          K = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+               or os.environ.get('SUPABASE_KEY'))
+          H = {'apikey': K, 'Authorization': f'Bearer {K}'}
+          today = (dt.datetime.now(dt.timezone.utc)
+                   - dt.timedelta(hours=4)).date().isoformat()
+          for sport, tbl in (('NCAAF', 'ncaaf_game_context'),
+                             ('NFL', 'nfl_game_context')):
+              g = requests.get(f'{SB}/rest/v1/{tbl}', headers=H, timeout=30,
+                               params={'select': 'game_id',
+                                       'game_date': f'eq.{today}',
+                                       'limit': '300'})
+              if g.status_code != 200:
+                  print(f'  {sport}: ctx HTTP {g.status_code}')
+                  continue
+              ids = {str(x['game_id']) for x in (g.json() or [])}
+              if not ids:
+                  print(f'  {sport}: no games today')
+                  continue
+              s = requests.get(f'{SB}/rest/v1/line_snapshot', headers=H,
+                               timeout=30,
+                               params={'select': 'game_id,market',
+                                       'sport': f'eq.{sport}',
+                                       'limit': '2000'})
+              have = {str(x['game_id']) for x in (s.json() or [])
+                      if str(x.get('market') or '').lower() in ('rl', 'spread')} \
+                  if s.status_code == 200 else set()
+              n = len(ids & have)
+              print(f'  {sport}: spread splits on {n}/{len(ids)} of today\'s games')
+              if n == 0:
+                  print(f'  WARNING {sport}: a game day with ZERO spread '
+                        f'splits — the fade edge has no input today')
+          PY
