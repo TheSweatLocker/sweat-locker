@@ -72,7 +72,31 @@ ESPN = ('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/'
 #: it is stamped explicitly rather than lumped into preseason, because
 #: "preseason" is a defensible thing to show a user and "the All-Star Game"
 #: is never part of a team record at all.
-TYPE_MAP = {1: 'preseason', 2: 'regular', 3: 'postseason', 4: 'allstar'}
+TYPE_MAP = {1: 'preseason', 2: 'regular', 3: 'postseason',
+            4: 'allstar', 5: 'playin'}
+
+#: ══ season.type ALONE IS NOT ENOUGH, MEASURED ══════════════════════════
+#: Two things the first dry run exposed, both of which would have left the
+#: records wrong in a way that looked fixed:
+#:
+#:  1. type 5 is the PLAY-IN TOURNAMENT ('play-in-season'), 6 games in
+#:     2025-26 between REAL teams - Heat/Hornets, Blazers/Suns, Magic/76ers,
+#:     Warriors/Clippers. Play-in games count toward neither the 82 nor the
+#:     playoffs, so they are their own phase and are excluded from a
+#:     regular-season record.
+#:
+#:  2. ESPN files the ALL-STAR GAMES as type 2, slug 'regular-season'.
+#:     "World at Team Stars" and "Team Stars at Team Stripes" on 2026-02-15
+#:     come back indistinguishable from a Tuesday night in January by type
+#:     alone. That is why the first dry run produced 1,235 'regular' games
+#:     against a true 1,230.
+#:
+#: So the note headline is checked too. ESPN puts "NBA All-Star - Round
+#: Robin" / "- Championship" in competitions[].notes[].headline, which is
+#: the feed stating it outright rather than us pattern-matching team names
+#: like 'Team Stars' - a list that would need editing every time the format
+#: changes (it has been Team Chuck/Kenny/Shaq/Candace before).
+ALLSTAR_MARKER = 'all-star'
 
 
 def page(tbl, params, cap=200000):
@@ -112,8 +136,16 @@ def espn_types_for_date(d: str, tries: int = 3):
             out = {}
             for ev in data.get('events', []):
                 t = (ev.get('season') or {}).get('type')
-                if ev.get('id') is not None and t is not None:
-                    out[str(ev['id'])] = int(t)
+                if ev.get('id') is None or t is None:
+                    continue
+                label = TYPE_MAP.get(int(t), f'espn_type_{int(t)}')
+                # The All-Star games arrive as type 2. Only the note says so.
+                comp = (ev.get('competitions') or [{}])[0] or {}
+                heads = ' '.join(str((nt or {}).get('headline') or '')
+                                 for nt in (comp.get('notes') or []))
+                if ALLSTAR_MARKER in heads.lower():
+                    label = 'allstar'
+                out[str(ev['id'])] = label
             return out
         except Exception:                                      # noqa: BLE001
             if i == tries - 1:
@@ -161,12 +193,11 @@ def main():
             failed_dates.append(d)
             continue
         for r in by_date[d]:
-            t = types.get(str(r.get('game_id')))
-            if t is None:
+            label = types.get(str(r.get('game_id')))
+            if label is None:
                 unmatched.append((d, r.get('game_id'),
                                   r.get('away_team'), r.get('home_team')))
                 continue
-            label = TYPE_MAP.get(t, f'espn_type_{t}')
             if r.get('season_type') != label:
                 updates.append((r.get('game_id'), label))
         if i % 50 == 0:

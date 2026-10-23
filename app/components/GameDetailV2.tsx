@@ -7435,18 +7435,48 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
       const starterNames = Object.values(smap)
         .map((x: any) => x.player_name).filter(Boolean);
       if (starterNames.length > 0) {
-        const {data: proj} = await client.from('nfl_player_projections')
+        // ══ 2026-10-22 · THIS WAS SHOWING NEXT WEEK, FROM ONE RANDOM VENDOR ══
+        // Andy: "a low consensus". Two separate bugs produced it.
+        //
+        //  1. NO WEEK FILTER. The query ordered by pulled_at desc and took
+        //     the newest row per team. The vendors had already rolled to
+        //     WEEK 8 (pulled 2026-10-22T21:25) while the game on screen was
+        //     WEEK 7 — so the card showed next week's projection as tonight's.
+        //
+        //  2. ONE VENDOR, CHOSEN ARBITRARILY. nfl_player_projections carries
+        //     two sources and both pull at the same timestamp, so whichever
+        //     sorted first won. They do not remotely agree:
+        //
+        //         Caleb Williams wk8   espn_fantasy 155.11   sleeper 203.35
+        //         Drake Maye     wk8   espn_fantasy 166.41   sleeper 275.26
+        //
+        //     ESPN's number is also flat across weeks (155.11 in wk7 AND
+        //     wk8), so it is a season-long per-game projection rather than a
+        //     matchup one. Averaging a season-long figure with a weekly one
+        //     is the same-measure error, so they are NOT averaged — the
+        //     range is shown, which makes the disagreement visible instead
+        //     of hiding it behind a single confident number.
+        let vq = client.from('nfl_player_projections')
           // 2026-09-19: was proj_pass_yards — no such column; the real one is
           // proj_pass_yds. One bad name 400s the whole select, so the QB
           // Matchup card lost its projections entirely (not just pass yards).
-          .select('player_name,team,proj_fantasy_pts,proj_pass_yds,proj_pass_tds')
+          .select('player_name,team,source,week,proj_fantasy_pts,proj_pass_yds,proj_pass_tds')
           .in('player_name', starterNames)
-          .in('team', [homeTeam, awayTeam])
-          .order('pulled_at', {ascending: false})
-          .limit(4);
-        const pmap: any = {};
-        for (const row of (proj || [])) if (!pmap[row.team]) pmap[row.team] = row;
-        setVendor({home: pmap[homeTeam], away: pmap[awayTeam]});
+          .in('team', [homeTeam, awayTeam]);
+        if (ctx?.week != null) vq = vq.eq('week', ctx.week);
+        const {data: proj} = await vq.order('pulled_at', {ascending: false}).limit(40);
+        const grouped: any = {};
+        for (const row of (proj || [])) {
+          const v = row?.proj_pass_yds;
+          if (v == null) continue;
+          (grouped[row.team] = grouped[row.team] || []).push(Number(v));
+        }
+        const summarise = (ab: any) => {
+          const xs: number[] = grouped[ab] || [];
+          if (!xs.length) return undefined;
+          return {lo: Math.min(...xs), hi: Math.max(...xs), n: xs.length};
+        };
+        setVendor({home: summarise(homeTeam), away: summarise(awayTeam)});
       }
     })();
   }, [homeTeam, awayTeam, gameId]);
@@ -7460,6 +7490,11 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
   //: NOT applied still shows, with its reason — a projection that silently
   //: skipped half its inputs must not read the same as one that used them all.
   const FACTORS = ['baseline', 'opponent', 'home_away', 'environment', 'game_script'];
+
+  //: Did the engine query work AT ALL for this game? If one side has a
+  //: projection the fetch plainly succeeded, so a missing other side is a
+  //: real skip. If neither does, we cannot claim to know why.
+  const anyEngine = !!(engine.home || engine.away);
 
   const renderQB = (side: 'home' | 'away', st: any, eng: any, ven: any, team: string) => {
     let inputs: any = eng?.inputs;
@@ -7500,10 +7535,22 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
             )}
           </TouchableOpacity>
         ) : (
-          //: Absent is said out loud. A card that renders nothing where a
-          //: projection belongs reads as a broken card, not an honest one.
+          // ══ 2026-10-22 · THIS SENTENCE DIAGNOSED THE WRONG THING ══
+          // It used to read "no projection — thin game log" whenever `eng`
+          // was empty. Andy saw it on a game where the projections existed
+          // and were correct: the app could not READ the table, because the
+          // new table shipped without a read grant and PostgREST answers an
+          // ungranted SELECT with 200 and an empty array, not an error.
+          //
+          // So the card explained a problem it had misdiagnosed, in a
+          // confident sentence about a game log. Zero rows is a WIRING
+          // ERROR until proven otherwise. It can only be called a thin log
+          // when the fetch demonstrably worked — which, here, means the
+          // OTHER side of the same game got a projection from the same
+          // query.
           <Text style={[styles.pitcherStats, {color: C.textMuted}]}>
-            no projection — thin game log
+            {anyEngine ? 'no projection — thin game log'
+                       : 'projection unavailable'}
           </Text>
         )}
 
@@ -7519,9 +7566,12 @@ function NFLQBMatchupCard({ctx, homeTeam, awayTeam}: any) {
           </View>
         ) : null}
 
-        {ven?.proj_pass_yds != null && (
+        {ven != null && (
           <Text style={[styles.pitcherStats, {color: C.textMuted, fontSize: 10, marginTop: 4}]}>
-            consensus {Math.round(Number(ven.proj_pass_yds))} yds
+            {ven.lo === ven.hi
+              ? `vendor ${Math.round(ven.lo)} yds`
+              : `vendors ${Math.round(ven.lo)}–${Math.round(ven.hi)} yds`}
+            {ven.n > 1 ? ` (${ven.n} sources)` : ''}
           </Text>
         )}
       </View>
