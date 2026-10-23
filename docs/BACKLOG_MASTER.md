@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B155**.
+- Next free ID: **B157**.
 
 ---
 
@@ -59,7 +59,9 @@ above — they are how the search stays honest enough to find something:
 | **B141** | OPEN | **NHL full assessment.** Same treatment as B134 and B139. Known material to start from: the engine is one-sided; three different win probabilities exist and the read quoted the hidden one; prop inputs **lose to the price**; props carry an over-bias (info-only today); the `rl` market was judged not viable on merits; records were 100% preseason until fixed. Decide per market what we publish — and what we stop publishing. |
 | B129 | OPEN | **Vault match dive** — status and update. How many patterns, match rate per sport on the forward slate, graded record with n, whether any pattern moves a tier today, whether any is a restatement of another. |
 | **B138** | OPEN | **Prop Jerry deep dive** — performance since inception, by sport / market / tier, and what actually improves it. |
-| **B139** | OPEN | **🔥 THE SHARP — the profitable cell does not exist outside baseball.** Andy 10-23: *"the sharp being better should be a priority."* Measured every sport x market cell (n=689): **MLB prop +17.10u** (197-137-2, 59.0%) and **MLB ml +9.24u** (64.4%) are the whole surface; **non-MLB props n=0** — never published one. Worst cell is **NFL rl 2-11-1 (15.4%, −5.24u)**; with NCAAF rl (−4.48u) that is **−9.72u on n=49, 51% of all non-MLB losses from one market**. MLB holds **15 of 20 slots** with 10 reserved for props, and that capacity does not transfer when the Series ends. Actions: (a) cut `rl` from football here; (b) reallocate the MLB slots now; (c) a non-MLB prop path is the only thing that can carry this surface — **blocked on B138**, measure before wiring. |
+| **B155** | OPEN | **THERE IS NO NBA OR NHL PROP SCORER.** `nba_generate_props.py:209` and `nhl_generate_props.py:290` hardcode `'tier': 'COVERAGE'`. NHL has written **31,000 props and never produced one publishable row**; NBA has **1 PRIME ever** out of 7,500. The publishable views (created 10-21) require `tier IN (PRIME,STRONG)` so they return 0 — price is NOT the gate, 1,911 of today’s 2,005 NBA props sit inside the legal band. **This is the blocker for B139**: props are the Sharp’s only profitable cell (+54.79u vs sides −18.02u) and MLB ends this week. Build the NBA scorer first (2,005 props/slate, view already waiting); NHL second, with the prior that its inputs already lose to the price. |
+| **B156** | OPEN | **Cut `rl` from football on The Sharp.** NFL rl 2-11-1, NCAAF rl 16-19 — **−9.72u on n=49**, over half of all non-MLB losses, from one market. Independent of B155 and safe now. |
+| **B139** | OPEN | **The Sharp: answered 10-23, and it is NOT selection.** Caps are not binding — NBA cap 3 produced 2, NHL cap 3 produced 0, NCAAF cap 5 produced 0, global cap 20 produced 3. The surface is starved because its only profitable input (MLB props) is ending and no replacement can exist until **B155**. Record now reconciles: 543-402-3 overall = sides 236-202-3 (−18.02u) + props 307-200-0 (+54.79u). Ledger thinness is the same cause, same candidate pool. **Blocked on B155.** |
 | B131 | OPEN | **NCAAF v3 == SP+** byte-identical on 307/307 points and totals. One opinion presented as two. Modelling fix, not display. |
 | B5 | OPEN | **`expo-updates` / OTA.** Every client fix is days away; the App State fix missed the 1.0.4 cut by an hour. Highest-leverage infra item. |
 
