@@ -1104,6 +1104,30 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
     render at index.tsx bar chart labels.
     """
     if not player_id or not stat_col: return []
+    # 2026-10-23: this builder interpolated stat_col RAW, bypassing
+    # _DERIVED_COLS. `anytime_td` is not a column on nfl_player_stats, so every
+    # call for that market returned 400 — hundreds per run, one per player,
+    # per season, silently swallowed by `if r.status_code != 200: return []`.
+    # Expand to the real source columns and sum them, exactly as
+    # player_rolling already does.
+    _src = _DERIVED_COLS.get(stat_col)
+    _sel = ','.join(_src) if _src else stat_col
+
+    def _val(row):
+        if not _src:
+            return row.get(stat_col)
+        tot, seen = 0.0, False
+        for c in _src:
+            cv = row.get(c)
+            if cv is None:
+                continue
+            try:
+                tot += float(cv)
+                seen = True
+            except (TypeError, ValueError):
+                continue
+        return tot if seen else None
+
     def _pull(sn):
         try:
             r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
@@ -1111,7 +1135,7 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
                              params={'player_id': f'eq.{player_id}',
                                      'season': f'eq.{sn}',
                                      'season_type': 'eq.REG',
-                                     'select': f'season,week,team,opponent_team,{stat_col}',
+                                     'select': f'season,week,team,opponent_team,{_sel}',
                                      'order': 'week.desc', 'limit': str(n)},
                              timeout=10)
             if r.status_code != 200: return []
@@ -1123,7 +1147,7 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
     # Normalize shape
     out = []
     for row in rows[:n]:
-        v = row.get(stat_col)
+        v = _val(row)
         if v is None: continue
         try: val = float(v)
         except (TypeError, ValueError): continue
@@ -1164,13 +1188,18 @@ def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
     actual_weeks and can either suppress (n<3) or label honestly (L{n}).
     """
     if not opp_team or not stat_col: return None
+    # 2026-10-23: same raw-interpolation bug as nfl_player_game_log — see the
+    # comment there. This one fired once per opponent team with limit=200, so
+    # an `anytime_td` market meant 32 more guaranteed 400s per run.
+    _src = _DERIVED_COLS.get(stat_col)
+    _sel = ','.join(_src) if _src else stat_col
     try:
         r = _retry_session.get(f'{SB}/rest/v1/nfl_player_stats',
                          headers=H_READ,
                          params={'opponent_team': f'eq.{opp_team}',
                                  'season': f'eq.{season}',
                                  'season_type': 'eq.REG',
-                                 'select': f'week,{stat_col}',
+                                 'select': f'week,{_sel}',
                                  'order': 'week.desc', 'limit': '200'},
                          timeout=15)
         if r.status_code != 200: return None
@@ -1181,8 +1210,22 @@ def fetch_nfl_defense_recent_allowed(opp_team: str, stat_col: str, season: int,
     by_week: dict = {}
     for row in rows:
         wk = row.get('week')
-        v = row.get(stat_col)
-        if wk is None or v is None: continue
+        if wk is None: continue
+        if _src:
+            v, seen = 0.0, False
+            for c in _src:
+                cv = row.get(c)
+                if cv is None:
+                    continue
+                try:
+                    v += float(cv)
+                    seen = True
+                except (TypeError, ValueError):
+                    continue
+            if not seen: continue
+        else:
+            v = row.get(stat_col)
+            if v is None: continue
         try: by_week[wk] = by_week.get(wk, 0) + float(v)
         except (TypeError, ValueError): continue
     if not by_week: return None
