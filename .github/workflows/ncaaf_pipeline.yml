@@ -509,6 +509,33 @@ jobs:
           cd mlb_pipeline
           python signal_attribution_grade.py --sport NCAAF --days 7
 
+      # ══ 2026-10-23 · SCHEDULE THE PER-GAME STAT WRITER ══
+      # recompute_ncaaf_per_game_stats.py was written 2026-09-26, run once by
+      # hand, and never scheduled. matchup_story's own docstring records what
+      # that cost on 10-02: it published Northwestern as the nation's #1
+      # passing offence at 403.5 yd/g (truth 269.0 -- a 2-game divisor on 3
+      # games) and was wrong on 5 of 6 teams. The fix then was to DROP rows
+      # older than MATCHUP_STORY_MAX_STAT_AGE_DAYS rather than narrate them,
+      # which is correct but only hides the problem: 27 days later the five
+      # keys this script owns (rush/pass/total/penalty yds_pg + turnovers_pg)
+      # were still 5.2 days stale, so 1,330 rows were being withheld from
+      # every NCAAF read -- 1,469 of 5,260 NCAAF stat rows in total.
+      #
+      # Andy found it from the other end: Army showing 333 rush yds/g when
+      # the true figure was 357.5. 333.2 was the frozen 5-game average from
+      # 10-18, one game behind. Not implausible -- stale.
+      #
+      # Runs BEFORE the game reads so the story layer sees fresh rows in the
+      # same invocation.
+      - name: Recompute NCAAF per-game stats (feeds the story layer)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "recompute_ncaaf_per_game_stats.py" python recompute_ncaaf_per_game_stats.py
+
       - name: Generate NCAAF game reads (Jerry)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

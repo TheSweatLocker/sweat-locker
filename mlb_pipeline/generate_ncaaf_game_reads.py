@@ -168,9 +168,27 @@ def fetch_upcoming_games():
     # 80+ games; prior cap left 30-40 games with "Analysis pending" stub placeholders
     # (Norfolk State @ Old Dominion class). Claude Haiku ~$0.001/call at ~600 tokens
     # per read → +$0.05 per big Sat slate. Trivial cost, kills stub coverage gap.
+    # ══ 2026-10-23 · ORDER BY DATE FIRST, THEN INTEREST ══
+    # This ordered by sweat_score alone, so a run that does not finish writes
+    # the most INTERESTING games in the window rather than the SOONEST. Found
+    # by Andy: "Umass Uconn game in ncaaf is missing all data in card."
+    #
+    # Measured at the time: all 5 games kicking off that night had NO
+    # jerry_cache row, while 16 of the next day's 44 did. In score order
+    # tonight's games sat at #8, #24, #33, #42 and #43 of 49, interleaved
+    # behind Saturday's slate, so the games closest to kickoff were last in
+    # line. A partial run therefore starves exactly the games a user is about
+    # to open, and the low-profile ones first -- UMass @ UConn scores 71
+    # against a Saturday field topping out at 81.
+    #
+    # game_date ascending puts every imminent game ahead of every later one,
+    # and sweat_score still ranks within a date, so an unfinished run now
+    # degrades by dropping the FURTHEST-OUT games, which have days left to be
+    # picked up by the next cron.
     url = (f"{SUPABASE_URL}/rest/v1/ncaaf_game_context"
            f"?game_date=gte.{today}&game_date=lte.{horizon}"
-           f"&select=*&order=sweat_score.desc.nullslast&limit=200")
+           f"&select=*&order=game_date.asc,sweat_score.desc.nullslast"
+           f"&limit=200")
     r = requests.get(url, headers=SB_READ, timeout=20)
     return r.json() if r.status_code == 200 else []
 

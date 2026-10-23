@@ -308,6 +308,78 @@ def load_team_stats(sport: str, season: int,
     if dropped:
         print(f'  ⚠ matchup_story: dropped {sum(dropped.values())} stat rows '
               f'older than {MAX_STAT_AGE_DAYS}d — {dropped}')
+    # ── mirror each row onto the school's other spelling. See _name_aliases.
+    alias = _name_aliases(sport)
+    mirrored = 0
+    for (team, key), row in list(out.items()):
+        other = alias.get(team)
+        if not other:
+            continue
+        cur = out.get((other, key))
+        if cur is None:
+            out[(other, key)] = row
+            mirrored += 1
+        else:
+            # both spellings carry this key - keep the fresher, never
+            # whichever was read last
+            a, b = _parse_ts(cur.get('refreshed_at')), _parse_ts(row.get('refreshed_at'))
+            if a is not None and b is not None and b > a:
+                out[(other, key)] = row
+    if mirrored:
+        print(f'  · matchup_story: mirrored {mirrored} stat rows across '
+              f'{len(set(alias))} aliased {sport} team name(s)')
+    return out
+
+
+
+# ══ 2026-10-23 · ONE SCHOOL, TWO NAMES, STATS SPLIT BETWEEN THEM ══
+# Andy: "Umass Uconn game in ncaaf is missing all data in card."
+#
+# team_stats_rolling holds 274 distinct NCAAF team names for ~136 teams,
+# because two writers spell seven schools differently, and the stat FAMILIES
+# landed under different spellings:
+#
+#   name on the game row   keys it has                 the other spelling   keys
+#   UMass                  7  (sos/sor/sweat only)     Massachusetts         18
+#   Connecticut            7                           UConn                 14
+#   Appalachian State      7                           App State             14
+#   FIU                    7                           Florida International 18
+#   Hawaii                 7                           Hawai'i               14
+#   Louisiana Monroe       7                           UL Monroe             14
+#   San Jose State         7                           San Jose State (accent) 14
+#
+# So a lookup by the game row's name returns the strength-of-schedule set and
+# NOTHING else: no rush_yds_pg, no pass_yds_pg, no EPA, no SP+, no third
+# down. UMass @ Connecticut is a game where BOTH teams are affected, which is
+# why that card looked completely empty rather than merely thin. Four upcoming
+# games are hit, three of them on the Saturday slate.
+#
+# ncaaf_team_name_aliases already maps all seven correctly (ctx_name ->
+# cfbd_canonical, populated 2026-09-20). Nothing was reading it here. This is
+# the same defect as project_nhl_stl_name_mismatch_1013, whose rule is
+# explicit: NEVER join feeds on a raw team name.
+#
+# Resolved by merging both spellings onto BOTH keys, so a caller may look up
+# either one. On a collision the FRESHER row wins, because the split is not
+# clean -- 'Massachusetts' carries sweat_rating too, 19 days stale, while
+# 'UMass' carries a fresher one -- and taking whichever row happened to be
+# read last is feedback_unordered_data_zero_picks_a_vintage.
+_ALIAS_TABLE = {'NCAAF': 'ncaaf_team_name_aliases'}
+
+
+def _name_aliases(sport: str) -> dict:
+    """ctx_name -> canonical_name, both directions, for this sport."""
+    tbl = _ALIAS_TABLE.get(str(sport).upper())
+    if not tbl:
+        return {}
+    pairs = _page(tbl, {'select': 'ctx_name,cfbd_canonical'})
+    out = {}
+    for p in pairs:
+        a, b = p.get('ctx_name'), p.get('cfbd_canonical')
+        if not a or not b or a == b:
+            continue
+        out[str(a)] = str(b)
+        out[str(b)] = str(a)
     return out
 
 
