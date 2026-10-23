@@ -1,5 +1,8 @@
 # BACKLOG — living
 
+**Open work now lives in [BACKLOG_MASTER.md](BACKLOG_MASTER.md) — that is the list we work down. This file is the archive: the reasoning, root causes and measurements behind every item.**
+
+
 **Last verified: 2026-10-07 (late night) — run `python mlb_pipeline/verify_backlog.py` before quoting any number in this file**
 
 Single source of open work. Rules that keep it from rotting like
@@ -5613,3 +5616,188 @@ not in `resolve_externals.SPORT_CONFIG` — but unlike NBA, no workflow calls
 it for UFC, so `_audit_callers()` reports nothing. See
 `project_ufc_externals_foreign_id_space_*` (B67): the UFC game_id is a
 foreign id space, which is the real blocker, not the config.
+
+## B134 — NFL FULL RETRAIN + ENGINE REWEIGHT, AFTER WEEK 7 (2026-10-22)
+
+Andy, after being shown the calibration finding below:
+
+> "We need to retrain model and recal then, we are in week 7 almost halfway
+> through season it is time after this weekend we need to take a good look at
+> models how they predict scores and the overall weighting of the entire
+> engine when it factors everything in and figure out a pattern based on last
+> 6 weeks of nfl data"
+
+**Scheduled: starts after Week 7 completes, ≈ Monday 2026-10-27.** Waiting
+is deliberate — Week 7 is one more week of graded outcomes, and the whole
+point is to fit on as much 2026 as exists.
+
+Four parts, in order:
+
+**(a) Retrain spread/total on 2026 weeks 1–7.** The current model retrains
+"~yearly post-season" (`nfl_pipeline.yml`), so what is live right now was fit
+before this season started.
+
+**(b) Audit how it predicts SCORES, not just margin.** Andy asked
+specifically about score prediction. Margin MAE can look fine while both
+scores are biased in the same direction — that is invisible on the spread and
+fatal on the total. Measure bias and MAE on home points and away points
+separately, then on their sum and difference.
+
+**(c) Audit the overall engine weighting.** What each signal contributes once
+everything is factored in, AND what each is worth alone. The QB projection
+work is the template: four factors, three of them worthless or harmful, and
+only an ablation showed it. Expect the same distribution here.
+
+**(d) Find the pattern in the last 6 weeks.** This is the open-ended half and
+the reason the item exists. Not "confirm the model works" — look for what
+2026 is doing that the model was not fit on.
+
+**Non-negotiable method constraints** (each of these has already cost us a
+retraction):
+
+- **Walk-forward.** Project week N using only weeks < N. Fitting on the weeks
+  being projected is how `project_models_dont_beat_the_close_1005` happened:
+  65-79% ATS, all of it leak.
+- **Measure against the CLOSE, not the result.** See
+  `project_nfl_curated_spread_is_the_leak_1018`: no projection beat the close
+  on any of 6 slope tests, all CIs spanning 0.
+- **Beat a constant before shipping a weight.** A league-average constant beat
+  our QB baseline (63.7 vs 64.9 MAE). A level model that cannot beat a
+  constant is not a model.
+- **Hold out.** K=2 shrinkage shipped only because it held across 3 folds.
+
+VERIFY (what is true today, before any retrain):
+
+    grep -n "retrain\|calibration\|apply_prop_refit" .github/workflows/nfl_pipeline.yml
+
+## B135 — NFL RECALIBRATION CADENCE (2026-10-22)
+
+Split out of B134: that is the one-time retrain, this is making it recur.
+
+Andy asked whether NFL calibration happens weekly "or are we going out there
+every weekend with the same product looking for different results." Measured
+answer: **the latter.** Three separate facts, all from the pipeline's own
+comments:
+
+- `nfl_pipeline.yml`: *"Cap tier at LEAN (no per-signal calibration for NFL
+  yet — every edge-detected prop currently defaults to STRONG; LEAN is honest
+  until signal_sources sport=NFL class=prop gets real hit_rate data from
+  graded outcomes)"*
+- `nfl_pipeline.yml`: *"NFL doesn't have apply_prop_refit yet (refit weights
+  are MLB-only), so playbook works from legacy_conviction + player_l10
+  signals only."*
+- `nfl_pipeline.yml`: the game model retrains *"~yearly post-season."*
+
+One thing DOES refresh: `refresh_prop_signal_calibration.py` runs for NFL on
+a 30-day rolling window and writes empirical hit rates into
+`signal_registry`, which `playbook._resolve_weight()` reads. So prop *signal*
+weights are not frozen. But its own docstring warns *"THESE BANDS ARE STALE —
+they describe the pre-2026-09-02 thresholds"*, and it does not touch the game
+model or the prop refit weights.
+
+**BLOCKED on B134.** A cadence is a decision about how often something is
+worth redoing, and we do not know that until we have done it once and
+measured how much the weights moved. If a week-7 refit barely changes them,
+weekly is waste; if it changes them a lot, yearly was malpractice.
+
+VERIFY:
+
+    grep -rn "refresh_prop_signal_calibration\|apply_prop_refit" .github/workflows/*.yml
+
+## B136 — NBA PLAYER PROJECTIONS + PREDICTED SCORE, ROLLED TO NFL (2026-10-22)
+
+Andy: *"NBA player projections and associated predicted score from that data,
+this should be roldened to nfl."*
+
+Harder than NFL QBs, and Andy named why when he first raised it: minutes,
+injuries, pace, and blowout risk — *"if the spread is high expect a blow out
+that would kill late minutes for stars."* That last one is a real
+interaction, and it is also the trap: the spread is the market's view, so a
+projection that leans on it is partly just restating the line. The NFL
+`environment` factor failed for exactly this reason — the posted total
+double-counted what the baseline already measured.
+
+Build order should follow the NFL one, which worked: baseline with shrinkage
+first, measure it against a constant, then add one factor at a time with an
+ablation each time.
+
+Predicted score is shared with B134(b). Do not solve it twice.
+
+## B137 — GAME PROP PRESENTATION: CLEAN UP NFL, ADD NHL + NBA (2026-10-22)
+
+Andy: *"clean up game prop presentation in nfl game detail, also adding game
+props to nhl and nba game details (props for that game)."*
+
+Two halves of one surface, so one item. The NFL half is presentation only.
+The NHL/NBA half is new wiring, and NHL has a known hazard: NHL props could
+not join their game (`project_nhl_props_cannot_join_their_game_1003`) — check
+that is actually fixed before building a surface on top of the join.
+
+## B138 — PROP JERRY DIVE: PERFORMANCE SINCE INCEPTION + IMPROVEMENTS (2026-10-22)
+
+Andy: *"dive in prop jerry for improvements and assess performance since
+conception."*
+
+Must be split by sport, market and tier, not reported as one number. Known
+distortions to handle before quoting anything:
+
+- `prop_prime` is inflated and held that way by choice
+  (`project_prop_record_inflation_held_1003`) — cite sides separately.
+- ROI before 2026-09-19 uses reconstructed prices and overstates
+  (`project_reconstructed_prices_inflate_roi_1009`) — floor every ROI there.
+- 641 of 692 FADE receipts name the faded side
+  (`feedback_grade_the_side_we_published`) — a raw read of prop results is
+  wrong by ~24 wins in our favour until that is filtered.
+
+So "since inception" needs a stated window and a stated price basis, or the
+headline number will be wrong in our favour again.
+
+## B139 — THE SHARP: ARE WE SELECTING THE RIGHT PLAYS? (2026-10-22)
+
+Andy: *"the sharp assessment do we need to pick better picks there i feel
+like it has been right due for discussion for improvements."*
+
+The distinction that makes this tractable: this is about **selection**, not
+grading. Grading has been audited repeatedly. What has never been audited is
+the composer — which 15 plays reach the slate out of the pool that qualified,
+and whether the ones it drops would have done better than the ones it kept.
+
+That is measurable: for each past slate, grade the plays that qualified and
+were NOT selected, and compare. If the unselected pool beats the slate, the
+composer is subtracting value.
+
+Reminder on naming: user-facing label is always **The Sharp** (the Steam Room
+slate, 15 picks), never "Sharp Card". The DB surface is still `sharp_card`.
+
+## B140 — STATUS INDEX FOR THIS FILE (2026-10-22)
+
+This file has 133 B-items with no status field, so closed and open work sit
+inline and a review means reading prose. `docs/BACKLOG_MASTER.md` now carries
+the open list; this file should get a one-line-per-item index so the archive
+is navigable too.
+
+## B141 — NHL FULL ASSESSMENT (2026-10-22)
+
+Andy: *"add nhl assessment on list as well"* — raised in the same breath as
+the NFL retrain, so read it as the same kind of request: not a bug report, a
+decision about what we should be publishing per market.
+
+NHL has more open adverse findings than any other sport, and they have never
+been assessed together:
+
+- the engine is one-sided (`project_nhl_engine_one_sided_1001`)
+- three different win probabilities exist and the read quoted the hidden one
+  (`project_nhl_read_card_drift_929`)
+- prop inputs **lose to the price** (`project_nhl_prop_inputs_lose_to_price_1003`)
+- props carry an over-bias, info-only today (`project_nhl_prop_over_bias_1009`)
+- the `rl` market was judged not viable on merits
+  (`project_nhl_rl_market_not_viable_1003`)
+- records were 100% preseason until fixed (`project_nhl_preseason_record_930`)
+- ordering inversion (`project_nhl_picks_no_market_1001`)
+- STL was the one team two feeds spell differently, and a silent `continue`
+  cost it all odds and all tendencies
+  (`project_nhl_stl_name_mismatch_1013`)
+
+The 10-03 note said NHL was *"in calibration, not broken."* That was three
+weeks ago and the season is live. The deliverable is a per-market verdict:
+publish, publish-as-info-only, or stop — with the measurement behind each.
