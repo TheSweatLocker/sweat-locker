@@ -2225,16 +2225,45 @@ def _label_from_candidate(candidate: str, ctx: dict,
         # OPPOSITE polarity, so a missing sport is a coin flip on the sign.
         print(f'  ⚠ _label_from_candidate: no sport for {candidate} with '
               f'close_spread={raw_sp} — spread sign cannot be resolved')
+    # ══ 2026-10-22 · NHL KEEPS ITS LINE IN A DIFFERENT COLUMN ══
+    # ANDY: "For NHL when primary play says knights rl what does rl mean?"
+    #
+    # Two bugs in one label. The second one is why he saw the first.
+    #
+    # NHL does not populate close_spread - it is NULL on 35 of the 62
+    # forward rows, because hockey stores its line in close_puckline
+    # (-1.5 / +1.5). So raw_sp came back None for NHL, the line was dropped,
+    # and the builder fell through to its no-line fallback, which hardcodes
+    # the string 'RL'. That is why an NHL card reads "Anaheim Ducks RL"
+    # instead of "Anaheim Ducks -1.5".
+    if raw_sp is None and sport == 'NHL':
+        for _k in ('close_puckline_home', 'close_puckline'):
+            try:
+                _v = ctx.get(_k)
+                if _v is not None:
+                    raw_sp = float(_v)
+                    break
+            except (TypeError, ValueError):
+                continue
     if raw_sp is not None and sport == 'NFL':
         home_line = -raw_sp  # flip to home perspective for NFL
     else:
         home_line = raw_sp   # MLB / NCAAF / NBA / NCAAB / NHL already home-perspective
+    # 'RL' is the RUN LINE and belongs to baseball. _MARKET_LABEL already
+    # resolves the code per sport (NHL -> PL, football/basketball -> ATS)
+    # and was added on 2026-09-26 for Andy's identical complaint about a
+    # college football card quoting "RL" — but it was wired into the PROSE
+    # builders and never into the pick label itself, so the label kept
+    # printing the internal code.
+    _mkt = _market_label('rl', sport)
     if candidate == 'HOME_RL':
         line = home_line
-        return (f'{home} {line:+g}' if line is not None else f'{home} RL', 'HOME', line)
+        return (f'{home} {line:+g}' if line is not None else f'{home} {_mkt}',
+                'HOME', line)
     if candidate == 'AWAY_RL':
         line = -home_line if home_line is not None else None
-        return (f'{away} {line:+g}' if line is not None else f'{away} RL', 'AWAY', line)
+        return (f'{away} {line:+g}' if line is not None else f'{away} {_mkt}',
+                'AWAY', line)
     if candidate == 'OVER':
         try: line = float(close_total)
         except (TypeError, ValueError): line = None
