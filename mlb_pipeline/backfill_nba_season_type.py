@@ -96,7 +96,23 @@ TYPE_MAP = {1: 'preseason', 2: 'regular', 3: 'postseason',
 #: the feed stating it outright rather than us pattern-matching team names
 #: like 'Team Stars' - a list that would need editing every time the format
 #: changes (it has been Team Chuck/Kenny/Shaq/Candace before).
+#: ══ AND THE NBA CUP FINAL IS NOT A REGULAR-SEASON GAME EITHER ══════════
+#: After the first full backfill every team landed at 82 or 83 games, with
+#: exactly TWO teams per season at 83:
+#:
+#:     2024-25   Oklahoma City Thunder, Milwaukee Bucks
+#:     2025-26   San Antonio Spurs, New York Knicks
+#:
+#: Each pair's "extra" game is their THIRD meeting in a season where they
+#: play twice, both in mid-December, both at a neutral site. They are the
+#: NBA Cup finals. Group-stage Cup games DO count toward the 82; the final
+#: does not, which is why it is the one game that breaks the count.
+#:
+#: ESPN files it as type 2 'regular-season' like the All-Star games, and
+#: again only the note says otherwise:
+#:     notes='NBA Cup Championship'   neutralSite=True
 ALLSTAR_MARKER = 'all-star'
+CUP_FINAL_MARKER = 'cup championship'
 
 
 def page(tbl, params, cap=200000):
@@ -143,8 +159,11 @@ def espn_types_for_date(d: str, tries: int = 3):
                 comp = (ev.get('competitions') or [{}])[0] or {}
                 heads = ' '.join(str((nt or {}).get('headline') or '')
                                  for nt in (comp.get('notes') or []))
-                if ALLSTAR_MARKER in heads.lower():
+                _h = heads.lower()
+                if ALLSTAR_MARKER in _h:
                     label = 'allstar'
+                elif CUP_FINAL_MARKER in _h:
+                    label = 'cup_final'
                 out[str(ev['id'])] = label
             return out
         except Exception:                                      # noqa: BLE001
