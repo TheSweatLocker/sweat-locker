@@ -936,6 +936,60 @@ def fetch_football_picks(today: str) -> list:
             if not isinstance(pp, dict): continue
             tier = str(pp.get('tier') or '').upper()
             if tier not in ('PRIME', 'STRONG'): continue
+            # ══ 2026-10-23 · FLIP OUR SHORT NCAAF SPREAD ON THIS CARD TOO ══
+            # ANDY: "I do think those plays should be published on the sharp
+            # and sweat card tomorow maybe not all bit the ones we really like
+            # specificlaly for ncaaf".
+            #
+            # The Sharp got this at its composer this morning; without the
+            # same step here the two curated surfaces would disagree about the
+            # same game, which is worse than either choice on its own.
+            #
+            # Scope matches what was measured: NCAAF only, spread only,
+            # |line| <= 7, and the PRIME/STRONG gate immediately above is what
+            # makes "the ones we really like" -- that subset went 4-18-1
+            # (18.2%) as published and 18-4-1 (81.8%, ROI +56.2%) flipped.
+            # NCAAF long is 49.8% on n=227 and NFL short 53.6% on n=28, so
+            # neither is here.
+            #
+            # The flipped side is priced from a POSTED line_history quote via
+            # the same helper flip_football_spreads uses, so there is one
+            # pricing rule in the codebase rather than two that can drift. No
+            # posted quote means the pick is left alone, never priced off our
+            # own stale number.
+            _flip = None
+            if (sport == 'NCAAF'
+                    and str(pp.get('type') or '').lower() in ('rl', 'spread')):
+                try:
+                    from flip_football_spreads import (
+                        posted_quotes as _pq, MAX_MAGNITUDE as _MAXM, OPP as _OPP)
+                    _ln = float(pp.get('line'))
+                    _sd = str(pp.get('side') or '').upper()
+                    if abs(_ln) <= _MAXM and _sd in _OPP:
+                        global _SWEAT_FLIP_Q
+                        try:
+                            _q, _tm = _SWEAT_FLIP_Q
+                        except NameError:
+                            _q, _tm = _pq('NCAAF', today)
+                            _SWEAT_FLIP_Q = (_q, _tm)
+                        _opp = _OPP[_sd]
+                        _nl = -_ln
+                        _lh = _tm.get((str(row.get('away_team')),
+                                       str(row.get('home_team'))))
+                        _qt = _q.get((_lh, _opp.lower(), _nl)) if _lh else None
+                        if _qt:
+                            _team = str(row.get('home_team') if _opp == 'HOME'
+                                        else row.get('away_team'))
+                            _flip = {'side': _opp, 'line': _nl,
+                                     'label': f'{_team} {_nl:+g}',
+                                     'odds': _qt[0], 'books': _qt[1],
+                                     'from': pp.get('label')}
+                            print(f'  NCAAF flip on Sweat Card: '
+                                  f'{pp.get("label")} -> {_flip["label"]} '
+                                  f'@ {_qt[0]:+g} ({_qt[1]}bk)')
+                except (TypeError, ValueError, ImportError) as _e:
+                    print(f'  ⚠ sweat-card flip skipped: {_e}')
+                    _flip = None
             # Early-season tier cap
             if today < EARLY_SEASON_TIER_CAP_UNTIL and tier == 'PRIME':
                 tier = 'STRONG'
@@ -952,8 +1006,10 @@ def fetch_football_picks(today: str) -> list:
                 'game_id': row.get('game_id'),
                 'game': f"{row.get('away_team')} @ {row.get('home_team')}",
                 'tier': tier,
-                'label': pp.get('label') or '',
-                'side': pp.get('side'),
+                'label': (_flip['label'] if _flip
+                          else (pp.get('label') or '')),
+                'side': (_flip['side'] if _flip else pp.get('side')),
+                'flipped_from': (_flip['from'] if _flip else None),
                 'type': pp.get('type'),
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),
@@ -963,7 +1019,7 @@ def fetch_football_picks(today: str) -> list:
                 # Anything consuming the card structurally — the grader,
                 # the app, a receipt — had to re-parse prose to find the
                 # line it was graded against. Carry it as a field.
-                'line': pp.get('line'),
+                'line': (_flip['line'] if _flip else pp.get('line')),
                 # 2026-10-11: Andy-approved overrides are carried through so
                 # the publish-lock and the item cap below can treat them
                 # differently from an auto-composed pick. set_manual_pick.py
