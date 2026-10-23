@@ -259,7 +259,15 @@ class SportPuller:
             # silently overwrites the first, leaving only the upper bound
             # and returning the oldest 1000 rows in the table. Use a list
             # of tuples so BOTH bounds reach PostgREST.
-            params = [('select', 'game_id,home_team,away_team,game_date'),
+            # 2026-10-22: was an explicit four-column list. Widened to *
+            # so the slate carries whatever ABBREVIATION columns the sport
+            # has (nba_game_context home_abbrev, nhl_game_context
+            # home_team_abbrev, ...). find_game_id prefers those over name
+            # matching - see the note there. Naming the abbrev columns
+            # explicitly would 400 on any sport that lacks them and take the
+            # WHOLE slate down with it, which is the failure mode this
+            # codebase keeps rediscovering; * cannot miss a column.
+            params = [('select', '*'),
                       ('game_date', f'gte.{game_date}'),
                       ('game_date', f'lte.{hi}'),
                       ('order', 'game_date.asc'),
@@ -284,6 +292,42 @@ class SportPuller:
         Clippers night. Collect every candidate and refuse unless exactly
         one survives; a wrong attribution is worse than no pick.
         """
+        # ══ 2026-10-22 · AN ABBREVIATION IS NOT A SUBSTRING ══
+        # team_side resolves a hint against the full team NAME, which works
+        # for "CLE" in "Cleveland Cavaliers" and fails silently for a great
+        # many codes:
+        #
+        #     OKC  not in  oklahoma city thunder
+        #     GSW  not in  golden state warriors
+        #     NYK  not in  new york knicks
+        #     SAS  not in  san antonio spurs
+        #     LAL  not in  los angeles lakers
+        #
+        # Caught when CBS — which publishes abbreviations only — matched
+        # CLE @ PHI and missed DEN @ OKC on the very same two-game slate.
+        # Every abbreviation-publishing source has been losing these rows,
+        # and losing them as "no match" rather than as an error.
+        #
+        # So abbreviations are matched FIRST and EXACTLY, from the sport's
+        # own column, rather than through a lookup table we would have to
+        # maintain. Name matching stays as the fallback for sources that
+        # publish names, so nothing that resolved before stops resolving.
+        def _abb(g, side):
+            for k in (f'{side}_abbrev', f'{side}_team_abbrev',
+                      f'{side}_team_abbreviation'):
+                v = g.get(k)
+                if v:
+                    return str(v).strip().upper()
+            return None
+
+        hh = str(home_hint or '').strip().upper()
+        ah = str(away_hint or '').strip().upper()
+        exact = [g['game_id'] for g in slate
+                 if _abb(g, 'home') == hh and _abb(g, 'away') == ah
+                 and _abb(g, 'home') is not None]
+        if len(exact) == 1:
+            return exact[0]
+
         hits = []
         for g in slate:
             h, a = g.get('home_team'), g.get('away_team')
@@ -446,7 +490,37 @@ class SportPuller:
                 'pickdawgz': self.fetch_pickdawgz,
                 'covers': self.fetch_covers,
                 'sbr': self.fetch_sbr,
-                'dimers': self.fetch_dimers}
+                'dimers': self.fetch_dimers,
+                'cbs': self.fetch_cbs}
+
+    def fetch_cbs(self, slate, game_date):
+        """CBS Sports expert picks.
+
+        ══ 2026-10-22 · ANDY ASKED FOR IT AND IT IS THE CHEAP KIND ══
+        "CBS does this for every sport
+        https://www.cbssports.com/nba/expert-picks/"
+
+        True for every sport — the path is /{league}/expert-picks/ and only
+        the slug changes — and the page is SERVER-RENDERED. Verified before
+        writing the scraper: 498KB of HTML, no __NEXT_DATA__, no
+        window.__INITIAL, and "CLE +2.5" sitting in the raw markup.
+
+        That matters more than it sounds. The four NBA sources that produced
+        nothing for a month were the browser-driven ones, failing because
+        nba_pipeline never installed playwright. A requests + BeautifulSoup
+        source cannot fail that way, so this is the first NBA source added
+        since the opener that does not depend on a browser being present.
+
+        Registered for EVERY sport rather than NBA alone: the page exists
+        for all six and a sport missing from LEAGUE_SLUG returns ([], 200),
+        so adding it here cannot break a sport it does not cover.
+        """
+        from externals_cbs import fetch_cbs_generic
+        return fetch_cbs_generic(
+            sport=self.sport, slate=slate, game_date=game_date,
+            find_game_id_fn=lambda s, home_hint, away_hint:
+                self.find_game_id(s, home_hint, away_hint),
+            make_pick_fn=ExternalPick)
 
     # ── run ──────────────────────────────────────────────────────────
     def run(self, game_date: Optional[str] = None, sources=None,
