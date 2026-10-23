@@ -66,8 +66,41 @@ from pick_lock import lock_active
 from season_calendar import read_horizon
 
 LOCK_IMMINENT_HOURS = 24
-# The slate being played. Thu->Wed covers a full football play-week.
-LOCK_SLATE_DAYS = 7
+# ══ 2026-10-23 · 7 DAYS REACHED INTO NEXT WEEK'S SLATE ══
+# ANDY: "there is a huge issue in integrity of the opening line / our pick ...
+# we say Giants +7.5 but market is 10.5 ... kind of means we are wrong."
+#
+# He is right, and this constant is why. The NFL lock window is Thu 8am ET ->
+# Mon. Combined with a 7-day reach, the window that protects THIS week's slate
+# also stamps NEXT week's, because next Sunday is exactly 7 days from this
+# Sunday. So on Sunday 10-18 the entire 10-25 slate was locked, and every one
+# of those picks then held a line that was already a week old by kickoff while
+# the card showed it beside a live market.
+#
+# Measured on the 10-25 slate before the change:
+#
+#   NFL   13 spread picks locked · lock lead median 6.9 DAYS (max 6.9)
+#         10 of 13 locked more than 5 days out
+#         10 of 13 lines now off-market: 4 better than market (which INFLATES
+#         the record, since grading uses the frozen receipt line) and 6 worse
+#         (which deflates it)
+#         worst: NYG +7 against a +10.5 close, locked 6.9 days early
+#   NCAAF 39 locked · lock lead median 0.9 days · only 6 of 39 over 5 days
+#
+# NCAAF was already healthy because Thu->Sat does not overshoot. The defect is
+# specific to NFL's longer play-week.
+#
+# 5 days covers the slate the lock exists to protect: when the NFL window
+# opens Thu 8am ET the Sunday games are ~3.2 days out and Monday night is
+# ~4.5. Next Sunday is 10.2 days out and is now correctly left unlocked, free
+# to track the market until its own Thursday.
+#
+# This does NOT retroactively refresh the 10 picks already locked on the
+# 10-25 slate. The trigger in 20260926b refuses a label change on a locked
+# row, and those picks already have published receipts whose pick_line is
+# immutable by design, so unlocking them would show one number on the card and
+# grade another. That is a records decision, not a constant.
+LOCK_SLATE_DAYS = 5
 
 CTX_TABLE = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context'}
 
