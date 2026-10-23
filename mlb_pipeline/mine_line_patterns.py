@@ -355,7 +355,39 @@ def _score_outcome(sport: str, game_id: str, market: str,
 # Refresh — recompute stats for every registered pattern
 # ──────────────────────────────────────────────────────────────────────
 
+#: Cache for _pull_archive_since, keyed (sport, days). Lives for the process.
+_ARCHIVE_CACHE: dict = {}
+
+
 def _pull_archive_since(sport: str, days: int) -> list:
+    """Paginated public_splits_archive read, CACHED per (sport, days).
+
+    ══ 2026-10-23 · WHY THE CACHE IS NOT OPTIONAL ════════════════════════════
+    This sat INSIDE _refresh_pattern(), which runs once per pattern. So
+    `--refresh --sport ALL` re-read a full YEAR of the archive for every
+    pattern, for every sport, and it is wired into two workflows
+    (cross_sport_lines.yml and mlb_pipeline.yml). Andy's Supabase dashboard
+    on the day this was found: 213,884 requests and 3,860 Postgres errors in
+    24h on a MICRO instance, and the advisor reporting
+    "Database not usable - Connection failed at the TCP layer".
+
+    The edge logs show the signature plainly: the same
+    `sport=eq.NFL&captured_at=gte.<now-365d>` scan restarting from offset=0
+    every ~5 seconds, walking to offset=29000. High-offset pagination makes
+    Postgres read every row it skips, so the last page alone is a full table
+    scan — and we were paying for it once per pattern.
+
+    Nothing about the computation needs a fresh read per pattern: the archive
+    is append-only history and every caller in one run wants the same
+    snapshot. One read per (sport, days) per process is the whole fix.
+
+    Users never saw any of this. It feeds the Vault pattern miner, which is
+    still unassessed (B129).
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    ck = (str(sport), int(days))
+    if ck in _ARCHIVE_CACHE:
+        return _ARCHIVE_CACHE[ck]
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace('+', '%2B')
     rows = []
     for page in range(200):  # up to 200k rows
@@ -371,6 +403,9 @@ def _pull_archive_since(sport: str, days: int) -> list:
         if not chunk: break
         rows.extend(chunk)
         if len(chunk) < 1000: break
+    _ARCHIVE_CACHE[ck] = rows
+    print(f'  [archive] {sport} {days}d: {len(rows)} rows read '
+          f'(cached for this run)')
     return rows
 
 
