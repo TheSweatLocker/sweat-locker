@@ -1078,6 +1078,37 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
           redundant "now -1.5". Spread/puckline only: an ML move is a price
           change and belongs in the price strip, not here. */}
       {(() => {
+        // ══ 2026-10-22 · TOTALS MOVE TOO, AND THEY WERE EXCLUDED ══
+        // The second QA pass: "The pick card says Under 234.5, but the
+        // market is 236.5 everywhere else." Correct, and this block
+        // returned null for it — rawType 'total' was not in the list, so
+        // the one card that most needed the disclosure never showed it.
+        // That is the Bears complaint again in a different market.
+        //
+        // A total's direction is NOT the spread's. For a spread, a bigger
+        // number is better for whoever we backed, full stop. For a total it
+        // depends which side we took: an OVER wants the market to rise, an
+        // UNDER wants it to fall. Reusing the magnitude test would have
+        // called a 2-point move against our Under a closing-line win.
+        if (rawType === 'total') {
+          const ourTot = Number(play.line);
+          const mktTot = Number(ctx?.close_total);
+          if (!isFinite(ourTot) || !isFinite(mktTot)) return null;
+          if (Math.abs(ourTot - mktTot) < 0.25) return null;
+          const isOver = String(play?.side || '').toUpperCase().includes('OVER');
+          const better = isOver ? mktTot > ourTot : mktTot < ourTot;
+          const gap = Math.abs(mktTot - ourTot).toFixed(1);
+          return (
+            <Text style={{color: better ? C.accent : C.textMuted, fontSize: 11,
+                          marginTop: 2, fontWeight: '600'}}>
+              {better ? '↗ ' : '↘ '}published at {ourTot}
+              {' · market now '}{mktTot}
+              {better
+                ? `  (we beat the close by ${gap})`
+                : `  (market moved ${gap} against this side)`}
+            </Text>
+          );
+        }
         if (!['rl', 'spread', 'puckline', 'ats'].includes(rawType)) return null;
         const ourLine = Number(play.line);
         const mkt = Number(ctx?.close_spread ?? ctx?.close_puckline_home
@@ -1834,6 +1865,27 @@ const RL_LABEL_BY_SPORT: Record<string,string> = {
   NBA: 'Spread', NCAAB: 'Spread', NHL: 'Puck Line',
 };
 const rlLabel = (sport?: string) => RL_LABEL_BY_SPORT[sport || ''] || 'Spread';
+
+// ══ 2026-10-22 · ONE SEASON, TWO SPELLINGS ON ONE SCREEN ══
+// QA on CLE @ PHI: the Team Stats banner read "2025 SEASON" while the
+// Situational Records chip directly below read "2025-26 RECORDS". Same
+// season, two formats, and for a basketball or hockey season the bare year
+// is simply the wrong one — the NBA season that ended in 2026 is 2025-26,
+// not 2025. A reader who notices has to work out whether they are being
+// shown two different things.
+//
+// Team Stats derives its vintage as a NUMBER (max season seen among the
+// borrowed rows) while Situational carries the season string straight from
+// the matview, which is why they diverged. This renders the number in the
+// sport's own form so both agree.
+const SPLIT_YEAR_SEASON = new Set(['NBA', 'NHL', 'NCAAB']);
+const seasonLabel = (year: any, sport?: string) => {
+  const n = Number(year);
+  if (!isFinite(n) || n <= 0) return String(year ?? '');
+  return SPLIT_YEAR_SEASON.has(String(sport || '').toUpperCase())
+    ? `${n}-${String(n + 1).slice(-2)}`
+    : String(n);
+};
 
 // 2026-09-01: Adapter that projects splits_summary → the shape MoneyMarket
 // expects ({pick, money, bets, div, agree}). Motivation: the old code read
@@ -5208,13 +5260,13 @@ function TeamStatsCard({sport, homeTeam, awayTeam, season, statsSource}: any) {
                         paddingVertical: 2, paddingHorizontal: 6}}>
             <Text style={{color: C.warn, fontSize: 9, fontWeight: '700',
                           letterSpacing: 0.04}}>
-              {_vintage.prior} SEASON
+              {seasonLabel(_vintage.prior, sport)} SEASON
             </Text>
           </View>
           <Text style={{color: C.textDim, fontSize: 10}}>
             {_vintage.borrowed === _vintage.total
-              ? `not enough games yet — every figure below is ${_vintage.prior}`
-              : `${_vintage.borrowed} of ${_vintage.total} figures below are ${_vintage.prior}`}
+              ? `not enough games yet — every figure below is ${seasonLabel(_vintage.prior, sport)}`
+              : `${_vintage.borrowed} of ${_vintage.total} figures below are ${seasonLabel(_vintage.prior, sport)}`}
           </Text>
         </View>
       ) : null}
