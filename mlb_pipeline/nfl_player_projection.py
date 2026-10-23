@@ -300,7 +300,38 @@ def before_week(games, wk):
     return out
 
 
-def baseline(games, col):
+#: ══ 2026-10-22 · SHRINK THE PLAYER TOWARD THE LEAGUE ══════════════════
+#: A player's own average over three or five games is a noisy estimate of
+#: his level, and the benchmark showed how noisy: measured walk-forward on
+#: 85 QB games in weeks 4-6, a LEAGUE-AVERAGE CONSTANT scored MAE 63.7
+#: against our player-average baseline's 64.9. The constant beat us.
+#:
+#: The standard answer is to shrink the player mean toward the population
+#: mean by n/(n+K), so a 3-game sample leans on the league and a 12-game
+#: sample barely does. Fitted and HELD OUT, three folds, leave-one-week-out:
+#:
+#:     train (4,5) -> K=2   test wk6   47.9 -> 44.5   +3.4
+#:     train (4,6) -> K=2   test wk5   71.5 -> 63.9   +7.6
+#:     train (5,6) -> K=2   test wk4   74.0 -> 73.2   +0.8
+#:
+#: Every fold picks the same K and every fold gains out of sample, which is
+#: what distinguishes this from the environment factor that was removed
+#: today for looking good in-sample and costing 3 yards.
+#:
+#: On the full set it takes passing yards from MAE 64.9 to 60.9, past
+#: sleeper's 61.5 — though 85 games over three weeks is a thin basis for
+#: claiming a vendor has been beaten, so that is not claimed.
+#:
+#: K=2 was validated on QB PASSING YARDS only. It is applied to every stat
+#: because shrinking a small sample toward its own population is a general
+#: property of small samples, not of passing yards - but each stat shrinks
+#: toward ITS OWN league mean, never a shared one, and a stat with no
+#: population available is left unshrunk rather than pulled toward a number
+#: that does not describe it.
+SHRINK_K = 2.0
+
+
+def baseline(games, col, league_mean=None):
     """Recency-weighted per-game average, newest games first.
 
     Returns (value, note, applied). Fewer than two games is not a baseline,
@@ -314,9 +345,17 @@ def baseline(games, col):
     m_l5 = statistics.fmean(l5)
     m_all = statistics.fmean(vals)
     val = W_L5 * m_l5 + W_SEASON * m_all
-    return (val,
-            f'L{len(l5)} {m_l5:.1f} x{W_L5:g} + season {m_all:.1f} '
-            f'x{W_SEASON:g} over {len(vals)} games', True)
+    note = (f'L{len(l5)} {m_l5:.1f} x{W_L5:g} + season {m_all:.1f} '
+            f'x{W_SEASON:g} over {len(vals)} games')
+    lm = _f(league_mean)
+    if lm is not None and SHRINK_K > 0:
+        n = len(vals)
+        w = n / (n + SHRINK_K)
+        shrunk = w * val + (1 - w) * lm
+        note += (f', shrunk {val:.1f} -> {shrunk:.1f} toward league {lm:.1f} '
+                 f'at n={n} (K={SHRINK_K:g})')
+        val = shrunk
+    return val, note, True
 
 
 def opp_factor(defrows, opp_abbrev, key):

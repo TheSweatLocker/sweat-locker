@@ -122,6 +122,37 @@ SPORT_CONFIG = {
     # disagreed with the stored spread_result on 30 of 400 finished games
     # (OT/SO handling). Leaving it out makes a NULL spread_result return
     # 'no_spread_result' instead of silently grading 7.5% of pucklines wrong.
+    # ══ 2026-10-22 · NBA — THE THIRD TIME THIS EXACT DEFECT HAS LANDED ══
+    # ANDY: "When will nba external record start populating they should
+    # right away right?"
+    #
+    # They never would have. nba_pipeline.yml has called
+    # `resolve_externals.py --sport NBA --days 14` since launch, NBA was not
+    # in SPORT_CONFIG, so argparse rejected the value against `choices` and
+    # the step exited 2 on EVERY run with continue-on-error swallowing it.
+    # Measured: 68 of 68 NBA external picks ungraded, and
+    # external_source_track_record holds MLB/NFL/NHL/NCAAF and no NBA row.
+    #
+    # The NCAAF comment above describes this happening once. The NHL comment
+    # describes it happening again, and says why: "that fix added one sport
+    # instead of auditing every caller." This is the third. The audit is now
+    # done in code rather than promised in a comment — see _audit_callers().
+    #
+    # NBA's vocabulary is identical to NHL's, verified on 400 scored rows:
+    #   spread_result  home_covered 168 / away_covered 148 / push 4
+    #   total_result   over 174 / under 145 / push 1
+    #   run_line_result NULL on all 400, so spread_result is the authority
+    # Only the total column differs: total_points, not total_goals.
+    'NBA': {
+        'results_table': 'nba_game_results',
+        'select_cols': ('game_id,home_score,away_score,total_points,home_win,'
+                        'spread_result,total_result,close_total'),
+        'spread_home_ok': ('home_covered',),
+        'spread_away_ok': ('away_covered',),
+        'total_over_ok':  ('over',),
+        'total_under_ok': ('under',),
+        'push_vals':      ('push',),
+    },
     'NHL': {
         'results_table': 'nhl_game_results',
         'select_cols': ('game_id,home_score,away_score,total_goals,home_win,'
@@ -133,6 +164,42 @@ SPORT_CONFIG = {
         'push_vals':      ('push',),
     },
 }
+
+
+def _audit_callers() -> list:
+    """Every sport a workflow asks this script for, that it cannot serve.
+
+    ══ 2026-10-22 · THE COMMENT SAID "AUDIT EVERY CALLER". NOW IT DOES. ══
+    This defect has shipped three times — NCAAF, then NHL, then NBA — and
+    each fix added one sport. The shape is always the same: a workflow calls
+    `--sport X`, X is missing from SPORT_CONFIG, argparse rejects it against
+    `choices`, the step exits 2, and continue-on-error makes that invisible.
+    The symptom appears weeks later as "why is there no record for X".
+
+    A list of configured sports cannot tell you what is MISSING; only the
+    callers can. So this reads the workflows and reports any sport they ask
+    for that is not configured. Run on every invocation - it is a directory
+    scan, and it has now cost three incidents.
+
+    Silent on success, so it only ever speaks when something is wrong.
+    """
+    import glob
+    import os as _os
+    import re as _re
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    wf = _os.path.join(_os.path.dirname(here), '.github', 'workflows')
+    if not _os.path.isdir(wf):
+        return []
+    want = set()
+    pat = _re.compile(r'resolve_externals\.py\s+--sport\s+([A-Za-z]+)')
+    for f in glob.glob(_os.path.join(wf, '*.yml')):
+        try:
+            with open(f, encoding='utf-8') as fh:
+                for m in pat.finditer(fh.read()):
+                    want.add(m.group(1).upper())
+        except OSError:
+            continue
+    return sorted(w for w in want if w not in SPORT_CONFIG)
 
 
 def _et_now():
@@ -408,9 +475,27 @@ def patch_result(pick_id: str, grade: str, actual: Optional[float],
 
 def run(sport: str = 'MLB', days: Optional[int] = None,
         force_regrade: bool = False, dry_run: bool = False) -> None:
+    # 2026-10-22: this used to print one line and `return`, i.e. exit 0 —
+    # a clean success for a run that graded nothing. Behind
+    # continue-on-error that is indistinguishable from a quiet night, which
+    # is how NCAAF, then NHL, then NBA each went ungraded for weeks.
     if sport not in SPORT_CONFIG:
-        print(f'  ✗ unsupported sport: {sport}')
-        return
+        print('')
+        print(f'*** {sport} IS NOT IN SPORT_CONFIG — NOTHING WAS GRADED ***')
+        print(f'    a workflow is calling this script for {sport} and it '
+              f'cannot serve it.')
+        print(f'    configured: {sorted(SPORT_CONFIG)}')
+        print(f'    add a {sport} block (results table, select_cols, and the '
+              f'result vocabulary) — see the NBA block for the shape.')
+        raise SystemExit(1)
+
+    # Report any OTHER sport a workflow asks for that is not configured, even
+    # when this particular run is fine. The point is to surface the next one
+    # before it costs weeks, not after.
+    _missing = _audit_callers()
+    if _missing:
+        print(f'  ⚠ workflows also call this script for {_missing}, which '
+              f'SPORT_CONFIG cannot serve — those sports are ungraded.')
 
     print(f'=== external picks resolver · {sport} ===')
     if days:
@@ -466,7 +551,11 @@ def run(sport: str = 'MLB', days: Optional[int] = None,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--sport', default='MLB', choices=list(SPORT_CONFIG.keys()))
+    # NOT `choices=` any more. argparse's rejection is a usage error on
+    # stderr and an exit 2, which is exactly how three sports went ungraded
+    # for weeks behind continue-on-error. An unconfigured sport now gets a
+    # sentence that says what is wrong and what to do about it.
+    ap.add_argument('--sport', default='MLB')
     ap.add_argument('--days', type=int, default=None,
                     help='Only grade picks from the last N days')
     ap.add_argument('--force-regrade', action='store_true',
