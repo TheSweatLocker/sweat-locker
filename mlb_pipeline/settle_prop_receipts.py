@@ -552,6 +552,23 @@ def main():
                     help='re-settle ALREADY-GRADED receipts and report agreement')
     ap.add_argument('--limit', type=int, default=0, help='cap rows (0 = all)')
     ap.add_argument('--commit', action='store_true')
+    # 2026-10-23 · B143. actual_value was NULL on 98% of graded prop receipts
+    # (2,458 of 2,507 since 09-23) because this settler unpacked the number
+    # and then dropped it — `res, actual, why = settle(...)` on one line and
+    # `patches.append((r['id'], res))` thirty lines later. The number was even
+    # printed in the --validate DISAGREE line. Same shape as
+    # feedback_grade_the_leg_from_the_row_it_came_from: a 3-tuple whose middle
+    # element silently goes nowhere.
+    #
+    # Forward runs now carry it. This mode fills the history, and fills ONLY
+    # actual_value: a receipt is a published record and the stored result is
+    # not up for revision here. Where the settled result CONTRADICTS the
+    # stored one the row is skipped and reported, because attaching a number
+    # that disagrees with the grade beside it is worse than leaving it blank.
+    ap.add_argument('--backfill-actual', action='store_true',
+                    dest='backfill_actual',
+                    help='fill actual_value on already-graded receipts; '
+                         'never writes result')
     args = ap.parse_args()
 
     sports = list(SPORTS) if args.sport.upper() == 'ALL' else [args.sport]
@@ -580,8 +597,13 @@ def run_one(args, sport):
     # pick_label is required for the same reason as audit: from_label() reads
     # the side/line/stat out of it for card-surface receipts that carry them
     # nowhere else. Omit it and 80 of 98 receipts silently stay unsettleable.
+    # actual_value is selected for --backfill-actual, which must only touch
+    # rows where it is still NULL. Per the warnings above, a column left out
+    # of this select reads as absent rather than erroring, so a backfill run
+    # without it would treat every row as unfilled and rewrite good ones.
     q = {'select': 'id,sport,game_date,player_name,prop_type,pick_side,'
-                   'pick_line,result,source_id,audit,pick_label,surface',
+                   'pick_line,result,source_id,audit,pick_label,surface,'
+                   'actual_value',
          # market=eq.prop is the real precondition (this settles player props)
          # and admits every surface that publishes one. But card surfaces are
          # only SETTLEABLE with LABEL_PARSE on, and that is unvalidated — so
@@ -590,13 +612,20 @@ def run_one(args, sport):
          'market': 'eq.prop', 'sport': f'eq.{sport}',
          **({} if LABEL_PARSE else {'surface': 'eq.prop_jerry'}),
          'game_date': f'gte.{lo}', 'order': 'game_date.asc'}
-    q['result'] = 'not.is.null' if args.validate else 'is.null'
+    if args.backfill_actual:
+        # already graded, number still missing
+        q['result'] = 'not.is.null'
+        q['actual_value'] = 'is.null'
+    else:
+        q['result'] = 'not.is.null' if args.validate else 'is.null'
     recs = [r for r in page('public_receipts', q)
             if str(r.get('game_date') or '')[:10] <= hi.isoformat()]
     if args.limit:
         recs = recs[:args.limit]
 
-    mode = 'VALIDATE' if args.validate else ('APPLY' if args.commit else 'DRY')
+    mode = ('VALIDATE' if args.validate
+            else ('BACKFILL-ACTUAL ' if args.backfill_actual else '')
+            + ('APPLY' if args.commit else 'DRY'))
     print(f'=== settle_prop_receipts · {sport} · {lo}..{hi} · {mode} ===')
     print(f'  {len(recs)} receipt(s)')
     if not recs:
@@ -628,8 +657,28 @@ def run_one(args, sport):
                           f'-> stored={stored} settled={res} (actual={actual})')
             else:
                 agree[f'stored_{stored[:12]}'] += 1
+        elif args.backfill_actual:
+            # Fill the number only. res is deliberately passed as None so the
+            # write cannot touch the published grade even if settle() and the
+            # ledger disagree about it.
+            if actual is None:
+                continue
+            stored = str(r.get('result') or '').strip().lower()
+            settled = str(res or '').strip().lower()
+            if settled and stored in ('win', 'loss', 'push', 'void'):
+                norm = {'void': 'push'}
+                if norm.get(stored, stored) != norm.get(settled, settled):
+                    agree['CONTRADICTS'] += 1
+                    if agree['CONTRADICTS'] <= 8:
+                        print(f'    SKIP id={r["id"]} {r.get("player_name")} '
+                              f'{r.get("prop_type")} {r.get("pick_side")} '
+                              f'{r.get("pick_line")} -> stored={stored} '
+                              f'settled={settled} actual={actual}')
+                    continue
+            agree['fillable'] += 1
+            patches.append((r['id'], None, actual))
         elif res is not None:
-            patches.append((r['id'], res))
+            patches.append((r['id'], res, actual))
         if i % 100 == 0:
             print(f'    …{i}/{len(recs)}  ({time.time()-t0:.0f}s)')
 
@@ -650,17 +699,48 @@ def run_one(args, sport):
                   f'none.')
         return
 
-    print(f'  settleable: {len(patches)} of {len(recs)}')
+    if args.backfill_actual:
+        print(f'  fillable: {agree.get("fillable", 0)} of {len(recs)}'
+              f'   contradicts-stored-grade: {agree.get("CONTRADICTS", 0)}'
+              f'   (those are SKIPPED, never written)')
+    else:
+        print(f'  settleable: {len(patches)} of {len(recs)}')
     if not args.commit:
         print('\n  DRY RUN — add --commit to write.')
         return
     ok = 0
-    for rid, res in patches:
+    for rid, res, actual in patches:
+        body = {}
+        if res is not None:
+            body['result'] = res
+        if actual is not None:
+            body['actual_value'] = actual
+        if not body:
+            continue
         pr = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W,
                             timeout=30, params={'id': f'eq.{rid}'},
-                            json={'result': res})
+                            json=body)
         ok += pr.status_code in (200, 204)
     print(f'  patched {ok}/{len(patches)}')
+    # A 204 is not proof a row changed (feedback_204_is_not_a_write). Re-read
+    # and count what is actually stored.
+    if patches:
+        ids = [str(p[0]) for p in patches]
+        filled = 0
+        for j in range(0, len(ids), 150):
+            chunk = ids[j:j + 150]
+            vr = requests.get(f'{SB}/rest/v1/public_receipts', headers=H,
+                              timeout=45,
+                              params={'select': 'id,actual_value',
+                                      'id': f'in.({",".join(chunk)})'})
+            if vr.status_code == 200:
+                filled += sum(1 for x in vr.json()
+                              if x.get('actual_value') is not None)
+        print(f'  VERIFIED by re-read: {filled}/{len(patches)} now carry '
+              f'actual_value')
+        if filled < len(patches):
+            print(f'  *** {len(patches)-filled} ROW(S) DID NOT TAKE THE WRITE '
+                  f'— investigate before trusting this run ***')
 
 
 if __name__ == '__main__':
