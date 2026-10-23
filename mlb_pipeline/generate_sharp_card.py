@@ -1024,6 +1024,200 @@ def _spread_prices(sport: str, dates: set) -> dict:
     return out
 
 
+# ══ 2026-10-23 · B156 REVISED · A SHORT FOOTBALL SPREAD IS A FLIP, NOT A BAN ══
+# The 10-23 blanket ban was measured right and scoped wrong. Banning every
+# football spread would have taken NFL off this surface entirely on three of
+# the last four Sundays — not thinned it, DARK:
+#
+#   Sunday   plays before   ml+total left   short spreads banned
+#   10-04         5                0                5
+#   10-11         7                0                6
+#   10-18         2                0                2
+#
+# Andy, 10-23: "still need to ensure we are having plays on the nfl though on
+# the sharp on sundays, it needs to not kill the sharp".
+#
+# The fix is that "we lose on football spreads" is not one finding, it is two,
+# and they split on the MAGNITUDE of the line. Measured on every football
+# spread receipt we have published (435 unique picks, deduped on
+# game_id+market+side+line, all four surfaces), flipped = the side we did NOT
+# take:
+#
+#   band              ours      flipped   hit     n    95% CI
+#   |line| <= 7      31-68      68-31    66.0%   103   [56.4, 74.4]
+#   |line|  > 7     129-124    124-129   49.0%   253   [42.9, 55.1]
+#
+# The long band is a coin flip and stays banned. The short band clears
+# breakeven with the whole interval above it, holds in both split halves, and
+# holds again inside the clean-price window (>= 09-19, after the
+# reconstructed-price era of project_reconstructed_prices_inflate_roi_1009).
+#
+# And it gets STRONGER on exactly the picks this surface publishes. The Sharp
+# drops LEAN on football, so every short spread that reaches the card is
+# STRONG+, and that subset is where the effect concentrates:
+#
+#   short spreads, tier=STRONG     ours 4-18   flipped 18-4   81.8%  n=22
+#                                                             CI[61.5, 92.7]
+#   short spreads, tier=none       ours 31-50  flipped 50-31  61.7%  n=81
+#                                                             CI[50.8, 71.6]
+#
+# The weak-tier bucket does NOT clear breakeven (50.8 < 52.4), so this is not
+# "flip every football spread". The more confident the engine is on a short
+# football spread, the more wrong it is — the same animal as
+# project_nfl_curated_spread_is_the_leak_1018 (curated NFL spread 27.1%, ROI
+# -45.9%, no projection beating the close on any of six slope tests) and
+# project_jerry_override_costs_the_edge_1007. Our conviction on this market is
+# an anti-signal, so the tier gate STAYS: it is what selects the subset the
+# flip works on.
+#
+# WHY THE FLIP RUNS LAST, not at the band gate. Every gate between that point
+# and the append reads the pick as the ENGINE produced it: the no-edge gate
+# matches on pp['sub'], and _lr_shadow_conflict compares pp['side'] to the
+# shadow's suggested side. Flipping early would blank the refusal text and
+# invert the shadow gate's meaning. The 81.8% was measured on receipts that
+# PASSED those gates, so the flip is applied at the end, to the pick that
+# would otherwise have been published.
+#
+# A flipped pick needs no grader change: grade_game_market_receipts reads the
+# RECEIPT's own pick_side and pick_line and treats the line as already signed
+# from the picked side's point of view (measured 97.2% on NCAAF n=246). It
+# never re-derives the side from primary_play. That had to be true before
+# touching this — feedback_grade_the_side_we_published records 641 of 692 fade
+# receipts naming the side we did not take, because a flip inverts what "our
+# pick" means and the grader did not know.
+_FLIP_SPREAD_MAX_MAGNITUDE = 7.0
+_FLIP_SPREAD_MIN_BOOKS = 2
+
+
+def _amer_to_prob(o) -> float:
+    o = float(o)
+    return (-o / (-o + 100.0)) if o < 0 else (100.0 / (o + 100.0))
+
+
+def _flip_prices(sport: str, game_ids: set) -> dict:
+    """(game_id, side, line) -> a POSTED price for that exact side and line.
+
+    The flip cannot reuse _spread_prices. That helper's own docstring says a
+    price belongs to a specific (market, side, line), and the price it carries
+    is the price of the side the READ took — the side we are now leaving.
+    Quoting it on the opposite side would publish a number no book ever
+    offered on the bet we actually made, which is the defect
+    project_jerry_published_fake_lines_1019 found on 48% of game_read spreads.
+
+    line_history stores one row per (book, side, line) with a real American
+    price, so the opposite side is available as DATA and nothing has to be
+    synthesised. Requires _FLIP_SPREAD_MIN_BOOKS books to post the exact
+    flipped line; if they do not, the caller drops the pick rather than
+    inventing a price.
+
+    The returned price is always a real quote from one book, never an average:
+    prices are ranked by implied probability and the upper-middle one taken,
+    so we never advertise a better number than half the market offers.
+
+    Scoped by commence_time over a two-day window rather than by game_id,
+    because NCAAF game_ids are built from team names
+    (project_ncaaf_five_team_name_mismatch_1021) and carry spaces, commas and
+    parentheses an in.(...) filter would have to encode. The window is
+    deliberately wide and the candidate set applied in Python — a window cut
+    fine on the runner's clock is a day ahead in ET for part of every night
+    (feedback_window_from_runner_clock_is_a_day_ahead).
+    """
+    if not game_ids:
+        return {}
+    try:
+        d0 = datetime.fromisoformat(str(_today_et())).date()
+    except (TypeError, ValueError):
+        return {}
+    lo = d0.isoformat()
+    hi = (d0 + timedelta(days=2)).isoformat()
+    want = {str(x) for x in game_ids if x}
+    latest: dict = {}
+    for pg in range(6):
+        params = {'select': 'game_id,side,line,price,book,captured_at,'
+                            'commence_time',
+                  'sport': f'eq.{sport}', 'market': 'eq.spread',
+                  'commence_time': f'gte.{lo}',
+                  'order': 'captured_at.desc',
+                  'limit': '1000', 'offset': str(pg * 1000)}
+        try:
+            r = requests.get(f'{SB}/rest/v1/line_history', params=params,
+                             headers=H_READ, timeout=30)
+        except Exception as e:
+            print(f'  ⚠ {sport} flip-price fetch failed — {e}')
+            return {}
+        # Reported, never swallowed. A 400 here would otherwise read as "no
+        # book posts the other side" and silently drop every flipped pick,
+        # which is feedback_green_step_that_writes_nothing exactly.
+        if r.status_code != 200:
+            print(f'  ⚠ {sport} flip-price fetch HTTP {r.status_code} — '
+                  f'{str(r.text)[:160]}')
+            return {}
+        batch = r.json() or []
+        for row in batch:
+            gid = str(row.get('game_id'))
+            if gid not in want:
+                continue
+            if str(row.get('commence_time') or '')[:10] > hi:
+                continue
+            try:
+                ln = float(row.get('line'))
+                pr = float(row.get('price'))
+            except (TypeError, ValueError):
+                continue
+            k = (gid, str(row.get('side') or '').lower(), ln,
+                 str(row.get('book')))
+            if k not in latest:      # ordered desc, so first seen is newest
+                latest[k] = pr
+        if len(batch) < 1000:
+            break
+    pool: dict = {}
+    for (gid, side, ln, _book), pr in latest.items():
+        pool.setdefault((gid, side, ln), []).append(pr)
+    out: dict = {}
+    for k, prices in pool.items():
+        if len(prices) < _FLIP_SPREAD_MIN_BOOKS:
+            continue
+        ranked = sorted(prices, key=_amer_to_prob)
+        out[k] = {'price': ranked[len(ranked) // 2], 'books': len(prices)}
+    return out
+
+
+def _flip_short_spread(pp: dict, g: dict, px: dict):
+    """Invert a short football spread onto the side we did NOT take.
+
+    Returns (side, line, label, price, books) or None with a reason. The line
+    is negated rather than recomputed from close_spread: primary_play['line']
+    is stored signed from the picked side's point of view, verified on live
+    rows (LAC @ LV close_spread -5.5, side AWAY, line -5.5; IND @ HOU
+    close_spread +5.5, side HOME, line -5.5), so the opposite side's handicap
+    is exactly its negation. Deriving it from close_spread instead would mean
+    re-establishing the per-sport orientation sign that
+    project_situational_records_include_preseason_playoffs_1022 found inverted
+    between sports, for no gain.
+    """
+    side = str(pp.get('side') or '').upper()
+    opp = {'HOME': 'AWAY', 'AWAY': 'HOME'}.get(side)
+    if opp is None:
+        return None, f'side {side!r} is not HOME/AWAY'
+    try:
+        line = float(pp.get('line'))
+    except (TypeError, ValueError):
+        return None, 'no line to invert'
+    new_line = -line
+    team = str((g.get('home_team') if opp == 'HOME'
+                else g.get('away_team')) or '')
+    if not team:
+        return None, 'no team name for the flipped side'
+    quote = px.get((str(g.get('game_id')), opp.lower(), new_line))
+    if not quote:
+        return None, f'no {_FLIP_SPREAD_MIN_BOOKS}+ books post {new_line:+g}'
+    return {'side': opp, 'line': new_line,
+            'label': f'{team} {new_line:+g}',
+            'price': quote['price'], 'books': quote['books'],
+            'from_side': side, 'from_line': line,
+            'from_label': pp.get('label')}, None
+
+
 def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     is_football = sport in ('NCAAF', 'NFL')
     # Date comes from _today_et(), NOT from the rows. game_date is not in the
@@ -1043,6 +1237,31 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_no_edge = 0
     dropped_ncaaf_total = 0
     dropped_football_spread = 0
+    dropped_flip_unpriced = 0
+    flipped_spread = 0
+    flip_skips: dict = {}
+    # Candidate game_ids for the two-sided price fetch, gathered before the
+    # loop so the flip costs ONE request per sport per run instead of one per
+    # pick. The 10-21 outage was caused by exactly that shape of per-row
+    # fetch, and project_anon_key_can_write_1021 / B154 are both about the
+    # request budget, so a new surface does not get to add a per-pick call.
+    _flip_need = set()
+    if is_football:
+        for _g in rows:
+            _pp = _g.get('primary_play') or {}
+            if not isinstance(_pp, dict):
+                continue
+            if str(_pp.get('type') or '').lower() not in ('rl', 'spread'):
+                continue
+            try:
+                if abs(float(_pp.get('line'))) <= _FLIP_SPREAD_MAX_MAGNITUDE:
+                    _flip_need.add(str(_g.get('game_id')))
+            except (TypeError, ValueError):
+                continue
+    _flip_px = _flip_prices(sport, _flip_need) if _flip_need else {}
+    if _flip_need:
+        print(f'  {sport} short-spread flip candidates: {len(_flip_need)} '
+              f'games, two-sided quotes found: {len(_flip_px)}')
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -1115,9 +1334,23 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # Scoped to football only. NHL rl is also negative (6-11, -4.30u) but
         # the puckline is a different market with a different distribution,
         # and NHL belongs to the B141 assessment rather than this gate.
+        #
+        # ══ 2026-10-23 REVISED · BAND, NOT BLANKET. See _flip_prices. ══
+        # Long spreads (|line| > 7) are refused outright: flipped they are
+        # 124-129 (49.0%, n=253), which is a coin flip, and unflipped they are
+        # the -9.72u this ban was written for. Short spreads (<= 7) fall
+        # through to the flip block at the end of the loop, which publishes
+        # the OPPOSITE side. A short spread with no usable line is refused
+        # here rather than guessed at.
         if is_football and (pp.get('type') or '').lower() in ('rl', 'spread'):
-            dropped_football_spread += 1
-            continue
+            try:
+                _mag = abs(float(pp.get('line')))
+            except (TypeError, ValueError):
+                dropped_football_spread += 1
+                continue
+            if _mag > _FLIP_SPREAD_MAX_MAGNITUDE:
+                dropped_football_spread += 1
+                continue
         # ══ 2026-09-29 · A PICK THAT SAYS "NO EDGE" IS NOT A PICK ══
         # Today's Sharp Card published, verbatim:
         #
@@ -1277,6 +1510,36 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             except (TypeError, ValueError):
                 pass
 
+        # ══ 2026-10-23 · THE FLIP. Last gate, by design — see _flip_prices.
+        # Everything above has judged the pick as the engine produced it. What
+        # survives to here is what WOULD have been published, and on a short
+        # football spread that is the thing measured at 4-18 (flipped 18-4,
+        # 81.8%, n=22). So the side, the line, the label and the price are all
+        # replaced with the other side of the same bet.
+        #
+        # juice_swapped is excluded deliberately. That pick is a football ML
+        # rerouted onto the spread for juice, and the ML read is our one
+        # football market with a positive edge (+10.7%,
+        # project_nfl_curated_spread_is_the_leak_1018, whose instruction was
+        # "cap spreads, never ML"). Flipping it would fade the signal that
+        # works. Only a pick the engine ITSELF called as a spread is flipped.
+        flipped = None
+        if is_football and pick_type in ('rl', 'spread') and not juice_swapped:
+            flipped, _why = _flip_short_spread(pp, g, _flip_px)
+            if flipped is None:
+                # No honest price for the other side means no bet. Dropping
+                # beats publishing the original side, which is the 18.2% half
+                # of this market, and beats inventing a price.
+                dropped_flip_unpriced += 1
+                flip_skips[_why] = flip_skips.get(_why, 0) + 1
+                continue
+            side = flipped['side']
+            pick_line = flipped['line']
+            pick_label = flipped['label']
+            pick_odds = flipped['price']
+            side_ml = away_ml if flipped['side'] == 'AWAY' else home_ml
+            flipped_spread += 1
+
         units = _units_for_pick(pp.get('tier'), pick_type,
                                  pick_odds,
                                  side_price_american=side_ml,
@@ -1288,7 +1551,10 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             'tier': pp.get('tier'),
             'pick': pick_label,
             'type': pick_type,
-            'reason': (pp.get('sub') or '') + (' [juice-cap swap: ML→spread]' if juice_swapped else ''),
+            'reason': (((f"fades our own {flipped['from_label']} read — "
+                         f'short football spreads flipped are 18-4 (n=22)')
+                        if flipped else (pp.get('sub') or ''))
+                       + (' [juice-cap swap: ML→spread]' if juice_swapped else '')),
             'odds': pick_odds,
             'line': pick_line,
             'units': units,
@@ -1319,6 +1585,15 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             # either sport puts a side on the Sharp.
             'conviction': pp.get('conviction'),
             'game_id': g.get('game_id'),
+            # The published side, spelled out on the item, so the receipt
+            # writer and the grader both read the side we actually took and
+            # nothing downstream has to re-derive it from primary_play.
+            'side': side,
+            'flipped_from': ({'side': flipped['from_side'],
+                              'line': flipped['from_line'],
+                              'label': flipped['from_label'],
+                              'books': flipped['books']}
+                             if flipped else None),
         })
     if is_football and (dropped_lean or dropped_chalk or dropped_pass or dropped_anchor):
         print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  '
@@ -1337,8 +1612,18 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # Unlike the NCAAF totals guard, this one SHOULD fire — football
         # spreads are a live market the engine keeps producing. Printed so the
         # volume being refused is visible rather than silently absorbed.
-        print(f'  {sport} spreads refused: {dropped_football_spread} '
-              f'(NFL rl 2-11-1, NCAAF rl 16-19 = -9.72u on n=49)')
+        print(f'  {sport} LONG spreads refused: {dropped_football_spread} '
+              f'(|line| > {_FLIP_SPREAD_MAX_MAGNITUDE:g}; flipped they are '
+              f'49.0% on n=253 — a coin flip)')
+    if flipped_spread:
+        print(f'  {sport} SHORT spreads flipped onto the other side: '
+              f'{flipped_spread} (our side of this band is 4-18, n=22)')
+    if dropped_flip_unpriced:
+        # Printed with the reasons because the usual one is "no 2+ books post
+        # the flipped line", which means the market moved off our number and
+        # is a fact about the board, not a bug.
+        print(f'  {sport} short spreads dropped for no two-sided price: '
+              f'{dropped_flip_unpriced} {flip_skips}')
     if dropped_no_edge:
         # Printed unconditionally, not just for football: a pick refused for
         # declaring its own lack of edge is the engine contradicting itself,
