@@ -5524,3 +5524,92 @@ the flag today would publish nothing regardless.
 5,495 prop rows, **zero graded**, `signals` blob empty on every row. Nothing
 to calibrate against by definition. 82 games a team means a usable graded
 sample arrives in roughly 2-3 weeks; revisit then rather than now.
+
+---
+
+## B129 — THE VAULT MATCH DIVE (2026-10-22, Andy: "tomorrow vault match dive, status and update")
+
+Andy wants a full status and update on vault pattern matching. Carried into
+tomorrow as a first-class item rather than a line in a summary.
+
+What is already known and should be the starting point, not re-derived:
+- `project_vault_ctx_depth_starves_patterns_925` — the vault is starved by
+  context depth; patterns cannot match when the ctx fields they key on are
+  thin.
+- `attach_vault_matches.py` runs in the NFL pipeline (and others) — check
+  which sports actually call it, the way `resolve_externals` turned out to be
+  called for a sport it could not serve.
+
+The dive needs to answer, with numbers:
+1. How many vault patterns exist, per sport, and how many have EVER matched.
+2. Match rate per sport on the forward slate — the consumer's fill rate, not
+   the table's row count (feedback_check_the_join_the_ui_actually_uses).
+3. Of matched patterns, what is the graded record, with n, and does it clear
+   its own breakeven (feedback_sample_size_with_pct, n>=30).
+4. Whether a matched pattern changes a tier or a conviction today, and if so,
+   whether that influence has ever been measured.
+5. Whether any pattern is a restatement of another (the panel-is-one-voice
+   shape, and NCAAF v3==SP+ at 307/307 — duplication is this codebase's most
+   recurrent modelling defect).
+
+Do NOT ship a weighting change out of this dive without a hold-out. The QB
+`environment` factor looked reasonable, shipped, and cost 3 yards of MAE
+until it was ablated.
+
+## B130 — MLB AND NCAAB RECORDS STILL COUNT EVERY PHASE (2026-10-22)
+
+NBA (20261022f) and NHL (20261022g) are fixed and verified to the exact
+game count. MLB and NCAAB are not, and the reason is recorded here so it is
+not rediscovered:
+
+- **MLB** has no phase column and `game_id` is a hash (`be50f6c5...`) that
+  joins to no feed. 2026 runs **157..168 games per team** against a 162-game
+  season, so the postseason is in. A date cutoff is the same heuristic that
+  was REMOVED from the NBA blocks for being unable to tell a playoff game
+  from a late regular-season one — both happen in October.
+- **NCAAB** has no phase column, a name-keyed `game_id`
+  (`ncaab_20260407_Connecticut_Michigan`), and — uniquely — **no fixed
+  games-per-team to verify a fix against**. 2025-26 legitimately runs 23..62.
+
+Both need a phase feed joined on something other than a team name. Guessing
+is worse than the current wrongness because it would look fixed.
+
+## B131 — NCAAF v3 AND SP+ ARE THE SAME NUMBER (2026-10-22)
+
+Measured across 554 `ncaaf_game_context` rows:
+
+    model_pred_home_points vs sp_plus_pred_home_pts   307/307 IDENTICAL
+    model_pred_away_points vs sp_plus_pred_away_pts   307/307 IDENTICAL
+    projected_total        vs sp_plus_pred_total      307/307 IDENTICAL
+    projected_spread       vs sp_plus_pred_spread     330/411 (80%)
+
+So Model Consensus presents one opinion as two on NCAAF. `groupVoices()`
+already labels the duplicate and counts it once — that disclosure shipped on
+2026-10-20 at Andy's direction ("i dont want to remove them, we need to fix
+this") — but the underlying duplication was never addressed. Either give v4
+genuinely different inputs on NCAAF or stop listing it as a separate lens.
+
+This is a MODELLING fix, not a display one. Contrast NBA, measured the same
+night: v3 and MC identical on **0 of 69**, mean gap 2.26 points — two real
+models.
+
+## B132 — 3 NBA RESULT ROWS CARRY A NAME-KEYED game_id (2026-10-22)
+
+The ESPN `season_type` backfill matched 2,840 of 2,843 rows on the event id.
+The 3 misses are not ESPN ids at all:
+
+    nba_20261021_Sacramento_Kings_Los_Angeles_Clippers
+    nba_20261023_Los_Angeles_Clippers_Los_Angeles_Lakers
+    nba_20261030_Los_Angeles_Clippers_Minnesota_Timberwolves
+
+All three involve the Clippers, so a fallback writer is producing a different
+id format for some games. Those rows are excluded from records (NULL is not
+'regular'), which is the right default, but the writer should be found.
+
+## B133 — UFC EXTERNALS ARE UNGRADED, AND UFC IS NOT IN SPORT_CONFIG (2026-10-22)
+
+Found while fixing NBA. 87 UFC external picks, all `result = NULL`. UFC is
+not in `resolve_externals.SPORT_CONFIG` — but unlike NBA, no workflow calls
+it for UFC, so `_audit_callers()` reports nothing. See
+`project_ufc_externals_foreign_id_space_*` (B67): the UFC game_id is a
+foreign id space, which is the real blocker, not the config.
