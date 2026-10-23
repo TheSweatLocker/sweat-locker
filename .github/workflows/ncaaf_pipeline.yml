@@ -609,6 +609,30 @@ jobs:
           # still restores OLD.pick_locked_at; it starts working the moment
           # 20260929d + 20260929c are applied.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NCAAF unlock-beyond-slate)" python lock_football_slate.py --sport NCAAF --unlock-beyond-slate
+          # ══ 2026-10-23 · FLIP OUR OWN SHORT SPREAD, BEFORE IT LOCKS ══
+          # Our short NCAAF spread call is the worst thing we publish:
+          # measured on the Sharp's own receipts, |line| <= 7 went 4-18-1
+          # (18.2%, ROI -65.3%) as published and 18-4-1 (81.8%, +56.2%)
+          # flipped. On Jerry's wider game_read population the flip is 66.0%,
+          # ROI +26.1%, n=53, CI[52.6,77.3], and stable across halves
+          # (61.8% early / 61.7% late).
+          #
+          # Placed HERE, immediately before the lock stamp, on purpose. Run
+          # after the stamp and the 20260926b trigger refuses the label change
+          # and logs it to pick_lock_drift; run at the composer level instead
+          # and Jerry's read would say "Texas -6.5" while the card said
+          # "Ole Miss +3.5" on the same screen, which is the contradiction
+          # Andy flagged as a smoking gun on the Giants CLV card. Flipping the
+          # source once means read, Sharp, Sweat Card and receipt all agree.
+          #
+          # It refuses, by construction, any game that already has a published
+          # receipt (pick_line is immutable, so a flip there would show one
+          # number and grade another), any long spread (49.8% on n=227 - a
+          # coin flip), any tier that is not a real call (PASS/COVERAGE -
+          # inverting "no play" invents a bet rather than fading a read), and
+          # any flip no 2+ books actually post. POTD is gated separately in
+          # jerry_anchor_potd on Andy's instruction that POTD not change.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "flip_football_spreads.py" python flip_football_spreads.py --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NCAAF)" python lock_football_slate.py --sport NCAAF
 
       # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but

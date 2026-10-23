@@ -256,6 +256,17 @@ def _load_primary_play_candidates(gd: str, sports: list) -> list:
             if not isinstance(pp, dict): continue
             tier = str(pp.get('tier') or '').upper()
             if tier not in ('PRIME', 'STRONG'): continue
+            # ══ 2026-10-23 · POTD NEVER TAKES A FLIPPED PICK ══
+            # flip_football_spreads.py inverts our own short NCAAF spread call
+            # at the source, so the read, the Sharp and the Sweat Card all
+            # agree on one side. Andy's standing instruction is that POTD is
+            # not to change, and a source-level flip would otherwise walk
+            # straight into it: a flipped STRONG short spread satisfies the
+            # tier test immediately above. `_flipped_from` is the marker the
+            # flip leaves behind, and this is the gate that honours that
+            # instruction.
+            if pp.get('_flipped_from'):
+                continue
             conv = int(pp.get('conviction') or 0)
             side = str(pp.get('side') or '').upper()
             market = str(pp.get('type') or pp.get('market') or '').lower()
