@@ -2054,6 +2054,32 @@ function MoneyMarket({label, data, lineMoved, pickPrice, oppPrice}: any) {
           {' · '}tickets are piling in without the handle behind them — the public-heavy pattern, and the side to fade rather than follow
         </Text>
       )}
+      {/* ══ 2026-10-22 · THE DEAD ZONE BETWEEN -15 AND +5 SAID NOTHING ══
+          QA on CLE @ PHI: the Moneyline row read "HOME -11pp" with no badge
+          and no sentence, while the Total right below it read "OVER SHARP
+          +9pp" with a full explanation. A reader fairly concludes the 11 is
+          less meaningful than the 9. It is not — it is just pointing the
+          other way, and nothing on the card said so.
+
+          `sharp` needs div >= 5 and `publicHeavy` needs div <= -15, so
+          anything in -14..+4 renders a bare signed number the reader has to
+          interpret unaided. A negative divergence means the money sits
+          BELOW the tickets on the named side, i.e. the handle leans the
+          other way.
+
+          This explains the number; it does NOT badge it. Lowering the
+          publicHeavy threshold to catch -11 would be changing a signal
+          threshold on the strength of one screenshot, and on the moneyline
+          specifically that is the worst place to do it: breakeven moves
+          with the price, which is why the ML divergence is already
+          price-normalised above and why public money on the ML is not
+          treated as an edge at all. */}
+      {!publicHeavy && !sharp && !extremeSharp && div <= -5 && (
+        <Text style={styles.moneyDivNote}>
+          {`${money}% of the money against ${bets}% of the tickets on ${data.pick || 'this side'}`}
+          {' · '}the handle is leaning the other way, though not far enough to call it a pattern
+        </Text>
+      )}
       {/* ══ 2026-09-28 · A PRICE-ADJUSTED NUMBER MUST CARRY ITS EXPLANATION ══
           QA on PHI @ CHI: "the moneyline pp label is still broken. It shows
           86 vs 83 as -8pp when the gap is +3."
@@ -7995,11 +8021,21 @@ function NBASituationalCard({ctx, homeTeam, awayTeam}: any) {
         {aB2B && <SitChip label={`${abbrev3(awayTeam)} 2nd of a back-to-back`} kind="warn" />}
         {hB2B && <SitChip label={`${abbrev3(homeTeam)} 2nd of a back-to-back`} kind="warn" />}
         {restEdge && <SitChip label={`Rest edge · ${abbrev3(restEdge)} +${restEdgeDays}d`} kind="info" />}
+        {/* 2026-10-22 · these read home/away_starters_out, so the chip is
+            about STARTERS — but it said only "out". On Andy's CLE @ PHI card
+            that rendered "PHI out · Dominick Barlow" while the Injuries list
+            below showed THREE Philadelphia players out (Hukporti, Fall,
+            Barlow). The chip was not wrong, it was underspecified: Barlow is
+            the only missing STARTER. Read as a complete out-list it
+            contradicts the card below it, which is how this got reported as
+            "Situation and Injuries are redundant" — they are not redundant,
+            they answer different questions, and only one of them said which
+            question it was answering. */}
         {aOut.length > 0 && (
-          <SitChip label={`${abbrev3(awayTeam)} out · ${aOut.slice(0, 2).join(', ')}${aOut.length > 2 ? ` +${aOut.length - 2}` : ''}`} kind="warn" />
+          <SitChip label={`${abbrev3(awayTeam)} ${aOut.length > 1 ? 'starters' : 'starter'} out · ${aOut.slice(0, 2).join(', ')}${aOut.length > 2 ? ` +${aOut.length - 2}` : ''}`} kind="warn" />
         )}
         {hOut.length > 0 && (
-          <SitChip label={`${abbrev3(homeTeam)} out · ${hOut.slice(0, 2).join(', ')}${hOut.length > 2 ? ` +${hOut.length - 2}` : ''}`} kind="warn" />
+          <SitChip label={`${abbrev3(homeTeam)} ${hOut.length > 1 ? 'starters' : 'starter'} out · ${hOut.slice(0, 2).join(', ')}${hOut.length > 2 ? ` +${hOut.length - 2}` : ''}`} kind="warn" />
         )}
         {paceHigh && <SitChip label={`Fast pace · ${paceAvg!.toFixed(1)} combined`} kind="info" />}
         {paceLow && <SitChip label={`Slow pace · ${paceAvg!.toFixed(1)} combined`} kind="info" />}
