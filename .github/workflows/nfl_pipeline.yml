@@ -566,6 +566,23 @@ jobs:
           fi
           echo "--- forward: week $WK ---"
           python nfl_weekly_starters.py
+          # 2026-10-23 · nfl_game_context does NOT read nfl_starters; it
+          # re-derives the QB and then never re-runs, so a row can look fresh
+          # with a QB written months earlier (refresh_nfl_context_qb's own
+          # header: "updated_at = computed_at = 2026-07-22" while team form
+          # was refreshed that night). This propagator existed since 10-02 and
+          # was in NO workflow, which is why NYG carried Jameis Winston on all
+          # 11 forward rows today. Fifth and sixth instance of the
+          # written-but-never-scheduled pattern tracked in B157.
+          echo "--- propagate starters into forward game context ---"
+          python refresh_nfl_context_qb.py --apply
+          # Read-only. Flags games whose context QB is Out/Doubtful on that
+          # week's injury report -- every QB-derived feature on such a row
+          # describes someone who will not take a snap. Does NOT catch a
+          # RELEASED player (he is on no injury report), which is what the
+          # manual override in nfl_starter_overrides.json is for.
+          echo "--- QB staleness audit ---"
+          python audit_qb_staleness.py || true
 
       # 2026-09-13: nflverse rosters refresh — authoritative player→team
       # mapping independent of games-played data. Solves the Kirk Cousins

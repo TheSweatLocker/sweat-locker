@@ -1,0 +1,48 @@
+{
+  "_what": "Manual starter overrides, consulted BEFORE any resolver path.",
+  "_why": [
+    "2026-10-23. Andy: 'saw jameis winston as starting qb when giant released",
+    "recently, jj mccarthy will be starting'. nfl_starters had NYG = Jameis",
+    "Winston on week 7 with source box_score_w6, and nothing in the resolver",
+    "could have known better:",
+    "  * ESPN probables and leaders returned NOTHING for all 28 resolved",
+    "    teams, so week 7 was 100% box-score carryover -- the exact 'a",
+    "    fallback that silently handles 100% of cases is not a fallback, it",
+    "    is the implementation' shape this script's own docstring warns about.",
+    "  * carryover is injury-gated via nfl_injuries, and a RELEASED player is",
+    "    not injured, so no gate fires.",
+    "  * nfl_rosters_current, pulled the same day at 16:25Z, still lists",
+    "    Winston as ACT on NYG. So a roster-status check would not have caught",
+    "    it either. It DOES carry J.J. McCarthy as ACT on NYG (his MIN row is",
+    "    stale: INA, last updated 09-28), which corroborates the correction.",
+    "  * nfl_current_depth_chart.json, the only forward-looking source",
+    "    nfl_game_context consults for _NFL_QB1_MAP, was last scraped",
+    "    2026-09-14 -- 39 days stale -- and still named Jaxson Dart, who is",
+    "    now RES.",
+    "A release is news before it is data. There is no feed we hold that",
+    "carried it, so a human override is the only correct mechanism, and it",
+    "has to beat the resolver or the Saturday 10am rerun writes Winston back",
+    "from the same box score."
+  ],
+  "_how": [
+    "Applies when week >= from_week, and through_week if set (inclusive).",
+    "NEVER applied in --retrospective mode: that pass records who ACTUALLY",
+    "started a completed week, which is history and must not be rewritten.",
+    "Every applied override prints on every run, so a stale one is loud",
+    "rather than silent. Delete an entry once the feeds agree with it."
+  ],
+  "overrides": [
+    {
+      "season": 2026,
+      "season_type": "REG",
+      "team": "NYG",
+      "position": "QB",
+      "player_name": "J.J. McCarthy",
+      "from_week": 7,
+      "through_week": null,
+      "reason": "Giants released Jameis Winston; McCarthy starting. Andy, 2026-10-23. Corroborated by nfl_rosters_current: McCarthy ACT on NYG as of 2026-10-23T16:25Z.",
+      "set_on": "2026-10-23",
+      "set_by": "andy"
+    }
+  ]
+}

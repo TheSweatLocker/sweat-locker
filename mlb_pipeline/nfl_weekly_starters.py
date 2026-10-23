@@ -77,6 +77,7 @@ Usage:
   python nfl_weekly_starters.py --dry-run
 """
 import argparse
+import json
 import os
 import sys
 import unicodedata
@@ -125,6 +126,77 @@ TEAM_MAP: dict[str, str] = {
     'LAC': 'LAC',
     # Rest match 1:1
 }
+
+# ══ 2026-10-23 · MANUAL OVERRIDE, CONSULTED FIRST ══
+# Andy: "saw jameis winston as starting qb when giant released recently, jj
+# mccarthy will be starting". nfl_starters had NYG = Jameis Winston on week 7,
+# source box_score_w6, and NO path in this resolver could have known better:
+#
+#   * ESPN probables and leaders returned nothing for all 28 resolved teams,
+#     so week 7 came back 100% box-score carryover. That is the same shape
+#     this module's docstring already indicts above ("a fallback that silently
+#     handles 100% of cases is not a fallback, it is the implementation") --
+#     fixed for the roster path in October, reappeared for the carryover path.
+#   * carryover is injury-gated through nfl_injuries, and a RELEASED player is
+#     not injured, so no gate fires.
+#   * nfl_rosters_current, pulled the same day at 16:25Z, STILL lists Winston
+#     as ACT on NYG, so a roster-status check would not have caught it either.
+#     It does carry J.J. McCarthy as ACT on NYG (his MIN row is stale: INA,
+#     updated 09-28), which is what corroborates the correction.
+#   * nfl_current_depth_chart.json -- the only forward-looking source
+#     nfl_game_context consults, via _NFL_QB1_MAP -- was last scraped
+#     2026-09-14, 39 days stale, and still named Jaxson Dart, now RES.
+#
+# A release is news before it is data. Nothing we hold carried it, so a human
+# override is the only correct mechanism, and it has to beat the resolver:
+# without this, the Saturday 10am rerun writes Winston straight back from the
+# same box score.
+#
+# Deliberately NOT applied in --retrospective mode. That pass records who
+# ACTUALLY started a completed week, read from that week's box score. It is
+# history, and an override must never rewrite it -- doing so would corrupt the
+# carryover evidence for every later week and the QB-vs-team career splits
+# built off it.
+OVERRIDE_FILE = Path(__file__).with_name('nfl_starter_overrides.json')
+
+
+def load_overrides() -> dict:
+    """(season, season_type, team, position) -> list of override entries."""
+    if not OVERRIDE_FILE.exists():
+        return {}
+    try:
+        with open(OVERRIDE_FILE, encoding='utf-8') as fh:
+            blob = json.load(fh)
+    except (OSError, ValueError) as e:
+        # Loud, and NOT fatal: a malformed override file must not take the
+        # whole starter pull down, but it must never pass unnoticed either.
+        print(f'  WARNING: could not read {OVERRIDE_FILE.name} - {e}')
+        return {}
+    out: dict = {}
+    for o in (blob.get('overrides') or []):
+        k = (o.get('season'), str(o.get('season_type') or 'REG').upper(),
+             str(o.get('team') or '').upper(),
+             str(o.get('position') or 'QB').upper())
+        out.setdefault(k, []).append(o)
+    return out
+
+
+def override_for(overrides: dict, season: int, season_type: str, team: str,
+                 position: str, week: int):
+    """The override that applies to this (team, position, week), or None."""
+    for o in overrides.get((season, str(season_type).upper(),
+                            str(team).upper(),
+                            str(position).upper()), []):
+        frm = o.get('from_week')
+        thr = o.get('through_week')
+        if frm is not None and week < int(frm):
+            continue
+        if thr is not None and week > int(thr):
+            continue
+        return o
+    return None
+
+
 def _map_team(esp: str) -> str:
     return TEAM_MAP.get(esp, esp)
 
@@ -338,6 +410,10 @@ def run(season: Optional[int] = None, week: Optional[int] = None,
     total = 0
     by_source: dict[str, int] = {}
     unresolved: list[str] = []
+    _overrides = load_overrides()
+    _applied: list[str] = []
+    if _overrides and not retrospective:
+        print(f'  manual overrides loaded: {len(_overrides)} key(s)')
     for ev in events:
         for c in ev.get('competitions') or []:
             for home_flag in (True, False):
@@ -349,6 +425,20 @@ def run(season: Optional[int] = None, week: Optional[int] = None,
                     team = _map_team(espn_abbrev)
                     qb = (actual_starter(team, week, by_team)
                           if retrospective else None)
+                    # The override outranks every resolver path, but only on a
+                    # FORWARD pass -- see load_overrides. Recorded with its own
+                    # source so a wrong row can be traced to the human who set
+                    # it, exactly as the box-score paths are traceable.
+                    _ov = (None if retrospective else
+                           override_for(_overrides, season, season_type, team,
+                                        'QB', week))
+                    if _ov:
+                        qb = {'name': _ov.get('player_name'), 'id': None,
+                              'source': 'manual_override'}
+                        _applied.append(
+                            f"{team} QB -> {_ov.get('player_name')} "
+                            f"(set {_ov.get('set_on')} by "
+                            f"{_ov.get('set_by')}: {_ov.get('reason')})")
                     if not (qb and qb.get('name')):
                         qb = extract_qb(c, home_flag)
                     if not (qb and qb.get('name')):
@@ -372,6 +462,30 @@ def run(season: Optional[int] = None, week: Optional[int] = None,
         print(f'   {src:18} {n}')
     if unresolved:
         print(f'   unresolved (no row written): {", ".join(sorted(unresolved))}')
+    if _applied:
+        # Printed every run, never summarised away. An override is a standing
+        # claim that our feeds are wrong, and it should be reviewed and
+        # deleted once they agree.
+        print(f'   MANUAL OVERRIDES APPLIED: {len(_applied)}')
+        for line in _applied:
+            print(f'     - {line}')
+    # ══ CARRYOVER SATURATION ══ the defect this module was rebuilt to kill
+    # came back in a different path: on week 7 every one of the 28 resolved
+    # teams fell through to box-score carryover, because probables and leaders
+    # were both empty. Carryover can only ever be right about the PAST -- it
+    # cannot name a QB who has not started yet (J.J. McCarthy appeared nowhere
+    # in all 7 weeks) and it cannot drop one who is gone. So when it handles
+    # effectively everything, say so, rather than reporting a clean run.
+    if not retrospective and total:
+        _carry = sum(n for src, n in by_source.items()
+                     if str(src).startswith('box_score'))
+        if _carry / total >= 0.8:
+            print(f'   WARNING: {_carry} of {total} rows ({100.0 * _carry / total:.0f}%) '
+                  f'came from BOX-SCORE CARRYOVER - ESPN probables/leaders '
+                  f'gave nothing. These describe last week, not this one: a '
+                  f'released or benched starter stays, and a new starter '
+                  f'cannot appear. Check nfl_rosters_current and the depth '
+                  f'chart before trusting QB-derived features this week.')
 
 
 if __name__ == '__main__':
