@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B151**.
+- Next free ID: **B152**.
 
 ---
 
@@ -56,7 +56,7 @@ above — they are how the search stays honest enough to find something:
 | **B141** | OPEN | **NHL full assessment.** Same treatment as B134 and B139. Known material to start from: the engine is one-sided; three different win probabilities exist and the read quoted the hidden one; prop inputs **lose to the price**; props carry an over-bias (info-only today); the `rl` market was judged not viable on merits; records were 100% preseason until fixed. Decide per market what we publish — and what we stop publishing. |
 | B129 | OPEN | **Vault match dive** — status and update. How many patterns, match rate per sport on the forward slate, graded record with n, whether any pattern moves a tier today, whether any is a restatement of another. |
 | **B138** | OPEN | **Prop Jerry deep dive** — performance since inception, by sport / market / tier, and what actually improves it. |
-| **B139** | OPEN | **The Sharp: are we picking the right plays?** Partly answered 10-23 and the answer is no. Lifetime 374-283-6 / +7.91u, but **every profitable unit is MLB** (+26.98u) and MLB ends this week; non-MLB is 55-66-1 / **−19.07u** (NCAAF −8.71, NHL −6.52, NFL 7-15-1 −5.60). By market `rl` **−11.38u**; by tier STRONG **−7.38u** vs PRIME +16.61u. Sept +26.13u → Oct **−18.22u**. Also **B146**: the "15-pick slate" has published 1-11 plays a day for two weeks, once just a single play. Decide what the surface is without MLB. |
+| **B139** | OPEN | **🔥 THE SHARP — the profitable cell does not exist outside baseball.** Andy 10-23: *"the sharp being better should be a priority."* Measured every sport x market cell (n=689): **MLB prop +17.10u** (197-137-2, 59.0%) and **MLB ml +9.24u** (64.4%) are the whole surface; **non-MLB props n=0** — never published one. Worst cell is **NFL rl 2-11-1 (15.4%, −5.24u)**; with NCAAF rl (−4.48u) that is **−9.72u on n=49, 51% of all non-MLB losses from one market**. MLB holds **15 of 20 slots** with 10 reserved for props, and that capacity does not transfer when the Series ends. Actions: (a) cut `rl` from football here; (b) reallocate the MLB slots now; (c) a non-MLB prop path is the only thing that can carry this surface — **blocked on B138**, measure before wiring. |
 | B131 | OPEN | **NCAAF v3 == SP+** byte-identical on 307/307 points and totals. One opinion presented as two. Modelling fix, not display. |
 | B5 | OPEN | **`expo-updates` / OTA.** Every client fix is days away; the App State fix missed the 1.0.4 cut by an hour. Highest-leverage infra item. |
 
@@ -72,6 +72,7 @@ above — they are how the search stays honest enough to find something:
 | B124 | OPEN | Clear NBA's "fix is in review" banner when 1.0.4 is approved. |
 | **B145** | OPEN | **`jerry_reads.call_line` is still off-market after the 10-19 fix** — 10-22 Bears read carries CHI −1.5 against a close of 3.0. `project_jerry_published_fake_lines_1019` fixed the published side; the read's own line was not covered. |
 | **B148** | OPEN | **The Fade has no monitoring, so "quiet" and "broken" are indistinguishable.** Checked 10-23: 0 plays at 16:13 UTC was *too early*, not an outage — fade receipts normally publish 19:49-20:27 UTC, because tonight's games have no public splits at midday. Two real smells found while checking: `generate_the_fade.latest_public_splits()` takes a `date` and **never filters on it**, so its "not on this slate: 2089" counts every key it ever saw; and `archive_public_splits.SUPPORTED_SPORTS` omits **NBA** (the per-sport `write_line_snapshot.py --sport NBA` call covers it, but the archive the pattern miner reads does not). Needs an alert on the surface with our only measured edge. |
+| **B151** | OPEN | **The Fade was validated on SPREADS and ships TOTALS.** Running record 11-7-1, 61.1%, +3.54u (n=19) — but **18 of 19 picks are totals, 1 is a spread**. The evidence the surface was built on is +12.4% on spreads, n=107, holding in both halves. We are publishing 95% of the market we did not validate. |
 | **B149** | OPEN | **Ladder has no sport after the World Series.** Rungs 52-63 are all MLB. Decide the post-MLB sport and price band before the streak (currently 4) dies of neglect. |
 | **B150** | OPEN | **Ledger tier drift** — the Brewers ML leg is `STRONG` in `ledger_suggestions` and `PRIME` in `ledger_snapshots`, same price, same conviction 79. One of the two is wrong on every parlay. |
 
