@@ -235,6 +235,37 @@ def check_abbrev_vocabularies(ctx, stats, defrows):
 
 
 # ─── factors ────────────────────────────────────────────────────────────────
+def before_week(games, wk):
+    """Only games played BEFORE the week being projected.
+
+    ══ 2026-10-22 · THE LEAK THIS CLOSES ══
+    by_player holds every logged week of the season, and nothing filtered it
+    against the game being projected. Live that is harmless - when week 8 is
+    the slate, weeks 1-7 are all that exist - which is exactly why it would
+    have sat here indefinitely.
+
+    It breaks the moment anyone runs --date on a past slate: projecting week
+    3 would average in weeks 4 through 7 and produce a number that could not
+    have been known. That is project_prop_l5_leak_922 and
+    project_rolling_stats_leak_trap_929, and a model that cannot be run on a
+    past date cannot be BACKTESTED either - so the leak and the inability to
+    measure are the same bug.
+
+    A missing week is treated as unknown and dropped rather than kept, since
+    a row with no week cannot be proven to predate anything.
+    """
+    if wk is None:
+        return games
+    out = []
+    for g in games:
+        w = g.get('_week')
+        if w is None:
+            continue
+        if int(w) < int(wk):
+            out.append(g)
+    return out
+
+
 def baseline(games, col):
     """Recency-weighted per-game average, newest games first.
 
@@ -730,7 +761,7 @@ def main():
                 skipped.append(f'{g.get("game_id")} {team_ab}: no starter')
                 continue
             nm = st.get('player_name')
-            games = by_player.get(nm, [])
+            games = before_week(by_player.get(nm, []), wk)
             if len(games) < 2:
                 skipped.append(f'{g.get("game_id")} {team_ab} {nm}: '
                                f'{len(games)} game log(s)')
@@ -763,6 +794,11 @@ def main():
             # changes with no extra feed. See pick_skill_players.
             for pos in ('RB', 'WR', 'TE'):
                 for pname, pgames in pick_skill_players(stats, team_ab, pos, wk):
+                    pgames = before_week(pgames, wk)
+                    if len(pgames) < 2:
+                        skipped.append(f'{g.get("game_id")} {pname} ({pos}): '
+                                       f'<2 games before week {wk}')
+                        continue
                     pv, pi = project_skill(
                         pgames, defrows, pos, opp_ab, side == 'HOME',
                         _f(g.get('close_total')), league_total, sp_for)
