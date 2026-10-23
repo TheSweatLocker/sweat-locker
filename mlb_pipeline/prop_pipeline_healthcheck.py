@@ -45,7 +45,7 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 SPORT_REG = {
     'MLB':   ('mlb_pipeline_props',   'mlb_game_context',   'prop_jerry_reads', 'MLB'),
     'NFL':   ('nfl_pipeline_props',   'nfl_game_context',   'prop_jerry_reads', 'NFL'),
-    'NCAAF': ('ncaaf_pipeline_props', 'ncaaf_game_context', 'prop_jerry_reads', 'NCAAF'),
+    # 'NCAAF': ('ncaaf_pipeline_props', 'ncaaf_game_context', 'prop_jerry_reads', 'NCAAF'),  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
     'NCAAB': ('ncaab_pipeline_props', 'ncaab_game_context', 'prop_jerry_reads', 'NCAAB'),
     'NHL':   ('nhl_pipeline_props',   'nhl_game_context',   'prop_jerry_reads', 'NHL'),
     'NBA':   ('nba_pipeline_props',   'nba_game_context',   'prop_jerry_reads', 'NBA'),

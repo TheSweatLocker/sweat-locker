@@ -59,7 +59,7 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 PROP_TABLES = {
     'MLB':   'mlb_pipeline_props',
     'NFL':   'nfl_pipeline_props',
-    'NCAAF': 'ncaaf_pipeline_props',
+    # 'NCAAF': 'ncaaf_pipeline_props',  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
     'NBA':   'nba_pipeline_props',
     'NHL':   'nhl_pipeline_props',
 }

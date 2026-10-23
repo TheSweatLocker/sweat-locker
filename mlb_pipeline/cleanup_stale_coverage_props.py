@@ -64,7 +64,7 @@ STALE_CONVICTION_FLOOR = 55
 PROPS_TABLES = {
     'MLB':   'mlb_pipeline_props',
     'NFL':   'nfl_pipeline_props',
-    'NCAAF': 'ncaaf_pipeline_props',
+    # 'NCAAF': 'ncaaf_pipeline_props',  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
 }
 
 

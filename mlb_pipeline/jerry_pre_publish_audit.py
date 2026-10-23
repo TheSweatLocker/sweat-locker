@@ -788,9 +788,16 @@ def auto_repair(sport: str, game_date: str) -> dict:
 
     if substitute_generic_pitcher_refs:
         # Fetch game_context for name resolution
+        # 2026-10-23: NFL was asking for home_qb/away_qb. Those columns do not
+        # exist — nfl_game_context has home_qb_name / away_qb_name. Every NFL
+        # run 400'd here, once per game_date, and the failure was invisible
+        # because the rows just came back empty and name substitution silently
+        # did nothing.
+        #
+        # NCAAF is dropped entirely: ncaaf_game_context has NO qb column of any
+        # kind, so that entry could never have worked.
         sport_ctx = {'MLB': ('mlb_game_context', 'home_pitcher', 'away_pitcher'),
-                     'NFL': ('nfl_game_context', 'home_qb', 'away_qb'),
-                     'NCAAF': ('ncaaf_game_context', 'home_qb', 'away_qb')}
+                     'NFL': ('nfl_game_context', 'home_qb_name', 'away_qb_name')}
         cfg = sport_ctx.get(sport)
         if cfg:
             ctx_table, home_key, away_key = cfg

@@ -51,7 +51,7 @@ PROP_TABLES = {
     'NFL': 'nfl_pipeline_props',
     'NHL': 'nhl_pipeline_props',
     'NBA': 'nba_pipeline_props',
-    'NCAAF': 'ncaaf_pipeline_props',
+    # 'NCAAF': 'ncaaf_pipeline_props',  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
 }
 
 

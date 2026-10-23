@@ -94,7 +94,7 @@ def _rank(prop: dict) -> tuple:
 SPORT_REG = {
     'MLB':   ('mlb_pipeline_props',   'MLB'),
     'NFL':   ('nfl_pipeline_props',   'NFL'),
-    'NCAAF': ('ncaaf_pipeline_props', 'NCAAF'),
+    # 'NCAAF': ('ncaaf_pipeline_props', 'NCAAF'),  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
     'NCAAB': ('ncaab_pipeline_props', 'NCAAB'),
     'NHL':   ('nhl_pipeline_props',   'NHL'),
     'NBA':   ('nba_pipeline_props',   'NBA'),

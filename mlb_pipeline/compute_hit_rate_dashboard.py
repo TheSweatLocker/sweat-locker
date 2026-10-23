@@ -81,7 +81,7 @@ SPORT_CONFIG = {
     },
     'NCAAF': {
         'jerry_game':     {'table': 'jerry_reads',        'tier_col': None,   'result_col': 'result', 'sport_filter': 'eq.NCAAF'},
-        'pipeline_prop':  {'table': 'ncaaf_pipeline_props', 'tier_col': 'tier', 'result_col': 'result', 'sport_filter': None},
+        # 'pipeline_prop':  {'table': 'ncaaf_pipeline_props', 'tier_col': 'tier', 'result_col': 'result', 'sport_filter': None},  # 2026-10-23: ncaaf_pipeline_props does not exist (404) and college props are banned by policy -- this entry was a guaranteed-404 per run
     },
     'NCAAB': {
         'jerry_game':     {'table': 'jerry_reads',        'tier_col': None,   'result_col': 'result', 'sport_filter': 'eq.NCAAB'},
