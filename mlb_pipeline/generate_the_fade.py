@@ -148,6 +148,64 @@ CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME', 'OVER': 'UNDER', 'UNDER': 'OVER'}
 
 
+# ══ 2026-10-23 · B151 · PUBLISH THE MARKET WE MEASURED ══
+# This surface was built on ONE measurement: fade heavy public on FOOTBALL
+# SPREADS (project_the_fade_is_the_one_real_edge_1019, +12.4% ROI on n=107).
+# Totals appear nowhere in that work, and 26 of the 27 receipts this surface
+# has written are totals. So the market we validated is not the market we
+# ship.
+#
+# Measured today on the same feed, deduped to the LAST snapshot per
+# (sport, game_id, market) exactly as build_plays does, graded off
+# *_game_results, fade = the side opposite the public, at the live >= 65%
+# threshold:
+#
+#   bucket              record      hit     ROI       n     verdict
+#   NCAAF/NFL spread    57-39      59.4%   +13.4%     96    the edge, reproduced
+#   MLB    total       130-151-15  46.3%   -11.7%    281    BANNED
+#   NCAAF  total        86-84      50.6%    -3.4%    170    BANNED
+#   NBA    total         3-3       50.0%      --       6    tracking
+#   NHL    total         5-5-1     50.0%      --      10    tracking
+#
+# Totals as ONE bucket read -8.4% on n=467, but that is MLB and NCAAF
+# carrying it, and money flow inverts by sport
+# (project_split_flags_opposite_by_sport_1012) so the pooled number is not a
+# verdict on any sport. Split out:
+#
+#   * MLB and NCAAF totals are MEASURED and NEGATIVE on real n. Banned. The
+#     threshold sweep is negative at every level from 50 to 80, and the early
+#     half is -18.3% against a late half of +1.1%, so there is no threshold
+#     and no window where this is a play.
+#   * NBA and NHL totals are UNMEASURED (n=6 and n=10), not disproven. Both
+#     leagues opened this month. Banning a market on n=6 would be the mirror
+#     of publishing one on n=6. They stay, labelled `tracking`, and B158's
+#     weekly check covers them.
+#
+# This deliberately does NOT add NBA/NHL spread orientation to
+# _HOME_HANDICAP_SIGN. Nine such spreads were dropped today as "orientation
+# unverified". Filling that map would hand this surface a third unvalidated
+# market, which is the exact complaint B151 opened with. The sign must be
+# DERIVED from results first (corr of close_spread against actual home
+# margin: NFL +0.324 so home_handicap = -close_spread, NCAAF -0.806 so +1 --
+# which independently reproduces the map below). NBA had only 22 final games
+# today, too few to call, and nhl_game_results carries no close_spread at
+# all.
+#
+# (sport, market) -> reason it is refused. Measured, with n, or it does not
+# belong here.
+FADE_BANNED = {
+    ('MLB', 'total'): 'fade 46.3%, ROI -11.7%, n=281',
+    ('NCAAF', 'total'): 'fade 50.6%, ROI -3.4%, n=170',
+}
+
+#: (sport, market) the 10-19 backtest actually covers. Everything else that
+#: survives the filters publishes as `tracking` -- it has no measured edge
+#: behind it and the payload says so, rather than borrowing the football
+#: spread number's credibility.
+FADE_VALIDATED = {('NCAAF', 'rl'), ('NCAAF', 'spread'),
+                  ('NFL', 'rl'), ('NFL', 'spread')}
+
+
 def f(v):
     try:
         x = float(v)
@@ -217,6 +275,10 @@ def build_plays(date: str) -> list[dict]:
         if not c:
             skipped['not on this slate'] += 1
             continue
+        _ban = FADE_BANNED.get((sport, mkt))
+        if _ban:
+            skipped[f'{sport} {mkt}: refused on evidence ({_ban})'] += 1
+            continue
         bets = f(s.get('bets_pct'))
         if bets is None:
             skipped['no public split'] += 1
@@ -264,6 +326,11 @@ def build_plays(date: str) -> list[dict]:
             'side': fade, 'line': line, 'label': label,
             'public_side': public, 'public_pct': round(pub_pct, 1),
             'public_money_pct': f(s.get('money_pct')),
+            # What stands behind THIS play, per (sport, market). A tracking
+            # play is published because it is unmeasured, not because it is
+            # proven, and the tab must be able to say which.
+            'evidence': ('validated' if (sport, mkt) in FADE_VALIDATED
+                         else 'tracking'),
             # the reason string a user reads - the whole point of the tab
             'reason': (f'{pub_pct:.0f}% of tickets are on '
                        f'{(home if public == "HOME" else away) if public in ("HOME","AWAY") else public.title()}'
@@ -309,7 +376,10 @@ def main() -> int:
           f'{"DRY RUN" if a.dry_run else "WRITING"} ===')
 
     plays = build_plays(date)
-    print(f'\n  FADE PLAYS: {len(plays)}')
+    _ev = {}
+    for _p in plays:
+        _ev[_p.get('evidence')] = _ev.get(_p.get('evidence'), 0) + 1
+    print(f'\n  FADE PLAYS: {len(plays)}  evidence: {_ev or "{}"}')
     for p in plays:
         print(f"    {p['sport']:<6}{p['market']:<6}{p['label'][:30]:<31}"
               f"public {p['public_pct']:>5.1f}% on {p['public_side']:<6}"
@@ -348,6 +418,28 @@ def main() -> int:
                               'holdout is 38 plays. Direction is consistent; '
                               'magnitude is not settled.'),
                    'measured_on': '2026-10-19',
+                   # ══ 2026-10-23 · B151 ══ the same feed, re-measured per
+                   # (sport, market), because the surface was shipping 26 of
+                   # 27 picks in a market this backtest never covered.
+                   'by_market_2026_10_23': {
+                       'football_spread': {'record': '57-39', 'hit': 59.4,
+                                           'roi_pct': 13.4, 'n': 96,
+                                           'status': 'validated'},
+                       'mlb_total': {'record': '130-151-15', 'hit': 46.3,
+                                     'roi_pct': -11.7, 'n': 281,
+                                     'status': 'banned'},
+                       'ncaaf_total': {'record': '86-84', 'hit': 50.6,
+                                       'roi_pct': -3.4, 'n': 170,
+                                       'status': 'banned'},
+                       'nba_total': {'record': '3-3', 'n': 6,
+                                     'status': 'tracking'},
+                       'nhl_total': {'record': '5-5-1', 'n': 10,
+                                     'status': 'tracking'},
+                       'note': ('totals pooled read -8.4% on n=467, but MLB '
+                                'and NCAAF carry that and money flow inverts '
+                                'by sport, so the pooled figure is not a '
+                                'verdict on NBA or NHL'),
+                   },
                },
                'generated_at': dt.datetime.now(dt.timezone.utc).isoformat()}
 
