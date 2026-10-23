@@ -159,6 +159,44 @@ def posted_quotes(sport: str, date: str) -> dict:
     return out, teams
 
 
+#: How many points worse than the flip number we will still accept.
+#: The thesis was measured at OUR number, so a board materially short of it is
+#: a different bet; a board AHEAD of it is the same bet on better terms.
+FLIP_LINE_TOLERANCE = 0.5
+
+
+def best_flip_quote(quotes: dict, lh_gid, side: str, flip_line: float):
+    """Best POSTED quote for the flipped side, or None.
+
+    ══ 2026-10-23 · AN EXACT-LINE MATCH REJECTED A BETTER NUMBER ══
+    The first version required the board to post our flipped number exactly.
+    That threw away Georgia Tech -5.5 -> Boston College, where the flip number
+    was +5.5 and the board posts +6.5 -- a full point MORE in our favour, on
+    the same side, refused for not matching. Andy: "If we knwo thes epicks are
+    btter i want to flip them to users, youre saying only flip one?" He was
+    right; refusing a better price is indefensible.
+
+    So: take the most favourable posted line for the side we want, and accept
+    it when it is no more than FLIP_LINE_TOLERANCE worse than the number the
+    thesis was measured at. Higher is always better for the holder, so the
+    comparison is a plain signed one and needs no per-sport convention.
+
+    Still refuses a board that has moved materially AGAINST the flip -- Texas
+    -6.5 flips to Ole Miss +6.5 while the board posts only +3.5, three points
+    short, which is a different bet from the one that was measured.
+    """
+    if not lh_gid:
+        return None
+    opts = [(ln, v) for (gid, sd, ln), v in quotes.items()
+            if gid == lh_gid and sd == side.lower()]
+    if not opts:
+        return None
+    ln, (price, books) = max(opts, key=lambda z: z[0])   # most points for us
+    if ln < flip_line - FLIP_LINE_TOLERANCE:
+        return None
+    return ln, price, books
+
+
 def receipted(sport: str, date: str) -> set:
     """game_ids that already have a published spread receipt. Never touched."""
     rows = _get('public_receipts',
@@ -231,11 +269,12 @@ def run(sport: str, date: str, apply: bool) -> int:
         new_line = -ours
         team = str(g['home_team'] if opp == 'HOME' else g['away_team'])
         lh = teammap.get((str(g['away_team']), str(g['home_team'])))
-        q = quotes.get((lh, opp.lower(), new_line)) if lh else None
+        q = best_flip_quote(quotes, lh, opp, new_line)
         if not q:
-            no(f'no {MIN_BOOKS}+ books post the flipped number')
+            no(f'no {MIN_BOOKS}+ books post a line within '
+               f'{FLIP_LINE_TOLERANCE:g} of the flipped number')
             continue
-        price, nbooks = q
+        new_line, price, nbooks = q
         new = dict(pp)
         new['side'] = opp
         new['line'] = new_line

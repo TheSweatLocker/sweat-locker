@@ -962,7 +962,8 @@ def fetch_football_picks(today: str) -> list:
                     and str(pp.get('type') or '').lower() in ('rl', 'spread')):
                 try:
                     from flip_football_spreads import (
-                        posted_quotes as _pq, MAX_MAGNITUDE as _MAXM, OPP as _OPP)
+                        posted_quotes as _pq, MAX_MAGNITUDE as _MAXM,
+                        OPP as _OPP, best_flip_quote as _bfq)
                     _ln = float(pp.get('line'))
                     _sd = str(pp.get('side') or '').upper()
                     if abs(_ln) <= _MAXM and _sd in _OPP:
@@ -976,17 +977,26 @@ def fetch_football_picks(today: str) -> list:
                         _nl = -_ln
                         _lh = _tm.get((str(row.get('away_team')),
                                        str(row.get('home_team'))))
-                        _qt = _q.get((_lh, _opp.lower(), _nl)) if _lh else None
+                        # best POSTED line for the side we want, accepting
+                        # a number equal to or BETTER than the flip number.
+                        # The first cut demanded an exact match and so refused
+                        # Boston College +6.5 against a flip number of +5.5 --
+                        # a point more in our favour. See best_flip_quote.
+                        _qt = _bfq(_q, _lh, _opp, _nl)
                         if _qt:
+                            _bl, _bp, _bk = _qt
                             _team = str(row.get('home_team') if _opp == 'HOME'
                                         else row.get('away_team'))
-                            _flip = {'side': _opp, 'line': _nl,
-                                     'label': f'{_team} {_nl:+g}',
-                                     'odds': _qt[0], 'books': _qt[1],
+                            _flip = {'side': _opp, 'line': _bl,
+                                     'label': f'{_team} {_bl:+g}',
+                                     'odds': _bp, 'books': _bk,
                                      'from': pp.get('label')}
+                            _delta = _bl - _nl
                             print(f'  NCAAF flip on Sweat Card: '
                                   f'{pp.get("label")} -> {_flip["label"]} '
-                                  f'@ {_qt[0]:+g} ({_qt[1]}bk)')
+                                  f'@ {_bp:+g} ({_bk}bk)'
+                                  + (f'  [{_delta:+g} vs flip number]'
+                                     if abs(_delta) > 1e-9 else ''))
                 except (TypeError, ValueError, ImportError) as _e:
                     print(f'  ⚠ sweat-card flip skipped: {_e}')
                     _flip = None

@@ -1087,6 +1087,9 @@ def _spread_prices(sport: str, dates: set) -> dict:
 # pick" means and the grader did not know.
 _FLIP_SPREAD_MAX_MAGNITUDE = 7.0
 _FLIP_SPREAD_MIN_BOOKS = 2
+#: Points worse than the flip number we will still take. A board AHEAD of our
+#: number is the same bet on better terms; materially short of it is not.
+_FLIP_LINE_TOLERANCE = 0.5
 
 
 def _amer_to_prob(o) -> float:
@@ -1208,13 +1211,34 @@ def _flip_short_spread(pp: dict, g: dict, px: dict):
                 else g.get('away_team')) or '')
     if not team:
         return None, 'no team name for the flipped side'
-    quote = px.get((str(g.get('game_id')), opp.lower(), new_line))
-    if not quote:
-        return None, f'no {_FLIP_SPREAD_MIN_BOOKS}+ books post {new_line:+g}'
-    return {'side': opp, 'line': new_line,
-            'label': f'{team} {new_line:+g}',
+    # ══ 2026-10-23 · AN EXACT MATCH REFUSED A BETTER NUMBER ══
+    # This demanded the board post our flipped number exactly, and so threw
+    # away Georgia Tech -5.5 -> Boston College where the flip number was +5.5
+    # and the board posts +6.5 -- a full point MORE in our favour, same side,
+    # refused on a technicality. Andy: "If we knwo thes epicks are btter i
+    # want to flip them to users, youre saying only flip one?"
+    #
+    # Now: take the most favourable posted line for the side we want, and
+    # accept it unless it is more than _FLIP_LINE_TOLERANCE points short of
+    # the number the thesis was measured at. Higher is always better for the
+    # holder, so this is a plain signed comparison with no per-sport
+    # convention in it. Still refuses a board that moved materially against
+    # the flip: Texas -6.5 -> Ole Miss +6.5 with the board at +3.5 is three
+    # points short and a different bet from the measured one.
+    gid = str(g.get('game_id'))
+    opts = [(ln, v) for (q_gid, q_side, ln), v in px.items()
+            if q_gid == gid and q_side == opp.lower()]
+    if not opts:
+        return None, f'no {_FLIP_SPREAD_MIN_BOOKS}+ books post that side'
+    best_line, quote = max(opts, key=lambda z: z[0])
+    if best_line < new_line - _FLIP_LINE_TOLERANCE:
+        return None, (f'board moved off the flip: best posted '
+                      f'{best_line:+g} vs flipped {new_line:+g}')
+    return {'side': opp, 'line': best_line,
+            'label': f'{team} {best_line:+g}',
             'price': quote['price'], 'books': quote['books'],
             'from_side': side, 'from_line': line,
+            'thesis_line': new_line,
             'from_label': pp.get('label')}, None
 
 
