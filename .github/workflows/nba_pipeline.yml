@@ -167,6 +167,29 @@ jobs:
         run: |
           cd mlb_pipeline
           python nba_resolve_results.py
+          # 2026-10-23 - B155. nba_player_log_ingest.py was in NO workflow.
+          # nba_player_game_logs held 58,600 rows but ZERO for 10-20, 10-21
+          # and 10-22 - the games actually played this season. Newest
+          # created_at was 10-05, the day someone last ran it by hand.
+          #
+          # That single gap is the root of the whole NBA prop problem:
+          #   no player game logs for played games
+          #     -> nothing to grade props against
+          #       -> 0 graded props of 7,500
+          #         -> no calibration data
+          #           -> tier hardcoded COVERAGE in nba_generate_props.py:209
+          #             -> v_nba_props_publishable returns 0
+          #               -> The Sharp has no NBA props, and no path past MLB
+          #
+          # Immediately AFTER nba_resolve_results and in the same step, so it
+          # ingests box scores for the games this run just finalised. --since
+          # is cheap: the script skips games it already holds (2,698 of 2,714
+          # on the backfill run).
+          #
+          # Fourth script found today written-but-never-scheduled, after
+          # split_sharp_card_record.py, refresh_calibration_notes.py and
+          # cross_sport_lines.yml. See B157.
+          python nba_player_log_ingest.py --since 2026-10-01 --apply
 
       # 2026-09-08 wired: grade NBA jerry_reads right after resolver so
       # NBA doesn't wait on the MLB nightly step. Parallels NHL wiring —
