@@ -751,5 +751,21 @@ bash "$RUN_STEP" --detector --label "assert_slate_freshness.py (nightly)" \
 
 bash "$RUN_STEP" --label "watchdog_workflow_heartbeat.py (nightly)" \
   python watchdog_workflow_heartbeat.py
+
+# 2026-10-23 · B152. Every dead column reference is a request that CANNOT
+# succeed, and until today they were all invisible: call sites swallowed the
+# 400 with `if r.status_code != 200: return []`, so the step exited green with
+# no data. That is how nfl_player_stats.anytime_td shipped hundreds of
+# guaranteed-fail requests per run, and how ATD ended up computing from an
+# empty list (its conviction came out INVERTED as a result).
+#
+# One OpenAPI request describes all 217 tables, so this whole audit is cheap —
+# which matters, because it was request volume on a micro instance that took
+# the app down for paying users today.
+#
+# --detector: report, never fail the nightly. A dead column is a code bug to
+# fix in daylight, not a reason to abort the night's slate.
+bash "$RUN_STEP" --detector --label "schema_guard.py --audit" \
+  python schema_guard.py --audit
 echo ""
 echo "══ nightly cross-sport complete ══"
