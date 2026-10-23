@@ -281,6 +281,80 @@ def _build_casual_summary(ctx):
     }
 
 
+def _rest_edge(ctx, home, away):
+    """A finished sentence about rest, or an explicit unknown.
+
+    Returns one of:
+        "PHI +2 days of rest"          both sides known and 2+ apart
+        "even rest (2 each)"           both known, within a day
+        "unknown - CLE has no rest figure"   either side missing
+
+    Never a comparison built from a null. See the call site.
+    """
+    h, a = ctx.get('home_rest_days'), ctx.get('away_rest_days')
+    if h is None or a is None:
+        miss = home if h is None else away
+        return f'unknown - no rest figure for {miss}, do not claim an edge'
+    try:
+        h, a = float(h), float(a)
+    except (TypeError, ValueError):
+        return 'unknown - rest figures unreadable, do not claim an edge'
+    d = h - a
+    if abs(d) < 2:
+        return f'even rest ({h:g} vs {a:g}) - no edge either way'
+    return (f'{home} +{d:g} days of rest' if d > 0
+            else f'{away} +{-d:g} days of rest')
+
+
+def _conviction_guidance(ctx):
+    """Say in words whether this pick is actionable, and how to write it.
+
+    A conviction NUMBER is not self-explanatory to a writer: 53 reads as
+    "moderately confident" when the engine means "below the bar". The tier
+    is the authority, so it is stated alongside an explicit instruction.
+    """
+    pp = ctx.get('primary_play') or {}
+    tier = str(pp.get('tier') or ctx.get('sweat_tier') or '').upper()
+    low = tier in ('COVERAGE', 'PASS', 'SKIP', 'LIGHT_LEAN')
+    return {
+        'tier': tier or 'UNKNOWN',
+        'actionable': not low,
+        'instruction': (
+            'This pick is BELOW our publishing bar. Describe what the model '
+            'sees, but do NOT call it an edge, a value play, or say the edge '
+            '"lives" anywhere, and do not tell the reader to back it.'
+            if low else
+            'This pick clears our bar. State the case plainly and name the '
+            'side and the number.'
+        ),
+    }
+
+
+def _total_gap(ctx):
+    """Projection vs market as a FINISHED set of numbers.
+
+    Andy's read said a 6.3-point gap was "half a point per quarter". It is
+    1.6. The model was handed a projection and a market line and did the
+    division itself, which is the one thing a language model should never
+    be asked to do on a card that claims to show its work. Every figure it
+    might want is computed here.
+    """
+    proj = _f(ctx.get('projected_total'))
+    mkt = _f(ctx.get('close_total'))
+    if proj is None or mkt is None:
+        return None
+    gap = proj - mkt
+    return {
+        'projected_total': round(proj, 1),
+        'market_total': round(mkt, 1),
+        'gap_points': round(gap, 1),
+        'gap_per_quarter': round(gap / 4.0, 2),
+        'lean': 'UNDER' if gap < 0 else ('OVER' if gap > 0 else 'none'),
+        'note': ('use these numbers as given - do not divide, multiply or '
+                 're-derive any of them'),
+    }
+
+
 def build_struct(ctx):
     home = ctx.get('home_team'); away = ctx.get('away_team')
     struct = {
@@ -327,6 +401,18 @@ def build_struct(ctx):
             },
         },
         'situational': {
+            # ══ 2026-10-22 · HAND IT THE VERDICT, NOT TWO NUMBERS ══
+            # Andy's CLE @ PHI read said "Philadelphia gets two days' rest
+            # advantage" while the Rest card on the same screen showed
+            # Cleveland's rest as "—". Cleveland had not played yet, so the
+            # rest edge was UNKNOWN; the payload passed home_rest_days=2 and
+            # away_rest_days=None and the model filled the gap by treating
+            # the missing side as zero.
+            #
+            # A null handed to a writer becomes a number. So the comparison
+            # is made HERE, where the null is visible, and the model is
+            # given the finished statement instead of the ingredients.
+            'rest_edge': _rest_edge(ctx, home, away),
             'home_rest_days': ctx.get('home_rest_days'),
             'away_rest_days': ctx.get('away_rest_days'),
             'home_is_b2b': ctx.get('home_is_b2b'),
@@ -355,6 +441,21 @@ def build_struct(ctx):
             'breakdown': ctx.get('signal_confluence_breakdown'),
         },
         'primary_play': ctx.get('primary_play'),
+        # Every figure the read might want about projection vs market,
+        # already divided. See _total_gap.
+        'total_gap': _total_gap(ctx),
+        # ══ 2026-10-22 · A LOW-CONVICTION PICK IS NOT AN EDGE ══
+        # Andy's CLE @ PHI read closed on "Under 234.5 carries a
+        # 53-conviction lean. Edge lives there." The pick was COVERAGE —
+        # the card badged it LOW CONVICTION and, at the time, carried a
+        # paragraph saying it was not a recommended play. The prose
+        # asserted an edge the engine had explicitly declined to claim.
+        #
+        # The payload never told it the tier in plain terms, so it read a
+        # conviction number of 53 as a finding. It is now handed the tier
+        # AND the instruction, because a number alone evidently reads as
+        # permission.
+        'conviction_guidance': _conviction_guidance(ctx),
         'sweat': {
             'score': ctx.get('sweat_score'),
             'tier': ctx.get('sweat_tier'),
