@@ -7796,21 +7796,39 @@ function NBATeamSnapshotCard({ctx, homeTeam, awayTeam}: any) {
   if (!isEnabled) return null;
   if (h.net == null && a.net == null && h.elo == null && a.elo == null) return null;
   const fmt = (v: any, digits = 1) => v == null ? '—' : Number(v).toFixed(digits);
+  // ══ 2026-10-22 · TWO MEASURES, ONE APPARENT NUMBER ══
+  // QA on CLE @ PHI: this card showed "Net 2.5 / Off-Def 117-115" and the
+  // Team Stats table below showed "NET PTS/G 2.5" and "POINTS 117". Same
+  // digits, DIFFERENT MEASURES, different sources: this card reads
+  // ctx.*_net_rating / *_off_rating, which are per-100-POSSESSIONS, while
+  // Team Stats reads points_pg / net_pts_pg from nba_elo, which are
+  // per-GAME.
+  //
+  // They agree here only because Cleveland and Philadelphia both play at
+  // ~99.9 possessions, so per-100 and per-game land on the same number.
+  // At a pace of 105 they separate, and a reader who learned them as
+  // interchangeable reads the gap as a data error.
+  //
+  // Relabelling either one to match the other would make one of them
+  // false - the fix is to say which basis this card is on, which costs
+  // nothing and cannot drift. (The deeper fix, folding this card into
+  // Team Stats so one number appears once, is a layout change and is
+  // queued rather than rushed into a resubmission.)
   return (
-    <Section title="Team Snapshot" hint="net rating + pace + Elo">
+    <Section title="Team Snapshot" hint="per 100 possessions · pace · Elo">
       <View style={{flexDirection: 'row', gap: 8}}>
         <View style={[styles.pitcherCard, {borderTopColor: C.away, padding: 12, gap: 3, flex: 1}]}>
           <Text style={styles.pitcherName}>{awayTeam}</Text>
-          {a.net != null && <Text style={styles.pitcherStats}>Net: <Text style={styles.pitcherStatBold}>{fmt(a.net)}</Text></Text>}
+          {a.net != null && <Text style={styles.pitcherStats}>Net/100: <Text style={styles.pitcherStatBold}>{fmt(a.net)}</Text></Text>}
           {a.pace != null && <Text style={styles.pitcherStats}>Pace: <Text style={styles.pitcherStatBold}>{fmt(a.pace)}</Text></Text>}
-          {a.off != null && a.def != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(a.off, 0)}/{fmt(a.def, 0)}</Text></Text>}
+          {a.off != null && a.def != null && <Text style={styles.pitcherStats}>Off/Def per 100: <Text style={styles.pitcherStatBold}>{fmt(a.off, 0)}/{fmt(a.def, 0)}</Text></Text>}
           {a.elo != null && <Text style={styles.pitcherStats}>Elo: <Text style={styles.pitcherStatBold}>{fmt(a.elo, 0)}</Text></Text>}
         </View>
         <View style={[styles.pitcherCard, {borderTopColor: C.home, padding: 12, gap: 3, flex: 1}]}>
           <Text style={styles.pitcherName}>{homeTeam}</Text>
-          {h.net != null && <Text style={styles.pitcherStats}>Net: <Text style={styles.pitcherStatBold}>{fmt(h.net)}</Text></Text>}
+          {h.net != null && <Text style={styles.pitcherStats}>Net/100: <Text style={styles.pitcherStatBold}>{fmt(h.net)}</Text></Text>}
           {h.pace != null && <Text style={styles.pitcherStats}>Pace: <Text style={styles.pitcherStatBold}>{fmt(h.pace)}</Text></Text>}
-          {h.off != null && h.def != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(h.off, 0)}/{fmt(h.def, 0)}</Text></Text>}
+          {h.off != null && h.def != null && <Text style={styles.pitcherStats}>Off/Def per 100: <Text style={styles.pitcherStatBold}>{fmt(h.off, 0)}/{fmt(h.def, 0)}</Text></Text>}
           {h.elo != null && <Text style={styles.pitcherStats}>Elo: <Text style={styles.pitcherStatBold}>{fmt(h.elo, 0)}</Text></Text>}
         </View>
       </View>
@@ -7926,8 +7944,17 @@ function NBARestB2BCard({ctx, homeTeam, awayTeam}: any) {
     <Section title="Rest &amp; B2B"
              hint={(aB2B || hB2B)
                      ? 'back-to-back — the big one'
-                     : (aRest != null && hRest != null
-                        && Math.abs(Number(aRest) - Number(hRest)) >= 2)
+                     // ══ 2026-10-22 · MISSING IS NOT EVEN ══
+                     // QA on CLE @ PHI: Cleveland's rest rendered "—" while
+                     // this hint read "even rest — no edge either way". The
+                     // old chain fell through to that string whenever EITHER
+                     // side was null, so an absent value was reported as a
+                     // measured tie. Cleveland had not played a game yet;
+                     // we did not know their rest, and saying we did is a
+                     // claim, not a gap.
+                     : (aRest == null || hRest == null)
+                       ? 'rest unknown for one side — not comparable'
+                     : (Math.abs(Number(aRest) - Number(hRest)) >= 2)
                        ? `rest edge · ${Math.abs(Number(aRest) - Number(hRest))} days`
                        : 'even rest — no edge either way'}>
       <View style={{flexDirection: 'row', gap: 8}}>
