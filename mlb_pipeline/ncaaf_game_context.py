@@ -2030,7 +2030,11 @@ def upsert(rows: list, dry_run: bool = False) -> int:
             if preserve_published('NCAAF', 'ncaaf_game_context', _row, SB, H_WRITE):
                 _locked += 1
         if _locked:
-            print(f'  🔒 NCAAF publish lock: preserved {{_locked}} published pick(s)')
+            # 2026-10-22: was `{{_locked}}` — doubled braces inside an
+            # f-string print the literal text "{_locked}", so this line has
+            # been reporting no number at all. NBA/NCAAB/NHL have the same
+            # line written correctly; only NCAAF was escaped.
+            print(f'  🔒 NCAAF publish lock: preserved {_locked} published pick(s)')
     except Exception as _e:
         print(f'  ⚠ NCAAF publish lock unavailable ({{type(_e).__name__}}) — writing unlocked')
 
@@ -2063,7 +2067,28 @@ def upsert(rows: list, dry_run: bool = False) -> int:
         retry_rounds += 1
     if stripped_total and r.status_code in (200, 201, 204):
         print(f'  ⚠ ncaaf ctx stripped {len(stripped_total)} unknown cols: {stripped_total} — add ALTER TABLE for these')
-    if r.status_code == 409:
+    if r.status_code in (400, 409):
+        # ══ 2026-10-22 · AND 400 DOES THE SAME THING ══
+        # This branch was gated on 409 alone. Tonight a CHECK violation
+        # (400, 23514) hit the same atomic batch and cost all 76 rows:
+        #
+        #   violates check constraint "ncaaf_ctx_gid_encodes_game_date"
+        #   failing row: ncaaf_20261108_Miami_Notre Dame, game_date 2026-11-07
+        #
+        # The Notre Dame kick is 00:30 UTC on 11-08, which is 7:30pm ET on
+        # 11-07. game_date is the ET date, correctly; the game_id was built
+        # from the UTC date. The constraint is right to reject it. What was
+        # wrong is that one malformed id zeroed the whole slate and the
+        # function then printed "✓ wrote 0 rows".
+        #
+        # Andy saw it as "App state game tonight college football has no
+        # data": ncaaf_game_results held all 76 upcoming games, a dry run
+        # built all 76, and the table held 16 — frozen since the last write
+        # that predated Miami/Notre Dame entering the 21-day horizon.
+        #
+        # The note below already says one row must not cost the rest. Same
+        # lesson, same table, one month later; only the status code differed.
+        #
         # 2026-09-23. One row can no longer cost the other eighty-nine.
         #
         # ncaaf_game_results holds the same fixture twice for neutral-site
@@ -2083,7 +2108,7 @@ def upsert(rows: list, dry_run: bool = False) -> int:
         # Fall back to one request per row: good rows land, and the
         # conflicting fixtures are named instead of being inferred from a
         # truncated Postgres error.
-        ok, clashed = 0, []
+        ok, clashed, rejected = 0, [], []
         for row in rows:
             rr = requests.post(
                 f'{SB}/rest/v1/ncaaf_game_context?on_conflict=game_id',
@@ -2093,8 +2118,23 @@ def upsert(rows: list, dry_run: bool = False) -> int:
                 ok += 1
             elif rr.status_code == 409:
                 clashed.append(row.get('game_id'))
+            elif rr.status_code == 400:
+                # Name the CONSTRAINT, not just the code. A truncated
+                # Postgres "details" blob is what made this slow to find —
+                # the message field carries the constraint name, details
+                # carries 90 nulls.
+                try:
+                    _m = rr.json().get('message') or rr.text[:140]
+                except Exception:                              # noqa: BLE001
+                    _m = rr.text[:140]
+                rejected.append((row.get('game_id'), _m))
             else:
                 print(f"  ⚠ {row.get('game_id')}: {rr.status_code} {rr.text[:120]}")
+        if rejected:
+            print(f'  ⚠ {len(rejected)} row(s) REJECTED by a constraint — '
+                  f'those games have NO context until the row is fixed:')
+            for _gid, _msg in rejected[:6]:
+                print(f'      {_gid}: {str(_msg)[:150]}')
         if clashed:
             print(f'  ⚠ {len(clashed)} row(s) rejected as duplicate fixtures '
                   f'(same matchup already present under another game_id): '
@@ -2151,8 +2191,16 @@ def run(dry_run: bool = False) -> None:
                                 ats_hist=ats_hist) for g in games]
     rows = [r for r in rows if r]
     written = upsert(rows, dry_run=dry_run)
-    prefix = '[DRY] ' if dry_run else '✓ '
-    print(f'\n{prefix}wrote {written} rows to ncaaf_game_context')
+    # 2026-10-22: "✓ wrote 0 rows" is how a total write failure hid in a
+    # green step. A checkmark on zero is a lie
+    # (feedback_green_step_that_writes_nothing).
+    if dry_run:
+        print(f'\n[DRY] wrote {written} rows to ncaaf_game_context')
+    elif rows and written == 0:
+        print(f'\n*** WROTE 0 OF {len(rows)} ROWS to ncaaf_game_context — '
+              f'THE SLATE IS NOT UPDATED ***')
+    else:
+        print(f'\n✓ wrote {written} rows to ncaaf_game_context')
 
 
 def main():

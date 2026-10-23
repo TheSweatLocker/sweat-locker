@@ -441,6 +441,138 @@ def check_sport(sport: str) -> tuple:
     return fails, notes
 
 
+#: Where each sport's SCHEDULE lives — the list of games that exist,
+#: independent of whether we have built context for them. For football this
+#: is the results table: rows are created when the schedule is imported and
+#: scores arrive later, so a future game is present with NULL scores.
+SCHEDULE_TABLE = {'NFL': 'nfl_game_results', 'NCAAF': 'ncaaf_game_results',
+                  'NBA': 'nba_game_results', 'NHL': 'nhl_game_results',
+                  'NCAAB': 'ncaab_game_results', 'MLB': 'mlb_game_results'}
+
+#: The kickoff column ON THE SCHEDULE TABLE, which is not always the one the
+#: context table uses. Measured: ncaaf_game_results has kickoff_utc,
+#: nfl_game_results has gametime, nba_game_results has NEITHER.
+#:
+#: This distinction is the difference between a useful check and a muted
+#: one. The first version filtered by game_date over a 30-hour window, and a
+#: 30-hour window expressed in DATES swallows a whole extra day: run late on
+#: a Thursday it reported "35 games missing context" because it had pulled in
+#: all of Saturday. That is precisely the cry-wolf this file's header warns
+#: about, and it would have been muted within a week.
+#:
+#: With a real timestamp the window is a real 30 hours. Without one the sport
+#: is limited to TODAY's date only, which is the most that can be claimed
+#: honestly - better to under-report than to train anyone to ignore this.
+SCHEDULE_TIME_COL = {'NCAAF': 'kickoff_utc', 'NFL': 'gametime'}
+
+#: How close to kickoff a missing context row stops being "fills in later".
+IMMINENT_HOURS = 30
+
+
+def check_imminent_context_gap(sport: str) -> tuple:
+    """A game starting TODAY with no context row is a miss, not a partial.
+
+    ══ 2026-10-22 · WHY THIS EXISTS ALONGSIDE THE PARTIAL-FILL EXCUSE ══
+    The header of this file says, correctly, that partial population is not
+    a finding — football context fills in across the week, so failing on
+    14-of-44 would cry wolf every Tuesday and get muted.
+
+    That reasoning is right for a Saturday three days out and WRONG for
+    tonight. Andy, 2026-10-22: "App state game tonight college football has
+    no data". Measured at that moment:
+
+        ESPN FBS 2026-10-22        3 games  (JMU @ APP, LIB @ KENN, ECU @ MEM)
+        ncaaf_game_results         3 games  — all three present
+        ncaaf_game_context         1 row    — two missing, one in progress
+
+    Over the horizon the gap was 16 context rows against 76 scheduled games,
+    while a dry run of the builder produced 76. So every input was present
+    (results rows last touched 10-18), the builder could handle all of them,
+    and the scheduled run simply did not finish its write. Nothing failed
+    red: that is feedback_green_step_that_writes_nothing, and the existing
+    partial-fill excuse is exactly what let it through this checker.
+
+    So the rule is not "is coverage complete" — it is "is any game about to
+    start that we never built". A game inside IMMINENT_HOURS has run out of
+    week to fill in.
+
+    Already-started games are excluded for the same reason the weather check
+    excludes them: nothing can fix a row for a game in progress, and
+    asserting on one only teaches us to ignore this script.
+    """
+    tbl = TABLE.get(sport)
+    sched = SCHEDULE_TABLE.get(sport)
+    if not tbl or not sched:
+        return [], [f'{sport}: no schedule table mapped — imminent check skipped']
+
+    now = dt.datetime.now(dt.timezone.utc)
+    tcol = SCHEDULE_TIME_COL.get(sport)
+    cutoff = now + dt.timedelta(hours=IMMINENT_HOURS)
+    # Fetch by date (indexed, cheap) then narrow by real kickoff below.
+    hi = (cutoff.date().isoformat() if tcol else now.date().isoformat())
+    lo = now.date().isoformat()
+
+    def _rows(t):
+        out = []
+        r = requests.get(f'{SB}/rest/v1/{t}', headers=H,
+                         params={'select': '*',
+                                 'and': f'(game_date.gte.{lo},game_date.lte.{hi})',
+                                 'limit': '1000'}, timeout=60)
+        if r.status_code == 200 and isinstance(r.json(), list):
+            out = r.json()
+        return out
+
+    try:
+        scheduled = _rows(sched)
+        built = _rows(tbl)
+    except Exception as e:                                     # noqa: BLE001
+        return ([f'{sport}: imminent check UNVERIFIED ({type(e).__name__})'],
+                [f'{sport}: imminent context check could not run'])
+
+    if not scheduled:
+        return [], [f'{sport}: no games scheduled in the next '
+                    f'{IMMINENT_HOURS}h — nothing to check']
+
+    have = {str(g.get('game_id')) for g in built if g.get('game_id')}
+    missing, in_window = [], 0
+    for g in scheduled:
+        # Narrow to a REAL 30 hours where the schedule carries a kickoff.
+        if tcol:
+            raw = g.get(tcol)
+            if not raw:
+                continue
+            try:
+                ko = dt.datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+                if ko.tzinfo is None:
+                    ko = ko.replace(tzinfo=dt.timezone.utc)
+            except ValueError:
+                continue
+            if ko < now or ko > cutoff:
+                continue              # under way, or still has time to fill
+        in_window += 1
+        if str(g.get('game_id')) in have:
+            continue
+        # A game that already has a score is finished; a started game cannot
+        # be fixed and must not be asserted on.
+        if g.get('home_score') is not None or g.get('away_score') is not None:
+            continue
+        missing.append(g)
+
+    if not in_window:
+        return [], [f'{sport}: no unstarted games within {IMMINENT_HOURS}h']
+    notes = [f'{sport}: {in_window} unstarted game(s) within '
+             f'{IMMINENT_HOURS}h · {in_window - len(missing)} with context · '
+             f'{len(missing)} MISSING'
+             + ('' if tcol else '  (date-only window — no kickoff column)')]
+    if not missing:
+        return [], notes
+    for g in missing[:8]:
+        notes.append(f'    no context: {g.get("game_date")} '
+                     f'{g.get("away_team")} @ {g.get("home_team")}')
+    fails = [f'{sport}: {len(missing)} game(s) start within {IMMINENT_HOURS}h '
+             f'with NO context row — the builder did not finish its write']
+    return fails, notes
+
 def check_ufc() -> tuple:
     """UFC has no *_game_context. Its product is the read, so assert the read.
 
@@ -586,6 +718,11 @@ def main() -> int:
         for line in notes:
             print(line)
         all_fails += fails
+        if s != 'UFC':
+            ifails, inotes = check_imminent_context_gap(s)
+            for line in inotes:
+                print(line)
+            all_fails += ifails
         print()
 
     # Feeds: population above proves rows are filled, this proves they moved.
