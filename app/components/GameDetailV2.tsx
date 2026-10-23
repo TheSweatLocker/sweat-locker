@@ -1122,10 +1122,34 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
         // depends which side we took: an OVER wants the market to rise, an
         // UNDER wants it to fall. Reusing the magnitude test would have
         // called a 2-point move against our Under a closing-line win.
+        // ══ 2026-10-23 · Number(null) IS 0, NOT NaN ══
+        // ANDY, on today's Blackhawks game: "plays says over then below
+        // published at 0 we beat market by 6.5. The otal would never publish
+        // at 0 that makes nbo sense".
+        //
+        // Montréal @ Chicago carried primary_play {type:'total', side:'OVER',
+        // line:null, label:'Over'} against a close_total of 6.5. `Number(null)`
+        // coerces to 0 and `isFinite(0)` is true, so the guard below passed
+        // with ourTot = 0 and the card announced "published at 0 · market now
+        // 6.5 (we beat the close by 6.5)". Number(undefined) IS NaN, which is
+        // why this was never caught in testing -- only a NULL column does it.
+        //
+        // num() refuses null, undefined, '' and NaN instead of coercing them,
+        // and a total is additionally required to be POSITIVE: no real total
+        // is zero or negative, so a non-positive one is a missing number
+        // wearing a value. Measured today: 6 total picks carry line=null, 3
+        // NHL and 3 NBA, every one of them labelled just "Over"/"Under" with
+        // no number in it at all.
+        const num = (v: any): number | null => {
+          if (v === null || v === undefined || v === '') return null;
+          const n = Number(v);
+          return isFinite(n) ? n : null;
+        };
         if (rawType === 'total') {
-          const ourTot = Number(play.line);
-          const mktTot = Number(ctx?.close_total);
-          if (!isFinite(ourTot) || !isFinite(mktTot)) return null;
+          const ourTot = num(play.line);
+          const mktTot = num(ctx?.close_total);
+          if (ourTot === null || mktTot === null) return null;
+          if (ourTot <= 0 || mktTot <= 0) return null;
           if (Math.abs(ourTot - mktTot) < 0.25) return null;
           const isOver = String(play?.side || '').toUpperCase().includes('OVER');
           const better = isOver ? mktTot > ourTot : mktTot < ourTot;
@@ -1142,10 +1166,13 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
           );
         }
         if (!['rl', 'spread', 'puckline', 'ats'].includes(rawType)) return null;
-        const ourLine = Number(play.line);
-        const mkt = Number(ctx?.close_spread ?? ctx?.close_puckline_home
-                           ?? ctx?.close_puckline);
-        if (!isFinite(ourLine) || !isFinite(mkt)) return null;
+        // Same null-coercion trap as the totals branch above: a spread pick
+        // with line=null would otherwise read as "published at +0" and claim
+        // the whole market number as closing-line value.
+        const ourLine = num(play.line);
+        const mkt = num(ctx?.close_spread ?? ctx?.close_puckline_home
+                        ?? ctx?.close_puckline);
+        if (ourLine === null || mkt === null) return null;
         // ══ 2026-10-23 · THIS CLAIMED A CLOSING-LINE WIN ON A LOSING NUMBER ══
         // ANDY: "for giants game it says Giants +7.5 but line is now +10.5,
         // says we beat the market and have 3 point in CLV ... it is not true

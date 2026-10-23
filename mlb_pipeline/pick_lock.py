@@ -251,6 +251,33 @@ def preserve_published(sport: str, table: str, context: dict,
         # Nothing cosmetic may sit between a decision and its application.
         # The write happens first and the message is best-effort.
         context[field] = published
+        # ══ 2026-10-23 · A LOCK MAY HOLD A PICK, NOT A MISSING NUMBER ══
+        # ANDY, on today's Blackhawks game: "plays says over then below
+        # published at 0 we beat market by 6.5. The otal would never publish
+        # at 0 that makes nbo sense".
+        #
+        # The published pick was {type:'total', side:'OVER', line:null,
+        # label:'Over'} -- made before close_total landed, so it never had a
+        # number. recover_total_line fills that from close_total at the shared
+        # defensive-gate chokepoint, but the gate runs on the REBUILD, and this
+        # lock then discards the rebuild and restores the published row. So the
+        # repair could never reach the stored pick and the card kept showing
+        # "published at 0".
+        #
+        # Filling in the number is not changing the pick: the side stays OVER,
+        # the market stays total, and 6.5 is the number the pick was always
+        # implicitly against. What this lock exists to prevent is the CALL
+        # moving after users have seen it, and that is untouched. So the
+        # recovery is applied to the preserved pick as well.
+        #
+        # Wrapped, and placed strictly AFTER the restore, because of the note
+        # directly above: nothing may sit between the lock's decision and its
+        # application, and a missed recovery must never cost the lock.
+        try:
+            from defensive_gates import recover_total_line as _rtl
+            context[field] = _rtl(context[field], context) or context[field]
+        except Exception:                                  # noqa: BLE001
+            pass
         if old_lbl != new_lbl:
             try:
                 print(f"  [LOCK] {sport} PICK LOCKED - keeping published "

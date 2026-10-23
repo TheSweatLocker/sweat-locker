@@ -2419,6 +2419,65 @@ def apply_nfl_big_favourite_spread_cap(pp: dict | None, ctx: dict) -> dict | Non
         return pp
 
 
+def recover_total_line(pp: dict | None, ctx: dict) -> dict | None:
+    """Give a total pick its number back, or say it has none.
+
+    ══ 2026-10-23 · "PUBLISHED AT 0, WE BEAT MARKET BY 6.5" ══
+    ANDY, on today's Blackhawks game: "plays says over then below published at
+    0 we beat market by 6.5. The otal would never publish at 0 that makes nbo
+    sense".
+
+    Montréal @ Chicago stored primary_play {type:'total', side:'OVER',
+    line:null, label:'Over'} against a close_total of 6.5. Two faults met:
+
+      * ensemble_scorer._label_from_candidate returns ('Over', 'OVER', None)
+        when close_total is null AT PICK TIME. The total landed later, the
+        context now holds 6.5, and nothing ever revisited the pick -- the same
+        computed-once-never-re-run shape as the stale QB fields.
+      * the card then did Number(play.line), and Number(null) is 0 rather than
+        NaN, so its isFinite guard passed and it announced a 6.5-point closing
+        line win against a line of zero.
+
+    The client guard is fixed separately. This is the source half, and it lives
+    in apply_all_defensive_gates because that is the ONE function all six sport
+    writers call -- game_context, nhl, nba, ncaaf, nfl and
+    recompute_primary_play. Measured across 10-01 onward: 6 total picks carry
+    line=null, 3 NHL and 3 NBA, all labelled bare "Over"/"Under". MLB's 5 and
+    NFL's 39 were fine, so putting this on any single sport's path would have
+    missed it.
+
+    close_total is the number the pick was made against, so it is recovered,
+    not invented. With no close_total the pick genuinely has no number: the
+    label is left alone and a warning printed, because inventing one is
+    feedback_consensus_line_must_be_posted (a median over an even split
+    produced a 0.0 line, and a fake line made a fake price).
+    """
+    if not isinstance(pp, dict):
+        return pp
+    if str(pp.get('type') or '').lower() not in ('total', 'totals'):
+        return pp
+    if pp.get('line') is not None:
+        return pp
+    raw = ctx.get('close_total')
+    try:
+        tot = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        tot = None
+    if tot is None or tot <= 0:
+        print(f'  ⚠ total pick has no line and no usable close_total '
+              f'({raw!r}) — unactionable, left as-is')
+        return pp
+    pp['line'] = tot
+    side = str(pp.get('side') or '').upper()
+    word = 'Over' if side == 'OVER' else ('Under' if side == 'UNDER' else None)
+    if word:
+        pp['label'] = f'{word} {tot:g}'
+    pp['_line_recovered_from'] = 'close_total'
+    print(f'  · total pick had no line — recovered {tot:g} from close_total, '
+          f'label now {pp.get("label")!r}')
+    return pp
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2433,6 +2492,7 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
       - Publish gate LAST — reads final pp state after all demotes and
         hard-caps PRIMEs that don't earn PRIME rigor
     """
+    pp = recover_total_line(pp, ctx)
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
