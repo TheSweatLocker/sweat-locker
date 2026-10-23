@@ -1577,6 +1577,124 @@ def check_reads_missing_near_kickoff() -> Optional[dict]:
                                'jerry_cache'},
     }
 
+
+# ══ 2026-10-23 · B171 · A LOCKED PICK WHOSE LINE THE MARKET LEFT BEHIND ══
+# ANDY: "there is a huge issue in integrity of the opening line / our pick ...
+# I am getting so tired of chasing down data integrity issues everyday."
+#
+# Root cause was LOCK_SLATE_DAYS=7 against an NFL lock window of Thu 8am ET ->
+# Mon: next Sunday is exactly 7 days from this Sunday, so the window that
+# protects THIS slate also stamped NEXT week's, and a pick froze ~7 days out.
+# Measured on the 10-25 slate: NFL lock lead MEDIAN 6.9 days, 10 of 13 spread
+# picks locked more than 5 days out, 10 of 13 lines off-market, worst NYG +7
+# against a +10.5 close. Fixed by LOCK_SLATE_DAYS=5.
+#
+# Changing the constant fixes THIS cause. This check is what stops the next
+# one, whatever its cause, from reaching Andy before it reaches us: it does
+# not care WHY a published line no longer matches the market, only that it
+# does not. A pick nobody can bet at the number we printed is the harm, and
+# it is measurable directly.
+#
+# TWO FINDINGS, deliberately in one check, because they are the same incident
+# seen from either end:
+#   lead  - locked further ahead than the slate window should allow, which is
+#           the cause and is actionable before any drift appears
+#   drift - the published line versus the market now, which is the effect the
+#           user actually sees
+#
+# The close is expressed FOR THE SIDE WE TOOK, from the sign of our own line
+# (positive = we are taking points) and the magnitude of close_spread. That
+# needs no per-sport sign convention and is the same arithmetic the server
+# CLV path uses. Doing it by magnitude alone is what made the card announce
+# "we beat the close by 3.5" about a number 3.5 points worse than the market
+# (feedback_magnitude_cannot_express_a_side).
+_DRIFT_SPORTS = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context'}
+#: Lock lead beyond this many days means the lock window overshot its slate.
+DRIFT_MAX_LOCK_LEAD_DAYS = 5.5
+#: Points of line drift worth reporting at all.
+DRIFT_REPORT_PTS = 1.0
+#: Drift this large on a game inside DRIFT_IMMINENT_HOURS is CRITICAL -- it is
+#: on screen now and cannot be bet at the number shown.
+DRIFT_CRITICAL_PTS = 2.0
+DRIFT_IMMINENT_HOURS = 72.0
+
+
+def check_locked_pick_line_drift() -> Optional[dict]:
+    """Published spread lines that the market has left behind."""
+    now = datetime.now(timezone.utc)
+    worst, early, drifted = [], 0, 0
+    crit = 0
+    for sport, tbl in _DRIFT_SPORTS.items():
+        r = requests.get(f'{SB}/rest/v1/{tbl}',
+                         params={'select': 'game_id,game_date,home_team,'
+                                           'away_team,close_spread,'
+                                           'primary_play,pick_locked_at,'
+                                           'kickoff_utc',
+                                 'game_date': f'gte.{_et_today()}',
+                                 'limit': '400'},
+                         headers=H_READ, timeout=20)
+        if r.status_code != 200:
+            # Reported, never swallowed: a 400 would otherwise read as a clean
+            # slate (feedback_green_step_that_writes_nothing).
+            worst.append(f'{sport}: ctx HTTP {r.status_code}')
+            continue
+        for g in (r.json() or []):
+            pp = g.get('primary_play') or {}
+            if not isinstance(pp, dict):
+                continue
+            if str(pp.get('type') or '').lower() not in ('rl', 'spread'):
+                continue
+            if not g.get('pick_locked_at'):
+                continue
+            try:
+                ours = float(pp.get('line'))
+                mag = abs(float(g.get('close_spread')))
+            except (TypeError, ValueError):
+                continue
+            lk = _read_parse_ts(g.get('pick_locked_at'))
+            ko = _read_parse_ts(g.get('kickoff_utc'))
+            if lk and ko and (ko - lk).total_seconds() / 86400.0 \
+                    > DRIFT_MAX_LOCK_LEAD_DAYS:
+                early += 1
+            close_for_us = mag if ours > 0 else -mag
+            gap = ours - close_for_us          # >0 = our number beats market
+            if abs(gap) < DRIFT_REPORT_PTS:
+                continue
+            drifted += 1
+            hrs = ((ko - now).total_seconds() / 3600.0) if ko else None
+            is_crit = (abs(gap) >= DRIFT_CRITICAL_PTS
+                       and hrs is not None and hrs <= DRIFT_IMMINENT_HOURS)
+            if is_crit:
+                crit += 1
+            worst.append(
+                f"{sport} {g.get('away_team')} @ {g.get('home_team')} "
+                f"{str(g.get('game_date'))[:10]}: published {ours:+g}, "
+                f"market {close_for_us:+g} ({gap:+.1f})"
+                + (f', kickoff {hrs:.0f}h' if hrs is not None else '')
+                + ('  <-- unbettable and on screen' if is_crit else ''))
+    if not drifted and not early:
+        return None
+    worst.sort(key=lambda s: '<--' not in s)
+    return {
+        'check_name': 'locked_pick_line_drift',
+        'severity': 'CRITICAL' if crit else 'WARNING',
+        'message': (
+            f'{drifted} locked spread pick(s) carry a line the market has '
+            f'moved off'
+            + (f', {crit} of them unbettable on a game inside '
+               f'{int(DRIFT_IMMINENT_HOURS)}h' if crit else '')
+            + (f'; {early} pick(s) locked more than '
+               f'{DRIFT_MAX_LOCK_LEAD_DAYS:g}d before kickoff' if early else '')
+            + '. We publish a number nobody can bet.'),
+        'detail': {'drifted': drifted, 'critical': crit,
+                   'locked_too_early': early, 'worst': worst[:10],
+                   'fix_hint': 'lock_football_slate.py --unlock-beyond-slate '
+                               'frees picks outside the slate window; a pick '
+                               'already inside it has a published receipt '
+                               'whose pick_line is immutable, so refreshing '
+                               'it is a RECORDS decision, not a rerun'},
+    }
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -1598,6 +1716,7 @@ CHECKS = [
     check_context_features_preseason,
     check_signal_wiring,
     check_reads_missing_near_kickoff,
+    check_locked_pick_line_drift,
 ]
 
 
