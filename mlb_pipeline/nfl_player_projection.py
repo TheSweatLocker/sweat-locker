@@ -67,6 +67,7 @@ import argparse
 import collections
 import datetime as dt
 import json
+import math
 import os
 import statistics
 import sys
@@ -263,6 +264,18 @@ def opp_factor(defrows, opp_abbrev, key):
     col = OPP_COL.get(key)
     if not col:
         return None, 'no opponent column for this stat', False
+    # ══ 2026-10-22 · FILTER TO THE QB ROWS ══
+    # defrows used to be fetched as position=QB only. Adding RB/WR/TE
+    # widened it to all 128 rows, and this function kept averaging the whole
+    # table: the "league mean" for passing yards became 57.8 instead of
+    # 230.9, every ratio collapsed toward zero and the factor dropped out as
+    # implausible. The QB projections silently MOVED (Caleb Williams 250.0
+    # -> 258.0) because a working factor had become no factor.
+    #
+    # Caught only because the factor prints its own numbers and "NE allows
+    # 0.0 vs league 57.8" is not a sentence about passing yards. A multiplier
+    # that reports its inputs is what makes a regression like this visible.
+    defrows = [r for r in defrows if str(r.get('position')) == 'QB']
     vals = [_f(r.get(col)) for r in defrows]
     vals = [v for v in vals if v is not None]
     if len(vals) < 10:
@@ -343,6 +356,238 @@ def trail_factor(spread_for_team, key):
                  f'({TRAIL_PER_POINT:g}/pt, clamped)', True)
 
 
+#: ══ 2026-10-22 · RB / WR / TE, THE NEXT STEP IN ANDY'S FRAMEWORK ══════════
+#: "then work that back to anytime touchdown and that branch of supporting
+#: data and eventually points which will lead to predicted score."
+#:
+#: How many players per team per position get a projection. Chosen from
+#: actual usage concentration rather than a depth-chart convention: on a
+#: typical team RB1+RB2 and the top three receivers account for the large
+#: majority of touches, and the next man down has a usage baseline too thin
+#: to project honestly.
+POSITION_SLOTS = {'RB': 2, 'WR': 3, 'TE': 1}
+
+#: nfl_starters is QB-ONLY (all 214 rows for 2026), so there is no depth
+#: chart to read for skill positions. Players are identified by RECENT
+#: USAGE instead, which is better than a depth chart anyway: it needs no
+#: separate feed, and it follows injuries and role changes automatically.
+#: CHI week 7 resolves to Swift/Johnson, Burden/Odunze/Raymond, Loveland -
+#: the same names the book posted anytime-TD props for.
+USAGE_COLS = {'RB': ('carries', 'targets'),
+              'WR': ('targets',),
+              'TE': ('targets',)}
+USAGE_LOOKBACK_WEEKS = 4
+
+#: Which projections each position gets, and the per-game stat that feeds
+#: each one.
+STAT_COL_BY_POS = {
+    'RB': {'proj_rush_yds': 'rushing_yards', 'proj_rush_tds': 'rushing_tds',
+           'proj_rec_yds': 'receiving_yards', 'proj_rec': 'receptions',
+           'proj_rec_tds': 'receiving_tds'},
+    'WR': {'proj_rec_yds': 'receiving_yards', 'proj_rec': 'receptions',
+           'proj_rec_tds': 'receiving_tds', 'proj_rush_yds': 'rushing_yards'},
+    'TE': {'proj_rec_yds': 'receiving_yards', 'proj_rec': 'receptions',
+           'proj_rec_tds': 'receiving_tds'},
+}
+
+#: The opponent-tendency column, PER POSITION. nfl_positional_defense states
+#: what a defence allows to each position group, which is exactly the
+#: "Bucs give up 100-110 to RBs" input.
+#:
+#: It is used only as a RATIO against the league mean, never as the player's
+#: number: the table measures what the whole position group gets, and RB1
+#: takes most but not all of it. A ratio carries the matchup difficulty
+#: without inheriting the group total.
+OPP_COL_BY_POS = {
+    'RB': {'proj_rush_yds': 'rush_yds_pg_blended',
+           'proj_rush_tds': 'rush_td_pg_blended',
+           'proj_rec_yds': 'rec_yds_pg_blended',
+           'proj_rec': 'receptions_pg',
+           'proj_rec_tds': 'rec_td_pg_blended'},
+    'WR': {'proj_rec_yds': 'rec_yds_pg_blended',
+           'proj_rec': 'receptions_pg',
+           'proj_rec_tds': 'rec_td_pg_blended',
+           'proj_rush_yds': 'rush_yds_pg_blended'},
+    'TE': {'proj_rec_yds': 'rec_yds_pg_blended',
+           'proj_rec': 'receptions_pg',
+           'proj_rec_tds': 'rec_td_pg_blended'},
+}
+
+BOUNDS_SKILL = {
+    'proj_rush_yds': (-5.0, 200.0), 'proj_rush_tds': (0.0, 2.5),
+    'proj_rec_yds': (0.0, 200.0),   'proj_rec': (0.0, 15.0),
+    'proj_rec_tds': (0.0, 2.5),
+}
+
+#: Volume stats move with the game environment; touchdown rates do not get
+#: an environment multiplier of their own because they are derived from
+#: volume already.
+ENV_SENSITIVE_SKILL = {'proj_rush_yds', 'proj_rec_yds', 'proj_rec'}
+
+#: Running backs on a team expected to LEAD get more carries (clock
+#: bleeding); receivers on a team expected to TRAIL get more targets. Same
+#: documented-prior discipline as the QB game-script factor - small, named,
+#: and clamped.
+SCRIPT_BY_POS = {'RB': {'proj_rush_yds': -0.008},
+                 'WR': {'proj_rec_yds': +0.005, 'proj_rec': +0.005},
+                 'TE': {'proj_rec_yds': +0.003, 'proj_rec': +0.003}}
+CLAMP_SCRIPT_SKILL = (0.93, 1.10)
+
+
+def pick_skill_players(stats, team, position, upto_week):
+    """Top-N by recent usage for one team and position, newest-first logs.
+
+    Returns [(player_name, [game rows newest first]), ...]. A player with
+    fewer than two logged games is dropped here rather than projected from
+    one, which is the same floor the QB baseline uses.
+    """
+    cols = USAGE_COLS.get(position, ('targets',))
+    lo = max(1, (upto_week or 99) - USAGE_LOOKBACK_WEEKS)
+    by_player = collections.defaultdict(list)
+    for r in stats:
+        if str(r.get('team')) != str(team):
+            continue
+        if str(r.get('position')) != position:
+            continue
+        nm = r.get('player_display_name') or r.get('player_name')
+        if nm:
+            by_player[nm].append(r)
+    scored = []
+    for nm, games in by_player.items():
+        recent = [g for g in games
+                  if g.get('_week') is not None and lo <= g['_week'] <= (upto_week or 99)]
+        usage = sum((_f(g.get(c)) or 0.0) for g in recent for c in cols)
+        if len(games) >= 2:
+            scored.append((usage, nm, sorted(games, key=lambda x: -(x['_week'] or 0))))
+    scored.sort(key=lambda x: -x[0])
+    # A player with no recent usage at all is not in the rotation.
+    return [(nm, gs) for usage, nm, gs in scored[:POSITION_SLOTS.get(position, 1)]
+            if usage > 0]
+
+
+def opp_factor_pos(defrows, opp_abbrev, position, key):
+    """Opponent tendency for a specific position group."""
+    col = (OPP_COL_BY_POS.get(position) or {}).get(key)
+    if not col:
+        return None, 'no opponent column for this stat', False
+    pool = [r for r in defrows if str(r.get('position')) == position]
+    vals = [_f(r.get(col)) for r in pool]
+    vals = [v for v in vals if v is not None]
+    if len(vals) < 10:
+        return None, f'only {len(vals)} rated {position} defences', False
+    league = statistics.fmean(vals)
+    mine = next((_f(r.get(col)) for r in pool
+                 if str(r.get('team')) == str(opp_abbrev)), None)
+    if mine is None:
+        return None, f'no {opp_abbrev} {position} defence row', False
+    if league <= 0:
+        return None, 'league mean is zero', False
+    raw = mine / league
+    fac = _damp_clamp(raw, DAMP_OPP, CLAMP_OPP)
+    rank = sorted(vals, reverse=True).index(mine) + 1 if mine in vals else None
+    return (fac, f'{opp_abbrev} allows {mine:.1f} to {position}s vs league '
+                 f'{league:.1f} (raw {raw:.3f}'
+                 + (f', rank {rank}/{len(vals)} most allowed' if rank else '')
+                 + ')', True)
+
+
+def script_factor_pos(spread_for_team, position, key):
+    """Game script, per position. Positive spread_for_team = underdog."""
+    coef = (SCRIPT_BY_POS.get(position) or {}).get(key)
+    if coef is None:
+        return None, 'stat is not game-script sensitive', False
+    s = _f(spread_for_team)
+    if s is None:
+        return None, 'no posted spread', False
+    fac = 1.0 + coef * s
+    fac = max(CLAMP_SCRIPT_SKILL[0], min(CLAMP_SCRIPT_SKILL[1], fac))
+    role = 'underdog' if s > 0 else ('favourite' if s < 0 else 'pick-em')
+    why = ('trailing scripts add targets' if coef > 0
+           else 'leading scripts add carries')
+    return fac, f'{abs(s):g}-point {role} — {why}', True
+
+
+def anytime_td_prob(rush_td, rec_td):
+    """P(scores at least one TD) from projected TD counts.
+
+    Poisson with mean = rush_td + rec_td, so P(>=1) = 1 - exp(-lambda).
+    Scoring twice is a real outcome, so summing the two rates and treating
+    the total as a probability would overstate it - a player projected for
+    0.6 rushing and 0.5 receiving TDs is not a 110% chance to score.
+
+    This matters beyond display. nfl_pipeline_props already carries 426
+    anytime_td rows whose CONVICTION is monotonically inverted against
+    outcome (76+ went 1-12, -72.7% ROI) because it tracks the PRICE rather
+    than any estimate of whether the player scores - corr(conviction,
+    projection) is -0.008 while corr(projection, WIN) is +0.138. A real
+    probability is the input that lets that be rebuilt as
+    projection-vs-price. It is NOT wired into any tier here; it is stored so
+    it can be graded first.
+    """
+    lam = 0.0
+    for v in (rush_td, rec_td):
+        if v is not None and isfinite_num(v):
+            lam += max(0.0, float(v))
+    if lam <= 0:
+        return None
+    return round(1.0 - math.exp(-lam), 3)
+
+
+def isfinite_num(v):
+    try:
+        f = float(v)
+        return f == f and f not in (float('inf'), float('-inf'))
+    except (TypeError, ValueError):
+        return False
+
+
+def project_skill(games, defrows, position, opp_abbrev, is_home, close_total,
+                  league_total, spread_for_team):
+    """Same shape as project_player, with per-position columns and factors."""
+    values, inputs = {}, {}
+    for key, col in (STAT_COL_BY_POS.get(position) or {}).items():
+        base, bnote, bok = baseline(games, col)
+        if not bok:
+            inputs[key] = {'skipped': bnote}
+            continue
+        facs, notes = [], {'baseline': f'{base:.2f} - {bnote}'}
+        env = (env_factor(close_total, league_total, 'proj_pass_yds')
+               if key in ENV_SENSITIVE_SKILL
+               else (None, 'stat is not volume-driven', False))
+        for label, (fac, note, ok) in (
+                ('opponent', opp_factor_pos(defrows, opp_abbrev, position, key)),
+                ('home_away', home_factor(games, col, is_home)),
+                ('environment', env),
+                ('game_script', script_factor_pos(spread_for_team, position, key))):
+            if ok and fac is not None:
+                facs.append(fac)
+                notes[label] = f'x{fac:.3f} - {note}'
+            else:
+                notes[label] = f'not applied - {note}'
+        val = base
+        for f in facs:
+            val *= f
+        lo, hi = BOUNDS_SKILL.get(key, (None, None))
+        if lo is not None and not (lo <= val <= hi):
+            notes['PLAUSIBILITY'] = (f'{val:.1f} outside [{lo}, {hi}] - '
+                                     f'dropped, an input is wrong')
+            inputs[key] = notes
+            continue
+        values[key] = round(val, 2)
+        notes['result'] = f'{val:.2f} from {len(facs)} applied factor(s)'
+        inputs[key] = notes
+    atd = anytime_td_prob(values.get('proj_rush_tds'), values.get('proj_rec_tds'))
+    if atd is not None:
+        values['proj_any_td'] = atd
+        inputs['proj_any_td'] = {
+            'result': f'{atd:.3f}',
+            'method': ('P(>=1 TD) = 1 - exp(-lambda), lambda = projected '
+                       f'rush TD {values.get("proj_rush_tds", 0)} + rec TD '
+                       f'{values.get("proj_rec_tds", 0)}'),
+            'note': 'informational — not wired to any tier until graded',
+        }
+    return values, inputs
+
 # ─── one player ─────────────────────────────────────────────────────────────
 def project_player(games, defrows, opp_abbrev, is_home, close_total,
                    league_total, spread_for_team):
@@ -403,15 +648,16 @@ def main():
     season = max(int(c['season']) for c in ctx if c.get('season'))
     print(f'  {len(ctx)} game(s) · season {season}')
 
-    defrows = [r for r in page('nfl_positional_defense',
-                               {'select': '*', 'position': 'eq.QB'})
+    # All positions: QB for the passer, RB/WR/TE for the skill slots.
+    defrows = [r for r in page('nfl_positional_defense', {'select': '*'})
                if int(r.get('season') or 0) == season]
-    print(f'  opponent defence: {len(defrows)} QB rows for {season}')
+    print(f'  opponent defence: {len(defrows)} position-rows for {season}')
 
     stats = page('nfl_player_stats',
                  {'select': '*', 'season': f'eq.{season}',
-                  'position': 'eq.QB'})
-    print(f'  player logs: {len(stats)} QB rows for {season}')
+                  'position': 'in.(QB,RB,WR,TE)'})
+    _mix = collections.Counter(str(r.get('position')) for r in stats)
+    print(f'  player logs: {len(stats)} rows for {season} · {dict(_mix)}')
 
     for msg in check_abbrev_vocabularies(ctx, stats, defrows):
         print(f'  ** TEAM SPELLING MISMATCH ** {msg}')
@@ -511,11 +757,42 @@ def main():
                 'updated_at': dt.datetime.now(dt.timezone.utc).isoformat(),
             })
 
-    print(f'\n  projected {len(payload)} QB line(s) · skipped {len(skipped)}')
+            # ── RB / WR / TE, identified by recent usage ──────────────
+            # No depth chart exists (nfl_starters is QB-only), and usage is
+            # the better signal anyway: it follows injuries and role
+            # changes with no extra feed. See pick_skill_players.
+            for pos in ('RB', 'WR', 'TE'):
+                for pname, pgames in pick_skill_players(stats, team_ab, pos, wk):
+                    pv, pi = project_skill(
+                        pgames, defrows, pos, opp_ab, side == 'HOME',
+                        _f(g.get('close_total')), league_total, sp_for)
+                    if not pv:
+                        skipped.append(f'{g.get("game_id")} {pname} ({pos}): '
+                                       f'no stat survived')
+                        continue
+                    payload.append({
+                        'game_id': str(g.get('game_id')),
+                        'game_date': str(g.get('game_date'))[:10],
+                        'season': season, 'week': wk,
+                        'player_name': pname,
+                        'player_id': pgames[0].get('player_id'),
+                        'team': team_ab, 'opp_team': opp_ab,
+                        'position': pos, 'home_away': side,
+                        **pv,
+                        'inputs': pi,
+                        'model_version': MODEL_VERSION,
+                        'updated_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                    })
+
+    _bypos = collections.Counter(p['position'] for p in payload)
+    print(f'\n  projected {len(payload)} line(s) {dict(_bypos)} · '
+          f'skipped {len(skipped)}')
     for s in skipped[:10]:
         print(f'     skip: {s}')
     for p in payload:
-        print(f'\n  {p["player_name"]} ({p["team"]} {p["home_away"]}) '
+        if p['position'] != 'QB':
+            continue      # QB detail below; skill lines summarised after
+        print(f'  {p["player_name"]} ({p["team"]} {p["home_away"]}) '
               f'vs {p["opp_team"]}')
         print(f'     yds {p.get("proj_pass_yds")}  att {p.get("proj_pass_att")}'
               f'  cmp {p.get("proj_pass_cmp")}  td {p.get("proj_pass_tds")}'
@@ -531,6 +808,23 @@ def main():
         return 0
     if not payload:
         return 0
+    # ══ 2026-10-22 · POSTGREST REQUIRES A UNIFORM KEY SET ══
+    # A batch POST where the objects carry DIFFERENT keys is rejected whole:
+    #     PGRST102  "All object keys must match"
+    # QB rows carry proj_pass_yds/att/cmp/ints; RB rows carry
+    # proj_rush_*/proj_rec_*; TE rows carry neither of the first set. Mixing
+    # positions in one payload therefore 400s the entire write - which it
+    # did, silently leaving only the two QB rows from the previous run.
+    #
+    # Every row is padded to the UNION of keys with explicit None. A column
+    # the position does not have is genuinely null, so this stores the same
+    # meaning it would have stored one position at a time
+    # (feedback_postgrest_batch_normalize_keys).
+    _allkeys = set()
+    for _row in payload:
+        _allkeys |= set(_row.keys())
+    payload = [{k: _row.get(k) for k in sorted(_allkeys)} for _row in payload]
+
     r = requests.post(f'{SB}/rest/v1/nfl_engine_player_projections',
                       headers={**H_W,
                                'Prefer': 'resolution=merge-duplicates,'

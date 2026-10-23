@@ -1100,6 +1100,63 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
           </Text>
         );
       })()}
+      {/* ══ 2026-10-22 · ON A PUCKLINE THE PRICE IS WHAT MOVES ══
+          ANDY: "The same change that was done to nfl and nba in regards to
+          'we published 1.5 it is now 3.5' by primary play up top on game
+          card should be done to nhl."
+
+          The block above already accepts 'puckline' and reads
+          close_puckline — and it can NEVER fire for NHL. Measured over the
+          62 forward NHL rows, close_puckline takes exactly three values:
+          -1.5, 1.5, and null. A puckline is fixed at a goal and a half by
+          definition, so the magnitude is always 1.5 and the "has it moved"
+          test is always false. Hockey does not move the line, it moves the
+          PRICE: close_puckline_home_price over the same rows runs 116,
+          -277, 200, 160, 153.
+
+          Most NHL picks are moneylines anyway (42 of 62), where there is no
+          line at all. So the NHL equivalent of Andy's display is the price
+          we published against the price now, and primary_play already
+          stores the first half as `_ml_price_at_pick`.
+
+          Compared as IMPLIED PROBABILITY, not as cents. American odds are
+          not linear — -105 to -135 is 6.2pp while +105 to +135 is 5.2pp —
+          so a cent comparison would call equal moves unequal and would flip
+          sign across the +100 boundary. Probability is the same measure on
+          both sides of it.
+
+          Direction follows the spread version: the market arriving at our
+          number is the proof. A pick whose implied probability has RISEN
+          since we published means the market came to us.
+
+          Only shown past 2pp. Measured moves include 1-cent drift
+          (-109 -> -110) that is noise, and a display that fires on noise
+          stops being read. */}
+      {(() => {
+        const atPick = (play as any)?._ml_price_at_pick;
+        if (atPick == null || rawType !== 'ml') return null;
+        const side = String(play?.side || '').toUpperCase();
+        const nowRaw = side === 'HOME'
+          ? (ctx?.home_ml_close ?? ctx?.close_home_ml)
+          : (ctx?.away_ml_close ?? ctx?.close_away_ml);
+        const a = Number(atPick), b = Number(nowRaw);
+        if (!isFinite(a) || !isFinite(b)) return null;
+        const imp = (o: number) => o < 0 ? (-o) / ((-o) + 100) : 100 / (o + 100);
+        const pa = imp(a), pb = imp(b);
+        const deltaPP = (pb - pa) * 100;
+        if (Math.abs(deltaPP) < 2) return null;
+        const better = deltaPP > 0;      // market moved toward our side
+        const fmt = (o: number) => (o > 0 ? `+${Math.round(o)}` : `${Math.round(o)}`);
+        return (
+          <Text style={{color: better ? C.accent : C.textMuted, fontSize: 11,
+                        marginTop: 2, fontWeight: '600'}}>
+            {better ? '↗ ' : '↘ '}published at {fmt(a)}{' · market now '}{fmt(b)}
+            {better
+              ? `  (market came to us, +${deltaPP.toFixed(1)}pp)`
+              : `  (price drifted off, ${deltaPP.toFixed(1)}pp)`}
+          </Text>
+        );
+      })()}
       {sub ? <Text style={[styles.verdictWhy, isLowConviction && {color: C.textMuted}]}>{scrubSourceNames(sub)}</Text> : null}
       {isLowConviction && (
         <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
