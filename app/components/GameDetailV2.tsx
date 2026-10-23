@@ -1189,11 +1189,31 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
         );
       })()}
       {sub ? <Text style={[styles.verdictWhy, isLowConviction && {color: C.textMuted}]}>{scrubSourceNames(sub)}</Text> : null}
-      {isLowConviction && (
-        <Text style={[styles.verdictWhy, {color: C.textMuted, marginTop:6, fontSize:11, fontStyle:'italic'}]}>
-          Not a recommended play — thin signal support or unplayable price. Shown here for context; The Sharp + Sweat Card only surface actionable picks.
-        </Text>
-      )}
+      {/* ══ 2026-10-22 · THE CHIP SAYS IT; THE PARAGRAPH SHOUTED IT ══
+          ANDY: "I just hate the 'not a recommended play' blurb, low
+          conviction badge or whatever it is covers that for users."
+
+          He is right, and the history explains why it was ever doubled up.
+          The LOW CONVICTION chip and this two-sentence italic were added
+          TOGETHER on 09-03, after his "not picking is wild, feel like there
+          should be something for every game" — the chip carried the signal
+          and the italic explained it. Then on 09-07 the pick label was
+          dimmed specifically "so the disclaimer wins the visual hierarchy",
+          because at the time the headline rendered full-bright and readers'
+          eyes skipped the italic entirely.
+
+          That was the real fix, and it is still in place one line above:
+          a COVERAGE/PASS/SKIP label renders dim and at lighter weight. With
+          the headline already receding, the paragraph is belt-and-braces
+          for a problem the dimming solved — and it had become the LARGEST
+          element in the block, out-shouting the pick it was annotating and
+          reading as an apology on every low-conviction card.
+
+          Removed, not softened. A chip plus a deliberately recessed
+          headline is the signal. Nothing here was compliance copy: the
+          whole thing came from Andy's own UX feedback, so it is his to
+          take back. The "why is this shown at all" half is a once-per-app
+          explanation and does not belong on every card. */}
     </View>
   );
 }
