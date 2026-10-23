@@ -84,7 +84,38 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
       - name: Install deps
-        run: pip install requests python-dotenv
+        run: |
+          # ══ 2026-10-22 · NBA HAD 2 WORKING EXTERNAL SOURCES, NOT 6 ══
+          # ANDY: "i want to assess NBA externals there should be more, what
+          # about CBS they do daily, and pickdawgz they do daily and others."
+          #
+          # He is right that there should be more, and the cause was not a
+          # missing scraper. SportPuller already offers SIX fetchers to NBA
+          # and external_pull_log shows all six being attempted. Four of them
+          # fail on almost every run:
+          #
+          #     dimers         success 12
+          #     sbr            success 11
+          #     covers         failed 10 / success 1
+          #     pickdawgz      failed 10 / success 1
+          #     scoresandodds  failed 10 / success 1
+          #     oddscrowd      failed 10 / success 1
+          #
+          # The two that work read SSR JSON. The four that fail need a
+          # browser — and this step installed neither playwright nor
+          # beautifulsoup4, while nhl/mlb/ncaaf/nfl_pipeline all do. Run
+          # pickdawgz for NBA by hand and it returns 4 picks on 4 games; run
+          # it here and it cannot.
+          #
+          # This is the SAME omission nhl_pipeline documented on 2026-09-25,
+          # which "kept dimers and action at 0 picks on NFL/NCAAF":
+          # _playwright_helper.render_page returns (None, 'unavailable') and
+          # the source then reports success with no data.
+          #
+          # NBA opened 2026-10-21 with 68 external rows against MLB's 9,439.
+          # Most of that gap is this line.
+          pip install requests python-dotenv beautifulsoup4 playwright
+          python -m playwright install --with-deps chromium || echo "⚠ chromium install failed — JS-rendered externals will skip this run"
 
       # 2026-09-08 heartbeat START (parity w/ mlb_pipeline). See
       # project_pipeline_overhaul_909.
