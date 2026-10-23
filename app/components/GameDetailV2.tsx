@@ -763,6 +763,26 @@ export default function GameDetailV2({
           </Section>
         )}
 
+        {/* ══ 2026-10-22 · THE MODEL DUMP BELONGS WITH THE MODELS ══
+            Andy asked whether the card reads well. One thing stood out: the
+            full per-model table sat at the very BOTTOM of the page, below
+            Sportsbook Odds and All Book Lines, two scrolls away from the
+            Model Consensus tiles it expands on. A reader who taps a tile
+            wanting the underlying numbers has no reason to look past the
+            betting panel to find them.
+
+            Moved directly under Model Consensus. It stays collapsed, so the
+            default page length is unchanged — this costs nothing to anyone
+            who does not open it, and saves two scrolls for anyone who does.
+
+            It also fixes the other half of the ordering complaint without a
+            second move: with Numbers gone from the tail, Sportsbook Odds and
+            All Book Lines end the page, which is where an action panel
+            belongs. */}
+        <Expander title="📐 Numbers" badge="full model dump">
+          <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
+        </Expander>
+
         {/* 2026-09-13 Signals row — Andy directive: surface WHICH signals
             fired (EPA gap, cohort match, LR shadow, anchor status, GOAT)
             with tap-to-explain info markers. Sits right under Model
@@ -956,10 +976,6 @@ export default function GameDetailV2({
             />
           </Expander>
         )}
-
-        <Expander title="📐 Numbers" badge="full model dump">
-          <NumbersPanel ctx={ctx} awayTeam={awayTeam} homeTeam={homeTeam} sport={gamesSport} />
-        </Expander>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
