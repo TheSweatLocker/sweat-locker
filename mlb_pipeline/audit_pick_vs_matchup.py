@@ -111,8 +111,41 @@ def board(sport, lo):
     return out, teams
 
 
+def splits(sport):
+    """(game_id) -> latest spread split. Empty is NORMAL before game day.
+
+    Measured on 298 NCAAF games: the FIRST spread split lands a median 3.2h
+    before kickoff (earliest 11.3h, and 10% land AFTER kickoff). So a Friday
+    night run legitimately has nothing for Saturday, and an empty dict here
+    means 'not yet', not 'broken'. Re-run on game morning to pick these up.
+    """
+    rows, off = [], 0
+    while off < 20000:
+        r, _ = q.get('line_snapshot',
+                     {'select': 'game_id,market,pick_side,bets_pct,'
+                                'money_pct,snapshot_ts',
+                      'sport': f'eq.{sport}', 'offset': str(off),
+                      'order': 'snapshot_ts.asc'}, limit=1000)
+        if isinstance(r, dict) or not r:
+            break
+        rows += r
+        if len(r) < 1000:
+            break
+        off += 1000
+    out = {}
+    for x in rows:
+        if str(x.get('market') or '').lower() not in ('rl', 'spread'):
+            continue
+        k = str(x.get('game_id'))
+        t = str(x.get('snapshot_ts'))
+        if k not in out or t > str(out[k].get('snapshot_ts')):
+            out[k] = x
+    return out
+
+
 def audit(sport, tbl, dates):
     quotes, teammap = board(sport, dates[0])
+    flow = splits(sport)
     games = [g for g in page(tbl, {'select': '*', 'game_date': f'gte.{dates[0]}',
                                    'order': 'game_date.asc'})
              if str(g.get('game_date'))[:10] in dates]
@@ -292,6 +325,65 @@ def audit(sport, tbl, dates):
                 score += 2
                 flags.append(f'rest edge against us: {oteam} {rsO:.0f} days '
                              f'vs {pteam} {rsP:.0f}')
+
+        # ══ SOR vs SOS — a hollow resume ══
+        # Strength of RECORD ranking much better than strength of SCHEDULE
+        # ranking means the record is a product of who they played. Backing
+        # that team is backing the schedule, not the team. Both ranks are
+        # 1=best, verified.
+        sorP, sosP = gv(P, 'sor_rank'), gv(P, 'sos_rank')
+        if sorP is not None and sosP is not None and sosP - sorP >= 40:
+            score += 3
+            flags.append(
+                f'{pteam} resume is hollow: SoR rank {sorP:.0f} on a schedule '
+                f'ranked only {sosP:.0f} (1=toughest) — {sosP - sorP:.0f} '
+                f'places of inflation')
+        sorO = gv(O, 'sor_rank')
+        if sorP is not None and sorO is not None and ours < 0 and sorP > sorO:
+            score += 2
+            flags.append(
+                f'laying points with the worse resume: {pteam} SoR {sorP:.0f} '
+                f'vs {oteam} {sorO:.0f}')
+
+        # ══ MONEY FLOW ══ tickets and money are different signals, and they
+        # do not point the same way across sports. Fading heavy public
+        # TICKETS on a football spread measured 59.4% / ROI +13.4% on n=96
+        # today, while project_split_flags_opposite_by_sport_1012 found the
+        # MONEY side is one to FOLLOW on NCAAF. So heavy tickets on our side
+        # is a strike against us, and money against our side is a second,
+        # independent one.
+        sp_row = flow.get(str(g['game_id']))
+        if sp_row is not None:
+            b = f(sp_row.get('bets_pct'))
+            m = f(sp_row.get('money_pct'))
+            ps = str(sp_row.get('pick_side') or '').upper()
+            if b is not None and ps in ('HOME', 'AWAY'):
+                on_us = (ps == side)
+                tickets_us = b if on_us else 100.0 - b
+                if tickets_us >= 65:
+                    score += 4
+                    flags.append(
+                        f'{tickets_us:.0f}% of TICKETS are on our side — '
+                        f'fading heavy public football spreads measured '
+                        f'59.4%, ROI +13.4%, n=96')
+                if m is not None:
+                    money_us = m if on_us else 100.0 - m
+                    if money_us <= 40:
+                        score += 3
+                        flags.append(
+                            f'MONEY is against us: only {money_us:.0f}% of '
+                            f'handle on our side ({tickets_us:.0f}% of '
+                            f'tickets) — money is the side to follow on '
+                            f'football')
+                    if tickets_us - money_us >= 15:
+                        score += 2
+                        flags.append(
+                            f'public/sharp divergence: tickets '
+                            f'{tickets_us:.0f}% vs handle {money_us:.0f}% on '
+                            f'our side — small bets, big money elsewhere')
+        elif sport in ('NCAAF', 'NFL'):
+            flags.append('[keep] no money-flow split captured for this game '
+                         'yet (median arrival is 3.2h before kickoff)')
 
         # 8 — our published number is already off the board
         cs = f(g.get('close_spread'))
