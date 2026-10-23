@@ -622,23 +622,23 @@ export default function GameDetailV2({
             competitive advantage in hiding them). Verdict + Jerry read +
             everything below the Market card is Pro. See the big gate
             after the Market section below. */}
+        // ══ 2026-10-22 · SAY WHOSE PRICES THESE ARE ══
+        // QA on CLE @ PHI: the moneyline appeared three times on one card
+        // with two different numbers and no way to tell why —
+        //
+        // Market strip       ML +120 / -142
+        // Line Movement      ML (HOME) -142      (hint says "consensus")
+        // Sportsbook Odds    PHI -150 / CLE +125 (hint says "Hard Rock")
+        //
+        // Neither number is wrong. The strip and Line Movement read
+        // close_home_ml / close_away_ml, which is a consensus close across
+        // books; Sportsbook Odds shows one book's live board. Line Movement
+        // and Sportsbook Odds both said so in their hints. This one did
+        // not, so the 8-cent gap read as a bug.
+        //
+        // Labelling it costs nothing and removes the only unexplained
+        // number of the three.
         {showMarket && (
-        {/* ══ 2026-10-22 · SAY WHOSE PRICES THESE ARE ══
-            QA on CLE @ PHI: the moneyline appeared three times on one card
-            with two different numbers and no way to tell why —
-
-              Market strip       ML +120 / -142
-              Line Movement      ML (HOME) -142      (hint says "consensus")
-              Sportsbook Odds    PHI -150 / CLE +125 (hint says "Hard Rock")
-
-            Neither number is wrong. The strip and Line Movement read
-            close_home_ml / close_away_ml, which is a consensus close across
-            books; Sportsbook Odds shows one book's live board. Line Movement
-            and Sportsbook Odds both said so in their hints. This one did
-            not, so the 8-cent gap read as a bug.
-
-            Labelling it costs nothing and removes the only unexplained
-            number of the three. */}
         <Section title="Market" hint="consensus close across books">
           <MarketRow
             closeSpread={closeSpread}
