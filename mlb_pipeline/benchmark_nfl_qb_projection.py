@@ -133,6 +133,9 @@ def main():
             vend_idx[(wk, r.get('player_name'))][r.get('source')] = v
 
     rows_base, rows_full = [], []
+    abl_solo = collections.defaultdict(list)
+    abl_drop = collections.defaultdict(list)
+    abl_applied = collections.Counter()
     rows_vendor = collections.defaultdict(list)
     rows_vendor_avg = []
     n_games = 0
@@ -156,15 +159,33 @@ def main():
             n_games += 1
             rows_base.append((base, actual))
 
+            facs = {
+                'opponent': opp_factor(defrows, opp, STAT),
+                'home_away': home_factor(hist, STAT_COL[STAT], is_home),
+                'environment': env_factor(close_total, league_total, STAT),
+                'game_script': trail_factor(sp_for, STAT),
+            }
             val = base
-            for fac, _n, applied in (
-                    opp_factor(defrows, opp, STAT),
-                    home_factor(hist, STAT_COL[STAT], is_home),
-                    env_factor(close_total, league_total, STAT),
-                    trail_factor(sp_for, STAT)):
+            for fac, _n, applied in facs.values():
                 if applied and fac is not None:
                     val *= fac
             rows_full.append((val, actual))
+            # ── ABLATION ────────────────────────────────────────────────
+            # "The factors hurt" is not actionable; WHICH factor hurts is.
+            # For each one: baseline x that factor ALONE (does it help by
+            # itself?) and the full chain WITHOUT it (does removing it help?).
+            for name, (fac, _n3, applied) in facs.items():
+                f = fac if (applied and fac is not None) else 1.0
+                abl_solo[name].append((base * f, actual))
+                v = base
+                for other, (of, _n4, oap) in facs.items():
+                    if other == name:
+                        continue
+                    if oap and of is not None:
+                        v *= of
+                abl_drop[name].append((v, actual))
+                if applied and fac is not None:
+                    abl_applied[name] += 1
 
             vs = vend_idx.get((wk, nm), {})
             for src, v in vs.items():
@@ -190,12 +211,32 @@ def main():
         line(f'vendor · {src}', rows_vendor[src])
     line('vendor · mean of both', rows_vendor_avg)
 
+    print()
+    print('FACTOR ABLATION — baseline MAE is the bar to beat')
+    b = mae(rows_base)
+    print(f'   {"factor":<16}{"applied":>8}{"solo MAE":>11}{"vs base":>9}'
+          f'{"full w/o it":>13}{"vs full":>9}')
+    print('   ' + '-' * 67)
+    f_all = mae(rows_full)
+    for name in ('opponent', 'home_away', 'environment', 'game_script'):
+        if not abl_solo[name]:
+            continue
+        ms, md = mae(abl_solo[name]), mae(abl_drop[name])
+        print(f'   {name:<16}{abl_applied[name]:>8}{ms:>11.1f}{ms - b:>+9.1f}'
+              f'{md:>13.1f}{md - f_all:>+9.1f}')
+    print(f'   {"(baseline)":<16}{"":>8}{b:>11.1f}{0.0:>+9.1f}'
+          f'{f_all:>13.1f}{0.0:>+9.1f}')
+    print()
+    print('   "vs base" < 0 means the factor helps on its own.')
+    print('   "vs full" < 0 means REMOVING it improves the full model.')
+
     # ── PAIRED on identical (week, player) keys ──────────────────────
     # An MAE table where each model covers a different set of games can be
     # won by coverage rather than by accuracy. This restricts to the games
     # EVERY model projected, so the comparison cannot be explained by n.
     print('paired on the games every model covered:')
-    keyed_ours, keyed_vend = {}, collections.defaultdict(dict)
+    keyed_ours, keyed_base = {}, {}
+    keyed_vend = collections.defaultdict(dict)
     for wk in weeks:
         for nm, games in by_player.items():
             actual = next((_f(g.get(ACTUAL_COL)) for g in games
@@ -206,7 +247,26 @@ def main():
             base, _n2, ok = baseline(hist, STAT_COL[STAT])
             if not ok:
                 continue
-            keyed_ours[(wk, nm)] = (base, actual)
+            # ── compare the model we SHIP, not just its baseline ──
+            # This block originally stored `base`, so the paired table and
+            # its confidence intervals described the baseline while the
+            # headline table described the full chain. Two different models
+            # under one label is exactly the thing this file exists to stop.
+            team2 = next((str(g.get('team')) for g in games
+                          if g.get('_week') == wk), None)
+            s2 = sched.get((wk, team2))
+            fullv = base
+            if s2:
+                is_home2, opp2, tot2, sp2 = s2
+                for fac, _n5, ap in (
+                        opp_factor(defrows, opp2, STAT),
+                        home_factor(hist, STAT_COL[STAT], is_home2),
+                        env_factor(tot2, league_total, STAT),
+                        trail_factor(sp2, STAT)):
+                    if ap and fac is not None:
+                        fullv *= fac
+            keyed_ours[(wk, nm)] = (fullv, actual)
+            keyed_base[(wk, nm)] = (base, actual)
             for src, v in vend_idx.get((wk, nm), {}).items():
                 keyed_vend[src][(wk, nm)] = (v, actual)
     srcs = sorted(keyed_vend)
@@ -221,7 +281,9 @@ def main():
     print(f'   {"MODEL":<30}{"MAE":>9}{"bias":>9}')
     print('   ' + '-' * 48)
     ours = [keyed_ours[k] for k in common]
-    print(f'   {"OURS · baseline only":<30}{mae(ours):>9.1f}{bias(ours):>+9.1f}')
+    basep = [keyed_base[k] for k in common]
+    print(f'   {"OURS · shipped model":<30}{mae(ours):>9.1f}{bias(ours):>+9.1f}')
+    print(f'   {"OURS · baseline only":<30}{mae(basep):>9.1f}{bias(basep):>+9.1f}')
     for src in srcs:
         v = [keyed_vend[src][k] for k in common]
         print(f'   {"vendor · " + src:<30}{mae(v):>9.1f}{bias(v):>+9.1f}')

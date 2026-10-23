@@ -153,8 +153,42 @@ STAT_COL = {
 #: attempts, fewer yards. Interceptions are left alone: nothing establishes
 #: that a slow game changes a QB's pick rate, and inventing a coefficient for
 #: it would be a number with no evidence behind it.
-ENV_SENSITIVE = {'proj_pass_yds', 'proj_pass_att', 'proj_pass_cmp',
-                 'proj_pass_tds'}
+#: ══ 2026-10-22 · MEASURED OFF, NOT REASONED OFF ══════════════════════
+#: benchmark_nfl_qb_projection ablated every factor against 85 QB
+#: player-games in weeks 4-6, walk-forward, with the plain recency-weighted
+#: baseline as the bar (MAE 64.9 on passing yards):
+#:
+#:     factor         applied   solo MAE  vs base   full w/o it  vs full
+#:     opponent            85      62.5     -2.4         67.2     +0.6
+#:     home_away            0      64.9     +0.0         66.5     +0.0
+#:     environment         85      67.1     +2.3         63.5     -3.0
+#:     game_script         85      65.0     +0.1         65.9     -0.7
+#:
+#: ENVIRONMENT is the drag, and two independent readings agree: it is worse
+#: than the baseline on its own (+2.3) and removing it improves the full
+#: chain more than removing anything else (-3.0). The prior was reasonable
+#: - a higher total should mean more passing - but a posted total is already
+#: the market's view of the same thing the baseline measures, so multiplying
+#: by it double-counts and adds variance.
+#:
+#: GAME_SCRIPT is neutral on its own (+0.1) and mildly positive to remove
+#: (-0.7). It was never more than a documented prior (0.006/pt, clamped) and
+#: nothing has earned it a place, so it comes off with environment.
+#:
+#: OPPONENT STAYS: -2.4 against the baseline, the only factor that helps.
+#: Read it with the caveat that nfl_positional_defense is a CURRENT snapshot
+#: with no history, so a week-4 projection sees week-4 defence - that figure
+#: is flattered and the factor is kept on the strength of a leak-touched
+#: measurement. It is the next thing to re-measure once defence is snapshotted.
+#:
+#: HOME_AWAY fired on ZERO of 85: it needs 2+ games each side and a week-4
+#: QB has at most three. It is left in because it is correctly guarded and
+#: will start firing later in the season - an inert factor is not a harmful one.
+#:
+#: Both sets stay in code and switch back on by adding the key, because this
+#: is 85 player-games over three weeks, not a verdict for all time.
+ENV_SENSITIVE: set = set()          # was {pass_yds, att, cmp, tds}
+SCRIPT_DISABLED = True
 
 #: A team expected to trail throws more. Applied to volume only, scaled by
 #: the spread, and deliberately small - this is a documented prior, not a
@@ -375,6 +409,9 @@ def trail_factor(spread_for_team, key):
 
     `spread_for_team` is positive when this team is the underdog.
     """
+    if SCRIPT_DISABLED:
+        return None, ('disabled 2026-10-22 — ablation showed it neutral solo '
+                      '(+0.1 MAE) and mildly positive to remove (-0.7)'), False
     if key not in {'proj_pass_att', 'proj_pass_cmp', 'proj_pass_yds'}:
         return None, 'stat is not game-script sensitive', False
     s = _f(spread_for_team)
