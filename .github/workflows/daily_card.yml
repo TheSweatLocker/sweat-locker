@@ -168,6 +168,22 @@ jobs:
             --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "compute_surface_records.py" python compute_surface_records.py
+          # 2026-10-23 - Andy: "the record up top is 530-384-10 but below says
+          # sides 87-45 props 56-48, the math isn't mathing."
+          #
+          # It wasn't. split_sharp_card_record.py exists precisely to make
+          # sides+props equal the headline, and it was in NO workflow - it ran
+          # once by hand on 2026-09-24, so the breakdown under the headline was
+          # a MONTH stale while the headline updated nightly. Third time this
+          # exact shape has shipped; see the refresh_calibration_notes.py note
+          # directly below, added two days ago for the same reason.
+          #
+          # It also silently computed 0-0-0 once the leg writer switched from
+          # 'W'/'L' to 'WIN'/'LOSS' - fixed in the same commit.
+          #
+          # Immediately AFTER compute_surface_records and in the same step, so
+          # it splits the records this run just wrote.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --detector             --label "split_sharp_card_record.py"             python split_sharp_card_record.py --sport ALL --write
           # 2026-10-21 - Andy: "make sure it updates record by itself if we
           # are going to put record". The UFC banner quotes a live W-L ("UFC
           # reads are 11-7 (61.1%) across 18 graded picks") and

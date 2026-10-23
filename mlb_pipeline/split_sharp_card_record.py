@@ -87,6 +87,29 @@ def american_payout(odds) -> float:
     return o / 100 if o > 0 else 100 / abs(o)
 
 
+# 2026-10-23 · Andy: "the record up top is 530-384-10 but below says sides
+# 87-45 props 56-48, the math isn't mathing."
+#
+# It was not. This script's whole purpose is that sides+props == headline, and
+# it had been emitting 0-0-0 since the day it was written, because tally()
+# tested `verdict in ('W','L','P')` while the leg writer emits FULL WORDS:
+#
+#     {'WIN': 374, 'LOSS': 283, 'PENDING': 24, 'VOID': 4, 'PUSH': 2,
+#      'NO_ACTION': 2}   -> 0 of 689 legs matched
+#
+# So every leg fell through to "pending", every window computed 0-0, and the
+# 87-45 / 56-48 the app shows are the frozen values from the single manual run
+# on 2026-09-24 (this script is in NO workflow). Same vocabulary-drift family
+# as feedback_result_column_is_title_case.
+#
+# Accept both vocabularies, and normalise once here rather than at each test.
+_VERDICT = {
+    'W': 'W', 'WIN': 'W',
+    'L': 'L', 'LOSS': 'L',
+    'P': 'P', 'PUSH': 'P', 'VOID': 'P',
+}
+
+
 def tally(legs, keep: set) -> dict:
     """Sum one bucket of legs the way agg_sharp_card sums the whole card."""
     t = {'wins': 0, 'losses': 0, 'pushes': 0, 'pending': 0,
@@ -95,8 +118,9 @@ def tally(legs, keep: set) -> dict:
         if str(leg.get('type') or '').lower() not in keep:
             continue
         t['shipped'] += 1
-        v = str(leg.get('verdict') or '').upper()
-        if v not in ('W', 'L', 'P'):
+        v = _VERDICT.get(str(leg.get('verdict') or '').upper())
+        if v is None:
+            # PENDING / NO_ACTION — not an outcome, do not stake it
             t['pending'] += 1
             continue
         stake = float(leg.get('stake') or 1)
