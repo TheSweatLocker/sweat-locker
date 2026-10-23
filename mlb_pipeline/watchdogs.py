@@ -1440,6 +1440,143 @@ def check_signal_wiring() -> Optional[dict]:
     }
 
 
+
+# ══ 2026-10-23 · B164 · A GAME KICKS OFF AND HAS NO READ ══
+# Andy found this, not us: "Umass Uconn game in ncaaf is missing all data in
+# card." All FIVE NCAAF games kicking off that night had no row in
+# jerry_reads, while 14 of the next day's 44 did, and nothing alerted. The
+# generator orders by sweat_score, so an unfinished run writes the most
+# INTERESTING games in the window rather than the SOONEST -- tonight's sat at
+# #8, #24, #33, #42 and #43 of 49, behind the whole Saturday slate.
+#
+# That ordering is fixed, but the reason it stayed invisible for a day is that
+# nothing measures read coverage against the slate. This is the B148 shape:
+# quiet and broken are indistinguishable, so the only detector was a paying
+# user opening the screen.
+#
+# MEASURED ON jerry_reads, NOT jerry_cache. app/index.tsx renders
+# _jerryFor(jerryReads, selectedGame)?.long_read and only falls back to the
+# cache, so jerry_reads IS the consumer. jerry_cache is the wrong table to
+# judge coverage by twice over: it stores the whole cache key in its game_id
+# column for NFL while storing the bare id for NCAAF, and its write
+# timestamps are not coverage. Counting it led me to claim NFL reads had been
+# dark for two weeks when jerry_reads had 14/14, 13/13, 11/12 and 12/12 --
+# feedback_check_the_join_the_ui_actually_uses, for the third time in a night.
+#
+# Per-sport kickoff column, because every sport spells it differently and one
+# of them is not even UTC:
+#     NFL / NCAAF   kickoff_utc
+#     NBA           commence_time_utc
+#     NHL           commence_time
+#     NCAAB         game_time_et     <- ET, deliberately NOT parsed as UTC
+#     MLB           no usable column on the context table
+# Where there is no trustworthy UTC kickoff the check still fires, at WARNING
+# rather than CRITICAL, because "today and unread" is worth saying even when
+# hours-to-kickoff is unknown. Guessing a timezone to sharpen a severity is
+# how feedback_window_from_runner_clock_is_a_day_ahead happened.
+_READ_KICKOFF_COL = {
+    'NFL': ('kickoff_utc', True), 'NCAAF': ('kickoff_utc', True),
+    'NBA': ('commence_time_utc', True), 'NHL': ('commence_time', True),
+    'NCAAB': ('game_time_et', False), 'MLB': (None, False),
+}
+_READ_CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
+             'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
+             'NCAAB': 'ncaab_game_context', 'MLB': 'mlb_game_context'}
+#: Inside this many hours to kickoff, an unread game is CRITICAL.
+READ_CRITICAL_HOURS = 6.0
+#: Outside this many hours, an unread game is not reported at all. The check
+#: already looks only at TODAY's ET slate, but "today" begins at 00:00 ET and
+#: some sports generate their reads the same morning, so a watchdog running
+#: every two hours from midnight would alert for hours every single day and
+#: get muted. A detector nobody trusts is worse than no detector. Games with
+#: no parseable kickoff are still reported, at WARNING -- see the column map.
+READ_WARN_HOURS = 12.0
+
+
+def _read_parse_ts(v):
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v).strip().replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def check_reads_missing_near_kickoff() -> Optional[dict]:
+    """Any game on today's ET slate with no jerry_reads long_read."""
+    today = _et_today()
+    now = datetime.now(timezone.utc)
+    crit, warn, per_sport, examples = 0, 0, {}, []
+    for sport, tbl in _READ_CTX.items():
+        col, is_utc = _READ_KICKOFF_COL.get(sport, (None, False))
+        sel = 'game_id,home_team,away_team' + (f',{col}' if col else '')
+        g = requests.get(f'{SB}/rest/v1/{tbl}',
+                         params={'select': sel, 'game_date': f'eq.{today}',
+                                 'limit': '300'},
+                         headers=H_READ, timeout=15)
+        if g.status_code != 200:
+            # Loud, not swallowed: a 400 here would read as "no games today"
+            # and the check would pass while blind.
+            per_sport[sport] = f'ctx HTTP {g.status_code}'
+            continue
+        games = g.json() or []
+        if not games:
+            continue
+        r = requests.get(f'{SB}/rest/v1/jerry_reads',
+                         params={'select': 'game_id,long_read',
+                                 'sport': f'eq.{sport}',
+                                 'game_date': f'eq.{today}', 'limit': '400'},
+                         headers=H_READ, timeout=15)
+        if r.status_code != 200:
+            per_sport[sport] = f'jerry_reads HTTP {r.status_code}'
+            continue
+        read_ok = {str(x.get('game_id')) for x in (r.json() or [])
+                   if str(x.get('long_read') or '').strip()}
+        missing = [x for x in games if str(x.get('game_id')) not in read_ok]
+        if not missing:
+            continue
+        near, soon, deferred = 0, 0, 0
+        for m in missing:
+            ts = _read_parse_ts(m.get(col)) if (col and is_utc) else None
+            hrs = ((ts - now).total_seconds() / 3600.0) if ts else None
+            if hrs is not None and hrs > READ_WARN_HOURS:
+                deferred += 1          # still time for the day's cron to run
+                continue
+            if hrs is not None and hrs <= READ_CRITICAL_HOURS:
+                near += 1
+            else:
+                soon += 1
+            if len(examples) < 8:
+                examples.append(
+                    f"{sport} {m.get('away_team')} @ {m.get('home_team')}"
+                    + (f' (kickoff in {hrs:.1f}h)' if hrs is not None
+                       else ' (kickoff unknown)'))
+        crit += near
+        warn += soon
+        if near or soon:
+            per_sport[sport] = {
+                'games': len(games), 'missing': len(missing),
+                f'within_{int(READ_CRITICAL_HOURS)}h': near,
+                'not_yet_due': deferred}
+    if not crit and not warn:
+        return None
+    return {
+        'check_name': 'reads_missing_near_kickoff',
+        'severity': 'CRITICAL' if crit else 'WARNING',
+        'message': (
+            f'{crit + warn} game(s) on today\'s slate have no Jerry read'
+            + (f' — {crit} kick off within {int(READ_CRITICAL_HOURS)}h'
+               if crit else '')
+            + '. Game detail renders jerry_reads.long_read, so these cards '
+              'are blank for paying users.'),
+        'detail': {'date': today, 'critical': crit, 'warning': warn,
+                   'per_sport': per_sport, 'examples': examples,
+                   'fix_hint': 'python generate_<sport>_game_reads.py — then '
+                               'confirm coverage on jerry_reads, NOT '
+                               'jerry_cache'},
+    }
+
 CHECKS = [
     check_ladder_empty,
     check_ensemble_engine_share,
@@ -1460,6 +1597,7 @@ CHECKS = [
     check_oc_flip_not_persisted,
     check_context_features_preseason,
     check_signal_wiring,
+    check_reads_missing_near_kickoff,
 ]
 
 
