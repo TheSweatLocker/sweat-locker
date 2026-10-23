@@ -8310,8 +8310,29 @@ function NBAInjuriesCard({ctx, homeTeam, awayTeam}: any) {
 }
 
 // Four Factors — eFG / TOV / ORB / FT for both teams from nba_team_stats.
+// ══ 2026-10-22 · DEFAULT FLIPPED true -> false: STRICTLY DOMINATED ══
+// Andy's CLE @ PHI QA: "does team snapshot, team stats, and four factors
+// seem redundant".
+//
+// Four Factors does, completely. Every one of its four rows already appears
+// in the Team Stats table below it, WITH a percentile rank and the
+// opponent's defensive number beside it — which this card has neither of:
+//
+//     eFG%     56.1 / 53.0   Team Stats: 56.1 (4/30) vs PHI DEF 54.1 (10/30)
+//     TOV%     12.2 / 11.9   Team Stats: 12.2 (8/30) vs 13.3 (8/30)
+//     ORB%     26.9 / 26.2   Team Stats: 26.9 (9/30) / 26.2 (10/30)
+//     FT Rate  0.21 / 0.22   Team Stats: 0.206 (16/30) / 0.212 (18/30)
+//
+// It also rounds differently from the table it duplicates — 0.21 against
+// 0.206 — so the same stat appears twice on one screen with two values, and
+// a reader who notices reasonably concludes one of them is wrong.
+//
+// Flipped rather than deleted, following the NFLTeamMatchupCard precedent in
+// this same file: the component stays, config_ui_sections can turn it back
+// on without a build, and if Team Stats ever stops carrying the four factors
+// this is one DB row away from returning.
 function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
-  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'four_factors', true);
+  const isEnabled = useSectionEnabled('NBA', 'game_detail', 'four_factors', false);
   const [stats, setStats] = useState<{home?: any; away?: any}>({});
   React.useEffect(() => {
     const client = sb();
