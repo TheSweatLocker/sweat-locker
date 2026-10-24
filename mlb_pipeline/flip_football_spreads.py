@@ -128,7 +128,31 @@ SPORTS = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
 # Excluding long was defensible when the alternative was leaving good picks
 # alone. It is not defensible as a reason to publish nothing while the surface
 # goes 0-5, and the decision is his. All bands flip.
-MAX_MAGNITUDE_BY_SPORT = {'NCAAF': None, 'NFL': None}
+# ══ THE BAND IS MEASURED BY WALKING THE CUTOFF, NOT ASSERTED ══
+# 2026-10-24. This was None/None ("flip every band") for one slate, on the
+# reasoning that NCAAF 0-5 could not get worse. That is not a measurement, and
+# the measurement turned out to disagree in BOTH directions.
+#
+# NCAAF flipped, graded receipts, cutoff walked rather than guessed:
+#     |line| <=  6.5   69.4%  n= 62  CI[57.0, 79.4]  clears
+#     |line| <=  7     71.0%  n= 69  CI[59.4, 80.4]  clears  <- peak
+#     |line| <=  7.5   68.4%  n= 79  CI[57.5, 77.6]  clears
+#     |line| <=  8.5   65.9%  n= 91  CI[55.7, 74.8]  clears
+#     |line| <=  9.5   63.1%  n=103  CI[53.5, 71.8]  clears
+#     |line| <= 10.5   62.0%  n=121  CI[53.1, 70.1]  clears  <- last one
+# and pooled both sports the same shape holds (61.6% n=172 at 10.5).
+#
+# The edge DECAYS, it does not cliff. An earlier cut at 7 reported ">7 is
+# 49.0% n=243" and that number was the trap this file's own history warns
+# about: it averaged the real 8.5-10.5 edge together with noise at 13.5-20+,
+# so it understated one half and overstated the other. Band every spread
+# finding -- one number over two bands is a number about neither.
+#
+# Past 10.5 there is no measured edge in EITHER direction, which is a reason
+# to publish nothing, not a reason to flip. A flipped pick carries a read
+# saying "we are fading our own number", and we cannot support that sentence
+# on a coin flip.
+MAX_MAGNITUDE_BY_SPORT = {'NCAAF': 10.5, 'NFL': 10.5}
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME'}
 
 
@@ -406,11 +430,104 @@ def run(sport: str, date: str, apply: bool,
     return flipped
 
 
+def unflip(sport: str, date: str, apply: bool,
+           beyond_band: bool = False) -> int:
+    """Restore flipped picks from their own recorded _flipped_from.
+
+    ══ WHY RESTORE RATHER THAN RE-DERIVE ══
+    _flipped_from carries the exact side, line, label, tier and sub the engine
+    produced. Re-deriving them from close_spread would mean re-establishing a
+    per-sport orientation sign that has been found inverted between sports
+    before, to recover something already written down. So this reads the
+    record, never recomputes it.
+
+    With --beyond-band only picks OUTSIDE the measured band are restored,
+    which is the real use: the band moved from "everything" to 10.5 once the
+    cutoff was walked, and the picks past it carry a read asserting "we are
+    fading our own number" over a market where neither side has a measured
+    edge. Undoing those removes a claim we cannot support; it is not a vote
+    of confidence in the engine.
+    """
+    tbl = SPORTS[sport]
+    rows = _get(tbl, {'select': 'game_id,game_date,home_team,away_team,'
+                                'primary_play,pick_locked_at',
+                      'game_date': f'eq.{date}', 'limit': '400'}) or []
+    band = MAX_MAGNITUDE_BY_SPORT.get(sport)
+    print(f'=== unflip · {sport} · {date} · '
+          f'{"APPLY" if apply else "DRY RUN"}'
+          + (f' · only |line| > {band:g}' if beyond_band and band else '')
+          + ' ===')
+    n = 0
+    for g in rows:
+        pp = g.get('primary_play')
+        if isinstance(pp, str):
+            try:
+                pp = json.loads(pp)
+            except ValueError:
+                pp = None
+        if not isinstance(pp, dict):
+            continue
+        fr = pp.get('_flipped_from')
+        if not isinstance(fr, dict):
+            continue
+        cur = f(pp.get('line'))
+        if beyond_band and band is not None and cur is not None                 and abs(cur) <= band:
+            continue
+        if g.get('pick_locked_at'):
+            print(f'  SKIP (locked) {g["away_team"]} @ {g["home_team"]} — '
+                  f'run lock_football_slate.py --unlock first')
+            continue
+        new = {k: v for k, v in pp.items() if k != '_flipped_from'}
+        for k_new, k_old in (('side', 'side'), ('line', 'line'),
+                             ('label', 'label'), ('tier', 'tier'),
+                             ('sub', 'sub')):
+            if fr.get(k_old) is not None:
+                new[k_new] = fr[k_old]
+        # Keep the audit trail: the flip HAPPENED and was published for a
+        # while, so erasing every trace of it would make the read history
+        # unexplainable.
+        new['_unflipped_from'] = {
+            'side': pp.get('side'), 'line': pp.get('line'),
+            'label': pp.get('label'),
+            'at': dt.datetime.now(dt.timezone.utc).isoformat(),
+            'why': (f'|line| outside the measured flip band '
+                    f'(<= {band:g}); no edge in either direction, so the '
+                    f'read must not claim a fade' if band else 'manual'),
+        }
+        print(f'  {"UNFLIP" if apply else "[DRY]  "} {g["away_team"]} @ '
+              f'{g["home_team"]}: {pp.get("label")} -> {new.get("label")}')
+        if not apply:
+            n += 1
+            continue
+        up = requests.patch(f'{SB}/rest/v1/{tbl}', headers=HW, timeout=30,
+                            params={'game_id': f'eq.{g["game_id"]}'},
+                            data=json.dumps({'primary_play': new}))
+        if up.status_code not in (200, 204):
+            print(f'      PATCH HTTP {up.status_code}: {up.text[:160]}')
+            continue
+        # A 200 is not a write (feedback_204_is_not_a_write).
+        back = _get(tbl, {'select': 'primary_play',
+                          'game_id': f'eq.{g["game_id"]}', 'limit': '1'}) or []
+        got = (back[0].get('primary_play') or {}) if back else {}
+        if isinstance(got, dict) and got.get('label') == new.get('label')                 and not got.get('_flipped_from'):
+            n += 1
+        else:
+            print(f'      REVERTED by the pick lock — still '
+                  f'{got.get("label")!r}')
+    print(f'  {"unflipped" if apply else "would unflip"}: {n}')
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', choices=sorted(SPORTS), action='append')
     ap.add_argument('--date', default=None)
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--unflip', action='store_true',
+                    help='restore flipped picks from _flipped_from')
+    ap.add_argument('--beyond-band', action='store_true',
+                    help='with --unflip, only picks outside the measured '
+                         'band for their sport')
     ap.add_argument('--over-receipts', action='store_true',
                     help='flip even where a spread receipt is '
                          'frozen on the original side; the '
@@ -419,7 +536,10 @@ def main() -> int:
     date = a.date or et_today()
     total = 0
     for sport in (a.sport or sorted(SPORTS)):
-        total += run(sport, date, a.apply, a.over_receipts)
+        if a.unflip:
+            total += unflip(sport, date, a.apply, a.beyond_band)
+        else:
+            total += run(sport, date, a.apply, a.over_receipts)
     return 0
 
 
