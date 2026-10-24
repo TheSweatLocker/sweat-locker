@@ -1603,7 +1603,17 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # "cap spreads, never ML"). Flipping it would fade the signal that
         # works. Only a pick the engine ITSELF called as a spread is flipped.
         flipped = None
-        if is_football and pick_type in ('rl', 'spread') and not juice_swapped:
+        # ══ NEVER FLIP A PICK THAT WAS ALREADY FLIPPED AT SOURCE ══
+        # flip_football_spreads.py --over-receipts now rewrites primary_play
+        # itself, so Jerry's read and the badge argue the flipped side. This
+        # composer flipping it a SECOND time would land the Sharp back on the
+        # original number while the read argued the other one -- silently
+        # undoing the whole thing and reintroducing the exact badge/read
+        # contradiction. The marker is the only reliable signal: the line
+        # alone cannot tell a flipped pick from one the engine made.
+        _src_flipped = isinstance(pp.get('_flipped_from'), dict)
+        if (is_football and pick_type in ('rl', 'spread')
+                and not juice_swapped and not _src_flipped):
             flipped, _why = _flip_short_spread(pp, g, _flip_px)
             if flipped is None:
                 # No honest price for the other side means no bet. Dropping

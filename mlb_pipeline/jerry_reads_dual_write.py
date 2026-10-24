@@ -31,7 +31,7 @@ import requests
 
 
 def _freeze_published_call(payload: dict, sport: str, game_id: str,
-                           game_date: str):
+                           game_date: str, flipped_to: dict = None):
     """Thin wrapper so a receipt_pins import failure cannot break a read write.
 
     Imported lazily and guarded: this module is the single write path for
@@ -48,7 +48,8 @@ def _freeze_published_call(payload: dict, sport: str, game_id: str,
         return payload, (f'receipt_pins unavailable ({e}) — leaving any '
                          f'stored call untouched')
     try:
-        return freeze_published_call(payload, sport, game_id, game_date)
+        return freeze_published_call(payload, sport, game_id,
+                                     game_date, flipped_to)
     except Exception as e:                              # noqa: BLE001
         for k in ('call_market', 'call_side', 'call_line', 'call_text'):
             payload.pop(k, None)
@@ -873,8 +874,13 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     # input_snapshot. Fails closed: if the receipt lookup cannot complete the
     # call fields are dropped from the payload rather than risk an
     # unrecoverable overwrite.
+    # _fresh is the primary_play re-read at WRITE time above. Passing it lets
+    # the pin release for a recorded flip -- and only onto that flip. Without
+    # it the call stays on the original side while the prose argues the new
+    # one, which is the contradiction this whole path exists to prevent.
     payload, _freeze_note = _freeze_published_call(
-        payload, sport, str(game_id), str(game_date))
+        payload, sport, str(game_id), str(game_date),
+        _fresh if isinstance(_fresh, dict) else None)
     if _freeze_note:
         print(f'  🔒 jerry_reads ({sport} {game_id}): {_freeze_note}')
 

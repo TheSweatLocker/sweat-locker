@@ -251,7 +251,8 @@ def receipted(sport: str, date: str) -> set:
             if str(r.get('market') or '').lower() in ('rl', 'spread')}
 
 
-def run(sport: str, date: str, apply: bool) -> int:
+def run(sport: str, date: str, apply: bool,
+        over_receipts: bool = False) -> int:
     tbl = SPORTS[sport]
     games = _get(tbl, {'select': 'game_id,game_date,home_team,away_team,'
                                  'close_spread,primary_play,pick_locked_at',
@@ -307,9 +308,37 @@ def run(sport: str, date: str, apply: bool) -> int:
         # real "nothing to flip" case.
         tier = str(pp.get('tier') or '').upper()
         gid = str(g['game_id'])
-        if gid in has_receipt:
+        # ══ A FLIPPED NO-PLAY MAKES THE READ CONTRADICT THE BADGE ══
+        # The read generator branches on tier: COVERAGE/PASS/SKIP produce
+        # "your prose must explain the PASS — do NOT argue for a side". Flip a
+        # PASS and Jerry argues no-play underneath a badge showing a play --
+        # the exact contradiction Andy flagged, only manufactured by us.
+        # Promoting the tier to make the prose cooperate would invent a
+        # conviction the engine never had. So a no-play stays a no-play, and
+        # the comment above about PASS being "flippable" is wrong on this
+        # point: it is publishable, but not flippable without the read.
+        if tier in ('PASS', 'SKIP', 'COVERAGE', ''):
+            no(f'tier={tier or "none"} is a no-play — flipping it would leave '
+               f'the read arguing PASS under a flipped badge')
+            continue
+        # ══ THE FROZEN RECEIPT, AND WHICH WAY THE ERROR CUTS ══
+        # public_receipts.pick_line is immutable by DB trigger, so a game that
+        # already published a spread receipt keeps grading the ORIGINAL side
+        # while the badge, the read and the Sharp all move to the flipped one.
+        # That is a real divergence and it is why this is opt-in.
+        #
+        # It is accepted only because of the DIRECTION: the original side is
+        # the one measured at 34.0% (0-5 on 10-23), so the record grades our
+        # WORSE side while users see the better one. Our published record
+        # understates us -- the same safe direction refresh_offmarket_lines.py
+        # already takes. The reverse (grading the flipped side while showing
+        # the original) would inflate the record and is never acceptable.
+        #
+        # The forward fix is ordering, not this flag: flip at source BEFORE
+        # the receipt writer runs and nothing diverges. See B169.
+        if gid in has_receipt and not over_receipts:
             no('RECEIPT ALREADY PUBLISHED — would show one number, grade '
-               'another')
+               'another (--over-receipts accepts that, record-understating)')
             continue
         if pp.get('_flipped_from'):
             no('already flipped')
@@ -333,6 +362,9 @@ def run(sport: str, date: str, apply: bool) -> int:
         new['label'] = f'{team} {new_line:+g}'
         new['_flipped_from'] = {
             'side': side, 'line': ours, 'label': pp.get('label'),
+            # True means a published receipt is frozen on the ORIGINAL side,
+            # so the record grades that side and understates this pick.
+            'receipt_frozen_on_original': gid in has_receipt,
             'tier': pp.get('tier'), 'sub': pp.get('sub'),
             'at': dt.datetime.now(dt.timezone.utc).isoformat(),
             'basis': ('NCAAF short spreads flipped 66.0% n=53 CI[52.6,77.3]; '
@@ -379,11 +411,15 @@ def main() -> int:
     ap.add_argument('--sport', choices=sorted(SPORTS), action='append')
     ap.add_argument('--date', default=None)
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--over-receipts', action='store_true',
+                    help='flip even where a spread receipt is '
+                         'frozen on the original side; the '
+                         'record then understates the pick')
     a = ap.parse_args()
     date = a.date or et_today()
     total = 0
     for sport in (a.sport or sorted(SPORTS)):
-        total += run(sport, date, a.apply)
+        total += run(sport, date, a.apply, a.over_receipts)
     return 0
 
 

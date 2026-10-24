@@ -235,7 +235,9 @@ def published_call(sport: str, game_id: str, game_date: str):
 
 
 def freeze_published_call(payload: dict, sport: str, game_id: str,
-                          game_date: str) -> tuple[dict, str | None]:
+                          game_date: str,
+                          flipped_to: dict | None = None
+                          ) -> tuple[dict, str | None]:
     """(payload, note) with the call fields pinned to what was published.
 
     Fails CLOSED: if the lookup cannot be completed we leave the published
@@ -245,6 +247,48 @@ def freeze_published_call(payload: dict, sport: str, game_id: str,
     frozen = published_call(sport, game_id, game_date)
     if frozen is None:
         return payload, None                      # nothing published yet
+
+    # ══ ONE RELEASE: A DELIBERATE, RECORDED FLIP OF OUR OWN CALL ══
+    # Andy: "if were flipping we need ot make sure jerry read matches".
+    #
+    # flip_football_spreads.py --over-receipts rewrites primary_play to the
+    # opposite side. This pin then held call_side/call_line on the original,
+    # which produced something worse than either state: the prose argued the
+    # flipped side while the read's own call named the side we abandoned, in
+    # the same read, on 20 NCAAF games.
+    #
+    # The release is deliberately the narrowest possible shape. It fires only
+    # when the FRESH primary_play carries the _flipped_from marker AND the
+    # incoming call already equals that flipped pick, so the pin can move a
+    # call ONTO the recorded flip and nowhere else. An arbitrary rewrite, a
+    # drifting line, a writer picking its own side -- all still refused, which
+    # is the abuse this guard exists to stop.
+    #
+    # What it does NOT do is change the receipt: public_receipts.pick_line is
+    # immutable by trigger, so the published receipt keeps grading the
+    # ORIGINAL side. That is accepted for one reason only -- direction. The
+    # original side is the one measured at 34.0% (0-5 on 10-23), so the record
+    # scores our WORSE side while users see the better one, and our published
+    # record understates us. The reverse would inflate it and is never
+    # allowed.
+    if isinstance(flipped_to, dict) and flipped_to.get('_flipped_from'):
+        _ft_side = str(flipped_to.get('side') or '').upper()
+        _ft_line = flipped_to.get('line')
+
+        def _eq_num(a, b):
+            try:
+                return abs(float(a) - float(b)) <= 0.01
+            except (TypeError, ValueError):
+                return False
+
+        _p_side = str(payload.get('call_side') or '').upper()
+        if (_ft_side and _p_side == _ft_side
+                and _eq_num(payload.get('call_line'), _ft_line)):
+            return payload, (
+                f'call moved to the RECORDED FLIP '
+                f'{str(flipped_to.get("label"))!r} (was published as '
+                f'{frozen.get("call_text")!r}); the receipt stays frozen on '
+                f'the original side, so the record understates this pick')
     if frozen is LOOKUP_FAILED:
         for k in ('call_market', 'call_side', 'call_line', 'call_text'):
             payload.pop(k, None)

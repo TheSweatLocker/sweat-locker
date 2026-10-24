@@ -958,15 +958,29 @@ def fetch_football_picks(today: str) -> list:
             # posted quote means the pick is left alone, never priced off our
             # own stale number.
             _flip = None
+            # ══ TWO GUARDS, BOTH LEARNED THE HARD WAY ══
+            # 1. _flipped_from means flip_football_spreads.py already turned
+            #    this pick at source, so the read and badge argue the flipped
+            #    side. Flipping again would put the Sweat Card back on the
+            #    original number -- the contradiction, re-created.
+            # 2. The import below read MAX_MAGNITUDE, which was renamed to
+            #    MAX_MAGNITUDE_BY_SPORT when the band went per-sport. The
+            #    except clause catches ImportError, so this entire flip has
+            #    been silently dead since that rename: no error, no log line,
+            #    just no flips. A name in an import is a call site
+            #    (feedback_validate_data_reaches_new_code).
             if (sport == 'NCAAF'
-                    and str(pp.get('type') or '').lower() in ('rl', 'spread')):
+                    and str(pp.get('type') or '').lower() in ('rl', 'spread')
+                    and not isinstance(pp.get('_flipped_from'), dict)):
                 try:
                     from flip_football_spreads import (
-                        posted_quotes as _pq, MAX_MAGNITUDE as _MAXM,
+                        posted_quotes as _pq,
+                        MAX_MAGNITUDE_BY_SPORT as _MAXMBS,
                         OPP as _OPP, best_flip_quote as _bfq)
+                    _MAXM = _MAXMBS.get('NCAAF')
                     _ln = float(pp.get('line'))
                     _sd = str(pp.get('side') or '').upper()
-                    if abs(_ln) <= _MAXM and _sd in _OPP:
+                    if (_MAXM is None or abs(_ln) <= _MAXM) and _sd in _OPP:
                         global _SWEAT_FLIP_Q
                         try:
                             _q, _tm = _SWEAT_FLIP_Q

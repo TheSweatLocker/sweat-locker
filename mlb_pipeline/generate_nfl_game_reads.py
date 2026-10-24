@@ -1997,6 +1997,31 @@ def render_prompt(templates, struct):
             ]
             if _e_sub:
                 _lines.append(f"  Engine reason: {_e_sub}")
+            # ══ A FLIPPED PICK MUST BE ARGUED AS A FADE OF OUR OWN NUMBER ══
+            # Andy: "if were flipping we need ot make sure jerry read matches".
+            # flip_football_spreads.py rewrites primary_play; this block is
+            # what the prose argues from. Without the disclosure Jerry sells
+            # the flipped side as the engine's own call, and a user who saw
+            # the original pick -- or reads the Receipts tab, where the
+            # receipt is frozen on the original side -- gets a silent
+            # reversal. The flip is defensible on the measurement; hiding it
+            # is not.
+            _flip = pp.get('_flipped_from')
+            if isinstance(_flip, dict):
+                _lines.append(
+                    f"  *** THIS IS A DELIBERATE FADE OF OUR OWN ENGINE. The "
+                    f"engine's original call was {_flip.get('label')} "
+                    f"(tier={_flip.get('tier')}) and we are now on the "
+                    f"OPPOSITE side. Basis: {_flip.get('basis')}. Your prose "
+                    f"MUST say plainly, in one sentence, that we are fading "
+                    f"our own earlier number on this game and why -- do not "
+                    f"present the flipped side as the engine's own read.")
+                if _flip.get('receipt_frozen_on_original'):
+                    _lines.append(
+                        "  Our published receipt for this game is frozen on "
+                        "the ORIGINAL side and will grade there, so the "
+                        "record scores our worse side. Do not claim a record "
+                        "or a closing-line edge for this pick.")
             if _lr_ml_p is not None:
                 try:
                     _pv = float(_lr_ml_p)
@@ -2601,6 +2626,29 @@ def run():
         games = [g for g in games if g.get("id") == game_id_filter]
         if not games:
             print(f"  ⚠ game_id {game_id_filter} not in fetched odds list")
+            return
+    # ══ TARGETED REGEN AFTER A SOURCE FLIP ══
+    # Same need as the NCAAF generator: a flipped primary_play leaves this
+    # game's read arguing the side we just abandoned, and re-running the whole
+    # Sunday slate through Claude to fix a handful of games is slow enough
+    # that it does not happen. Reads the flip marker straight off the context
+    # rows so the two scripts cannot disagree about which games moved.
+    if "--flipped-only" in sys.argv:
+        _flipped = set()
+        for _c in (fetch_nfl_contexts() or {}).values():
+            _pp = _c.get('primary_play') if isinstance(_c, dict) else None
+            if isinstance(_pp, str):
+                try:
+                    _pp = json.loads(_pp)
+                except ValueError:
+                    _pp = None
+            if isinstance(_pp, dict) and _pp.get('_flipped_from'):
+                _flipped.add(str(_c.get('game_id')))
+        games = [g for g in games if str(g.get("id")) in _flipped]
+        print(f"  --flipped-only: {len(_flipped)} flipped context row(s), "
+              f"{len(games)} on the fetched slate")
+        if not games:
+            print("  nothing flipped in the read window — nothing to do.")
             return
     if not games:
         print("  No NFL games in the next 8 days.")

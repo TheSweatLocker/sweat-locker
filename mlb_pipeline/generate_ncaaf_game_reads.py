@@ -680,6 +680,30 @@ def render_prompt(templates, struct):
             ]
             if _e_sub:
                 _lines.append(f"  Engine reason: {_e_sub}")
+            # ══ A FLIPPED PICK MUST BE ARGUED AS A FADE OF OUR OWN NUMBER ══
+            # Andy: "if were flipping we need ot make sure jerry read matches".
+            # Without this the prose argues the flipped side as if the engine
+            # had always liked it, and a user who saw the original pick this
+            # morning -- or reads it on the Receipts tab, where the receipt is
+            # frozen on the original side -- gets a silent reversal with no
+            # explanation. The flip is defensible on the measurement; pretending
+            # it never happened is not.
+            _flip = _pp.get('_flipped_from')
+            if isinstance(_flip, dict):
+                _lines.append(
+                    f"  *** THIS IS A DELIBERATE FADE OF OUR OWN ENGINE. The "
+                    f"engine's original call was {_flip.get('label')} "
+                    f"(tier={_flip.get('tier')}) and we are now on the "
+                    f"OPPOSITE side. Basis: {_flip.get('basis')}. Your prose "
+                    f"MUST say plainly, in one sentence, that we are fading "
+                    f"our own earlier number on this game and why -- do not "
+                    f"present the flipped side as the engine's own read.")
+                if _flip.get('receipt_frozen_on_original'):
+                    _lines.append(
+                        "  Our published receipt for this game is frozen on "
+                        "the ORIGINAL side and will grade there, so the "
+                        "record scores our worse side. Do not claim a record "
+                        "or a closing-line edge for this pick.")
             # LR shadow for NCAAF (fields mirror NFL if present)
             _lr_ml = _pp.get('_lr_ml_shadow') or {}
             _lr_tot = _pp.get('_lr_total_shadow') or {}
@@ -801,7 +825,9 @@ def write_cache(game_id: str, sport: str, narrative: str, struct: dict) -> bool:
     return True
 
 
-def run(force: bool = False, limit: Optional[int] = None) -> None:
+def run(force: bool = False, limit: Optional[int] = None,
+        flipped_only: bool = False,
+        game_ids: Optional[list] = None) -> None:
     print(f'=== NCAAF game reads · {today_et()} ===')
     templates = load_templates()
     if not templates:
@@ -812,6 +838,29 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
     if not games:
         print('  (no NCAAF games in horizon — offseason or slate not loaded)')
         return
+    # ══ TARGETED REGENERATION AFTER A FLIP ══
+    # flip_football_spreads.py rewrites primary_play, which is the ENGINE PICK
+    # block this prompt argues from -- so every flipped game's read is stale
+    # and arguing the side we just abandoned. Without a filter the only way to
+    # fix those is to re-run all 44 games through Claude, which is slow enough
+    # that it does not get done, which is how a read ends up contradicting its
+    # own badge. --flipped-only regenerates exactly the games whose pick moved.
+    if flipped_only or game_ids:
+        want = {str(x) for x in (game_ids or [])}
+        sel = []
+        for c in games:
+            pp = c.get('primary_play')
+            if isinstance(pp, str):
+                try:
+                    pp = json.loads(pp)
+                except ValueError:
+                    pp = None
+            is_flipped = isinstance(pp, dict) and bool(pp.get('_flipped_from'))
+            if (flipped_only and is_flipped) or str(c.get('game_id')) in want:
+                sel.append(c)
+        print(f'  filtered to {len(sel)} game(s)'
+              + ('  [flipped picks]' if flipped_only else ''))
+        games = sel
     if limit:
         games = games[:limit]
 
@@ -871,8 +920,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--flipped-only', action='store_true',
+                    help='only games whose primary_play carries '
+                         '_flipped_from (set by flip_football_spreads.py)')
+    ap.add_argument('--game-id', action='append', default=None)
     args = ap.parse_args()
-    run(force=args.force, limit=args.limit)
+    run(force=args.force, limit=args.limit,
+        flipped_only=args.flipped_only, game_ids=args.game_id)
 
 
 if __name__ == '__main__':
