@@ -969,9 +969,16 @@ def fetch_football_picks(today: str) -> list:
             #    been silently dead since that rename: no error, no log line,
             #    just no flips. A name in an import is a call site
             #    (feedback_validate_data_reaches_new_code).
+            # _unflipped_from means we ALREADY decided this one is not
+            # flippable (its line sits outside the measured band), so the
+            # composer must not re-flip it. On 10-24 it did exactly that:
+            # Arizona -10 -> Iowa State +11.5, recreating the pick that had
+            # just been removed as unsupported. The band check runs on the
+            # PRE-flip line, and the best posted quote can land past the band.
             if (sport == 'NCAAF'
                     and str(pp.get('type') or '').lower() in ('rl', 'spread')
-                    and not isinstance(pp.get('_flipped_from'), dict)):
+                    and not isinstance(pp.get('_flipped_from'), dict)
+                    and not isinstance(pp.get('_unflipped_from'), dict)):
                 try:
                     from flip_football_spreads import (
                         posted_quotes as _pq,
@@ -997,7 +1004,11 @@ def fetch_football_picks(today: str) -> list:
                         # Boston College +6.5 against a flip number of +5.5 --
                         # a point more in our favour. See best_flip_quote.
                         _qt = _bfq(_q, _lh, _opp, _nl)
-                        if _qt:
+                        # Band the line we would END UP on, not just the
+                        # one we started from: the best posted quote is
+                        # allowed to be BETTER than the flip number, which
+                        # can carry it past the band.
+                        if _qt and (_MAXM is None or abs(_qt[0]) <= _MAXM):
                             _bl, _bp, _bk = _qt
                             _team = str(row.get('home_team') if _opp == 'HOME'
                                         else row.get('away_team'))
@@ -1033,7 +1044,17 @@ def fetch_football_picks(today: str) -> list:
                 'label': (_flip['label'] if _flip
                           else (pp.get('label') or '')),
                 'side': (_flip['side'] if _flip else pp.get('side')),
-                'flipped_from': (_flip['from'] if _flip else None),
+                # Carries BOTH flip origins. _flip is this composer's own
+                # flip; _flipped_from is a flip already applied at source by
+                # flip_football_spreads.py, in which case the composer skips
+                # its own. The football lock downstream needs to know a pick
+                # is a recorded flip either way, or it reuses the published
+                # pick and the card contradicts its own badge.
+                'flipped_from': (
+                    _flip['from'] if _flip
+                    else ((pp.get('_flipped_from') or {}).get('label')
+                          if isinstance(pp.get('_flipped_from'), dict)
+                          else None)),
                 'type': pp.get('type'),
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),
@@ -3279,11 +3300,53 @@ def build_card():
                           f"pick(s) + added {len(_manual_new)} Andy-approved "
                           f"override(s) → {len(football_picks)}")
                 else:
-                    if _new_ids != _old_ids:
+                    # ══ A RECORDED SOURCE FLIP IS AN OWNER DECISION ══
+                    # The lock exists to stop a WORKFLOW RE-RUN swapping picks
+                    # users have seen. A pick carrying _flipped_from is the
+                    # other case the block above already carves out for manual
+                    # picks: deliberate, recorded, made before the 12:00 ET
+                    # lock. On 10-24 the lock reused BYU -7.5 / Iowa -7.5 /
+                    # Indiana -7.5 while the badge and Jerry's read on those
+                    # same games argued UCF +7.5 / Minnesota +7.5 / Michigan
+                    # +7.5 -- the card contradicting its own game detail.
+                    #
+                    # It cannot be UNIONED like a manual pick on a new game:
+                    # a flip is the SAME game_id on the opposite side, so
+                    # keeping both would put two opposing picks for one game
+                    # on one card. It REPLACES, per game_id.
+                    #
+                    # The already-published receipt stays frozen on the
+                    # original side and grades there, so the record scores our
+                    # worse side -- the same accepted direction as the source
+                    # flip. Never the reverse.
+                    _flip_by_gid = {
+                        p.get('game_id'): p for p in football_picks
+                        if isinstance(p, dict)
+                        and isinstance(p.get('flipped_from'), (dict, str))
+                        and p.get('flipped_from')}
+                    _merged, _replaced = [], []
+                    for _p in _locked_fb:
+                        _f = _flip_by_gid.get(_p.get('game_id'))
+                        if _f is not None and (str(_f.get('side') or '').upper()
+                                               != str(_p.get('side') or '').upper()):
+                            _f = dict(_f)
+                            _f['_published'] = True
+                            _merged.append(_f)
+                            _replaced.append(f"{_p.get('label')} -> "
+                                             f"{_f.get('label')}")
+                        else:
+                            _merged.append(_p)
+                    if _replaced:
+                        print(f"  🔓 football lock: {len(_replaced)} published "
+                              f"pick(s) REPLACED by a recorded source flip "
+                              f"(receipt stays on the original side):")
+                        for _r in _replaced:
+                            print(f"       {_r}")
+                    elif _new_ids != _old_ids:
                         print(f"  🔒 football LOCKED — reusing {len(_locked_fb)} published "
                               f"pick(s); fresh compose wanted {len(_new_ids)} "
                               f"({len(_new_ids ^ _old_ids)} would have changed)")
-                    football_picks = _locked_fb
+                    football_picks = _merged
     except Exception as _e:
         print(f"  ⚠ football lock check failed ({_e}) — composing fresh")
     # Cap at 5 (multi-sport peak day maximum). Rank by conviction already
