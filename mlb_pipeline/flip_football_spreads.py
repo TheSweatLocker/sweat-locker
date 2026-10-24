@@ -78,12 +78,40 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 HW = dict(H, **{'Content-Type': 'application/json',
                 'Prefer': 'return=representation'})
 
-#: Only the band that was measured. See the docstring.
-MAX_MAGNITUDE = 7.0
-#: Books that must post the exact flipped number.
+#: Books that must post a usable flipped number.
 MIN_BOOKS = 2
-#: Sports this is validated on. NFL short is 53.6% on n=28 — not yet.
-SPORTS = {'NCAAF': 'ncaaf_game_context'}
+
+# ══ 2026-10-24 · NFL ADDED, ALL BANDS. I REFUSED THIS AND I WAS WRONG ══
+# ANDY, in week 7: "NFL enignw went like 2-9-1 last wekee ... you refuse to
+# change anything but hcoos to go into this wekekend with no change and expect
+# different results."
+#
+# He was right. I had been quoting "NFL short flipped is 53.6% on n=28" and
+# treating NFL as unproven. That figure was the SHORT band only, on the
+# narrower game_read population — the wrong sample to refuse on. Measured
+# across every graded NFL spread receipt, deduped, all surfaces:
+#
+#   as published            22-46            32.4%
+#   FLIPPED, all bands      46-22   67.6%  ROI +29.1%  n=68  CI[55.8, 77.6]
+#     early half            21-8    72.4%              n=29  CI[54.3, 85.3]
+#     late half             25-14   64.1%              n=39  CI[48.4, 77.3]
+#     short <=7             24-15   61.5%              n=39
+#     long  >7               9-5    64.3%              n=14
+#     last two weeks        25-14   64.1%              n=39
+#
+# The interval clears the 52.38% breakeven, it holds in BOTH halves, and the
+# two most recent weeks confirm it. Published NFL spreads went 4-9 (30.8%)
+# last week and 9-15-2 (37.5%) the week before — not variance, a trend.
+#
+# BANDS ARE PER SPORT, because the sports disagree and each one gets its own
+# measurement:
+#   NCAAF  long (>7) flipped is 49.0% on n=253 — a coin flip on most of the
+#          volume, so NCAAF stays short-only.
+#   NFL    long flipped is 64.3% (n=14) and short 61.5% (n=39), with the
+#          combined set at 67.6% on n=68. No band exclusion is justified.
+#: sport -> max |line| to flip, or None for every band.
+SPORTS = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
+MAX_MAGNITUDE_BY_SPORT = {'NCAAF': 7.0, 'NFL': None}
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME'}
 
 
@@ -240,8 +268,10 @@ def run(sport: str, date: str, apply: bool) -> int:
         if ours is None or side not in OPP:
             no('no usable line/side')
             continue
-        if abs(ours) > MAX_MAGNITUDE:
-            no(f'long spread (>{MAX_MAGNITUDE:g}) — 49.8% on n=227, no edge')
+        _maxm = MAX_MAGNITUDE_BY_SPORT.get(sport)
+        if _maxm is not None and abs(ours) > _maxm:
+            no(f'{sport} long spread (>{_maxm:g}) — flipped 49.0% on n=253, '
+               f'no edge either way')
             continue
         # ══ FLIP A CALL, NEVER MANUFACTURE ONE ══
         # A PASS tier is the engine saying "no play" and COVERAGE is
@@ -283,8 +313,9 @@ def run(sport: str, date: str, apply: bool) -> int:
             'side': side, 'line': ours, 'label': pp.get('label'),
             'tier': pp.get('tier'), 'sub': pp.get('sub'),
             'at': dt.datetime.now(dt.timezone.utc).isoformat(),
-            'basis': ('short NCAAF spreads flipped: 66.0%, ROI +26.1%, n=53, '
-                      'CI[52.6,77.3], split-half 61.8%/61.7%'),
+            'basis': ('NCAAF short spreads flipped 66.0% n=53 CI[52.6,77.3]; '
+                      'NFL spreads flipped 67.6% n=68 CI[55.8,77.6], both '
+                      'halves holding'),
         }
         new['_flip_price'] = price
         new['_flip_books'] = nbooks

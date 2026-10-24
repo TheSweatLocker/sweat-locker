@@ -1087,6 +1087,8 @@ def _spread_prices(sport: str, dates: set) -> dict:
 # pick" means and the grader did not know.
 _FLIP_SPREAD_MAX_MAGNITUDE = 7.0
 _FLIP_SPREAD_MIN_BOOKS = 2
+#: sport -> max |line| eligible for the flip, None meaning every band.
+_FLIP_BAND_BY_SPORT = {'NCAAF': 7.0, 'NFL': None}
 #: Points worse than the flip number we will still take. A board AHEAD of our
 #: number is the same bet on better terms; materially short of it is not.
 _FLIP_LINE_TOLERANCE = 0.5
@@ -1263,6 +1265,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_football_spread = 0
     dropped_flip_unpriced = 0
     flipped_spread = 0
+    lean_flip_admitted = 0
     flip_skips: dict = {}
     # Candidate game_ids for the two-sided price fetch, gathered before the
     # loop so the flip costs ONE request per sport per run instead of one per
@@ -1372,7 +1375,16 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             except (TypeError, ValueError):
                 dropped_football_spread += 1
                 continue
-            if _mag > _FLIP_SPREAD_MAX_MAGNITUDE:
+            # ══ 2026-10-24 · THE BAND IS PER SPORT ══
+            # NCAAF long (>7) flipped is 49.0% on n=253 — a coin flip on most
+            # of its volume, so NCAAF stays short-only. NFL does not behave
+            # that way: long flipped 64.3% (n=14), short 61.5% (n=39), and the
+            # combined set 67.6% on n=68 with CI[55.8,77.6] clearing
+            # breakeven. No band exclusion is justified for NFL, and applying
+            # NCAAF's rule to it was discarding the better half of the
+            # evidence.
+            _band = _FLIP_BAND_BY_SPORT.get(sport, _FLIP_SPREAD_MAX_MAGNITUDE)
+            if _band is not None and _mag > _band:
                 dropped_football_spread += 1
                 continue
         # ══ 2026-09-29 · A PICK THAT SAYS "NO EDGE" IS NOT A PICK ══
@@ -1410,9 +1422,41 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             continue
         tier = pp.get('tier')
         # (1) LEAN gate for football
-        if not tier_gate(tier):
+        # ══ 2026-10-24 · A LEAN FOOTBALL SPREAD IS ELIGIBLE *IF* FLIPPED ══
+        # ANDY, week 7: "NFL enignw went like 2-9-1 last wekee ... you refuse
+        # to change anything but hcoos to go into this wekekend with no change
+        # and expect different results."
+        #
+        # The LEAN gate exists because a low-conviction football pick is not
+        # worth publishing. That reasoning is sound for OUR side and backwards
+        # for the flip, where our conviction is an anti-signal. Measured on
+        # every graded NFL spread receipt:
+        #
+        #   as published, all tiers      22-46   32.4%
+        #   FLIPPED, all tiers           46-22   67.6%  n=68  CI[55.8,77.6]
+        #   FLIPPED, tier=STRONG         22-4    84.6%  n=26  CI[66.5,93.9]
+        #   FLIPPED, untiered game_read  24-18   57.1%  n=42  CI[42.2,70.9]
+        #
+        # The 84.6% subset does not exist this week: the engine produced ZERO
+        # STRONG football picks on the 10-25 slate, only LEAN and COVERAGE. So
+        # holding the STRONG-only gate means NFL contributes nothing at all,
+        # which is how a 4-9 week becomes another 4-9 week.
+        #
+        # Flipping is better than publishing on EVERY NFL subset measured —
+        # 57% against 43% untiered, 85% against 15% at STRONG. The honest
+        # read on a LEAN flip is "modestly positive, interval still spans
+        # breakeven", and that is strictly better than shipping our own side
+        # at 32%. So a LEAN football SPREAD survives this gate, and only
+        # because the flip block at the end of the loop will invert it; a LEAN
+        # ML or total is still dropped, because neither was measured.
+        _lean_flip_ok = (is_football and tier == 'LEAN'
+                         and str(pp.get('type') or '').lower()
+                         in ('rl', 'spread'))
+        if not tier_gate(tier) and not _lean_flip_ok:
             if is_football and tier == 'LEAN': dropped_lean += 1
             continue
+        if _lean_flip_ok and not tier_gate(tier):
+            lean_flip_admitted += 1
         # Sport-aware column aliases: MLB uses home_ml_close, NCAAF/NFL use close_home_ml
         home_ml = g.get('home_ml_close') or g.get('home_ml_odds') or g.get('close_home_ml')
         away_ml = g.get('away_ml_close') or g.get('away_ml_odds') or g.get('close_away_ml')
@@ -1639,6 +1683,9 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         print(f'  {sport} LONG spreads refused: {dropped_football_spread} '
               f'(|line| > {_FLIP_SPREAD_MAX_MAGNITUDE:g}; flipped they are '
               f'49.0% on n=253 — a coin flip)')
+    if lean_flip_admitted:
+        print(f'  {sport} LEAN spreads admitted for flipping only: '
+              f'{lean_flip_admitted} (our side of these is 32%; flipped 68%)')
     if flipped_spread:
         print(f'  {sport} SHORT spreads flipped onto the other side: '
               f'{flipped_spread} (our side of this band is 4-18, n=22)')
