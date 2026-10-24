@@ -1088,7 +1088,14 @@ def _spread_prices(sport: str, dates: set) -> dict:
 _FLIP_SPREAD_MAX_MAGNITUDE = 7.0
 _FLIP_SPREAD_MIN_BOOKS = 2
 #: sport -> max |line| eligible for the flip, None meaning every band.
-_FLIP_BAND_BY_SPORT = {'NCAAF': None, 'NFL': None}
+# ══ THE BAND IS 10.5, MEASURED — AND THIS COPY WAS STILL `None` ══════════
+# 2026-10-24. flip_football_spreads.py got the measured band (walking the
+# cutoff: clears breakeven to |line| 10.5, 62.0% n=121, peak 71.0% n=69 at
+# <=7) but this second copy still said None, meaning "flip every band". So
+# the composer flipped Texas State -13.5 onto Utah State +14 -- 13.5 is well
+# past where any edge exists in either direction. Two constants for one
+# finding is how they drift.
+_FLIP_BAND_BY_SPORT = {'NCAAF': 10.5, 'NFL': 10.5}
 #: Points worse than the flip number we will still take. A board AHEAD of our
 #: number is the same bet on better terms; materially short of it is not.
 _FLIP_LINE_TOLERANCE = 0.5
@@ -1611,7 +1618,21 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # undoing the whole thing and reintroducing the exact badge/read
         # contradiction. The marker is the only reliable signal: the line
         # alone cannot tell a flipped pick from one the engine made.
-        _src_flipped = isinstance(pp.get('_flipped_from'), dict)
+        # ══ NEVER FLIP A PICK ANDY SET BY HAND ══════════════════════════
+        # 2026-10-24. The guard below checked only _flipped_from, so a MANUAL
+        # override sailed straight into the flip and came out inverted: three
+        # picks hand-curated minutes earlier were published as USC -2.5,
+        # Utah State +14 and Georgia State -2.5 -- the exact opposite side of
+        # what the owner chose. set_manual_pick.py's whole contract is that
+        # the override reaches all three surfaces intact, and the flip broke
+        # it silently because `manual` is a different key.
+        #
+        # An override is a deliberate decision with a recorded prior value.
+        # It is never a candidate for a statistical inversion.
+        _src_flipped = (isinstance(pp.get('_flipped_from'), dict)
+                        or bool(pp.get('manual'))
+                        or isinstance(pp.get('_manual_correction'), dict)
+                        or isinstance(pp.get('_unflipped_from'), dict))
         if (is_football and pick_type in ('rl', 'spread')
                 and not juice_swapped and not _src_flipped):
             flipped, _why = _flip_short_spread(pp, g, _flip_px)
