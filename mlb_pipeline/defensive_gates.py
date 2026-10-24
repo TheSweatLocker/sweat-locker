@@ -30,6 +30,7 @@ Add new gates here as the same pattern: apply_<name>_gate(pp, ctx) -> pp.
 from __future__ import annotations
 
 import os
+import re as _re_mod
 
 
 def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
@@ -2419,8 +2420,11 @@ def apply_nfl_big_favourite_spread_cap(pp: dict | None, ctx: dict) -> dict | Non
         return pp
 
 
-def recover_total_line(pp: dict | None, ctx: dict) -> dict | None:
-    """Give a total pick its number back, or say it has none.
+_TRAILING_LINE_RE = _re_mod.compile(r'(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$')
+
+
+def recover_pick_line(pp: dict | None, ctx: dict) -> dict | None:
+    """Give a pick its number back, or say it has none.
 
     ══ 2026-10-23 · "PUBLISHED AT 0, WE BEAT MARKET BY 6.5" ══
     ANDY, on today's Blackhawks game: "plays says over then below published at
@@ -2454,9 +2458,44 @@ def recover_total_line(pp: dict | None, ctx: dict) -> dict | None:
     """
     if not isinstance(pp, dict):
         return pp
-    if str(pp.get('type') or '').lower() not in ('total', 'totals'):
-        return pp
+    ptype = str(pp.get('type') or '').lower()
     if pp.get('line') is not None:
+        return pp
+
+    # ══ 2026-10-23 · SPREADS HAVE THE SAME HOLE, AT PRIME ══
+    # Asked whether the total fix held going forward, the answer was no: the
+    # same null-line shape sits on spreads. Measured from 10-01 -- NFL 8 of
+    # 144 with line=null, TWO OF THEM PRIME (LAC @ MIA 12-27 labelled
+    # 'MIA +7.0', PHI @ ARI 12-06 labelled 'ARI +8.5'), and NHL 19 of 53.
+    # PRIME reaches the Sharp and the Sweat Card, so this is not a COVERAGE
+    # curiosity.
+    #
+    # The number is ALREADY IN THE LABEL and simply never reached the field --
+    # the same defect public_receipt.recover_line was written for this morning
+    # ("the number only existed inside the label string"). So it is parsed from
+    # the label rather than rebuilt from close_spread: the label is already
+    # side-relative, which means NO per-sport sign convention is involved and
+    # none can be got wrong (project_close_spread_sign_bug_914).
+    #
+    # End-anchored on purpose, so "Philadelphia 76ers -5.5" cannot parse as
+    # 76. And it self-skips NHL puckline, whose labels carry no number at all
+    # ("Tampa Bay Lightning RL") -- that market is a fixed +/-1.5 and
+    # check_live_clv documents it as deliberately line-less, so finding
+    # nothing is the correct outcome rather than a miss.
+    if ptype in ('rl', 'spread', 'puckline', 'ats'):
+        m = _TRAILING_LINE_RE.search(str(pp.get('label') or ''))
+        if m:
+            try:
+                pp['line'] = float(m.group(1))
+                pp['_line_recovered_from'] = 'label'
+                print(f'  · {ptype} pick had no line — recovered '
+                      f'{pp["line"]:+g} from its own label '
+                      f'{pp.get("label")!r}')
+            except (TypeError, ValueError):
+                pass
+        return pp
+
+    if ptype not in ('total', 'totals'):
         return pp
     raw = ctx.get('close_total')
     try:
@@ -2478,6 +2517,10 @@ def recover_total_line(pp: dict | None, ctx: dict) -> dict | None:
     return pp
 
 
+#: Kept so pick_lock's import keeps working after the rename.
+recover_total_line = recover_pick_line
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2492,7 +2535,7 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
       - Publish gate LAST — reads final pp state after all demotes and
         hard-caps PRIMEs that don't earn PRIME rigor
     """
-    pp = recover_total_line(pp, ctx)
+    pp = recover_pick_line(pp, ctx)
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)
