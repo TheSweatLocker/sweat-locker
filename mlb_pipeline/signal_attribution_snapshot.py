@@ -97,6 +97,32 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
     return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
 
 
+#: Which side the closing number favours, per sport. DERIVED, not assumed:
+#: tested against the stored result on every graded spread row, NCAAF
+#: 694/774 and NFL 225/225 reproduce it (see scratch sig_orient.py).
+#: NCAAF close_line is the HOME HANDICAP (positive = home getting points);
+#: NFL close_line is positive when HOME IS FAVOURED. Getting this backwards
+#: would label every anchored favourite as a dog, so a sport with no measured
+#: convention returns NEUTRAL rather than a guess.
+_CLOSE_LINE_HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': 1.0}
+
+
+def _anchor_subject_side(sport, ctx):
+    """HOME/AWAY that the close favours, or NEUTRAL when undeterminable."""
+    sgn = _CLOSE_LINE_HOME_FAV_SIGN.get(str(sport or '').upper())
+    if sgn is None:
+        return 'NEUTRAL'
+    for col in ('close_spread', 'close_line'):
+        try:
+            v = float(ctx.get(col))
+        except (TypeError, ValueError):
+            continue
+        if abs(v) < 0.25:
+            return 'NEUTRAL'          # a pick'em has no favourite
+        return 'HOME' if sgn * v > 0 else 'AWAY'
+    return 'NEUTRAL'
+
+
 def _build_rows(sport: str, ctx: dict) -> list[dict]:
     """Extract fired signals for one game → list of snapshot rows."""
     pp = ctx.get('primary_play') or {}
@@ -193,9 +219,18 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
     aw = ctx.get('spread_anchor_weight')
     try:
         if aw is not None and float(aw) > 0:
+            # ANCHOR is a deference WEIGHT, not a pick, so its subject is
+            # the side the market favours -- that is what the projection is
+            # being pulled toward. Recording it makes "when we defer hard to
+            # the market, does the market side cover?" measurable, which is
+            # the only question that can justify or condemn the anchor.
+            # close_line orientation is per-sport and MEASURED, not assumed
+            # (NCAAF 694/774, NFL 225/225): see _anchor_subject_side.
             out.append({**base, 'signal_key': 'ANCHOR',
                         'signal_value': round(float(aw), 2),
-                        'signal_side': 'NEUTRAL', 'kind': 'neutral'})
+                        'signal_side': _anchor_subject_side(
+                            base.get('sport'), ctx),
+                        'kind': 'neutral'})
     except (TypeError, ValueError): pass
 
     # GOAT — from align_status.chips_extra
@@ -218,8 +253,31 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
     for tag in (ctx.get('cohort_tags') or []):
         if not isinstance(tag, str): continue
         key = f'COHORT_{tag.upper().replace(" ", "_")}'
+        # ══ A SIGNAL WITH NO RECORDED SIDE CAN NEVER BE CALIBRATED ══
+        # 2026-10-24. Every COHORT_* row was written with signal_side
+        # 'NEUTRAL', and so was ANCHOR -- 931 of 2,034 rows, 46%. The
+        # consequence is not cosmetic: "did the side this signal argued
+        # cover?" is unanswerable, so the only number available for these
+        # signals is OUR PICK's result on games where they fired. That is a
+        # measurement of our own selection, not of the signal, and it is what
+        # ANCHOR's "46.2%" and HEAVY_HOME_DOG's "40.6%" actually were. I
+        # recommended retiring both on those figures. Andy: "why retire
+        # automatically intesad of looking liek whats driving those negative
+        # ROI". He was right -- there was nothing to look at.
+        #
+        # The cohort tag already names its SUBJECT, so the side is derivable
+        # with no new data: every side-bearing tag on the board is
+        # home-referenced (HOME_FAV, HEAVY_HOME_FAV, HEAVY_HOME_DOG,
+        # DIV_HOME_COVER). SHOOTOUT and GRINDER describe the TOTAL and name
+        # no side, so they stay NEUTRAL rather than being given a fake one.
+        #
+        # Recording the subject is deliberately NOT the same as recording a
+        # recommendation: whether to follow or fade the subject is then a
+        # calibration OUTPUT instead of an assumption baked into the writer
+        # (feedback_signal_needs_a_direction_control).
+        _subj = 'HOME' if 'HOME' in key else 'NEUTRAL'
         out.append({**base, 'signal_key': key, 'signal_value': None,
-                    'signal_side': 'NEUTRAL', 'kind': 'ok'})
+                    'signal_side': _subj, 'kind': 'ok'})
 
     return out
 

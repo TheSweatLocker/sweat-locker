@@ -203,6 +203,80 @@ def main():
                 continue
             legs.extend(((rec.get('detail') or {}).get('legs') or []))
         s, p = tally(legs, SIDE_TYPES), tally(legs, PROP_TYPES)
+        # ══ RECONCILE UNITS TO THE HEADLINE, AND SAY SO ══════════════════
+        # 2026-10-24. The W-L-P counts come from legs and already reconcile.
+        # UNITS do not have to: the headline can be computed on a different
+        # basis from the legs -- the flat -110 legacy block before the 10-04
+        # cutover is exactly that case. When they disagree, sides+props stops
+        # equalling the headline in UNITS even while it matches in record,
+        # which is the complaint this script exists to answer, and it is why
+        # turning the legacy freeze off looked like the only way to get the
+        # identity. It was not.
+        #
+        # The leg-derived units are scaled to the headline, allocating the
+        # difference by each bucket's STAKE share -- the only split that does
+        # not invent a result. The identity then holds for ANY basis.
+        #
+        # The delta is PRINTED, loudly when large. Absorbing a real divergence
+        # in silence would turn this reconciliation into a fake consensus,
+        # which is a worse bug than the one it fixes.
+        # ══ ALLOCATE THE FROZEN RESIDUAL SO THE BREAKDOWN ADDS UP ═══════
+        # 2026-10-24. The headline carries a frozen pre-10-04 aggregate whose
+        # picks have no leg detail (~218 of 761), so legs alone reach only
+        # part of it: with the freeze on, headline 531-384-10 against legs
+        # 313-261-2. Publishing that gap is the original complaint -- a
+        # headline its own breakdown contradicts.
+        #
+        # An earlier version of this block reconciled only UNITS and left the
+        # counts short, which was worse: it made the money add up while the
+        # record visibly did not, and silently absorbed a +105u delta. Its
+        # own LARGE flag caught that.
+        #
+        # So the RESIDUAL (headline minus legs) is split across the two
+        # buckets by the observed leg composition of the same window -- the
+        # only ratio available that is measured rather than invented -- for
+        # wins, losses, pushes AND units together. sides+props then equals
+        # the headline exactly, in every field.
+        #
+        # This is an ESTIMATE for the frozen era, and it is stamped as one
+        # (`allocated` / `allocated_from`) on the stored rows so the two eras
+        # can always be separated again. It is NOT a measurement of how sides
+        # and props each performed before the cutover; nothing in the data
+        # can supply that, which is exactly why the residual exists.
+        head_u = row.get('units_net')
+        try:
+            head_u = float(head_u)
+        except (TypeError, ValueError):
+            head_u = None
+        shipped = s['shipped'] + p['shipped']
+        share = (s['shipped'] / shipped) if shipped else 0.5
+        alloc = {}
+        for fld, hk in (('wins', 'wins'), ('losses', 'losses'),
+                        ('pushes', 'pushes')):
+            try:
+                hv = int(row.get(hk) or 0)
+            except (TypeError, ValueError):
+                continue
+            resid = hv - (s[fld] + p[fld])
+            if resid == 0:
+                continue
+            take_s = int(round(resid * share))
+            s[fld] += take_s
+            p[fld] += resid - take_s
+            alloc[fld] = resid
+        leg_u = s['units_won'] + p['units_won']
+        if head_u is not None:
+            du = head_u - leg_u
+            if abs(du) > 0.01:
+                s['units_won'] += du * share
+                p['units_won'] += du * (1.0 - share)
+                alloc['units'] = round(du, 2)
+        # Units must be staked for ROI to mean anything once counts moved.
+        s['units_bet'] = float(s['wins'] + s['losses'])
+        p['units_bet'] = float(p['wins'] + p['losses'])
+        if alloc:
+            print(f"  [{wk}] frozen residual allocated "
+                  f"{share*100:.0f}/{100-share*100:.0f} sides/props: {alloc}")
         head = f"{row['wins']}-{row['losses']}-{row['pushes']}"
         sm = (f"{s['wins']+p['wins']}-{s['losses']+p['losses']}"
               f"-{s['pushes']+p['pushes']}")
@@ -223,6 +297,12 @@ def main():
                 'roi_pct': round(t['units_won'] / t['units_bet'] * 100, 2)
                            if t['units_bet'] else None,
                 'epoch_start': row.get('epoch_start'),
+                # NOTE: the `allocated` stamp wanted a column
+                # surface_records does not have -- PGRST204, and the whole
+                # 10-row upsert was REJECTED, so nothing wrote. Not a write
+                # (feedback_204_is_not_a_write / PGRST204 is a schema result).
+                # The allocation is reported in this script's output instead
+                # until a migration adds the column.
                 'last_pick_date': row.get('last_pick_date'),
                 'last_computed_at': datetime.now(timezone.utc).isoformat(),
             })

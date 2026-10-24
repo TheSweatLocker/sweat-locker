@@ -1145,8 +1145,102 @@ def pick_ufc_sides() -> list[dict]:
 # were protecting against: there is no longer a flat-priced portion that
 # "must never be cited as proven edge."
 # ══════════════════════════════════════════════════════════════════════════
-SHARP_LEGACY_FREEZE = False
+# ══ 2026-10-24 · BACK TO True. THE TRADE-OFF WAS NEVER REAL ══════════════
+# Andy: "I literally asked yetseday to juts ensue the record mathced between
+# overla dnd side andprop not change the units" -- and "anybody keeping up
+# wihtt hat would see a hige red flags".
+#
+# Both correct. He authorised the IDENTITY (overall == sides + props). Turning
+# the freeze off also moved the published headline from +81.21u to +36.77u,
+# which is a change to the record users track, and it was never asked for. The
+# cost was measured BEFORE the change and written into the comment below
+# instead of being put in front of him while he was deciding.
+#
+# The justification for the flip was that the frozen block "is a single
+# aggregate with NO leg-level detail, so it cannot be split into sides and
+# props -- while the freeze was on, sides+props could never equal the headline
+# BY CONSTRUCTION". That is FALSE, and checking it took one query:
+# daily_surface_records carries legs on 119 of 119 pre-cutover day-rows --
+# 1,931 legs with types (prop 1240, ml 338, game 169, total 128, rl 56).
+#
+# So the identity and the units were never in conflict. split_sharp_card_
+# record.py now reconciles its buckets to the headline explicitly, so
+# sides+props == overall holds for ANY basis instead of only when the basis
+# happens to agree. The honesty conditions above still bind: the frozen
+# portion is flat-priced, it OVERSTATES, and it must never be cited as proven
+# edge or quoted as an ROI we achieved.
+# ══ 2026-10-24 · BACK TO False. I WAS WRONG TWICE; THE TRADE-OFF IS REAL ══
+# I set this to True believing the note above was mistaken. It was not, and
+# the correction matters more than the original claim.
+#
+# What I checked: daily_surface_records carries legs on 119 of 119
+# pre-cutover day-rows -- 1,931 of them, typed (prop 1240, ml 338, game 169,
+# total 128, rl 56). I concluded the frozen block therefore COULD be split and
+# that Andy was never facing a trade-off between the units and the identity.
+#
+# What I failed to check: whether those legs SUM TO the frozen constant. They
+# do not, and not by a little. With the freeze on:
+#     headline (frozen constant + receipt era)   531-384-10   +81.72u
+#     legs the splitter can actually find        313-261-2    -23.45u
+# ~218 picks of the frozen MLB aggregate (455-297-9) have no corresponding
+# legs. So the frozen number is a DIFFERENT POPULATION from the legs, not the
+# same population on a different basis -- which is exactly what the original
+# note said, and why sides+props cannot equal the headline while it is on.
+#
+# Legs existing was necessary for the split, not sufficient. Finding them and
+# stopping there is the same error as reading a column's fill rate and
+# calling it wired.
+#
+# So the conflict is genuine and it is ANDY'S CALL, not a bug to code around:
+#   freeze OFF  543-402-3  +36.77u  ROI +3.20%  -- identity HOLDS, real prices
+#   freeze ON   530-384-10 +81.21u  ROI +8.89%  -- identity CANNOT hold
+# Left OFF because that is the only self-consistent published state: with it
+# on, the card shows a headline its own breakdown contradicts, which is the
+# complaint split_sharp_card_record.py exists to answer.
+# ══ 2026-10-24 · ON, AND IT STAYS ON. ANDY'S EXPLICIT DIRECTIVE ══════════
+# "the units need to make sense for what they ahve ebeen since launch,
+#  ddudcting 30+ units overnight with no epxlaination is fucking unsat ...
+#  It slosers users trust, and it makes it seem liek eveythign we do is
+#  smoke and mirrors"  /  "THIS CANNOT STAY THE FUCKING SAME"
+#
+# The published headline must stay continuous with what subscribers have
+# tracked since launch. A 44-unit overnight drop with no on-screen
+# explanation is a trust event, and it is worse than carrying a basis that
+# overstates: the overstatement is disclosed and stable, while the drop reads
+# as either a catastrophic day or a fabrication.
+#
+# I flipped this off on 10-23 to deliver the sides+props identity and did not
+# put the unit cost in front of him while he was deciding. That was the
+# error; this is the correction.
+#
+# The cost stays documented, not hidden:
+#   freeze ON   530-384-10  +81.21u  ROI +8.89%
+#   freeze OFF  543-402-3   +36.77u  ROI +3.20%
+# The W-L is nearly identical. The gap is pricing: the pre-10-04 era is flat
+# -110, which credits a -200 favourite win 0.909u when it returned 0.50u.
+#
+# HONESTY CONDITIONS, binding: the frozen portion OVERSTATES,
+# basis='legacy_flat_110' stays stamped on every frozen pick, and this figure
+# is never cited as proven edge or quoted as an ROI we achieved.
+#
+# The frozen block is a DIFFERENT POPULATION from the leg detail (~218 of its
+# 761 picks have no legs), so sides+props cannot be derived from legs alone.
+# split_sharp_card_record.py allocates the frozen residual across the two
+# buckets by the observed leg composition of that same era, so the breakdown
+# adds up to the headline instead of visibly contradicting it. That
+# allocation is an ESTIMATE and is labelled as one in the stored rows.
+SHARP_LEGACY_FREEZE = True
 SHARP_LEGACY_CUTOVER = dt.date(2026, 10, 4)      # inclusive last legacy day
+#: Where the frozen block is DATED. It represents 08-20..10-04 history, and
+#: dating it on the cutover put all 761 of its picks inside the recent
+#: windows: with the freeze on, mtd read 508-360-10 for October when
+#: October's real receipt record is 59-67-1, and d30 read 512-373-10. A
+#: pre-launch aggregate reported as this month's performance is a
+#: fabrication a subscriber can catch by counting the slate.
+#: Dating it at the ERA START keeps it in epoch/lifetime (where it belongs,
+#: and where Andy needs the launch-continuous total) and out of d7/d30/mtd,
+#: which then show the receipt era at real prices.
+SHARP_LEGACY_ERA_START = dt.date(2026, 8, 20)
 SHARP_LEGACY_FROZEN = {'MLB': (455, 297, 9, 110.73)}
 
 
@@ -1237,15 +1331,15 @@ def pick_sharp_card() -> list[dict]:
                 continue
             per_win = (won + l) / w
             for _ in range(w):
-                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                out.append({'sport': sp, 'date': SHARP_LEGACY_ERA_START,
                             'result': 'win', 'stake': 1.0, 'payout': per_win,
                             'basis': 'legacy_flat_110'})
             for _ in range(l):
-                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                out.append({'sport': sp, 'date': SHARP_LEGACY_ERA_START,
                             'result': 'loss', 'stake': 1.0, 'payout': 0.909,
                             'basis': 'legacy_flat_110'})
             for _ in range(p_):
-                out.append({'sport': sp, 'date': SHARP_LEGACY_CUTOVER,
+                out.append({'sport': sp, 'date': SHARP_LEGACY_ERA_START,
                             'result': 'push', 'stake': 1.0, 'payout': 0.909,
                             'basis': 'legacy_flat_110'})
     return out
