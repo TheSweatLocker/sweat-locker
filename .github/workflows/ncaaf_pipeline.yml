@@ -7,6 +7,14 @@ on:
     - cron: '0 22 * * 3'   # Wed 6pm ET   — mid-week refresh + externals pull (Phase 2)
     - cron: '0 18 * * 5'   # Fri 2pm ET   — Fri night games lock + Sat prep
     - cron: '15 12 * * 6'  # Sat 8:15am EDT (12:15 UTC) — staggered from 12:00 pile-up (2026-09-08)
+    # 2026-10-24 TEMPORARY, Andy-approved for this weekend only.
+    # The Saturday slate's last kickoff is 10:15pm ET and finishes
+    # ~1:30am, but the resolver below does not run until 9am ET, so
+    # Saturday's graded record is not visible until mid-morning.
+    # 06:00 UTC is 2am ET -- after the late window closes, seven
+    # hours earlier. Same job, run once; it adds no request volume.
+    # REMOVE THIS once the weekend is reviewed (tracked at B180).
+    - cron: '0 6 * * 0'    # Sun 2am ET   — overnight Sat resolver (temporary)
     - cron: '0 13 * * 0'   # Sun 9am ET   — Sat resolver + Sun cohort refresh
   workflow_dispatch:
     inputs:
@@ -92,6 +100,10 @@ jobs:
           else
             HOUR=$(date -u +%H); DOW=$(date -u +%u)
             if [ "$DOW" = "7" ] && [ "$HOUR" = "13" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
+            # the temporary 06:00 UTC Sunday slot above. Without a
+            # case here it would fall through to mode=full and run
+            # the whole pipeline at 2am instead of just grading.
+            elif [ "$DOW" = "7" ] && [ "$HOUR" = "06" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
             elif [ "$DOW" = "6" ] && [ "$HOUR" = "12" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
             elif [ "$DOW" = "5" ] && [ "$HOUR" = "18" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
             else echo "mode=full" >> $GITHUB_OUTPUT
