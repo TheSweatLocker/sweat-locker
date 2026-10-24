@@ -418,7 +418,98 @@ def _existing_gid_for_fight(fight: dict) -> str | None:
         if '' in got:
             continue
         if got == want:
-            return row.get('game_id')
+            old_gid = row.get('game_id')
+            # ══ 2026-10-23 · REUSING A STALE ID HID THE READ FROM THE APP ══
+            # ANDY: "UFC matches for tomorrow some have Jerry reads some just
+            # ahve model pick and likely round".
+            #
+            # Reusing the old id stops the duplicate-read disaster this
+            # function was written for, and it creates a second one: the app
+            # looks up ufc_<date>_<CURRENT fight_order>, so once the card is
+            # renumbered the read becomes unreachable, or worse, the id now
+            # belongs to a DIFFERENT fight. Verified on UFC 333:
+            #
+            #   ufc_2026-10-24_4  held Magomedov vs Rowston, now order 7
+            #   ufc_2026-10-24_8  held Volkov vs Kuniev,     now order 11
+            #   orders 13 and 14 had no reachable read at all
+            #
+            # and after the hyphen fix recovered Krylov vs Yakhyaev as order 8,
+            # that id would have served VOLKOV's analysis on KRYLOV's fight.
+            # Missing is bad; wrong is worse.
+            #
+            # So the row is RE-KEYED to the current order rather than reused in
+            # place: still exactly one read per fight, no twin to grade twice,
+            # and the id matches what the app asks for. Only when the old id
+            # has no receipt pinned to it -- a receipt is frozen identity, and
+            # moving the read out from under one would orphan it. With a
+            # receipt present the old id is reused as before, which keeps the
+            # grading safe and leaves the display problem for the client fix.
+            want_gid = f"ufc_{fight['event_date']}_{fight['fight_order']}"
+            if old_gid == want_gid:
+                return old_gid
+            try:
+                rc = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/public_receipts', headers=H_READ,
+                    params={'sport': 'eq.UFC', 'game_id': f'eq.{old_gid}',
+                            'select': 'id', 'limit': '1'}, timeout=15)
+                pinned = bool(rc.status_code == 200 and rc.json())
+            except Exception:                                  # noqa: BLE001
+                pinned = True          # cannot prove it is free -> do not move
+            if pinned:
+                print(f"  · {a} vs {b}: read sits at {old_gid} and a receipt "
+                      f"is pinned to it — reusing, not re-keying")
+                return old_gid
+            try:
+                up = requests.patch(
+                    f'{SUPABASE_URL}/rest/v1/jerry_reads',
+                    headers=H_WRITE,
+                    params={'sport': 'eq.UFC', 'game_id': f'eq.{old_gid}',
+                            'game_date': f"eq.{fight['event_date']}"},
+                    data=json.dumps({'game_id': want_gid}), timeout=15)
+                if up.status_code in (200, 204):
+                    print(f"  · {a} vs {b}: re-keyed read {old_gid} -> "
+                          f"{want_gid} (card was renumbered)")
+                    return want_gid
+                # ══ THE RE-KEYS FORM A CHAIN ══
+                # A renumbered card shifts several fights at once, so the
+                # moves are 4->7, 7->10, 10->13 and the target of one is the
+                # current home of the next. Processed in card order, two of
+                # three 409'd on "Key (sport, game_id, game_date) already
+                # exists" and the chain only resolved over three separate
+                # runs. The pipeline runs this ONCE.
+                #
+                # So on a conflict the OCCUPANT is displaced to a temporary id
+                # first. It belongs to a fight later in this same loop, which
+                # will find its read by fighter PAIR -- not by id -- and
+                # re-key it from the temp slot to its own correct order before
+                # the run ends. One pass, any order.
+                if up.status_code == 409:
+                    tmp = f"ufc_{fight['event_date']}_tmp{fight['fight_order']}"
+                    mv = requests.patch(
+                        f'{SUPABASE_URL}/rest/v1/jerry_reads', headers=H_WRITE,
+                        params={'sport': 'eq.UFC',
+                                'game_id': f'eq.{want_gid}',
+                                'game_date': f"eq.{fight['event_date']}"},
+                        data=json.dumps({'game_id': tmp}), timeout=15)
+                    if mv.status_code in (200, 204):
+                        again = requests.patch(
+                            f'{SUPABASE_URL}/rest/v1/jerry_reads',
+                            headers=H_WRITE,
+                            params={'sport': 'eq.UFC',
+                                    'game_id': f'eq.{old_gid}',
+                                    'game_date': f"eq.{fight['event_date']}"},
+                            data=json.dumps({'game_id': want_gid}), timeout=15)
+                        if again.status_code in (200, 204):
+                            print(f"  · {a} vs {b}: displaced occupant of "
+                                  f"{want_gid} to {tmp}, re-keyed {old_gid} "
+                                  f"-> {want_gid}")
+                            return want_gid
+                    print(f"  ⚠ could not displace occupant of {want_gid}")
+                print(f"  ⚠ re-key {old_gid} -> {want_gid} HTTP "
+                      f"{up.status_code}: {str(up.text)[:120]}")
+            except Exception as e:                             # noqa: BLE001
+                print(f'  ⚠ re-key failed {old_gid}: {e}')
+            return old_gid
     return None
 
 

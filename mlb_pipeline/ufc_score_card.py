@@ -93,36 +93,87 @@ def fetch_fighter_url(name):
     """Look up fighter_url via ufc_fighter_stats.
 
     2026-07-27 fix: fighter names in ufc_fighter_stats are stored
-    accent-stripped (Uros Medic, not Uroš Medić) but ESPN's scraper
-    feeds us accented names. Plain ILIKE with accented input misses
-    accent-stripped rows. Try three lookups in order:
-      1. Exact name as-given (in case DB has both variants)
-      2. Accent-stripped version (catches Medić → Medic etc.)
-      3. Last-name-only fallback (last-ditch fuzzy)
-    """
-    import unicodedata
-    def _strip(s):
-        return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+    accent-stripped (Uros Medic, not Uros Medic with diacritics) but the
+    scraper feeds us accented names, so a plain ILIKE with accented input
+    misses.
 
-    tries = [name, _strip(name)]
-    # Only add last-name if it's a plausibly-unique last name (5+ chars)
-    stripped_last = _strip(name).split()[-1] if name.split() else ''
-    if len(stripped_last) >= 5:
-        tries.append(stripped_last)
+    ══ 2026-10-23 · A HYPHEN COST US A FIGHT, AND THE FALLBACK WAS DEAD ══
+    ANDY, on UFC 333: 4 of 14 fights had no pick at all. ufc_score_card skips
+    a fight when either fighter has no URL, and #8 Nikita Krylov vs
+    Abdul-Rakhman Yakhyaev was skipped for a single character: the card spells
+    him "Abdul-Rakhman", ufc_fighter_stats stores "Abdul Rakhman". Krylov is
+    present and 31-11, so the whole fight was lost to punctuation. Same rule
+    as project_nhl_stl_name_mismatch_1013 — never join feeds on a raw name.
+
+    And the last-name fallback could never have saved it. It passed
+    `ilike.{last}` with NO wildcards, which is an exact case-insensitive match
+    against the WHOLE column, so "Yakhyaev" could never match "Abdul Rakhman
+    Yakhyaev". That branch has been dead since it was written.
+
+    Order, widest-safe last:
+      1. the name as given
+      2. accent-stripped
+      3. punctuation normalised — hyphens and apostrophes to spaces, and
+         removed entirely, which covers both "Abdul-Rakhman"/"Abdul Rakhman"
+         and "Lone'er"/"Loneer"
+      4. surname wildcard, accepted ONLY when it is unambiguous or the first
+         name also matches. ufc_fighter_stats holds two Kopylovs, six
+         Magomedovs and twenty-eight Santoses, and a .limit(1) on an ambiguous
+         surname is what put Andrei Kopylov's 6-11 record on Roman's card.
+    """
+    import re as _re
+    import unicodedata
+
+    def _strip(s):
+        return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore')             .decode('ascii')
+
+    base = _strip(name or '')
+    tries = [name, base,
+             _re.sub(r"[-'’.]", ' ', base),
+             _re.sub(r"[-'’.]", '', base)]
+    tries = [_re.sub(r'\s+', ' ', t).strip() for t in tries if t]
 
     seen = set()
     for candidate in tries:
-        if candidate in seen or not candidate: continue
-        seen.add(candidate)
+        key = candidate.lower()
+        if key in seen or not candidate:
+            continue
+        seen.add(key)
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/ufc_fighter_stats",
             headers=HEADERS,
-            params={"fighter_name": f"ilike.{candidate}", "select": "fighter_url", "limit": "1"},
+            params={"fighter_name": f"ilike.{candidate}",
+                    "select": "fighter_url", "limit": "1"},
             timeout=10,
         )
         d = r.json() if r.status_code == 200 else []
         if d:
             return d[0]["fighter_url"]
+
+    # Surname, wildcarded this time, and refused when ambiguous.
+    parts = base.split()
+    last = parts[-1] if parts else ''
+    first = parts[0].lower() if parts else ''
+    if len(last) >= 5:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/ufc_fighter_stats",
+            headers=HEADERS,
+            params={"fighter_name": f"ilike.%{last}%",
+                    "select": "fighter_name,fighter_url", "limit": "10"},
+            timeout=10,
+        )
+        d = r.json() if r.status_code == 200 else []
+        if len(d) == 1:
+            return d[0]["fighter_url"]
+        if len(d) > 1 and first:
+            # several share the surname — take one only if the FIRST name
+            # also matches, never on the surname alone
+            hits = [x for x in d
+                    if first in str(x.get('fighter_name', '')).lower()]
+            if len(hits) == 1:
+                return hits[0]["fighter_url"]
+            print(f"  · {name}: {len(d)} fighters share surname {last!r} and "
+                  f"the first name does not disambiguate — refusing to guess")
     return None
 
 
