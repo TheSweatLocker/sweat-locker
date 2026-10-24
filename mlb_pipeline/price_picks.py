@@ -112,10 +112,12 @@ def nfl_key(game_date, away, home) -> str | None:
     return f"{str(game_date)[:10].replace('-', '')}_{a}_{h}"
 
 
-#: How many of the most recent captures to read per sport. One capture cycle
-#: is roughly games x markets x sides x books — about 600 rows for an NFL
-#: Sunday — so this covers several cycles with room to spare.
-QUOTE_SCAN_ROWS = 8000
+#: Pages of 1,000 captures to walk per sport, newest first. An NCAAF Saturday
+#: is ~44 games x 3 markets x 2 sides x ~10 books = 2,640 rows per capture
+#: cycle, so 40 pages covers roughly 15 cycles — enough to see every game on
+#: the board, and still only 40 cheap keyset requests instead of 700 deep
+#: offsets.
+QUOTE_SCAN_PAGES = 40
 
 
 def quote_index(sport: str, lo: str) -> dict:
@@ -151,26 +153,47 @@ def quote_index(sport: str, lo: str) -> dict:
     `lo` is still honoured as a floor so a backfill cannot reach past its
     window, but it no longer drives the volume.
     """
-    r = requests.get(f'{SB}/rest/v1/line_history', headers=H, timeout=120,
-                     params={'sport': f'eq.{sport}',
-                             'select': 'game_id,market,book,side,line,price,'
-                                       'captured_at,commence_time',
-                             'commence_time': f'gte.{lo}',
-                             'order': 'captured_at.desc',
-                             'limit': QUOTE_SCAN_ROWS})
-    if r.status_code != 200:
-        print(f'  !! line_history {sport}: HTTP {r.status_code} '
-              f'{r.text[:180]}')
-        return defaultdict(list)
-    rows = r.json()
-    if not isinstance(rows, list):
-        print(f'  !! line_history {sport}: {str(rows)[:180]}')
-        return defaultdict(list)
-    if len(rows) >= QUOTE_SCAN_ROWS:
-        # Hit the cap: the newest captures are still in hand, so the current
-        # board is intact, but say so rather than let it pass as complete.
-        print(f'  · {sport}: quote scan hit its {QUOTE_SCAN_ROWS} cap — '
-              f'current board is covered, older captures were not read')
+    # Keyset pagination on captured_at, newest first. NOT offset: the
+    # original walked offsets to 700,000 and hung. And NOT a single flat page
+    # either — the first attempt at this capped one page at 8,000 rows, and
+    # NCAAF captures 136,658 rows in 24h, so which games landed inside the cap
+    # was luck. Two identical runs priced 26 and then 12 NCAAF reads, which is
+    # how that showed up. A cursor keeps every page cheap at any depth while
+    # still walking far enough to cover the whole board.
+    rows, cursor, pages = [], None, 0
+    while pages < QUOTE_SCAN_PAGES:
+        params = {'sport': f'eq.{sport}',
+                  'select': 'game_id,market,book,side,line,price,'
+                            'captured_at,commence_time',
+                  'commence_time': f'gte.{lo}',
+                  'order': 'captured_at.desc',
+                  'limit': 1000}
+        if cursor:
+            params['captured_at'] = f'lt.{cursor}'
+        r = requests.get(f'{SB}/rest/v1/line_history', headers=H, timeout=120,
+                         params=params)
+        if r.status_code != 200:
+            print(f'  !! line_history {sport}: HTTP {r.status_code} '
+                  f'{r.text[:180]}')
+            break
+        b = r.json()
+        if not isinstance(b, list):
+            print(f'  !! line_history {sport}: {str(b)[:180]}')
+            break
+        if not b:
+            break
+        rows += b
+        pages += 1
+        nxt = str(b[-1].get('captured_at'))
+        if nxt == cursor:           # all ties — cursor cannot advance
+            break
+        cursor = nxt
+        if len(b) < 1000:
+            break
+    if pages >= QUOTE_SCAN_PAGES:
+        print(f'  · {sport}: quote scan stopped at {QUOTE_SCAN_PAGES} pages '
+              f'({len(rows)} rows) — newest captures are in hand, older were '
+              f'not read')
     latest = {}
     for x in rows:
         if x.get('price') is None:
