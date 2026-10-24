@@ -101,8 +101,36 @@ export default function UfcFightDetail({
   const jerry = jerryKey ? ufcJerryByGame[jerryKey] : null;
   const jerryFull = scrubJerry(jerry?.long_read) || scrubJerry(jerry?.short_read);
 
-  const f1Stats = ufcFighterStats[f1last];
-  const f2Stats = ufcFighterStats[f2last];
+  // ══ 2026-10-23 · EVERY FIGHTER SHOWED NO STATS ══
+  // ANDY: "all are missing fighter stats size length etc."
+  //
+  // The map is keyed by FULL name and this read it by LAST name, so every
+  // lookup missed and hasStats was false on every fight — the whole
+  // head-to-head grid (reach, height, weight, stance, SLpM, TD, finish rate)
+  // rendered empty on all 10 fights of UFC 333.
+  //
+  // index.tsx builds it as `statsByName[full.toLowerCase()]`. It used to key
+  // by surname, and the 2026-10-02 fix changed the producer to full names on
+  // purpose — ufc_fighter_stats holds two Kopylovs and a surname key could
+  // only ever hold one of them, which is how Andrei Kopylov's 6-11 showed on
+  // Roman's card. That fix did not update this consumer, so the producer and
+  // the reader have disagreed on key SHAPE ever since
+  // (feedback_dedupe_key_shape_must_match: two keys of different shape can
+  // never be equal, no matter how well each is normalised).
+  //
+  // Full name first. Surname stays as a fallback for a display-name spelling
+  // the producer resolved under a different full string, but ONLY when it is
+  // unambiguous on this card — never where it could silently seat the wrong
+  // fighter, which is the bug the 10-02 change was making impossible.
+  const statsFor = (full: string, last: string) => {
+    const k = String(full || '').trim().toLowerCase();
+    if (k && ufcFighterStats[k]) return ufcFighterStats[k];
+    const hits = Object.keys(ufcFighterStats).filter(
+      n => n.split(' ').pop() === last);
+    return hits.length === 1 ? ufcFighterStats[hits[0]] : undefined;
+  };
+  const f1Stats = statsFor(String(fighter1), f1last);
+  const f2Stats = statsFor(String(fighter2), f2last);
   const fightExternals = pick?.game_id ? (ufcExternals[pick.game_id] || []) : [];
 
   const hasStats = !!(f1Stats || f2Stats);

@@ -207,7 +207,19 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           cd mlb_pipeline
-          python generate_ufc_fight_synthesis.py
+          # ══ 2026-10-23 · SYNTHESIS RAN WITHOUT --force, READS RAN WITH IT ══
+          # ANDY: "UFC matches for tomorrow some have Jerry reads some just
+          # ahve model pick and likely round, why?"
+          #
+          # On UFC 333, picks existed for fight_orders 1,3,6,7,9,10,11,12,13,14
+          # while jerry_reads covered only 1,3,4,6,7,8,9,10,11 -- so the top of
+          # the card, Dvalishvili/Yan and Volkanovski/Evloev among it, had a
+          # model pick and no narrative. Running this WITHOUT --force meant a
+          # fight skipped on the first pass (no odds or EV yet that early) was
+          # never retried, while generate_ufc_game_reads two steps below has
+          # always run with --force. Re-running it by hand with --force
+          # produced all 10 immediately.
+          python generate_ufc_fight_synthesis.py --force
 
       # 2026-08-22: UFC game reads MOVED HERE from mlb_pipeline.yml where it
       # was firing --force every MLB cron with no UFC-workflow context. Now
