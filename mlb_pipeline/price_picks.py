@@ -112,11 +112,65 @@ def nfl_key(game_date, away, home) -> str | None:
     return f"{str(game_date)[:10].replace('-', '')}_{a}_{h}"
 
 
+#: How many of the most recent captures to read per sport. One capture cycle
+#: is roughly games x markets x sides x books — about 600 rows for an NFL
+#: Sunday — so this covers several cycles with room to spare.
+QUOTE_SCAN_ROWS = 8000
+
+
 def quote_index(sport: str, lo: str) -> dict:
-    """Latest quote per (game_id, market, side, line), newest wins."""
-    rows = page('line_history', sport=f'eq.{sport}',
-                select='game_id,market,book,side,line,price,captured_at',
-                commence_time=f'gte.{lo}')
+    """Latest quote per (game_id, market, side, line), newest wins.
+
+    ══ 2026-10-23 · THIS HUNG, WHICH IS WHY PRICING WAS DEGRADING ══
+    price_picks never completed. Run against a single sport it exits 124 on a
+    115s timeout with zero output, which is why jerry_reads pricing fell from
+    100% in early October to 55% on 10-23, 21% on the 10-24 slate and 0% on
+    10-27/28/31, and why an unpriced pick cannot be graded for ROI or CLV.
+
+    The cause was here. It paged ALL of line_history for the sport with
+    commence_time >= lo, and lo defaults to 14 days back:
+
+        NFL     702,512 rows
+        NCAAF   the COUNT ITSELF times out (57014) — over 600k
+        NBA     639,202 rows
+        MLB      70,544 rows
+
+    At 1,000 per request that is 700+ requests per sport with offsets reaching
+    700,000, and a deep offset makes Postgres walk every skipped row. Across
+    six sports it is thousands of requests and millions of row-walks — the
+    exact shape that took the app down on 10-21. So this being unscheduled was
+    protective, not an oversight: scheduling it as written would have been
+    dangerous.
+
+    What the function actually needs is the CURRENT board, not history. So it
+    takes ONE page of the most recent captures, ordered captured_at DESC, with
+    no offset walking at all. That also fixes a correctness bug: the old query
+    had no `order`, so "newest wins" depended on whatever order PostgREST
+    happened to return (feedback_unordered_data_zero_picks_a_vintage).
+
+    `lo` is still honoured as a floor so a backfill cannot reach past its
+    window, but it no longer drives the volume.
+    """
+    r = requests.get(f'{SB}/rest/v1/line_history', headers=H, timeout=120,
+                     params={'sport': f'eq.{sport}',
+                             'select': 'game_id,market,book,side,line,price,'
+                                       'captured_at,commence_time',
+                             'commence_time': f'gte.{lo}',
+                             'order': 'captured_at.desc',
+                             'limit': QUOTE_SCAN_ROWS})
+    if r.status_code != 200:
+        print(f'  !! line_history {sport}: HTTP {r.status_code} '
+              f'{r.text[:180]}')
+        return defaultdict(list)
+    rows = r.json()
+    if not isinstance(rows, list):
+        print(f'  !! line_history {sport}: {str(rows)[:180]}')
+        return defaultdict(list)
+    if len(rows) >= QUOTE_SCAN_ROWS:
+        # Hit the cap: the newest captures are still in hand, so the current
+        # board is intact, but say so rather than let it pass as complete.
+        print(f'  · {sport}: quote scan hit its {QUOTE_SCAN_ROWS} cap — '
+              f'current board is covered, older captures were not read')
     latest = {}
     for x in rows:
         if x.get('price') is None:

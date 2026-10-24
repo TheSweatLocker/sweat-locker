@@ -785,5 +785,28 @@ bash "$RUN_STEP" --detector --label "audit_unscheduled_writers.py"   python audi
 # Internal only -- project_sweat_rating_surfacing_pinned_1004 still stands;
 # this refreshes the number without surfacing it.
 bash "$RUN_STEP" --label "compute_sweat_rating.py"   python compute_sweat_rating.py --all --write
+
+# ══ 2026-10-23 · B168 · price_picks HUNG, WHICH IS WHY PRICING DECAYED ══
+# It never completed: run against one sport it exited 124 on a 115s timeout
+# with zero output. jerry_reads pricing had fallen from 100% in early October
+# to 55% on 10-23, 21% on the 10-24 slate and 0% on 10-27/28/31, and an
+# unpriced pick cannot be graded for ROI or CLV.
+#
+# quote_index paged ALL of line_history for each sport with a 14-day floor:
+# NFL 702,512 rows, NBA 639,202, and for NCAAF the COUNT ITSELF timed out.
+# At 1,000 a request that is 700+ requests per sport with offsets reaching
+# 700,000, every deep offset walking the rows it skips — the same shape that
+# took the app down on 10-21. So it being unscheduled was PROTECTIVE, and
+# scheduling it as written would have been dangerous.
+#
+# It now reads ONE ordered page of the most recent captures per sport, which
+# is all the current board requires: 6 requests and 8.6 seconds for every
+# sport, against a hard timeout before. That is why it is safe to schedule at
+# last. Pricing on the 10-24 slate went 21% -> 53% and 10-31 went 0% -> 87%
+# on the first real run.
+#
+# The rest of the gap is NOT this script: 93 of 107 misses are "no quotes for
+# this game", the jerry_reads/line_history game_id mismatch tracked as B160.
+bash "$RUN_STEP" --label "price_picks.py"   python price_picks.py --write
 echo ""
 echo "══ nightly cross-sport complete ══"
