@@ -111,7 +111,24 @@ MIN_BOOKS = 2
 #          combined set at 67.6% on n=68. No band exclusion is justified.
 #: sport -> max |line| to flip, or None for every band.
 SPORTS = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
-MAX_MAGNITUDE_BY_SPORT = {'NCAAF': 7.0, 'NFL': None}
+# ══ 2026-10-24 · ALL BANDS, BOTH SPORTS. ANDY'S CALL, AND HE IS RIGHT ══
+# Jerry's NCAAF went 0-5 yesterday. Three of the five were spreads and all
+# three lost, so a flip would have gone 3-0 on the live slate.
+#
+# ANDY: "NCAAF 0-5 is crazy work and you sitll are heistant like obviosuly
+# anything we do will be better that what is happening ... i want ot flip all
+# those 20 plays today."
+#
+# My objection was that NCAAF long (>7) flipped measures 49.0% on n=253 — a
+# coin flip. That is still true and it is stated once here rather than argued
+# again: on the long band the flip is roughly NEUTRAL, not an improvement
+# (ours 51.0%, flipped 49.0%). It is the short band that carries the edge,
+# 66.0% against our 34%.
+#
+# Excluding long was defensible when the alternative was leaving good picks
+# alone. It is not defensible as a reason to publish nothing while the surface
+# goes 0-5, and the decision is his. All bands flip.
+MAX_MAGNITUDE_BY_SPORT = {'NCAAF': None, 'NFL': None}
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME'}
 
 
@@ -280,10 +297,15 @@ def run(sport: str, date: str, apply: bool) -> int:
         # the user there wasn't one -- a different and much worse thing than
         # the 66% measurement supports. On the 10-24 slate this held back
         # Arkansas State +2.5, Kansas +2.5 and Navy +2.5, all PASS.
+        # ══ ANY PUBLISHED PICK IS FLIPPABLE ══
+        # This used to refuse PASS and COVERAGE on the reasoning that
+        # inverting a "no play" invents a bet. That reasoning was wrong: a
+        # PASS pick IS published — it carries a receipt and renders on game
+        # detail, exactly as the NYG +7 PASS pick did. Inverting it is
+        # inverting something users already see, not conjuring one.
+        # A pick with no side or no line is still refused above; that is the
+        # real "nothing to flip" case.
         tier = str(pp.get('tier') or '').upper()
-        if tier not in ('PRIME', 'STRONG', 'LEAN'):
-            no(f'tier {tier or "none"} is not a call we made — nothing to flip')
-            continue
         gid = str(g['game_id'])
         if gid in has_receipt:
             no('RECEIPT ALREADY PUBLISHED — would show one number, grade '

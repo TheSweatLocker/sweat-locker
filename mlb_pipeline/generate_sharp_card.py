@@ -99,7 +99,7 @@ FOOTBALL_CHALK_ML_JUICE_MAX = -1500        # if picked ML <= this, cap it
 # the quota drops by tier priority (LEAN first, then STRONG).
 # Historical volume was 100+; new cap ~50 balances "sharp discipline"
 # with "cross-sport coverage on Sat when 4 sports are live."
-SHARP_CARD_ITEM_CAP = 20  # was 50 — tightened 2026-09-11 for curation
+SHARP_CARD_ITEM_CAP = 36  # 20 cut the football flips off (2026-10-24)
 
 # (4) 2026-09-06 juice cap on SOLE game picks (all sports). ML picks
 # juicier than this get auto-swapped to the spread side of the same
@@ -121,7 +121,7 @@ LEDGER_ML_JUICE_MAX    = -450  # ledger-only; documented for the composer that b
 # because on quiet slates it could produce a 2-3 item card.
 SHARP_CARD_PER_SPORT_MAX = {
     'MLB':   15,   # daily bread — was 25
-    'NCAAF': 5,    # Sat slate — was 12
+    'NCAAF': 20,   # Sat slate — 5 throttled the flips to a trickle (10-24)
     'NFL':   5,    # Sun slate — was 10
     'NCAAB': 5,    # was 10
     'NBA':   3,    # was 8
@@ -159,7 +159,7 @@ COLD_LOOKBACK_DAYS = 7
 COLD_MIN_SAMPLE = 15         # need at least 15 plays to trust the sample
 COLD_HIT_RATE_THRESHOLD = 0.50   # < 50% = cold
 WARM_HIT_RATE_THRESHOLD = 0.55   # ≥ 55% = normal
-COLD_ITEM_CAP = 15            # tighter deck when cold
+COLD_ITEM_CAP = 30            # was 15 — do not throttle the flips
 COLD_TIER_FILTER = {'PRIME', 'STRONG'}   # cold-mode: drop LEAN
 
 _SPORT_PRIORITY = {'MLB': 0, 'NCAAF': 1, 'NFL': 2, 'NCAAB': 3, 'NBA': 4, 'NHL': 5, 'UFC': 6}
@@ -1088,7 +1088,7 @@ def _spread_prices(sport: str, dates: set) -> dict:
 _FLIP_SPREAD_MAX_MAGNITUDE = 7.0
 _FLIP_SPREAD_MIN_BOOKS = 2
 #: sport -> max |line| eligible for the flip, None meaning every band.
-_FLIP_BAND_BY_SPORT = {'NCAAF': 7.0, 'NFL': None}
+_FLIP_BAND_BY_SPORT = {'NCAAF': None, 'NFL': None}
 #: Points worse than the flip number we will still take. A board AHEAD of our
 #: number is the same bet on better terms; materially short of it is not.
 _FLIP_LINE_TOLERANCE = 0.5
@@ -1280,8 +1280,14 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
                 continue
             if str(_pp.get('type') or '').lower() not in ('rl', 'spread'):
                 continue
+            # 2026-10-24: this still filtered on the old short-only constant,
+            # so a long-band game never had its two-sided quotes FETCHED and
+            # then failed later with "no 2+ books post that side" — 25 of them
+            # on the 10-24 slate. The pre-pass has to use the same per-sport
+            # band the flip itself uses, or it starves the flip of prices.
+            _pb = _FLIP_BAND_BY_SPORT.get(sport, _FLIP_SPREAD_MAX_MAGNITUDE)
             try:
-                if abs(float(_pp.get('line'))) <= _FLIP_SPREAD_MAX_MAGNITUDE:
+                if _pb is None or abs(float(_pp.get('line'))) <= _pb:
                     _flip_need.add(str(_g.get('game_id')))
             except (TypeError, ValueError):
                 continue
@@ -1449,7 +1455,12 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # at 32%. So a LEAN football SPREAD survives this gate, and only
         # because the flip block at the end of the loop will invert it; a LEAN
         # ML or total is still dropped, because neither was measured.
-        _lean_flip_ok = (is_football and tier == 'LEAN'
+        # 2026-10-24: widened from LEAN to EVERY tier, for spreads only.
+        # Jerry's NCAAF went 0-5 yesterday with 3 of 3 spreads losing. A tier
+        # gate that admits nothing while the surface goes 0-5 is not
+        # discipline. Our conviction is an anti-signal on this market, so the
+        # tier tells us nothing about whether to flip — only the market does.
+        _lean_flip_ok = (is_football
                          and str(pp.get('type') or '').lower()
                          in ('rl', 'spread'))
         if not tier_gate(tier) and not _lean_flip_ok:
