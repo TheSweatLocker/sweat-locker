@@ -262,7 +262,20 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     url = (f'{SB}/rest/v1/jerry_reads?sport=eq.{sport}'
            f'&select=id,sport,game_id,game_date,call_market,call_side,'
            f'call_line,call_text,conviction,result,generated_at,resolved_at,'
-           f'price_american,priced_at,matchup:input_snapshot->>matchup'
+           f'price_american,priced_at,matchup:input_snapshot->>matchup,'
+           # ══ THE TIER THE GATE USED, FROM THE FROZEN SNAPSHOT ══
+           # B179. `tier` below was hardcoded None, so all 327 graded
+           # game_read spread receipts carried no tier -- and tier is
+           # the gate deciding what reaches users. B178 could only be
+           # measured by joining the MUTABLE primary_play, which a
+           # post-game re-score would silently corrupt.
+           # input_snapshot is written at read time and never
+           # changes, so its primary_play.tier is what the gate
+           # actually applied. Present on 410 of 456 sampled reads
+           # with the full range (STRONG 127, LEAN 135, COVERAGE 97,
+           # PASS 33, PRIME 18) -- the discriminator now lives on the
+           # row that gets graded.
+           f'snap_tier:input_snapshot->primary_play->>tier'
            f'&order=game_date.desc')
     batch = []
     written = 0
@@ -368,7 +381,8 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
                         if row.get('matchup') and '@' in str(row['matchup'])
                         else None),
             'pick_label': row.get('call_text'),
-            'tier': None,
+            'tier': ((str(row.get('snap_tier')).upper()
+                      if row.get('snap_tier') else None) or None),
             'conviction': row.get('conviction'),
             'result': result,
             'actual_value': None,
