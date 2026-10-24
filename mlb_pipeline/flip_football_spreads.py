@@ -312,8 +312,9 @@ def run(sport: str, date: str, apply: bool,
             continue
         _maxm = MAX_MAGNITUDE_BY_SPORT.get(sport)
         if _maxm is not None and abs(ours) > _maxm:
-            no(f'{sport} long spread (>{_maxm:g}) — flipped 49.0% on n=253, '
-               f'no edge either way')
+            no(f'{sport} spread beyond the measured band (>{_maxm:g}) — '
+               f'the flip clears breakeven to 10.5 (62.0% n=121) and past '
+               f'that has no edge either way')
             continue
         # ══ FLIP A CALL, NEVER MANUFACTURE ONE ══
         # A PASS tier is the engine saying "no play" and COVERAGE is
@@ -367,6 +368,19 @@ def run(sport: str, date: str, apply: bool,
         if pp.get('_flipped_from'):
             no('already flipped')
             continue
+        # ══ A DELIBERATE UN-FLIP MUST NOT BE RE-FLIPPED ══
+        # --unflip --beyond-band records _unflipped_from when we decide a
+        # pick sits outside the measured band. This script runs unattended
+        # from the Saturday cron with --apply, so without this guard it would
+        # re-flip that pick the moment the slate is unlocked, undoing the
+        # decision with no log anyone reads. Arizona -10 is the live example:
+        # |line| 10.0 is INSIDE the 10.5 band, so the band check alone does
+        # not save it -- it was un-flipped because the flipped number lands
+        # at +11.5, outside the band.
+        if pp.get('_unflipped_from'):
+            no('deliberately un-flipped (outside the measured band) — '
+               'not re-flipping')
+            continue
         if g.get('pick_locked_at'):
             no('pick is LOCKED — run lock_football_slate.py --unlock first')
             continue
@@ -378,6 +392,17 @@ def run(sport: str, date: str, apply: bool,
         if not q:
             no(f'no {MIN_BOOKS}+ books post a line within '
                f'{FLIP_LINE_TOLERANCE:g} of the flipped number')
+            continue
+        # ══ BAND THE LINE WE LAND ON, NOT THE ONE WE STARTED FROM ══
+        # best_flip_quote deliberately accepts a line BETTER than the flip
+        # number (that is what recovered Boston College +6.5 against a +5.5
+        # flip number), so the result can be carried past the band by a
+        # favourable quote. Checking only `ours` above let Arizona -10 become
+        # Iowa State +11.5 on the Sweat Card -- outside the band, and exactly
+        # the pick that had just been removed as unsupported.
+        if _maxm is not None and abs(q[0]) > _maxm:
+            no(f'flipped line {q[0]:+g} lands outside the {_maxm:g} band '
+               f'even though {ours:+g} was inside it')
             continue
         new_line, price, nbooks = q
         new = dict(pp)
