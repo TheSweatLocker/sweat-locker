@@ -2346,7 +2346,8 @@ def _strip_markers(txt, fallback_key):
     return strip_markdown_emphasis(strip_section_markers(txt, fallback_key))
 
 
-def upsert_jerry_read_nfl(game, struct, parsed, narrative):
+def upsert_jerry_read_nfl(game, struct, parsed, narrative,
+                          _forced: bool = False):
     """Write structured NFL Jerry read to jerry_reads table (2026-08-06 Phase 2).
     Uses (sport, game_id, game_date) unique key. This is what the sweat card
     queries for game-side picks — parity with MLB path."""
@@ -2378,7 +2379,21 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     # exists and week is locked. Override: NFL_UNLOCK_WEEK=1 env.
     # Skips are silent-safe — the row already in DB is what the app
     # renders. See nfl_week_write_locked() for the semantics.
-    if nfl_week_write_locked():
+    # ══ A FORCED REGEN MUST NOT MOVE THE PROSE AND LEAVE THE CALL ══
+    # 2026-10-24. --force busts the jerry_cache Thu-lock above, so the prose
+    # is rewritten; this guard then no-ops the structured write, so call_side
+    # / call_line / call_text keep the OLD pick. The result is a read whose
+    # paragraph argues one side under its own headline call naming the other
+    # -- and it is silent, because "skips are silent-safe" is true only when
+    # nothing else moved.
+    #
+    # Measured on 10-24: 4 NFL picks were flipped at source, --force
+    # rewrote all 4 reads, and all 4 calls stayed on the abandoned side.
+    #
+    # A half-regeneration is worse than no regeneration. So a caller that
+    # forced the prose for this game also writes the call. The lock still
+    # holds for every unforced path, which is every cron.
+    if nfl_week_write_locked() and not _forced:
         try:
             existing = sb_get('jerry_reads',
                               {'sport': 'eq.NFL',
@@ -2538,7 +2553,7 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative):
     return True
 
 
-def upsert_read(game, struct, narrative, parsed=None):
+def upsert_read(game, struct, narrative, parsed=None, _forced=False):
     # 2026-09-02: Thu-lock cache key. Was per-day (game_read_<id>_<YYYY-MM-DD>)
     # which regenerated Jerry reads daily even on stable NFL slates. Now
     # per-week — key ties to the Thursday start of the NFL week. Subsequent
@@ -2570,7 +2585,8 @@ def upsert_read(game, struct, narrative, parsed=None):
     # by conviction. This is the missing piece that had NFL sitting at
     # "prose-only, no structured selection" until now.
     if parsed and parsed.get('short_read'):
-        upsert_jerry_read_nfl(game, struct, parsed, narrative or '')
+        upsert_jerry_read_nfl(game, struct, parsed, narrative or '',
+                              _forced=_forced)
 
     return ok
 
@@ -2940,7 +2956,8 @@ def run():
             except ImportError:
                 pass  # validator not installed — skip gracefully
 
-        if upsert_read(g, struct, narrative or "", parsed=parsed):
+        if upsert_read(g, struct, narrative or "", parsed=parsed,
+                       _forced=force):
             call_str = ''
             if parsed.get('call_market'):
                 call_str = f" · {parsed.get('call_text') or parsed['call_market']} ({parsed.get('conviction') or '-'})"
