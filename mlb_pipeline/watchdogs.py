@@ -1608,7 +1608,23 @@ def check_reads_missing_near_kickoff() -> Optional[dict]:
 # CLV path uses. Doing it by magnitude alone is what made the card announce
 # "we beat the close by 3.5" about a number 3.5 points worse than the market
 # (feedback_magnitude_cannot_express_a_side).
-_DRIFT_SPORTS = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context'}
+# ══ 2026-10-23 · EXTENDED BEYOND FOOTBALL ══
+# ANDY: "Look into Idniana Pacer game same issue as other published 5.5 now
+# 10.5 ... i think its wrong on all sports". He was right — it is not a
+# football problem.
+#
+# Dallas @ Indiana: open_spread -5.5, close_spread +10.5. NBA close_spread is
+# the HOME handicap (verified 25/25 against the cheaper moneyline, and
+# corr -0.393 with home margin), so Indiana OPENED a 5.5-point favourite and
+# CLOSED a 10.5-point dog — a 16-point move with the favourite flipping, which
+# is a star scratch. Our primary_play still read 'Indiana Pacers -5.5', the
+# OPENING number, and the published game_read receipt still held 'Indiana
+# Pacers ML' at -216, a price that no longer exists.
+#
+# So the drift check runs on every sport that stores a spread, not just the
+# two it was written for.
+_DRIFT_SPORTS = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
+                 'NBA': 'nba_game_context', 'NCAAB': 'ncaab_game_context'}
 #: Lock lead beyond this many days means the lock window overshot its slate.
 DRIFT_MAX_LOCK_LEAD_DAYS = 5.5
 #: Points of line drift worth reporting at all.
@@ -1625,11 +1641,19 @@ def check_locked_pick_line_drift() -> Optional[dict]:
     worst, early, drifted = [], 0, 0
     crit = 0
     for sport, tbl in _DRIFT_SPORTS.items():
+        # nba_game_context and ncaab_game_context have NO pick_locked_at
+        # column, and naming a missing column makes PostgREST 400 the WHOLE
+        # select — which would read as "no games" and pass the check while
+        # blind. Per-sport column list, as feedback_explicit_select_silent_blanks
+        # keeps teaching.
+        _cols = ['game_id', 'game_date', 'home_team', 'away_team',
+                 'close_spread', 'primary_play']
+        if sport in ('NFL', 'NCAAF'):
+            _cols += ['pick_locked_at', 'kickoff_utc']
+        elif sport == 'NBA':
+            _cols += ['commence_time_utc']
         r = requests.get(f'{SB}/rest/v1/{tbl}',
-                         params={'select': 'game_id,game_date,home_team,'
-                                           'away_team,close_spread,'
-                                           'primary_play,pick_locked_at,'
-                                           'kickoff_utc',
+                         params={'select': ','.join(_cols),
                                  'game_date': f'gte.{_et_today()}',
                                  'limit': '400'},
                          headers=H_READ, timeout=20)
@@ -1644,7 +1668,7 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                 continue
             if str(pp.get('type') or '').lower() not in ('rl', 'spread'):
                 continue
-            if not g.get('pick_locked_at'):
+            if sport in ('NFL', 'NCAAF') and not g.get('pick_locked_at'):
                 continue
             try:
                 ours = float(pp.get('line'))
@@ -1652,11 +1676,40 @@ def check_locked_pick_line_drift() -> Optional[dict]:
             except (TypeError, ValueError):
                 continue
             lk = _read_parse_ts(g.get('pick_locked_at'))
-            ko = _read_parse_ts(g.get('kickoff_utc'))
+            ko = _read_parse_ts(g.get('kickoff_utc')
+                                or g.get('commence_time_utc'))
             if lk and ko and (ko - lk).total_seconds() / 86400.0 \
                     > DRIFT_MAX_LOCK_LEAD_DAYS:
                 early += 1
-            close_for_us = mag if ours > 0 else -mag
+            # ══ 2026-10-23 · INFERRING THE SIDE UNDERSTATED A 16-POINT MOVE ══
+            # This used to guess favourite-vs-dog from the sign of OUR OWN
+            # line. That cannot see the market flipping which team is favoured,
+            # and Dallas @ Indiana did exactly that: open_spread -5.5,
+            # close_spread +10.5, so Indiana went from a 5.5-point favourite to
+            # a 10.5-point dog. Guessing from our -5.5 produced "market -10.5"
+            # and a 5-point gap, when the true swing is 16 and the market has
+            # Indiana +10.5. An understated gap can fall under the CRITICAL
+            # threshold and hide the worst cases.
+            #
+            # The side we took is not a guess -- primary_play.side holds it. So
+            # the close for OUR side is derived from the home handicap, using a
+            # per-sport convention that was measured rather than assumed:
+            #   NFL   close_spread positive = home FAVOURED  -> home hcap = -cs
+            #   NCAAF positive = home handicap                -> +cs
+            #   NBA   positive = home handicap                -> +cs
+            #         (verified 25 of 25 against the cheaper moneyline, and
+            #          corr(close_spread, home margin) = -0.393)
+            # An unverified sport falls back to the old inference and says so,
+            # because guessing a convention is indistinguishable from knowing
+            # one (feedback_edge_formula_sign_audit).
+            _HOME_HCAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0, 'NBA': 1.0}
+            _sd = str(pp.get('side') or '').upper()
+            _sgn = _HOME_HCAP_SIGN.get(sport)
+            if _sgn is not None and _sd in ('HOME', 'AWAY'):
+                _hh = _sgn * float(g.get('close_spread'))
+                close_for_us = _hh if _sd == 'HOME' else -_hh
+            else:
+                close_for_us = mag if ours > 0 else -mag
             gap = ours - close_for_us          # >0 = our number beats market
             if abs(gap) < DRIFT_REPORT_PTS:
                 continue

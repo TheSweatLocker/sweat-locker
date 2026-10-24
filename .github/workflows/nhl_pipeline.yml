@@ -287,6 +287,25 @@ jobs:
           cd mlb_pipeline
           python generate_nhl_game_reads.py
 
+          # ══ 2026-10-23 · THE BADGE AND GAME DETAIL CONTRADICTED ══
+          # ANDY: "timberwolves pregame bage not amtchign game detail priamry
+          # play". Minnesota @ Orlando carried primary_play 'Orlando Magic ML'
+          # (HOME) against jerry_reads call_side AWAY -- same market, OPPOSITE
+          # sides, one screen saying Minnesota and the other Orlando.
+          #
+          # jerry_pick_scrub exists for exactly this: Jerry's LLM writes
+          # call_side at generation time, primary_play is later recomputed (MC
+          # refresh, close-line update, defensive gate flip), and the two
+          # diverge. It was scheduled in the MLB, NCAAF and NFL pipelines and
+          # in NEITHER NBA nor NHL, so those two sports drifted with nothing
+          # to reconcile them. Measured today before adding this: 5 of 12 NBA
+          # games disagreed (1 opposite-side, 3 different-market, 1 line) and
+          # 1 of 2 NHL.
+          #
+          # Note this is a sub-class the unscheduled-writer audit cannot see:
+          # the script IS referenced by workflows, just not by every sport's.
+          python jerry_pick_scrub.py --sport NHL
+
       # ─── NHL prop pipeline (2026-08-17) ────────────────────────────
       # Sweeps Odds API for goalie + skater props, upserts stubs into
       # nhl_pipeline_props. Playbook scorer (shared with MLB/NFL) runs

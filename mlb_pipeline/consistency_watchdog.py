@@ -232,8 +232,39 @@ def _check_badge_drift_for_sport(date: str, sport: str, ctx_table: str) -> list:
         pp_side = (pp.get('side') or '').upper()
         jr_type = (jr_row.get('call_market') or '').lower()
         jr_side = (jr_row.get('call_side') or '').upper()
+        # ══ 2026-10-23 · THE SIDE WAS NEVER COMPARED ══
+        # ANDY: "timberwolves pregame bage not amtchign game detail priamry
+        # play do a full deep dive into selciton and abdging process".
+        #
+        # Minnesota @ Orlando carried primary_play 'Orlando Magic ML' (HOME)
+        # against jerry_reads call_side AWAY -- the SAME market, OPPOSITE
+        # sides. The badge reads jerry_reads and game detail reads
+        # primary_play, so one screen said Minnesota and the other said
+        # Orlando on the same game.
+        #
+        # This check computed pp_side and jr_side and then compared only the
+        # TYPE, using the sides nowhere but the message payload. Its own
+        # docstring says "type/side/label" -- the side comparison was intended
+        # and never implemented, so a market mismatch alerted (3 NBA tonight)
+        # while an opposite-side mismatch was invisible.
+        #
+        # A side mismatch is STRICTLY WORSE than a market mismatch: two
+        # markets on one game can both be defensible, but two sides cannot
+        # both be right, and whichever the user acted on, we graded the other.
+        # It is reported with its own `kind` so the two are never conflated
+        # again.
         if pp_type and jr_type and pp_type != jr_type:
             mismatches.append({
+                'kind': 'market',
+                'sport': sport,
+                'game': f'{c.get("away_team","?")[:12]} @ {c.get("home_team","?")[:12]}',
+                'primary_play': f'{pp_type}/{pp_side}',
+                'jerry_reads':  f'{jr_type}/{jr_side}',
+            })
+        elif (pp_type and jr_type and pp_type == jr_type
+                and pp_side and jr_side and pp_side != jr_side):
+            mismatches.append({
+                'kind': 'SIDE — opposite sides of the same bet',
                 'sport': sport,
                 'game': f'{c.get("away_team","?")[:12]} @ {c.get("home_team","?")[:12]}',
                 'primary_play': f'{pp_type}/{pp_side}',
@@ -272,11 +303,17 @@ def check_badge_matches_detail(date: str) -> Optional[dict]:
         by_sport.setdefault(m['sport'], 0)
         by_sport[m['sport']] += 1
     sport_summary = ', '.join(f'{s}={n}' for s, n in sorted(by_sport.items()))
+    n_side = sum(1 for m in all_mismatches if str(m.get('kind','')).startswith('SIDE'))
+    n_mkt = len(all_mismatches) - n_side
     return {
         'check_name': 'badge_detail_drift',
         'severity': 'CRITICAL',
-        'message': f'{len(all_mismatches)} game(s) with primary_play vs jerry_reads '
-                   f'market mismatch ({sport_summary}). Badges + game detail contradict.',
+        'message': (f'{len(all_mismatches)} game(s) where the badge and game '
+                    f'detail contradict ({sport_summary})'
+                    + (f' — {n_side} on OPPOSITE SIDES of the same bet'
+                       if n_side else '')
+                    + (f', {n_mkt} on different markets' if n_mkt else '')
+                    + '.'),
         'detail': {'mismatches': all_mismatches[:15],
                    'fix_hint': 'python jerry_pick_scrub.py --sport <SPORT> for each'},
     }
