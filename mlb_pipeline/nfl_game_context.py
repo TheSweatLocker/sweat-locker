@@ -432,13 +432,21 @@ _NFL_QB1_MAP_FALLBACK: dict[str, str] = {
     # AFC West
     'DEN': 'Bo Nix',           'KC':  'Patrick Mahomes', 'LV':  'Kirk Cousins',      'LAC': 'Justin Herbert',
     # NFC East
-    'DAL': 'Dak Prescott',     'NYG': 'Jaxson Dart',     'PHI': 'Jalen Hurts',       'WAS': 'Jayden Daniels',
+    # 2026-10-25: NYG + PHI corrected. Both were stale in the direction that
+    # names a player now on RESERVE: Dart is RES (McCarthy ACT), Hurts is RES
+    # (McKee ACT), per nfl_rosters_current refreshed the same day, and the
+    # live depth scrape agrees on both. This map went 39 days without a
+    # correction because the scrape that was supposed to overlay it had been
+    # crashing before its own write since the day it was wired in.
+    'DAL': 'Dak Prescott',     'NYG': 'J.J. McCarthy',   'PHI': 'Tanner McKee',      'WAS': 'Jayden Daniels',
     # NFC North
     'CHI': 'Caleb Williams',   'DET': 'Jared Goff',      'GB':  'Jordan Love',       'MIN': 'Kyler Murray',
     # NFC South
-    # ATL: Cooper Rush is starting Wk 2 — Tua + Penix both banged up.
-    # Revisit when either is medically cleared.
-    'ATL': 'Cooper Rush',      'CAR': 'Bryce Young',     'NO':  'Tyler Shough',      'TB':  'Baker Mayfield',
+    # ATL: was pinned to Cooper Rush for a Wk 2 Penix injury. That has
+    # REVERSED — as of 2026-10-25 nfl_rosters_current has Penix ACT and Rush
+    # INA, and the live scrape names Penix. The pin outlived its injury by
+    # weeks because nothing re-checked it.
+    'ATL': 'Michael Penix Jr.', 'CAR': 'Bryce Young',    'NO':  'Tyler Shough',      'TB':  'Baker Mayfield',
     # NFC West
     'ARI': 'Jacoby Brissett',  'LA':  'Matthew Stafford','SF':  'Brock Purdy',       'SEA': 'Sam Darnold',
 }
@@ -463,14 +471,69 @@ try:
             # injury) survive if the scrape hasn't caught up.
             for _team, _slots in _per_team.items():
                 if isinstance(_slots, dict) and _slots.get('QB1'):
-                    # Preserve Andy's manual override on ATL if scrape shows Penix.
-                    if _team == 'ATL' and str(_slots.get('QB1')).lower().startswith('michael penix'):
-                        continue
+                    # 2026-10-25: there was a hardcoded branch here that
+                    # dropped the scrape whenever it named Penix on ATL,
+                    # protecting a Wk 2 "Penix is hurt" pin. The injury
+                    # reversed (Penix ACT, Rush INA) and the branch then did
+                    # the opposite of its purpose: it reinstated an INACTIVE
+                    # QB over a correct live feed, and would have done so on
+                    # every context rebuild. A team-specific exception with
+                    # an injury's lifetime does not belong in import-time
+                    # code -- nfl_starter_overrides.json is the mechanism
+                    # for a manual starter call, it is dated, and it prints
+                    # on every run so a stale entry is loud. See B161.
                     _NFL_QB1_MAP[_team] = _slots['QB1']
             print(f'  [nfl_game_context] loaded depth chart for {len(_NFL_DEPTH_CHART)} teams '
                   f'(freshness={_dc.get("freshness","?")} source={_dc.get("source","?")})')
 except Exception as _e:
     print(f'  [nfl_game_context] depth-chart JSON load failed ({_e}) — using hardcoded fallback')
+
+# ── Manual starter overrides BEAT the scrape ────────────────────────────────
+# 2026-10-25. The scrape above overwrites QB1 unconditionally, so a stale row
+# in the feed outranks everything -- and the feed IS stale in places. Measured
+# on TB the same day: the depth chart names Baker Mayfield, but Jalon Daniels
+# actually started weeks 4, 5 and 6 (27/25/43 attempts, box_score_actual), so
+# trusting the scrape would have put the wrong QB in TB's game read with a
+# published pick live in that game.
+#
+# nfl_starter_overrides.json already exists for exactly this, is dated, and is
+# documented as "consulted BEFORE any resolver path" -- but only
+# nfl_weekly_starters.py was reading it. Reading it here too means there is ONE
+# override mechanism instead of a second set of hardcoded team branches, which
+# is what the ATL/Penix pin was and how it outlived its own injury.
+#
+# Overrides are keyed by week, so an entry cannot leak backwards into a week it
+# was not set for.
+_NFL_STARTER_OVERRIDES: list = []
+try:
+    import datetime as _dt
+    import json as _json
+    from pathlib import Path as _Path
+    _ov_path = _Path(__file__).parent / 'nfl_starter_overrides.json'
+    if _ov_path.exists():
+        _ov = _json.loads(_ov_path.read_text(encoding='utf-8'))
+        _NFL_STARTER_OVERRIDES = list(_ov.get('overrides') or [])
+        # week 1 Monday anchor, same as pull_madden27_ratings.current_nfl_week
+        _wk = min(18, max(1, ((_dt.date.today() - _dt.date(2026, 9, 9)).days // 7) + 1))
+        for _o in _NFL_STARTER_OVERRIDES:
+            if str(_o.get('position') or '').upper() not in ('QB', 'QB1'):
+                continue
+            _fw, _tw = _o.get('from_week'), _o.get('through_week')
+            if _fw is not None and _wk < int(_fw):
+                continue
+            if _tw is not None and _wk > int(_tw):
+                continue
+            _t, _p = _o.get('team'), _o.get('player_name')
+            if _t and _p:
+                # print every applied override so a stale one is loud
+                print(f'  [nfl_game_context] starter override wk{_wk}: '
+                      f'{_t} QB1 = {_p} (set {_o.get("set_on")} by '
+                      f'{_o.get("set_by")}) — was {_NFL_QB1_MAP.get(_t)!r}')
+                _NFL_QB1_MAP[str(_t).upper()] = _p
+                _NFL_DEPTH_CHART.setdefault(str(_t).upper(), {})['QB1'] = _p
+except Exception as _e:
+    print(f'  [nfl_game_context] starter-override load failed ({_e}) — '
+          f'scrape/fallback stand')
 
 
 def get_current_starter_by_position(team_abbr: str, position: str) -> str | None:

@@ -67,9 +67,23 @@ def _load_current_qb1_map() -> dict[str, str]:
     path = os.path.join(HERE, 'nfl_game_context.py')
     with open(path, 'r', encoding='utf-8') as f:
         src = f.read()
-    m = re.search(r"_NFL_QB1_MAP:\s*dict\[str,\s*str\]\s*=\s*\{(.*?)\n\}", src, re.DOTALL)
+    # 2026-10-25: the literal was RENAMED to _NFL_QB1_MAP_FALLBACK in
+    # 3fa6c92a -- the SAME commit that wired this scrape into the pipeline.
+    # So this pattern never matched, this function raised on every single
+    # run, and because the save used to sit at the END of main() the scrape
+    # never once wrote its output. 39 days of a frozen depth chart, silent
+    # behind `continue-on-error: true`.
+    # Match EITHER name, and never raise: a diagnostic that can kill the
+    # write is worse than no diagnostic at all.
+    m = (re.search(r"_NFL_QB1_MAP_FALLBACK:\s*dict\[str,\s*str\]\s*=\s*\{(.*?)\n\}",
+                   src, re.DOTALL)
+         or re.search(r"_NFL_QB1_MAP:\s*dict\[str,\s*str\]\s*=\s*\{(.*?)\n\}",
+                      src, re.DOTALL))
     if not m:
-        raise RuntimeError('could not locate _NFL_QB1_MAP literal')
+        print('[warn] could not locate the QB1 fallback literal in '
+              'nfl_game_context.py — skipping the diff. Output is already '
+              'saved, so this costs a report, not the data.')
+        return {}
     body = m.group(1)
     out: dict[str, str] = {}
     # matches: 'ABC': 'Player Name'
@@ -235,6 +249,33 @@ def main():
               f'{(r.get("WR2") or "-"):22} '
               f'{(r.get("TE1") or "-"):22}')
 
+    # -------- save FIRST --------
+    # The file IS the point of this script; every print below it is a
+    # diagnostic. This block used to sit at the very end of main(), so when
+    # the diff step raised it took the write down with it and the scrape
+    # produced nothing for 39 days while reporting a fresh pull to stdout.
+    # Write, read it back, and only then report.
+    payload = {
+        'source': source,
+        'freshness': freshness,
+        'scraped_at_utc': pd.Timestamp.utcnow().isoformat(),
+        'per_team': per_team,
+    }
+    n_qb = sum(1 for t in TEAMS_32 if (per_team.get(t) or {}).get('QB1'))
+    if n_qb < 24:
+        print(f'[ABORT] only {n_qb}/32 teams have a QB1 — refusing to '
+              f'overwrite a usable chart with a thin scrape')
+        return 1
+    with open(OUT_JSON, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+    with open(OUT_JSON, encoding='utf-8') as f:          # a write that is read back
+        _back = json.load(f)
+    if len(_back.get('per_team') or {}) < 24:
+        print('[ABORT] re-read of the saved chart came back thin')
+        return 1
+    print()
+    print(f'[saved] {OUT_JSON}  ({n_qb}/32 QB1, source={source})')
+
     # -------- diff vs current QB1 map --------
     cur_map = _load_current_qb1_map()
     print()
@@ -265,18 +306,8 @@ def main():
         mark = 'OK   ' if ok else 'MISS '
         print(f' [{mark}] {team:4} {slot:3}  expected={expected!r:26}  scraped={got!r}')
 
-    # -------- save --------
-    payload = {
-        'source': source,
-        'freshness': freshness,
-        'scraped_at_utc': pd.Timestamp.utcnow().isoformat(),
-        'per_team': per_team,
-    }
-    with open(OUT_JSON, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, indent=2)
-    print()
-    print(f'[saved] {OUT_JSON}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)

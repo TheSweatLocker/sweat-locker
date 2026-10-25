@@ -63,7 +63,22 @@ PICK_FIELDS = ('type', 'side', 'tier', 'label', 'line', 'conviction')
 #: belongs behind the same protection. Fourth instance in one day of the flip
 #: not being durable -- the other three were the two composers and the
 #: jerry_reads call pin.
-DECISION_MARKERS = ('_manual_correction', '_flipped_from', '_unflipped_from')
+#: 2026-10-25 · FIFTH instance, and the first that reached the POTD.
+#: `_board_aligned` (align_picks_to_board.py) was missing from this tuple, so
+#: preserve() saw no decision, returned the engine's pick untouched, and a
+#: board-aligned pick had exactly zero protection. Measured consequence:
+#: DEN @ ARI was aligned to ARI +5 at 14:15Z, a context rebuild at 14:33Z
+#: overwrote it with the engine's DEN -4.5, and the pick lock then froze the
+#: REVERTED value -- while the published POTD still read ARI +5. The app would
+#: have shown a badge on one side of a game and the Play of the Day on the
+#: other.
+#:
+#: A board alignment is not the engine's opinion either. It is a deliberate,
+#: recorded, user-FACING move of the number onto a quote books actually post,
+#: and it only ever moves in the user's favour. Once shown it is a commitment,
+#: so it belongs behind the same protection as a flip or a hand correction.
+DECISION_MARKERS = ('_manual_correction', '_flipped_from', '_unflipped_from',
+                    '_board_aligned')
 
 
 def _mc(pp):

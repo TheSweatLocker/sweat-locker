@@ -43,6 +43,30 @@
       "reason": "Giants released Jameis Winston; McCarthy starting. Andy, 2026-10-23. Corroborated by nfl_rosters_current: McCarthy ACT on NYG as of 2026-10-23T16:25Z.",
       "set_on": "2026-10-23",
       "set_by": "andy"
+    },
+    {
+      "season": 2026,
+      "season_type": "REG",
+      "team": "TB",
+      "position": "QB",
+      "player_name": "Jalon Daniels",
+      "from_week": 7,
+      "through_week": null,
+      "reason": "nfl_current_depth_chart.json names Baker Mayfield, but Jalon Daniels ACTUALLY started weeks 4, 5 and 6 (27/25/43 attempts, nfl_player_stats; nfl_starters source=box_score_actual_w4/w5/w6). Mayfield started only weeks 1-3. Both are ACT on nfl_rosters_current so roster status cannot resolve it. The depth-chart feed lags on mid-season job changes -- the same staleness Andy flagged on 2026-09-14 for the RB/WR slots (Kamara over Etienne, Mike Evans over Egbuka), now shown at QB. Needed because the scrape overwrites _NFL_QB1_MAP unconditionally.",
+      "set_on": "2026-10-25",
+      "set_by": "claude-verified-box-score"
+    },
+    {
+      "season": 2026,
+      "season_type": "REG",
+      "team": "BAL",
+      "position": "QB",
+      "player_name": "Tyler Huntley",
+      "from_week": 7,
+      "through_week": null,
+      "reason": "nfl_current_depth_chart.json and the hardcoded fallback both name Lamar Jackson, but nfl_injuries has Jackson 'Out' (Ankle/Sprain) with report_date 2026-10-25 and Huntley 'Full' -- and Huntley actually started weeks 5 and 6. Both QBs are ACT on nfl_rosters_current so roster status cannot resolve it. ROOT CAUSE: the scrape overlay onto _NFL_QB1_MAP has NO injury gate, unlike the carryover path in nfl_weekly_starters. A depth chart lists the nominal starter, not the one who is available. Remove this entry once the overlay is injury-gated.",
+      "set_on": "2026-10-25",
+      "set_by": "claude-verified-injury-report"
     }
   ]
 }

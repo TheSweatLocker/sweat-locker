@@ -611,9 +611,28 @@ jobs:
       # WR2/TE1 to mlb_pipeline/nfl_current_depth_chart.json which
       # nfl_game_context.py loads at import to build _NFL_QB1_MAP and to
       # power the get_current_starter_by_position() helper consumed by
-      # generate_nfl_game_reads. File is committed post-scrape so all
-      # downstream pipeline steps (game context build, game reads, prop
-      # generation) see the same fresh roster.
+      # generate_nfl_game_reads.
+      #
+      # ⚠ 2026-10-25: this comment USED to claim "File is committed
+      # post-scrape so all downstream steps see the same fresh roster."
+      # That was never true — there is no `git add`/`git commit` anywhere in
+      # this workflow, so the scrape writes into the runner's ephemeral
+      # filesystem and the file is discarded when the job ends. Downstream
+      # steps in the SAME job do see it; nothing in a later run does.
+      #
+      # It did not even get that far. The script's save was the LAST
+      # statement in main(), after a diff step that regex-matched
+      # `_NFL_QB1_MAP` — a symbol renamed to `_NFL_QB1_MAP_FALLBACK` in
+      # 3fa6c92a, the same commit that added this step. So it raised before
+      # writing on every run since the day it shipped, silently, because of
+      # the `continue-on-error: true` below. The committed chart sat frozen
+      # at 2026-09-14 for 39 days while this step reported a fresh pull to
+      # the log. Save-ordering fixed in nfl_live_depth_scrape.py.
+      #
+      # STILL OPEN (B161): nothing persists this across runs. The durable
+      # fix is a table, not a committed file — manual starter calls go in
+      # nfl_starter_overrides.json, which IS committed and is read by both
+      # nfl_weekly_starters.py and nfl_game_context.py.
       - name: Scrape live NFL depth chart (nflverse + ESPN fallback)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

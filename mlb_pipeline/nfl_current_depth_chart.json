@@ -1,13 +1,13 @@
 {
-  "source": "espn_html",
-  "freshness": "ESPN live HTML @ 2026-09-14T16:14:31.967178+00:00",
-  "scraped_at_utc": "2026-09-14T16:14:31.968949+00:00",
+  "source": "nflverse_depth_charts_2026",
+  "freshness": "2026-10-25T12:30:46+00:00",
+  "scraped_at_utc": "2026-10-25T14:32:57.284541+00:00",
   "per_team": {
     "ARI": {
       "QB1": "Jacoby Brissett",
       "RB1": "Jeremiyah Love",
-      "WR1": "Marvin Harrison Jr.",
-      "WR2": "Michael Wilson",
+      "WR1": "Michael Wilson",
+      "WR2": "Kendrick Bourne",
       "TE1": "Trey McBride"
     },
     "ATL": {
@@ -55,7 +55,7 @@
     "CLE": {
       "QB1": "Deshaun Watson",
       "RB1": "Quinshon Judkins",
-      "WR1": "Jerry Jeudy",
+      "WR1": "Denzel Boston",
       "WR2": "KC Concepcion",
       "TE1": "Harold Fannin Jr."
     },
@@ -82,30 +82,30 @@
     },
     "GB": {
       "QB1": "Jordan Love",
-      "RB1": "MarShawn Lloyd",
+      "RB1": "Josh Jacobs",
       "WR1": "Christian Watson",
-      "WR2": "Jayden Reed",
+      "WR2": "Matthew Golden",
       "TE1": "Tucker Kraft"
     },
     "HOU": {
       "QB1": "C.J. Stroud",
       "RB1": "David Montgomery",
       "WR1": "Nico Collins",
-      "WR2": "Kayshon Boutte",
+      "WR2": "Marvin Harrison Jr.",
       "TE1": "Dalton Schultz"
     },
     "IND": {
       "QB1": "Daniel Jones",
       "RB1": "Jonathan Taylor",
-      "WR1": "Alec Pierce",
-      "WR2": "Josh Downs",
+      "WR1": "Josh Downs",
+      "WR2": "Keenan Allen",
       "TE1": "Tyler Warren"
     },
     "JAX": {
       "QB1": "Trevor Lawrence",
       "RB1": "Bhayshul Tuten",
-      "WR1": "Brian Thomas Jr.",
-      "WR2": "Parker Washington",
+      "WR1": "Parker Washington",
+      "WR2": "Jakobi Meyers",
       "TE1": "Brenton Strange"
     },
     "KC": {
@@ -119,8 +119,8 @@
       "QB1": "Matthew Stafford",
       "RB1": "Kyren Williams",
       "WR1": "Puka Nacua",
-      "WR2": "Davante Adams",
-      "TE1": "Colby Parkinson"
+      "WR2": "Konata Mumpfield",
+      "TE1": "Tyler Higbee"
     },
     "LAC": {
       "QB1": "Justin Herbert",
@@ -138,7 +138,7 @@
     },
     "MIA": {
       "QB1": "Malik Willis",
-      "RB1": "De'Von Achane",
+      "RB1": "Ollie Gordon II",
       "WR1": "Malik Washington",
       "WR2": "Caleb Douglas",
       "TE1": "Greg Dulcich"
@@ -153,19 +153,19 @@
     "NE": {
       "QB1": "Drake Maye",
       "RB1": "Rhamondre Stevenson",
-      "WR1": "Romeo Doubs",
+      "WR1": "A.J. Brown",
       "WR2": "DeMario Douglas",
       "TE1": "Hunter Henry"
     },
     "NO": {
       "QB1": "Tyler Shough",
-      "RB1": "Travis Etienne Jr.",
+      "RB1": "Alvin Kamara",
       "WR1": "Chris Olave",
       "WR2": "Devaughn Vele",
       "TE1": "Juwan Johnson"
     },
     "NYG": {
-      "QB1": "Jaxson Dart",
+      "QB1": "J.J. McCarthy",
       "RB1": "Cam Skattebo",
       "WR1": "Malik Nabers",
       "WR2": "Malachi Fields",
@@ -179,7 +179,7 @@
       "TE1": "Mason Taylor"
     },
     "PHI": {
-      "QB1": "Jalen Hurts",
+      "QB1": "Tanner McKee",
       "RB1": "Saquon Barkley",
       "WR1": "DeVonta Smith",
       "WR2": "Dontayvion Wicks",
@@ -189,12 +189,12 @@
       "QB1": "Aaron Rodgers",
       "RB1": "Jaylen Warren",
       "WR1": "DK Metcalf",
-      "WR2": "Michael Pittman Jr.",
+      "WR2": "Germie Bernard",
       "TE1": "Darnell Washington"
     },
     "SEA": {
       "QB1": "Sam Darnold",
-      "RB1": "Jadarian Price",
+      "RB1": "Emanuel Wilson",
       "WR1": "Jaxon Smith-Njigba",
       "WR2": "Rashid Shaheed",
       "TE1": "AJ Barner"
@@ -203,7 +203,7 @@
       "QB1": "Brock Purdy",
       "RB1": "Christian McCaffrey",
       "WR1": "Mike Evans",
-      "WR2": "Deebo Samuel Sr.",
+      "WR2": "Deebo Samuel",
       "TE1": "George Kittle"
     },
     "TB": {
@@ -222,9 +222,9 @@
     },
     "WAS": {
       "QB1": "Jayden Daniels",
-      "RB1": "Jacory Croskey-Merritt",
-      "WR1": "Terry McLaurin",
-      "WR2": "Stefon Diggs",
+      "RB1": "Rachaad White",
+      "WR1": "Stefon Diggs",
+      "WR2": "Antonio Williams",
       "TE1": "Chig Okonkwo"
     }
   }
