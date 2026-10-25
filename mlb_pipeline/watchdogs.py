@@ -1748,7 +1748,105 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                                'it is a RECORDS decision, not a rerun'},
     }
 
+def check_record_discontinuity() -> Optional[dict]:
+    """A PUBLISHED RECORD moved by more than the day's results can explain.
+
+    ══ WHY (B172) ══════════════════════════════════════════════════════
+    On 2026-10-23 the all-time Sharp went +81.21u -> +36.77u overnight. The
+    W-L barely moved; only the pricing basis did. Nothing alerted, nothing was
+    logged, and the only detector was Andy reading the card the next morning.
+
+    The test is NOT "units changed" -- units change every day that games
+    grade, and an alert on that is noise nobody reads. The test is whether
+    units moved further than the NEWLY GRADED picks could account for. A
+    record that moves without new results is a methodology change or a bug,
+    and both have to be said out loud before a subscriber finds them.
+
+    Budget: a newly graded pick can move units by at most ~1 unit (a loss is
+    -1.0; a win at a long price can exceed that, so the allowance is
+    deliberately generous at 2.0 per pick) plus a small floor for rounding and
+    re-pricing. Anything past that is unexplained.
+
+    Needs two snapshots from snapshot_surface_records.py, so it stays quiet
+    until a second ET day lands rather than firing on a cold table.
+    """
+    r = requests.get(
+        f'{SB}/rest/v1/surface_records_history', headers=H_READ, timeout=20,
+        params={'select': 'snapshot_date,surface,sport,window_key,wins,'
+                          'losses,pushes,units_net',
+                'order': 'snapshot_date.desc', 'limit': '2000'})
+    if r.status_code == 404:
+        return None                      # migration not applied yet
+    if r.status_code not in (200, 206):
+        # a non-200 is a bug in our call, not a quiet day (B153)
+        return {
+            'check_name': 'record_discontinuity',
+            'severity': 'WARNING',
+            'message': (f'cannot read surface_records_history: HTTP '
+                        f'{r.status_code} — record movement is UNMONITORED.'),
+            'detail': {'status': r.status_code, 'body': r.text[:200]},
+        }
+    rows = r.json() if isinstance(r.json(), list) else []
+    if not rows:
+        return None                      # table empty: nothing to compare yet
+    days = sorted({str(r.get('snapshot_date')) for r in rows}, reverse=True)
+    if len(days) < 2:
+        return None                      # one snapshot is not a comparison
+    today, prev = days[0], days[1]
+
+    def key(r):
+        return (str(r.get('surface')), str(r.get('sport')),
+                str(r.get('window_key')))
+
+    now_m = {key(r): r for r in rows if str(r.get('snapshot_date')) == today}
+    was_m = {key(r): r for r in rows if str(r.get('snapshot_date')) == prev}
+    offenders = []
+    for k, now in now_m.items():
+        was = was_m.get(k)
+        if not was:
+            continue
+        try:
+            u_now = float(now.get('units_net') or 0)
+            u_was = float(was.get('units_net') or 0)
+            n_now = int(now.get('wins') or 0) + int(now.get('losses') or 0)
+            n_was = int(was.get('wins') or 0) + int(was.get('losses') or 0)
+        except (TypeError, ValueError):
+            continue
+        new_picks = max(0, n_now - n_was)
+        d_units = u_now - u_was
+        budget = 2.0 * new_picks + 1.0
+        if abs(d_units) > budget:
+            offenders.append({
+                'surface': k[0], 'sport': k[1], 'window': k[2],
+                'units_was': round(u_was, 2), 'units_now': round(u_now, 2),
+                'units_moved': round(d_units, 2),
+                'newly_graded': new_picks,
+                'explainable_by': round(budget, 2),
+                'record_was': f"{was.get('wins')}-{was.get('losses')}",
+                'record_now': f"{now.get('wins')}-{now.get('losses')}",
+            })
+    if not offenders:
+        return None
+    offenders.sort(key=lambda z: -abs(z['units_moved']))
+    worst = offenders[0]
+    # A lifetime/epoch window moving is the user-facing headline; a d7 window
+    # moving is far less serious, so the severity follows the window.
+    hard = any(o['window'] in ('lifetime', 'epoch') for o in offenders)
+    return {
+        'check_name': 'record_discontinuity',
+        'severity': 'CRITICAL' if hard else 'WARNING',
+        'message': (f'{len(offenders)} published record(s) moved further than '
+                    f'new results explain between {prev} and {today}. Worst: '
+                    f'{worst["surface"]}/{worst["sport"]}/{worst["window"]} '
+                    f'{worst["units_was"]:+} -> {worst["units_now"]:+} '
+                    f'({worst["units_moved"]:+}u) on {worst["newly_graded"]} '
+                    f'newly graded pick(s).'),
+        'detail': {'from': prev, 'to': today, 'offenders': offenders[:12]},
+    }
+
+
 CHECKS = [
+    check_record_discontinuity,
     check_ladder_empty,
     check_ensemble_engine_share,
     check_primary_play_stale,

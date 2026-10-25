@@ -168,6 +168,15 @@ jobs:
             --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "compute_surface_records.py" python compute_surface_records.py
+          # 2026-10-24 B172 - snapshot the record so a CHANGE to it is
+          # detectable. On 10-23 the all-time Sharp went +81.21u to
+          # +36.77u overnight and nothing noticed, because
+          # surface_records holds one row per key UPDATED IN PLACE: once
+          # the number moved the previous value was gone and could not be
+          # diffed at all. Runs right after the writer above so the
+          # snapshot always reflects what was just published.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "snapshot_surface_records.py" python snapshot_surface_records.py --apply
           # 2026-10-23 - Andy: "the record up top is 530-384-10 but below says
           # sides 87-45 props 56-48, the math isn't mathing."
           #
