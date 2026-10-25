@@ -357,10 +357,42 @@ def fetch_yesterday_recap():
         # already resolves, so this needs no new grading path. top_8 remains
         # the fallback for older cached cards that predate it, which is why the
         # selection is a fallback chain rather than a swap.
-        y_picks = (y_data.get("unified_top_picks")
-                   if isinstance(y_data.get("unified_top_picks"), list)
-                   and y_data.get("unified_top_picks")
-                   else y_data.get("top_8"))
+        # ══ 2026-10-25 · THE 10-09 FIX WAS CONDITIONAL ON A FIELD THAT
+        #                 STOPPED BEING WRITTEN, SO THE BUG CAME BACK ══
+        # Andy: "yesterday sweat card recap on home page now says 1-1 and has
+        # no college football plays".
+        #
+        # The chain above prefers unified_top_picks and falls back to top_8.
+        # sweat_card_2026-10-24 carries NO unified_top_picks at all — its keys
+        # are top_8 (2 entries, both MLB) and football_picks (5 entries, all
+        # NCAAF). So the fallback fired, the recap read 2 MLB legs, and
+        # reported "1-1" while five graded NCAAF plays sat in the sibling
+        # field. That is precisely the defect the comment above describes,
+        # reintroduced by its own fallback.
+        #
+        # A preference chain is the wrong shape here. Whether a given card
+        # vintage wrote unified_top_picks, top_8, football_picks or some
+        # combination is not something the recap should have to know, and
+        # picking ONE of them is how a sport goes missing. UNION all three and
+        # dedupe by label, so the recap is sport-blind by construction and
+        # cannot regress again when a writer changes which key it fills.
+        _seen, y_picks = set(), []
+        for _src in ('unified_top_picks', 'top_8', 'football_picks'):
+            _lst = y_data.get(_src)
+            if not isinstance(_lst, list):
+                continue
+            for _e in _lst:
+                if not isinstance(_e, dict):
+                    continue
+                _k = str(_e.get('label') or '').strip().lower()
+                if not _k or _k in _seen:
+                    continue
+                _seen.add(_k)
+                y_picks.append(_e)
+        print(f'     recap legs from yesterday: {len(y_picks)} '
+              f'(unified={len(y_data.get("unified_top_picks") or [])} '
+              f'top_8={len(y_data.get("top_8") or [])} '
+              f'football={len(y_data.get("football_picks") or [])})')
         if isinstance(y_picks, list) and y_picks:
             # Overlay live prop results so the recap reflects current
             # grading state. Yesterday's card top_8 was written at
