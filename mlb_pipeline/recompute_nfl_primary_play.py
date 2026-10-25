@@ -554,6 +554,53 @@ def run(start_date: str, days: int, dry_run: bool = False, lookback: int = 0) ->
         # "opposite sides two minutes apart" symptom — not a scorer race, a
         # human decision with no protection against recomputes that run all
         # day.
+        # ══ 2026-10-25 · PRESERVE AGAINST THE LIVE ROW, NOT THE SNAPSHOT ══
+        # `old_pp` comes from `g`, read when the run STARTED. This pipeline
+        # takes hours — the Sunday 12:10Z run reached this write at 15:26Z —
+        # so preserve() was comparing against a three-hour-old copy. Anything
+        # decided DURING the run carried no marker in that copy, so preserve()
+        # saw no decision and the engine's pick won.
+        #
+        # Measured on 2026-10-25: DEN@ARI was restored to the published
+        # ARI +5 (POTD side) with a `_manual_correction` at ~15:05Z and
+        # overwritten with DEN -5 at 15:26Z; IND@MIN IND +7 -> MIN -5 and
+        # CIN@BAL CIN ML -> BAL ML the same second. pick_lock_drift logged an
+        # UNLOCK of the exact stamp that write had just set, then a re-LOCK,
+        # so the row was current and only the SNAPSHOT was stale. Nine games
+        # whose flips predated 12:10Z survived, which is the signature.
+        #
+        # Same race nfl_game_context fixed with _reread_primary_play; this
+        # writer never got it. See B171.
+        try:
+            _lr = requests.get(f'{SB}/rest/v1/nfl_game_context', headers=H_R,
+                               timeout=15,
+                               params={'select': 'primary_play',
+                                       'game_id': f"eq.{g['game_id']}",
+                                       'limit': '1'})
+            if _lr.status_code == 200 and _lr.json():
+                _live = (_lr.json()[0] or {}).get('primary_play') or {}
+                if isinstance(_live, str):
+                    import json as _j
+                    try: _live = _j.loads(_live)
+                    except Exception: _live = {}
+                if isinstance(_live, dict) and _live:
+                    if str(_live.get('label')) != str(old_pp.get('label')):
+                        print(f"  ↻ {g['game_id']}: row moved during this run "
+                              f"— {old_pp.get('label')!r} -> {_live.get('label')!r}; "
+                              f"preserving against the LIVE row")
+                    old_pp = _live
+                    # old_key was built from the snapshot at the top of the
+                    # loop. Leaving it stale would make the "unchanged, skip"
+                    # test below compare against a row that no longer exists,
+                    # so a genuine no-op could still PATCH and a real change
+                    # could be skipped. Rebuild it from what is actually there.
+                    old_key = (f"{old_pp.get('type')}/{old_pp.get('label')}"
+                               f"/{old_pp.get('tier')}")
+                    # _shadow_was_missing is derived from old_pp further down,
+                    # so it picks up the live row without help here.
+        except Exception as _re:                                   # noqa: BLE001
+            print(f'  ! live re-read failed ({_re}) — preserving against snapshot')
+
         new_pp, _mo_note = _preserve_manual(old_pp, new_pp)
         if _mo_note:
             print(f'  ✋ {_mo_note}')
