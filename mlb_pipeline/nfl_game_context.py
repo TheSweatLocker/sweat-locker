@@ -286,6 +286,33 @@ def _nfl_blend_pg(cur_val, cur_games: int, pri_val, pri_games: int,
     return round(w * cur_pg + (1 - w) * pri_pg, 2)
 
 
+
+def _reread_primary_play(game_id):
+    """The CURRENT primary_play for one game, read at write time.
+
+    The caller's `existing_opens` snapshot is taken before a long build, so it
+    cannot see a pick written during the run. Anything that reverts a flip or
+    an override is almost always this staleness rather than a missing guard,
+    so the fix is a fresh read rather than another protective branch.
+
+    Returns {} on any failure, which makes the caller fall back to the
+    snapshot -- strictly no worse than the old behaviour.
+    """
+    if not game_id:
+        return {}
+    try:
+        r = requests.get(f'{SB}/rest/v1/nfl_game_context',
+                         headers=H_READ, timeout=15,
+                         params={'select': 'game_id,primary_play',
+                                 'game_id': f'eq.{game_id}', 'limit': '1'})
+        if r.status_code != 200:
+            return {}
+        rows = r.json() or []
+        return rows[0] if rows else {}
+    except Exception:                                      # noqa: BLE001
+        return {}
+
+
 def _nfl_blend_label(cur_games: int, current_season: int, prior_season: int) -> str:
     """Per-team caption describing which season(s) the displayed NFL stats
     reflect. Matches ncaaf_game_context._blend_label convention.
@@ -2065,9 +2092,38 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
         for open_key in ('open_spread', 'open_total', 'open_home_ml', 'open_away_ml'):
             if prev.get(open_key) is not None:
                 row[open_key] = prev[open_key]
-        if _locked and prev.get('primary_play'):
-            row['primary_play'] = prev['primary_play']
+        # ══ RE-READ AT WRITE TIME, AND HONOUR RECORDED DECISIONS ══════
+        # 2026-10-24. Two defects lived in the one line this replaces.
+        #
+        # 1. THE RACE. `prev` comes from a snapshot taken at the START of the
+        #    run. The builder then works for minutes and writes that stale
+        #    copy back, so anything written to primary_play DURING the run is
+        #    silently reverted. Four NCAAF flips and both NFL flips were lost
+        #    this way on 10-24, twice -- the second time within an hour of
+        #    being restored, with receipts already published on the flipped
+        #    side. Same shape as the read-then-write race in
+        #    jerry_reads_dual_write.
+        #
+        # 2. IT ONLY FIRED WHEN LOCKED. Outside the Thu-Mon window the fresh
+        #    pick overwrote everything, including a hand-set override and a
+        #    recorded flip. manual_pick_override.preserve() exists exactly
+        #    for that and was never wired into this writer -- it covers
+        #    recompute_*_primary_play, which this builder does not go
+        #    through.
+        _fresh_prev = _reread_primary_play(row.get('game_id')) or prev
+        if _locked and _fresh_prev.get('primary_play'):
+            row['primary_play'] = _fresh_prev['primary_play']
             _kept += 1
+        else:
+            try:
+                from manual_pick_override import preserve as _mp_preserve
+                row['primary_play'], _note = _mp_preserve(
+                    _fresh_prev.get('primary_play') or {},
+                    row.get('primary_play'))
+                if _note:
+                    print(f"     {row.get('game_id')}: {_note}")
+            except Exception as _pe:                       # noqa: BLE001
+                print(f'     ! override-preserve skipped ({_pe})')
     if _kept:
         print(f'     kept {_kept} locked pick(s) from the Thursday slate')
 
