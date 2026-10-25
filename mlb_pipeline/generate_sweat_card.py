@@ -512,6 +512,24 @@ def fetch_yesterday_recap():
                     return stored
                 if not label:
                     return stored
+                # ══ A GAME PICK MUST NOT STAY PENDING FOREVER ══════════════
+                # 2026-10-25. receipt_lookup is keyed on the LABEL, so when
+                # the card displays one side and the receipt holds the other
+                # the lookup misses and the leg stays Pending for good.
+                # Yesterday's recap read 2-1 with THREE stuck pending --
+                # UCF +7.5, Minnesota +7.5 and Michigan +7.5, all three
+                # WINNERS -- because their receipts say BYU -7.5, Iowa -7.5
+                # and Indiana -7.5. The true card was 5-1.
+                #
+                # A spread/total pick carries everything needed to grade
+                # itself: the team and number are in the label, the matchup is
+                # in `game`. So parse it by SHAPE and grade off the box score
+                # rather than hoping a label matches
+                # (feedback_parse_a_pick_by_shape_not_vocabulary). This is a
+                # fallback only -- a real graded receipt still wins above.
+                _bs = _grade_from_box(label, pick.get("game"))
+                if _bs:
+                    return _bs
                 # Labels look like "Jacob Misiorowski Under 1.5 er under"
                 # — try suffix prop_type match. Also handle NFL labels
                 # like "Caleb Williams Over 32.5 Pass Attempts" whose
@@ -935,7 +953,32 @@ def fetch_football_picks(today: str) -> list:
                 except Exception: pp = {}
             if not isinstance(pp, dict): continue
             tier = str(pp.get('tier') or '').upper()
-            if tier not in ('PRIME', 'STRONG'): continue
+            # ══ ADMIT A FLIP INSIDE THE BAND, EVEN AT LEAN ══════════════
+            # 2026-10-25. The STRONG+ floor left the Sweat Card EMPTY on an
+            # NFL Sunday: 0 of 12 NFL picks carry STRONG or PRIME (5 LEAN,
+            # 6 COVERAGE), so football=0 and users saw nothing but
+            # yesterday's recap. That is B162 arriving exactly as filed.
+            #
+            # This is NOT "lower the floor because the card is empty". The
+            # floor is measured to be WRONG on this population, twice over:
+            #   * tier ANTI-predicts on short spreads -- STRONG+ at
+            #     |line|<=10.5 runs 34.4% n=61 (BELOW breakeven, 25.8% in the
+            #     late half) while LEAN/COVERAGE/PASS runs 44.4% (B178)
+            #   * a flipped spread inside 10.5 runs 62-71% on n=121, and
+            #     yesterday went 6-3 in-band live
+            # So the admitted set is narrow on purpose: a RECORDED FLIP
+            # (_flipped_from) inside the measured band. A LEAN that is not a
+            # flip stays out, because nothing measured supports it.
+            try:
+                _ln = float(pp.get('line'))
+            except (TypeError, ValueError):
+                _ln = None
+            _is_banded_flip = (
+                isinstance(pp.get('_flipped_from'), dict)
+                and str(pp.get('type') or '').lower() in ('rl', 'spread')
+                and _ln is not None and abs(_ln) <= 10.5)
+            if tier not in ('PRIME', 'STRONG') and not _is_banded_flip:
+                continue
             # ══ 2026-10-23 · FLIP OUR SHORT NCAAF SPREAD ON THIS CARD TOO ══
             # ANDY: "I do think those plays should be published on the sharp
             # and sweat card tomorow maybe not all bit the ones we really like
@@ -2843,6 +2886,85 @@ def _fetch_all_game_reads(game_date: str) -> list:
         row["tier"] = tier
         out.append(row)
     return out
+
+
+
+#: results table per sport, for grading a card leg off the final score.
+_BOX_TABLES = (('NCAAF', 'ncaaf_game_results'), ('NFL', 'nfl_game_results'),
+               ('NBA', 'nba_game_results'), ('NHL', 'nhl_game_results'),
+               ('MLB', 'mlb_game_results'), ('NCAAB', 'ncaab_game_results'))
+_BOX_CACHE: dict = {}
+
+
+def _box_rows(date_str: str):
+    """All finals for a date, keyed (away, home) -> (home_score, away_score)."""
+    if date_str in _BOX_CACHE:
+        return _BOX_CACHE[date_str]
+    out = {}
+    for _sp, _tbl in _BOX_TABLES:
+        try:
+            r = requests.get(f'{SUPABASE_URL}/rest/v1/{_tbl}', headers=HEADERS,
+                             timeout=20,
+                             params={'select': 'home_team,away_team,'
+                                               'home_score,away_score',
+                                     'game_date': f'eq.{date_str}',
+                                     'limit': '400'})
+            if r.status_code != 200:
+                continue
+            for x in (r.json() or []):
+                hs, as_ = x.get('home_score'), x.get('away_score')
+                if hs is None or as_ is None:
+                    continue
+                out[(str(x.get('away_team')), str(x.get('home_team')))] = (
+                    float(hs), float(as_))
+        except Exception:                                  # noqa: BLE001
+            continue
+    _BOX_CACHE[date_str] = out
+    return out
+
+
+def _grade_from_box(label: str, game: str, date_str: str = None):
+    """Grade 'Team +7.5' / 'Over 48.5' against the final. None if it cannot.
+
+    Parsed by SHAPE: a trailing signed number is the line, the text before it
+    is the team (or Over/Under). Needs `game` as 'AWAY @ HOME' to decide which
+    side the team is.
+    """
+    import re as _re2
+    if not label or not game or '@' not in str(game):
+        return None
+    m = _re2.search(r'^(.*?)\s*([+-]\d+(?:\.\d+)?)\s*$', str(label).strip())
+    if not m:
+        return None
+    who, line = m.group(1).strip(), float(m.group(2))
+    try:
+        away, home = [t.strip() for t in str(game).split('@', 1)]
+    except ValueError:
+        return None
+    if not date_str:
+        import datetime as _dt2
+        date_str = (_dt2.datetime.strptime(today_et(), '%Y-%m-%d')
+                    - _dt2.timedelta(days=1)).strftime('%Y-%m-%d')
+    box = _box_rows(date_str)
+    sc = box.get((away, home))
+    if sc is None:
+        return None
+    hs, as_ = sc
+    wl = who.lower()
+    if wl in ('over', 'under'):
+        tot = hs + as_
+        v = (tot - line) if wl == 'over' else (line - tot)
+    else:
+        if who == home:
+            margin = hs - as_
+        elif who == away:
+            margin = as_ - hs
+        else:
+            return None
+        v = margin + line
+    if abs(v) < 1e-9:
+        return 'Push'
+    return 'Win' if v > 0 else 'Loss'
 
 
 def build_card():
