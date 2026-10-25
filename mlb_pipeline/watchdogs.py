@@ -1812,15 +1812,46 @@ def check_record_discontinuity() -> Optional[dict]:
             n_was = int(was.get('wins') or 0) + int(was.get('losses') or 0)
         except (TypeError, ValueError):
             continue
-        new_picks = max(0, n_now - n_was)
+        # ══ ROLLING WINDOWS MOVE FROM BOTH ENDS ════════════════════════
+        # First live run flagged 12 records; 8 were d7/d30 and all false.
+        # d7 is a SLIDING window, so yesterday's oldest day ages out and the
+        # record SHRINKS: prop_coverage/ALL/d7 went 1215-1102 -> 1075-977,
+        # 265 picks leaving. `max(0, n_now - n_was)` reads that as ZERO new
+        # picks and then flags the unit move as unexplained. The budget only
+        # ever counted ARRIVALS.
+        #
+        # So the churn is |n_now - n_was| plus arrivals, and an append-only
+        # window (lifetime/epoch) is the only place a DROP is itself a
+        # defect -- a lifetime record must never lose a win.
+        rolling = k[2] not in ('lifetime', 'epoch')
+        churn = abs(n_now - n_was)
         d_units = u_now - u_was
-        budget = 2.0 * new_picks + 1.0
+        lost_wins = int(was.get('wins') or 0) - int(now.get('wins') or 0)
+        if rolling:
+            budget = 2.0 * churn + 1.0
+        else:
+            # append-only: new picks are the only legitimate source of
+            # movement, and losing wins is never legitimate
+            budget = 2.0 * max(0, n_now - n_was) + 1.0
+            if lost_wins > 0:
+                offenders.append({
+                    'surface': k[0], 'sport': k[1], 'window': k[2],
+                    'units_was': round(u_was, 2), 'units_now': round(u_now, 2),
+                    'units_moved': round(d_units, 2),
+                    'newly_graded': max(0, n_now - n_was),
+                    'explainable_by': 0.0,
+                    'WINS_LOST': lost_wins,
+                    'record_was': f"{was.get('wins')}-{was.get('losses')}",
+                    'record_now': f"{now.get('wins')}-{now.get('losses')}",
+                })
+                continue
         if abs(d_units) > budget:
             offenders.append({
                 'surface': k[0], 'sport': k[1], 'window': k[2],
                 'units_was': round(u_was, 2), 'units_now': round(u_now, 2),
                 'units_moved': round(d_units, 2),
-                'newly_graded': new_picks,
+                'newly_graded': max(0, n_now - n_was),
+                'window_churn': churn,
                 'explainable_by': round(budget, 2),
                 'record_was': f"{was.get('wins')}-{was.get('losses')}",
                 'record_now': f"{now.get('wins')}-{now.get('losses')}",
@@ -1831,7 +1862,9 @@ def check_record_discontinuity() -> Optional[dict]:
     worst = offenders[0]
     # A lifetime/epoch window moving is the user-facing headline; a d7 window
     # moving is far less serious, so the severity follows the window.
-    hard = any(o['window'] in ('lifetime', 'epoch') for o in offenders)
+    # an append-only window losing wins is the serious case
+    hard = any(o['window'] in ('lifetime', 'epoch') or o.get('WINS_LOST')
+               for o in offenders)
     return {
         'check_name': 'record_discontinuity',
         'severity': 'CRITICAL' if hard else 'WARNING',
