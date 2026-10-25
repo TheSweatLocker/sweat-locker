@@ -140,7 +140,10 @@ def _espn_events_on_date(date_str: str) -> list:
     ymd = date_str.replace('-', '')
     r = requests.get(f'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={ymd}',
                      timeout=15)
-    if r.status_code != 200: return []
+    if r.status_code != 200:
+        # B153: never swallow a non-200 silently -- name it.
+        print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+        return []
     return r.json().get('events', [])
 
 

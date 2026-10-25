@@ -10,7 +10,11 @@ These fields power the `player_l10_vs_line_extreme` playbook signal.
 
 Data sources per sport:
   * MLB — pitcher_game_logs / batter_game_logs from Baseball Savant
-  * NFL — nfl_player_game_logs (via nfl_data_py backfill)
+  * NFL — `signals._stat_last10`, written by nfl_generate_props.py (NOT a
+    separate table). 2026-10-25: this line used to claim the NFL path read
+    `nfl_player_game_logs`, a table that DOES NOT EXIST (PGRST205), which
+    sent an investigation of empty lookback columns down the wrong path
+    entirely. The NFL path has never read a game-log table.
 
 Idempotent: PATCHes each prop row. Safe to re-run.
 

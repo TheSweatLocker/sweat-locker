@@ -86,7 +86,10 @@ def normalize_from_public_splits_archive(sport: str, game_date: str) -> list[dic
                                        "oc_divergence,fr_handle_pct,fr_bettors_pct,captured_at",
                              "limit": 2000},
                      timeout=20)
-    if r.status_code != 200: return []
+    if r.status_code != 200:
+        # B153: never swallow a non-200 silently -- name it.
+        print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+        return []
     rows = []
     for row in r.json() or []:
         if not isinstance(row, dict): continue
@@ -318,7 +321,10 @@ def normalize_from_fadereport_signals(sport: str, game_date: str) -> list[dict]:
                                        "strength_pts,fetched_at,home_team,away_team",
                              "limit": 2000},
                      timeout=20)
-    if r.status_code != 200: return []
+    if r.status_code != 200:
+        # B153: never swallow a non-200 silently -- name it.
+        print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+        return []
     gid_idx = _game_id_lookup(sport, game_date) if sport != "MLB" else {}
     rows = []
     for row in r.json() or []:
@@ -371,7 +377,10 @@ def normalize_from_cleatz_signals(sport: str, game_date: str) -> list[dict]:
                                        "divergence,fetched_at,home_team,away_team",
                              "limit": 2000},
                      timeout=20)
-    if r.status_code != 200: return []
+    if r.status_code != 200:
+        # B153: never swallow a non-200 silently -- name it.
+        print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+        return []
     gid_idx = _game_id_lookup(sport, game_date) if sport != "MLB" else {}
     rows = []
     for row in r.json() or []:

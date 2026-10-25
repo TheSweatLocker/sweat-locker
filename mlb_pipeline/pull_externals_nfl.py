@@ -476,7 +476,10 @@ def fetch_pickswise(slate: list, game_date: str, aliases: dict) -> tuple:
         headers={'User-Agent': 'Mozilla/5.0 (Sweat Locker aggregator)'},
         timeout=12,
     )
-    if r.status_code != 200: return [], r.status_code
+    if r.status_code != 200:
+        # B153: never swallow a non-200 silently -- name it.
+        print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+        return [], r.status_code
     soup = BeautifulSoup(r.text, 'html.parser')
     text = soup.get_text('\n', strip=True)
 

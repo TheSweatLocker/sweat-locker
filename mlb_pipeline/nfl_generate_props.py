@@ -1138,7 +1138,10 @@ def fetch_nfl_player_recent(player_id: int, stat_col: str, season: int,
                                      'select': f'season,week,team,opponent_team,{_sel}',
                                      'order': 'week.desc', 'limit': str(n)},
                              timeout=10)
-            if r.status_code != 200: return []
+            if r.status_code != 200:
+                # B153: never swallow a non-200 silently -- name it.
+                print(f'  ! HTTP {r.status_code} {r.url} :: {r.text[:180]}')
+                return []
             return r.json() or []
         except Exception: return []
     rows = _pull(season)
