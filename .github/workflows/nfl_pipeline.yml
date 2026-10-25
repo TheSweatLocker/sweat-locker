@@ -1777,3 +1777,33 @@ jobs:
         run: |
           cd mlb_pipeline
           python assert_slate_freshness.py --sport NFL
+
+      # ══ 2026-10-25 · THE ONE INVARIANT (B175) ═════════════════════════
+      # Andy: "why cant we get on same page with records and resolvers it
+      # always something every day". Every incident on 10-25 was the same
+      # shape -- two surfaces disagreed and nothing checked. The flip wrote
+      # ctx while the receipt kept the pre-flip side (17 receipts graded the
+      # opposite of what shipped, Sweat Card booked 1-4 on a 5-1 card); the
+      # recap preferred one card key while the writer filled another (five
+      # NCAAF plays vanished, reported 1-1); a badge said DEN -4.5 while the
+      # POTD and the read both said ARI +5.
+      #
+      # Deliberately NOT continue-on-error, and deliberately placed last:
+      # this is the check that is supposed to stop a bad publish being
+      # invisible, so making it advisory would defeat it -- the same reason
+      # the freshness assert above is hard.
+      #
+      # --fail-on side: a SIDE disagreement fails the build. A MARKET-only
+      # disagreement shouts but passes, because that is the known B144
+      # population (237 of 1,754 game_read receipts publish a different
+      # market than the read) and a permanently red step is a muted step.
+      # Tighten to `--fail-on any` once B144 is cleared.
+      - name: Assert publish invariant (badge == read == card == receipt)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python assert_publish_invariant.py --sport NFL --fail-on side

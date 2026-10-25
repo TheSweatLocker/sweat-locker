@@ -1191,3 +1191,17 @@ jobs:
         run: |
           cd mlb_pipeline
           python assert_slate_freshness.py --sport NCAAF
+
+      # ══ 2026-10-25 · THE ONE INVARIANT (B175) — see nfl_pipeline.yml ══
+      # badge == read == card == receipt, on SIDE and MARKET. Hard by design:
+      # an advisory version of this check is a muted one. --fail-on side so
+      # the known B144 market population shouts without pinning the build red.
+      - name: Assert publish invariant (badge == read == card == receipt)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python assert_publish_invariant.py --sport NCAAF --fail-on side
