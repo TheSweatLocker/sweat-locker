@@ -502,7 +502,11 @@ def run(game_date: str | None = None, threshold: int = 70,
                 if isinstance(_data, str):
                     try: import json as _j; _data = _j.loads(_data)
                     except Exception: _data = {}
-                if (_data or {}).get('anchor') == 'jerry_synthesis_v1':
+                # 2026-10-25: `or _is_manual_potd` added. This tested only
+                # for this script's own anchor, so a hand-set POTD was not
+                # covered by the hard lock at all.
+                if ((_data or {}).get('anchor') == 'jerry_synthesis_v1'
+                        or _is_manual_potd(_data)):
                     print(f"  🔒🔒 best_bet_{gd} HARD-LOCK — {_et_hour:02d}:00 ET past "
                           f"{_HARD_LOCK_HOUR:02d}:00 lock. Republish REFUSED even with "
                           f"--force. Emergency override: POTD_EMERGENCY_UNLOCK=1")
@@ -530,6 +534,15 @@ def run(game_date: str | None = None, threshold: int = 70,
                     except Exception:
                         _data = {}
                 _anchor = (_data or {}).get('anchor')
+                # 2026-10-25: a manual POTD is a publication too. Same miss
+                # as the hard lock above — see _MANUAL_ANCHORS.
+                if _is_manual_potd(_data):
+                    print(f"  🔒 best_bet_{gd} is a MANUAL POTD "
+                          f"({(_data or {}).get('leanDisplay')!r}, set by "
+                          f"{((_data or {}).get('_manual') or {}).get('by')}) — "
+                          f"skipping republish. --force does NOT override a "
+                          f"hand-set play; clear it by hand first.")
+                    return
                 if _anchor == 'jerry_synthesis_v1':
                     print(f"  🔒 best_bet_{gd} already Jerry-anchored "
                           f"({(_row.get('fetched_at') or '?')[:19]}) — skipping "
@@ -1031,10 +1044,62 @@ def run(game_date: str | None = None, threshold: int = 70,
         print(f"  ⚠ history mirror failed: {e}")
 
 
+#: Anchors that represent a HUMAN decision rather than this script's output.
+#: 2026-10-25: the two publish locks below both tested
+#: `anchor == 'jerry_synthesis_v1'` — this script's OWN string. A POTD set by
+#: set_potd_manual.py carries `anchor='manual_owner_pick'` plus a `_manual`
+#: stamp, so it matched neither guard and was invisible to the lock that
+#: exists to protect a published headline play. Measured: Andy's ARI +5 POTD
+#: was published, then wiped at 14:54Z by a scheduled run of this script,
+#: which wrote noPlay=True over it. The narrative field survived because the
+#: no-play writer does not set one, leaving daily_best_bet_history holding
+#: lean='No Play (discipline pass)' ALONGSIDE the full Arizona write-up — a
+#: row that argued for a play it said we did not make.
+_MANUAL_ANCHORS = ('manual_owner_pick',)
+
+
+def _is_manual_potd(data) -> bool:
+    """True when this payload records a human POTD decision."""
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get('_manual'), dict):
+        return True
+    return str(data.get('anchor') or '') in _MANUAL_ANCHORS
+
+
+def _read_potd_payload(gd: str):
+    """The stored best_bet payload for `gd`, parsed, or None."""
+    try:
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/jerry_cache", headers=H_READ,
+                         params={"cache_key": f"eq.best_bet_{gd}",
+                                 "select": "data,fetched_at"}, timeout=10)
+        if r.status_code != 200 or not r.json():
+            return None
+        d = r.json()[0].get('data') or {}
+        if isinstance(d, str):
+            import json as _j
+            try: d = _j.loads(d)
+            except Exception: return None
+        return d if isinstance(d, dict) else None
+    except Exception as _e:                                    # noqa: BLE001
+        print(f"  ⚠ manual-POTD check failed: {_e} — proceeding")
+        return None
+
+
 def _write_no_play(game_date: str, dry_run: bool, reads: list) -> None:
     """Write a 'Jerry passing' payload when no read clears the threshold.
     Preserves the same shape play_of_day used for no-play days
     (top-level noPlay + reason keys)."""
+    # A hand-set POTD outranks this script concluding "no play". Without this
+    # the engine passing silently deletes a human decision, and because this
+    # writer sets no `narrative` the history row is left self-contradictory.
+    if not dry_run:
+        _ex = _read_potd_payload(game_date)
+        if _is_manual_potd(_ex):
+            print(f"  🔒 best_bet_{game_date} is a MANUAL POTD "
+                  f"({(_ex or {}).get('leanDisplay')!r}) — refusing to "
+                  f"overwrite it with noPlay. Clear it by hand to pass.")
+            return
     top_conv = max((r.get("conviction") or 0) for r in reads)
     reason = (f"Jerry's highest conviction today is {top_conv} — below the "
               f"POTD threshold. Full slate available; no headline play locked.")
