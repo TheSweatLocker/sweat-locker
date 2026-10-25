@@ -242,9 +242,14 @@ def latest_public_splits(date: str) -> dict:
     counting one game several times.
     """
     out = {}
+    # odds_pick was missing from this SELECT, so it read as absent even
+    # though line_snapshot carries it -- the explicit-SELECT
+    # silent-blank trap. It is the PUBLIC side's price, so it is NOT
+    # our price (see price_faded_side below), but it is the other half
+    # of any 'was the public getting a worse number' question.
     for s in page('line_snapshot', {'select': 'sport,game_id,market,pick_side,'
                                              'bets_pct,money_pct,line,'
-                                             'snapshot_ts'}):
+                                             'odds_pick,snapshot_ts'}):
         mkt = str(s.get('market') or '').lower()
         if mkt not in FADE_MARKETS:
             continue
@@ -253,6 +258,90 @@ def latest_public_splits(date: str) -> dict:
         if k not in out or ts > str(out[k].get('snapshot_ts')):
             out[k] = s
     return out
+
+
+
+#: Sides as line_history stores them, lowercased, per market.
+_LH_SIDE = {'HOME': 'home', 'AWAY': 'away', 'OVER': 'over', 'UNDER': 'under'}
+
+
+def price_faded_side(sport: str, game_id: str, market: str, side: str,
+                     line) -> tuple:
+    """(price, books) for OUR side at OUR line, from posted two-sided quotes.
+
+    ══ WHY NOT odds_pick ══════════════════════════════════════════════
+    line_snapshot.odds_pick is the price of the side the PUBLIC is on. The
+    Fade takes the other side, so quoting it would publish the price of a bet
+    we did not make -- the same defect as pricing a flipped football spread
+    off `_spread_prices`, which carries the price of the side the read TOOK.
+
+    So this reads line_history, which stores one row per (book, side, line)
+    with a real posted price, and takes the MEDIAN across books at our exact
+    line. Median rather than best, because best-of-N flatters the record and
+    reconstructed prices have already inflated ROI once
+    (project_reconstructed_prices_inflate_roi_1009).
+
+    Returns (None, 0) when fewer than 2 books post our number -- better an
+    honestly unpriced leg than a fabricated price. 22 of 49 Fade receipts are
+    currently unpriced, which makes 45% of our one measured edge W/L-only and
+    its published ROI a partial number presented as a whole.
+    """
+    want = _LH_SIDE.get(str(side or '').upper())
+    if want is None or line is None:
+        return None, 0
+    mkt = 'total' if str(market).lower() == 'total' else 'spread'
+    rows = page('line_history',
+                {'select': 'side,line,price,book,captured_at',
+                 'sport': f'eq.{sport}', 'game_id': f'eq.{game_id}',
+                 'market': f'eq.{mkt}'})
+    # ══ ONE QUOTE PER BOOK, THE LATEST ══════════════════════════════════
+    # line_history stores a row per (book, side, line) PER CAPTURE, so the
+    # first cut of this medianed 2,367 rows for a single game and called it
+    # "2367 books". That is a median across DAYS, blending a price from
+    # Tuesday with tonight's, and it would read as a huge consensus while
+    # actually being a time-average. Collapse to the newest quote per book
+    # first, then median across books.
+    latest = {}
+    for r in rows or []:
+        if str(r.get('side') or '').lower() != want:
+            continue
+        lv, pv = f(r.get('line')), f(r.get('price'))
+        if lv is None or pv is None or abs(lv - float(line)) > 0.01:
+            continue
+        bk = str(r.get('book') or '?')
+        ts = str(r.get('captured_at') or '')
+        if bk not in latest or ts > latest[bk][0]:
+            latest[bk] = (ts, pv)
+    prices = [v for _, v in latest.values()]
+    if len(prices) < 2:
+        return None, len(prices)
+    # ══ AMERICAN ODDS CANNOT BE AVERAGED ARITHMETICALLY ═════════════════
+    # They are discontinuous at +/-100: +100 and -102 are adjacent prices,
+    # but their arithmetic mean is -1, which is not a price at all. The first
+    # cut of this published exactly that for UCF +7.
+    # So median the IMPLIED PROBABILITY -- which is continuous and monotonic
+    # in the price -- and convert the median back.
+    def to_prob(a):
+        return (100.0 / (a + 100.0)) if a > 0 else (-a / (-a + 100.0))
+
+    def to_american(pr):
+        if pr <= 0 or pr >= 1:
+            return None
+        return (-(pr / (1.0 - pr)) * 100.0 if pr >= 0.5
+                else ((1.0 - pr) / pr) * 100.0)
+
+    probs = sorted(to_prob(v) for v in prices)
+    mid = len(probs) // 2
+    med_p = (probs[mid] if len(probs) % 2
+             else (probs[mid - 1] + probs[mid]) / 2.0)
+    am = to_american(med_p)
+    if am is None:
+        return None, len(prices)
+    # a price between -100 and +100 does not exist; nudge to the nearer edge
+    am = int(round(am))
+    if -100 < am < 100:
+        am = -100 if med_p >= 0.5 else 100
+    return am, len(prices)
 
 
 def build_plays(date: str) -> list[dict]:
@@ -319,6 +408,8 @@ def build_plays(date: str) -> list[dict]:
             line = ct
             label = f'{fade.title()} {ct:g}'
 
+        _our_px, _our_bk = price_faded_side(
+            sport, gid, mkt, fade, line)
         plays.append({
             'sport': sport, 'game_id': gid, 'game_date': date,
             'market': 'total' if mkt == 'total' else 'rl',
@@ -326,6 +417,13 @@ def build_plays(date: str) -> list[dict]:
             'side': fade, 'line': line, 'label': label,
             'public_side': public, 'public_pct': round(pub_pct, 1),
             'public_money_pct': f(s.get('money_pct')),
+            # OUR side's posted price, median across books at our exact
+            # number. None when fewer than 2 books post it -- an honestly
+            # unpriced leg beats a fabricated one.
+            'our_price': _our_px, 'our_price_books': _our_bk,
+            # the public side's price, for the 'were they getting a worse
+            # number' question. NOT our price.
+            'public_odds': f(s.get('odds_pick')),
             # What stands behind THIS play, per (sport, market). A tracking
             # play is published because it is unmeasured, not because it is
             # proven, and the tab must be able to say which.
@@ -472,12 +570,18 @@ def main() -> int:
                 'market': p['market'], 'matchup': p['matchup'],
                 'pick_side': p['side'], 'pick_line': p['line'],
                 'pick_label': p['label'],
+                'pick_odds': p.get('our_price'),
                 'source_table': 'line_snapshot',
                 'source_id': f"fade:{p['sport']}:{p['game_id']}:{p['market']}",
                 'audit': {'public_pct': p['public_pct'],
                           'public_side': p['public_side'],
                           'public_money_pct': p['public_money_pct'],
-                          'filter': f'public >= {FADE_MIN_PUBLIC:g}%'},
+                          'filter': f'public >= {FADE_MIN_PUBLIC:g}%',
+                          # so a later sweep can ask whether a higher
+                          # threshold is better WITHOUT needing new data
+                          'evidence': p.get('evidence'),
+                          'public_odds': p.get('public_odds'),
+                          'our_price_books': p.get('our_price_books')},
             } for p in plays]
             n = capture(rows, surface='fade')
             print(f'  receipts captured: {n}/{len(rows)}')
