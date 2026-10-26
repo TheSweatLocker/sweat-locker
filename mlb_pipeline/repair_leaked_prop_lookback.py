@@ -145,7 +145,7 @@ def _req(method, path, params=None, body=None, extra=None):
         # A 400 names a COLUMN, not just a table -- print the body.
         print('    HTTP %s on %s %s :: %s'
               % (e.code, method, path,
-                 e.read().decode('utf-8', 'replace')[:400]))
+                 e.read().decode('utf-8', 'replace')[:900]))
         return None, e.code
 
 
@@ -287,6 +287,8 @@ def main():
                     help='actually write; default is a dry run')
     ap.add_argument('--revert', action='store_true',
                     help='restore the values saved under _leak_repair')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='write at most N rows -- canary before the full run')
     a = ap.parse_args()
 
     table = TABLES[a.sport]
@@ -340,52 +342,59 @@ def main():
                   % (100 * moves[len(moves) // 2],
                      100 * moves[int(len(moves) * 0.9)], 100 * moves[-1]))
 
+    if a.limit and len(patches) > a.limit:
+        patches = patches[:a.limit]
+        print('  --limit %d : writing only the first %d'
+              % (a.limit, len(patches)))
+
     if not a.apply:
         print('')
         print('  DRY RUN -- nothing written. Re-run with --apply.')
         return 0
 
-    # One PATCH per row would be 13,290 requests. B154 exists because the
-    # first signal that we were issuing 214k requests/day was the app
-    # going down for paying users, so this goes out as batched upserts
-    # instead: ~270 requests at CHUNK=50.
+    # ONE PATCH PER ROW, and the reason is worth writing down.
     #
-    # merge-duplicates on the primary key updates only the columns named
-    # in the payload. Every object here carries the SAME key set, which is
-    # what feedback_postgrest_batch_normalize_keys requires -- a batch with
-    # ragged keys gets its keys unioned and writes nulls over columns the
-    # short objects never mentioned. Asserted, not assumed.
-    keyset = {frozenset(c) for _rid, c in patches}
-    if len(keyset) != 1:
-        print('  ABORT: payload objects do not share one key set (%d shapes).'
-              % len(keyset))
-        print('         A ragged batch upsert would null columns it never '
-              'names.')
-        return 1
-
+    # The first version batched these as POST upserts with
+    # resolution=merge-duplicates to keep the request count near 270
+    # instead of 13,290 (B154: 214k requests/day is what took the app down
+    # for paying users). It failed on all 13,290 with
+    #
+    #   23502  null value in column "game_date" violates not-null constraint
+    #
+    # because PostgREST's merge-duplicates is INSERT ... ON CONFLICT DO
+    # UPDATE, and PostgreSQL evaluates the INSERT arm first. A partial
+    # payload therefore trips every NOT NULL column it omits before
+    # conflict resolution ever runs. Batching a PARTIAL-COLUMN update is
+    # not possible this way.
+    #
+    # The workaround would be to include the row's identity columns read
+    # moments earlier, so the INSERT arm validates. That makes the write a
+    # read-modify-write over columns this script has no business touching,
+    # and a concurrent writer in between would be silently reverted. Not
+    # worth it to save requests on a ONE-OFF repair, so: keyed PATCH, one
+    # row at a time, which can only ever touch the columns it names.
     ok = fail = 0
-    for i in range(0, len(patches), CHUNK):
-        batch = patches[i:i + CHUNK]
-        body = []
-        for rid, cols in batch:
-            o = dict(cols)
-            o['id'] = rid
-            body.append(o)
-        _r, st = _req('POST', table, {}, body,
-                      {'Prefer': 'resolution=merge-duplicates,'
-                                 'return=minimal'})
-        if st in (200, 201, 204):
-            ok += len(batch)
+    for i, (rid, cols) in enumerate(patches):
+        # A keyed PATCH on one id returning 204 IS a write -- urlencode
+        # builds the filter, so feedback_unencoded_url_filter_eats_writes
+        # does not apply. The post-write re-read below is the real check.
+        _r, st = _req('PATCH', table, {'id': 'eq.%s' % rid}, cols,
+                      {'Prefer': 'return=minimal'})
+        if st in (200, 204):
+            ok += 1
         else:
-            fail += len(batch)
-            if fail <= CHUNK * 2:
-                print('     FAILED batch at %d (status %s)' % (i, st))
-        if (i // CHUNK) % 20 == 0:
-            print('     ... %d/%d' % (min(i + CHUNK, len(patches)),
-                                      len(patches)))
+            fail += 1
+            if fail <= 5:
+                print('     FAILED id=%s status=%s' % (rid, st))
+            if fail >= 25 and ok == 0:
+                print('  ABORT: first %d writes all failed -- stopping rather'
+                      ' than hammering the API.' % fail)
+                break
+        if (i + 1) % 500 == 0:
+            print('     ... %d/%d  (ok %d, fail %d)'
+                  % (i + 1, len(patches), ok, fail))
     print('')
-    print('  wrote %d, failed %d  (%d requests)'
-          % (ok, fail, (len(patches) + CHUNK - 1) // CHUNK))
+    print('  wrote %d, failed %d  (%d requests)' % (ok, fail, ok + fail))
 
     # Assert the OUTPUT moved. A green step may write nothing
     # (feedback_green_step_that_writes_nothing) -- so re-read one repaired
