@@ -67,8 +67,18 @@ def period_key(date_str: str, period: str = 'week') -> str:
         return d.isoformat()
     if period == 'month':
         return d.strftime('%Y-%m')
-    iso = d.isocalendar()
-    return '%d-W%02d' % (iso[0], iso[1])
+    if period == 'week':
+        iso = d.isocalendar()
+        return '%d-W%02d' % (iso[0], iso[1])
+    if period in ('year', 'season'):
+        return '%04d' % d.year
+    # 2026-10-26: this used to fall through to ISO week for ANY unknown
+    # value, so period='year' silently ran WEEKLY and the output said
+    # "seasons 120/250" when 250 was a week count. A silent default that
+    # mislabels its own output is the same defect class as a swallowed
+    # non-200 -- so an unknown period now raises instead.
+    raise ValueError(
+        "unknown period %r -- use 'day', 'week', 'month' or 'year'" % period)
 
 
 def walk_forward(rows, rule_factory, grade, period='week', min_train=150,
