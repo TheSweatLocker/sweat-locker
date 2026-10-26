@@ -1798,6 +1798,16 @@ jobs:
       # population (237 of 1,754 game_read receipts publish a different
       # market than the read) and a permanently red step is a muted step.
       # Tighten to `--fail-on any` once B144 is cleared.
+      - name: Side-rule shadow (records only, publishes nothing)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python side_rule_shadow.py --sport NFL --apply
       - name: Assert publish invariant (badge == read == card == receipt)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

@@ -1196,6 +1196,16 @@ jobs:
       # badge == read == card == receipt, on SIDE and MARKET. Hard by design:
       # an advisory version of this check is a muted one. --fail-on side so
       # the known B144 market population shouts without pinning the build red.
+      - name: Side-rule shadow (records only, publishes nothing)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python side_rule_shadow.py --sport NCAAF --apply
       - name: Assert publish invariant (badge == read == card == receipt)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:
