@@ -153,6 +153,36 @@ SPORTS = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
 # saying "we are fading our own number", and we cannot support that sentence
 # on a coin flip.
 MAX_MAGNITUDE_BY_SPORT = {'NCAAF': 10.5, 'NFL': 10.5}
+
+# ══ 2026-10-26 · B209 · NFL SPREADS ARE REFUSED ON CURATED SURFACES ══════
+# Measured on every graded NFL spread receipt (n=85), priced from each
+# receipt's own pick_odds rather than a flat -110:
+#
+#     sharp_card   5-13  27.8%  ROI -47.31%
+#     sweat_card   5-13  27.8%  ROI -47.40%
+#     game_read   21-28  42.9%  ROI -17.89%   <- different surface, untouched
+#
+# Breakeven is 52.38%. Both curated surfaces lose about half of stake, and
+# the engine's own audit_note already says so: "this is a measured loser,
+# not variance... the tier was never earned."
+#
+# Counterfactual of removing them:
+#     Sweat Card  617-437 +92.56u  ->  612-424 +101.09u
+#     The Sharp   395-300  +6.25u  ->  390-287  +14.77u
+#
+# The Sharp's whole lifetime profit is +6.25u and this one market costs it
+# -8.51u, so the cut more than doubles the surface.
+#
+# NFL MONEYLINE is NOT banned (+10.7%) -- cap spreads, never ML
+# (project_nfl_curated_spread_is_the_leak_1018).
+#
+# This lives here, next to the band, because both composers already import
+# from this module: a second copy of the threshold is how
+# generate_sweat_card.py:1042 ended up with a silently dead flip after a
+# rename.
+#
+# REVERT: set this to set().
+CURATED_SPREAD_BANNED_SPORTS = {'NFL'}
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME'}
 
 

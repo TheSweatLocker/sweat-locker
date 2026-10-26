@@ -1270,6 +1270,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_no_edge = 0
     dropped_ncaaf_total = 0
     dropped_football_spread = 0
+    dropped_b209_nfl_spread = 0
     dropped_flip_unpriced = 0
     flipped_spread = 0
     lean_flip_admitted = 0
@@ -1383,6 +1384,29 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # the OPPOSITE side. A short spread with no usable line is refused
         # here rather than guessed at.
         if is_football and (pp.get('type') or '').lower() in ('rl', 'spread'):
+            # ══ 2026-10-26 · B209 · NFL SPREADS REFUSED OUTRIGHT HERE ══
+            # 5-13 (27.8%, ROI -47.31%) on this surface, priced at what we
+            # published. The Sharp's lifetime profit is +6.25u and this
+            # market alone costs it -8.51u, so refusing it more than
+            # doubles the surface. NFL ML is untouched.
+            try:
+                from flip_football_spreads import (
+                    CURATED_SPREAD_BANNED_SPORTS as _CSB)
+            except ImportError:
+                # A renamed import left the Sweat Card flip silently dead
+                # for weeks (generate_sweat_card.py:1042). Fail LOUD rather
+                # than quietly publishing a measured loser again.
+                print('  !! B209 gate unavailable (import failed) -- '
+                      'refusing NFL spreads by fallback')
+                _CSB = {'NFL'}
+            if sport in _CSB:
+                # Its OWN counter: reusing dropped_football_spread made the
+                # run log say "LONG spreads refused (|line| > 7)" about a
+                # 4.5-point spread refused for being NFL at all. A counter
+                # that mislabels its own reason is the same defect as a
+                # silent default (walk_forward.period_key, fixed today).
+                dropped_b209_nfl_spread += 1
+                continue
             try:
                 _mag = abs(float(pp.get('line')))
             except (TypeError, ValueError):
@@ -1718,6 +1742,10 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         # NCAAF totals again and wants looking at, not silently discarding.
         print(f'  {sport} totals refused: {dropped_ncaaf_total} '
               f'(NCAAF over/under is 49.99% on 6,329 games — nothing to pick)')
+    if dropped_b209_nfl_spread:
+        print(f'  B209: {dropped_b209_nfl_spread} NFL spread(s) refused '
+              f'outright — curated NFL spreads are 5-13 (27.8%, '
+              f'ROI -47.3%) on this surface')
     if dropped_football_spread:
         # Unlike the NCAAF totals guard, this one SHOULD fire — football
         # spreads are a live market the engine keeps producing. Printed so the

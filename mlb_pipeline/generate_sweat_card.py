@@ -1011,6 +1011,26 @@ def fetch_football_picks(today: str) -> list:
                 and _ln is not None and abs(_ln) <= 10.5)
             if tier not in ('PRIME', 'STRONG') and not _is_banded_flip:
                 continue
+            # ══ 2026-10-26 · B209 · NFL SPREADS REFUSED ON THIS CARD ══
+            # 5-13 (27.8%, ROI -47.40%) priced at what we published; the
+            # cut takes the Sweat Card from +92.56u to +101.09u. Placed
+            # AFTER the tier/flip gate so the refusal is unconditional --
+            # a banded flip does not buy an NFL spread back in. NFL ML is
+            # untouched (+10.7%).
+            if (sport == 'NFL'
+                    and str(pp.get('type') or '').lower() in ('rl',
+                                                              'spread')):
+                try:
+                    from flip_football_spreads import (
+                        CURATED_SPREAD_BANNED_SPORTS as _CSB)
+                except ImportError:
+                    print('  !! B209 gate unavailable (import failed) -- '
+                          'refusing NFL spreads by fallback')
+                    _CSB = {'NFL'}
+                if 'NFL' in _CSB:
+                    print(f'  B209: refused NFL spread '
+                          f'{pp.get("label")} (curated 27.8%, ROI -47.4%)')
+                    continue
             # ══ 2026-10-23 · FLIP OUR SHORT NCAAF SPREAD ON THIS CARD TOO ══
             # ANDY: "I do think those plays should be published on the sharp
             # and sweat card tomorow maybe not all bit the ones we really like
