@@ -48,7 +48,11 @@ class _Q:
 
 q = _Q()
 
-HOME_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}   # close_spread -> HOME handicap
+from sport_line_sign import HOME_HANDICAP_SIGN as HOME_SIGN  # 2026-10-25: was a local dict. Canonical now lives in
+# sport_line_sign.py with its validation counts (NFL 56/56,
+# NCAAF 310/310) -- the convention exists in two parameterisations
+# that look contradictory, and retyping one is how a sign error
+# gets underneath everything fitted on top of it.
 HFA = {'NCAAF': 2.5, 'NFL': 1.8}
 PLAYS = 65.0          # typical offensive plays, for EPA -> points
 

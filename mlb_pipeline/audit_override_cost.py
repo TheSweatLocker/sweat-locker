@@ -84,7 +84,11 @@ RES = {'NCAAF': 'ncaaf_game_results', 'NFL': 'nfl_game_results'}
 #: NCAAF stores a NEGATIVE close_spread for a HOME favourite, NFL POSITIVE.
 #: Verified on 6,444 graded NCAAF games (home wins 78.9% when spread<0,
 #: correlation -0.723, spread_result agrees with margin+spread>0 on 99.8%).
-HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': +1.0}
+from sport_line_sign import HOME_FAV_SIGN  # 2026-10-25: was a local dict. Canonical now lives in
+# sport_line_sign.py with its validation counts (NFL 56/56,
+# NCAAF 310/310) -- the convention exists in two parameterisations
+# that look contradictory, and retyping one is how a sign error
+# gets underneath everything fitted on top of it.
 
 
 def _page(t, p, cap=400000):

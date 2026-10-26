@@ -64,7 +64,11 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 HW = dict(H, **{'Content-Type': 'application/json'})
 
 #: Sign of close_line that means HOME IS FAVOURED, per sport. Measured.
-CLOSE_LINE_HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': 1.0}
+from sport_line_sign import HOME_FAV_SIGN as CLOSE_LINE_HOME_FAV_SIGN  # 2026-10-25: was a local dict. Canonical now lives in
+# sport_line_sign.py with its validation counts (NFL 56/56,
+# NCAAF 310/310) -- the convention exists in two parameterisations
+# that look contradictory, and retyping one is how a sign error
+# gets underneath everything fitted on top of it.
 
 
 def f(v):

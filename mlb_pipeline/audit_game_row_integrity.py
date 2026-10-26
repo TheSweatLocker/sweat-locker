@@ -77,7 +77,11 @@ RESULTS = {'NCAAF': 'ncaaf_game_results', 'NFL': 'nfl_game_results'}
 CONTEXT = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
 #: NCAAF/MLB store NEGATIVE for a home favourite; NFL stores POSITIVE. Both
 #: verified empirically — getting this backwards inverts every finding below.
-HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': +1.0}
+from sport_line_sign import HOME_FAV_SIGN  # 2026-10-25: was a local dict. Canonical now lives in
+# sport_line_sign.py with its validation counts (NFL 56/56,
+# NCAAF 310/310) -- the convention exists in two parameterisations
+# that look contradictory, and retyping one is how a sign error
+# gets underneath everything fitted on top of it.
 #: Only flag a sign anomaly when our rating gap is at least this big. Below
 #: it, market-vs-model disagreement is ordinary and common.
 SP_GAP_FLOOR = 7.0
