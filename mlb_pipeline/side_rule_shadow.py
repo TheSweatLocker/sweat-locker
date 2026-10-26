@@ -44,7 +44,16 @@ so it cannot be rationalised later:
     PROMOTE a sport's rule when, on SHADOW rows only, it has
       * n >= 150 graded, AND
       * a Wilson lower bound above 52.38%, AND
-      * more than 60% of weeks above breakeven.
+      * more than 60% of weeks above breakeven, AND
+      * it BEATS THE CONCURRENT LEAGUE-WIDE SEASON COVER RATE for that
+        side -- added 2026-10-26 after measuring that most of the apparent
+        edge is a season regime, not our selection:
+
+            NCAAF home cover   50.6% long-run | 55.0% league 2026 | 58.4% ours
+            NFL   home cover   48.9% long-run | 42.0% league 2026 | 27.1% ours
+
+        Of NCAAF's +7.8pts over long-run, ~+4.4 is THE SEASON. Without this
+        clause the bar promotes a regime and calls it an edge.
 
 WHAT IT TOUCHES
 Adds exactly one key, `_side_rule_shadow`, inside `primary_play` — the same
