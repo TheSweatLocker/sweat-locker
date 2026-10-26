@@ -55,6 +55,17 @@ so it cannot be rationalised later:
         Of NCAAF's +7.8pts over long-run, ~+4.4 is THE SEASON. Without this
         clause the bar promotes a regime and calls it an edge.
 
+    AND THE REGIME MEAN-REVERTS, measured 2026-10-26 over 28 NFL seasons:
+
+        corr(H1 home-cover, H2 home-cover) = -0.474   <-- NEGATIVE
+        H1 and H2 favour the SAME side in 10 of 28 seasons (36%)
+        betting the season-to-date leading side: 49.3% ROI -5.90% n=6,161
+
+    So a season tilt does not merely fade, it tends to REVERSE. 2026 NFL
+    went H1 50.0% -> H2 34.0%, meaning the away tilt this NFL rule rides is
+    a second-half phenomenon in the sport where second halves invert. Treat
+    a promotion on seasonal evidence as disqualified, not merely weak.
+
 WHAT IT TOUCHES
 Adds exactly one key, `_side_rule_shadow`, inside `primary_play` — the same
 convention as the existing `_goat_shadow`. Read-modify-write preserving every
