@@ -77,6 +77,36 @@ Dry-run by default.
 
     python side_rule_shadow.py --sport NFL
     python side_rule_shadow.py --sport NFL --apply
+
+TWO SHADOWS ARE RECORDED
+  _side_rule_shadow  the sport-constant rule (NFL away / NCAAF home) --
+                     measured to be a mean-reverting SEASON REGIME, so it
+                     is disqualified from promotion on its own evidence and
+                     is kept only as a benchmark.
+  _ats_shadow        ATS MEAN REVERSION: back the team with the WORSE
+                     season-to-date ATS record. Measured 2026-10-26 on
+                     5,793 bounded NFL games, walk-forward by season over
+                     26 seasons, cutoff WALKED:
+
+                       gap 20pp  52.7% n=1834 ROI  +0.55%  14/26
+                       gap 30pp  53.3% n= 898 ROI  +1.83%  15/26
+                       gap 38pp  57.5% n= 497 ROI  +9.85%  15/26  CI clears
+                       gap 40pp  57.9% n= 428 ROI +10.61%  16/26  CI clears
+                       CONTROL (back the BETTER record) at 40pp: 42.1%,
+                       ROI -19.71% -- it inverts symmetrically, which is
+                       what a real signal looks like.
+
+                     Split-half by era at 40pp: EARLY 1999-2012 59.6%
+                     (+13.82%), LATE 2013-2026 54.4% (+3.84%). BOTH halves
+                     positive, so it passes split-half -- but the modern
+                     half does NOT clear its own CI, so the expectation is
+                     ~54% and ~+4% ROI, not 58%. Quote the modern number.
+
+                     Shadow gate: gap >= 30pp with >=3 prior games for both
+                     teams -- the best trade of n (898-1,170), season
+                     breadth (15-18 of 26) and positive ROI. Fixed, not
+                     re-fitted.
+    python side_rule_shadow.py --sport NFL --apply
     python side_rule_shadow.py --sport NCAAF --date 2026-10-24 --apply
 """
 from __future__ import annotations
@@ -101,6 +131,12 @@ SIDE_RULE = {'NFL': 'AWAY', 'NCAAF': 'HOME'}
 BASE_RATE = {'NFL': 51.1, 'NCAAF': 50.6}
 
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context'}
+RESULTS = {'NFL': 'nfl_game_results', 'NCAAF': 'ncaaf_game_results'}
+# validated on these tables: NFL 7181/7181, NCAAF 6503/6504
+HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}
+
+ATS_MIN_GAP = 0.30        # measured; fixed, never re-fitted per run
+ATS_MIN_GAMES = 3
 
 PROMOTE_MIN_N = 150
 PROMOTE_MIN_LOWER = 52.38
@@ -176,6 +212,73 @@ def as_dict(v):
     return dict(v) if isinstance(v, dict) else {}
 
 
+
+def _ats_records(sport, upto_date):
+    """Season-to-date ATS cover rate per team, BOUNDED to games before
+    upto_date. Built from the results table, which is the only place a
+    historical ATS record exists -- team_stats_rolling has no history."""
+    tbl = RESULTS.get(sport)
+    if not tbl:
+        return {}
+    season = int(str(upto_date)[:4])
+    # a season spans a calendar boundary; take the sport's own season field
+    rows, _st = _req('GET', tbl, {'select': '*', 'season': 'eq.%d' % season,
+                                  'limit': '1000'})
+    if not isinstance(rows, list):
+        return {}
+    rec = {}
+    for r in rows:
+        if r.get('home_score') is None:
+            continue
+        d = str(r.get('game_date'))[:10]
+        if d >= str(upto_date):
+            continue                      # BOUND: never see the slate
+        cs = f(r.get('close_spread'))
+        if cs is None:
+            continue
+        hcap = HOME_HANDICAP_SIGN.get(sport, 0.0) * cs
+        cov = (f(r['home_score']) - f(r['away_score'])) + hcap
+        if abs(cov) < 1e-9:
+            continue
+        for team, did in ((str(r.get('home_team')), cov > 0),
+                          (str(r.get('away_team')), cov < 0)):
+            w, l = rec.get(team, (0, 0))
+            rec[team] = (w + (1 if did else 0), l + (0 if did else 1))
+    return rec
+
+
+def _ats_shadow(sport, g, rec):
+    """The ATS-reversion call for one game, or None."""
+    home, away = str(g.get('home_team') or ''), str(g.get('away_team') or '')
+    hw, hl = rec.get(home, (0, 0))
+    aw, al = rec.get(away, (0, 0))
+    hn, an = hw + hl, aw + al
+    if hn < ATS_MIN_GAMES or an < ATS_MIN_GAMES:
+        return {'status': 'no play -- fewer than %d prior games'
+                          % ATS_MIN_GAMES,
+                'home_ats': '%d-%d' % (hw, hl), 'away_ats': '%d-%d' % (aw, al)}
+    hp, ap = hw / hn, aw / an
+    gap = abs(hp - ap)
+    side = 'HOME' if hp < ap else 'AWAY'
+    team = home if side == 'HOME' else away
+    fires = gap >= ATS_MIN_GAP
+    return {
+        'rule': 'ATS mean reversion: back the WORSE season ATS record',
+        'home_ats': '%d-%d (%.1f%%)' % (hw, hl, 100 * hp),
+        'away_ats': '%d-%d (%.1f%%)' % (aw, al, 100 * ap),
+        'gap_pp': round(100 * gap, 1),
+        'gate_pp': round(100 * ATS_MIN_GAP, 1),
+        'fires': fires,
+        'side': side if fires else None,
+        'team': team if fires else None,
+        'expectation': '~54% / ~+4% ROI (the MODERN half; the pooled 26-'
+                       'season figure of 57-58% is inflated by 1999-2012)',
+        'status': ('SHADOW -- not published, not a play' if fires
+                   else 'no play -- gap %.1fpp below the %.0fpp gate'
+                        % (100 * gap, 100 * ATS_MIN_GAP)),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', default='NFL', choices=sorted(CTX))
@@ -198,6 +301,10 @@ def main():
     print('  measured rule: always take %s   (2026 receipts)' % want)
     print('  long-run cover rate of that side: %.1f%%  <-- read these'
           ' together' % BASE_RATE[sport])
+
+    ats_rec = _ats_records(sport, date)
+    print('  teams with a bounded %d ATS record: %d'
+          % (int(str(date)[:4]), len(ats_rec)))
 
     rows, st = _req('GET', CTX[sport], {'select': '*',
                                         'game_date': 'eq.%s' % date})
@@ -262,6 +369,13 @@ def main():
                  ('%+g' % rule_line) if rule_line is not None else '-',
                  mark))
 
+        ats = _ats_shadow(sport, g, ats_rec)
+        print('                 ATS: home %s away %s -> %s'
+              % (ats.get('home_ats', '?'), ats.get('away_ats', '?'),
+                 (ats.get('team') + ' (gap %.1fpp)'
+                  % ats['gap_pp']) if ats.get('fires')
+                 else ats.get('status', 'no play')))
+
         if not a.apply:
             continue
 
@@ -275,6 +389,7 @@ def main():
         if not live:
             live = dict(pp)
         live['_side_rule_shadow'] = shadow
+        live['_ats_shadow'] = _ats_shadow(sport, g, ats_rec)
         _r, stt = _req('PATCH', CTX[sport], {'game_id': 'eq.%s' % g.get('game_id')},
                        {'primary_play': live},
                        {'Prefer': 'return=minimal'})
