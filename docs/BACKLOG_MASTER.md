@@ -254,3 +254,51 @@ conviction 76, 2.0 units, as POTD. It won; the gate still failed.
 174 rl receipts store a magnitude, 258 store a signed line, and 15 have a
 label reading `-12.5` beside a stored `+12.5`. No single formula grades the
 column. This broke my own audit grader before it broke anything else.
+
+### B225 — OPEN — full NFL/NCAAF model reassessment (Andy, 10-27)
+Something has to change in how football sides are selected. **Blocked on
+data pulls first** — Andy's call: get the stats in before re-modelling, so
+the reassessment is not run against the same thin inputs that produced the
+current numbers. Depends on **B226 (G2)**: until an NFL receipt can join an
+NFL result, every accuracy figure for the football engine is unverifiable.
+
+Inputs to assemble before modelling:
+  * team rolling stats with `refreshed_at` checked (NCAAF chain was stale,
+    not wrong — 10/23)
+  * opponent-adjusted rates, not raw per-game averages
+  * the real close, not `open_spread` (it is a byte copy of `close_spread`)
+  * preseason excluded via `sport_registry.season_start`, not the season col
+
+### B226 — OPEN — G2: NFL receipts have no joinable game key
+`public_receipts.game_id` is a 32-char hash (`4853610e…`), `matchup` is full
+team names and NULL on 2 of 3 rows; `nfl_game_results` uses
+`20261026_DAL_PHI` with `DAL`/`PHI`. Neither key matches, so **no NFL receipt
+can be verified against a box score**. NFL grades currently come via
+`jerry_reads.actual_outcome` — the same source that produced them, so there
+is no independent check anywhere in the NFL chain.
+
+### B227 — OPEN — targeted prop selection off matchup exploitation (Andy, 10-27)
+Andy, verbatim shape of the ask: "maybe we don't assess every single prop,
+maybe we assess fewer based on matchup that could lead to exploitation of
+specific markets."
+
+Worked example he gave: PHI at DAL. DAL has a poor run defence and
+historically concedes yardage to elite RBs (above a rating threshold we
+already reference). Prop Jerry should dig into *that game's* RB rushing
+markets and assess whether Saquon over rush yards is a real play — rather
+than pulling ~9,000 props a day, assessing none of them properly, and
+feeding a conviction tier system that is broken as a result.
+
+Why this is the right direction, from what is already measured:
+  * 17,087 prop receipts, **7,970 void/no_action (47%)** — half the board
+    was never gradeable in the first place
+  * the only prop edge we ever found was the **L5 leak** (10/26)
+  * prop projection beats the line **only where inputs were fed**
+    (+0.103 fed vs −1.247 unfed) — volume without inputs is noise
+  * `anytime_td_over`: 430 receipts, 430 NO_ACTION, never graded
+  * conviction is already known non-monotonic, and inverted on anytime TD
+
+Design shape to evaluate: a matchup gate FIRST (defence-vs-position
+weakness, pace, role/usage), which selects a handful of games, and only then
+a prop pull inside those games — so every published prop has a stated
+reason, enough inputs to project, and a conviction that means something.
