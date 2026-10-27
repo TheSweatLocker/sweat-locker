@@ -63,6 +63,32 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 
 # ─── Paged read helper ─────────────────────────────────────────────
 
+def _norm_result_or_none(v):
+    """public_receipts is UPPERCASE; the source tables are Title case.
+
+    ══ 2026-10-27 · G6 ════════════════════════════════════════════════════
+    This module copied `result` straight off the source row into
+    public_receipts at four sites. The source tables (prop_jerry_reads,
+    mlb/nfl/nba/nhl_pipeline_props, daily_dawg, daily_best_bet_history) all
+    store Title case; public_receipts stores UPPERCASE, as documented in
+    public_receipt.norm_result. The raw copy put 1,893 off-case rows into
+    the table, 1,828 of them prop_jerry, so any comparison written inside
+    public_receipts silently missed them.
+
+    norm_result is the shared boundary and maps pending -> NULL, which
+    matters: the graders find work with `result=is.null`, so a sentinel
+    there hides a row from grading forever.
+    """
+    if v is None:
+        return None
+    try:
+        from public_receipt import norm_result as _nr
+        return _nr(v)
+    except ImportError:
+        # Fail to the table's own convention rather than passing raw text.
+        return str(v).strip().upper() or None
+
+
 def _et_today_str() -> str:
     """Today's date in ET, as YYYY-MM-DD.
 
@@ -170,7 +196,7 @@ def backfill_prop_jerry(sport: str, dry_run: bool = False) -> int:
         if verdict == 'FADE' and direction in ('over', 'under'):
             _backed = 'under' if direction == 'over' else 'over'
         pick_side = _backed.upper() if _backed in ('over', 'under') else None
-        result = (row.get('result') or None)
+        result = _norm_result_or_none(row.get('result'))
         # Normalize result
         if result:
             r_low = result.lower()
@@ -284,7 +310,7 @@ def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     skipped_future = 0
     for row in paged(url):
         scanned += 1
-        result = row.get('result')
+        result = _norm_result_or_none(row.get('result'))
         if result:
             r_low = str(result).lower()
             if r_low in ('w', 'win'): result = 'WIN'
@@ -449,7 +475,7 @@ def backfill_ledger(sport: str, dry_run: bool = False) -> int:
     scanned = 0
     for row in paged(url):
         scanned += 1
-        result = row.get('result')
+        result = _norm_result_or_none(row.get('result'))
         if result:
             r_low = str(result).lower()
             if r_low in ('w', 'win'): result = 'WIN'
@@ -579,7 +605,7 @@ def backfill_daily_degen(dry_run: bool = False) -> int:
     scanned = 0
     for row in paged(url):
         scanned += 1
-        result = row.get('result')
+        result = _norm_result_or_none(row.get('result'))
         if result:
             r_low = str(result).lower()
             if r_low in ('w', 'win'): result = 'WIN'

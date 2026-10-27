@@ -205,12 +205,25 @@ def yesterday_et() -> str:
 
 
 def flip_for_fade(prop_result: str, verdict: str) -> str:
-    """FADE cashes when the underlying prop misses. Flip W↔L."""
+    """FADE cashes when the underlying prop misses. Flip W/L.
+
+    ══ 2026-10-27 · COMPARE CASE-INSENSITIVELY ════════════════════════════
+    This used to test `prop_result == 'Win'` exactly. Every props table is
+    Title case today (mlb/nfl/nba/nhl_pipeline_props all store Win/Loss/
+    Void), so the flip does fire — but if any source ever writes 'WIN', the
+    comparison silently fails and a FADE INHERITS THE UNFLIPPED SIDE. That
+    is the family that put 641 of 692 fade receipts on the wrong side and
+    turned 13-6 into 11-8 on UFC. A grade must never depend on the casing
+    of an upstream string.
+    """
     verdict = (verdict or '').upper()
     if verdict != 'FADE':
         return prop_result   # BACK: inherit as-is
-    if prop_result == 'Win':  return 'Loss'
-    if prop_result == 'Loss': return 'Win'
+    r = str(prop_result or '').strip().lower()
+    if r in ('win', 'won'):
+        return 'Loss'
+    if r in ('loss', 'lost', 'lose'):
+        return 'Win'
     return prop_result  # Push/Void pass through
 
 
