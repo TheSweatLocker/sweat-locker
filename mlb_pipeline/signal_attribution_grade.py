@@ -72,7 +72,7 @@ def _grade_pick(pick_market: str, pick_side: str,
         # cover math is a single formula. For MLB/NCAAF, negate the
         # spread. Everywhere below treats home_line as "points home is
         # laying (positive if favored)".
-        home_line = sp if sport == 'NFL' else -sp
+        home_line = sp if sport in _HOME_POSITIVE_SPREAD_SPORTS else -sp
         diff = margin - home_line
         if diff == 0: return 'P'
         home_cover = diff > 0
@@ -92,7 +92,35 @@ _RESULTS_TBL = {
     'NFL':   'nfl_game_results',
     'NCAAF': 'ncaaf_game_results',
     'MLB':   'mlb_game_results',
+    # 2026-10-27 · NHL/NBA/NCAAB added. Without them the attribution rows
+    # written for those sports could never be graded, so their signals could
+    # never earn an evidence-based weight -- half the sports were locked out
+    # of the attribution -> grade -> refit -> weight chain entirely.
+    'NHL':   'nhl_game_results',
+    'NBA':   'nba_game_results',
+    'NCAAB': 'ncaab_game_results',
 }
+
+# The spread column is NOT called the same thing in every sport.
+# nhl_game_results has NO `close_spread` -- a select naming it 400s and
+# returns nothing, which would have looked like "no NHL games settled"
+# rather than a wiring error.
+_SPREAD_COL = {
+    'NHL': 'close_puckline',
+}
+
+# POSITIVE close-spread means HOME FAVOURED only on NFL. Measured, not
+# assumed, by correlating the stored line against the realised home margin:
+#   NFL   +0.425  positive = home favoured
+#   NCAAF -0.721  negative = home favoured
+#   NBA   -0.516  negative
+#   NCAAB -0.644  negative
+#   MLB   -0.134  negative
+#   NHL   -0.171  negative  (close_puckline, n=2,707, values -1.5/0/+1.5)
+# Every sport except NFL therefore takes the negate branch in _grade_pick.
+# Getting this backwards grades every spread inverted -- see
+# project_close_spread_sign_bug_914.
+_HOME_POSITIVE_SPREAD_SPORTS = frozenset({'NFL'})
 
 
 def _fetch_results(sport: str, date_lo: str) -> tuple[dict, dict]:
@@ -111,7 +139,13 @@ def _fetch_results(sport: str, date_lo: str) -> tuple[dict, dict]:
                                   'Range': f'{page*1000}-{(page+1)*1000-1}'},
                          params={
                              'game_date': f'gte.{date_lo}',
-                             'select': 'game_id,game_date,home_team,away_team,home_score,away_score,close_spread,close_total',
+                             # alias the sport's own spread column to
+                             # close_spread so the grader reads one name
+                             'select': ('game_id,game_date,home_team,'
+                                        'away_team,home_score,away_score,'
+                                        'close_spread:%s,close_total'
+                                        % _SPREAD_COL.get(sport,
+                                                          'close_spread')),
                          },
                          timeout=20)
         if r.status_code not in (200, 206): break
@@ -129,6 +163,9 @@ _CTX_TBL = {
     'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
     'MLB':   'mlb_game_context',
+    'NHL':   'nhl_game_context',
+    'NBA':   'nba_game_context',
+    'NCAAB': 'ncaab_game_context',
 }
 
 
@@ -181,7 +218,11 @@ def _fetch_pending(sport: str, date_lo: str) -> list:
 
 def run(sport: Optional[str] = None, days: int = 3) -> None:
     date_lo = (date.today() - timedelta(days=days)).isoformat()
-    sports = [sport] if sport else ['NFL', 'NCAAF', 'MLB']
+    # 2026-10-27: default to EVERY sport in the results map. The old
+    # default was ['NFL','NCAAF','MLB'], so the nightly run silently
+    # skipped NHL/NBA/NCAAB even once they were wired -- the same
+    # shape of omission as the sport choices list.
+    sports = [sport] if sport else list(_RESULTS_TBL)
     from datetime import datetime as _dt, timezone as _tz
     now_iso = _dt.now(_tz.utc).isoformat()
     print(f'=== signal_attribution_grade · since {date_lo} · sports={sports} ===')
@@ -247,7 +288,8 @@ def run(sport: Optional[str] = None, days: int = 3) -> None:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB'])
+    p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB',
+                                       'NHL', 'NBA', 'NCAAB'])
     p.add_argument('--days', type=int, default=3)
     args = p.parse_args()
     run(sport=args.sport, days=args.days)
