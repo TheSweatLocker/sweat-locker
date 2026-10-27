@@ -33,6 +33,52 @@ import os
 import re as _re_mod
 
 
+# 2026-10-27 · sports where the LR override must NOT flip HOME<->AWAY.
+# Measured on 63 judgeable flips: NHL+NCAAF combined 21-29 (42.0%) for the
+# LR against 28-21 (57.1%) for the side it replaced, n=50. NFL inverts
+# (+39pts) but on n=13, too thin to act on, so NFL is excluded on purpose.
+# Only the SIDE is blocked; tier changes and the totals override are not,
+# because only the side was measured. REVERT: set to frozenset().
+LR_SIDE_FLIP_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF'})
+
+
+# ══ 2026-10-27 · THE OVERRIDE MUST NOT ERASE THE AUDIT TRAIL ═════════════
+_ENSEMBLE_AUDIT_FIELDS = ('_ensemble_sources', '_ensemble_runner_up',
+                          '_ensemble_all_markets', 'score')
+
+
+def _carry_ensemble_audit(new_pp: dict, old_pp) -> dict:
+    """Copy ensemble_v2's audit trail forward onto an LR override.
+
+    Both LR override paths build a FRESH new_pp, so every field not
+    explicitly copied is dropped. That silently deleted
+    `_ensemble_sources` -- the per-signal record of weight, class, side and
+    contribution that ensemble_v2 writes -- on 457 picks:
+
+        sport    ensemble_v2    lr_v1 (override)
+        NHL          105            181
+        NFL          176             93
+        NCAAF        513            143
+
+    All 457 carry `_pre_lr`, proving a prior pick existed, and `_pre_lr`
+    keeps only tier/side/type/engine/conviction. So the signal record was
+    not missing on those picks, it was ERASED, and 63% of NHL picks became
+    unattributable. That breaks the weekly attribution cadence exactly
+    where it matters most -- the games where the engine changed its mind.
+
+    This is the same class of bug the 2026-09-09 notes in this file already
+    fix for `_lr_total_shadow` and `_lr_ml_shadow`: a fresh dict drops what
+    it does not name. Correct regardless of whether the override improves
+    the pick.
+    """
+    if not isinstance(old_pp, dict):
+        return new_pp
+    for f in _ENSEMBLE_AUDIT_FIELDS:
+        if old_pp.get(f) is not None and new_pp.get(f) is None:
+            new_pp[f] = old_pp[f]
+    return new_pp
+
+
 def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
     """Demote ML PRIME/STRONG picks when Monte Carlo disagrees.
 
@@ -1435,6 +1481,36 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             _sub = (f'Model win probability on {team_short} · {conviction}% '
                     f'vs {_imp}% implied')
 
+        # ══ 2026-10-27 · DO NOT LET THE LR FLIP THE SIDE ON NHL / NCAAF ══
+        # Measured on the 63 judgeable HOME<->AWAY flips this override made:
+        #
+        #   sport      lr_v1's side        the side it overwrote
+        #   NHL  n=23   10-13  43.5%        13-10  56.5%
+        #   NCAAF n=27  11-16  40.7%        15-11  57.7%
+        #   NFL  n=13    9-4   69.2%         3-7   30.0%
+        #   POOL n=63   30-33  47.6%        31-28  52.5%
+        #
+        # NHL and NCAAF agree independently: combined 21-29 (42.0%) for the
+        # LR against 28-21 (57.1%) for the side it replaced, n=50 -- a 15
+        # point gap in the ensemble's favour. NFL inverts by +39 points but
+        # on n=13, too thin to act on, so NFL is deliberately UNCHANGED.
+        #
+        # Scope is exactly what was measured: a HOME<->AWAY flip on this ML
+        # path. Tier changes are a separate decision and are NOT blocked --
+        # only the side was measured. The totals override is untouched; its
+        # OVER/UNDER flips were never measured.
+        #
+        # REVERT: set LR_SIDE_FLIP_BLOCKED_SPORTS = frozenset().
+        _old_side = str((old_pp or {}).get('side') or '').upper()
+        _new_side = str(pred.get('suggested_side') or '').upper()
+        if (sport in LR_SIDE_FLIP_BLOCKED_SPORTS
+                and _old_side in ('HOME', 'AWAY')
+                and _new_side in ('HOME', 'AWAY')
+                and _old_side != _new_side):
+            print(f'  LR side flip REFUSED ({sport}): {_old_side} -> '
+                  f'{_new_side} — measured 42.0% vs 57.1% on n=50')
+            return pp
+
         new_pp = {
             'type': 'ml',
             'tier': _tier_after,
@@ -1477,6 +1553,9 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
             new_pp['_lr_total_shadow'] = old_pp['_lr_total_shadow']
         if isinstance(old_pp, dict) and old_pp.get('_lr_p_over') is not None:
             new_pp['_lr_p_over'] = old_pp['_lr_p_over']  # legacy raw
+        # 2026-10-27: and the ensemble audit trail, which this fresh dict
+        # was dropping -- see _carry_ensemble_audit.
+        new_pp = _carry_ensemble_audit(new_pp, old_pp)
         # 2026-09-20: a discipline cap outranks an LR promotion.
         return respect_discipline_cap(new_pp, old_pp)
     except Exception:
@@ -2943,6 +3022,9 @@ def apply_mlb_total_lr_override(pp, ctx):
             new_pp['_lr_ml_shadow'] = old_pp['_lr_ml_shadow']
         if isinstance(old_pp, dict) and old_pp.get('_lr_p_home_win') is not None:
             new_pp['_lr_p_home_win'] = old_pp['_lr_p_home_win']  # legacy raw
+        # 2026-10-27: and the ensemble audit trail -- see
+        # _carry_ensemble_audit.
+        new_pp = _carry_ensemble_audit(new_pp, old_pp)
         # 2026-09-20: a discipline cap outranks an LR promotion.
         return respect_discipline_cap(new_pp, old_pp)
     except Exception:
