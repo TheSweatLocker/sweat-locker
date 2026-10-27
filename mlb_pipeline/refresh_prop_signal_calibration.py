@@ -101,6 +101,49 @@ def _tier_for(hit_rate: float, n: int) -> str | None:
     return 'UNVALIDATED'
 
 
+def _weight(hit_rate_frac: float, n: int) -> float:
+    """Capped, sample-shrunk weight. Delegates to the canonical formula.
+
+    ══ 2026-10-27 · F4 · THIS WRITER WAS UNCAPPED AND UNSHRUNK ═════════════
+    Both payloads below used:
+
+        round(max(0.0, (hit - BREAKEVEN) / 0.12), 3)
+
+    with no `min(..., 1.0)` and no sample-size term, while
+    refit_signal_registry._recommended_weight_for caps at 1.0 AND shrinks by
+    log1p(n)/log(101). Two writers, two formulas, same column.
+
+    Consequence: the largest weights in the live registry sat on the
+    THINNEST samples, which is exactly backwards. Verified to the third
+    decimal against the live rows:
+
+        signal                hit%   n   stored   this formula uncapped
+        NHL two_sided_price   84.8   33   2.700   2.702
+        MLB l5_confirm        80.0   20   2.300   2.302
+        MLB opp_form          78.6   28   2.183   2.185
+        MLB last7_walks       76.2   21   1.983   1.985
+
+    A weight of 2.700 is ~3x a VALIDATED signal's mean (0.931), earned on
+    33 graded firings. Shrunk properly those become 0.66-0.80, a 66-72%
+    reduction, because log1p(n)/log(101) only reaches 1.0 at n=100.
+
+    The canonical function is imported rather than copied so the two cannot
+    drift apart again -- the same reason prop_publishability.py exists.
+    """
+    try:
+        from refit_signal_registry import _recommended_weight_for
+        return _recommended_weight_for(int(n or 0), float(hit_rate_frac),
+                                       '')
+    except Exception:                                      # noqa: BLE001
+        # Fail to the SHRUNK form, never to the uncapped one. A missing
+        # import must not quietly restore 2.7x weights.
+        import math
+        edge = max(0.0, float(hit_rate_frac) - BREAKEVEN)
+        edge_c = min(edge / 0.12, 1.0)
+        n_c = min(math.log1p(max(int(n or 0), 0)) / math.log(101), 1.0)
+        return round(edge_c * n_c, 4)
+
+
 def run(sport: str = 'MLB', days: int = 30, dry_run: bool = False) -> int:
     # Import tracker's analysis function
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -140,7 +183,7 @@ def run(sport: str = 'MLB', days: int = 30, dry_run: bool = False) -> int:
                 'sample_n': fn,
                 'edge_pp': round((fhr - BREAKEVEN) * 100, 2),
                 'tier': ftier,
-                'recommended_weight': round(max(0.0, (fhr - BREAKEVEN) / 0.12), 3),
+                'recommended_weight': _weight(fhr, fn),
                 'origin': 'auto_calibration_from_graded',
                 'last_computed_at': now_iso,
                 'notes': f'auto-calibrated 30d rolling window · from signal_contribution_tracker',
@@ -159,7 +202,7 @@ def run(sport: str = 'MLB', days: int = 30, dry_run: bool = False) -> int:
                 'sample_n': n,
                 'edge_pp': edge_pp,
                 'tier': tier,
-                'recommended_weight': round(max(0.0, (hit_rate - BREAKEVEN) / 0.12), 3),
+                'recommended_weight': _weight(hit_rate, n),
                 'origin': 'auto_calibration_from_graded',
                 'last_computed_at': now_iso,
                 'notes': f'auto-calibrated 30d rolling · aggregate across all prop families',
