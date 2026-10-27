@@ -263,6 +263,29 @@ def run(game_id: Optional[str] = None, dry_run: bool = False) -> None:
         except Exception as e:
             print(f'  ⚠ bad kickoff_utc {g.get("kickoff_utc")}: {e}')
             continue
+        # ══ 2026-10-26 · LEAD-TIME GUARD · MEASURED, NOT PRECAUTIONARY ══
+        # Open-Meteo forecasts 16 days out. Beyond that the response is
+        # not a forecast, and a July seeding run wrote wind for September
+        # games -- those rows are still in ctx and they are ANTI-CORRELATED
+        # with what actually happened:
+        #
+        #   lead time            n   mean |err|   corr(forecast, observed)
+        #   0-2 days before     13       3.38        +0.531   usable
+        #   17+ days            19       5.05        -0.317   worse than none
+        #
+        # 19 of 46 paired games carried a stale forecast, which is why
+        # "the wind lens does not work on forecasts" measured false: the
+        # test was run against poisoned inputs. CLE @ TB was written
+        # 8 weeks early at 20mph and blew 4mph.
+        #
+        # The docstring always claimed "<=7 days out" and nothing enforced
+        # it. This enforces it, and SKIPS rather than writing a value it
+        # cannot stand behind -- a null is honest, a stale number is not.
+        _lead_days = (target_utc.date() - datetime.now(timezone.utc).date()).days
+        if _lead_days > 7:
+            print(f'  skip {g["game_id"]}: kickoff is {_lead_days}d out, '
+                  f'beyond the 7-day forecast horizon')
+            continue
         wx = fetch_forecast(stad['lat'], stad['lng'], target_utc)
         if not wx:
             continue
