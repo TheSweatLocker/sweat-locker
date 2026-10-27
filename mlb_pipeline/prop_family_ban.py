@@ -70,7 +70,18 @@ import sys
 # inherits it. MLB entries below carry CLEAN-window figures.
 #
 # (sport, prop_type) -> (n, win_pct, roi, note)
-BANNED = {
+# ══ 2026-10-27 · DISABLED, PENDING ANDY'S REVIEW ════════════════════════
+# Andy did not ask for a ban and does not trust the backtest behind it, so
+# nothing here is enforced. ENFORCED is the switch; the evidence stays in
+# the file so it can be argued with rather than re-derived.
+#
+# He also said plainly that MLB was never in scope: NHL, NBA and NFL are
+# the live seasons and the priority. The MLB entries below are kept only as
+# a record of what was measured; they are not enforced, and MLB's season
+# ends this week regardless.
+ENFORCED = frozenset()          # e.g. {'NHL', 'NBA', 'NFL'} to turn on
+
+_MEASURED = {
     # ── MLB, clean window >= 2026-09-19 ──
     ('MLB', 'hr_over'):           (1834,  8.6, -41.63, 'clean window'),
     ('MLB', 'runs_over'):         (1776, 29.7, -26.29, 'clean window'),
@@ -132,8 +143,15 @@ MUST_SURVIVE = (
 )
 
 
+BANNED = {k: v for k, v in _MEASURED.items() if k[0] in ENFORCED}
+
+
 def is_banned(sport, prop_type):
-    """-> (True, reason) | (False, '')   Never raises."""
+    """-> (True, reason) | (False, '')   Never raises.
+
+    Returns False for every family while ENFORCED is empty. The measured
+    evidence lives in _MEASURED and is unaffected.
+    """
     if not BANNED:
         return False, ''
     key = (str(sport or '').upper().strip(), str(prop_type or '').lower().strip())
@@ -154,6 +172,20 @@ def banned_for_sport(sport):
 
 def _selftest():
     bad = 0
+    print('  ENFORCED sports: %s' % (sorted(ENFORCED) or 'NONE — ban is OFF'))
+    print('  families measured: %d   families enforced: %d'
+          % (len(_MEASURED), len(BANNED)))
+    if not BANNED:
+        print('')
+        print('  ban is DISABLED, so is_banned() must return False for every')
+        print('  measured family:')
+        leaks = [k for k in _MEASURED if is_banned(k[0], k[1])[0]]
+        print('     %d of %d leak through' % (len(leaks), len(_MEASURED)))
+        if leaks:
+            print('     FAIL: %s' % leaks[:5])
+            return 1
+        print('  0 failure(s)')
+        return 0
     print('  banned families: %d' % len(BANNED))
     for sp in sorted({s for s, _ in BANNED}):
         print('     %-5s %s' % (sp, ', '.join(banned_for_sport(sp))))
