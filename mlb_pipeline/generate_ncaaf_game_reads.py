@@ -29,6 +29,16 @@ from dotenv import load_dotenv
 
 from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
 
+# 2026-10-27 · conviction band gate on the COVERAGE→LEAN promotion.
+# SHADOW ONLY (False). The pooled band finding is real and split-half
+# validated, but the NCAAF subset this would act on is NOT: the refused set
+# runs +8.09% in the first half and -42.07% in the second (n=35/36), and the
+# promotion cell itself is n=23 at -1.14%. Recorded on every read as
+# primary_play._conviction_band_shadow; flip to True only once the refused
+# population is negative in BOTH halves.
+BAND_GATE_PROMOTION = False
+
+
 # 2026-09-12 CROSS-SPORT VOCAB SCRUB. Andy caught Jerry writing
 # "Texas bats last" in an Ohio State @ Texas NCAAF read — baseball
 # vocab in a football prose block. Root cause is LLM occasionally
@@ -660,12 +670,77 @@ def render_prompt(templates, struct):
         # normalization.
         _valid_pick_shape = (_e_market in ('ml', 'spread', 'rl', 'total')
                              and _e_side and _e_label)
+        # ══ 2026-10-27 · THE PROMOTION IS GATED ON THE PRICE BAND ══════════
+        # Promoting COVERAGE→LEAN on conviction alone manufactures the worst
+        # measured cell in the product. On 689 graded game_read receipts,
+        # splitting on conviction's median WITHIN each price band:
+        #
+        #   -180..-130   HI 72.2% n=72  ROI +19.20%   LO 59.1%  -1.53%
+        #   -130..+100   HI 48.3% n=230 ROI  -8.99%   LO 50.9%  -3.19%
+        #   NCAAF pick-em HI 43.2% n=118 ROI -17.97%  LO 53.5%  +1.80%
+        #
+        # and it inverts in BOTH halves of the season, not just one. NCAAF
+        # reads are overwhelmingly spreads at standard juice, which lands in
+        # the -130..+100 band — so this rule took the tier floor off exactly
+        # the picks where conviction points the wrong way.
+        #
+        # The gate can only BLOCK a promotion the old code would have made;
+        # it never promotes something new. ENABLE: set
+        # BAND_GATE_PROMOTION = True (see the split-half note below first).
+        # SHADOW ONLY as of 2026-10-27. The verdict is computed and recorded
+        # on every read; it changes nothing until the population it acts on
+        # survives a split-half. Today it does not:
+        #
+        #   NCAAF reads this gate would REFUSE
+        #     pooled      43.7% n=71  ROI -17.34%
+        #     EARLY half  57.1% n=35  ROI  +8.09%   <- PROFITABLE
+        #     LATE  half  30.6% n=36  ROI -42.07%
+        #
+        # One bad half is not an edge. And the promotion cell itself is
+        # n=23 at -1.14%, essentially flat — the -17.97% belongs to the
+        # whole pick-em band at n=118, a different population. Enforcing on
+        # this evidence would be the Fade shipping on totals again.
+        _band_ok = True
+        _band_why = 'shadow'
+        _band_v = None
+        try:
+            from conviction_band_gate import verdict as _band_verdict
+            _price = _pp.get('odds')
+            if _price is None:
+                _price = _pp.get('price_american')
+            if _price is None:
+                _price = -110            # standard spread juice
+            _band_v, _band_why = _band_verdict(_price, _e_conv, 'NCAAF')
+            if BAND_GATE_PROMOTION:
+                _band_ok = (_band_v == 'PUBLISH')
+        except Exception as _be:        # noqa: BLE001
+            _band_why = 'band gate unavailable (%s)' % _be
+            if BAND_GATE_PROMOTION:
+                # Fail CLOSED only when actually enforcing.
+                _band_ok = False
+        if _band_v and isinstance(_pp, dict):
+            # Same convention as the other shadows on this row.
+            _pp['_conviction_band_shadow'] = {
+                'verdict': _band_v, 'why': _band_why,
+                'enforced': bool(BAND_GATE_PROMOTION),
+            }
+
         _cov_promotable = (_e_tier == 'COVERAGE'
                            and isinstance(_e_conv, (int, float))
                            and int(_e_conv) >= 60
-                           and _valid_pick_shape)
+                           and _valid_pick_shape
+                           and _band_ok)
         if _cov_promotable:
             _e_tier = 'LEAN'
+        elif (_e_tier == 'COVERAGE'
+                and isinstance(_e_conv, (int, float))
+                and int(_e_conv) >= 60
+                and _valid_pick_shape):
+            print(f'  band gate: COVERAGE→LEAN promotion refused '
+                  f'(conv={_e_conv}) — {_band_why}')
+        elif _band_v and _band_v != 'PUBLISH' and _cov_promotable:
+            print(f'  band gate SHADOW: would refuse this promotion '
+                  f'(conv={_e_conv}, {_band_v}) — not enforcing')
         _is_pass = (_e_tier in ('COVERAGE', 'PASS', 'SKIP')) or not _valid_pick_shape
         if _is_pass:
             engine_block = (
