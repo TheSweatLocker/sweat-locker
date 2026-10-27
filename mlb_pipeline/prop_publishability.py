@@ -85,6 +85,39 @@ def is_publishable(prop: dict) -> tuple[bool, str]:
     registry diagnostic; LR overrides it when LR-tier is high. See the
     _DIAGNOSTIC_PLAYBOOK_GATES constant docstring.
     """
+    # ══ 2026-10-27 · HARD KILL 0 · MEASURED-NEGATIVE FAMILIES ═══════════
+    # Andy: "we have some surfaces and sports hitting at 40%, that is
+    # unacceptable." Measured on 87,875 GRADED props at stored prices:
+    #
+    #   ALL OVERS   50,442  31.6%  -9,004u  ROI -17.85%
+    #   ALL UNDERS  37,433  64.4%    -850u  ROI  -2.27%
+    #   NHL overs   23,885  25.7%  -4,778u  ROI -20.00%
+    #   NBA overs    4,910  42.7%    -779u  ROI -15.87%
+    #
+    # 19 (sport, prop_type) families are negative in BOTH halves of their
+    # own date range with ROI worse than -5% on n>=150. They are refused
+    # here, before tier is even considered, because tier never saved them.
+    #
+    # Deliberately NOT a blanket over-ban: MLB hits_over runs +7.14% on
+    # n=2,788 and six of the nineteen are UNDERS. The list is per family,
+    # and prop_family_ban.MUST_SURVIVE asserts the profitable ones stay
+    # publishable. See prop_family_ban.py for the evidence per family.
+    #
+    # feedback_prop_family_ban_three_layer: this is the SOURCE layer. The
+    # scorer and the publishable VIEW each need the same list or the ban
+    # leaks around it.
+    try:
+        from prop_family_ban import is_banned as _fam_banned
+        _sp = (prop.get('sport') or prop.get('league') or '')
+        _bad, _why = _fam_banned(_sp, prop.get('prop_type'))
+        if _bad:
+            return False, 'family_ban: %s' % _why
+    except ImportError:
+        # Fail OPEN here on purpose: a missing module must not empty the
+        # whole prop surface the way the 09-24 coverage-kill change did.
+        # The ban is re-asserted by the scorer and the view.
+        pass
+
     sig = _coerce_signals(prop.get('signals'))
 
     # Hard kill 1: coverage kill gate — but only while it is still TRUE.
