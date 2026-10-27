@@ -170,6 +170,74 @@ def _sid(*parts: Any) -> str:
     return raw[:80] + ':' + hashlib.sha1(raw.encode('utf-8')).hexdigest()[:12]
 
 
+H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+
+
+def _live_keys(payload: list):
+    """Keys already holding a NON-VOID receipt, or None if unknowable.
+
+    ══ 2026-10-27 · WHY THIS EXISTS INSTEAD OF ?on_conflict= ══
+    20261025a replaced the full UNIQUE CONSTRAINT on
+    (sport, surface, game_date, source_id) with a PARTIAL unique index
+    (WHERE result IS NULL OR lower(result) <> 'void') so a voided receipt
+    could be replaced by the correct side. That is the right data rule and
+    the 19 void+replacement pairs in the table depend on it.
+
+    But Postgres can only infer a PARTIAL index as an ON CONFLICT arbiter
+    when the statement also supplies the index predicate, and PostgREST's
+    `on_conflict=` parameter carries column names only. So every live write
+    returned 42P10 "no unique or exclusion constraint matching the ON
+    CONFLICT specification" from 10-25 onward: public_receipts took no write
+    for two days on EVERY surface while the cards published normally,
+    because capture() is fail-soft and nobody reads the step log.
+
+    Dropping the parameter clears 42P10, but a plain INSERT then raises
+    23505 on the second publish of the day and the batch is all-or-nothing.
+    So first-write-wins is enforced here: read the keys that are already
+    live, skip them, insert the rest.
+
+    Returns None when the read fails. The caller must then NOT pre-filter,
+    because an empty set would read as "nothing exists yet" and would
+    duplicate the entire card.
+    """
+    if not payload:
+        return set()
+    seen = set()
+    groups = {(str(r.get('sport')), str(r.get('surface')),
+               str(r.get('game_date'))) for r in payload}
+    for sport, surf, gd in groups:
+        off = 0
+        while True:
+            try:
+                resp = requests.get(
+                    f'{SB}/rest/v1/public_receipts', headers=H_READ,
+                    params={'select': 'source_id,result',
+                            'sport': f'eq.{sport}', 'surface': f'eq.{surf}',
+                            'game_date': f'eq.{gd}',
+                            'limit': '1000', 'offset': str(off)},
+                    timeout=45)
+            except Exception as e:                          # noqa: BLE001
+                print(f'  ⚠ receipts ({surf}): dedupe read raised: {e}')
+                return None
+            if resp.status_code != 200:
+                print(f'  ⚠ receipts ({surf}): dedupe read HTTP '
+                      f'{resp.status_code}: {resp.text[:160]}')
+                return None
+            try:
+                batch = resp.json()
+            except ValueError:
+                return None
+            if not isinstance(batch, list):
+                return None
+            for row in batch:
+                if str(row.get('result') or '').strip().lower() != 'void':
+                    seen.add((sport, surf, gd, str(row.get('source_id'))))
+            if len(batch) < 1000:
+                break
+            off += 1000
+    return seen
+
+
 def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             quiet: bool = False) -> dict:
     """Write live receipts. Returns {'written': n, 'failed': n, 'skipped': n}.
@@ -222,20 +290,64 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         if not quiet:
             print(f'  [DRY] would capture {len(payload)} live receipt(s) → {surface}')
         return out
+    # First-write-wins enforced in code, not by ON CONFLICT — see _live_keys
+    # for why the partial index of 20261025a cannot be an arbiter here.
+    existing = _live_keys(payload)
+    if existing is None:
+        print(f'  ⚠ receipts ({surface}): cannot verify what is already '
+              f'recorded — refusing to write rather than duplicate the card')
+        out['failed'] = len(payload)
+        return out
+    fresh = [r for r in payload
+             if (str(r.get('sport')), str(r.get('surface')),
+                 str(r.get('game_date')),
+                 str(r.get('source_id'))) not in existing]
+    already = len(payload) - len(fresh)
+    if already:
+        out['already'] = already
+        if not quiet:
+            print(f'  receipts ({surface}): {already} already recorded, '
+                  f'left untouched')
+    if not fresh:
+        return out
+
+    def _send(batch):
+        return requests.post(f'{SB}/rest/v1/public_receipts',
+                             headers=H_WRITE, json=batch, timeout=60)
+
     try:
-        resp = requests.post(
-            f'{SB}/rest/v1/public_receipts?on_conflict={UNIQUE_KEY}',
-            headers=H_WRITE, json=payload, timeout=60)
+        resp = _send(fresh)
         if resp.status_code in (200, 201, 204):
-            out['written'] = len(payload)
+            out['written'] = len(fresh)
             if not quiet:
-                print(f'  🧾 captured {len(payload)} LIVE receipt(s) → {surface}')
+                print(f'  🧾 captured {len(fresh)} LIVE receipt(s) → {surface}')
+        elif resp.status_code == 409:
+            # Raced another writer. The batch is all-or-nothing, so retry one
+            # row at a time: a single collision must not cost the rest of the
+            # card its receipts.
+            ok = raced = failed = 0
+            for r in fresh:
+                rr = _send([r])
+                if rr.status_code in (200, 201, 204):
+                    ok += 1
+                elif rr.status_code == 409:
+                    raced += 1
+                else:
+                    failed += 1
+                    print(f'  ⚠ receipts ({surface}) row HTTP '
+                          f'{rr.status_code}: {rr.text[:160]}')
+            out['written'] = ok
+            out['already'] = out.get('already', 0) + raced
+            out['failed'] = failed
+            if not quiet:
+                print(f'  🧾 captured {ok} LIVE receipt(s) → {surface} '
+                      f'({raced} raced, {failed} failed)')
         else:
-            out['failed'] = len(payload)
+            out['failed'] = len(fresh)
             print(f'  ⚠ receipts ({surface}) HTTP {resp.status_code}: '
                   f'{resp.text[:240]}')
     except Exception as e:                                  # noqa: BLE001
-        out['failed'] = len(payload)
+        out['failed'] = len(fresh)
         print(f'  ⚠ receipts ({surface}) raised: {e}')
     return out
 
