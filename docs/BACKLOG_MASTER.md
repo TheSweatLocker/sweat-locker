@@ -302,3 +302,59 @@ Design shape to evaluate: a matchup gate FIRST (defence-vs-position
 weakness, pace, role/usage), which selects a handful of games, and only then
 a prop pull inside those games — so every published prop has a stated
 reason, enough inputs to project, and a conviction that means something.
+
+### B227 — MEASURED 2026-10-27 — matchup-gated props: plumbing yes, direction inverted
+
+Tested Andy's pitch on **419 graded RB `rush_yds` props** joined to the
+opponent's run defence from `nfl_game_context`, selecting the defence BY
+SIDE (a home player faces the away defence — reversing that inverts
+everything).
+
+**1. The plumbing works.** 419 of 419 joined, **zero join failures**, zero
+missing stats. `def_rush_ypg` / `def_rush_epa_allowed` are present for both
+sides at pick time. Volume: 118 props over 17 dates = **6.9/day**, about
+**2.6% of the 4,568 props we publish**. Exactly the "fewer and justified"
+shape.
+
+**2. The direction is inverted.** Rushing OVER gets monotonically worse the
+weaker the run defence:
+
+```
+opp allows >=140 ypg   25.0% n=8    (thin)
+opp allows >=130       36.0% n=25   (thin)
+opp allows >=120       42.9% n=63   ROI -19.26%
+opp allows >=median    45.8% n=118  ROI -13.78%
+CONTROL   <median      47.0% n=115  ROI -11.29%
+```
+
+Every cell loses and the weak-defence cell is **worse than the control**.
+It also fails split-half: **−24.27% early (n=72) vs +2.64% late (n=46)**.
+
+**3. The mirror is the only positive cell — the opposite play:**
+
+```
+UNDER vs a STRONG run defence   57.0% n=93  ROI +7.66%  CI[47,67]
+UNDER vs a weak defence         49.5% n=93  ROI -6.70%
+```
+
+CI does not clear BE 53.0%, so **not shippable** — but coherent with (2).
+
+**4. The real find, which vindicates the instinct behind the pitch:**
+
+```
+corr(opp rush ypg allowed, projection - line) = +0.047   n=233
+```
+
+**Our projection does not use the run-defence matchup at all.** The input
+exists, joins cleanly, and is unused. The matchup data *is* being left on
+the table; only the sign was guessed wrong.
+
+Also: **233 of 233 overs have projection > line**, because the over book is
+selected on that — so `projection > line` carries zero information inside
+it. Circular.
+
+**"Elite RB" adds nothing:** line ≥32.5 & weak 49.3% vs & strong 47.9%.
+
+**Next step:** build the gate as pitched, but feed the matchup into the
+**projection** rather than publishing a direction off it, and shadow it.
+Nothing in the grid clears breakeven yet.
