@@ -48,6 +48,54 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
 
+def resolve_week(ctx: dict, game_date) -> Optional[int]:
+    """The week this pick belongs to, for the weekly attribution cadence.
+
+    ══ 2026-10-27 · WHY A FALLBACK CHAIN ═══════════════════════════════════
+    This used to read `ctx.get('season_week')` alone, which left
+    season_week NULL on 1,246 of 2,165 signal_attribution rows (58%) and so
+    made Andy's weekly review impossible on most of the data.
+
+    The NULLs are TWO different causes and must not be treated as one:
+
+      * NCAAF is a plain bug. `ncaaf_game_context` has `week` populated on
+        650 of 660 rows but `season_week` on only 256, and this function was
+        reading the emptier of the two columns. 403 of the 404 NULL rows are
+        recoverable from `week`, which this query ALREADY SELECTS.
+
+      * MLB / NHL / NBA have NO week column at all, and for MLB that is
+        CORRECT -- baseball has no league weeks, so a NULL there is honest
+        data, not a defect. Filling it from a league week would be inventing
+        a field. Those sports group by the ISO week of game_date instead.
+
+    So: season_week, else week, else the ISO week number of game_date. The
+    last branch means a weekly cadence is available for EVERY sport,
+    including the ones with no league week -- it is a grouping key, and
+    every row has a date.
+    """
+    for key in ('season_week', 'week'):
+        v = ctx.get(key)
+        if v is None:
+            continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        if iv > 0:
+            return iv
+    # No league week exists for this sport. Derive a stable grouping key
+    # from the date so the cadence still runs.
+    try:
+        d = game_date
+        if isinstance(d, str):
+            d = date.fromisoformat(str(d)[:10])
+        if isinstance(d, datetime):
+            d = d.date()
+        return int(d.isocalendar()[1])
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
@@ -144,7 +192,7 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
         'game_id': game_id,
         'game_date': game_date,
         'season': ctx.get('season'),
-        'season_week': ctx.get('season_week'),
+        'season_week': resolve_week(ctx, game_date),
         'pick_market': pick_market,
         'pick_side': pick_side,
         'pick_tier': pick_tier,
