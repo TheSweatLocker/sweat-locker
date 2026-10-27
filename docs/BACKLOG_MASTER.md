@@ -193,3 +193,64 @@ These are the starting inputs for B134, not reasons to skip it.
 - **Anytime TD conviction is inverted** (76+ went 1-12, −72.7% ROI) because
   `projection` is an expected COUNT read as a probability
 - **NBA v3 and MC are not duplicates** (identical on 0 of 69) — unlike NCAAF
+
+---
+
+## 2026-10-27 — found in the Monday audit of 10-26
+
+Every line below was verified by direct query; see `docs/daily/2026-10-27.md`
+for the queries and the full numbers.
+
+### B214 — OPEN — receipt sync wrote nothing for 10-26 on six surfaces
+`sharp_card`, `sweat_card`, `potd`, `fade`, `ledger`, `daily_degen` all have
+0 receipts for 2026-10-26; every day 10-16..10-25 has them. The cards WERE
+built (`sharp_card_2026-10-26` 2 items @12:44, `sweat_card_2026-10-26`
+@12:48). Build ran, sync wrote nothing, exit was green. **Highest priority —
+yesterday is invisible in the published record.**
+
+### B215 — OPEN — NBA reads unbridged and ungraded since 10-26
+10-20..10-25 mapped 1:1; from 10-26 nine reads produced zero receipts and
+`result`/`actual_outcome`/`resolved_at` are NULL on all nine. Likely the same
+root as B214 or adjacent to it — check together, fix separately.
+
+### B216 — OPEN — `anytime_td_over` has never graded a single row
+430 receipts, 430 `NO_ACTION`, 0 W/L, all history. 13 of yesterday's 19 NFL
+`NO_ACTION` props. Either wire the grader to a TD source or stop publishing
+the family — with the inverted conviction from 10/22, prefer stopping.
+
+### B217 — OPEN — NBA `rl` reads carry moneyline prices
+14 of 27 priced outside a spread band (BOS −14.5 @ −750, HOU −4.5 @ **+167**).
+Poisons every NBA ROI. Fix at the writer, then re-measure NBA from scratch.
+
+### B218 — OPEN — NBA conviction ceiling is 65
+0 of 106 reads ever ≥70 vs MLB 35.0% / NCAAF 31.0% / NFL 12.2%. Median 51,
+33% Void. The scale is compressed, so NBA's 53.5% (23-20) is unselected.
+Rebuild the NBA conviction scale before trusting any NBA read record.
+
+### B219 — OPEN — `actual_value` regressed to zero on props
+0 of 1,416 prop receipts in 14 days, vs 24.2% filled historically.
+`game_read` is 0 of 1,360 ever. Receipts can't show their own work.
+
+### B220 — OPEN — jerry regen overwrites the read a frozen receipt names
+677 reads have `generated_at` after their receipt's `published_at`; that
+explains 82% of the 198 result disagreements. Receipt is authoritative;
+`jerry_reads` has lost its history. Version reads instead of overwriting.
+
+### B221 — OPEN — 7 ML receipts void/no_action on a decided game
+Sign-independent, so not a line-convention artefact. Includes 10-26 MNF
+(`PHI ML -110` stored void; PHI lost 21-38).
+
+### B222 — OPEN — curated surfaces run far under spec
+`top_8` mean 1.4 over 14 days, four days at zero; `dawg` dark 14/14. The
+Sharp mean ~5.3 against a 15-pick spec, and on 10-26 it was 2 items, both
+MLB, both the same game — identical to the Sweat Card's 2, collapsing the
+two surfaces into one.
+
+### B223 — OPEN — POTD published a play the engine passed on
+`reason = "⚠ Engine passed: MC sim has our side at 14% win prob"`, published
+conviction 76, 2.0 units, as POTD. It won; the gate still failed.
+
+### B224 — OPEN — `pick_line` holds two conventions in one column
+174 rl receipts store a magnitude, 258 store a signed line, and 15 have a
+label reading `-12.5` beside a stored `+12.5`. No single formula grades the
+column. This broke my own audit grader before it broke anything else.
