@@ -184,3 +184,104 @@ worse than no surface.
 
 D1, D2 and D5 are the three that change the subscriber's week. D3/D4/D6 are
 the ones that stop it recurring.
+
+---
+
+# Item 4 worked — the NFL n=0 chain, 2026-10-27
+
+The weighting chain is **attribution → grade → refit → weight**. Each stage
+was inspected; six findings, ordered by how much they block the standard.
+
+## F1 — the n=0 root cause is already fixed in code and was never re-run
+
+`refit_signal_registry.py:245` documents it:
+
+> "the game-ensemble grading path has been dead for every sport whose
+> results table lacks the column, which is all of NFL/NCAAF/NBA/NHL. MLB
+> 'worked' only because mlb_game_results happens to carry primary_play.
+> That is why 67 NCAAF ensemble signals and 123 NFL ones all sit at
+> sample_n=0, and why `_resolve_weight` returns (None, 0, None) for every
+> one of them so they fall back to RAMP_UP_PRIOR — **a signal that loses
+> weighted the same as one that wins**."
+
+The join was repaired (date+teams instead of `game_id`). Dry run confirms
+it works now: **`[NFL] game rows joined ctx->results: 107 of 107`**. The
+registry still shows 121 NFL signals at `sample_n=0` only because the refit
+has not been run since.
+
+## F2 — but the real constraint is firings per signal, not the join
+
+```
+[NFL] unique signals with firings: 71  (prop=0, game=66, attr=5)
+[NFL] 5 signals meet min_n=20 threshold  (66 DROPPED)
+```
+
+71 distinct signals spread across ~176 ensemble picks means most fire 2-10
+times. At `min_n=20`, **66 of 71 are dropped and stay unweighted**. Running
+the refit alone does not fix NFL; the sport needs either more graded games
+or a lower floor with explicit shrinkage. This is the same shape as the
+NBA inventory problem, one level down.
+
+## F3 — the grader does not support NHL, NBA or NCAAB
+
+`signal_attribution_grade.py` has `--sport choices=['NFL','NCAAF','MLB']`.
+So the 197 NHL and 74 NBA attribution rows written today **cannot be
+graded**, which means they can never inform a weight. The chain is wired
+for three sports out of six.
+
+## F4 — the weight formula caps at 1.0, but the registry holds 2.7
+
+```python
+edge   = max(0.0, hit_rate_frac - 0.5238)
+edge_c = min(edge / 0.12, 1.0)
+n_c    = min(log1p(n) / log(101), 1.0)    # shrinks by sample size
+return round(edge_c * n_c, 4)             # CAPS AT 1.0
+```
+
+`_recommended_weight_for` cannot return more than 1.0, yet the live
+registry contains weights up to **2.700**. Another writer is setting
+weights outside this function and without its n-shrinkage. Candidates:
+`ensemble_blend.py`, `backfill_signal_tiers.py`,
+`compute_model_track_records.py`, `grade_model_panel.py`,
+`nhl_backfill_signal_tiers.py`. **Unresolved — needs tracing.**
+
+## F5 — the highest weights sit on the thinnest samples
+
+```
+NHL  two_sided_price   w=2.700  n=33  hit=84.8
+MLB  l5_confirm        w=2.300  n=20  hit=80.0
+MLB  opp_form          w=2.183  n=28  hit=78.6
+MLB  last7_walks       w=1.983  n=21  hit=76.2
+```
+
+DISCOVERY tier: 192 signals, **median n=25**, mean weight 0.758 against
+VALIDATED's 0.931. Those extreme hit rates exist *because* n is small, and
+whatever produced these weights rewarded that. Weight must scale with
+evidence; at the top of the registry it does the opposite. Follows from F4.
+
+## F6 — BREAKEVEN is hardcoded at 0.5238 for every market
+
+`edge = hit_rate - 0.5238` is the -110 breakeven. Moneyline books average
+-120..-203, so real ML breakeven is **56-58%**. Every ML signal is credited
+with 3-5 points of edge it does not have, which inflates its weight. Same
+error as flat -110 ROI (`feedback_flat_110_inflates_every_ml_figure`),
+baked into the weighting rather than a report.
+
+It also explains three signals that looked mis-tiered: NFL `model_mc_ml`
+57.55% n=106, `model_panel_ml` 56.57% n=99, NCAAF `model_epa_ml` 58.97%
+n=234, all ANTI_VALIDATED despite clearing 52.38%. They are **moneyline**
+signals, so the tier is probably right. It cannot be confirmed because
+`baseline_pct` is NULL on **1,262 of 1,280 rows (99%)** — no tier
+assignment in the registry is auditable.
+
+## Order to fix
+
+1. **F3** — teach the grader NHL/NBA/NCAAB. Smallest change, and without
+   it half the sports can never earn a weight.
+2. **F6** — per-market breakeven in the weight formula. One constant to a
+   lookup; it is currently inflating every ML signal.
+3. **F4** — trace and stop the writer producing unshrunk >1.0 weights.
+4. **F2** — then decide NFL's floor: more games, or a lower `min_n` with
+   explicit shrinkage, which F4/F6 make safe.
+5. **F1** — re-run the refit once 1-4 are done, so it writes correct
+   weights rather than fast ones.
