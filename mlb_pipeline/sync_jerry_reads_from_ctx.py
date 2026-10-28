@@ -249,7 +249,12 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
                 f'{SB}/rest/v1/jerry_reads',
                 params={'sport': f'eq.{sport}', 'game_id': f'eq.{gid}',
                         'game_date': f'eq.{gd}',
-                        'select': 'short_read,long_read,prompt_version'},
+                        # 2026-10-27: market/side/line and the price come
+                        # back too, so a market change can invalidate the
+                        # price it was computed for. See below.
+                        'select': 'short_read,long_read,prompt_version,'
+                                  'call_market,call_side,call_line,'
+                                  'price_american'},
                 headers=H, timeout=15)
             rows = ex.json() if ex.status_code == 200 else []
         except Exception as _e:
@@ -275,6 +280,58 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
                       f'{rows[0].get("prompt_version")}) — leaving it alone')
                 skipped += 1
                 continue
+
+        # ══ 2026-10-27 · A MARKET CHANGE MUST INVALIDATE THE PRICE ═══════
+        # This upsert rewrites call_market/call_side/call_line and left the
+        # price fields untouched, so a read priced as an ML and then
+        # regenerated here as a SPREAD kept the moneyline price.
+        #
+        # Measured on jerry_reads: 55 rl reads carry a price impossible for a
+        # spread, and 53 of them were regenerated AFTER being priced --
+        # NBA 16 of 16, NHL 28 of 28, NCAAF 8 of 8, NFL 1 of 1. The regen
+        # gap is consistently 220-330 minutes, so the read is priced in the
+        # afternoon and rewritten about four hours later.
+        #
+        # Example: "Philadelphia 76ers -12.5" stored -669. line_history has
+        # 427 quotes for spread/home/-12.5 between -110 and -118; -669 is the
+        # MEDIAN OF THE MONEYLINE (home ML ran -850..-721). The price was
+        # correct for the market it was computed against, and that market
+        # then changed underneath it.
+        #
+        # Every ROI, breakeven and edge figure on those rows was wrong, which
+        # is why NBA spread records could not be trusted at all. A NULL is
+        # the honest content -- price_picks.py re-prices a NULL on its next
+        # run, and a NULL is visibly absent where a stale number is not.
+        #
+        # feedback_late_data_must_invalidate_derived_output.
+        if rows:
+            _old_mkt = str(rows[0].get('call_market') or '')
+            _old_side = str(rows[0].get('call_side') or '')
+            _old_line = rows[0].get('call_line')
+            _new_mkt = str(ptype or '')
+            _new_side = str(side or '')
+            _new_line = pp.get('line')
+
+            def _same_line(x, y):
+                if x is None and y is None:
+                    return True
+                try:
+                    return abs(float(x) - float(y)) < 1e-9
+                except (TypeError, ValueError):
+                    return str(x) == str(y)
+
+            _changed = (_old_mkt != _new_mkt or _old_side != _new_side
+                        or not _same_line(_old_line, _new_line))
+            if _changed and rows[0].get('price_american') is not None:
+                payload.update({
+                    'price_american': None, 'price_implied': None,
+                    'price_best': None, 'price_best_book': None,
+                    'price_books_n': None, 'priced_at': None,
+                })
+                print(f'  ⚠ {matchup}: pick changed '
+                      f'{_old_mkt}/{_old_side}/{_old_line} -> '
+                      f'{_new_mkt}/{_new_side}/{_new_line} — clearing the '
+                      f'stale price ({rows[0].get("price_american")})')
 
         if dry:
             print(f'  DRY {matchup}: {ptype}/{side} "{call_text}"  narrative={bool(narrative)}')
