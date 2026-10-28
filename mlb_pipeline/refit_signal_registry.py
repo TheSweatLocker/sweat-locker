@@ -141,6 +141,15 @@ def _tier_for(n: int, hit_rate_frac: float,
 #   per sport:  MLB ml 57.81%   NHL ml 57.45%   NCAAF ml 58.68%
 #
 # So rl and total were always right; ml was the one being inflated.
+# 2026-10-27 · the spread column is NOT named the same in every sport.
+# nhl_game_results has NO `close_spread` -- its spread is `close_puckline`.
+# A select naming close_spread 400s and _page returns [], which printed
+# "game rows joined ctx->results: 0 of 0 results" and read as "NHL has no
+# settled games" rather than a wiring error. The grader had the identical
+# bug; this is the same fix in the second file.
+_SPREAD_COL = {'NHL': 'close_puckline'}
+
+
 BREAKEVEN_BY_MARKET = {
     'ml': 0.5833,
     'moneyline': 0.5833,
@@ -329,10 +338,17 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
               f'(last {days}d): {len(rows)}')
         return _tally_game_firings(rows, sport)
 
+    _sc = _SPREAD_COL.get(sport, 'close_spread')
     res_rows = _page(results_table, {
         'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
+        # alias the sport's own spread column to close_spread so the
+        # grading below reads one name
         'select': 'game_date,home_team,away_team,home_score,away_score,'
-                  'close_spread,close_total'})
+                  f'close_spread:{_sc},close_total'})
+    if not res_rows:
+        print(f'  [{sport}] WARNING: results fetch returned 0 rows from '
+              f'{results_table} (spread col {_sc!r}) — if that table has '
+              f'settled games this is a WIRING ERROR, not an empty slate')
     ctx_rows = _page(ctx_table, {
         'game_date': f'gte.{cutoff}',
         'select': 'game_date,home_team,away_team,primary_play'})
