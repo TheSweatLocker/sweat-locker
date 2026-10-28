@@ -207,7 +207,39 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             # promise of a refresh we may not deliver (see the matching
             # note in jerry_pick_scrub.py).
             _sub = (pp.get('sub') or '').strip() if isinstance(pp, dict) else ''
-            short_read = _sub or 'Analysis pending — Jerry is reviewing the tape.'
+            short_read = _sub or 'Analysis pending - Jerry is reviewing the tape.'
+
+        # == 2026-10-28 . THE ENGINE'S VERDICT OUTRANKS THE NARRATIVE ==
+        # When the MC dissent gate fires, defensive_gates demotes the tier,
+        # drives conviction to 0 via tier_cap {'COVERAGE': 0} and rewrites
+        # primary_play['sub'] to '! Engine passed: MC sim has our side at
+        # N% win prob'. Its own comment says why:
+        #
+        #   "a PRIME 'sharp money is here . H2H dominant' narrative on a
+        #    COVERAGE/conv=0 pick reads as a lie (Rays 8/30 canonical)"
+        #
+        # It fixed `sub`. It did not fix short_read, which is what users
+        # actually read -- and the block above only falls back to `sub`
+        # when the LLM narrative is MISSING. So the narrative won, and it
+        # was written before the gate ran. Measured on NHL: 15 picks carry
+        # an _mc_dissent, 10 of them at conviction 0, ALL 15 became reads
+        # with call_text and ALL 15 have receipts in the published record.
+        # One of them reads 'Markstrom is confirmed and running a 0.9167
+        # save percentage with a plus-2.16 GSAA ... a 5.31-goal chasm'
+        # above a conviction of 0.
+        #
+        # NHL hits this far more than anywhere else -- conviction 0 on 10.1%
+        # of playable reads against NBA 0.0%, NCAAF 0.0%, NFL 0.7%, MLB 3.0%
+        # -- which is why it looked like 'NHL has no conviction'.
+        #
+        # The pick is NOT suppressed. It stays visible, the record stays
+        # whole, and the engine's verdict simply leads instead of being
+        # buried: a user reading a confident goalie argument is told first
+        # that the engine passed on it.
+        if isinstance(pp, dict) and pp.get('_mc_dissent'):
+            _verdict = (pp.get('sub') or '').strip()
+            if _verdict and short_read and not short_read.startswith(_verdict):
+                short_read = f'{_verdict} - {short_read}'
 
         payload = {
             'sport': sport,
