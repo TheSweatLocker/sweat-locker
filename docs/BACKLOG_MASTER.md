@@ -776,28 +776,63 @@ Caught by the eval logger shipped today, on its first real run:
 sports — the condition audit (`audit_signal_conditions_all_sports.py`) now
 reports RAISE separately, so re-run it after any change.
 
-## R9 — NHL and NBA are missing four transferable signal classes
+## R9 — MEASURED 2026-10-28. The family does NOT transfer as a family
 
 Enabled signal classes per sport: MLB 22, NCAAF 20, NFL 20, **NHL 11,
-NBA 11**. NHL has 90% of its registry carrying evidence, so it is not
-calibration-poor — it is variety-poor. Classes MLB has that both lack:
+NBA 11**. NHL carries evidence on 90% of its registry, so it is variety-poor
+rather than calibration-poor. `cohort` is the largest family it lacks (MLB
+15 rows, NHL 0, NBA 0).
+
+### The plumbing transfers. The RULES mostly do not.
+
+The cohort family reads 10 ctx fields. The ones it leans on are present and
+fully populated on both sports, and the ones that are missing are precisely
+the baseball-specific ones (bullpen ERA, NRFI tier, `spread_delta`):
 
 ```
-cohort         MLB 14 signals    (NCAAF has them too; HEAVY_HOME_DOG is
-                                  59.4% at weight 0.405 after today's fix)
-scenario       MLB  1            present in MLB/NCAAF/NFL/NCAAB
-split          MLB  2            money-flow splits
-defense        MLB  1            present in MLB/NCAAF
+signal_confluence_net   NHL 297/297    NBA 155/155
+home_ml_close           NHL 212/297    NBA  76/155
+close_spread            present        present
 ```
 
-`external_pick` was the fifth and was closed today.
+So each is an insert, not new logic — which is exactly why the rule had to
+be measured first. `backtest_cohort_transfer_nhl_nba.py` runs the five
+evaluable rules verbatim from the live MLB rows, priced at each game's own
+closing ML, with two direction-only controls:
 
-**Plan:** `cohort` first, because it is the largest family, it already
-measures on NCAAF, and `signal_sources` is declarative so each is an insert
-plus a `cohort_tags` producer on the ctx row. Build NHL cohorts from tags
-the ctx already supports, seed each registry row from a backtest BEFORE
-enabling (the pattern used for the b2b and oddscrowd signals today), then
-let the weekly attribution price them.
+```
+NHL (n=197 joined, graded, priced)
+rule                          n    hit%   med BE      ROI    split-half
+confluence_home_lean_as_fav  43   74.4%   66.0%   +11.79%   +7.6 -> +15.7
+confluence_home_lean         60   68.3%   64.2%    +7.06%  +10.7 ->  +3.4
+sharp_confluence_alignment   46   63.0%   65.7%    -4.69%
+confluence_away_lean         60   55.0%   55.1%    -5.27%
+CONTROL always HOME         197   56.3%   54.5%    +1.16%
+CONTROL always AWAY         197   43.7%   49.5%   -13.98%
+```
+
+**NOT SHIPPED, and the reasons are specific:**
+
+* The two positive rules **do** beat the direction-only control (+11.79% and
+  +7.06% against +1.16%) and hold their sign split-half. That is the
+  encouraging half and why they are worth carrying.
+* But **neither CI clears its own breakeven.**
+  `confluence_home_lean_as_fav` is [59.8, 85.1] against a 66.0% breakeven —
+  lower bound below the price, on n=43.
+* **Two of the five are negative on NHL.** `confluence_away_lean` -5.27% and
+  `sharp_confluence_alignment` -4.69%. Enabling all five because two look
+  good is the precise mistake behind `project_sp_plus_compression_927` and
+  the retracted NFL prop edge.
+* **NBA is sample-blocked, not signal-blocked.** Only 63 games have a
+  confluence value, a closing ML and a final score together; every rule and
+  both controls are negative. There is nothing to conclude yet.
+
+**Plan:** re-run the script as NHL volume grows. Bar for enabling is the
+same one today's b2b and oddscrowd signals were held to — a CI that clears
+breakeven AND split-half holding. `scenario`, `split` and `defense` are
+untouched and should get the same treatment one at a time, never as a batch.
+`external_pick` was the fifth class and did clear, which is why it shipped
+today and these did not.
 
 ## R10 — CLOSED 2026-10-28. It was preseason, plus four Clippers games
 
@@ -1155,5 +1190,6 @@ be false:**
 
 **Open and actionable, not yet done:** R3 (the market-change population is
 resolved as "keep the receipt"; what remains is wiring the pre-game check to
-`line_history.commence_time`), R9 (NHL/NBA transferable signal classes), R15 (the app-side NULL
+`line_history.commence_time`), R9 (measured — two NHL
+cohort candidates carried forward, nothing enabled), R15 (the app-side NULL
 risk is verified safe; only the "lifetime is ~90 days" labelling remains).
