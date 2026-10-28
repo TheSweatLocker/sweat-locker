@@ -199,7 +199,50 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
                 'mc_pick_win_pct': round(pick_prob_f * 100, 1),
                 'reason': reason,
             }
-            pp['tier'] = new_tier
+            # == 2026-10-28 . THE DEMOTION IS REMOVED. THE RECORD STAYS. ==
+            # Andy: "i dont really love the mc dissent ahs that been fucking
+            # us? If it donets work it should kill picks right?" It has been,
+            # and it should not. Four independent lines, all one direction:
+            #
+            # 1. THE PICKS IT FLAGS WIN MORE THAN THE ONES IT LEAVES ALONE.
+            #      dissented   n= 26  61.5% [42.5,77.6]
+            #      control     n=840  52.6% [49.2,56.0]
+            #
+            # 2. THE PICKS IT PUSHED OFF THE CARDS WON. 20 were STRONG or
+            #    PRIME and were demoted below STRONG, losing card
+            #    eligibility. Their game_read receipts went
+            #      12W-6L  66.7% [43.7,83.7]  +5.78u
+            #    Only 4 of the 20 reached the Sharp anyway.
+            #
+            # 3. ITS OWN NUMBER IS MISCALIBRATED IN THE TRIGGER BAND. The
+            #    STRONG threshold is 0.48 and the hard block is 0.40, and
+            #    NHL MC runs 11-12pp too PESSIMISTIC exactly there
+            #    (predicted -> actual: 0-35% 26.7->38.1, 35-45% 40.0->52.0,
+            #    45-55% 50.0->58.6, n=198). A genuinely ~55% side reads as
+            #    ~44% and is killed. On the dissented picks MC said 40.1%
+            #    and reality was 61.5%.
+            #
+            # 4. ITS MOST CONFIDENT BAND IS ITS WORST. 65-100% predicted
+            #    (72.5% avg) delivers 57.9% -- below what its 55-65% band
+            #    delivers. The sim does not rank games, so a threshold on it
+            #    cannot rank them either.
+            #
+            # WHAT IS KEPT: _mc_dissent still records the disagreement and
+            # the sub still says so, because the evidence has to keep
+            # accumulating and because a user seeing a flagged pick deserves
+            # to know the sim disagreed. What is removed is the SILENT
+            # PENALTY -- the tier change that took the pick off the cards.
+            #
+            # NOT AN ARGUMENT ABOUT BUCKETS. R18 shows COVERAGE is currently
+            # the best-performing tier on game_read (61.4% vs STRONG 51.4%),
+            # so this is not 'promote them into a good bucket'. It is 'stop
+            # demoting picks that win'. Their 66.7% is what those games did,
+            # whatever label the pick carried.
+            #
+            # Reversible in one line if a forward sample says otherwise:
+            # restore `pp['tier'] = new_tier` here.
+            pp['_mc_dissent']['tier_unchanged_since'] = '2026-10-28'
+            pp['_mc_dissent']['would_have_been'] = new_tier
             # == 2026-10-28 . A COVERAGE DEMOTION MUST NOT WRITE conv=0 ==
             # Andy: "Does MC dissent even work? How often is MC corretc how
             # often is it corretc on other side of MC dissents?" Measured on
@@ -240,11 +283,19 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
             # claim -- the mirror of the argument this file already used to
             # zero classes_boost ('paying a bonus for being wrong does').
             # LEAN and STRONG keep their caps: those ARE published bands.
-            tier_cap = {'LEAN': 55, 'STRONG': 65}
-            if new_tier in tier_cap and isinstance(pp.get('conviction'),
-                                                   (int, float)):
-                pp['conviction'] = min(int(pp['conviction']),
-                                       tier_cap[new_tier])
+            # The conviction cap goes WITH the tier demotion, necessarily.
+            # Capping to LEAN's 55 while leaving the tier at STRONG would
+            # publish tier STRONG with conviction 55 -- outside the band
+            # (STRONG is 65-79) and exactly the tier/conviction
+            # contradiction clamp_conviction_to_tier exists to repair. Half
+            # a removed penalty is a new defect.
+            #
+            # ONE CONSERVATIVE RESIDUE IS KEPT, below: recommended_stake
+            # drops to 1.0. The pick ships at its own tier and conviction,
+            # the disagreement is recorded and shown, and it is simply not
+            # staked as a 2u LOCK while a model we have on record disagrees.
+            # That costs nothing if the flagged picks keep winning and caps
+            # the damage if they do not.
             # 2026-08-31: reset recommended_stake to 1.0 on dissent —
             # MC blocking the pick invalidates the "high-confidence bucket"
             # premise the 2u LOCK relied on.
@@ -258,12 +309,23 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
             for src in (pp.get('_ensemble_sources') or [])[:2]:
                 p = src.get('prose')
                 if p: top_signals.append(p)
-            if new_tier == 'COVERAGE':
-                header = f'⚠ Engine passed: MC sim has our side at {pick_prob_f*100:.0f}% win prob'
-            else:
-                header = f'⚠ Downgraded to {new_tier}: MC sim at {pick_prob_f*100:.0f}%'
+            # == 2026-10-28 . THE WORDING HAD TO CHANGE WITH THE BEHAVIOUR ==
+            # These two headers said 'Engine passed' and 'Downgraded to
+            # LEAN'. Neither happens any more -- the tier and conviction are
+            # untouched and the pick ships. Leaving the old text would put
+            # 'Engine passed' above a STRONG pick we are publishing, which
+            # is a worse lie than the one this block was written to fix
+            # (the Rays 8/30 case in the comment above).
+            #
+            # The pick is NOT suppressed, so the honest line is that a model
+            # we keep on record disagrees and the stake is reduced for it.
+            # The signals that argued FOR the pick are still appended,
+            # because the user should see both sides of the disagreement
+            # rather than only the objection.
+            header = (f'⚠ MC sim disagrees: has our side at '
+                      f'{pick_prob_f*100:.0f}% — shipped at 1u')
             if top_signals:
-                pp['sub'] = f'{header} — outweighs {" · ".join(top_signals)}'
+                pp['sub'] = f'{header}, against {" · ".join(top_signals)}'
             else:
                 pp['sub'] = header
     except Exception:
