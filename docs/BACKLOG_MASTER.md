@@ -623,7 +623,25 @@ a single path instead of at the point of use.
   the records whose denominator is R1's open question, so it is a records
   change needing its own decision.
 
-**Result: 563 prices recoverable** (339 `close`, 224 `publish`) and applied.
+**Result: 596 prices written** across two passes (567 before the football
+alias was wired, 29 after), every one verified by read-back, 0 failed.
+
+Measured effect on the thing that actually matters — unpriced GRADED
+receipts, before today against now:
+
+```
+sport  market   before    now   priced
+MLB    ml          318     18      300
+MLB    prop        384    177      207
+NCAAF  ml           31      3       28
+NFL    ml           24      7       17
+NHL    ml           46     42        4
+TOTAL             1,949  1,431      518
+```
+
+A few cells read slightly higher now (MLB total 449 -> 464) because games
+graded during the day added new unpriced rows; that is new volume, not a
+regression.
 
 **Still open, with reasons rather than a promise:**
 * **403 prop receipts** — props have no price column in any results table.
@@ -1151,8 +1169,16 @@ So this was never a missing bridge. The bridge was built on 09-21 and my
 mistake as R4 itself, one layer down.
 
 **Fixed:** `_close_price` now resolves `game_id` through
-`football_game_id_alias` when a direct lookup misses. 0 of 59 becomes 59 of
-59 on NFL; NCAAF goes 170 to 180.
+`football_game_id_alias` when a direct lookup misses.
+
+**Correction to my own first write-up of this.** I recorded it as "0 of 59
+becomes 59 of 59". That conflated two different things. The alias resolves
+the JOIN for all 59, which is what was measured — but only the moneyline
+rows can then be PRICED, because NFL results store no spread, prop or POTD
+price column. Of the 59, the market split is rl 24, prop 18, ml 10, potd 4,
+total 2. Verified delta after applying: **NFL ml unpriced 24 -> 7 (17
+priced)** and NCAAF ml **31 -> 3 (28 priced)**. The bridge was worth wiring;
+it was worth 17 NFL prices, not 59.
 
 **One genuine risk this leaves:** an empty join does not error. NFL receipts
 missed pricing for weeks with nothing failing. The bridge's own migration
