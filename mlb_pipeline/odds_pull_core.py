@@ -283,7 +283,8 @@ def _consensus(event: dict, home: str, away: str) -> dict:
 class OddsPuller:
     def __init__(self, sport_code, odds_sport, results_table, id_prefix,
                  spread_col, total_col, season, team_map=None,
-                 write_abbrev=False, schedule_fn=None, price_cols=None):
+                 write_abbrev=False, schedule_fn=None, price_cols=None,
+                 name_aliases=None):
         self.sport_code = sport_code
         self.odds_sport = odds_sport
         self.results_table = results_table
@@ -307,6 +308,27 @@ class OddsPuller:
         # minting its own. See _canonical_id.
         self.schedule_fn = schedule_fn
         self._sched_cache: dict = {}
+        # ══ 2026-10-28 · ONE TEAM SPELLED TWO WAYS FORKED EVERY ITS GAMES ══
+        # The Odds API says "Los Angeles Clippers"; our context and results
+        # tables, the ESPN schedule, nba_elo and compute_margin_strength all
+        # say "LA Clippers". _canonical_id normalises by stripping
+        # non-alphanumerics, so laclippers != losangelesclippers, the schedule
+        # lookup missed, and the fallback minted a composite id -- giving
+        # nba_game_results TWO rows for every Clippers game:
+        #
+        #   2026-10-21  401909842                              96-121
+        #   2026-10-21  nba_20261021_Sacramento_Kings_...       None-None
+        #
+        # The phantom never resolves (the resolver works in ESPN ids), so it
+        # sits with NULL scores forever, inflates every NBA game count and
+        # gives a read joined to it nothing to grade. nba_odds_pull.py said
+        # "NBA needs no alias map -- Odds API names match our stored names
+        # exactly (verified 27/27)" -- 27 of 30 teams, and the Clippers were
+        # one of the three it never saw (feedback_comment_asserting_a_measurement).
+        #
+        # Applied in _resolve so the STORED team name and the canonical-id
+        # lookup both use the DB's spelling, not just one of them.
+        self.name_aliases = name_aliases or {}
 
     def _canonical_id(self, game_date: str, away: str, home: str):
         """The league's own game id for this fixture, or None.
@@ -339,6 +361,7 @@ class OddsPuller:
 
     def _resolve(self, api_name: str):
         """-> (stored_team_name, abbrev). None when unmappable."""
+        api_name = self.name_aliases.get(api_name, api_name)
         if not self.team_map:
             return api_name, None
         hit = self.team_map.get(api_name)
@@ -390,9 +413,17 @@ class OddsPuller:
             dt_et = dt_utc - timedelta(hours=4)
             gd = dt_et.date().isoformat()
             c = _consensus(ev, api_home, api_away)
-            gid = self._canonical_id(gd, away, home) or (
-                f'{self.id_prefix}_{dt_et.strftime("%Y%m%d")}_'
-                f'{away}_{home}').replace(' ', '_')
+            gid = self._canonical_id(gd, away, home)
+            if gid is None:
+                # A minted id creates a row the league-id resolver can never
+                # fill, so say so rather than letting it look like a normal
+                # write. Loud, not fatal: a fixture the league has not
+                # published yet still has to be stored.
+                gid = (f'{self.id_prefix}_{dt_et.strftime("%Y%m%d")}_'
+                       f'{away}_{home}').replace(' ', '_')
+                if self.schedule_fn:
+                    print(f'  ⚠ no league id for {away} @ {home} on {gd} '
+                          f'— minted {gid}; this row will NOT resolve')
             row = {
                 'game_id': gid,
                 'game_date': gd,
