@@ -145,7 +145,13 @@ def candidates(gd: str) -> list:
                    {'game_date': 'eq.%s' % gd,
                     'select': 'id,sport,game_id,call_text,call_market,'
                               'call_side,call_line,conviction,price_american,'
-                              'short_read,input_snapshot->>matchup',
+                              'short_read,input_snapshot->>matchup,'
+                              # the tier the gate ACTUALLY applied, from the
+                              # frozen snapshot. Present on 88% of recent
+                              # reads; NULL is written when it is absent
+                              # rather than minting one from conviction,
+                              # which is a per-sport scale.
+                              'snap_tier:input_snapshot->primary_play->>tier',
                     'order': 'conviction.desc'})
     if not isinstance(rows, list):
         print('  read failed (HTTP %s)' % st)
@@ -245,7 +251,16 @@ def main():
             'pick_line': c.get('call_line'),
             'price_american': _i(c.get('price_american')),
             'conviction': _i(c.get('conviction')),
-            'tier': None,
+            # ══ 2026-10-28b · NO INVENTED TIER, NO INVENTED EDGE ══
+            # spread_delta and tier were NOT NULL (both are MLB-generator
+            # concepts) and the first --apply failed 23502 on them. 20261028b
+            # drops both NOT NULLs rather than letting this writer fabricate:
+            # spread_delta 0.0 would read as "model edge 0.0" on a play
+            # chosen for its PRICE, and a tier derived from conviction would
+            # be a baseball scale in another sport's jersey -- conviction 70+
+            # is 70.0% / +85.65u on MLB and 50.3% / -14.75u on NCAAF.
+            'tier': c.get('snap_tier'),
+            'spread_delta': None,
             'narrative': c.get('short_read'),
             'signals': {'source': 'jerry_reads',
                         'jerry_read_id': c.get('id'),
