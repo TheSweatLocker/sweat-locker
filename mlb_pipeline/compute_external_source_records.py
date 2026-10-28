@@ -179,7 +179,37 @@ def run(sport_filter: str | None = None) -> None:
         p = sum(1 for x in items if _norm_result(x.get('result')) == 'PUSH')
         n = w + l + p
         n_graded = w + l  # exclude pushes from hit-rate math
-        hit_rate = round(100 * w / n_graded, 2) if n_graded else None
+        # ══ 2026-10-28 · A RATE ON n=2 IS NOT A RECORD ══
+        # Andy, looking at MLB externals: "external ahndicapper record to be
+        # pretty low given an entire year of reagular seaosn picks, did the
+        # external handicapper record reste for pist season".
+        #
+        # Nothing reset. Two separate things were happening and neither is a
+        # bug in the arithmetic:
+        #
+        # 1. THERE WAS NEVER A YEAR OF PICKS. external_picks begins 2026-07
+        #    (July 831, Aug 4,228, Sep 4,055, Oct 378), which is why the 90d
+        #    and 9999d "lifetime" windows hold IDENTICAL numbers -- oddscrowd
+        #    3,017 in both. Lifetime is ~90 days because that is all the
+        #    history the scrapers ever stored.
+        #
+        # 2. MLB VOLUME COLLAPSED WITH THE REGULAR SEASON: 4,055 picks in
+        #    September to 378 in October. So the short windows now rest on a
+        #    handful of postseason picks, and were being published as records:
+        #        pickswise  window=7  n=4  hit_rate 0.0
+        #        sbr        window=7  n=2  hit_rate 0.0
+        #        tonyspicks window=30 n=2  hit_rate 0.0
+        #    69 of 105 seven-day rows had n_graded < 30. A handicapper shown
+        #    at 0.0% because two of its picks lost in a thin week reads as a
+        #    collapse, and it is the sample size talking.
+        #
+        # MIN_GRADED_FOR_RATE is Andy's own standing rule (every % shows its n,
+        # gate at n>=30). The row is still written -- the source exists and
+        # its n is real information -- but the RATE is withheld rather than
+        # fabricated. A NULL is visibly absent; 0.0% on n=2 is a false claim.
+        MIN_GRADED_FOR_RATE = 30
+        hit_rate = (round(100 * w / n_graded, 2)
+                    if n_graded >= MIN_GRADED_FOR_RATE else None)
         # 2026-10-10 · B73c · ROI only over PRICED picks, and NULL when the
         # price is unknown for any of them.
         #
@@ -198,8 +228,11 @@ def run(sport_filter: str | None = None) -> None:
                  for x in items]
         decided = [u for u in units if u is not None]
         unpriced = sum(1 for u in units if u is None)
+        # Same floor on ROI, for the same reason: an ROI built from two
+        # graded picks is noise wearing a percent sign.
         roi = (round(100 * sum(decided) / n, 2)
-               if (n and unpriced == 0) else None)
+               if (n and unpriced == 0 and n_graded >= MIN_GRADED_FOR_RATE)
+               else None)
         payloads.append({
             'source': source, 'sport': sport, 'surface': surface,
             'window_days': win_days,
