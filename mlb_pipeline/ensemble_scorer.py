@@ -339,7 +339,34 @@ def _load_sources(sport: str) -> list[dict]:
                 'signal_sources', {'select': '*', 'enabled': 'eq.true'})
         except Exception:
             _SOURCES_CACHE = []
-    return [s for s in _SOURCES_CACHE if s.get('sport') in (sport, '*')]
+    # == 2026-10-28 . THE GAME SCORER WAS LOADING PROP SIGNALS ==
+    # This filtered on sport ONLY. prop_ensemble_scorer._load_prop_sources
+    # filters 'subject_scope': 'in.(prop,player_prop)'; this side had no
+    # matching exclusion, so all 136 enabled prop-scoped rows were loaded
+    # and evaluated against every game (MLB 71, NFL 22, NBA 19, NHL 14,
+    # NCAAF 10).
+    #
+    # No contamination, checked rather than assumed: all 136 reference p.*
+    # and `p` does not exist in the game namespace, so every one raised
+    # NameError and evaluate_bool turned that into False. ZERO of them could
+    # fire on a game pick.
+    #
+    # Two real costs even so. 136 wasted evaluations per game, and -- as of
+    # the eval logger added today -- 136 '!!' lines per run saying 'this can
+    # never be true on ANY row'. That is how a useful alarm becomes noise
+    # nobody reads, which is the same failure the publish-invariant detector
+    # had this morning. It is also what made nhl_legacy_conviction_strong
+    # look like a misconfigured signal when the row is correct and the
+    # LOADER was wrong.
+    #
+    # Excluding the known prop scopes rather than selecting == 'game': a row
+    # with a NULL or new subject_scope still reaches the game scorer, which
+    # is the behaviour that exists today. Measured scopes on enabled rows:
+    # game 504, prop 134, player_prop 2, no NULLs.
+    _PROP_SCOPES = ('prop', 'player_prop')
+    return [s for s in _SOURCES_CACHE
+            if s.get('sport') in (sport, '*')
+            and str(s.get('subject_scope') or '') not in _PROP_SCOPES]
 
 
 # 2026-08-26: max age for a signal_registry row to be considered valid.
