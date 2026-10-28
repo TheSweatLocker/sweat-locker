@@ -741,3 +741,92 @@ Two mechanisms now exist to help and should be used:
 * `audit_signal_conditions_all_sports.py` — replays conditions against live
   rows and counts fires. Neither NBA defect was visible by reading code;
   both were visible by counting. Run it after any signal change.
+
+## R18 — TIER IS ANTI-PREDICTIVE ON game_read, IN FOUR SPORTS
+
+Found 2026-10-28 while pricing the MC tier demotion. This is the largest
+open finding on the board and it reframes the Sharp's non-MLB problem.
+
+Graded `game_read` receipts, pooled:
+
+```
+tier        n      hit%    95% CI          units
+PRIME       24    58.3%  [38.8, 75.5]     -0.50u
+STRONG     208    51.4%  [44.7, 58.1]    -13.52u
+LEAN       200    49.0%  [42.2, 55.9]    -16.95u
+COVERAGE   277    61.4%  [55.5, 66.9]    +22.71u
+```
+
+**The lowest tier is the only profitable one.** STRONG and LEAN — the two
+tiers the curated surfaces select from — both lose, and together they cost
+30.47 units.
+
+And it is not one sport's mix. COVERAGE is top in every sport with enough
+volume to judge:
+
+```
+sport   STRONG                LEAN                  COVERAGE
+NCAAF   47.6% n=126 -16.69u   50.0% n=150 -8.61u    63.6% n= 44 +4.34u
+NHL     56.7% n= 60  +0.67u   39.1% n= 23 -7.45u    61.8% n=144 +13.35u
+NFL     --                    50.0% n= 24 -1.24u    57.1% n= 42 +1.75u
+NBA     --                    --                    61.7% n= 47 +3.27u
+```
+
+Four independent sport populations, same direction.
+
+### Why this explains the Sharp
+
+The Sharp selects high-tier picks. NHL `rl` on the Sharp is 7-13 (35.0%,
+-4.93u) and **all twenty were tagged STRONG**. The surface is drawing from
+the two buckets that lose.
+
+It also explains R1 from the other side: `compute_surface_records` excludes
+COVERAGE, and the excluded group is the better half (+20.09u). We are
+excluding our best picks from the record and selecting our worst onto cards.
+
+### The limitation, stated plainly
+
+**No split-half is possible on this field.** `tier` was hardcoded `None` on
+game_read receipts until B179 (all 327 graded spread receipts carried no
+tier), so every tier-bearing row sits in one time window — the "1st half" is
+n=0 for all four tiers. The cross-sport replication is what carries this
+instead of a time split, and that is weaker evidence than both together
+would be.
+
+MLB shows nothing here (756 receipts, no tier bucket reaching n=20), so this
+is a non-MLB finding.
+
+### Plan
+
+1. **Do not act on it as a selection rule yet.** "Publish COVERAGE instead
+   of STRONG" is exactly the kind of inversion this repo has been burned by
+   (SP+ K=0.85, the retracted NFL prop edge, classes_boost). It needs a
+   forward sample.
+2. **Start the forward sample now.** Tier is already stamped on every
+   receipt, so the measurement runs itself — re-measure in two weeks on
+   picks made after 2026-10-28 only, which also excludes the signal-weight
+   corrections shipped today.
+3. **Meanwhile, stop trusting tier for stake sizing.** `ensemble_scorer`
+   already carries this warning in its own conviction comment: "conviction
+   still does not rank pick quality and must not be trusted for stake sizing
+   until `base` has its own study." The same is now true of tier, and
+   `TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}`
+   in `compute_surface_records.py` is staking in exact inverse proportion to
+   measured outcome.
+4. **Check whether `tier` and `conviction` disagree on these rows.** Today's
+   conviction work found NHL conviction 0 on picks the engine passed; if the
+   COVERAGE bucket is mostly MC-dissent picks, this finding and the MC one
+   are the same finding wearing two labels, and that must be ruled out before
+   either is acted on.
+
+### Why the MC tier demotion stays, now for a measured reason
+
+This morning I kept the MC dissent tier demotion and said it "lowers
+exposure" — a judgement, not a measurement, and Andy was right to push on
+it. The measurement now exists: the demotion moves picks STRONG->COVERAGE
+(9), STRONG->LEAN (8), LEAN->COVERAGE (6), and COVERAGE is the
+best-performing bucket. The demoted picks went 40-31 (56.3%, +5.43u).
+
+So the demotion lands picks in the bucket that wins. It stays — but note
+that is a coincidence of two separate defects, not a working gate, and it
+dissolves the moment R18 is resolved.
