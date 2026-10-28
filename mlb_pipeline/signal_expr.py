@@ -99,7 +99,53 @@ _SAFE_BUILTINS = {
 }
 
 
-def evaluate(expr: str, ctx: dict | AttrDict, default: Any = None) -> Any:
+#: (label, exception type, expr) already reported this process.
+_LOGGED_EVAL_ERRORS: set = set()
+#: Exceptions that are ALWAYS a defect in the expression, never a property of
+#: the data. A missing name, a syntax error or an attribute that is not there
+#: cannot become true on a different row -- the condition is dead for every
+#: game, forever.
+_ALWAYS_A_BUG = ('NameError', 'SyntaxError', 'AttributeError', 'KeyError')
+
+
+def _report(label: Optional[str], expr: str, exc: BaseException) -> None:
+    """Say a signal expression failed, once per (label, type, expr) per run.
+
+    ══ 2026-10-28 · WHY THIS HAD TO EXIST ══
+    `evaluate` returned `default` on any exception and said nothing, so a
+    swallowed NameError and an honestly-false condition were the SAME
+    observable: no firing, no log, an enabled row with a weight and
+    sample_n=0.
+
+    That hid `isinstance(x, dict)` -- isinstance is whitelisted, dict is not
+    -- in 17 enabled game-path signals for months: the entire
+    oddscrowd_*_fade_boost family, one per market per sport, across all six
+    sports. prop_ensemble_scorer added exactly this logger after 19 dead
+    signals were found the same way; the game evaluator never got it.
+
+    A NameError in a condition is NOT a data condition. It is dead code
+    wearing an enabled flag, and it should be loud the first time it runs.
+    """
+    kind = type(exc).__name__
+    key = (str(label or '?'), kind, str(expr)[:120])
+    if key in _LOGGED_EVAL_ERRORS:
+        return
+    _LOGGED_EVAL_ERRORS.add(key)
+    sev = '!!' if kind in _ALWAYS_A_BUG else '⚠'
+    note = ('  <- this can never be true on ANY row'
+            if kind in _ALWAYS_A_BUG else '')
+    print(f'  {sev} signal_expr[{label or "?"}] {kind}: {str(exc)[:90]}{note}')
+    print(f'     expr: {str(expr)[:140]}')
+
+
+def eval_error_report() -> list:
+    """Every distinct expression failure seen this process, for a caller that
+    wants to assert on them rather than read a log."""
+    return sorted(_LOGGED_EVAL_ERRORS)
+
+
+def evaluate(expr: str, ctx: dict | AttrDict, default: Any = None,
+             label: Optional[str] = None) -> Any:
     """Evaluate `expr` against `ctx`. Returns `default` on any error.
 
     The expression can reference `ctx` as an object with attribute/item
@@ -121,27 +167,31 @@ def evaluate(expr: str, ctx: dict | AttrDict, default: Any = None) -> Any:
         # compile + eval with restricted namespaces
         code = compile(expr, '<signal_expr>', 'eval')
         return eval(code, globs, locs)  # noqa: S307 (deliberate, locked-down)
-    except Exception:
+    except Exception as e:                                  # noqa: BLE001
+        _report(label, expr, e)
         return default
 
 
-def evaluate_bool(expr: str, ctx: dict | AttrDict) -> bool:
+def evaluate_bool(expr: str, ctx: dict | AttrDict,
+                  label: Optional[str] = None) -> bool:
     """Evaluate as boolean; failures + None → False."""
-    result = evaluate(expr, ctx, default=False)
+    result = evaluate(expr, ctx, default=False, label=label)
     return bool(result) if result is not None else False
 
 
-def evaluate_str(expr: str, ctx: dict | AttrDict) -> Optional[str]:
+def evaluate_str(expr: str, ctx: dict | AttrDict,
+                 label: Optional[str] = None) -> Optional[str]:
     """Evaluate as string; failures → None."""
-    result = evaluate(expr, ctx, default=None)
+    result = evaluate(expr, ctx, default=None, label=label)
     if result is None:
         return None
     return str(result)
 
 
-def evaluate_float(expr: str, ctx: dict | AttrDict, default: float = 0.5) -> float:
+def evaluate_float(expr: str, ctx: dict | AttrDict, default: float = 0.5,
+                   label: Optional[str] = None) -> float:
     """Evaluate as float in [0, 1]; failures + None → default; clamped."""
-    result = evaluate(expr, ctx, default=default)
+    result = evaluate(expr, ctx, default=default, label=label)
     if result is None:
         return default
     try:

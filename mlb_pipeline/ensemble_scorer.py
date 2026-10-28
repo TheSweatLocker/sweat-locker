@@ -1650,14 +1650,22 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
 
         # Expression-based
         condition = source.get('condition_expr', '')
-        if not evaluate_bool(condition, ctx_attr):
+        # ══ 2026-10-28 · NAME THE SIGNAL IN THE EVAL LOG ══
+        # signal_expr swallowed every exception and said nothing, so a
+        # swallowed NameError looked exactly like an honestly-false
+        # condition. It hid isinstance(x, dict) -- isinstance whitelisted,
+        # dict not -- in 17 enabled signals across all six sports. The label
+        # is what makes the new report actionable rather than just noisy.
+        _lbl = source.get('signal_key') or '?'
+        if not evaluate_bool(condition, ctx_attr, label=_lbl):
             continue
 
-        side = evaluate_str(source.get('side_expr', ''), ctx_attr)
+        side = evaluate_str(source.get('side_expr', ''), ctx_attr, label=_lbl)
         if not side:
             continue
 
-        strength = evaluate_float(source.get('strength_expr', '0.5'), ctx_attr, default=0.5)
+        strength = evaluate_float(source.get('strength_expr', '0.5'), ctx_attr,
+                                  default=0.5, label=_lbl)
         if strength <= 0:
             continue
 

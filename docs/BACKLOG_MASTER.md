@@ -358,3 +358,33 @@ it. Circular.
 **Next step:** build the gate as pitched, but feed the matchup into the
 **projection** rather than publishing a direction off it, and shadow it.
 Nothing in the grid clears breakeven yet.
+
+## B228 — mlb_game_context.home/away_ops_last7 is never filled (4 dead signals)
+
+Found 2026-10-28 by replaying every enabled game-path condition against live
+context rows.
+
+Four enabled MLB signals read it and can never fire:
+`home_offense_hot_l7`, `away_offense_hot_l7`, `home_offense_cold_l7`,
+`away_offense_cold_l7`.
+
+The chain:
+* `enrich_team_recency.py` computes L7/L14 team OPS and writes
+  `mlb_team_offense.ops_last7` — correct in-season, and genuinely NULL right
+  now because no team has played in the last 7 days (the regular season is
+  over). Note the step still prints `✅ Upserted recency stats for 30 teams`
+  with every value `-`, which is the green-step-writes-nothing shape.
+* `backfill_team_ops_history.py` writes `mlb_game_results.home_ops_last7`,
+  and that IS populated for every in-season game — 394/394 in 2026-04,
+  426/426 in 2026-05, 417/417 in 2026-08.
+* migration `20260524_game_context_ops_recency.sql` added the columns to
+  `mlb_game_context` and its own comment says "game_context copies the
+  relevant per-team values into the game context payload". **Nothing does
+  that copy.** 0 of 21 ctx rows have ever held a value.
+
+FIX: one copy step in the MLB context builder, sourcing from
+`mlb_team_offense` (live) or `mlb_game_results` (historical). Deliberately
+not built on 2026-10-28: there is no in-season data to copy until spring, so
+the fix could not be verified today beyond "the column stops being NULL".
+Verify next March by asserting the four signals fire, not by checking the
+column is non-NULL.
