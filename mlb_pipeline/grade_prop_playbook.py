@@ -30,7 +30,7 @@ Usage:
     python grade_prop_playbook.py --sport MLB            # (only MLB supported today)
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, sys, time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -429,6 +429,20 @@ def grade_date(date_str: str, sport: str = 'MLB',
 
     now_iso = datetime.now(timezone.utc).isoformat()
     errors = 0
+    wrote = 0
+    dropped = 0
+    # ══ 2026-10-28 · ONE RESET CONNECTION KILLED A TEN-DAY BACKFILL ══
+    # This loop PATCHed once per row with no retry and no exception handling.
+    # On the first multi-sport backfill the host reset a connection partway
+    # through and `requests.ConnectionError` propagated out of grade_date,
+    # out of main, and ended the run -- so every date after that one went
+    # ungraded. Behind `continue-on-error: true` that is a step that looks
+    # like it ran. Thousands of rows per NHL/NBA slate make a transient reset
+    # a near-certainty rather than an edge case.
+    #
+    # Retry twice with a short backoff, then count the row as dropped and
+    # keep going. A row left ungraded is picked up by the next --backfill
+    # run; a run that dies halfway is not.
     for u in updates:
         patch = {
             'result':       u['result'],
@@ -436,17 +450,33 @@ def grade_date(date_str: str, sport: str = 'MLB',
             'grade_source': u['grade_source'],
             'graded_at':    now_iso,
         }
-        r2 = requests.patch(
-            f'{SB}/rest/v1/prop_playbook_decisions?id=eq.{u["id"]}',
-            headers=H_WRITE, data=json.dumps(patch), timeout=10)
-        if r2.status_code not in (200, 204):
-            errors += 1
-            if errors <= 3:
-                print(f'    write error id={u["id"]} HTTP {r2.status_code} — {r2.text[:200]}')
-    if errors:
-        print(f'  ⚠ {errors} write errors')
-    else:
-        print(f'  ✓ patched {len(updates)} rows')
+        for _try in range(3):
+            try:
+                r2 = requests.patch(
+                    f'{SB}/rest/v1/prop_playbook_decisions?id=eq.{u["id"]}',
+                    headers=H_WRITE, data=json.dumps(patch), timeout=20)
+            except requests.RequestException as e:
+                if _try == 2:
+                    dropped += 1
+                    if dropped <= 3:
+                        print(f'    dropped id={u["id"]} after 3 tries: {e}')
+                    break
+                time.sleep(1.0 + _try)
+                continue
+            if r2.status_code in (200, 204):
+                wrote += 1
+            else:
+                errors += 1
+                if errors <= 3:
+                    print(f'    write error id={u["id"]} HTTP '
+                          f'{r2.status_code} — {r2.text[:200]}')
+            break
+    print(f'  patched {wrote} of {len(updates)} rows'
+          + (f', {errors} write error(s)' if errors else '')
+          + (f', {dropped} DROPPED after retries' if dropped else ''))
+    if dropped:
+        print('    dropped rows stay ungraded and are retried by the next '
+              '--backfill run; the run did NOT abort')
     return dict(tally)
 
 
