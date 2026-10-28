@@ -343,6 +343,30 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_nhl_game_reads.py
+          # == 2026-10-28 . PRICE THE PICK THAT WAS JUST WRITTEN ==========
+          # nightly_cross_sport.sh has carried this note since 10-02:
+          # "this is the daily floor, not the ideal ... the right place is
+          # also immediately after each sport's read generation ... Wiring
+          # that per-pipeline is queued." It stayed queued, and tonight it
+          # cost us in public: 6 of 7 NBA spread picks carried a price that
+          # was not a spread price --
+          #     San Antonio Spurs -13.5  shown at -650 (the away MONEYLINE)
+          #     Houston Rockets   -8.5   shown at -340 (ditto)
+          # Every read was priced at 18:37 and REGENERATED at 22:28, and
+          # nothing priced them again. Breakeven at -650 is 86.7 percent,
+          # so the juice gates and every ROI figure were computed off a
+          # number no book posts.
+          #
+          # price_picks.py already handles this correctly -- it re-prices
+          # any game that has NOT started and freezes the price once it has,
+          # so a repeat run cannot rewrite the record of what we published.
+          # It just never ran after the pick moved. The clearing guard in
+          # sync_jerry_reads_from_ctx.py does not help here: it skips every
+          # read a real synthesis generator wrote, which is all of them
+          # (feedback_guard_belongs_at_the_chokepoint).
+          #
+          # Non-fatal: a pricing miss must not fail the slate.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "price_picks.py --sport NHL (re-price the moved pick)"             python price_picks.py --sport NHL --write || true
 
           # ══ 2026-10-23 · THE BADGE AND GAME DETAIL CONTRADICTED ══
           # ANDY: "timberwolves pregame bage not amtchign game detail priamry

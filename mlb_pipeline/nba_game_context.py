@@ -108,9 +108,50 @@ def _season_label(gd: date) -> tuple[str, str]:
     return season, 'regular'
 
 
+def _mascot(name) -> str:
+    """Last token of a team name, lowercased.
+
+    Unique across all 30 NBA franchises -- including the two that look
+    risky: "Portland Trail Blazers" -> "blazers" and "Philadelphia 76ers"
+    -> "76ers". That uniqueness is what makes it a safe join key when two
+    feeds disagree about the CITY, which they do:
+
+        ESPN / nba_game_context   "LA Clippers"
+        Odds API / line_history   "Los Angeles Clippers"
+
+    Note "LA Clippers" is NOT a substring of "Los Angeles Clippers", so the
+    containment test below could never match them.
+    """
+    toks = str(name or '').strip().split()
+    return toks[-1].lower() if toks else ''
+
+
+def _same_team(a, b) -> bool:
+    """One franchise under two spellings."""
+    a, b = str(a or '').strip(), str(b or '').strip()
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    return _mascot(a) == _mascot(b)
+
+
 def enrich_market(rows: list[dict]) -> None:
-    """Pull odds for h2h + spreads + totals. Attaches to ctx rows via
-    home/away_team full name match."""
+    """Pull odds for h2h + spreads + totals, joined on team identity.
+
+    2026-10-28 . THIS JOIN SILENTLY DROPPED EVERY CLIPPERS GAME. Andy
+    spotted LAL @ LAC as the one game tonight with no line. Both tests
+    here were spelling-exact:
+
+      1. the event lookup asked `home_full in h`, and "LA Clippers" is
+         not a substring of "Los Angeles Clippers";
+      2. the outcome parse asked `name == home_full`, so even a matched
+         event would have dropped all three markets.
+
+    A miss then hit a bare `continue`, which is why it read as "missing
+    game data" rather than as a failure (feedback_green_step_that_writes
+    _nothing). Unmatched games are now listed at the end of the step.
+    """
     if not ODDS_KEY:
         print('  ⚠ ODDS_API_KEY missing — skipping market enrichment')
         return
@@ -131,14 +172,17 @@ def enrich_market(rows: list[dict]) -> None:
     for e in events:
         by_matchup[(e.get('home_team'), e.get('away_team'))] = e
 
+    unmatched: list[str] = []
     for row in rows:
         home_full = row.get('home_team') or ''
         away_full = row.get('away_team') or ''
         ev = None
         for (h, a), e_ in by_matchup.items():
-            if home_full and home_full in h and away_full and away_full in a:
+            if _same_team(home_full, h) and _same_team(away_full, a):
                 ev = e_; break
-        if not ev: continue
+        if not ev:
+            unmatched.append(f'{away_full} @ {home_full}')
+            continue
 
         # Prefer DraftKings if available; else first bookmaker
         books = ev.get('bookmakers', [])
@@ -152,19 +196,19 @@ def enrich_market(rows: list[dict]) -> None:
                 price = o.get('price')
                 point = o.get('point')
                 if key == 'h2h':
-                    if name == home_full: row['home_ml_close'] = int(price)
-                    elif name == away_full: row['away_ml_close'] = int(price)
+                    if _same_team(name, home_full): row['home_ml_close'] = int(price)
+                    elif _same_team(name, away_full): row['away_ml_close'] = int(price)
                 elif key == 'spreads':
                     # 2026-10-21: the PRICE was parsed two lines up and
                     # dropped for this market and the next, so every spread
                     # and total ROI in the app was computed at an assumed
                     # -110. Captured now (migration 20261021a). Left NULL
                     # when absent - a missing price must never read as -110.
-                    if name == home_full and point is not None:
+                    if _same_team(name, home_full) and point is not None:
                         row['close_spread'] = float(point)
                         if price is not None:
                             row['close_spread_home_price'] = int(price)
-                    elif name == away_full and price is not None:
+                    elif _same_team(name, away_full) and price is not None:
                         row['close_spread_away_price'] = int(price)
                 elif key == 'totals':
                     if name == 'Over' and point is not None:
@@ -173,6 +217,15 @@ def enrich_market(rows: list[dict]) -> None:
                             row['close_total_over_price'] = int(price)
                     elif name == 'Under' and price is not None:
                         row['close_total_under_price'] = int(price)
+
+    # A game with no odds event is a JOIN result, not a fact about the
+    # game. Say so, every run, so the next spelling fork is visible the
+    # day it appears instead of months later.
+    if unmatched:
+        print(f'  !! {len(unmatched)} game(s) matched NO odds event '
+              f'-- no close line written:')
+        for u in unmatched:
+            print(f'       {u}')
 
 
 def enrich_rest(rows: list[dict]) -> None:

@@ -537,6 +537,30 @@ jobs:
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_nba_game_reads.py" python generate_nba_game_reads.py
+          # == 2026-10-28 . PRICE THE PICK THAT WAS JUST WRITTEN ==========
+          # nightly_cross_sport.sh has carried this note since 10-02:
+          # "this is the daily floor, not the ideal ... the right place is
+          # also immediately after each sport's read generation ... Wiring
+          # that per-pipeline is queued." It stayed queued, and tonight it
+          # cost us in public: 6 of 7 NBA spread picks carried a price that
+          # was not a spread price --
+          #     San Antonio Spurs -13.5  shown at -650 (the away MONEYLINE)
+          #     Houston Rockets   -8.5   shown at -340 (ditto)
+          # Every read was priced at 18:37 and REGENERATED at 22:28, and
+          # nothing priced them again. Breakeven at -650 is 86.7 percent,
+          # so the juice gates and every ROI figure were computed off a
+          # number no book posts.
+          #
+          # price_picks.py already handles this correctly -- it re-prices
+          # any game that has NOT started and freezes the price once it has,
+          # so a repeat run cannot rewrite the record of what we published.
+          # It just never ran after the pick moved. The clearing guard in
+          # sync_jerry_reads_from_ctx.py does not help here: it skips every
+          # read a real synthesis generator wrote, which is all of them
+          # (feedback_guard_belongs_at_the_chokepoint).
+          #
+          # Non-fatal: a pricing miss must not fail the slate.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "price_picks.py --sport NBA (re-price the moved pick)"             python price_picks.py --sport NBA --write || true
 
           # ══ 2026-10-23 · THE BADGE AND GAME DETAIL CONTRADICTED ══
           # ANDY: "timberwolves pregame bage not amtchign game detail priamry
@@ -691,6 +715,34 @@ jobs:
         run: |
           cd mlb_pipeline
           python backfill_prop_lookback.py --sport NBA
+
+      # == 2026-10-28 . THE MEASURED NBA PROP GATE WAS NEVER SCHEDULED ==
+      # nba_prop_gate.py was written on 10-26 to give this board its first
+      # discriminator (prop_line / bounded L5, quintiles within direction,
+      # monotone with a 37-point spread on overs). It was run by hand once
+      # and never wired, so the board went straight back to one flat tier:
+      #
+      #     10-25  signals on 1,006 of 1,110 rows   tier LEAN/SKIP/COVERAGE
+      #     10-26  signals on   317 of 1,650 rows
+      #     10-27  signals on     0 of   642 rows   tier COVERAGE on ALL
+      #     10-28  signals on     0 of 1,945 rows   tier COVERAGE on ALL
+      #
+      # The decay is nba_generate_props.py:209 upserting tier COVERAGE /
+      # conviction 0 / signals {} on every run, which overwrites anything
+      # applied out of band. In-run ordering is therefore the fix: this
+      # must sit AFTER the generator, which it now does.
+      #
+      # PUBLISHES NOTHING. It assigns SKIP and LEAN only -- no PRIME, no
+      # STRONG, because no cell measured profitably -- and publishing
+      # needs PRIME plus a feature flag that is still FALSE (B121).
+      - name: NBA prop measured gate (SKIP/LEAN, publishes nothing)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python nba_prop_gate.py --apply
 
       - name: NBA prop playbook scorer (shadow mode)
         continue-on-error: true

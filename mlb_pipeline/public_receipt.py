@@ -599,8 +599,24 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
     matchup, game_id, tier, conviction, close_spread, spread_delta,
     result. One per day.
 
+    2026-10-28: THE PRICE EXISTS NOW. The multi-sport Dawg rebuild
+    shipped today added price_american / price_implied / priced_at /
+    market / pick_side to `daily_dawg`, so the sentence below stopped
+    being true the same day it was still being relied on. Verified on
+    tonight's two rows: MLB +135, NHL +117, both receipts pick_odds NULL.
+    `pick_odds` now comes straight off the source row, and the source's
+    own `pick_side` wins over the derived one when it is present --
+    the generator knows which side it picked; this builder is guessing
+    from a matchup string.
+
+    `market` stays 'dotd'. The source row says 'ml', but the receipt is
+    what reached the user and its market sets the denominator every
+    published Dawg record is computed against (the R3 decision, 10-28).
+    The source's market is recorded in `audit` instead, so a later ROI
+    pass can use the right breakeven without the record moving.
+
     2026-10-06: this builder set no `pick_odds` and no `pick_side`, and
-    `daily_dawg` has no price column at all — so all 130 Dawg receipts are
+    `daily_dawg` had no price column at all — so all 130 Dawg receipts are
     unpriced. The price is recoverable from line_history (which holds spread
     prices for every sport), but only given a side, so `pick_side` is now
     derived from the matchup. `pick_line` already carries close_spread, which
@@ -614,7 +630,9 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
         team = rec.get('team')
         if not gd or not team:
             continue
-        _side = _side_from_matchup(team, rec.get('matchup'))
+        _side = (str(rec.get('pick_side')).strip().upper()
+                 if rec.get('pick_side')
+                 else _side_from_matchup(team, rec.get('matchup')))
         _cs = _num_or_none(rec.get('close_spread'))
         out.append({
             'pick_side': _side,
@@ -646,12 +664,19 @@ def dawg_rows(records: list, game_date: str | None = None) -> list[dict]:
             'matchup': rec.get('matchup'),
             'market': 'dotd',
             'pick_label': team,
+            'pick_odds': _num_or_none(rec.get('price_american')),
             'tier': rec.get('tier'),
             'conviction': rec.get('conviction'),
             'result': norm_result(rec.get('result')),
             'audit': {
                 'spread_delta': rec.get('spread_delta'),
                 'captured_by': 'generate_dawg_of_day',
+                'price_basis': ('publish' if rec.get('price_american')
+                                is not None else None),
+                'price_source': ('daily_dawg.price_american'
+                                 if rec.get('price_american') is not None
+                                 else None),
+                'source_market': rec.get('market'),
             },
         })
     return out

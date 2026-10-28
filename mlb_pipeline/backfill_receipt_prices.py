@@ -460,6 +460,26 @@ def main() -> int:
         if b.get('odds_american') is not None:
             potd[str(b['bet_date'])] = b['odds_american']
     print(f'potd prices indexed: {len(potd)}\n')
+    # == 2026-10-28 . daily_dawg HAS a price now =======================
+    # public_receipt.dawg_rows still carries the 10-06 comment "daily_dawg
+    # has no price column at all". That stopped being true TODAY: the
+    # multi-sport Dawg rebuild added price_american / price_implied /
+    # priced_at / market / pick_side. Verified on tonight's two rows --
+    # MLB +135, NHL +117, both inside the +100..+250 plus-odds rule --
+    # while both receipts carry pick_odds NULL.
+    #
+    # Fixed in BOTH places, because the receipt upsert is
+    # resolution=ignore-duplicates: the builder cannot repair a receipt
+    # that already exists, and this script cannot repair one that was
+    # never written (feedback_fix_every_writer_to_the_table).
+    dawg = {}
+    for d in page('daily_dawg',
+                  {'select': 'game_date,game_id,market,pick_side,'
+                             'price_american,priced_at,created_at',
+                   'game_date': f'gte.{args.since}'}):
+        if d.get('price_american') is not None and d.get('game_id'):
+            dawg[str(d['game_id'])] = d
+    print(f'dawg prices indexed: {len(dawg)}')
 
     # ---- resolve -----------------------------------------------------
     price_fixes, matchup_fixes, tier_fixes = [], [], []
@@ -629,6 +649,36 @@ def main() -> int:
                     got = _num(g.get(f'{side}_ml_close'))
                     basis, src = 'close', f'mlb_game_results.{side}_ml_close'
                     reason = 'results row has no closing ML' if got is None else None
+
+        elif stbl == 'daily_dawg' and sid.startswith('dotd:'):
+            d = dawg.get(sid[len('dotd:'):])
+            if not d:
+                reason = 'dawg row has no price'
+            else:
+                # THE SIDE MUST AGREE. The generator writes pick_side on the
+                # source row; the receipt derives its own from the matchup
+                # string. A price is attached only when the two name the
+                # same side, so a disagreement can never silently price the
+                # opposite team (feedback_grade_the_side_we_published).
+                _rs = str(rec.get('pick_side') or '').strip().upper()
+                _ds = str(d.get('pick_side') or '').strip().upper()
+                if _rs and _ds and _rs != _ds:
+                    reason = (f'dawg row is on {_ds}, receipt is on {_rs}'
+                              f' -- refusing its price')
+                else:
+                    got = _num(d.get('price_american'))
+                    # priced_at is NULL on the rows the new generator writes
+                    # (verified on both of tonight's). created_at is the
+                    # moment the generator chose AND priced the pick, so it
+                    # is the honest publish stamp. Never invent one.
+                    basis = _basis(d.get('priced_at') or d.get('created_at'),
+                                   rec['game_date'])
+                    src = 'daily_dawg.price_american'
+                    if got is None:
+                        reason = 'dawg row has no price'
+                    elif basis is None:
+                        reason = 'dawg price carries no timestamp'
+                        got = None
 
         elif stbl == 'daily_best_bet_history' and sid.startswith('potd:'):
             d = sid[len('potd:'):]

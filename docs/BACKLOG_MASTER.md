@@ -1219,3 +1219,214 @@ resolved as "keep the receipt"; what remains is wiring the pre-game check to
 `line_history.commence_time`), R9 (measured — two NHL
 cohort candidates carried forward, nothing enabled), R15 (the app-side NULL
 risk is verified safe; only the "lifetime is ~90 days" labelling remains).
+
+---
+
+# EVENING ADDENDUM — 2026-10-28 · the favourite-bias dive
+
+Andy: *"All NBA reads tonight are just favortie spreads or favorite ML, has
+it been like that all NBA season ... why doenst engine pick dawg spreads?
+When engine says fav ML how often does Dawg win on spread? Is it like that
+for all sports, feel like NFL engine spits ou some +7.5 plays right? ...
+Additonally La v LAC in NBA tonight is missing game data."*
+
+## R20 · FIXED · spread picks were priced with the MONEYLINE
+
+Tonight's NBA board, as published:
+
+```
+San Antonio Spurs -13.5   shown -650   real spread price -110/-110
+Houston Rockets   -8.5    shown -340   real spread price -115/-105
+New York Knicks   -6.5    shown -275   real spread price -105/-115
+Philadelphia 76ers -7.5   shown -270   real spread price -110/-120
+Detroit Pistons   -7.5    shown -295   real spread price -120/-110
+Oklahoma City     -5.5    shown -215   real spread price -110/-110
+Cleveland         -9.5    shown -110   correct
+```
+
+-650 and -340 are *exactly* that game's away moneyline. Breakeven at -650
+is 86.7%, so every ROI figure and every juice gate on those picks was
+computed against a number no book posts — and a subscriber was shown it.
+
+**Root cause, proven by timestamps.** All 12 reads were priced at
+18:37:30 and regenerated at 22:28–22:30, ~4h later. The picks that moved
+from ML to spread kept the ML price. `price_picks.py` handles this
+correctly already (it re-prices any unstarted game and freezes only after
+kickoff — written for this exact failure on 09-24), **but it is not in any
+sport pipeline**; it runs only in `nightly_cross_sport.sh`. And the
+price-clearing guard added 10-27 lives in `sync_jerry_reads_from_ctx.py`,
+which **skips every read a real synthesis generator wrote** — which is all
+of them. A guard on one of several writers again.
+
+This was a *known queued item*. `nightly_cross_sport.sh` has said since
+10-02: "this is the daily floor, not the ideal ... the right place is also
+immediately after each sport's read generation ... Wiring that per-pipeline
+is queued." 26 days queued; tonight it was public.
+
+**Done:** re-priced NBA from `line_history` at the pick's own line (13 of
+13 written, -650 to -111, -340 to -105); NULLed the 2 NFL rows whose line
+no book posts any more (a NULL is visibly absent, a stale number is not);
+wired `price_picks.py --sport X --write` immediately after read generation
+in **nba / nhl / nfl / ncaaf** pipelines. Impossible prices across all
+sports: **8 to 0**.
+
+**Follow-up:** 8 NFL reads sit at lines no book currently posts (HOU +2.5,
+IND +1.5, NYG +5.5, SEA -13.5, SF -8.5, BAL -4.5, CIN -5.5, DET -6.5).
+That is the 10-19 published-lines finding, still open.
+
+## R21 · FIXED · the NBA line join dropped every Clippers game
+
+LAL @ LAC was the one game tonight with no `close_spread` and no
+`close_total` (100 of 116 columns filled vs 111-113 for the rest).
+
+`nba_game_context.enrich_market` matched the odds event with
+`home_full in h` and parsed outcomes with `name == home_full`. ESPN says
+**"LA Clippers"**; the Odds API says **"Los Angeles Clippers"** — and
+"LA Clippers" is **not** a substring of "Los Angeles Clippers", so both
+tests missed and a bare `continue` swallowed it. It read as missing data
+rather than a failed join.
+
+**Done:** joined on the mascot token, verified unique across all 42 NBA
+team strings in `nba_game_results` (0 collisions; Trail Blazers to
+blazers, 76ers to 76ers), and any game matching no odds event is now
+printed every run. Rebuilt: LAL@LAC now carries spread -1.5, total 224.5,
+ML -112/-108. **Tonight: 12 games, 0 missing a spread, 0 missing a total.**
+The read itself was generated before the line existed, so its blank line
+and price were filled from the market (Over 224.5 at -110) — side
+untouched.
+
+## R22 · MEASURED · the favourite bias is real, and sport-specific
+
+Dog share of our own spread picks, `call_line > 0` (full season):
+
+```
+sport     n    FAV   DOG    dog%   biggest dog   common dog lines
+NFL      94     54    40   42.6%        +13.5    +2.5 +3.5 +1.5 +3.0
+NCAAF   401    266   135   33.7%        +46.5    +14.5 +2.5 +9.5
+NBA      36     31     5   13.9%         +5.5    +1.5 +3.5
+NHL      41     38     3    7.3%         +1.5    (puckline only)
+```
+
+Moneylines: **NFL has taken a plus-money ML 0 times in 24 priced picks.**
+NBA 3 of 23, NHL 18 of 146.
+
+So Andy is right twice: NBA/NHL are favourite-only in practice (tonight 11
+of 12 NBA reads were favourites, 0 dogs), and NFL *does* produce +7.5-type
+plays.
+
+**The mechanism, measured.** Our projected margin vs the market's:
+
+```
+sport    n    mean|proj|  mean|close|  proj MORE extreme   mean diff
+NBA     77         6.92         5.92              61.0%       +1.01
+NCAAF  517        10.53        11.97              45.5%       -1.44
+NFL    314         2.80         4.44              25.5%       -1.64
+NHL    208         0.76         1.49              12.5%       -0.73
+```
+
+NBA projects favourites ~1 point **bigger** than the market, so "largest
+edge" lands on the favourite by construction. NFL projects **smaller**,
+which is why NFL gives dogs. **NHL's favourite bias is NOT explained by
+this** (its projection is the least extreme of all four) — cause unknown,
+open.
+
+**And the projection loses to the close in every sport**, each measured in
+its own sign convention:
+
+```
+sport    n     MAE close   MAE projection   MAE constant 0
+NBA     63        10.786           12.595           13.159
+NFL    105         8.576            9.800           10.133
+NCAAF  447        11.254           13.770           16.879
+```
+
+Correction to my own first pass: I reported NCAAF projection MAE as 23.595
+and "worse than a constant". That was the **sign**, not the model —
+NCAAF's `projected_spread` is in margin convention while its
+`close_spread` is in betting convention. In its own convention it is
+13.770 and it *does* beat a constant. `ncaaf_game_context` already handles
+this deliberately (`edge = abs(proj + close)`, fixed 09-16 from Andy's
+MIA@WF audit), and NFL correctly subtracts because both its columns are
+nflverse convention. **No sign bug — the handling is correct. My
+measurement re-derived it.**
+
+## R23 · MEASURED · when we take the favourite, what the dog does
+
+```
+sport  market    n   fav ML won   dog covered   95% CI
+MLB    ml      275        59.6%         56.7%   [50.8, 62.5]
+NCAAF  ml       92        64.1%         48.9%   [38.9, 59.0]
+NCAAF  rl      220        79.5%         49.1%   [42.6, 55.7]
+NHL    ml      117        60.7%         66.7%   [57.7, 74.6]
+NFL    rl       32        50.0%         75.0%   [57.9, 86.7]
+NFL    ml       29        82.8%         27.6%   n<30, under gate
+NBA    rl       24        83.3%         45.8%   n<30, under gate
+NBA    ml       12        58.3%         41.7%   n<30, under gate
+```
+
+**NHL looked like the big find and it is not.** Priced at the dog
+puckline's *actual* cost: 66.0% on n=106, **mean breakeven 66.6%**, median
+price -205, **ROI -0.14%**. Flat. The market prices it exactly. Same trap
+as this morning's NHL props — a rate that clears 52.4% and loses at its
+own price.
+
+**NFL favourite spreads are the real finding.** Dog covered **24 of 32 =
+75.0%**, and split-half it is **75.0% / 75.0%** on 16 each. At the
+conventional -110 (NFL results store no spread price column — an
+assumption, stated) that is **+43.18% ROI**. Consistent with the known
+"engine loses to a one-word rule" and already partly actioned by B209
+(NFL spreads refused on both curated surfaces). n=32 is the limit.
+
+## R24 · FIXED · the NBA prop discriminator was never scheduled
+
+`nba_prop_gate.py` (built 10-26, the quintile gate with a 37-point spread
+on overs) was run by hand once and never wired. The board decayed straight
+back to one flat tier:
+
+```
+10-25  signals on 1,006 of 1,110 rows   tier LEAN/SKIP/COVERAGE
+10-26  signals on   317 of 1,650 rows
+10-27  signals on     0 of   642 rows   tier COVERAGE on ALL
+10-28  signals on     0 of 1,945 rows   tier COVERAGE on ALL
+```
+
+Cause: `nba_generate_props.py:209` upserts tier COVERAGE / conviction 0 /
+signals {} on every run, overwriting anything applied out of band. So
+in-run ordering is the fix. Wired **after** the generator. Publishes
+nothing — SKIP and LEAN only, and publishing needs PRIME plus a feature
+flag that is still FALSE.
+
+## R25 · FIXED · the Dawg receipt dropped a price that now exists
+
+`daily_dawg` gained `price_american` in today's own multi-sport rebuild,
+but `public_receipt.dawg_rows` still carried the 10-06 comment "daily_dawg
+has no price column at all" and set no `pick_odds`. Tonight: MLB +135, NHL
++117 on the source rows, both receipts NULL.
+
+Fixed in **both** writers, because the receipt upsert is
+`resolution=ignore-duplicates` — the builder cannot repair a receipt that
+already exists, and the backfill cannot repair one never written. 2 of 2
+written, verified by read-back. `market` stays `dotd` (the R3 decision:
+the receipt's market is the denominator its record is computed against);
+the source's `ml` is recorded in `audit.source_market` instead.
+
+## Still open from the status sweep
+
+* **NHL props**: conviction works (11 distinct, max 97, 39 rows >=70) but
+  `signals` holds exactly one key, `two_sided_price`. No evidence trail,
+  against the engine-selection standard. Tier COVERAGE on 100% is
+  *correct* (R5: -6.93% ROI at real prices) — the gap is the audit trail.
+* **NFL props**: plumbing complete (73 distinct conviction, real tier
+  spread, 10 signal keys) and **819 receipts in 7 days**, our highest
+  volume surface, on a market where no cell clears breakeven (R7). The
+  volume is the exposure.
+* **Signal firing**: 4 of 27 `isinstance`-gated prop signals have fired
+  since 10-25. The other 23 are mostly MLB batter signals on a 2-team
+  World Series board and NFL signals with 45 playbook rows — i.e. low
+  volume, NOT proven dead. Needs the real test: per signal, count rows
+  that *qualified* vs rows that *fired*. A column check passes them all.
+* **NBA projection coverage**: `projection` / `proj_vs_line_edge` on 346 of
+  1,945 rows (18%). The discriminator feeds under a fifth of the board.
+* **NHL favourite bias**: 92.7% of NHL spread picks and 87.7% of its
+  moneylines are favourites, and the projection mechanism does NOT explain
+  it. Cause unidentified.
