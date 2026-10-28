@@ -93,6 +93,11 @@ DEGEN_MIN_LEGS = 3
 DEGEN_MAX_LEGS = 3
 DEGEN_MIN_COMBINED_PAYOUT = 175     # matches the +216 median 3-leg build
 DEGEN_LEG_ODDS_MIN = -125            # ban -200+ juice; -125 is the ceiling on juice
+#: primary_play.sub reads like "Capitals · 65% vs 70% implied — -4.7pp edge".
+#: Both shapes are matched because the explicit pp figure is not always there.
+_DEGEN_EDGE_PP = __import__('re').compile(r'([-+]?\d+(?:\.\d+)?)\s*pp edge')
+_DEGEN_VS_IMPLIED = __import__('re').compile(
+    r'(\d+(?:\.\d+)?)%\s*vs\s*(\d+(?:\.\d+)?)%\s*implied')
 DEGEN_LEG_ODDS_MAX = 300             # allow up to +300 dogs
 
 # Audit-based prioritization (added 2026-05-04). Each candidate's static
@@ -361,6 +366,8 @@ def fetch_primary_play_legs():
     gd = today_et()
     hdr = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
     out = []
+    dropped_game_leg_juice = 0
+    dropped_game_leg_negative_edge = 0
     for sport, table, home_ml, away_ml in CONTEXT_TABLES:
         try:
             r = requests.get(
@@ -406,6 +413,64 @@ def fetch_primary_play_legs():
                 odds = g.get(home_ml) if side == 'HOME' else g.get(away_ml)
             if odds is None:
                 odds = -110          # spreads/totals price at -110 absent a book line
+            # ══ 2026-10-28 · THE JUICE FLOOR WAS IN THE PROP LOOP ONLY ══
+            # DEGEN_LEG_ODDS_MIN/-MAX has been enforced since 10-07 at the
+            # prop leg (line ~569, gating on book_over_odds/book_under_odds).
+            # GAME legs -- ML, RL, TOTAL, NRFI -- never passed through it.
+            # Measured on the 14 slips since the rule landed: 14 of 42 legs
+            # (33%) are priced worse than -125, and EVERY ONE is an ML (12) or
+            # an NRFI (2). Zero prop violations. Worst was Houston ML at -192;
+            # today's slip carries Jacksonville State ML at -160.
+            #
+            # Why it matters more on a parlay than anywhere else: the juice
+            # compounds. Within 4-leg slips, where the leg count cannot
+            # confound it, the record splits hard on exactly this line --
+            #
+            #   4 legs, worst leg <= -140   n=44   4.5% hit  BE 11.9%  -27.62u
+            #   4 legs, worst leg  > -140   n=18  22.2% hit  BE  7.2%  +37.87u
+            #
+            # (that subset is winners-skewed in LEVEL -- winners have 76% of
+            # legs priced against losers' 67% -- so the comparison between
+            # the buckets is the usable part, not the absolute rates.)
+            #
+            # Same shape as four other defects found today: a rule written
+            # into one of the two places that needed it.
+            try:
+                _oi = int(odds)
+            except (TypeError, ValueError):
+                _oi = None
+            if _oi is None or _oi < DEGEN_LEG_ODDS_MIN or _oi > DEGEN_LEG_ODDS_MAX:
+                dropped_game_leg_juice += 1
+                continue
+            # ══ 2026-10-28 · DO NOT PARLAY A LEG OUR OWN MODEL RATES BELOW
+            #                 THE MARKET ══
+            # primary_play.sub carries the engine's own comparison, e.g.
+            #     "Capitals · 65% vs 70% implied — -4.7pp edge"
+            # 65% against a 70% implied price means the MARKET is more
+            # confident than we are. That is a negative-EV leg by our own
+            # number, and today's slip shipped two of them while the LLM
+            # narrative told users "we're stealing 4.5 points of edge".
+            #
+            # Of the 24 legs that carry a stated edge, 11 are negative, and
+            # ALL ELEVEN are type RL. Where graded they are 2-6 (25.0%, n=8)
+            # against positive-edge legs at 50.0% (n=10) -- thin on both
+            # sides, and that is not what justifies this rule. Betting a side
+            # your own model prices worse than the book is incoherent
+            # regardless of sample: it needs no backtest, only reading.
+            #
+            # A leg with NO stated edge is left alone rather than assumed bad
+            # -- 596 of 620 historical legs carry no such string, and
+            # inferring one would be guessing.
+            _sub = str(pp.get('sub') or '')
+            _em = _DEGEN_EDGE_PP.search(_sub)
+            if _em is None:
+                _vs = _DEGEN_VS_IMPLIED.search(_sub)
+                _epp = (float(_vs.group(1)) - float(_vs.group(2))) if _vs else None
+            else:
+                _epp = float(_em.group(1))
+            if _epp is not None and _epp < 0:
+                dropped_game_leg_negative_edge += 1
+                continue
             conv = pp.get('conviction')
             try:
                 conv = int(conv)
@@ -424,6 +489,16 @@ def fetch_primary_play_legs():
                 'sport': sport,
                 'signals': [s for s in [pp.get('sub')] if s][:3],
             })
+    if dropped_game_leg_negative_edge:
+        print(f'  [daily_degen] game legs refused for a NEGATIVE stated edge '
+              f'(our pct below the market implied pct): '
+              f'{dropped_game_leg_negative_edge}')
+    if dropped_game_leg_juice:
+        # Said out loud: a juice drop that shrinks the pool to nothing should
+        # be visible as the reason, not look like "no candidates today".
+        print(f'  [daily_degen] game legs refused on juice '
+              f'(outside {DEGEN_LEG_ODDS_MIN:+d}..{DEGEN_LEG_ODDS_MAX:+d}): '
+              f'{dropped_game_leg_juice}')
     if out:
         by = {}
         for c in out:
@@ -1253,5 +1328,35 @@ def run():
         print(f"\n✅ Daily Degen stored for {gd}")
 
 
+# ══ 2026-10-28 · IT HAD NO --dry-run AND WROTE ANYWAY ══
+# This file took no arguments at all. `python generate_daily_degen.py
+# --dry-run` therefore ignored the flag silently and PUBLISHED -- which is
+# exactly what happened while measuring the juice gate: today's slip was
+# overwritten by what was meant to be a preview. A script that publishes a
+# user-facing card must be previewable, and a flag it does not understand
+# must be an error rather than a shrug.
+#
+# argparse gives both for free: --dry-run is honoured, and any unknown flag
+# exits non-zero instead of being swallowed.
 if __name__ == "__main__":
+    import argparse as _ap
+    _p = _ap.ArgumentParser(description='Build and publish the Daily Degen slip.')
+    _p.add_argument('--dry-run', action='store_true',
+                    help='select and print the slip, write nothing')
+    _a = _p.parse_args()
+    if _a.dry_run:
+        # Patch the single writer rather than threading a flag through the
+        # whole builder: the selection path is what a preview needs to
+        # exercise, and anything that reaches the write is a bug in dry mode.
+        def _refuse(gd, legs, narrative):            # noqa: ANN001
+            print('')
+            print('  [DRY RUN] would store %d leg(s) for %s - '
+                  'nothing written' % (len(legs), gd))
+            for _l in legs:
+                print('     %-38s %-5s odds=%s'
+                      % (str(_l.get('pick'))[:38], _l.get('type'),
+                         _l.get('odds')))
+            return False
+        upsert_daily_degen = _refuse                 # noqa: F811
+        globals()['upsert_daily_degen'] = _refuse
     run()
