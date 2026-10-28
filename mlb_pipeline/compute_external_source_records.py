@@ -94,7 +94,7 @@ def pick_roi(result: str, odds_american):
     return 0.0
 
 
-def run(sport_filter: str | None = None) -> None:
+def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
     print(f'=== external_source_records rollup ===')
     # Pull all graded external picks
     rows = []
@@ -242,6 +242,22 @@ def run(sport_filter: str | None = None) -> None:
         })
 
     print(f'  rollup rows to write: {len(payloads)}')
+    # == 2026-10-28 . R17 . IT HAD NO --dry-run AND WROTE ANYWAY ==
+    # Same gap as generate_daily_degen, which cost an accidental overwrite
+    # of a live card earlier today. This writes external_source_track_record,
+    # which is user-facing, so previewing it has to be possible.
+    if dry_run:
+        import collections as _c
+        _w = _c.Counter()
+        for _p in payloads:
+            _w[(str(_p.get('sport')), _p.get('window_days'))] += 1
+        _nr = sum(1 for _p in payloads if _p.get('hit_rate') is None)
+        print('  [DRY RUN] nothing written.')
+        print('    rows by (sport, window): %s'
+              % dict(sorted(_w.items(), key=lambda z: str(z[0]))))
+        print('    rows whose rate is WITHHELD for n_graded < %d: %d'
+              % (MIN_GRADED_FOR_RATE, _nr))
+        return
     written = 0
     for i in range(0, len(payloads), 500):
         chunk = payloads[i:i+500]
@@ -313,8 +329,10 @@ def _et_today_date() -> date:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport')
+    p.add_argument('--dry-run', action='store_true',
+                   help='compute and summarise, write nothing')
     args = p.parse_args()
-    run(sport_filter=args.sport)
+    run(sport_filter=args.sport, dry_run=args.dry_run)
 
 
 if __name__ == '__main__':
