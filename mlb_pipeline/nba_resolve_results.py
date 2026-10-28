@@ -74,6 +74,21 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
                      headers=H_READ, timeout=15)
     ctx_by_gid = {c['game_id']: c for c in (r.json() if r.status_code == 200 else [])}
 
+    # == 2026-10-28 . FALL BACK TO THE LINE ALREADY STORED ==
+    # The grades below are computed from the CTX line, so a game whose ctx
+    # row has no close_spread got spread_result=None even when
+    # nba_game_results already held a perfectly good line. That is how the
+    # three Clippers games sat with a score, a restored -4.5/-9.0/-16.0 and
+    # still no spread_result. ctx wins when it has a value; the stored row
+    # is used when it does not. Neither is invented.
+    r2 = requests.get(f'{SB}/rest/v1/nba_game_results'
+                      f'?game_id=in.({",".join(game_ids)})'
+                      '&select=game_id,close_spread,close_total,'
+                      'close_home_ml,close_away_ml',
+                      headers=H_READ, timeout=15)
+    stored_by_gid = {c['game_id']: c
+                     for c in (r2.json() if r2.status_code == 200 else [])}
+
     now_iso = datetime.now(timezone.utc).isoformat()
     written = 0
     for f in finals:
@@ -81,8 +96,13 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
         hs = f['home_score']; as_ = f['away_score']
         if hs is None or as_ is None: continue
         ctx = ctx_by_gid.get(gid, {})
+        _st = stored_by_gid.get(gid, {})
         spread = ctx.get('close_spread')
+        if spread is None:
+            spread = _st.get('close_spread')
         total = ctx.get('close_total')
+        if total is None:
+            total = _st.get('close_total')
 
         payload = {
             'game_id':      gid,
@@ -99,12 +119,37 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
             'went_to_ot':   f.get('went_to_ot', False),
             'close_spread': spread,
             'close_total':  total,
-            'close_home_ml': ctx.get('home_ml_close'),
-            'close_away_ml': ctx.get('away_ml_close'),
+            'close_home_ml': (ctx.get('home_ml_close')
+                              if ctx.get('home_ml_close') is not None
+                              else _st.get('close_home_ml')),
+            'close_away_ml': (ctx.get('away_ml_close')
+                              if ctx.get('away_ml_close') is not None
+                              else _st.get('close_away_ml')),
             'spread_result': _grade_spread(hs, as_, spread),
             'total_result':  _grade_total(hs, as_, total),
             'resolved_at':   now_iso,
         }
+
+        # == 2026-10-28 . A RESOLVER MUST NOT BLANK A CLOSING LINE ==
+        # These four close_* values are copied out of nba_game_context, and
+        # when ctx has none the copy wrote NULL straight over whatever was
+        # already stored. nba_game_context holds a close_spread on only 57
+        # of 81 recent rows, so a resolver run DESTROYED good lines.
+        #
+        # Caught the hard way: the Clippers phantom repair merged four line
+        # fields onto three real result rows (rows holding both a score and
+        # a close line went 59 -> 62), then running this resolver on those
+        # same dates put them back to NULL and the count fell to 52.
+        #
+        # This runs AFTER the game is final, so there is no case where
+        # blanking a closing line is right -- the line is frozen by then. A
+        # None here means 'ctx does not have it', not 'it is not true'.
+        # Scores, results and resolved_at are this script's OWN output and
+        # are always written, including a legitimate None.
+        for _k in ('close_spread', 'close_total',
+                   'close_home_ml', 'close_away_ml'):
+            if payload.get(_k) is None:
+                payload.pop(_k, None)
 
         note = ''
         if payload['spread_result']: note += f' sp={payload["spread_result"]}'
