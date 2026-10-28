@@ -445,6 +445,9 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
                                or f"{row.get('prop_type','')} {direction.lower()} · conv {effective_conv}"),
                 'long_read': '',
                 'generated_at': None,
+                # Top level as well as in _prop_meta: _potd_odds reads one
+                # key regardless of which candidate path produced the winner.
+                'price_american': odds,
                 '_prop_meta': {
                     'player_name': row.get('player_name'),
                     'prop_type': row.get('prop_type'),
@@ -456,6 +459,54 @@ def _load_top_prop_candidates(gd: str, min_conv: int = 80) -> list:
         if skipped_past:
             print(f"  ⏭  {sport} top_prop: skipped {skipped_past} props for games already played")
     return out
+
+
+def _potd_odds(winner: dict, gd: str) -> int | None:
+    """The american price for the POTD pick, or None.
+
+    2026-10-28. The three candidate paths carry a price in three different
+    places, and primary_play often carries none at all -- of 473 recent
+    primary_play blobs only 166 hold `_ml_price_at_pick`. So this tries each
+    in turn and finally asks jerry_reads, which is the best-populated source
+    (MLB/NCAAF 97%, NFL 89%, NHL 79%, NBA 70%).
+
+    Returns None rather than a guess. A NULL price is visibly absent and
+    backfill_receipt_prices can still fill it; a fabricated -110 silently
+    becomes a number in a published ROI.
+    """
+    def _as_int(v):
+        try:
+            iv = int(float(v))
+        except (TypeError, ValueError):
+            return None
+        return iv or None          # 0 is not a price
+
+    for v in (winner.get('price_american'),
+              (winner.get('_prop_meta') or {}).get('odds'),
+              winner.get('_ml_price_at_pick')):
+        iv = _as_int(v)
+        if iv is not None:
+            return iv
+
+    gid = winner.get('game_id')
+    if not gid:
+        return None
+    try:
+        rr = requests.get(
+            f"{SUPABASE_URL}/rest/v1/jerry_reads",
+            headers=H_READ,
+            params={"game_date": f"eq.{gd}", "game_id": f"eq.{gid}",
+                    "select": "price_american,call_market",
+                    "limit": "5"},
+            timeout=8,
+        )
+        for row in (rr.json() if rr.status_code == 200 else []):
+            iv = _as_int(row.get('price_american'))
+            if iv is not None:
+                return iv
+    except Exception as e:                                    # noqa: BLE001
+        print(f"  ⚠ POTD price lookup failed: {e}")
+    return None
 
 
 def run(game_date: str | None = None, threshold: int = 70,
@@ -609,8 +660,23 @@ def run(game_date: str | None = None, threshold: int = 70,
         headers=H_READ,
         params={"sport": f"in.({','.join(POTD_SPORTS)})",
                 "game_date": f"eq.{gd}",
+                # ══ 2026-10-28 · price_american WAS ONE COLUMN AWAY ══
+                # This select took call_market/call_side/call_line and left
+                # price_american behind, so the POTD mirror and its receipt
+                # were both written with no price. 108 of 156 real POTD picks
+                # (69%) have NULL odds_american, which means every POTD ROI
+                # we have quoted was computed at an assumed -110 on a surface
+                # that is mostly moneylines and props -- and a flat -110
+                # overstates every ML figure, because ML books average
+                # -120..-203 (feedback_flat_110_inflates_every_ml_figure).
+                #
+                # Exactly the 10-04 bug in backfill_public_receipts: "price_
+                # american and the snapshot matchup were NOT selected, so
+                # every game_read receipt was written with pick_odds and
+                # matchup NULL -- 895 of 895 since 09-01."
                 "select": "sport,game_id,call_text,call_market,call_side,call_line,"
-                          "conviction,short_read,long_read,generated_at",
+                          "conviction,short_read,long_read,generated_at,"
+                          "price_american",
                 "order": "conviction.desc"},
         timeout=15,
     )
@@ -939,6 +1005,17 @@ def run(game_date: str | None = None, threshold: int = 70,
     }
     narrative_line = f"Play of the Day: {ctx['away_team']} @ {ctx['home_team']} | {call} (Jerry {conv})"
 
+    # Resolved BEFORE the dry-run return on purpose. Computed after it, a
+    # --dry-run could never reach this line, so the price path would be
+    # unexercised by the only safe way to run this script -- which is how a
+    # missing column survives for months.
+    _potd_price = _potd_odds(winner, gd)
+    if _potd_price is None:
+        print('  ⚠ POTD has NO price from any source — odds_american '
+              'stays NULL rather than assuming -110')
+    else:
+        print(f'  POTD price {_potd_price:+d}')
+
     if dry_run:
         print(f"  [DRY] would upsert best_bet_{gd} · {narrative_line}")
         return
@@ -1016,6 +1093,10 @@ def run(game_date: str | None = None, threshold: int = 70,
                 "game": f"{ctx['away_team']} @ {ctx['home_team']}",
                 "lean": f"{call} (Jerry {conv}/100)",
                 "sweat_score": conv,  # column name preserved; source is now Jerry
+                # 2026-10-28: this payload had no price at all, and the live
+                # receipt below is built from the same values, so pick_odds
+                # was NULL too. See _potd_odds.
+                "odds_american": _potd_price,
                 "result": "Pending",
             },
             timeout=15,
@@ -1036,6 +1117,8 @@ def run(game_date: str | None = None, threshold: int = 70,
                     'game': f"{ctx['away_team']} @ {ctx['home_team']}",
                     'lean': f"{call} (Jerry {conv}/100)",
                     'sweat_score': conv,
+                    # potd_rows maps this straight to pick_odds
+                    'odds_american': _potd_price,
                     'result': 'Pending',
                 }]), surface='potd')
             except Exception as _re:
