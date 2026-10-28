@@ -176,10 +176,32 @@ def _recommended_weight_for(n: int, hit_rate_frac: float, tier: str,
     """
     if tier == 'ANTI_VALIDATED':
         return 0.0
-    import math
     edge = max(0.0, hit_rate_frac - breakeven_for(market))
     edge_c = min(edge / 0.12, 1.0)
-    n_c = min(math.log1p(n) / math.log(101), 1.0)
+    # ══ 2026-10-27 · LINEAR TO 100, NOT LOGARITHMIC ══════════════════════
+    # Was min(log1p(n)/log(101), 1.0), which is far too generous at low n:
+    # it hands 0.520 of full weight to a 10-firing signal and 0.706 to a
+    # 25-firing one. That is how a 64%-on-n=25 candidate came out at 0.684,
+    # nearly the weight of a VALIDATED signal with 100+ firings.
+    #
+    # Linear is identical at n>=100 and strictly stricter below it:
+    #     n      log    linear
+    #    10    0.520     0.100
+    #    25    0.706     0.250
+    #    50    0.852     0.500
+    #   100    1.000     1.000
+    #
+    # Measured across all 976 evidenced registry rows it ZEROES NOTHING NEW
+    # (485 rows at weight 0 before and after, so no signal is lost) and only
+    # removes over-confidence: rows above 0.5 fall 176 -> 56, mean weight
+    # 0.207 -> 0.105. Well-evidenced signals are untouched --
+    # sp_plus_edge_home (n=106) and prop:slow_start (n=159) do not move at
+    # all; away_covers_as_dog (n=99) moves 0.008.
+    #
+    # This is what lets a brand-new signal be USED immediately at a weight
+    # that reflects its evidence, instead of either over-trusted or
+    # excluded until it clears a floor.
+    n_c = min(max(int(n or 0), 0) / 100.0, 1.0)
     return round(edge_c * n_c, 4)
 
 
