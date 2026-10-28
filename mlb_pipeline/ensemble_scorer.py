@@ -449,10 +449,32 @@ def _load_track_records() -> dict:
                 # Normalize n_graded (wins + losses, excluding pushes) so
                 # downstream weight math is consistent with hit_rate meaning.
                 row['n_graded'] = int(row.get('n_wins') or 0) + int(row.get('n_losses') or 0)
+                # == 2026-10-28 . PREFER A ROW THAT ACTUALLY HAS A RATE ==
+                # The window priority alone picked the 30-day row whenever
+                # one existed. compute_external_source_records now withholds
+                # hit_rate below n_graded 30 (a handicapper shown at 0.0% on
+                # two postseason picks is sample size, not a record), and the
+                # 30-day window is exactly the one that goes thin first -- 69
+                # of 105 seven-day rows and 34 of 121 thirty-day rows sit
+                # under that floor.
+                #
+                # Priority alone would therefore hand this handler a NULL
+                # rate from a thin 30-day row while a perfectly good 90-day
+                # or lifetime row for the same source sat unused, because
+                # only one row per key is kept. A usable rate outranks a
+                # fresher window: NHL oddscrowd rl is 61.6% on n=159 over the
+                # long window and that is the number worth weighting.
+                row['_prio'] = prio
+                row['_has_rate'] = row.get('hit_rate') is not None
                 existing = out.get(key)
-                if existing is None or prio > existing.get('_prio', 0):
-                    row['_prio'] = prio
+                if existing is None:
                     out[key] = row
+                else:
+                    better = ((row['_has_rate'], prio)
+                              > (existing.get('_has_rate', False),
+                                 existing.get('_prio', 0)))
+                    if better:
+                        out[key] = row
         except Exception:
             pass
     _TRACK_CACHE = out
@@ -1231,6 +1253,26 @@ def _handler_external(source_row: dict, ctx: dict) -> list[Opinion]:
                   if invert else
                   f'{persona} is on this side '
                   f'({rec_str} on {_market_label(market, sport)})')
+        # == 2026-10-28 . A HANDICAPPER WITH NO EDGE SHOULD BE SILENT ==
+        # Found the moment NHL got its external_pick row: covers is 41.75%
+        # on n=103, edge_weight correctly gave it 0.00 -- and the zero-weight
+        # opinion still CREATED a candidate. Washington's puckline went from
+        #     RL PASS
+        # to
+        #     RL Washington Capitals -1.5 [LEAN conv=50 score=0.00]
+        # A market that had no pick acquired one, carried by a signal
+        # contributing nothing. The top pick was unaffected (the ML at
+        # conv=86) but the candidate lands in _ensemble_all_markets, which
+        # the card composers read.
+        #
+        # An opinion worth zero is not a quiet opinion, it is an absent one.
+        # UNVALIDATED with a MEASURED sub-breakeven rate on a real sample is
+        # a source we have tested and found wanting; it should not vote.
+        # A source with no rate yet (hr is None) still speaks at the prior --
+        # that is the ramp-up path and it is deliberate.
+        if (hr is not None and n >= 25
+                and hr_rel is not None and hr_rel <= 0.0):
+            continue
         out.append(Opinion(
             signal_key=f'external:{src}' + ('__fadeflag' if invert else ''),
             signal_class='external_pick', side=cand, strength=0.5,
