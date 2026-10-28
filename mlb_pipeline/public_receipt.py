@@ -55,6 +55,35 @@ H_WRITE = {
 }
 
 UNIQUE_KEY = 'sport,surface,game_date,source_id'
+
+# == 2026-10-28 . A SPREAD PRICE THAT NO BOOK POSTS MUST NOT FREEZE ==========
+# pick_odds allows NULL -> value and then FREEZES (migration 20260918b), so a
+# wrong price written once is wrong forever. Measured tonight: 8 rl/spread
+# receipts carry a price impossible for that market, 7 already graded --
+#
+#     2026-10-28 NBA   Cleveland Cavaliers -9.5   -400   (ungraded)
+#     2026-09-27 NFL   DET -9.5                   -300
+#     2026-09-26 NCAAF Mississippi State -1.5     -230   WIN
+#
+# -- every one a moneyline captured against a spread pick after the pick
+# moved. A WIN at -230 pays 0.43u where the real -110 pays 0.91u, so the
+# published record understates its own returns, and none of it can be
+# repaired.
+#
+# Bands are the SAME measured p1..p99 spread quotes repair_stale_read_prices
+# uses, and they are per sport on purpose: MLB's run line and NHL's puckline
+# are fixed at +-1.5 and legitimately price far wider than a football or
+# basketball spread, where the line moves and the price stays near -110. A
+# flat band would have destroyed 32 correct prices there.
+#
+# NULL, never a guessed -110: backfill_receipt_prices can still fill a NULL
+# from line_history at the pick's own line, and a NULL is visibly absent
+# where a stale number reads as real (feedback_gate_the_stored_row).
+_SPREAD_BANDS = {
+    'NFL': (-150, 130), 'NCAAF': (-150, 130), 'NBA': (-150, 130),
+    'NCAAB': (-150, 130), 'MLB': (-400, 350), 'NHL': (-400, 350),
+}
+_SPREAD_MARKETS = ('rl', 'spread')
 _INT_FIELDS = ('conviction', 'pick_odds')
 _MARKET_MAX = 24
 
@@ -134,6 +163,23 @@ def sanitize(row: dict) -> dict:
             row[f] = int(round(float(v)))
         except (TypeError, ValueError):
             row[f] = None
+    # refuse a spread price outside what that sport's spreads actually trade
+    # at -- it is a moneyline that followed the pick, and pick_odds freezes
+    _mk = str(row.get('market') or '').strip().lower()
+    _od = row.get('pick_odds')
+    if _mk in _SPREAD_MARKETS and isinstance(_od, int):
+        _lo, _hi = _SPREAD_BANDS.get(
+            str(row.get('sport') or '').strip().upper(), (-150, 130))
+        if not (_lo <= _od <= _hi):
+            row['pick_odds'] = None
+            _aud = row.get('audit')
+            if not isinstance(_aud, dict):
+                _aud = {} if _aud is None else {'prior_audit': _aud}
+            _aud['price_refused'] = _od
+            _aud['price_refused_why'] = (
+                f'{_od} is outside the measured {_mk} band [{_lo}, {_hi}] '
+                f'for this sport — a moneyline on a spread pick')
+            row['audit'] = _aud
     m = row.get('market')
     if isinstance(m, str) and (len(m) > _MARKET_MAX or '\n' in m):
         aud = row.get('audit')
