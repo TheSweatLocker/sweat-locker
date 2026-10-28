@@ -171,6 +171,29 @@ jobs:
           python grade_prop_playbook.py --sport NHL --backfill 3
 
       # ══ 2026-10-28 · ATTRIBUTION RAN FOR 3 OF 6 SPORTS ══
+      # ══ 2026-10-28 · NOTHING WAS WRITING NHL'S ATTRIBUTION ROWS ══
+      # The grade step below had nothing to grade: signal_attribution_snapshot
+      # ran for MLB, NCAAF and NFL only, so NHL had 74 rows against NCAAF's
+      # 3,101. Without snapshots there is no attribution, without attribution
+      # refit_signal_registry can never compute a NHL weight, and every NHL
+      # game signal stays UNVALIDATED at the 0.3 prior forever -- which is
+      # exactly what the registry shows today: not ONE NHL game signal has
+      # sample_n > 0. The four NHL signals carrying real weight (1.0) are all
+      # PROP signals, which cannot fire on a game pick at all.
+      #
+      # This is the loop Andy asked for on 10-27: every signal recorded per
+      # pick, graded, and the weights refit per sport week to week. The
+      # snapshot is the first link and it was missing for two sports.
+      - name: Snapshot NHL signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport NHL
+
       - name: Grade NHL signal attribution
         continue-on-error: true
         env:

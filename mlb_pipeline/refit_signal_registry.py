@@ -659,7 +659,16 @@ def run(sport: str, days: int, dry_run: bool = False, min_n: int = 20) -> None:
                   f'hr={r["hit_rate"]}% n={r["sample_n"]} w={r["recommended_weight"]}')
 
     written = upsert_registry(rows, dry_run=dry_run)
-    print(f'  [{sport}] ✓ wrote {written} registry rows')
+    # ══ 2026-10-28 · A DRY RUN THAT SAYS "wrote" ══
+    # upsert_registry returns len(rows) in dry mode, so this line printed
+    # "✓ wrote 10 registry rows" on a --dry-run. I read that today and had
+    # to query the table to find out whether the weights had actually
+    # changed. A message that cannot be told apart from the real thing is
+    # worse than no message.
+    if dry_run:
+        print(f'  [{sport}] DRY RUN — computed {written} rows, WROTE NOTHING')
+    else:
+        print(f'  [{sport}] ✓ wrote {written} registry rows')
 
 
 def main():

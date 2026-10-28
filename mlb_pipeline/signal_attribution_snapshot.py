@@ -100,10 +100,26 @@ def _today_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
 
 
+# ══ 2026-10-28 · NOTHING WROTE NBA OR NHL ATTRIBUTION ══
+# This map held three sports, and --sport took its choices from it, so NBA and
+# NHL could not be snapshotted even by hand. The consequence runs all the way
+# down the chain Andy set as the standard on 10-27:
+#
+#   signal_attribution rows   NCAAF 3,101   NFL 985   MLB 351   NHL 197   NBA 74
+#
+# No snapshots -> no attribution -> refit_signal_registry can never compute a
+# weight -> every NBA game signal sits at UNVALIDATED with sample_n=0 and the
+# 0.3 prior. Measured today: NOT ONE NBA game signal has sample_n > 0, and the
+# four NBA signals carrying real weight (1.0) are all PROP signals, which
+# cannot fire on a game pick at all. So NBA game picks are the sum of a
+# handful of evidence-free priors.
 _TBL_BY_SPORT = {
     'NFL':   'nfl_game_context',
     'NCAAF': 'ncaaf_game_context',
     'MLB':   'mlb_game_context',
+    'NBA':   'nba_game_context',
+    'NHL':   'nhl_game_context',
+    'NCAAB': 'ncaab_game_context',
 }
 
 
@@ -128,6 +144,23 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
                 'primary_play,spread_anchor_weight,'
                 'home_off_rating:home_off_epa_pp,'
                 'away_off_rating:away_off_epa_pp')
+    elif sport in ('NBA', 'NCAAB'):
+        # Measured 2026-10-28: nba_game_context has season, align_status and
+        # home/away_off_rating but NOT week, season_week, cohort_tags or
+        # spread_anchor_weight. Asking for a column that is not there 400s the
+        # whole select and returns zero games, which would look like "no games
+        # today" (feedback_explicit_select_silent_blanks), so the set is
+        # explicit per sport rather than shared and hopeful.
+        cols = ('game_id,season,game_date,home_team,away_team,'
+                'align_status,primary_play,close_spread,close_total,'
+                'home_off_rating,away_off_rating,splits_summary')
+    elif sport == 'NHL':
+        # NHL has no off_rating pair at all, and its spread column is
+        # close_puckline. Aliased to close_spread so the downstream anchor
+        # code reads one canonical name.
+        cols = ('game_id,season,game_date,home_team,away_team,'
+                'align_status,primary_play,close_total,splits_summary,'
+                'close_spread:close_puckline')
     else:  # MLB — no cohort_tags/spread_anchor_weight/off_rating on ctx.
         # Season derived from game_date year on writer side; week is N/A.
         # splits_summary + primary_play carry everything we need.
@@ -152,7 +185,24 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
 #: NFL close_line is positive when HOME IS FAVOURED. Getting this backwards
 #: would label every anchored favourite as a dog, so a sport with no measured
 #: convention returns NEUTRAL rather than a guess.
-_CLOSE_LINE_HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': 1.0}
+#
+#: 2026-10-28 · the remaining four sports, measured the same way: correlate
+#: the stored close number against the realised home margin, and check how
+#: often home wins when that number is NEGATIVE.
+#:
+#:   sport      n     corr    home win% when negative
+#:   NBA     2,449   -0.517      68.8%   -> negative = home favoured, -1.0
+#:   NHL     2,718   -0.172      60.1%   -> negative = home favoured, -1.0
+#:   MLB     2,136   -0.133      58.2%   -> negative = home favoured, -1.0
+#:   NCAAB   5,027   -0.644      75.9%   -> negative = home favoured, -1.0
+#:   NCAAF   6,618   -0.721      78.7%   (already here)
+#:   NFL     7,383   +0.425      35.3%   (already here; NFL is the odd one)
+#:
+#: NFL stays +1.0 and is the only sport that way -- home wins just 35.3% of
+#: the games where its number is negative, which is the convention inverted.
+_CLOSE_LINE_HOME_FAV_SIGN = {'NCAAF': -1.0, 'NFL': 1.0,
+                             'NBA': -1.0, 'NHL': -1.0,
+                             'MLB': -1.0, 'NCAAB': -1.0}
 
 
 def _anchor_subject_side(sport, ctx):
@@ -369,7 +419,7 @@ def run(sport: Optional[str] = None,
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--sport', choices=['NFL', 'NCAAF', 'MLB'])
+    p.add_argument('--sport', choices=sorted(_TBL_BY_SPORT))
     p.add_argument('--date', dest='game_date')
     p.add_argument('--days', type=int, default=14,
                    help='window size in days from --date (default 14)')

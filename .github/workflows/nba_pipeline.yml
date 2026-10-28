@@ -252,6 +252,29 @@ jobs:
       # but only MLB, NFL and NCAAF had a workflow step calling it — so the
       # week-to-week record of which signals drive which outcomes, which is
       # the standard Andy set, would never accumulate for NBA.
+      # ══ 2026-10-28 · NOTHING WAS WRITING NBA'S ATTRIBUTION ROWS ══
+      # The grade step below had nothing to grade: signal_attribution_snapshot
+      # ran for MLB, NCAAF and NFL only, so NBA had 74 rows against NCAAF's
+      # 3,101. Without snapshots there is no attribution, without attribution
+      # refit_signal_registry can never compute a NBA weight, and every NBA
+      # game signal stays UNVALIDATED at the 0.3 prior forever -- which is
+      # exactly what the registry shows today: not ONE NBA game signal has
+      # sample_n > 0. The four NBA signals carrying real weight (1.0) are all
+      # PROP signals, which cannot fire on a game pick at all.
+      #
+      # This is the loop Andy asked for on 10-27: every signal recorded per
+      # pick, graded, and the weights refit per sport week to week. The
+      # snapshot is the first link and it was missing for two sports.
+      - name: Snapshot NBA signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport NBA
+
       - name: Grade NBA signal attribution
         continue-on-error: true
         env:

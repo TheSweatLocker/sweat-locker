@@ -51,10 +51,49 @@ class AttrDict(dict):
 
 # Whitelist of functions callable from expressions.
 # Deliberately no `getattr`, `type`, `dir`, `eval`, `exec`, `open`, `__import__`.
+# ══ 2026-10-28 · isinstance WAS WHITELISTED AND dict WAS NOT ══
+# `isinstance` is in this dict; `dict` and `list` are not. So
+#     isinstance(ctx.oddscrowd_snapshot, dict)
+# raised NameError, `evaluate` caught it and returned the default, and
+# evaluate_bool turned that into False. The condition could never be true no
+# matter what the data said. Measured: 17 enabled GAME-path signals were dead
+# this way -- every oddscrowd_*_fade_boost row, one per market per sport,
+# across all six sports:
+#
+#   MLB 3   NFL 3   NCAAF 3   NHL 3   NCAAB 3   NBA 2
+#
+# That is the whole public-fade family in the ensemble, and the Fade is the
+# one surface with a measured edge (project_the_fade_is_the_one_real_edge_1019).
+# Verified piece by piece on a game whose snapshot really does hold
+# ml.fade == 'boost':
+#     isinstance(ctx.oddscrowd_snapshot, dict)            -> False
+#     ctx.oddscrowd_snapshot['ml'].get('fade') == 'boost'  -> True
+# The subscript worked; only the type check failed.
+#
+# 27 further prop-scope rows use the same idiom and are FINE --
+# prop_ensemble_scorer._safe_eval has 'dict', 'list' and 'bool' in its own
+# namespace. Two evaluators, two namespaces, one of them short.
+#
+# WHY NOT JUST ADD `dict`: signal_sources is a table, and the app's anon key
+# can write schema-wide with RLS off (project_anon_key_can_write_1021). A row
+# that reaches eval with the name `dict` bound gets `dict.__subclasses__()`,
+# which is the standard way out of a locked-down eval -- AttrDict's dunder
+# block protects ctx, not the builtin type. So the TYPES stay out and safe
+# PREDICATES go in: is_dict/is_list are plain functions with no class
+# introspection surface, and they are what new rows should use.
+def _is_dict(v) -> bool:
+    return isinstance(v, dict)
+
+
+def _is_list(v) -> bool:
+    return isinstance(v, (list, tuple))
+
+
 _SAFE_BUILTINS = {
     'abs': abs, 'min': min, 'max': max, 'round': round,
     'float': float, 'int': int, 'str': str, 'bool': bool, 'len': len,
     'isinstance': isinstance, 'sum': sum,
+    'is_dict': _is_dict, 'is_list': _is_list,
     'None': None, 'True': True, 'False': False,
     'math': math,  # exposes math.log, math.sqrt, etc.
 }
