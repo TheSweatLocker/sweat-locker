@@ -231,6 +231,11 @@ class MarketDecision:
     # outvoted by HOME_RL signals on the same market.
     runner_up_side: Optional[str] = None
     runner_up_contributions: list = field(default_factory=list)
+    # 2026-10-28 R2: class-cap diagnostics for the WINNING candidate. Carries
+    # n_contributing, the feasible cap for this pick, the share the live code
+    # actually returns and the share a fixed-point cap would return. Recorded
+    # only -- nothing reads it to make a decision yet, by design.
+    cap_audit: dict = field(default_factory=dict)
 
     def prose_signals(self, max_shown: int = 5) -> list[str]:
         """Ordered list of reader-friendly signal quotes Jerry can use."""
@@ -2001,6 +2006,11 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
 
     # Sum per candidate + apply class-balance
     scored: list[tuple[str, float, list[Contribution], dict, int]] = []
+    #: 2026-10-28 R2: per-candidate class-cap diagnostics, keyed by candidate
+    #: so the WINNER's numbers can be stamped on the output. Collected rather
+    #: than computed again later -- recomputing it outside the loop would read
+    #: the post-scaling chips and silently report the cap as holding.
+    cap_audits: dict[str, dict] = {}
     for cand in candidates:
         chips = per_side.get(cand, [])
         raw_total = sum(c.contribution for c in chips)
@@ -2084,6 +2094,94 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                     c.contribution = round(c.contribution * factor, 4)
                     c.weight = round(c.weight * factor, 4)
 
+        # ══ 2026-10-28 · R2 · THE CAP STILL DOES NOT HOLD, FOR TWO REASONS ══
+        # Measured on 642 stored primary_play breakdowns across five sports:
+        # 464 carry a class whose share of the RETURNED total exceeds 0.40,
+        # which is what every fix above was supposed to prevent. Splitting
+        # them by how many classes actually contribute (> 0) separates two
+        # different problems that had been read as one:
+        #
+        #   391 of 464  fewer than 3 contributing classes.  A 0.40 cap needs
+        #               at least ceil(1/0.40) = 3 classes to be satisfiable
+        #               at all; with 2 the floor is 0.50 and with 1 it is
+        #               1.00. These are not cap failures, they are an
+        #               INFEASIBLE CONSTRAINT. 261 picks have exactly one
+        #               contributing class -- one class is the entire case
+        #               for the pick, and no arithmetic changes that.
+        #               They are mostly low tier already (255 COVERAGE,
+        #               85 LEAN, 8 STRONG), so thin evidence does track
+        #               tier -- but the 0.40 figure quoted on them is
+        #               meaningless.
+        #
+        #    73 of 464  three or more contributing classes and still over,
+        #               at 0.436-0.528. This IS the algebra, and the cause
+        #               is the loop above: it walks a list sorted once,
+        #               descending, and capping a later class shrinks
+        #               `working_total` again -- which pushes an
+        #               already-capped class back over the line. The
+        #               2026-08-26 note anticipated the multi-class case
+        #               but a single descending pass is not a fixed point.
+        #               The observed 0.44-0.53 is exactly one extra round
+        #               of shrinkage past 0.40.
+        #
+        # WHY THIS IS A SHADOW AND NOT A FIX. Enforcing the cap correctly
+        # lowers the score on hundreds of live picks and would re-tier them
+        # today, with no measurement of whether the re-tiering helps. On the
+        # same board, tier is currently measuring ANTI-predictive on
+        # game_read in four sports (R18) and conviction is known not to rank
+        # pick quality. Shipping an unmeasured scoring change into that is
+        # how SP+ K=0.85 and classes_boost happened. So the corrected
+        # numbers are RECORDED next to the live ones and nothing is
+        # re-scored; the gate exits on evidence, not on this comment.
+        try:
+            _cs_now = defaultdict(float)
+            for c in chips:
+                _cs_now[c.signal_class] += c.contribution
+            _n_contrib = sum(1 for v in _cs_now.values() if v > 1e-9)
+            _live_total = sum(_cs_now.values())
+            _live_share = (max(_cs_now.values()) / _live_total
+                           if _cs_now and _live_total > 0 else None)
+            # feasible cap for THIS pick, then run it to a fixed point
+            _cap = max(MAX_CLASS_SHARE, 1.0 / _n_contrib) if _n_contrib else 1.0
+            _fix_share = _live_share
+            _fix_total = _live_total
+            if _cap < 1.0 and raw_total > 0:
+                _ratio = _cap / (1.0 - _cap)
+                _w = dict(class_share)
+                _wt = raw_total
+                for _ in range(12):
+                    _over = [(k, v) for k, v in _w.items()
+                             if v > (_wt - v) * _ratio + 1e-12]
+                    if not _over:
+                        break
+                    _k, _v = max(_over, key=lambda z: z[1])
+                    _allowed = max((_wt - _v) * _ratio, 0.0)
+                    _wt -= (_v - _allowed)
+                    _w[_k] = _allowed
+                if _wt > 0 and _w:
+                    _fix_share = max(_w.values()) / _wt
+                    _fix_total = _wt
+            cap_audit = {
+                'n_classes': len(_cs_now),
+                'n_contributing': _n_contrib,
+                'feasible_cap': round(_cap, 4),
+                'share_live': (round(_live_share, 4)
+                               if _live_share is not None else None),
+                'share_fixed_point': (round(_fix_share, 4)
+                                      if _fix_share is not None else None),
+                'total_live': round(_live_total, 4),
+                'total_fixed_point': round(_fix_total, 4),
+                'infeasible': _n_contrib < 3,
+                'live_cap_violated': bool(_live_share is not None
+                                          and _n_contrib >= 3
+                                          and _live_share > _cap + 1e-4),
+            }
+        except Exception as _e:                                   # noqa: BLE001
+            # A diagnostic must never be able to take down scoring. But it
+            # must also not fail silently, or it becomes dead code nobody
+            # notices (feedback_coverage_pct_hides_dead_code).
+            cap_audit = {'error': '%s: %s' % (type(_e).__name__, _e)}
+
         # 2026-08-26 aggregate FADE cap. Per-class cap doesn't restrain
         # a stack of auto-fades that split across classes (Rockies UNDER
         # PRIME 97 had 4 fades across pitcher/weather/offense — each got
@@ -2103,6 +2201,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                     adjusted_total -= (fade_share - max_fade_effective)
 
         classes_fired = len([c for c in class_share.keys() if class_share[c] > 0])
+        cap_audits[cand] = cap_audit
         scored.append((cand, adjusted_total, chips, dict(class_share), classes_fired))
 
     scored.sort(key=lambda t: -t[1])
@@ -2245,6 +2344,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         class_share=win_shares,
         runner_up_side=runner_side,
         runner_up_contributions=runner_chips,
+        cap_audit=cap_audits.get(winner_cand) or {},
     )
 
 

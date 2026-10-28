@@ -160,6 +160,15 @@ def _num(v):
     return int(round(f))
 
 
+def _num_f(v):
+    """A line, not a price: 0.0 and sub-100 values are legitimate here."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
 #: markets line_history can price, and the sides each one may legally carry.
 #: Checked rather than trusted because `pick_side` is not reliable: there are
 #: game_read rows with market='ml' and pick_side='OVER' on a team pick
@@ -209,10 +218,152 @@ def _lh_price(rec: dict, market: str, reason: str):
             f'line_history.price[{r.get("book")}]', None)
 
 
+#: Where each sport stores a CLOSING price, per market. Columns differ by
+#: sport and were read off the live tables rather than assumed (MLB uses
+#: `home_ml_close`, everyone else `close_home_ml`).
+#:
+#: Only markets with a REAL stored price appear here. MLB/NFL/NCAAF/NBA have
+#: no spread-price or total-price column anywhere, so those stay NULL rather
+#: than being assigned a conventional -110: a -110 we invented is
+#: indistinguishable from a -110 a book posted, and
+#: feedback_flat_110_inflates_every_ml_figure is what that costs.
+RESULT_SPEC = {
+    'MLB':   ('mlb_game_results',   'home_ml_close',  'away_ml_close'),
+    'NFL':   ('nfl_game_results',   'close_home_ml',  'close_away_ml'),
+    'NCAAF': ('ncaaf_game_results', 'close_home_ml',  'close_away_ml'),
+    'NHL':   ('nhl_game_results',   'close_home_ml',  'close_away_ml'),
+    'NBA':   ('nba_game_results',   'close_home_ml',  'close_away_ml'),
+}
+#: NHL is the only sport that prices the puckline and the total. Each entry is
+#: (line column, home/over price column, away/under price column) and the
+#: receipt's own line must MATCH the stored line, or the price belongs to a
+#: different number than the one we published.
+NHL_LINED = {
+    'rl':    ('close_puckline', 'close_puckline_home_price',
+              'close_puckline_away_price'),
+    'total': ('close_total', 'close_total_over_price',
+              'close_total_under_price'),
+}
+
+
+def _close_price(rec: dict, market: str, res_by_sport: dict, reason: str):
+    """(price, 'close', source, reason) from the sport's results table.
+
+    ══ 2026-10-28 · WHY THIS IS NOT THE EXISTING mlb_game_results BRANCH ══
+    That branch does the same lookup and has since 10-04, but it is reached
+    only when the RECEIPT's own `source_table` is already 'mlb_game_results'.
+    Every receipt that actually needs it comes from jerry_reads or
+    jerry_cache, so it never fired for one: 280 graded MLB moneyline receipts
+    sat unpriced while the closing price for all 280 games was stored one
+    join away, 268 of them non-NULL.
+
+    That is the same shape as the six other defects found this week — a
+    correct rule placed behind one path instead of at the point of use. So
+    this runs as a LAST fallback, dispatched on what exists for the game
+    rather than on where the receipt came from.
+
+    basis is always 'close'. A closing price is a real, pre-game, bettable
+    number, but it is NOT the price we published at, and
+    project_reconstructed_prices_inflate_roi is the standing reminder that
+    mixing the two inflates ROI. Consumers can separate them on
+    audit.price_basis; nothing here writes a price without that stamp.
+
+    Fails closed on every ambiguity, for the same reason _lh_price does.
+    """
+    sport = str(rec.get('sport') or '').upper()
+    mk = str(market or '').lower()
+    spec = RESULT_SPEC.get(sport)
+    if not spec:
+        return None, None, None, reason
+    g = (res_by_sport.get(sport) or {}).get(str(rec.get('game_id')))
+    if not g:
+        return None, None, None, 'no results row for that game_id'
+    tbl = spec[0]
+    allowed = _LH_SIDES.get(mk)
+    if not allowed:
+        return None, None, None, reason
+    # ══ THE LABEL DECIDES, NOT pick_side ══════════════════════════════
+    # grade_public_receipts resolves the result from the receipt's own
+    # pick_label ("The LABEL is authoritative for the sign"), and this
+    # script's own header measured 249 of 1,340 receipts (18.6%) disagreeing
+    # with their source row on side, line or market. So if pick_side and the
+    # label name different teams, pricing by pick_side attaches the OTHER
+    # team's price to a receipt that was graded on the label's team -- a
+    # real-looking number on the wrong side of the bet, on MLB moneylines,
+    # the one surface measuring a genuine edge. The label wins wherever it
+    # resolves; pick_side is only the fallback when it does not.
+    lbl = str(rec.get('pick_label') or '').lower()
+    side = None
+    disagreed = False
+    if allowed == ('HOME', 'AWAY'):
+        h = str(g.get('home_team') or '').lower()
+        a = str(g.get('away_team') or '').lower()
+        hit = [sd for sd, nm in (('HOME', h), ('AWAY', a))
+               if nm and len(nm) >= 4 and nm[:12] in lbl]
+        if len(hit) == 1:
+            side = hit[0]
+            ps = str(rec.get('pick_side') or '').strip().upper()
+            if ps in allowed and ps != side:
+                disagreed = True
+    elif mk == 'total':
+        if 'under' in lbl:
+            side = 'UNDER'
+        elif 'over' in lbl:
+            side = 'OVER'
+    if side is None:
+        ps = str(rec.get('pick_side') or '').strip().upper()
+        if ps in allowed:
+            side = ps
+        elif allowed == ('HOME', 'AWAY'):
+            return (None, None, None,
+                    'label names neither team and pick_side %r is invalid'
+                    % rec.get('pick_side'))
+        else:
+            return (None, None, None,
+                    'pick_side %r invalid for %s' % (rec.get('pick_side'), mk))
+
+    _tag = ' (label overrode pick_side)' if disagreed else ''
+    if mk == 'ml':
+        col = spec[1] if side == 'HOME' else spec[2]
+        got = _num(g.get(col))
+        return (got, 'close', '%s.%s%s' % (tbl, col, _tag),
+                None if got is not None else 'results row has no closing ML')
+
+    if sport == 'NHL' and mk in NHL_LINED:
+        lncol, hcol, acol = NHL_LINED[mk]
+        stored, ours = _num_f(g.get(lncol)), _num_f(rec.get('pick_line'))
+        if stored is None:
+            return None, None, None, 'results row has no stored %s line' % mk
+        if ours is None:
+            return None, None, None, '%s needs a line and the receipt has none' % mk
+        # The puckline is signed by side; the total is not. Compare on the
+        # number we actually published against the number that was priced.
+        same = (abs(abs(stored) - abs(ours)) < 1e-6 if mk == 'rl'
+                else abs(stored - ours) < 1e-6)
+        if not same:
+            return (None, None, None,
+                    'receipt line %s != priced line %s' % (ours, stored))
+        col = hcol if side in ('HOME', 'OVER') else acol
+        got = _num(g.get(col))
+        return (got, 'close', '%s.%s%s' % (tbl, col, _tag),
+                None if got is not None else 'results row has no %s price' % mk)
+
+    return None, None, None, reason
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--since', default='2026-09-01')
     ap.add_argument('--apply', action='store_true')
+    # 2026-10-28: this script fills three different things and they carry very
+    # different risk. Prices are additive and provenance-stamped. TIER is read
+    # from the mutable prop tables, and tier currently feeds the surface
+    # records whose denominator is itself an open question (R1) while
+    # measuring anti-predictive on game_read (R18) - so backfilling 1,049 of
+    # them is a records change, not a price fix, and gets its own decision.
+    ap.add_argument('--only', choices=('prices', 'matchup', 'tier', 'all'),
+                    default='all',
+                    help='which fill to APPLY (dry run always shows all)')
     args = ap.parse_args()
 
     print(f'=== backfill_receipt_prices · since {args.since} · '
@@ -258,12 +409,24 @@ def main() -> int:
             props.setdefault(key, p)
     print(f'prop rows indexed: {len(props)}')
 
-    mlb_res = {}
-    for g in page('mlb_game_results', {'select': 'game_id,home_team,away_team,'
-                                                 'home_ml_close,away_ml_close',
-                                       'game_date': f'gte.{args.since}'}):
-        mlb_res[str(g['game_id'])] = g
-    print(f'mlb results indexed: {len(mlb_res)}')
+    # 2026-10-28: was MLB-only. Every sport stores a closing moneyline and
+    # NHL stores puckline and total prices too, so all five are indexed and
+    # _close_price dispatches on the sport. `select` is explicit per sport
+    # because the column names differ — and a column left out of SELECT reads
+    # as NULL rather than erroring (feedback_explicit_select_silent_blanks).
+    res_by_sport = {}
+    for _sp, (_tbl, _hml, _aml) in RESULT_SPEC.items():
+        _cols = ['game_id', 'home_team', 'away_team', _hml, _aml]
+        if _sp == 'NHL':
+            for _l, _h, _a in NHL_LINED.values():
+                _cols += [_l, _h, _a]
+        _idx = {}
+        for g in page(_tbl, {'select': ','.join(_cols),
+                             'game_date': f'gte.{args.since}'}):
+            _idx[str(g['game_id'])] = g
+        res_by_sport[_sp] = _idx
+        print(f'{_sp} results indexed: {len(_idx)}')
+    mlb_res = res_by_sport['MLB']
 
     potd = {}
     for b in page('daily_best_bet_history', {'select': 'bet_date,odds_american',
@@ -469,6 +632,16 @@ def main() -> int:
         if got is None and rec.get('game_id'):
             got, basis, src, reason = _lh_price(rec, market, reason)
 
+        # ---- FINAL FALLBACK: the sport's stored CLOSING price -------
+        # 2026-10-28. line_history only reaches back to 2026-10-14 (verified:
+        # min captured_at is 10-14 in all five sports), and 1,913 of the 1,949
+        # unpriced graded receipts are older than that. The results tables go
+        # back to April. Dispatched on the game, not on source_table — see
+        # _close_price for why that distinction is the whole bug.
+        if got is None and rec.get('game_id'):
+            got, basis, src, reason = _close_price(rec, market,
+                                                   res_by_sport, reason)
+
         if got is None:
             why[f'{surface}/{market or "-"}: {reason}'] += 1
             continue
@@ -504,6 +677,10 @@ def main() -> int:
         return 0
 
     ok = bad = 0
+    if args.only not in ('prices', 'all'):
+        print(f'prices: {len(price_fixes)} recoverable, SKIPPED '
+              f'(--only {args.only})')
+        price_fixes = []
     for rec, got, basis, src in price_fixes:
         aud = rec.get('audit')
         if isinstance(aud, str):
@@ -532,6 +709,9 @@ def main() -> int:
     print(f'\nprices written {ok}/{len(price_fixes)} (verified by read-back), {bad} failed')
 
     tok = tbad = 0
+    if args.only not in ('tier', 'all'):
+        print(f'tiers: {len(tier_fixes)} recoverable, SKIPPED (--only {args.only})')
+        tier_fixes = []
     for rec, tier in tier_fixes:
         r = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W, timeout=60,
                            params={'id': f'eq.{rec["id"]}', 'tier': 'is.null'},
@@ -544,6 +724,10 @@ def main() -> int:
     print(f'tiers written {tok}/{len(tier_fixes)}, {tbad} failed')
 
     mok = mbad = 0
+    if args.only not in ('matchup', 'all'):
+        print(f'matchups: {len(matchup_fixes)} recoverable, SKIPPED '
+              f'(--only {args.only})')
+        matchup_fixes = []
     for rec, m in matchup_fixes:
         r = requests.patch(f'{SB}/rest/v1/public_receipts', headers=H_W, timeout=60,
                            params={'id': f'eq.{rec["id"]}', 'matchup': 'is.null'},

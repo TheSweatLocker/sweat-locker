@@ -437,31 +437,58 @@ record whatever label it carried. Then delete the skip in
 `compute_surface_records` and re-snapshot. Needs
 `snapshot_surface_records.py` run first so the before/after is diffable.
 
-## R2 — MAX_CLASS_SHARE is documented as a hard cap and is not holding
+## R2 — MAX_CLASS_SHARE: one infeasible constraint and one real algebra bug
 
-`MAX_CLASS_SHARE = 0.40`. The post-cap `class_share` printed at
-`ensemble_scorer.py:2578` exceeded it on 4 of 14 picks scored on 2026-10-28:
+### MEASURED AND SPLIT IN TWO — 2026-10-28
+
+The 0.40 cap does not hold on 464 of 642 stored `primary_play` breakdowns
+across five sports. Splitting them by how many classes actually CONTRIBUTE
+(contribution > 0) separates two different problems that had been read as
+one, and the first theory — negative class totals — was **wrong**: zero
+picks carry a negative class.
 
 ```
-NHL    model        0.92
-NHL    model        0.75
-NCAAF  model        0.92
-NCAAF  situational  0.48
+                                            picks   violating   feasible?
+fewer than 3 contributing classes            391       391         NO
+three or more contributing classes           251        73         yes
 ```
 
-A pick that is 92% one class is a single-voice pick — the
-`project_panel_is_one_voice_1014` problem in another guise. `external_pick`
-is NOT among the offenders, so this predates today's work.
+**391 of 464 are arithmetically impossible.** A 0.40 cap needs at least
+ceil(1/0.40) = 3 classes to be satisfiable; with 2 the floor is 0.50 and
+with 1 it is 1.00. 261 picks have exactly ONE contributing class — one class
+is the entire case for the pick, and no arithmetic changes that. The 0.40
+figure quoted on those picks was never meaningful. They do skew low-tier
+already (255 COVERAGE, 85 LEAN, 8 STRONG), so thin evidence does track tier.
 
-**Why it is not already fixed:** the cap math has three documented repairs
-already (08-21 soft→hard, 08-23 fixed-point, 08-26 multi-class) and its own
-comments record a prior state where "the capped class ended up ~56% of the
-new total". Touching it blind is how that cycle repeats.
+**73 are the real bug**, at 0.436-0.528. Cause: the loop walks a list sorted
+once, descending, and capping a later class shrinks `working_total` again —
+which pushes an already-capped class back over. The 2026-08-26 note
+anticipated the multi-class case but a single descending pass is not a fixed
+point. 0.44-0.53 is exactly one extra round of shrinkage past 0.40.
 
-**Plan:** read the fixed-point block (lines 1983-2060) against a worked
-example before changing anything, then add an assertion that the RETURNED
-`class_share` never exceeds the cap — the bug has recurred three times
-because nothing checks the output.
+### SHIPPED: a shadow, not a fix
+
+`ensemble_scorer.py` now computes `cap_audit` on the winning candidate and
+carries it on `MarketDecision`: `n_contributing`, the feasible cap for that
+pick, `share_live`, `share_fixed_point`, and `live_cap_violated`. Verified
+on 243 live decisions, 0 errors — 74% infeasible, 15 genuine violations
+where `share_live` 0.411-0.489 collapses to 0.400-0.403 under a fixed point.
+
+It is a shadow **by design**. Enforcing the cap correctly lowers the score
+on hundreds of live picks and would re-tier them the same day with no
+measurement of whether the re-tiering helps — and on this same board `tier`
+is measuring anti-predictive on `game_read` in four sports (R18). Shipping
+an unmeasured scoring change into that is how SP+ K=0.85 and
+`classes_boost` happened.
+
+**Plan:** the assertion the old plan asked for now exists and runs on every
+pick. (1) Let `cap_audit` accumulate ~2 weeks. (2) Then decide the cap rule
+with evidence: either `max(0.40, 1/n_contributing)` as a satisfiable cap, or
+drop the cap and gate on `n_contributing` directly, which is the thing the
+cap was a proxy for all along. (3) A pick whose entire case is one signal
+class is the `project_panel_is_one_voice_1014` problem restated — worth
+deciding whether it should be card-eligible at all, which is a selection
+decision for Andy, not a cap repair.
 
 ## R3 — 121 receipts still grade something other than what we published
 
@@ -487,21 +514,75 @@ populations that were deliberately left alone:
 * **25 after-kickoff** — no action. The receipt is the honest record of what
   we published. Leave them and keep the guard.
 
-## R4 — POTD has no price on 115 historical receipts
+## R4 — Receipt pricing: 563 recovered, and the plan's premise was wrong
 
-Today's fix makes POTD capture its price going forward (verified on five
-dates). The history is still unpriced: 108 of 156 real picks and 115 of 170
-receipts.
+### PARTIALLY CLOSED 2026-10-28
 
-`backfill_receipt_prices.py` cannot help — it sources POTD from
-`daily_best_bet_history.odds_american`, which is the column that is NULL.
+The original plan here was to price history from `line_history`. **That
+premise was false and measuring it first is what caught it:** `line_history`
+holds nothing before **2026-10-14** in any sport (verified min `captured_at`
+per sport), while unpriced receipts run back to April:
 
-**Plan:** add a POTD branch that prices from `line_history` instead, the way
-`restore_clippers_closing_lines.py` did for NBA — match on (game, market,
-side) and take the last pre-game quote. Floor every recovered ROI at the
-date the price was reconstructed, per
-`project_reconstructed_prices_inflate_roi_1009`, and label it as
-reconstructed rather than captured.
+```
+2026-04  39    2026-07 240    2026-10  78
+2026-05 167    2026-08 543
+2026-06 250    2026-09 632
+```
+
+Of 1,949 unpriced GRADED receipts, `line_history` can reach **23**. An
+earlier probe reported "0 of 40 found in line_history" — that was a
+keyspace mismatch, not an empty table (MLB keys on an odds-API hash, NHL on
+NHL ids, NBA on ESPN ids), and treating a zero read as a finding is the
+`feedback_zero_rows_is_a_wiring_error` trap.
+
+**The source that does go back is the per-sport results table**, which
+stores closing moneylines for every sport and puckline/total prices for NHL.
+
+### THE ACTUAL DEFECT
+
+`backfill_receipt_prices.py` already did this lookup, and had since 10-04 —
+but only when the RECEIPT's own `source_table` was already
+`mlb_game_results`. Every receipt that needs it comes from `jerry_reads` or
+`jerry_cache`, so the branch never fired once: 280 graded MLB moneyline
+receipts sat unpriced while the closing price for all 280 games was stored
+one join away, 268 of them non-NULL.
+
+That is the **seventh** instance this week of one correct rule placed behind
+a single path instead of at the point of use.
+
+### SHIPPED
+
+* `_close_price()` — a final fallback dispatched on what exists FOR THE
+  GAME, not on where the receipt came from. All five sports' closing ML,
+  plus NHL puckline and total prices. `basis='close'` is stamped on every
+  row, because a closing price is real and pre-game but is NOT the price we
+  published at (`project_reconstructed_prices_inflate_roi_1009`).
+* It refuses to invent a price. MLB/NFL/NCAAF/NBA store no spread-price or
+  total-price column anywhere, so those stay NULL rather than being assigned
+  a conventional -110 — an invented -110 is indistinguishable from a posted
+  one.
+* **The LABEL decides the side, not `pick_side`.** Grading resolves from
+  `pick_label`, and this script's own header measured 18.6% of receipts
+  disagreeing with their source row. Pricing by `pick_side` would attach the
+  other team's price to a receipt graded on the label's team. In the event
+  the override fired **0 times** — so no value changed, but the code is now
+  correct by construction rather than by luck.
+* `--only prices|matchup|tier|all`, so a price fix cannot silently also
+  write 1,049 `tier` values read out of the mutable prop tables. Tier feeds
+  the records whose denominator is R1's open question, so it is a records
+  change needing its own decision.
+
+**Result: 563 prices recoverable** (339 `close`, 224 `publish`) and applied.
+
+**Still open, with reasons rather than a promise:**
+* **403 prop receipts** — props have no price column in any results table.
+* **142 POTD + 70 sweat_card POTD** — `daily_best_bet_history.odds_american`
+  is NULL for those dates and there is no second source. Forward capture is
+  fixed; this history is likely unrecoverable and should be stated as such
+  rather than carried as a to-do.
+* **~496 spread/total rows** that only a per-market price column could
+  price. The real fix is forward: store the spread/total price at publish.
+* **59 NFL receipts join 0 of 59** — see R19.
 
 ## R5 — NHL props have no working tier gate, so NHL publishes zero props
 
@@ -625,17 +706,48 @@ the ctx already supports, seed each registry row from a backtest BEFORE
 enabling (the pattern used for the b2b and oddscrowd signals today), then
 let the weekly attribution price them.
 
-## R10 — 13 of 68 played NBA games cannot be graded on spread
+## R10 — CLOSED 2026-10-28. It was preseason, plus four Clippers games
 
-`nba_game_context` carries a `close_spread` on 57 of 81 recent rows. After
-today's repairs, NBA played rows stand at 55 of 68 with both a score and a
-line, and 55 of 68 with a `spread_result` — those two being equal means
-every gradeable row IS graded, and the remaining 13 simply have no line.
+The "~30% of NBA games have no line" framing was wrong, and the earlier
+count of 13 of 68 was measured on a moving denominator. Correct measurement:
 
-**Plan:** trace why ctx lacks a line on ~30% of NBA games — the odds puller
-writes `nba_game_results` directly, so ctx is filled by a different path.
-Likely the same class as the Clippers id mismatch. Start by checking whether
-the 13 share a team, a book, or a date pattern.
+```
+nba_game_context rows                        155
+missing close_spread                          84
+  before the 10-21 opener (PRESEASON)         60   <- not a defect
+  after today (NOT YET PLAYED)                19   <- nothing has closed
+  regular season, played                       5   <- the real gap
+```
+
+**60 of 84 are preseason.** Books barely line those games and nothing
+downstream should read them — see
+`project_situational_records_include_preseason_playoffs_1022` for what
+counting preseason has already cost. Another 19 are future fixtures; a game
+that has not been played has no closing line by definition. The first run of
+the fix script counted those 19 as targets, which is why the window is now
+bounded at both ends.
+
+**4 of the remaining 5 were Clippers games** — the same alias bug as this
+morning's phantom rows, with every quote orphaned under a minted id (R12).
+The 5th (Chicago Bulls @ Milwaukee Bucks, 10-23) had quotes under its own
+ESPN id and simply never had ctx filled.
+
+**Fixed:** `fill_nba_ctx_close_from_line_history.py`. Joins on `matchup` +
+capture batch rather than `game_id`, so orphaned rows are reachable without
+rewriting history. **Patched 5, failed 0**; the only ctx rows still without
+a close line are the 19 unplayed ones.
+
+Two things worth keeping from the build:
+* It takes the **modal posted line** and the median price only among books
+  posting THAT line. A plain median across books can invent a line no book
+  posted (`feedback_consensus_line_must_be_posted`).
+* An unfiltered `line_history` read is cancelled server-side (57014). It
+  queries per matchup. A timeout returning partial rows would have priced a
+  game off a handful of books.
+
+**Cross-check that this is reading the right thing:** the recovered totals
+for 10-21 / 10-23 / 10-25 are 226.5 / 225.5 / 223.0 — matching, exactly, the
+values independently recovered from the deleted phantom rows this morning.
 
 ## R11 — The MC dissent tier demotion is unproven, on n=26
 
@@ -651,18 +763,43 @@ recording its own evidence, which is why `_mc_dissent` stays on the blob.
 Separately: MC's calibration is the deeper problem and worth its own study —
 its most confident band (72.5% predicted) delivers 57.9%.
 
-## R12 — `line_history` is keyed on whatever id the puller minted
+## R12 — The alias fix is VERIFIED LIVE; orphans are now consumed, not repointed
 
-All historical Clippers line history sits under
-`nba_20261021_Sacramento_Kings_Los_Angeles_Clippers` rather than the ESPN
-id, so it is orphaned from every join. New rows key correctly now the alias
-is fixed; old ones do not.
+### Status 2026-10-28: live defect confirmed gone, historical rows handled
 
-**Plan:** low urgency — the data is recoverable by name+date, which is how
-`restore_clippers_closing_lines.py` found it. If any analysis needs
-historical Clippers line movement, repoint those rows in one pass. Worth
-checking whether other sports have minted-id line history for the same
-reason (the warning the puller now prints will catch it going forward).
+The alias fix (commit 5717af94) is not just present in the file — the
+switchover is visible in production data for tonight's Lakers @ Clippers:
+
+```
+minted id   first 2026-10-27T23:26:19   last 2026-10-28T13:26:21
+ESPN id     first 2026-10-28T16:26:22   last 2026-10-28T21:26:23
+```
+
+Two consecutive polls, writes moved. Nothing new is being orphaned.
+
+**The orphans are no longer repointed, and that is deliberate.** Rewriting
+`game_id` on historical quotes edits the audit trail of what we saw and
+when, in order to fix a derived table. R10's fix instead READS them via
+`matchup` + capture batch and writes only the derived `close_*` columns.
+
+**One thing the build turned up that was not in the original entry:**
+`line_history.matchup` stores the RAW Odds API string, so it is un-aliased
+even on rows written AFTER the alias fix — the alias is applied when
+deriving the `game_id`, not when storing the matchup. An exact-match lookup
+therefore reported 4 of 5 games as having "no line_history under ANY id"
+while 400 quotes sat there. Any future consumer of `matchup` needs the same
+alias expansion; it is in `MATCHUP_ALIASES` in the fix script.
+
+**Checked for other sports, and NCAAF is a false positive.** NCAAF
+"minted-looking" ids (`ncaaf_20261031_Washington_Nebraska`) are its NATIVE
+keyspace — NCAAF `game_id` is built from team names by design
+(`project_ncaaf_five_team_name_mismatch_1021`). NHL, MLB and NFL show zero
+minted ids. NBA had exactly the one. Note the probe was capped at
+PostgREST's 1000 rows, so that is a floor, not a census.
+
+**Plan:** no further action unless an analysis needs historical Clippers
+line MOVEMENT (the derived close lines are now filled). If one does, repoint
+in a single audited pass rather than ad hoc.
 
 ## R13 — `prop_playbook_decisions` denominators before 2026-10-28 are a random subset
 
@@ -705,42 +842,18 @@ postdate it) and 4-leg's own second half is +4.54u on n=27.
 **Plan:** no action. The generator already caps at 3 and that is holding
 (14 of 14 slips since 10-07). Revisit only if the cap is ever loosened.
 
-## R17 — Two scripts still publish with no `--dry-run`
+## R17 — CLOSED 2026-10-28. Both scripts now have `--dry-run`
 
-`compute_external_source_records.py` takes `--sport` only.
-`generate_daily_degen.py` was the same until today, and that cost an
-accidental overwrite of a live card.
+`compute_external_source_records.py` was the last write-only one.
+`run(sport_filter, dry_run)` now threads the flag, prints the rows it would
+write grouped by (sport, window) plus the count whose rate is WITHHELD for
+`n_graded < 30`, and returns before the first write.
 
-**Plan:** add `--dry-run` to `compute_external_source_records`, then grep
-every script that writes a user-facing table for the same gap. The degen
-pattern (patch the single writer in dry mode) is the template.
+Verified: `--sport NHL --dry-run` reports 21 rows per window, all 21 with
+the rate withheld, and writes nothing. Commit 2f48a129.
 
----
-
-## THE PATTERN BEHIND MOST OF TODAY — and the standing check
-
-Six separate defects on 2026-10-28 were the same shape: **a correct rule in
-one writer and a second writer without it.**
-
-```
-on_conflict vs partial index   capture() fixed       backfill not
-future-date receipt guard      1 source of 8
-degen juice floor              prop loop only        game legs not
-grade the signal's own side    refit inverted        weekly report not
-cohort subject side            writer fixed 10-24    consumer never
-MC "engine passed"             sub rewritten         short_read not
-```
-
-**Plan — make it a habit, not a hope:** when a rule is added or changed,
-enumerate every writer AND consumer of that field before closing the task.
-Two mechanisms now exist to help and should be used:
-
-* `signal_outcome.py` — one shared definition of "was this signal right",
-  imported by both consumers. The same treatment belongs on receipt writing
-  (two writers) and conviction (ensemble + lr_v1 + gates).
-* `audit_signal_conditions_all_sports.py` — replays conditions against live
-  rows and counts fires. Neither NBA defect was visible by reading code;
-  both were visible by counting. Run it after any signal change.
+This mattered because a missing `--dry-run` overwrote a live degen card
+earlier the same day.
 
 ## R18 — TIER IS ANTI-PREDICTIVE ON game_read, IN FOUR SPORTS
 
@@ -831,3 +944,73 @@ best-performing bucket. The demoted picks went 40-31 (56.3%, +5.43u).
 So the demotion lands picks in the bucket that wins. It stays — but note
 that is a coincidence of two separate defects, not a working gate, and it
 dissolves the moment R18 is resolved.
+
+---
+
+## R19 — NFL receipts cannot join `nfl_game_results` at all
+
+Found while measuring R4. Of 59 unpriced NFL receipts carrying a `game_id`,
+**0 join** `nfl_game_results` — a 0% join rate, where NCAAF manages 25 of
+31 and MLB 280 of 280.
+
+The cause is a keyspace split. NFL receipts carry an odds-API style hash:
+
+```
+receipt game_id      f7679cf18454e4d88a8f2b990c3f08ac   (sweat_card, 10-25)
+                     27f3994841ce8081c0b7349cf3d1e3d7   (game_read, 10-18)
+nfl_game_results     20261109_BUF_MIN
+line_history (NFL)   20261109_BUF_MIN
+```
+
+So two different NFL id conventions are live at once. This is adjacent to
+`project_nfl_game_id_mismatch_911` but is not the same thing — that was
+NFL vs NCAAF; this is NFL receipts vs NFL results.
+
+**Consequence, stated narrowly:** 59 NFL receipts cannot be priced, and any
+join from a receipt to NFL game data silently returns nothing. It is a
+silent-empty-join, which is the dangerous kind — nothing errors.
+
+**Not yet measured, and must be before acting:**
+1. Which writer stamps the hash — `bridge_football_game_ids.py` exists and
+   may already be the intended bridge.
+2. Whether the hash is the Odds API `event.id`, which would make the bridge
+   a lookup rather than a reconstruction.
+3. Whether anything OTHER than pricing joins on NFL receipt `game_id`. If
+   grading does, this is more serious than 59 prices.
+
+**Plan:** answer those three first. The repair is probably one bridge call
+at receipt-capture time, but a 0% join rate is exactly the shape that turns
+out to have a second writer, so no code until the writer is identified.
+
+---
+
+## REGISTER STATUS — end of 2026-10-28
+
+Closed today: **R8, R10, R12, R17**, and **R4 partially** (563 prices
+recovered and applied; the unrecoverable remainder is enumerated with
+reasons rather than carried as an open promise).
+
+Shipped as a measuring shadow rather than a behaviour change: **R2**.
+
+**Time-gated by design — cannot be closed today, and saying otherwise would
+be false:**
+* **R6** — NCAAF conviction needs ~2 more weeks of graded picks.
+* **R11** — MC dissent re-measure at n>=60. The demotion itself was already
+  removed today, so the exposure question is settled; only the forward
+  measurement remains.
+* **R13** — `prop_playbook_decisions` baseline is clean from 2026-10-28, so
+  the first honest denominator is ~2026-11-07.
+* **R18** — tier/`game_read` needs a forward sample on picks made after
+  2026-10-28. Deliberately NOT acted on: "publish COVERAGE instead of
+  STRONG" is exactly the inversion this repo has been burned by.
+
+**Blocked on a product decision from Andy, not on work:**
+* **R1** — which denominator is the real one (`surface_records` excludes
+  COVERAGE/conv-0; receipts counts them; the exclusion drops 84% of NBA and
+  3% of MLB). Recommendation on file: count everything that reached a user.
+* **R7** — NFL prop volume: no cell clears breakeven and conviction is
+  inverted there, so the choice is publish fewer or publish none.
+
+**Open and actionable, not yet done:** R3 (121 receipts), R5 (NHL prop
+cells vs 52.83%), R9 (NHL/NBA transferable signal classes), R15 (app must
+not render a withheld NULL rate as 0), R19 (above).
