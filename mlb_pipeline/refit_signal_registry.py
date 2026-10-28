@@ -644,7 +644,16 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', help='specific sport (default: all)')
     p.add_argument('--days', type=int, default=90)
-    p.add_argument('--min-n', type=int, default=20,
+    # 2026-10-27: floor lowered 20 -> 10. At min_n=20 NFL weighted only 9
+    # of 72 firing signals and NHL 3 of 28, so the other 63 and 25 fell back
+    # to an UNMEASURED prior -- "a signal that loses weighted the same as one
+    # that wins", per the note at the results-join fix above. The F4
+    # shrinkage now bounds the risk that the old floor was standing in for:
+    # log1p(n)/log(101) caps a 10-firing signal at 0.520 and a 15-firing one
+    # at 0.601, both earned only on a full 12pp edge over their own
+    # breakeven. A measured low weight beats an unmeasured 0.3 default.
+    # Raising it back is one number.
+    p.add_argument('--min-n', type=int, default=10,
                    help='minimum firings before writing a row (default 20)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
