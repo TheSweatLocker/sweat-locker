@@ -567,7 +567,24 @@ from a population with no measurable edge. Options to price out for Andy:
 (c) stop publishing NFL props and keep generating them for measurement.
 Needs Andy's call on what the surface is FOR before any code changes.
 
-## R8 — `nhl_legacy_conviction_strong` is a prop expression in the game path
+## R8 — CLOSED 2026-10-28. The signal was fine; the LOADER was wrong
+
+**Resolution:** `nhl_legacy_conviction_strong` is correctly configured
+(`class=prop_form`, `subject_scope=prop`). `ensemble_scorer._load_sources`
+filtered on sport only, with no `subject_scope` exclusion to match
+`prop_ensemble_scorer._load_prop_sources`, so all **136** enabled
+prop-scoped rows were evaluated against every game (MLB 71, NFL 22, NBA 19,
+NHL 14, NCAAF 10).
+
+No contamination — all 136 reference `p.*`, which does not exist in the game
+namespace, so every one raised and returned False. Published picks verified
+identical before and after the fix. The costs were 136 wasted evaluations
+per game and 136 `!!` log lines per run that would have buried real
+findings. NameError lines per NHL run: **136 → 0**.
+
+Original entry kept below for the trail.
+
+### original entry
 
 Caught by the eval logger shipped today, on its first real run:
 
