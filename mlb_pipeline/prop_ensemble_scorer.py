@@ -1110,12 +1110,58 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False,
     ctx_index = build_ctx_index(ctx_rows)
 
     # Load props — from live table + (optionally) union with existing decisions
-    r = requests.get(f'{SB}/rest/v1/{table}',
-                     headers=H_READ,
-                     params={'game_date': f'eq.{game_date}',
-                             'select': '*', 'limit': limit or 500},
-                     timeout=30)
-    live_props = r.json() if r.status_code == 200 else []
+    # ══ 2026-10-28 · THE SCORER SAW 11% OF AN NHL SLATE ══
+    # This was one GET with `limit: limit or 500`, and no workflow passes
+    # --limit, so every slate was cut to the first 500 rows PostgREST chose
+    # to return — unordered, so an arbitrary 500. Measured:
+    #
+    #   date        props   decisions   scored
+    #   NHL 10-27    4,730        535      11%
+    #   NHL 10-22    4,719        500      11%
+    #   NHL 10-24    4,486        792      18%
+    #   NBA 10-20    2,782        563      20%
+    #   MLB any       ~100       ~100     100%   <- why this never showed
+    #
+    # So Prop Jerry's playbook has been choosing from a random fifth of the
+    # NHL and NBA prop boards, and any measurement of it is over a different
+    # arbitrary subset each day. Nothing about the scoring was wrong; it was
+    # never shown the slate. MLB's board is ~100 props so it always fit,
+    # which is why this surfaced only when NHL and NBA came online.
+    #
+    # Note `limit` could not have fixed it from the CLI either: PostgREST
+    # caps a limit at 1,000 regardless of what is asked for
+    # (project_postgrest_truncation_audit_912), so paging is the only way to
+    # read a 4,730-row slate.
+    #
+    # Ordered by id so the page boundaries are stable and a re-run scores
+    # the same set — an unordered page can repeat and skip rows between
+    # requests.
+    live_props = []
+    _page = 0
+    while True:
+        _off = _page * 1000
+        r = requests.get(f'{SB}/rest/v1/{table}',
+                         headers=H_READ,
+                         params={'game_date': f'eq.{game_date}',
+                                 'select': '*', 'order': 'id.asc',
+                                 'limit': '1000', 'offset': str(_off)},
+                         timeout=60)
+        if r.status_code != 200:
+            print(f'  [{sport}] props fetch HTTP {r.status_code}: {r.text[:200]}')
+            break
+        _chunk = r.json() if isinstance(r.json(), list) else []
+        live_props.extend(_chunk)
+        if len(_chunk) < 1000:
+            break
+        _page += 1
+        if limit and len(live_props) >= limit:
+            break
+        if _page > 30:
+            print(f'  [{sport}] props fetch hit the 30-page guard '
+                  f'at {len(live_props)} rows')
+            break
+    if limit:
+        live_props = live_props[:limit]
 
     if refresh_existing:
         # Union live props with previously-decided props whose source row

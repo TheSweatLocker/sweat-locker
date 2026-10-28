@@ -147,6 +147,40 @@ jobs:
           cd mlb_pipeline
           python grade_jerry_reads.py --sport NHL
 
+      # ══ 2026-10-28 · THE PLAYBOOK LEDGER WAS MLB-ONLY ══
+      # prop_playbook_decisions held 12,891 NHL rows and 0 graded ones,
+      # because grade_prop_playbook.SPORT_PROPS_TABLE was {'MLB': ...}.
+      # NHL props themselves grade fine (69,074 of 71,470) — it was only
+      # the decision ledger, which is the table the weekly signal
+      # attribution reads, that had no grade to read.
+      #
+      # Pass 1 inherits from nhl_pipeline_props and is keyed on the base
+      # stat plus `direction`, not prop_type: R4 in prop_ensemble_scorer
+      # flips `direction` on a cold prop and leaves prop_type as the market
+      # the book listed, so 45.6% of NHL decisions store a pair the props
+      # table never holds. Keyed on prop_type, 147 of 502 rows on a single
+      # date went unresolved; keyed on the stat, 7 do.
+      - name: Grade NHL prop playbook decisions
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_prop_playbook.py --sport NHL --backfill 3
+
+      # ══ 2026-10-28 · ATTRIBUTION RAN FOR 3 OF 6 SPORTS ══
+      - name: Grade NHL signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport NHL --days 7
+
       # 2026-10-08: the in-calibration banner users read on the NHL tab had
       # "our graded sample is 21 games" typed into it. It was written once by
       # hand from a gitignored scratch script (_nhl_calibration_note.py), so

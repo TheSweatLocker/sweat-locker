@@ -206,6 +206,62 @@ jobs:
           cd mlb_pipeline
           python grade_jerry_reads.py --sport NBA
 
+      # ══ 2026-10-28 · NBA PROPS HAD NO SCHEDULED GRADER AT ALL ══
+      # grade_props.py has carried 'NBA': 'nba_pipeline_props' in
+      # SPORT_PROPS_TABLE since the NBA buildout, but NO workflow ever
+      # called it. Every graded NBA prop in the table got there from a
+      # hand run, so grading drifted days behind the slate:
+      #
+      #   nba_pipeline_props   12,075 rows   9,783 graded
+      #   last graded game_date 2026-10-25, with 10-26 and 10-27 open
+      #
+      # Same failure shape as the receipt sport list and the ctx chain that
+      # stopped at NHL: the capability existed and the schedule did not.
+      # NHL has had this step since 10-09; this is its NBA twin.
+      - name: Grade NBA props
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_props.py --sport NBA
+
+      # ══ 2026-10-28 · AND THE PLAYBOOK LEDGER BEHIND THEM ══
+      # prop_playbook_decisions is Prop Jerry's decision ledger — the table
+      # the weekly attribution has to read to answer "what drove the pick".
+      # It held 58,405 rows, 26,299 graded, and every graded one was MLB,
+      # because grade_prop_playbook.SPORT_PROPS_TABLE was {'MLB': ...} and
+      # --sport took its choices from that dict. NBA put 608 rows into it
+      # on 10-27 alone and none of them could ever be graded.
+      #
+      # --backfill 3 picks up a late box score the same way MLB's does.
+      - name: Grade NBA prop playbook decisions
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_prop_playbook.py --sport NBA --backfill 3
+
+      # ══ 2026-10-28 · ATTRIBUTION RAN FOR 3 OF 6 SPORTS ══
+      # signal_attribution_grade.py was extended to NBA/NHL/NCAAB on 10-27,
+      # but only MLB, NFL and NCAAF had a workflow step calling it — so the
+      # week-to-week record of which signals drive which outcomes, which is
+      # the standard Andy set, would never accumulate for NBA.
+      - name: Grade NBA signal attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport NBA --days 7
+
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NBA
       # slot redesign. Uses refresh_home_road_tendencies(sport) RPC from

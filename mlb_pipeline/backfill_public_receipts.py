@@ -147,14 +147,81 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     for _r in rows:
         _r.setdefault('capture_mode', 'reconstructed')
         _sanitize(_r)
+    # ══ 2026-10-28 · THE FUTURE GUARD WAS ON ONE SOURCE OF EIGHT ══
+    # backfill_jerry_reads got the "game day or earlier only" rule on 10-22
+    # (see its own block below for why: pick_side/pick_line/pick_label are
+    # frozen by trigger, so a receipt written before the pick is final can
+    # never be corrected). The other seven sources never got it.
+    #
+    # I proved it the hard way this morning: one run of this script wrote
+    # 237 NFL prop_jerry receipts for games on 10-29, 11-01 and 11-02 --
+    # frozen claims for unplayed games, from the one function that had no
+    # guard. They had to be voided by hand afterwards.
+    #
+    # The guard belongs HERE, at the single chokepoint every source already
+    # passes through, so a source added later cannot forget it. ET, not the
+    # runner's clock: on a UTC runner `date.today()` is tomorrow for four to
+    # five hours a night, which is exactly when the nightly jobs run.
+    _today = _et_today_str()
+    _future = [r for r in rows if str(r.get('game_date') or '')[:10] > _today]
+    if _future:
+        rows = [r for r in rows
+                if str(r.get('game_date') or '')[:10] <= _today]
+        print(f'  held {len(_future)} receipt(s) for games after {_today} '
+              f'— a frozen pick for an unplayed game cannot be corrected')
+    if not rows:
+        return 0
     if dry_run:
         return len(rows)
-    r = requests.post(
-        f'{SB}/rest/v1/public_receipts?on_conflict=sport,surface,game_date,source_id',
-        headers=H_WRITE, json=rows, timeout=60,
-    )
+    # ══ 2026-10-28 · THE SECOND WRITER STILL CARRIED THE on_conflict= ══
+    # 20261025a replaced the full UNIQUE CONSTRAINT on
+    # (sport, surface, game_date, source_id) with a PARTIAL unique index, and
+    # PostgREST's `on_conflict=` carries column names only -- Postgres cannot
+    # infer a partial index as an arbiter without its predicate. Every POST
+    # from this file has returned
+    #     400 42P10 "there is no unique or exclusion constraint matching the
+    #                ON CONFLICT specification"
+    # since 10-25. public_receipt.capture() was fixed for this on 10-27; THIS
+    # writer was not, and it is the one that owns reconstruction, so:
+    #
+    #   reads -> receipts, 10-26 and 10-27   NBA 13->0  NCAAF 2->0  MLB 2->0
+    #
+    # while NHL and NFL kept writing, because their pipelines publish through
+    # capture(). One root cause, two writers, and only one of them patched.
+    # The morning audit read as "NBA wrote no receipts" -- a surface problem.
+    # It was a 400 nobody printed.
+    #
+    # Same remedy as capture(): first-write-wins in code. The partial index
+    # stays as it is -- it is the correct data rule and the void+replacement
+    # pairs depend on it.
+    from public_receipt import _live_keys as _lk
+    live = _lk(rows)
+    if live is None:
+        # The dedupe read failed. An empty set would read as "nothing exists"
+        # and duplicate every receipt, so refuse instead.
+        print('  ⚠ batch write skipped: could not read existing receipts')
+        return 0
+    fresh = [r for r in rows
+             if (str(r.get('sport')), str(r.get('surface')),
+                 str(r.get('game_date')), str(r.get('source_id'))) not in live]
+    if not fresh:
+        return 0
+    r = requests.post(f'{SB}/rest/v1/public_receipts',
+                      headers=H_WRITE, json=fresh, timeout=60)
     if r.status_code in (200, 201, 204):
-        return len(rows)
+        return len(fresh)
+    if r.status_code == 409:
+        # A batch INSERT is all-or-nothing, so one row that raced us kills the
+        # rest. Fall back to per-row and keep the ones that are genuinely new.
+        ok = 0
+        for _one in fresh:
+            r1 = requests.post(f'{SB}/rest/v1/public_receipts',
+                               headers=H_WRITE, json=[_one], timeout=30)
+            if r1.status_code in (200, 201, 204):
+                ok += 1
+            elif r1.status_code != 409:
+                print(f'  ⚠ row write {r1.status_code}: {r1.text[:200]}')
+        return ok
     print(f'  ⚠ batch write {r.status_code}: {r.text[:300]}')
     return 0
 

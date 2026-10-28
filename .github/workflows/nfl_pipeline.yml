@@ -1254,6 +1254,24 @@ jobs:
           cd mlb_pipeline
           python signal_attribution_grade.py --sport NFL --days 7
 
+      # ══ 2026-10-28 · THE PLAYBOOK LEDGER WAS MLB-ONLY ══
+      # prop_playbook_decisions held 5,105 NFL rows and 0 graded ones.
+      # grade_prop_playbook.SPORT_PROPS_TABLE was {'MLB': ...} and --sport
+      # took its choices from that dict, so NFL could not be passed even by
+      # hand. nfl_pipeline_props itself grades fine (4,475 of 4,728) — it
+      # was only the decision ledger, which is what the weekly attribution
+      # reads to answer "what drove the pick", that had nothing to read.
+      - name: Grade NFL prop playbook decisions
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_prop_playbook.py --sport NFL --backfill 4
+
       # 2026-09-02: Thu-lock injury regen check. Runs on every cron
       # (cheap query — silent no-op unless a QB1 has status change
       # since last lock). Fires generate_nfl_game_reads.py --force

@@ -190,8 +190,23 @@ def side_from_team(team, home, away):
 class Claim:
     """One surface's statement about which bet this is."""
 
-    def __init__(self, surface, side, market, line, label, extra=''):
+    def __init__(self, surface, side, market, line, label, extra='',
+                 flip_reason=''):
         self.surface = surface
+        # ══ 2026-10-28 · A DELIBERATE FADE IS NOT A WRONG SIDE ══
+        # The Sharp publishes the OPPOSITE side of our own read on short
+        # football spreads on purpose -- the flip clears breakeven to
+        # |line| 10.5 and the receipt says so in audit.reason:
+        #   "fades our own BYU -7.5 read - short football spreads flipped
+        #    are 18-4 (n=22)"
+        # Every one of those was reported here as CRITICAL. Measured over
+        # 10-20..10-27: 59 CRITICAL rows across five sports, and on 10-24
+        # NCAAF alone 22 of 44 games. An alarm that is wrong most of the
+        # time is an alarm nobody reads, and it would bury the real
+        # wrong-side bug this file exists to catch. So an intentional flip
+        # is now its own class: still printed, never CRITICAL, never a
+        # --fail-on side failure.
+        self.flip_reason = str(flip_reason or '')
         self.side = norm_side(side)
         self.market = norm_mkt(market)
         self.line = f(line)
@@ -201,6 +216,12 @@ class Claim:
     def __repr__(self):
         return (f'{self.surface}={self.label!r} '
                 f'({self.side}/{self.market}/{self.line})')
+
+
+#: Text a surface writes into its own audit trail when it publishes the
+#: opposite side ON PURPOSE. generate_sharp_card / generate_sweat_card write
+#: "fades our own <read> read - short football spreads flipped are ...".
+_FLIP_MARK = 'fades our own'
 
 
 def check_sport(sport: str, date: str) -> dict:
@@ -235,7 +256,7 @@ def check_sport(sport: str, date: str) -> dict:
             if isinstance(e, dict) and e.get('game_id'):
                 card_legs.setdefault(str(e['game_id']), (src, e))
 
-    critical, warn, unver = [], [], []
+    critical, warn, unver, flips = [], [], [], []
     for g in ctx:
         gid = str(g.get('game_id'))
         home, away = g.get('home_team'), g.get('away_team')
@@ -266,19 +287,26 @@ def check_sport(sport: str, date: str) -> dict:
             if s is None:
                 team, ln, mk = parse_label(leg.get('label'))
                 s = side_from_team(team, home, away) or norm_side(team)
+            _lr = str((leg.get('audit') or {}).get('reason')
+                      if isinstance(leg.get('audit'), dict)
+                      else leg.get('reason') or '')
             claims.append(Claim(f'card:{src}', s,
                                 leg.get('type') or leg.get('market'),
-                                leg.get('line'), leg.get('label')))
+                                leg.get('line'), leg.get('label'),
+                                flip_reason=_lr if _FLIP_MARK in _lr else ''))
 
         for rc in receipts.get(gid, []):
             s = norm_side(rc.get('pick_side'))
             if s is None:
                 team, ln, mk = parse_label(rc.get('pick_label'))
                 s = side_from_team(team, home, away) or norm_side(team)
+            _aud = jload(rc.get('audit')) or {}
+            _rsn = str(_aud.get('reason') or '')
             claims.append(Claim(f"receipt:{rc.get('surface')}", s,
                                 rc.get('market'), rc.get('pick_line'),
                                 rc.get('pick_label'),
-                                extra=f"id={rc.get('id')}"))
+                                extra=f"id={rc.get('id')}",
+                                flip_reason=_rsn if _FLIP_MARK in _rsn else ''))
 
         known = [c for c in claims if c.side and c.market]
         if len(known) < 2:
@@ -306,9 +334,16 @@ def check_sport(sport: str, date: str) -> dict:
             # record that grades something we did not display, and the known
             # population of B144, but a materially different defect.
             kind = 'SIDE' if c.side != winner[0] else 'MARKET'
-            critical.append({'sport': sport, 'mu': mu, 'kind': kind,
-                             'winner': winner, 'agree': agree, 'odd': c,
-                             'tie': tie})
+            row = {'sport': sport, 'mu': mu, 'kind': kind,
+                   'winner': winner, 'agree': agree, 'odd': c, 'tie': tie}
+            # A surface that SAYS it is fading our own read is doing what it
+            # was built to do. It is reported, separately, and does not fail
+            # the step. If the reason is absent the dissent is still CRITICAL
+            # -- silence is not a licence.
+            if c.flip_reason and kind == 'SIDE':
+                flips.append(row)
+            else:
+                critical.append(row)
         for c in agree:
             if (c is not agree[0] and c.line is not None
                     and agree[0].line is not None
@@ -316,7 +351,7 @@ def check_sport(sport: str, date: str) -> dict:
                 warn.append((sport, mu, agree[0], c))
 
     return {'games': len(ctx), 'critical': critical, 'warn': warn,
-            'unverifiable': unver}
+            'unverifiable': unver, 'flips': flips}
 
 
 def main() -> int:
@@ -343,13 +378,15 @@ def main() -> int:
           f'{"/".join(sports)} ===')
     print('    badge == read == card == receipt, on SIDE and MARKET')
     print('')
-    tot_c = tot_w = tot_u = tot_g = 0
+    tot_c = tot_w = tot_u = tot_g = tot_f = 0
     _crit_by_sport = {}
     for sp in sports:
         res = check_sport(sp, date)
         if not res:
             continue
         c, w, u = res['critical'], res['warn'], res['unverifiable']
+        fl = res.get('flips') or []
+        tot_f += len(fl)
         _crit_by_sport[sp] = c
         tot_c += len(c)
         tot_w += len(w)
@@ -361,7 +398,15 @@ def main() -> int:
                                      + (f' / {nmkt} MARKET' if nmkt else ''))
         print(f'  {sp:<6} games={res["games"]:<4} {status}'
               f'{f"  line-drift={len(w)}" if w else ""}'
+              f'{f"  intentional-flip={len(fl)}" if fl else ""}'
               f'{f"  unverifiable={len(u)}" if u else ""}')
+        for x in sorted(fl, key=lambda z: z['mu']):
+            od, ag = x['odd'], x['agree']
+            print(f"     ↻ {x['mu']:<12} [FLIP] "
+                  f"{len(ag)} surface(s) say {ag[0].label!r} "
+                  f"({x['winner'][0]}/{x['winner'][1]})  "
+                  f"BUT {od.surface} says {od.label!r} ON PURPOSE "
+                  f"— {od.flip_reason[:70]} {od.extra}")
         for x in sorted(c, key=lambda z: (z['kind'] != 'SIDE', z['mu'])):
             od, ag = x['odd'], x['agree']
             mark = '✖' if x['kind'] == 'SIDE' else '⚠'
@@ -379,7 +424,12 @@ def main() -> int:
 
     print('')
     print(f'  games checked {tot_g}   CRITICAL {tot_c}   '
-          f'line-drift {tot_w}   unverifiable {tot_u}')
+          f'line-drift {tot_w}   intentional-flip {tot_f}   '
+          f'unverifiable {tot_u}')
+    if tot_f:
+        print(f'  {tot_f} FLIP row(s): a surface that names the read it is '
+              f'fading in its own audit trail. Not a defect — but if the flip '
+              f'itself is ever wrong, these are the rows it lives in.')
     tot_side = sum(1 for sp in sports for x in (_crit_by_sport.get(sp) or [])
                    if x['kind'] == 'SIDE')
     if tot_c:

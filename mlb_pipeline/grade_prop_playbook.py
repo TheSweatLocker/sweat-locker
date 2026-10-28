@@ -54,7 +54,30 @@ KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
-SPORT_PROPS_TABLE = {'MLB': 'mlb_pipeline_props'}
+# ══ 2026-10-28 · MLB-ONLY BY CONSTRUCTION, SO 32,106 ROWS WERE UNGRADEABLE ══
+# This map was {'MLB': ...} and --sport took its choices FROM it, so NBA and
+# NHL could not be passed even by hand. Measured this morning:
+#
+#   prop_playbook_decisions   58,405 rows   26,299 graded   ALL MLB
+#   on 2026-10-27 alone       NBA 608   NHL 535   MLB 107
+#
+# prop_playbook_decisions is Prop Jerry's decision ledger -- the table the
+# weekly attribution has to read to answer "what drove the pick". For NBA and
+# NHL it has never held a single graded row, so there is no measurement of
+# those surfaces to tune against, which is the whole point of the standard
+# Andy set on 10-27.
+#
+# Pass 1 (inherit the grade from {sport}_pipeline_props) is already generic --
+# it was reading SPORT_PROPS_TABLE the whole time. Pass 2 is the MLB Stats API
+# and is now gated to MLB: run against an NBA date it would fetch the MLB
+# schedule, find no players, and mark every row unresolved. Nothing worse than
+# that, but a grader must not reach for the wrong sport's boxscore at all.
+SPORT_PROPS_TABLE = {
+    'MLB':   'mlb_pipeline_props',
+    'NBA':   'nba_pipeline_props',
+    'NHL':   'nhl_pipeline_props',
+    'NFL':   'nfl_pipeline_props',
+}
 
 # prop_type → boxscore stat key (mirrors grade_props.STAT_MAP_MLB)
 STAT_MAP_MLB = {
@@ -124,14 +147,62 @@ def fetch_legacy_results_for_date(sport: str, date_str: str) -> dict:
         chunk = r.json() if isinstance(r.json(), list) else []
         rows.extend(chunk)
         if len(chunk) < 1000: break
-    out = {}
+    # ══ 2026-10-28 · THE KEY CARRIED THE PRE-FLIP MARKET NAME ══
+    # This index was keyed on (player, prop_type, direction, line) and so
+    # could not match a prop whose side the scorer FLIPPED. R4 in
+    # prop_ensemble_scorer flips `direction` on a cold prop and deliberately
+    # leaves `prop_type` as the market the book listed:
+    #
+    #     "Flip direction -- downstream Jerry render must pull the NEW side
+    #      from PropDecision.direction not from prop dict"
+    #
+    # so a flipped decision is stored as ('goals_over', direction='under').
+    # The props tables NEVER store that pair -- measured, 0 of 126,953 rows
+    # across MLB/NFL/NBA/NHL -- so the lookup missed every flipped row:
+    #
+    #     prop_playbook_decisions with prop_type suffix != direction
+    #       NHL 5,879 of 12,891 (45.6%)    NBA 2,253 of 5,565 (40.5%)
+    #       MLB 2,780 of 34,939 ( 8.0%)    NFL   118 of 5,105 ( 2.3%)
+    #     by tier:  LEAN 64.6% contra, PASS 35.8%, PRIME and STRONG 0.0%
+    #
+    # PRIME and STRONG are never affected because the same rule stack demotes
+    # a cold prop to LEAN before flipping it, which is why this stayed hidden.
+    #
+    # `direction` is the authoritative side -- pass 2 (grade_from_stats) has
+    # always read prop_type for the STAT and direction for the SIDE, and that
+    # is the semantics copied here. Keying on the base stat plus direction is
+    # a 1:1 re-key of the props table (which never contradicts), so nothing
+    # that matched before stops matching.
+    #
+    # A base-stat key can collide if the props table holds two rows for one
+    # (player, stat, direction, line). Those are DROPPED from the index, not
+    # resolved by picking data[0] -- grading a published side off an
+    # arbitrary vintage is the failure this whole fix exists to stop.
+    def _base(ptype: str) -> str:
+        t = str(ptype or '')
+        for suf in ('_over', '_under'):
+            if t.endswith(suf):
+                return t[:-len(suf)]
+        return t
+
+    staged = {}
+    collisions = set()
     for row in rows:
         line = row.get('prop_line')
         if line is not None:
             line = float(line)
-        key = (row['player_name'], row['prop_type'], row['direction'], line)
-        out[key] = (row.get('result'), row.get('final_value'))
-    return out
+        key = (row['player_name'], _base(row['prop_type']),
+               str(row.get('direction') or '').lower(), line)
+        val = (row.get('result'), row.get('final_value'))
+        if key in staged and staged[key] != val:
+            collisions.add(key)
+        staged[key] = val
+    for k in collisions:
+        staged.pop(k, None)
+    if collisions:
+        print(f'  ⚠ {len(collisions)} (player, stat, direction, line) keys had '
+              f'conflicting results in {table} — dropped, not guessed')
+    return staged
 
 
 # ─── Pass 2: fall back to MLB Stats API ────────────────────────────────
@@ -270,7 +341,14 @@ def grade_date(date_str: str, sport: str = 'MLB',
         if line is not None:
             try: line = float(line)
             except (TypeError, ValueError): line = None
-        key = (row['player_name'], row['prop_type'], row['direction'], line)
+        # the same base-stat + direction key the legacy index is built on
+        _t = str(row['prop_type'] or '')
+        for _suf in ('_over', '_under'):
+            if _t.endswith(_suf):
+                _t = _t[:-len(_suf)]
+                break
+        key = (row['player_name'], _t,
+               str(row.get('direction') or '').lower(), line)
 
         # ── Pass 1
         leg = legacy.get(key)
@@ -285,13 +363,22 @@ def grade_date(date_str: str, sport: str = 'MLB',
                 'id': row['id'],
                 'result': short,
                 'actual_value': actual,
-                'grade_source': 'mlb_pipeline_props',
+                # the table actually read, not a hardcoded 'mlb_pipeline_props'
+                'grade_source': SPORT_PROPS_TABLE.get(sport, 'legacy_props'),
             })
             tally['from_legacy'] += 1
             tally[short] += 1
             continue
 
-        # ── Pass 2: stats API
+        # ── Pass 2: stats API — MLB ONLY (it IS the MLB Stats API)
+        if sport != 'MLB':
+            tally['unresolved'] += 1
+            if len(unresolved_examples) < 5:
+                unresolved_examples.append(
+                    (row['id'], key,
+                     f'no graded row in {SPORT_PROPS_TABLE.get(sport)} '
+                     f'(pass 2 is MLB-only)'))
+            continue
         if stats_map is None:
             stats_map, n_games = fetch_player_stats_for_date(date_str)
             print(f'  loaded {len(stats_map)} player stat rows from {n_games} final games (stats API)')
