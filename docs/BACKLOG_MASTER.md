@@ -813,11 +813,12 @@ is a non-MLB finding.
    `TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}`
    in `compute_surface_records.py` is staking in exact inverse proportion to
    measured outcome.
-4. **Check whether `tier` and `conviction` disagree on these rows.** Today's
-   conviction work found NHL conviction 0 on picks the engine passed; if the
-   COVERAGE bucket is mostly MC-dissent picks, this finding and the MC one
-   are the same finding wearing two labels, and that must be ruled out before
-   either is acted on.
+4. ~~Check whether the COVERAGE bucket is mostly MC-dissent picks.~~
+   **DONE 2026-10-28, ruled out.** Only 15 of 277 graded COVERAGE receipts
+   (5.4%) sit on an MC-dissent game, and COVERAGE with NO dissent is
+   **61.5% [55.4, 67.1] +20.82u on n=262** — indistinguishable from the
+   bucket as a whole (61.4%, +22.71u). The two findings are independent and
+   R18 stands on its own evidence.
 
 ### Why the MC tier demotion stays, now for a measured reason
 
