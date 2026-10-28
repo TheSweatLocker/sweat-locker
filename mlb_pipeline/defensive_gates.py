@@ -200,9 +200,51 @@ def apply_mc_dissent_gate(pp: dict | None, ctx: dict) -> dict | None:
                 'reason': reason,
             }
             pp['tier'] = new_tier
-            tier_cap = {'COVERAGE': 0, 'LEAN': 55, 'STRONG': 65}
-            if isinstance(pp.get('conviction'), (int, float)):
-                pp['conviction'] = min(int(pp['conviction']), tier_cap.get(new_tier, 55))
+            # == 2026-10-28 . A COVERAGE DEMOTION MUST NOT WRITE conv=0 ==
+            # Andy: "Does MC dissent even work? How often is MC corretc how
+            # often is it corretc on other side of MC dissents?" Measured on
+            # every graded pick that reached a published read:
+            #
+            #   MC DISSENTED (gate said engine passed)  n= 26  61.5% [42.5,77.6]
+            #   [CONTROL] no dissent                    n=840  52.6% [49.2,56.0]
+            #
+            # The picks MC overruled did BETTER than the ones it left alone.
+            # And MC's own number on those games said our side wins 40.1% on
+            # average; it won 61.5%. A 21-point miss, in the wrong direction.
+            #
+            # It is not confined to dissents. NHL MC is non-monotonic and
+            # biased low exactly where this gate triggers (predicted ->
+            # actual, n=198):
+            #    0-35%   26.7% -> 38.1%   +11.4
+            #   35-45%   40.0% -> 52.0%   +12.0
+            #   45-55%   50.0% -> 58.6%    +8.6
+            #   55-65%   59.6% -> 62.5%    +2.9
+            #   65-100%  72.5% -> 57.9%   -14.6   <- most confident, worst
+            # So the gate reads a probability that is 11-12 points too
+            # pessimistic in the band that makes it fire. NCAAF is scattered
+            # the same way (35-45% -> 55.2%, 55-65% -> 80.3%).
+            #
+            # WHAT CHANGES, AND WHAT DOES NOT. n=26 is thin, so the tier
+            # demotion STAYS -- it lowers exposure and that is the
+            # conservative half. What goes is the conviction zeroing on a
+            # COVERAGE demotion. 0 is not one of our published bands at all
+            # (PRIME 80-100 / STRONG 65-79 / LEAN 50-64 / READ 30-49), and
+            # clamp_conviction_to_tier already takes the position that
+            # COVERAGE 'is an internal gate verdict, not one of the published
+            # conviction bands, so it has no defensible ceiling here'. This
+            # file was contradicting that by writing 0.
+            #
+            # The harm was concrete: all 15 NHL dissent picks were published
+            # as plays with receipts, carrying a confident narrative above a
+            # conviction of 0. Removing an unearned PENALTY needs no new
+            # claim -- the mirror of the argument this file already used to
+            # zero classes_boost ('paying a bonus for being wrong does').
+            # LEAN and STRONG keep their caps: those ARE published bands.
+            tier_cap = {'LEAN': 55, 'STRONG': 65}
+            if new_tier in tier_cap and isinstance(pp.get('conviction'),
+                                                   (int, float)):
+                pp['conviction'] = min(int(pp['conviction']),
+                                       tier_cap[new_tier])
             # 2026-08-31: reset recommended_stake to 1.0 on dissent —
             # MC blocking the pick invalidates the "high-confidence bucket"
             # premise the 2u LOCK relied on.
