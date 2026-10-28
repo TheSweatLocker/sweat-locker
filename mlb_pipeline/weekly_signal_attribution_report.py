@@ -28,9 +28,20 @@ DISCIPLINE THIS REPORT KEEPS
     report (see feedback_flat_110_inflates_every_ml_figure).
   * every percentage carries its n, and nothing is called over- or
     under-weighted below MIN_N firings.
-  * `kind` is not used as the headline. It is ~97% 'ok' by construction --
-    the ensemble picks the side its own signals favour -- so ranking by it
-    would be meaningless. Outcomes come from the graded result.
+  * outcomes come from signal_outcome.signal_was_right, which grades the
+    side the signal NAMED against the stored margin and close line -- not
+    from `result`, which is the PICK's outcome stamped onto every signal row
+    that fired on it.
+
+    2026-10-28 CORRECTION. This file used to say "`kind` is ... ~97% 'ok' by
+    construction" and tallied `result` directly. Measured on 4,002 graded
+    rows, kind is ok 78.1%, warn 11.6%, neutral 10.2% -- a comment asserting
+    a measurement that was never taken. Tallying raw `result` was therefore
+    wrong on the 466 warn rows (whose grade must be inverted) and also
+    counted the 409 neutral rows that are informational by design: 875 of
+    4,002, 21.9%. The bias had a direction that matters -- it penalised a
+    signal for DISAGREEING with the engine, which is the dissenting voice we
+    most need measured honestly.
   * weeks are the sport's own league week where one exists, else the ISO
     week of the date (baseball and basketball have no league weeks).
 
@@ -49,6 +60,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ONE definition of "was this signal right", shared with
+# refit_signal_registry. Two implementations of that question is how the
+# report and the refit came to disagree by up to 16pp on the same rows.
+from signal_outcome import signal_was_right as _swr
 
 # measured from stored prices on graded receipts since 2026-09-19,
 # median payout -> 1/(1+payout). See refit_signal_registry.BREAKEVEN_BY_MARKET
@@ -186,16 +203,21 @@ def main():
             if not wr:
                 continue
             agg = collections.defaultdict(
-                lambda: {'w': 0, 'l': 0, 'mkt': collections.Counter()})
+                lambda: {'w': 0, 'l': 0, 'skip': 0,
+                         'mkt': collections.Counter()})
             for r in wr:
                 k = str(r.get('signal_key'))
-                if str(r.get('result')) == 'W':
-                    agg[k]['w'] += 1
-                else:
-                    agg[k]['l'] += 1
                 m = str(r.get('pick_market') or '').lower()
                 if m:
                     agg[k]['mkt'][m] += 1
+                _v = _swr(r, sp)
+                if _v is None:
+                    agg[k]['skip'] += 1
+                    continue
+                if _v:
+                    agg[k]['w'] += 1
+                else:
+                    agg[k]['l'] += 1
             tw = sum(v['w'] for v in agg.values())
             tl = sum(v['l'] for v in agg.values())
             print('')
@@ -228,16 +250,21 @@ def main():
 
         # ── the gap: the tuning instruction ──
         agg = collections.defaultdict(
-            lambda: {'w': 0, 'l': 0, 'mkt': collections.Counter()})
+            lambda: {'w': 0, 'l': 0, 'skip': 0,
+                     'mkt': collections.Counter()})
         for r in graded:
             k = str(r.get('signal_key'))
-            if str(r.get('result')) == 'W':
-                agg[k]['w'] += 1
-            else:
-                agg[k]['l'] += 1
             m = str(r.get('pick_market') or '').lower()
             if m:
                 agg[k]['mkt'][m] += 1
+            _v = _swr(r, sp)
+            if _v is None:
+                agg[k]['skip'] += 1
+                continue
+            if _v:
+                agg[k]['w'] += 1
+            else:
+                agg[k]['l'] += 1
         cand = []
         for k, v in agg.items():
             n = v['w'] + v['l']

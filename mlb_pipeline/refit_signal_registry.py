@@ -484,8 +484,13 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
                                  'game_date': f'gte.{cutoff}',
                                  'result': 'in.(W,L)',
                                  'kind': 'in.(ok,warn)',
-                                 'select': 'signal_key,kind,result,'
-                                           'pick_market'},
+                                 # signal_side + the outcome numbers, so the
+                                 # tally can grade the side the signal named
+                                 # rather than inheriting our pick's result.
+                                 'select': 'signal_key,kind,result,sport,'
+                                           'pick_market,pick_side,signal_side,'
+                                           'actual_margin,actual_total,'
+                                           'close_line'},
                          timeout=30)
         if r.status_code not in (200, 206): break
         page_rows = r.json() or []
@@ -496,6 +501,40 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
 
     firings: dict[str, dict] = defaultdict(
         lambda: {'right': 0, 'wrong': 0, 'mkt': Counter()})
+    # ══ 2026-10-28 · kind='ok' IS A PLACEHOLDER ON COHORT ROWS ══
+    # The kind rule below measured OUR PICK's result on games where a signal
+    # fired, for every row the snapshot writer stamps kind='ok' without
+    # comparing sides. That is every COHORT_* row: the writer records
+    # signal_side as the cohort's SUBJECT (HOME for any home-referenced tag)
+    # and says so explicitly --
+    #
+    #   "Recording the subject is deliberately NOT the same as recording a
+    #    recommendation: whether to follow or fade the subject is then a
+    #    calibration OUTPUT instead of an assumption baked into the writer."
+    #
+    # -- and it was fixed on 10-24 to record that side. This consumer was
+    # never updated to use it, so the calibration output the writer set up
+    # was still being replaced by a measurement of our own selection. The
+    # exact thing its comment warns about, one file downstream.
+    #
+    # Measured difference on n>=25 signals (kind rule -> side-graded):
+    #   NCAAF COHORT_NCAAF_HEAVY_HOME_FAV   61.7% -> 50.9%  n=110
+    #   NCAAF COHORT_NCAAF_HEAVY_HOME_DOG   43.8% -> 60.0%  n= 70
+    #   NCAAF LR_SHADOW                     57.1% -> 51.4%  n=422
+    #   NFL   COHORT_NFL_HOME_FAV           48.6% -> 40.3%  n= 67
+    # HEAVY_HOME_FAV carries weight 0.78 as VALIDATED on the 61.7%; its own
+    # subject covered 50.9%. HEAVY_HOME_DOG sits at 0.0 ANTI_VALIDATED on the
+    # 43.8%; its subject covered 60.0%.
+    #
+    # signal_outcome.signal_was_right grades signal_side against the stored
+    # margin and close line, with the per-sport sign convention, and returns
+    # None rather than a guess for a row it cannot settle -- a NEUTRAL
+    # subject, a side signal on a total pick, a push, or a total market (the
+    # closing total is not stored on these rows at all: close_line is the
+    # SPREAD even on total rows). It falls back to the kind rule only when
+    # the numbers are missing, so nothing countable before stops counting.
+    from signal_outcome import signal_was_right as _swr
+    _skipped = 0
     for row in all_rows:
         key = row.get('signal_key')
         if not key: continue
@@ -504,13 +543,15 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
         _m = str(row.get('pick_market') or '').strip().lower()
         if _m:
             firings[key]['mkt'][_m] += 1
-        kind = str(row.get('kind', '')).lower()
-        result = str(row.get('result', '')).upper()
-        won = (result == 'W')
-        # ok+W or warn+L → the signal's voice was right; ok+L or warn+W → wrong.
-        signal_was_right = (kind == 'ok' and won) or (kind == 'warn' and not won)
-        if signal_was_right: firings[key]['right'] += 1
-        else:                firings[key]['wrong'] += 1
+        verdict = _swr(row, sport)
+        if verdict is None:
+            _skipped += 1
+            continue
+        if verdict: firings[key]['right'] += 1
+        else:       firings[key]['wrong'] += 1
+    if _skipped:
+        print(f'  [{sport}] {_skipped} attribution row(s) not countable '
+              f'(neutral subject / cross-axis / push) — skipped, not defaulted')
     return dict(firings)
 
 
