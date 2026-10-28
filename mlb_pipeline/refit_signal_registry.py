@@ -33,7 +33,7 @@ CLI:
 """
 from __future__ import annotations
 import argparse, os, sys
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -123,14 +123,52 @@ def _tier_for(n: int, hit_rate_frac: float,
     return 'UNVALIDATED'
 
 
-def _recommended_weight_for(n: int, hit_rate_frac: float, tier: str) -> float:
+# ══ 2026-10-27 · F6 · BREAKEVEN IS NOT 52.38% ON EVERY MARKET ════════════
+# This was a single hardcoded 0.5238 (-110 juice) applied to every market,
+# so a moneyline signal was credited with ~6 points of edge it does not
+# have and its weight came out roughly 4x too high.
+#
+# MEASURED from stored prices on graded receipts since 2026-09-19, using the
+# MEDIAN payout -- the mean is the wrong statistic here, because American
+# odds are skewed and a few longshots drag it (that error is what made NHL
+# overs read as CLEARING at BE 7.0% while their ROI was -20.00%):
+#
+#   market         n   med payout   BREAKEVEN
+#   prop        3852        0.893      52.83%
+#   ml           541        0.714      58.33%   <- 5.95 pts above -110
+#   rl           355        0.909      52.38%
+#   total        171        0.909      52.38%
+#   per sport:  MLB ml 57.81%   NHL ml 57.45%   NCAAF ml 58.68%
+#
+# So rl and total were always right; ml was the one being inflated.
+BREAKEVEN_BY_MARKET = {
+    'ml': 0.5833,
+    'moneyline': 0.5833,
+    'prop': 0.5283,
+    'rl': 0.5238,
+    'spread': 0.5238,
+    'total': 0.5238,
+}
+BREAKEVEN_DEFAULT = 0.5238          # -110, the right answer for rl/total
+
+
+def breakeven_for(market: str) -> float:
+    return BREAKEVEN_BY_MARKET.get(
+        str(market or '').strip().lower(), BREAKEVEN_DEFAULT)
+
+
+def _recommended_weight_for(n: int, hit_rate_frac: float, tier: str,
+                            market: str = '') -> float:
     """Coarse mapping to signal_registry.recommended_weight; ensemble
-    scorer's edge_weight() is the runtime authority — this is a hint."""
+    scorer's edge_weight() is the runtime authority — this is a hint.
+
+    `market` picks the breakeven. Omitting it keeps the -110 default, which
+    is correct for rl/total and conservative-high for prop.
+    """
     if tier == 'ANTI_VALIDATED':
         return 0.0
     import math
-    BREAKEVEN = 0.5238  # -110 juice
-    edge = max(0.0, hit_rate_frac - BREAKEVEN)
+    edge = max(0.0, hit_rate_frac - breakeven_for(market))
     edge_c = min(edge / 0.12, 1.0)
     n_c = min(math.log1p(n) / math.log(101), 1.0)
     return round(edge_c * n_c, 4)
@@ -408,7 +446,8 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
                                  'game_date': f'gte.{cutoff}',
                                  'result': 'in.(W,L)',
                                  'kind': 'in.(ok,warn)',
-                                 'select': 'signal_key,kind,result'},
+                                 'select': 'signal_key,kind,result,'
+                                           'pick_market'},
                          timeout=30)
         if r.status_code not in (200, 206): break
         page_rows = r.json() or []
@@ -417,10 +456,16 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
         if len(page_rows) < 1000: break
     print(f'  [{sport}] signal_attribution graded rows (last {days}d): {len(all_rows)}')
 
-    firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
+    firings: dict[str, dict] = defaultdict(
+        lambda: {'right': 0, 'wrong': 0, 'mkt': Counter()})
     for row in all_rows:
         key = row.get('signal_key')
         if not key: continue
+        # 2026-10-27 F6: the market decides the breakeven, so tally which
+        # market this signal actually fires on.
+        _m = str(row.get('pick_market') or '').strip().lower()
+        if _m:
+            firings[key]['mkt'][_m] += 1
         kind = str(row.get('kind', '')).lower()
         result = str(row.get('result', '')).upper()
         won = (result == 'W')
@@ -442,13 +487,19 @@ def merge_firings(*dicts) -> dict[str, dict]:
     producing is the same silent-no-op class as the rest of today.
     """
     out: dict[str, dict] = defaultdict(
-        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
+                 'mkt': Counter()})
     for d in dicts:
         for k, v in d.items():
             out[k]['right'] += v.get('right', 0)
             out[k]['wrong'] += v.get('wrong', 0)
             out[k]['blind_sum'] += v.get('blind_sum', 0.0)
             out[k]['blind_n'] += v.get('blind_n', 0)
+            # 2026-10-27 F6: carry the market tally, per this docstring's
+            # own warning about silently dropping new keys.
+            _m = v.get('mkt')
+            if _m:
+                out[k]['mkt'].update(_m)
     return dict(out)
 
 
@@ -524,7 +575,12 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         _bn = ct.get('blind_n') or 0
         blind = (ct['blind_sum'] / _bn) if _bn >= max(10, int(n * 0.8)) else None
         tier = _tier_for(n, hr_frac, blind)
-        weight = _recommended_weight_for(n, hr_frac, tier)
+        # 2026-10-27 F6: weight against the breakeven of the market this
+        # signal actually fires on, not a flat -110.
+        _mkt_ct = ct.get('mkt') or {}
+        _dom = (max(_mkt_ct.items(), key=lambda z: z[1])[0]
+                if _mkt_ct else '')
+        weight = _recommended_weight_for(n, hr_frac, tier, _dom)
         out.append({
             'signal_name': signal_key,
             'category': _infer_category(signal_key),

@@ -132,13 +132,17 @@ def _weight(hit_rate_frac: float, n: int) -> float:
     """
     try:
         from refit_signal_registry import _recommended_weight_for
+        # market='prop' so the prop breakeven (52.83%, measured from
+        # stored prices -- props skew to -112, not -110) is used rather
+        # than the -110 default. F6.
         return _recommended_weight_for(int(n or 0), float(hit_rate_frac),
-                                       '')
+                                       '', 'prop')
     except Exception:                                      # noqa: BLE001
         # Fail to the SHRUNK form, never to the uncapped one. A missing
         # import must not quietly restore 2.7x weights.
         import math
-        edge = max(0.0, float(hit_rate_frac) - BREAKEVEN)
+        # 0.5283 = measured prop breakeven, not the -110 constant.
+        edge = max(0.0, float(hit_rate_frac) - 0.5283)
         edge_c = min(edge / 0.12, 1.0)
         n_c = min(math.log1p(max(int(n or 0), 0)) / math.log(101), 1.0)
         return round(edge_c * n_c, 4)
