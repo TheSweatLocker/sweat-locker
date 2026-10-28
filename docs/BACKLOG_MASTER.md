@@ -490,29 +490,80 @@ class is the `project_panel_is_one_voice_1014` problem restated — worth
 deciding whether it should be card-eligible at all, which is a selection
 decision for Andy, not a cap repair.
 
-## R3 — 121 receipts still grade something other than what we published
+## R3 — Population 1 RESOLVED by evidence; population 2 has a source
 
-After today's reconciler repaired 48, the remainder splits into three
-populations that were deliberately left alone:
+### The market-change population: keep the receipt. Measured 2026-10-28
+
+First, a count correction. The register said 63. Measuring every receipt
+citing `jerry_reads` rather than only the reconciler's window:
 
 ```
-63  the read changed MARKET, not just the side   (B144)
-34  MLB, no start time on mlb_game_context       (cannot verify pre-game)
-25  the read changed AFTER the game started      (receipt is honest)
+receipts citing jerry_reads                  2,147
+the read now names a DIFFERENT market          211
+of those, graded                               165
 ```
 
-**Plan, per population:**
-* **63 market changes** — a bigger claim than a side fix (replacing an ML
-  receipt with a total). Needs its own decision: is the published record the
-  market we showed first, or the market the read settled on? Measure the
-  record impact both ways before choosing, the way the side repair did
-  (it cost 3.01u, which is what made it credible).
-* **34 MLB** — needs a start-time source. `mlb_game_context` has none;
-  options are the MLB Stats API schedule (already used by
-  `grade_prop_playbook` pass 2) or a `first_pitch_utc` column. Then the
-  existing reconciler covers them with no new logic.
-* **25 after-kickoff** — no action. The receipt is the honest record of what
-  we published. Leave them and keep the guard.
+So the population is larger than recorded. The split by market pair shows
+this is not one sport's quirk:
+
+```
+NHL    receipt=ml     read now=rl      37
+NCAAF  receipt=total  read now=rl      20
+NCAAF  receipt=ml     read now=rl      20
+MLB    receipt=total  read now=ml      12
+NFL    receipt=ml     read now=rl      11
+NBA    receipt=ml     read now=rl      11
+```
+
+**As published, those 165 are 92-72 (56.1%), -2.94u** — above breakeven on
+hit rate, slightly negative on units once juice is paid.
+
+**The decision the plan asked for is now answered, and it is not a
+judgement call.** "Replace the receipt with the market the read settled on"
+is not an available option:
+
+```
+2026-09-22  MLB  Over 7.0              total   ->  Pass   pass   LOSS
+2026-09-22  MLB  San Diego Padres ML   ml      ->  Pass   pass   LOSS
+2026-09-22  MLB  Under 7.5             total   ->  Pass   pass   WIN
+```
+
+Several reads now say **Pass**. A Pass cannot be graded, and replacing an ML
+receipt with a total would record a bet we never showed anyone. The receipt
+is what reached the user; `jerry_reads` is a mutable row with 41 writers and
+no row-level write protection (B41), rewritten after the fact. Same
+principle already settled for the sign: the published artefact is
+authoritative, not the source row.
+
+**Resolution: keep the receipt's market, document why, no repair.** The
+reconciler already reports rather than repairs these, so the code is correct
+as it stands.
+
+### The 34 MLB receipts: the start-time source exists and is not the Stats API
+
+The plan proposed the MLB Stats API schedule or a new `first_pitch_utc`
+column. Neither is needed for the mechanism — **`line_history.commence_time`
+is already stored on every quote**, for every sport:
+
+```
+line_history.commence_time = 2026-10-29T00:10:00+00:00
+mlb_game_context           no time column at all
+mlb_game_results           no time column at all
+```
+
+**Honest limit, stated rather than buried:** `line_history` holds nothing
+before 2026-10-14, so `commence_time` fixes this FORWARD and will not
+recover most of the historical 34. For those, the MLB Stats API schedule
+remains the only route, and it is worth asking whether 34 historical
+receipts justify it.
+
+**Plan:** wire the pre-game check to `line_history.commence_time` (forward,
+all sports, no migration). Decide separately whether the historical 34 are
+worth a Stats API backfill.
+
+### The 25 after-kickoff receipts
+
+No action, unchanged. The receipt is the honest record of what we published.
 
 ## R4 — Receipt pricing: 563 recovered, and the plan's premise was wrong
 
@@ -584,25 +635,67 @@ a single path instead of at the point of use.
   price. The real fix is forward: store the spread/total price at publish.
 * **59 NFL receipts join 0 of 59** — see R19.
 
-## R5 — NHL props have no working tier gate, so NHL publishes zero props
+## R5 — CLOSED 2026-10-28. No NHL prop cell clears its own price. Keep the gate shut
 
-`nhl_pipeline_props` holds 40,983 graded rows at tier COVERAGE and
-essentially nothing above it. Consequence: **0 NHL prop receipts, ever**,
-while the board is generated and graded nightly.
+`nhl_pipeline_props` holds 40,983 graded rows at tier COVERAGE and nothing
+above it, so NHL has published **0 prop receipts, ever**. The question was
+whether any cell deserves a gate. Measured: **no.**
+
+### The first cut was wrong and would have shipped a fake edge
+
+Scored against a flat 52.83% prop breakeven, four cells look like strong
+edges:
 
 ```
-NHL  COVERAGE  n=40,983  42.2%  [41.7, 42.6]
+goals_under    n=3,823   84.1%   "CLEARS"
+assists_under  n=2,534   70.2%   "CLEARS"
+points_under   n=4,015   67.5%   "CLEARS"
+sog_under      n=5,349   54.9%   "CLEARS"
 ```
 
-**Why not fixed:** a tier gate that promotes NHL props would start
-publishing a surface measured at 42.2%. That is the wrong direction.
+Every one of those is an artefact of `feedback_flat_110_inflates_every_ml_figure`
+applied to props. A `goals_under` hitting 84% is not an edge when the book
+charges **-900** for it. Re-scored at each row's OWN book price:
 
-**Plan:** do NOT open the gate. Find out whether any NHL prop CELL clears
-52.83% (prop breakeven) first — by prop_type × direction × a conviction
-band, with split-half, the way the NFL prop grid was measured. If no cell
-clears, the correct state is the current one and this register entry closes
-as "working as intended, documented". If a cell does clear, gate to that
-cell only.
+```
+prop_type        n      hit%   med price   med BE%     ROI
+goals_under    3,823   84.1%      -900      90.0%    -4.03%
+assists_under  2,534   70.2%      -290      74.4%    -3.19%
+points_under   4,015   67.5%      -227      69.4%    -3.96%
+sog_under      5,349   54.9%      -139      58.2%    -3.28%
+```
+
+The hit rate is high because the price is high. Nothing clears.
+
+### Within the publishable -300..+150 band, the same answer
+
+```
+direction      n      hit%   med price   med BE%      ROI
+under        7,603   58.7%      -156      60.9%    -2.61%
+over         5,955   46.2%      -105      51.2%   -12.46%
+
+pooled      13,558   53.2%                          -6.93%
+```
+
+### Both places a selection edge could have hidden are closed
+
+**Conviction** does not rescue it. The 70-79 band's apparent 67.6% is
+entirely price: its median breakeven is 67.2%, ROI **-9.36%**, and inside
+the band it is **-20.12% on n=61**. The `>=80` band is n=13.
+
+**saves_under** was the single non-negative cell (+3.82%, n=279) and it
+**fails split-half**: +12.84% then **-5.13%**.
+
+### Conclusion
+
+Every prop_type, every direction, every conviction band is negative at its
+own price. **NHL publishing zero props is correct behaviour, not a bug.**
+Opening the tier gate would ship a board measured at -6.93% ROI.
+
+**Plan:** do not touch the gate. The work NHL props need is input quality
+(`project_nhl_prop_inputs_lose_to_price_1003`), not gating — and that is a
+modelling project, not a register item. Re-open only if a projection change
+moves a cell's ROI positive AND it holds split-half.
 
 ## R6 — NCAAF conviction is inverted above 60 and it holds both halves
 
@@ -829,9 +922,37 @@ postseason?" question. The 90-day and 9999-day windows hold identical
 numbers because that is all the history the scrapers stored.
 
 **Plan:** state it on any surface that shows a lifetime external record.
-And an **app-side note**: today's n≥30 floor means `hit_rate` and `roi` are
-now NULL where they used to be a number. Whatever renders them must read
-NULL as "not enough picks yet", not 0.
+
+### The app-side NULL risk is VERIFIED SAFE — 2026-10-28
+
+Today's n>=30 floor makes `hit_rate` and `roi` NULL where they used to be a
+number, so the worry was an app rendering NULL as `0%` — a withheld rate
+reading as a catastrophic one. Audited every consumer rather than assuming:
+
+`external_source_track_record` is read in exactly **two** places, and
+`roi` is **never selected** by either.
+
+```
+GameDetailV2.tsx:424   selects source,surface,n_wins,n_losses,hit_rate
+index.tsx:10442        selects ...,hit_rate,n_picks,n_wins,n_losses,n_pushes
+                       -> normalized into LineMovementTab
+```
+
+Both degrade correctly:
+
+* **HandicappersRow** (GameDetailV2:3578) renders `{w}-{l}` from
+  `n_wins`/`n_losses`, which are **not** withheld, gated on `(w+l) >= 5`.
+  `hit_rate` is used only to pick hot/cold colour and is guarded by
+  `rec?.hit_rate != null`. A NULL rate therefore costs the chip its colour,
+  not its record.
+* **LineMovementTab:893** gates on `row.hitRate != null && row.n != null &&
+  row.n > 0` before `.toFixed(1)`, and its type is already
+  `hit_rate: number|null`.
+
+**No app change required.** Worth noting the reason it was already safe:
+both sites were written to handle a withheld thin-sample rate (the n>=5 gate
+and the 2026-09-26 "say n=2 so the absence is a fact rather than a gap"
+note), so the n>=30 floor landed on code that already expected NULL.
 
 ## R16 — Degen leg-count cap is confounded and unresolved
 
@@ -947,46 +1068,67 @@ dissolves the moment R18 is resolved.
 
 ---
 
-## R19 — NFL receipts cannot join `nfl_game_results` at all
+## R19 — CLOSED 2026-10-28. The bridge existed; the pricing path ignored it
 
-Found while measuring R4. Of 59 unpriced NFL receipts carrying a `game_id`,
-**0 join** `nfl_game_results` — a 0% join rate, where NCAAF manages 25 of
-31 and MLB 280 of 280.
+Found while measuring R4: of 59 unpriced NFL receipts carrying a `game_id`,
+**0 joined** `nfl_game_results`.
 
-The cause is a keyspace split. NFL receipts carry an odds-API style hash:
+### Two wrong turns on the way, both worth recording
+
+**First framing was wrong.** I wrote this up as "NFL receipts cannot join
+NFL game data". They join `nfl_game_context` fine — that table is keyed on
+the same hash the receipts carry. The split is **context vs results**:
 
 ```
-receipt game_id      f7679cf18454e4d88a8f2b990c3f08ac   (sweat_card, 10-25)
-                     27f3994841ce8081c0b7349cf3d1e3d7   (game_read, 10-18)
-nfl_game_results     20261109_BUF_MIN
-line_history (NFL)   20261109_BUF_MIN
+nfl_game_context / NFL receipts   7d664fbcd39350e559d83c0068ba7169
+nfl_game_results                  20270110_TB_NO
 ```
 
-So two different NFL id conventions are live at once. This is adjacent to
-`project_nfl_game_id_mismatch_911` but is not the same thing — that was
-NFL vs NCAAF; this is NFL receipts vs NFL results.
+**Second probe was a wiring error.** I then queried
+`nfl_game_results.context_game_id`, got `42703 column does not exist`, and
+the script carried on and printed "0 join via game_id" for 201 NCAAF rows
+that do in fact join. The read had failed, so every number in that table
+was meaningless — `feedback_zero_rows_is_a_wiring_error` and
+`feedback_select_star_before_concluding_absent` in one go. The column name
+came from `bridge_football_game_ids.py`'s **stale docstring**; migration
+20260921d creates a TABLE, not a column, and deliberately so (a game
+accumulates more than one historical id, so a single column is many-to-one
+the wrong way round).
 
-**Consequence, stated narrowly:** 59 NFL receipts cannot be priced, and any
-join from a receipt to NFL game data silently returns nothing. It is a
-silent-empty-join, which is the dangerous kind — nothing errors.
+### The actual state
 
-**Not yet measured, and must be before acting:**
-1. Which writer stamps the hash — `bridge_football_game_ids.py` exists and
-   may already be the intended bridge.
-2. Whether the hash is the Odds API `event.id`, which would make the bridge
-   a lookup rather than a reconstruction.
-3. Whether anything OTHER than pricing joins on NFL receipt `game_id`. If
-   grading does, this is more serious than 59 prices.
+`football_game_id_alias` exists, is applied, and is populated:
 
-**Plan:** answer those three first. The repair is probably one bridge call
-at receipt-capture time, but a 0% join rate is exactly the shape that turns
-out to have a second writer, so no code until the writer is identified.
+```
+rows 984    NFL 329   NCAAF 655      by source: context 851, line_history 133
+```
 
----
+And it resolves the gap completely:
+
+```
+sport   unpriced w/ gid   direct join   VIA ALIAS   of those with a closing ML
+NFL            59              0            59               59
+NCAAF         201            170           180              153
+```
+
+So this was never a missing bridge. The bridge was built on 09-21 and my
+`_close_price` fallback simply did not consult it — the same class of
+mistake as R4 itself, one layer down.
+
+**Fixed:** `_close_price` now resolves `game_id` through
+`football_game_id_alias` when a direct lookup misses. 0 of 59 becomes 59 of
+59 on NFL; NCAAF goes 170 to 180.
+
+**One genuine risk this leaves:** an empty join does not error. NFL receipts
+missed pricing for weeks with nothing failing. The bridge's own migration
+notes the same pattern cost the football money-flow gate its entire
+validation (NFL 0/51 flags graded). Worth a standing check that counts
+join-misses per sport rather than trusting that a join found rows — filed as
+a follow-up, not claimed as done.
 
 ## REGISTER STATUS — end of 2026-10-28
 
-Closed today: **R8, R10, R12, R17**, and **R4 partially** (563 prices
+Closed today: **R5, R8, R10, R12, R17, R19**, and **R4 partially** (563 prices
 recovered and applied; the unrecoverable remainder is enumerated with
 reasons rather than carried as an open promise).
 
@@ -1011,6 +1153,7 @@ be false:**
 * **R7** — NFL prop volume: no cell clears breakeven and conviction is
   inverted there, so the choice is publish fewer or publish none.
 
-**Open and actionable, not yet done:** R3 (121 receipts), R5 (NHL prop
-cells vs 52.83%), R9 (NHL/NBA transferable signal classes), R15 (app must
-not render a withheld NULL rate as 0), R19 (above).
+**Open and actionable, not yet done:** R3 (the market-change population is
+resolved as "keep the receipt"; what remains is wiring the pre-game check to
+`line_history.commence_time`), R9 (NHL/NBA transferable signal classes), R15 (the app-side NULL
+risk is verified safe; only the "lifetime is ~90 days" labelling remains).

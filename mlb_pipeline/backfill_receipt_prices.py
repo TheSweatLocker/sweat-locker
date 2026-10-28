@@ -246,7 +246,8 @@ NHL_LINED = {
 }
 
 
-def _close_price(rec: dict, market: str, res_by_sport: dict, reason: str):
+def _close_price(rec: dict, market: str, res_by_sport: dict, reason: str,
+                 alias: dict | None = None):
     """(price, 'close', source, reason) from the sport's results table.
 
     ══ 2026-10-28 · WHY THIS IS NOT THE EXISTING mlb_game_results BRANCH ══
@@ -275,7 +276,24 @@ def _close_price(rec: dict, market: str, res_by_sport: dict, reason: str):
     spec = RESULT_SPEC.get(sport)
     if not spec:
         return None, None, None, reason
-    g = (res_by_sport.get(sport) or {}).get(str(rec.get('game_id')))
+    _res = res_by_sport.get(sport) or {}
+    gid = str(rec.get('game_id'))
+    g = _res.get(gid)
+    if g is None and alias:
+        # ══ 2026-10-28 R19 · FOOTBALL KEEPS ITS IDS IN TWO SCHEMES ══
+        # nfl_game_context (and therefore every NFL receipt) is keyed on a
+        # hash; nfl_game_results is keyed on season_week_away_home. Measured
+        # 2026-09-21: 0 of 316 context ids appear in results. So a direct
+        # lookup finds NOTHING for NFL -- 59 of 59 unpriced NFL receipts
+        # missed, silently, because an empty join does not error.
+        #
+        # football_game_id_alias (migration 20260921d) already maps any id
+        # ever seen to the canonical results id, is populated with 984 rows,
+        # and resolves all 59. It was simply not consulted here. Checking it
+        # turns 0 of 59 into 59 of 59, and NCAAF 170 of 201 into 180.
+        _rid = alias.get((sport, gid))
+        if _rid:
+            g = _res.get(_rid)
     if not g:
         return None, None, None, 'no results row for that game_id'
     tbl = spec[0]
@@ -427,6 +445,14 @@ def main() -> int:
         res_by_sport[_sp] = _idx
         print(f'{_sp} results indexed: {len(_idx)}')
     mlb_res = res_by_sport['MLB']
+
+    # The football id bridge. Read as a dict rather than joined per row so a
+    # missing table degrades to "no bridge" instead of taking the run down.
+    alias_map = {}
+    for _a in page('football_game_id_alias',
+                   {'select': 'sport,alias_game_id,results_game_id'}):
+        alias_map[(str(_a['sport']), str(_a['alias_game_id']))] =             str(_a['results_game_id'])
+    print(f'football id aliases: {len(alias_map)}')
 
     potd = {}
     for b in page('daily_best_bet_history', {'select': 'bet_date,odds_american',
@@ -640,7 +666,8 @@ def main() -> int:
         # _close_price for why that distinction is the whole bug.
         if got is None and rec.get('game_id'):
             got, basis, src, reason = _close_price(rec, market,
-                                                   res_by_sport, reason)
+                                                   res_by_sport, reason,
+                                                   alias_map)
 
         if got is None:
             why[f'{surface}/{market or "-"}: {reason}'] += 1
