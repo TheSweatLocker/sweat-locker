@@ -314,6 +314,17 @@ const styles = StyleSheet.create({
     lineHeight: 13,
     fontStyle: 'italic',
   },
+  // 2026-10-29: this key was REFERENCED and never defined. `styles.emptyText`
+  // came back undefined, so the empty-state Text took React Native's default
+  // colour — BLACK — on a #41586B card. The one place the panel speaks to a
+  // user with no data was the one place it was unreadable.
+  // feedback_undefined_palette_key_renders_black.
+  emptyText: {
+    color: TEXT_MUTED,
+    fontSize: 12,
+    marginTop: 8,
+    lineHeight: 17,
+  },
 });
 
 export default ExternalPicksPanel;

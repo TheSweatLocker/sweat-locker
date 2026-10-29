@@ -8938,6 +8938,14 @@ if(mkt.key === 'pitcher_props') {
         let viewQuery = supabase.from(_viewCfg.view).select('*').order('display_conviction', {ascending: false});
         let jerryQuery = supabase.from('prop_jerry_reads')
           .select('game_id,player_name,prop_type,direction,short_read,call_verdict,conviction,input_snapshot')
+          // 2026-10-29: explicit cap. PostgREST silently returns 1000 rows
+          // on an unpaged read, and this is the only client query measured
+          // anywhere near it — 447 rows for NFL alone in the 8-day window
+          // below (4,666 for NFL with no date filter at all). Switching NBA
+          // or NHL props on would add two more sports to the same window, so
+          // the cap is set here now, above the real volume, rather than
+          // discovered as missing reads later.
+          .limit(2000)
           .eq('sport', sport.toUpperCase());
         if (_viewCfg.dateStrategy === 'today') {
           viewQuery = viewQuery.eq('game_date', todayET);

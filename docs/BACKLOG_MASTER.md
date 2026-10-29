@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**.
+- Next free ID: **B197**. (R-series: next free **R37**.)
 
 ---
 
@@ -2106,3 +2106,175 @@ one-off repair (feedback_guard_belongs_at_the_chokepoint, again).
 **Open:** move the kickoff check into `backfill_public_receipts` so a receipt
 can never be written for a read finalised after the game started. Until then
 the exposure is 2 rows and bounded by how late a read can regenerate.
+
+---
+
+## R34 — WHY NBA AND NHL PROPS HAVE NEVER SURFACED (2026-10-29)
+
+Andy has asked this for over a week. The answer is not plumbing, and it is
+not one gate — it is three, stacked, and the third is the real one.
+
+```
+1. prop_ensemble_scorer writes ONLY to prop_playbook_decisions   ("shadow mode")
+2. promote_playbook_conviction promotes PRIME by default, and
+   v_nhl/nba_props_publishable require PRIME or STRONG
+3. feature_flags(NHL|NBA, 'pipeline_props') = FALSE
+```
+
+Measured today:
+
+| | playbook decisions | live prop tiers | publishable view |
+|---|---|---|---|
+| NHL | 1,669 → 566 LEAN, 673 BACK | 2,124 rows, **100% COVERAGE**, conv 0 | **0** |
+| NBA | 517 → **517 PASS** | 517 rows, 119 LEAN, conv 0 | **0** |
+| NFL | 74 → 2 LEAN | — | 499 total, 12 today |
+
+Gate 3 was turned off deliberately on 2026-10-21 and is the binding one.
+Flipping it needs **no app build**.
+
+### Should they be flipped on? No. Re-measured, and the answer is the same.
+
+The 10-21 decision was reached with a broken price (see R35), so it was
+re-run bet-side corrected and filtered to the -300..+150 band:
+
+```
+                   actionable (rec BACK/LEAN), in band
+  NHL   n=197   50.3%  vs BE 51.4%   -1.17pp   ROI  -1.09%   split-half -4.91 / +2.52  FAILS
+  NBA   n=247   50.6%  vs BE 51.4%   -0.79pp   ROI  -0.16%   every cell negative
+  MLB   n=2328  55.3%  vs BE 53.5%   +1.78pp   ROI  +4.03%   split-half +1.52 / +2.04  HOLDS
+```
+
+MLB is the only prop surface that clears, and it holds in both halves.
+NBA additionally has **nothing to publish even with the flag on** — all 14
+measured NBA prop signals are UNVALIDATED or ANTI_VALIDATED, every weight
+is ~0, and the scorer PASSed all 517 props today. That is modelling work.
+
+Both flag notes in the DB were corrected on 10-29; NBA's previously claimed
+"ZERO graded prop rows" when it has 5,163.
+
+**Status**: ANSWERED. Flags stay OFF on evidence, not on neglect.
+**VERIFY**: `python mlb_pipeline/refit_signal_registry.py --sport NBA --dry-run`
+(every NBA prop signal, its pick control and its tier), and
+`select sport, feature, enabled, note from feature_flags where feature='pipeline_props'`.
+
+---
+
+## R35 — THE PROP SIGNAL PATH GRADED EVERY SIGNAL AGAINST A PICK WE USUALLY NEVER MADE
+
+`collect_prop_firings` in `refit_signal_registry.py`, three defects, each
+inverting evidence. Fixed in **e70cffdc**.
+
+1. **`result` grades the prop's LISTED direction.** On a FADE we back the
+   opposite, so `result='W'` means our bet LOST. The function already knew
+   this (`pb_eff` flipped the side for the baseline) but `won` was read raw.
+   NHL 503 of 2,610 graded rows, NBA 818 of 4,540, MLB 2,144 of 25,321.
+
+2. **`correct = (src_side == pb_side) == won` treats PASS as a side.** PASS
+   is most of the table — MLB 77.0%, NHL 71.6%, NBA 65.1% — and on a PASS
+   row no source can equal `pb_side`, so a signal that voted BACK on a prop
+   whose listed direction WON was scored WRONG. Three quarters of the
+   evidence, inverted. FADE voters came out right by accident, which is why
+   the two families looked so different.
+
+3. **The metric was circular.** 93.96% of MLB firings voted the same way as
+   their own pick, so the hit rate was mostly that pick's record wearing the
+   signal's name: `pitcher_vs_team_owned` read 70.25% against a 69.42%
+   signal-blind control.
+
+A signal's record does not depend on what we did with it: it advocates a
+side, and either that side won or it did not. Graded that way the pick drops
+out of the metric entirely and PASS rows carry their real information.
+
+### Net effect: 57 of 1,046 registry rows moved
+
+Promoted — all twelve hold split-half with the CI floor above their own side
+baseline. This is real edge the inversion was destroying:
+
+```
+  pitcher_vs_team_owned             71.90% n=121  +22.36pp   75.0 / 68.9
+  pitcher_vs_team_recent_baa_high   68.75% n=144  +20.13pp   75.0 / 62.5
+  pitcher_vs_team_career_er_high    68.66% n= 67  +20.00pp   72.7 / 64.7
+  pitcher_vs_team_recent_hit_hard   65.50% n=458  +15.96pp   71.6 / 59.4
+  pitcher_vs_team_tagged_history    62.33% n=300  +13.71pp   64.0 / 60.7
+  pitcher_vs_team_dominant_history  62.40% n=516  +11.54pp   64.0 / 60.9
+  player_l10_vs_line_extreme        60.83% n=919  +10.57pp   61.9 / 59.8
+```
+
+Demoted:
+
+```
+  nhl_prop_l10_extreme   67.19% -> 28.25% n=570  VALIDATED w0.89 -> ANTI w0
+  pitcher_xera_elite     57.93% -> 50.43% n=347  VALIDATED w0.46 -> UNVALIDATED
+```
+
+`nhl_prop_l10_extreme` is the one that mattered: the only NHL prop signal
+carrying real weight, and it is **inverted**. On rows where it disagreed
+with a pick we made, our bet won 78.9%; where it agreed, 25.2%. A -53.64pp
+discrimination that holds in both halves.
+
+**Caveat to carry**: these hit rates clear a SIDE baseline, not a price.
+"65% on n=458" is not a profit claim — the price question is R34's band
+table, where MLB `rec=BACK` is +2.91pp / +6.02% ROI.
+
+**Status**: FIXED (e70cffdc). The pick control and the disagreement cell are
+now computed and printed every run; `20261029c` adds the columns to store
+them and the script probes for them, so no second deploy is needed.
+**VERIFY**: `python mlb_pipeline/refit_signal_registry.py --sport MLB --dry-run`
+and read the `PICK CONTROL (prop path)` table.
+
+---
+
+## R36 — CLIENT-SIDE SWEEP (2026-10-29) · one real bug, and a class that is clean
+
+**FIXED · The Fade tab never populated on first open** (e70cffdc). Andy:
+"i always have to swipe up to refresh page to get picks." The Fade fetch sat
+near the END of `fetchSteamFlags`, inside that function's outer `try`, so any
+earlier `await` that threw jumped to `catch { setSteamFlags([]) }` and the
+Fade lines never ran — empty until a pull-to-refresh re-ran the chain. Even
+with nothing throwing it was the last fetch behind a long chain, so the tab
+rendered an empty Fade first regardless. Now its own `fetchFade` callback,
+called FIRST in the steam effect.
+
+**AUDITED, CLEAN · the silent 1000-row PostgREST cap.** A regex sweep flagged
+78 reads with no `.limit()`, which was mostly noise — it was matching
+`.upsert()` writes, `{count:'exact', head:true}` counts, and chains whose
+`.limit()` sits on the next statement. Every candidate was then measured
+against the live row count **with the filters the client actually sends**:
+
+```
+  prop_jerry_reads  sport=NFL, 8-day window (what the client sends)     447
+  prop_jerry_reads  sport=NFL, NO date filter (not what it sends)     4,666
+  external_picks    sport=NFL, +game_id at both call sites          small
+  team_recent_games sport=NFL team=GB                                  477
+  cleatz_signals    snapshot_date=today                                188
+  jerry_reads       game_date>=today                                   174
+  v_prop_track_record / _by_type (whole view)                          2 / 8
+```
+
+Nothing the client sends today returns over 1000 rows. **Not a bug — but the
+margin is thin on `prop_jerry_reads`** (447 of 1000 with NFL alone), so a
+`.limit()` belongs there before NBA and NHL props are ever switched on.
+
+**AUDITED, CLEAN · the Hermes `new Date(toLocaleString(...))` reparse.** All
+four matches in `app/` are comments warning against reintroducing it.
+
+**FIXED · `ExternalPicksPanel` empty state rendered BLACK on a dark card.**
+`styles.emptyText` was referenced and never defined, so it came back
+`undefined` and the Text took React Native's default colour (#000) on a
+`#41586B` card. The one place the panel speaks to a user who has no data was
+the one place it was unreadable. Found by grepping tsc for the
+undefined-style-key class across `app/` — this was the only instance.
+(`feedback_undefined_palette_key_renders_black`.)
+
+**FIXED (preventative) · `.limit(2000)` on the `prop_jerry_reads` client
+read**, the only client query measured anywhere near the 1000-row cap.
+
+**Note on tsc as a gate**: `app/` carries **1,841** pre-existing type errors
+(mostly `TS7006` implicit-any), so a clean `tsc` is not available as a
+pre-build check today. The undefined-style-key class is still greppable out
+of that noise with `does not exist on type` and is worth re-running each
+build — it is the class that ships invisible text.
+
+**Status**: client sweep COMPLETE for this build.
+
+---
