@@ -720,12 +720,48 @@ SAMPLE_MIN_N = 25
 # A weight change moves every published pick, and this one would move them
 # away from home across two sports at once
 # ([[feedback_suppression_gate_needs_shadow]]).
+# == 2026-10-28 . MEASURED FOR ALL FIVE SPORTS ============================
+# Only NFL and NCAAF had entries, so side_baseline() returned None for MLB,
+# NBA and NHL -- and refit_signal_registry._tier_for falls back to its FLAT
+# rule when blind_frac is None. That flat rule is where the favourite bias
+# is manufactured: >=55% earns VALIDATED, while a blind bet on the home
+# side already returns 53.5-57.6% depending on the sport. A favourite-
+# pointing signal at 56% was being stamped VALIDATED for performing WORSE
+# than the one-word rule, and VALIDATED is what the ensemble's credibility
+# floor reads to let a pick reach a card.
+#
+# Measured over full results history on 2026-10-28, Wilson 95%:
+#
+#   P(home wins), moneyline          P(home covers), ATS
+#   MLB    53.5%  n= 4,809           MLB    48.4%  n= 2,136
+#   NFL    56.3%  n= 7,367           NFL    48.9%  n= 7,182
+#   NCAAF  57.6%  n=15,618           NCAAF  50.6%  n= 6,529
+#   NBA    55.0%  n= 2,842           NBA    50.2%  n= 2,431
+#   NHL    54.2%  n= 3,126           NHL    -- no close_spread column
+#
+# TWO OF THE EXISTING VALUES WERE WRONG, which mattered because they were
+# the only two in use: NFL ml was 0.545 against a measured 0.563, and NFL
+# ats 0.513 against 0.489. NCAAF ml 0.589 against 0.576.
+#
+# ATS is computed in each sport's OWN sign convention (verified 10-28:
+# close_spread is a home BETTING spread in MLB/NBA/NCAAF, negative when
+# home is favoured, but a home MARGIN in NFL), pushes excluded.
+#
+# NHL has no ats entry on purpose -- its spread is a puckline fixed at
+# +-1.5 and the results table stores no close_spread, so there is nothing
+# measured to put here. side_baseline() returns None and the caller falls
+# back, which is the documented behaviour: never another sport's number.
 _SIDE_BASELINE = {
     # (sport, market_kind): P(home wins/covers). Away side is 1 - value.
-    ('NFL',   'ml'):  0.545,
-    ('NFL',   'ats'): 0.513,
-    ('NCAAF', 'ml'):  0.589,
-    ('NCAAF', 'ats'): 0.516,
+    ('MLB',   'ml'):  0.535,
+    ('MLB',   'ats'): 0.484,
+    ('NFL',   'ml'):  0.563,
+    ('NFL',   'ats'): 0.489,
+    ('NCAAF', 'ml'):  0.576,
+    ('NCAAF', 'ats'): 0.506,
+    ('NBA',   'ml'):  0.550,
+    ('NBA',   'ats'): 0.502,
+    ('NHL',   'ml'):  0.542,
 }
 
 

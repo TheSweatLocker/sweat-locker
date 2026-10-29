@@ -167,16 +167,34 @@ def breakeven_for(market: str) -> float:
 
 
 def _recommended_weight_for(n: int, hit_rate_frac: float, tier: str,
-                            market: str = '') -> float:
+                            market: str = '',
+                            blind_frac: Optional[float] = None) -> float:
     """Coarse mapping to signal_registry.recommended_weight; ensemble
     scorer's edge_weight() is the runtime authority — this is a hint.
 
     `market` picks the breakeven. Omitting it keeps the -110 default, which
     is correct for rl/total and conservative-high for prop.
+
+    ══ 2026-10-28 · THE BAR MUST BE THE SIDE, NOT JUST THE PRICE ══
+    This measured edge against the PRICE breakeven only, so a signal that
+    points at the home/favourite side was paid for beating 52.4% while a
+    blind bet on that same side already returns 53.5-57.6% by sport.
+    Observed: nba_elo_home_ml_strong — the chip behind the NBA favourite
+    lock — was correctly demoted to UNVALIDATED by _tier_for's control and
+    STILL carried weight 0.3215 from here, because the two functions used
+    different bars. Half a fix is the dangerous state: the tier says
+    "unproven" and the weight says "use me".
+
+    Same shape as edge_weight: a signal must clear the harder of the two
+    bars. `blind_frac` is None wherever nothing is measured (NHL puckline,
+    prop paths), and then this is byte-identical to before.
     """
     if tier == 'ANTI_VALIDATED':
         return 0.0
-    edge = max(0.0, hit_rate_frac - breakeven_for(market))
+    _bar = breakeven_for(market)
+    if blind_frac is not None:
+        _bar = max(_bar, blind_frac)
+    edge = max(0.0, hit_rate_frac - _bar)
     edge_c = min(edge / 0.12, 1.0)
     # ══ 2026-10-27 · LINEAR TO 100, NOT LOGARITHMIC ══════════════════════
     # Was min(log1p(n)/log(101), 1.0), which is far too generous at low n:
@@ -500,7 +518,29 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
     print(f'  [{sport}] signal_attribution graded rows (last {days}d): {len(all_rows)}')
 
     firings: dict[str, dict] = defaultdict(
-        lambda: {'right': 0, 'wrong': 0, 'mkt': Counter()})
+        lambda: {'right': 0, 'wrong': 0, 'mkt': Counter(),
+                 'blind_sum': 0.0, 'blind_n': 0})
+    # == 2026-10-28 . THE CONTROL WAS MISSING ON EXACTLY THIS PATH ========
+    # _tier_for already judges a signal against a blind bet on its own side,
+    # and falls back to a FLAT rule (>=55% earns VALIDATED) when blind_frac
+    # is None. blind_sum was accumulated only on the primary_play path, so
+    # every signal measured through ATTRIBUTION got the flat rule -- and the
+    # flat rule is where the favourite bias is manufactured, because a blind
+    # bet on the home side already returns 53.5-57.6% by sport.
+    #
+    # Observed before this fix: nba_elo_home_ml_strong, the chip behind the
+    # NBA favourite lock, came out DISCOVERY w=0.3215 on hr=60.42% n=48.
+    # Against NBA's measured home-ML baseline of 0.550 its edge is +5.4pp
+    # against a 1SE bar of 7.2pp -- it should not promote at all.
+    #
+    # So the de-biasing is not a new rule, it is supplying the control to the
+    # path that had none (feedback_guard_belongs_at_the_chokepoint, again).
+    # side_baseline returns None where nothing is measured (NHL puckline),
+    # and the coverage gate below still refuses a partial baseline.
+    try:
+        from ensemble_scorer import side_baseline as _sb
+    except Exception:                                          # noqa: BLE001
+        _sb = lambda *_a, **_k: None                            # noqa: E731
     # ══ 2026-10-28 · kind='ok' IS A PLACEHOLDER ON COHORT ROWS ══
     # The kind rule below measured OUR PICK's result on games where a signal
     # fired, for every row the snapshot writer stamps kind='ok' without
@@ -549,6 +589,11 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
             continue
         if verdict: firings[key]['right'] += 1
         else:       firings[key]['wrong'] += 1
+        # the blind rate for the side THIS signal named, same row
+        _bl = _sb(sport, _m, row.get('signal_side'))
+        if _bl is not None:
+            firings[key]['blind_sum'] += _bl
+            firings[key]['blind_n'] += 1
     if _skipped:
         print(f'  [{sport}] {_skipped} attribution row(s) not countable '
               f'(neutral subject / cross-axis / push) — skipped, not defaulted')
@@ -659,7 +704,7 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         _mkt_ct = ct.get('mkt') or {}
         _dom = (max(_mkt_ct.items(), key=lambda z: z[1])[0]
                 if _mkt_ct else '')
-        weight = _recommended_weight_for(n, hr_frac, tier, _dom)
+        weight = _recommended_weight_for(n, hr_frac, tier, _dom, blind)
         out.append({
             'signal_name': signal_key,
             'category': _infer_category(signal_key),
