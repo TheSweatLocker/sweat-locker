@@ -1199,6 +1199,57 @@ def main(force: bool = False, sport: str | None = None,
             total += run_for_sport(s, gd, template, force=force, limit=limit, tier_gate=tier_gate)
     print(f'\n=== wrote {total} prop_jerry_reads across {len(game_dates)} date(s) ===')
 
+    # ══ 2026-10-29 · CAPTURE THE RECEIPT AT PUBLISH TIME ════════════════
+    # Prop Jerry had NO live capture. Measured the same day over receipts
+    # for games from 10-22:
+    #     sweat_card  28 live / 3 reconstructed   90.3% live
+    #     sharp_card  57 live / 3                 95.0% live
+    #     prop_jerry   0 live / 925                0.0% live
+    # Every prop receipt existed only because backfill_public_receipts
+    # rebuilt it afterwards, which stamps capture_mode='reconstructed'.
+    # capture() was wired into the sweat card, sharp card, dawg, POTD and
+    # fade publishers and never here, and the backfill kept the table
+    # looking full so nothing went red.
+    #
+    # That is why no prop record can be published: on the curated surfaces
+    # where both modes exist the reconstructed half reads 59.40% / +5.06%
+    # and the LIVE half 56.00% / -3.65%, so a prop claim sourced from
+    # reconstructed rows is a claim the live record contradicts.
+    #
+    # Reads the rows back rather than capturing from the in-memory pick, so
+    # the receipt carries the stored id and the stored values — the same
+    # source the backfill uses, which is what keeps the two paths
+    # byte-identical. BACK/FADE only; a PASS is not a published play.
+    # Never raises: capture() swallows its own errors, and the try/except
+    # is here so a receipts problem can never cost the slate its reads.
+    try:
+        from public_receipt import capture as _capture, prop_jerry_rows as _pj_rows
+        for gd in game_dates:
+            for s in sports:
+                r = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/prop_jerry_reads',
+                    headers=H_READ,
+                    params={'select': 'id,sport,game_id,game_date,player_name,'
+                                      'prop_type,direction,prop_line,conviction,'
+                                      'book_odds,call_verdict',
+                            'sport': f'eq.{s}', 'game_date': f'eq.{gd}',
+                            'call_verdict': 'in.(BACK,FADE)', 'limit': '2000'},
+                    timeout=60)
+                if r.status_code not in (200, 206):
+                    print(f'  ⚠ receipts (prop_jerry) {s} {gd}: read-back '
+                          f'{r.status_code} — not captured')
+                    continue
+                rows = _pj_rows(r.json() or [], s)
+                if not rows:
+                    continue
+                res = _capture(rows, surface='prop_jerry')
+                print(f'  receipts (prop_jerry) {s} {gd}: '
+                      f"written={res.get('written')} failed={res.get('failed')} "
+                      f"skipped={res.get('skipped')}")
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  ⚠ prop_jerry receipt capture unavailable '
+              f'({type(_e).__name__}: {_e}) — reads are unaffected')
+
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()

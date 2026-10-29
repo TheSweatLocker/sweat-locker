@@ -748,6 +748,88 @@ def _sweat_market(raw: str) -> str:
     return _SWEAT_MARKET.get(t, t or 'unknown')
 
 
+def prop_jerry_rows(reads: list, sport: str) -> list[dict]:
+    """Receipt rows for Prop Jerry picks, for capture AT PUBLISH TIME.
+
+    == 2026-10-29 · PROP JERRY HAD NO LIVE CAPTURE AT ALL ==
+    Measured on 10-29 over receipts for games from 10-22:
+
+        surface        live  reconstructed  live%
+        sweat_card       28         3       90.3%
+        sharp_card       57         3       95.0%
+        prop_jerry        0       925        0.0%
+
+    Zero. Every prop receipt in the table exists only because
+    backfill_public_receipts rebuilt it afterwards, and that path stamps
+    capture_mode='reconstructed' by design. capture() is called from the
+    sweat card, sharp card, dawg, POTD and fade publishers — props were
+    simply never wired in, and nothing noticed because the backfill kept
+    the table looking full.
+
+    It is the reason the prop record cannot be published. Same day, on the
+    curated prop surfaces where both modes exist:
+
+        curated props  reconstructed  59.40%  ROI +5.06%
+        curated props  live           56.00%  ROI -3.65%
+
+    — the edge is in the reconstructed half only. With prop_jerry at 0%
+    live there is no honest prop number to quote at all, for any sport.
+
+    SHAPE IS COPIED FROM backfill_prop_jerry DELIBERATELY: same pick_label,
+    same FADE flip, same `audit.side_convention='backed'` stamp. A live row
+    and a backfilled row for the same read must be indistinguishable, or
+    the two paths grade differently (the 10-04 two-conventions mess is
+    exactly that failure, and it left 123 fade receipts permanently
+    unsettleable).
+
+    PASS reads are NOT captured. A receipt is the record of a play we
+    published; a PASS is the record of one we declined, and writing it as a
+    pick is how a denominator gets inflated with plays nobody made.
+    """
+    out: list[dict] = []
+    for row in (reads or []):
+        if not isinstance(row, dict):
+            continue
+        verdict = str(row.get('call_verdict') or '').upper() or None
+        if verdict not in ('BACK', 'FADE'):
+            continue                      # PASS / unset is not a published pick
+        direction = str(row.get('direction') or '').lower()
+        # A FADE backs the OPPOSITE of the prop's own side.
+        backed = direction
+        if verdict == 'FADE' and direction in ('over', 'under'):
+            backed = 'under' if direction == 'over' else 'over'
+        try:
+            odds_int = (int(row['book_odds'])
+                        if row.get('book_odds') is not None else None)
+        except (TypeError, ValueError):
+            odds_int = None
+        line = row.get('prop_line')
+        out.append({
+            'sport': row.get('sport') or sport,
+            'game_id': row.get('game_id'),
+            'surface': 'prop_jerry',
+            'market': 'prop',
+            'game_date': row.get('game_date'),
+            'player_name': row.get('player_name'),
+            'prop_type': row.get('prop_type'),
+            'pick_side': backed.upper() if backed in ('over', 'under') else None,
+            'pick_line': line,
+            'pick_odds': odds_int,
+            'matchup': None,
+            'pick_label': (
+                f"{row.get('player_name', '')} "
+                f"{(backed or direction).upper()} {line} {row.get('prop_type', '')}"
+                f" @ {odds_int if odds_int else '?'}"
+            ),
+            'tier': None,
+            'conviction': row.get('conviction'),
+            'source_table': 'prop_jerry_reads',
+            'source_id': str(row.get('id')),
+            'audit': {'call_verdict': verdict, 'side_convention': 'backed'},
+        })
+    return out
+
+
 def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
     """Shape a published Sweat Card into receipt rows.
 
