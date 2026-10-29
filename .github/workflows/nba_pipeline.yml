@@ -285,6 +285,35 @@ jobs:
           cd mlb_pipeline
           python signal_attribution_grade.py --sport NBA --days 7
 
+      # == 2026-10-28 . CLOSE THE LOOP: REFIT NBA'S OWN WEIGHTS ========
+      # The snapshot and grade steps above were added today, so attribution
+      # finally accumulates for NBA. But refit_signal_registry -- the step
+      # that turns graded attribution into weights -- is scheduled ONLY from
+      # mlb_pipeline.yml and mlb_refit_weekly.yml. MLB is in the World
+      # Series; when it stops running, NBA's weights would never refit
+      # again, and every NBA game signal would sit on the unmeasured
+      # prior forever. That is the loop Andy asked for on 10-27 -- "every
+      # signal recorded per pick and attributed WEEKLY so weighting can be
+      # tuned per sport" -- and its last link was owned by another sport.
+      #
+      # Each sport now refits its own. min-n 10 matches the floor raised on
+      # 10-27 (99 weighted signals -> 163).
+      #
+      # As of tonight NBA has 0 of 32 enabled GAME signals with a
+      # measured hit rate, so the first runs will mostly write
+      # UNVALIDATED/ANTI_VALIDATED -- which is the honest state and is what
+      # makes the direction-only control (fixed 10-28) start to bite as
+      # volume arrives rather than after the bias is entrenched.
+      - name: Refit NBA signal weights from graded attribution
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python refit_signal_registry.py --sport NBA --days 90 --min-n 10
+
       # 2026-08-25: refresh home/road tendencies materialized view after
       # results resolver. Powers the Trends & Tendencies card in the NBA
       # slot redesign. Uses refresh_home_road_tendencies(sport) RPC from

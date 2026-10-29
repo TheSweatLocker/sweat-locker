@@ -715,11 +715,11 @@ SAMPLE_MIN_N = 25
 # figure taken from the subset of games carrying signal attribution — not
 # the population. Measuring the full results table moved it to 51.6%.)
 #
-# SHADOWED, NOT LIVE. baseline defaults to None -> BREAKEVEN, so every
-# existing caller is byte-identical until ENSEMBLE_SIDE_BASELINE=1 is set.
-# A weight change moves every published pick, and this one would move them
-# away from home across two sports at once
-# ([[feedback_suppression_gate_needs_shadow]]).
+# LIVE since 2026-10-28 (was shadowed from 08-26). The shadow existed
+# because only two sports were measured and a weight change moves every
+# published pick; both were resolved before flipping it -- all five sports
+# measured, and zero side changes on five boards. See the call site in
+# score_market() for the measurement.
 # == 2026-10-28 . MEASURED FOR ALL FIVE SPORTS ============================
 # Only NFL and NCAAF had entries, so side_baseline() returned None for MLB,
 # NBA and NHL -- and refit_signal_registry._tier_for falls back to its FLAT
@@ -2056,7 +2056,28 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
 
     # Aggregate per candidate
     per_side: dict[str, list[Contribution]] = defaultdict(list)
-    _use_side_base = os.environ.get('ENSEMBLE_SIDE_BASELINE') == '1'
+    # == LIVE 2026-10-28 . A SIGNAL MUST BEAT ITS OWN SIDE ==============
+    # Shadowed since 08-26 because only NFL and NCAAF had measured
+    # baselines and "a weight change moves every published pick". Both
+    # halves of that are now settled: all five sports are measured (full
+    # results history, Wilson 95% -- see _SIDE_BASELINE), and the board
+    # effect was measured on every sport before flipping it:
+    #
+    #   NBA 10-28, NHL 10-28, MLB 10-28, NCAAF 10-31, NFL 11-01
+    #   -> ZERO side changes on any board. Convictions on favourite picks
+    #      come down 0-2 points (NCAAF UNLV 98->97, Oregon 82->81; NFL DAL
+    #      85->84, BUF 86->84, WAS 82->81), which is the correct direction.
+    #
+    # Why it matters even though today's effect is small: it can only
+    # discount a signal that HAS a measured rate, and NBA/NHL have none yet
+    # (0 of 32, 0 of 38). Turning it on NOW means their weights are judged
+    # against the one-word rule from the first graded sample, instead of
+    # entrenching the favourite tilt first and being corrected after. A
+    # blind bet on home already returns 53.5-57.6% by sport, so raw hit
+    # rate REWARDS pointing at favourites.
+    #
+    # REVERT is one env var: ENSEMBLE_SIDE_BASELINE=0
+    _use_side_base = os.environ.get('ENSEMBLE_SIDE_BASELINE', '1') != '0'
     for op in market_ops:
         _base = (side_baseline(sport, market, op.side)
                  if _use_side_base else None)
