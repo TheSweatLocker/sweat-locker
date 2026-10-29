@@ -775,11 +775,35 @@ def side_baseline(sport: Optional[str], market: Optional[str],
     """
     if not sport or not side:
         return None
-    kind = 'ml' if str(market).lower() == 'ml' else 'ats'
+    # == 2026-10-28 . OVER/UNDER IS A DIFFERENT AXIS =====================
+    # This fell out of adding MLB/NBA/NHL entries and turning the flag on:
+    # the home/away test below is `startswith('HOME')`, so ANY other side
+    # fell through to `1.0 - base`. A game TOTAL therefore collected the
+    # ATS baseline --
+    #     NBA total OVER -> 0.498 and UNDER -> 0.498
+    # -- the same number for both sides, which is self-evidently not a
+    # baseline for either, and a spread cover rate says nothing about a
+    # total anyway. It was previously invisible because MLB/NBA/NHL had no
+    # entries at all (None) and the flag was off for NFL/NCAAF.
+    #
+    # Currently INERT rather than harmful: totals signals are unmeasured,
+    # so edge_weight returns its floor regardless of the bar. It would have
+    # started biting the moment a totals signal earned a hit rate.
+    #
+    # Return None for anything that is not a home/away side. None means
+    # "nothing measured for this" and the caller falls back to BREAKEVEN --
+    # never to a guess, and never to another axis's number.
+    _s = str(side).strip().upper()
+    if not (_s.startswith('HOME') or _s.startswith('AWAY')):
+        return None
+    _mk = str(market or '').strip().lower()
+    if _mk in ('total', 'totals', 'ou', 'over_under'):
+        return None
+    kind = 'ml' if _mk == 'ml' else 'ats'
     base = _SIDE_BASELINE.get((str(sport).upper(), kind))
     if base is None:
         return None
-    return base if str(side).upper().startswith('HOME') else 1.0 - base
+    return base if _s.startswith('HOME') else 1.0 - base
 
 
 def edge_weight(hit_rate: Optional[float], n: int,
