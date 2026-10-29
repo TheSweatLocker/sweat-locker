@@ -1616,3 +1616,78 @@ firings per signal, under the n>=10 floor.
 * 8 receipts froze an impossible spread price and cannot be repaired
   (`pick_odds` freezes on first write); the guard now refuses them at
   `sanitize()`, which both write paths call.
+
+## R27 — PUBLISHED vs ENGINE, tonight. The flags are not the story
+
+Andy: *"What pkcks would ahve chnagedntonihgt vs what is published ti bnsuers"*
+
+**What tonight's two flag changes would have changed: 1 pick of 19.**
+
+```
+Los Angeles Lakers @ LA Clippers   LA Clippers -1.5  ->  Los Angeles Lakers ML
+```
+Plus 6 conviction trims: NBA DEN 70->67, PHI 67->62; NHL EDM 82->81,
+COL 97->93, WAS 84->82, TOR 62->63 (up); NCAAF MTSU 74->68. No other side
+moved on any sport.
+
+**But published differs from the engine's current view on 11 of 19, and the
+flags are not why.** Three separate causes, all pre-existing:
+
+### 1. lr_v1 authored 8 of 19 published picks, and promoted 5 from COVERAGE
+
+```
+MLB    1 of 1     NHL  3 of 4     NBA  3 of 12     NCAAF  1 of 2
+```
+`audit_note` on five of them reads `LR override · p=0.6x · was COVERAGE/ml`
+-- lr_v1 publishing picks the ensemble had rated COVERAGE, i.e. info-only
+and not card-eligible. This is `project_lr_v1_override_erases_attribution_1027`,
+where lr_v1 measured **42.0% against the ensemble's 57.1% (n=50)** on
+judgeable side flips.
+
+Trail erasure is partly repaired: `_ensemble_sources` is wiped to 0 chips on
+tonight's NHL lr_v1 picks and on NCAAF 10-31 (15 of 15), but rows written
+10-29 onward keep their chips. So 3a7e38aa fixed the trail going forward and
+did NOT stop the override.
+
+### 2. Three published picks are the OPPOSITE side of the engine's view
+
+```
+MLB  World Series   published Tampa Bay Rays ML (lr_v1, p=0.62)
+                    ensemble now: Milwaukee Brewers ML, conv 84
+NHL  TOR @ SEA      published Seattle Kraken ML, CONVICTION 0
+                    ensemble now: Toronto Maple Leafs, conv 63
+NCAAF KENN @ MTSU   published Kennesaw State +3.5
+                    ensemble now: Middle Tennessee ML
+```
+
+The NHL one is its own defect: conviction **0**, and its own audit note says
+the gate refused it -- *"NHL ML confidence gate: home wp 0.523 < 0.56: that
+band is 11-18 (37.9%)"*. The engine declined and we published it anyway,
+which is exactly what 44fb3ef7 was meant to stop. Still live.
+
+### 3. 11 of 12 NBA picks published tonight are tier COVERAGE
+
+Published as game reads regardless. Their own notes say why the engine has
+no opinion:
+
+```
+ensemble_scorer v2 · NBA · 1 sources · score=0      x3
+NBA LR sees coin flip (p=0.49) — legacy demote      x4
+NBA LR ML too juicy (>-300) — coverage · rerouted   x2
+LR override · p=0.6x · was COVERAGE/ml              x3
+```
+
+Only Detroit carries STRONG, and that is lr_v1-promoted from COVERAGE. So
+the honest answer to "what would have changed" on NBA is *very little*,
+because the engine barely has an opinion to change -- consistent with 0 of
+32 NBA game signals having a measured hit rate.
+
+**Caveat stated plainly:** the fresh recompute is not automatically "right".
+The published pick was made earlier, on less complete data, and the pick
+lock preserves it deliberately -- that is correct behaviour, not a bug. What
+is a bug is lr_v1 overriding a declined pick, and a conviction-0 pick
+reaching users.
+
+**Next actions, not yet done:** make lr_v1 MERGE rather than replace (the
+10-27 recommendation, still open); and refuse to publish a read whose own
+gate declined it.
