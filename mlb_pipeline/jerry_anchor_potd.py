@@ -500,7 +500,23 @@ def _potd_odds(winner: dict, gd: str) -> int | None:
                     "limit": "5"},
             timeout=8,
         )
+        # == 2026-10-28 . THE MARKET MUST MATCH ==========================
+        # This selected `call_market` and then never read it, so the
+        # fallback would hand a POTD whatever price the first jerry_reads
+        # row for that game happened to carry. A POTD is often a PROP
+        # ("Logan Henderson Over 14.5 Outs") while the read for the same
+        # game is a moneyline -- so the prop would have shipped at the
+        # game's ML price, which is a fabricated number in a published
+        # ROI, not an approximation of one.
+        #
+        # Same shape as the spread picks shown at -650 tonight, and as the
+        # POTD select bug this function was written to fix. Fetching a
+        # column and not using it is the tell.
+        _want = str(winner.get('call_market') or '').strip().lower()
         for row in (rr.json() if rr.status_code == 200 else []):
+            _got = str(row.get('call_market') or '').strip().lower()
+            if _want and _got and _want != _got:
+                continue
             iv = _as_int(row.get('price_american'))
             if iv is not None:
                 return iv
