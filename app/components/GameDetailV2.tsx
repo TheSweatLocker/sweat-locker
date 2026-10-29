@@ -3313,8 +3313,46 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
     const rec = cohortTagRecords[`${t}|ats`] || cohortTagRecords[`${t}|ml`];
     let kind: 'ok' | 'warn' | 'neutral' = 'neutral';
     let value = 'active';
+    // 2026-10-29 . ANDY: "i dont like the 48% Home fav badge seems
+    // meaningless." He is right, and it is not one badge -- it is all of
+    // them. A cohort chip only earns its place if acting on it beats the
+    // juice, so the test is a Wilson interval against breakeven, not a
+    // magic 58. Measured on all ten rows of cohort_tag_records:
+    //
+    //   NFL   nfl_home_fav          48.19% n=4665  CI[46.8,49.6]
+    //   NCAAF ncaaf_home_fav        49.88% n=4222  CI[48.4,51.4]
+    //   NFL   nfl_div_home_cover    47.84% n=2245  CI[45.8,49.9]
+    //   NFL   nfl_outdoor_under     53.16% n=1870  CI[50.9,55.4]
+    //   NCAAF ncaaf_heavy_home_dog  51.86% n=1234  CI[49.1,54.6]
+    //   NCAAF ncaaf_heavy_home_fav  52.02% n=1190  CI[49.2,54.8]
+    //   NCAAF ncaaf_shootout        48.23% n= 958  CI[45.1,51.4]
+    //   NFL   nfl_dome_over         51.34% n= 744  CI[47.8,54.9]
+    //   NFL   nfl_heavy_home_dog    55.86% n= 512  CI[51.5,60.1]
+    //   NCAAF ncaaf_grinder         43.32% n= 337  CI[38.1,48.7]
+    //
+    // ZERO of ten clear 52.38% in either direction -- not even the grinder
+    // as a fade, whose other side comes in at CI low 51.3%. Every one of
+    // these is priced. The numbers are honest (they come from 337-4,665
+    // real games, not from our picks) and that is exactly the problem: a
+    // true fact that implies an edge we do not have, sitting on a chip next
+    // to this game's teams, identical on every card the cohort fires on.
+    //
+    // So a cohort that does not clear is SUPPRESSED rather than shown
+    // "neutral". Today that hides all ten. That is the correct amount of
+    // cohort signal to show, because it is how much we have.
     if (rec && rec.sample_n >= 30) {
       const hp = Number(rec.hit_rate);
+      const _cn = Number(rec.sample_n);
+      const _ck = (hp / 100) * _cn;
+      const _p = _ck / _cn, _z = 1.96, _d = 1 + (_z * _z) / _cn;
+      const _c = (_p + (_z * _z) / (2 * _cn)) / _d;
+      const _m = (_z * Math.sqrt((_p * (1 - _p)) / _cn
+                 + (_z * _z) / (4 * _cn * _cn))) / _d;
+      const ciLo = 100 * (_c - _m), ciHi = 100 * (_c + _m);
+      const BE_ATS = 52.38;   // median -110 payout; see feedback_flat_110...
+      const followClears = ciLo > BE_ATS;
+      const fadeClears = (100 - ciHi) > BE_ATS;
+      if (!followClears && !fadeClears) continue;   // priced - say nothing
       // 2026-09-17: fade threshold tightened from < 52 → < 47. Andy
       // caught "Home Favorite · 48.51% · fade" — fading a 48.51%
       // trend nets 51.49% return, still BELOW breakeven ~52.4% at
@@ -3337,11 +3375,11 @@ function SignalsRow({ctx, gamesSport, cohortTagRecords = {}}: any) {
       // standing rule that every published percentage carries its
       // sample. "hits 51.7% (n=310)" is unambiguously a track record.
       const _n = rec.sample_n;
-      if (hp >= 58) { kind = 'ok'; value = `hits ${hp}% (n=${_n}) · follow`; }
-      else if (hp < 47) { kind = 'warn'; value = `hits ${hp}% (n=${_n}) · fade`; }
-      else { kind = 'neutral'; value = `hits ${hp}% (n=${_n})`; }
-    } else if (rec) {
-      value = `hits ${Number(rec.hit_rate)}% (n=${rec.sample_n})`;
+      if (followClears) { kind = 'ok'; value = `hits ${hp}% (n=${_n}) · follow`; }
+      else { kind = 'warn'; value = `hits ${hp}% (n=${_n}) · fade`; }
+    } else {
+      // Under 30 graded games the cohort has no record worth a chip either.
+      continue;
     }
     // 2026-09-15: use COHORT_LABEL_MAP for user-facing labels — was
     // showing raw "nfl home fav" text. Andy audit callout: "the whole
