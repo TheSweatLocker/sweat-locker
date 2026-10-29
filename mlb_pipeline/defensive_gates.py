@@ -2796,6 +2796,88 @@ def recover_pick_line(pp: dict | None, ctx: dict) -> dict | None:
 recover_total_line = recover_pick_line
 
 
+def apply_stored_edge_cap(pp: dict | None) -> dict | None:
+    """Cap a bettable tier whose OWN stored model edge is non-positive.
+
+    ══ 2026-10-29 · THE EDGE CAP RAN IN ONE PATH, NOT AT THE CHOKEPOINT ══
+    Andy, on tonight's CAR @ GB: "is data pointing the right way for each
+    pick and the engine logically selected data driven pick?"
+
+    Measured across the whole live NFL slate, counting only picks that carry
+    a `_model_edge_pp`:
+
+        positive edge  2
+        NEGATIVE edge 17
+        no edge stored 20
+
+    Not an outlier — the rule. And the picks say it themselves in their own
+    sub line, which is what renders under the badge:
+
+        GB -4.5   "63% vs 71% implied - -8.0pp edge"   tier LEAN
+        CHI ML    "59% vs 66% implied - -6.8pp edge"   tier COVERAGE
+        KC -4.5   "64% vs 69% implied - -5.2pp edge"   tier LEAN
+        PIT -4.5  "64% vs 69% implied - -4.6pp edge"   tier LEAN
+        DET ML    "58% vs 63% implied - -5.0pp edge"   tier COVERAGE
+
+    Several are LEAN, i.e. ACTIONABLE. A tier is a claim to have an edge over
+    the market; publishing LEAN on a number our own model says is worse than
+    the price is the claim inverted. It also explains the record: NFL curated
+    spreads run 27.78% with ROI -32.25% (n=18).
+
+    WHY IT WAS MISSED. cap_tier_for_edge already implements exactly this
+    rule, and has since it was written — but the only call site is inside
+    _apply_ml_lr_override_impl. A pick that never goes through the LR
+    override never meets it, and one that is re-tiered afterwards keeps the
+    higher tier. That is feedback_guard_belongs_at_the_chokepoint, the same
+    shape as the juice trap and the unpriced-market gate, both of which have
+    notes in this file about being moved AFTER the override for this reason.
+
+    This runs LAST, just before the publish gate, so every pick reaches it
+    however it was built — legacy compose, LR override, or heavy-ML reroute.
+
+    It reads the edge ALREADY ON THE PICK rather than recomputing from a
+    price: the figure is stored by whoever computed it, so this cannot
+    disagree with the number the card prints. A pick with no stored edge is
+    LEFT ALONE — an unknown edge is not evidence of a bad one, which is the
+    same reasoning cap_tier_for_edge documents for a missing price.
+    """
+    if not isinstance(pp, dict):
+        return pp
+    # A HAND-SET PICK IS EXEMPT, and tonight is the reason. GB -3.5 was set
+    # deliberately as a PUBLIC FADE — 66% of bets and 76% of the money on
+    # Carolina, against the one rule in this system that has held up under
+    # testing (+12.4%, n=107). Its model edge is -0.75pp BY DESIGN: the
+    # thesis is that the model is not the evidence here, the money is. A
+    # model-edge gate must not silently demote a decision taken on other
+    # grounds, which is the same reasoning that keeps lr_v1 off a manual
+    # pick (feedback_lock_must_see_a_manual_decision).
+    if any(pp.get(k) for k in _MANUAL_MARKERS):
+        return pp
+    e = pp.get('_model_edge_pp')
+    if not isinstance(e, (int, float)):
+        return pp
+    t = str(pp.get('tier') or '').upper()
+    if t not in ('PRIME', 'STRONG', 'LEAN'):
+        return pp
+    try:
+        from model_edge import NO_EDGE_PP, NO_EDGE_TIER_CAP
+    except Exception:                                      # noqa: BLE001
+        NO_EDGE_PP, NO_EDGE_TIER_CAP = 0.0, 'COVERAGE'
+    if float(e) > NO_EDGE_PP:
+        return pp
+    out = dict(pp)
+    out['tier'] = NO_EDGE_TIER_CAP
+    _prev = out.get('_edge_cap') or {}
+    out['_edge_cap'] = {'from': t, 'to': NO_EDGE_TIER_CAP,
+                        'reason': f'stored edge {float(e):+.2f}pp is not '
+                                  f'positive - capped at the chokepoint',
+                        'prior': _prev or None}
+    out['_stored_edge_cap_applied'] = True
+    print(f"  [gate] {str(pp.get('label'))[:26]} edge {float(e):+.2f}pp "
+          f"-> tier {t} capped to {NO_EDGE_TIER_CAP}")
+    return out
+
+
 def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') -> dict | None:
     """Apply all defensive gates in the canonical order:
     OC flip → MC dissent → juice-trap → NCAAF large-spread → publish gate.
@@ -2974,6 +3056,7 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # These gates catch pipeline-side contradictions BEFORE they render.
     pp = apply_vault_fade_dissent_gate(pp, ctx)
     pp = apply_trap_game_gate(pp, ctx, sport=sport)
+    pp = apply_stored_edge_cap(pp)
     pp = apply_publish_gate(pp, ctx)
     return pp
 
