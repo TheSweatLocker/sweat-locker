@@ -171,10 +171,33 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
         )
         if existing.status_code == 200:
             rows = existing.json()
-            if rows and rows[0].get('prompt_version') and \
-               not str(rows[0].get('prompt_version')).endswith('_ctx_bridge_v1'):
-                skipped += 1
-                continue
+            # ══ 2026-10-29 · prompt_version IS NOT PROOF OF PROSE ════════
+            # This skipped on the version string ALONE, which is cruder than
+            # the content test further down and ran before it, so the
+            # content test never got a say.
+            #
+            # Tonight's CAR @ GB carried prompt_version
+            # 'nfl_game_read_v2_2026-08-06' with a short_read and long_read
+            # that were both the same 45 characters:
+            #     "GB ML · GB · 63% vs 66% implied · -3.4pp edge"
+            # — the scorer's own summary line, not a write-up. The pick was
+            # then changed to CAR +3.5 and this bridge refused to carry it
+            # across, leaving the app showing GB ML for a game that night.
+            #
+            # The 08-29 guard this implements is still right: a real
+            # generated read must never be replaced by a bridge stub. It
+            # just has to judge the ROW, not its label. So the version check
+            # now also requires substantive content — which is the same test
+            # the placeholder branch below applies, hoisted so the two
+            # cannot disagree.
+            if rows:
+                _pv = str(rows[0].get('prompt_version') or '')
+                _s = (rows[0].get('short_read') or '').strip()
+                _l = (rows[0].get('long_read') or '').strip()
+                _has_prose = len(_s) >= 60 and len(_l) >= 300
+                if _pv and not _pv.endswith('_ctx_bridge_v1') and _has_prose:
+                    skipped += 1
+                    continue
 
         # Try to find narrative from jerry_cache. cache_key format is
         # game_read_{game_id}_{generation_date} — generation_date != game_date

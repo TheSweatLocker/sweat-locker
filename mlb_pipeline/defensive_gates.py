@@ -1171,8 +1171,51 @@ def respect_discipline_cap(new_pp, old_pp):
     return new_pp
 
 
+#: primary_play keys that mark a decision a HUMAN made. lr_v1 must not
+#  overwrite any of them.
+_MANUAL_MARKERS = ('_manual_correction', '_manual_override', '_manual_pick')
+
+
 def _apply_ml_lr_override_impl(pp, ctx, model, sport):
     if model is None: return pp
+
+    # ══ 2026-10-29 · lr_v1 DELETED A HAND-SET PICK, TWICE IN ONE DAY ═════
+    # Andy, tonight: "Primary play for GB game tonight still says GB ML but
+    # CAR +3.5 on pregame badges."
+    #
+    # Exactly that. CAR @ GB was corrected to CAR +3.5 at 15:38Z through
+    # set_manual_pick, verified stored as LEAN/rl/AWAY with
+    # _manual_correction set. This function then ran again and put it back:
+    #
+    #   label        GB ML        tier COVERAGE     _engine lr_v1
+    #   audit_note   "LR override · p=0.65 · was LEAN/rl"
+    #   _manual_correction   GONE
+    #
+    # It states in its own note that it replaced a LEAN/rl pick, and because
+    # every path here builds a FRESH new_pp, the manual marker went with it —
+    # so nothing downstream could even tell a human decision had been
+    # overwritten. jerry_reads kept CAR +3.5, which is why the badge and the
+    # primary play disagreed on the same screen.
+    #
+    # It also overrode onto a NEGATIVE edge: GB at -195 implies 66.1% and
+    # the model said 63-65%, which the sub line admits ("no edge"). So the
+    # override traded a measured spread lean for a moneyline it knew it
+    # could not price.
+    #
+    # This is feedback_lock_must_see_a_manual_decision recurring — the same
+    # class that wiped a published POTD — and it compounds
+    # project_lr_v1_override_erases_attribution_1027, where lr_v1's side
+    # flips measured 42.0% against the ensemble's 57.1% on n=50.
+    #
+    # A human decision outranks every model in this file. Refuse, loudly,
+    # and return the pick untouched.
+    if isinstance(pp, dict):
+        _mk = next((k for k in _MANUAL_MARKERS if pp.get(k)), None)
+        if _mk:
+            print(f'  🛑 {sport} LR override REFUSED — {_mk} present '
+                  f'({pp.get("label")!r} {pp.get("tier")}/{pp.get("type")}). '
+                  'A hand-set pick outranks lr_v1.')
+            return pp
     try:
         pred = _lr_predict_ml(ctx, model=model)
         if pred is None: return pp
