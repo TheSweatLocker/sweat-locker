@@ -1745,3 +1745,65 @@ restriction — it inverts.
    and 11 of 12 NBA picks published at tier COVERAGE. A trust claim, not a
    performance claim.
 4. Measured signals (NBA 0 of 32, NHL 0 of 38). The real fix; needs weeks.
+
+## R29 — ITEMS 2 AND 3: one dissolved, one is not shippable on evidence
+
+Worked down the list Andy approved. Item 1 shipped (see 1ea05257).
+
+### Item 2 — NCAAF spreads: DISSOLVED BY ITEM 1
+
+The -10.54pp gap was measured on ALL NCAAF spread picks. The rerouted
+heavy-fav MLs ARE spread picks in that population:
+
+```
+ALL spread picks      n=341  ours 50.1%  -4.27%  vs always-HOME +8.05%  -12.32pp
+REROUTED (blocked)    n= 49  ours 36.7% -29.87%                         -35.06pp
+NATIVE spread picks   n=292  ours 52.4%  +0.03%  vs always-HOME +8.53%   -8.50pp
+  native first half   n=146                                            -14.38pp
+  native second half  n=146                                             -2.62pp
+```
+
+Removing the reroutes takes NCAAF spreads from -4.27% to **breakeven
+(+0.03%)**, and the residual gap **fails split-half** (-14.38 -> -2.62).
+**Correction: my "holds both halves" claim was measured on the population
+that included the reroutes.** No further action justified.
+
+NFL, same test: native picks lose in both halves (-12.50% / -16.00%, n=49)
+-- that part holds -- but "always-DOG +23.17%" is one half carrying it
+(+3.41% then +29.82%). B209 already refuses NFL spreads on both curated
+surfaces; extending it to game_read is a product decision, not an evidence
+gap.
+
+### Item 3 — NOT shippable. Conviction-0 picks are not losing
+
+```
+jerry_reads conviction 0   228 published, 41 graded  win 56.1%  ROI +6.17%
+receipts    conviction 0   143 reached users, 52 graded  win 51.9%
+```
+
+Suppressing them would not improve results. The declined-then-published
+subsets by gate reason:
+
+```
+gate reason        published  graded   win%
+coin flip                 88      55  56.4%
+too juicy                 75      46  52.2%
+confidence gate           26       6  66.7%   n too small
+```
+
+**AND THE ROI COLUMN ON THOSE IS UNUSABLE — caught before quoting it.**
+NCAAF "too juicy" printed -100.00% ROI next to a 50.0% win rate, which is
+arithmetically impossible. Cause: only **5 of 20** rows carry a price, all
+5 lost, so the ROI is computed on 5 rows while the win rate is on 20.
+
+### THE REAL BLOCKER, surfaced by items 2 and 3
+
+**We cannot evaluate these selection decisions because most rows have no
+price.** 1,431 graded receipts are still unpriced (down from 1,949 today).
+Every suppression question -- items 2, 3 and the R7/R1 decisions -- needs
+ROI, and ROI needs a price on each row. Win rate alone cannot settle them:
+"coin flip" picks hit 56.4% and still plausibly lose money on juice.
+
+So the honest next priority is NOT another selection change. It is finishing
+the price backfill, which is mechanical and already half done. Then items
+2 and 3 become answerable instead of arguable.
