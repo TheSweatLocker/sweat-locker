@@ -4,7 +4,46 @@
 editor and Run once.** Idempotent (`IF NOT EXISTS` + a NOT-EXISTS guard),
 read-neutral — new nullable columns and new signal rows only.
 
-## ⚠ The first paste of this failed. Fixed 2026-10-29.
+## ⚠ TWO failed pastes. Now uses only a shape proven in this DB.
+
+**Attempt 2** returned `42P01: relation "a" does not exist`. There is no
+identifier `a` anywhere in the file — verified by stripping every string and
+comment, which leaves only `AS`, `s` and `v` — so Postgres did not produce
+that from this text. The client mangled the
+`INSERT … SELECT … FROM (VALUES …) AS v(…)` construct with its `::` casts.
+
+Attempt 1 reached the INSERT (it failed with 42P10), which proves the
+`ALTER`, the `COMMENT` and multi-statement execution are all fine. The fault
+was isolated to the one thing that changed.
+
+So the INSERT is now **six separate
+`INSERT … SELECT … WHERE NOT EXISTS` statements**, the shape 20260911c uses
+— verified still live in this database, 4 rows at origin
+`SEEDED_QB_SPLITS_911`. No derived table, no alias, no `::` cast, and no
+`''` escape anywhere outside comments (the one in the `COMMENT ON COLUMN`
+was reworded away). A NOT-EXISTS guard also cannot raise 42P10, since it has
+no conflict target at all.
+
+All six conditions were re-replayed through `signal_expr` **after**
+regeneration, reading the expressions back out of the file rather than
+trusting the generator:
+
+```
+signal                        GOOD  NEAR  BLANK  stren  side
+nba_shooting_exploit_home     True False  False  0.436  HOME_RL
+nba_shooting_exploit_away     True False  False  0.436  AWAY_RL
+nba_ball_security_home        True False  False  0.426  HOME_RL
+nba_ball_security_away        True False  False  0.426  AWAY_RL
+nba_foul_leverage_home        True False  False  0.340  HOME_RL
+nba_foul_leverage_away        True False  False  0.340  AWAY_RL
+swallowed-error report: EMPTY
+```
+
+NEAR is a ctx just under each gate, so the thresholds are proven to bite,
+not just to pass. **If it still fails, run the six INSERTs one at a time** —
+the error will then name which one, and they are independent.
+
+## The first paste: 42P10
 
 ```
 ERROR: 42P10: there is no unique or exclusion constraint matching the
