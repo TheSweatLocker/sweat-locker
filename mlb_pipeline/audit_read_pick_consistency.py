@@ -392,6 +392,9 @@ def main() -> int:
     ap.add_argument('--days', type=int, default=14)
     ap.add_argument('--verbose', action='store_true')
     ap.add_argument('--warn-only', action='store_true')
+    ap.add_argument('--strict', action='store_true',
+                    help='exit 1 on non-blocking warnings too '
+                         '(default: warnings print and exit 0)')
     a = ap.parse_args()
     sports = [a.sport] if a.sport else ['NFL', 'NCAAF', 'NBA', 'NHL']
 
@@ -463,7 +466,25 @@ def main() -> int:
         print('  >> every read agrees with its pick.')
     if a.warn_only:
         return 0
-    return 2 if hard else (1 if all_f else 0)
+    # == 2026-10-29 . A WARNING MUST NOT TURN THE STEP RED =================
+    # This returned `1 if all_f` -- non-zero for ANY finding, including the
+    # deliberately non-blocking text rules above. The four sport pipelines
+    # call this WITHOUT --warn-only, so it went red the moment any read
+    # tripped a weak rule: on 10-29 alone NBA x3, NHL x2, NFL x2, NCAAF x1,
+    # every one of them 0 BLOCKING.
+    #
+    # A step that is always red is a step nobody reads, which is how the
+    # Sharp-fade invariant check ended up muted
+    # (feedback_a_detector_must_know_the_intentional_case). The blocking
+    # codes still exit 2 and still stop a pipeline; warnings are printed and
+    # exit 0, which is what "kept visible but never blocking" two comments
+    # above was always supposed to mean. --strict restores the old behaviour
+    # for anyone who wants it in a gate.
+    if hard:
+        return 2
+    if warn and a.strict:
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

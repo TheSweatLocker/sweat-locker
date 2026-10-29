@@ -178,9 +178,35 @@ else
   # captured — and through `tee` so it still STREAMS live, which matters
   # because this repo has had steps hang (price_picks, 10-23) and a hang is
   # undebuggable if its output only appears at exit.
+  #
+  # 2026-10-29 (same day, second attempt) . THE FIRST VERSION RACED.
+  # It was `"$@" 2> >(tee -a "$_err" >&2)`. Bash does not wait for a process
+  # substitution, so the heartbeat below read $_err while tee was still
+  # buffering, and `stderr_tail` came back EMPTY on every step_failed row it
+  # was supposed to explain -- including the four audit_read_pick_consistency
+  # failures on 10-29 that then could not be diagnosed. Telemetry that
+  # reports nothing is worse than none, because it looks like it is working.
+  #
+  # A FIFO with a real PID fixes it and keeps the live streaming the note
+  # above argues for: tee reads the pipe and forwards to stderr as output
+  # arrives, the command's exit closes the write end, tee sees EOF and
+  # exits, and `wait` guarantees the file is complete before it is read.
   _err="$(mktemp)"
-  "$@" 2> >(tee -a "$_err" >&2)
-  rc=$?
+  _fifo="$(mktemp -u)"
+  if mkfifo "$_fifo" 2>/dev/null; then
+    tee -a "$_err" >&2 < "$_fifo" &
+    _teepid=$!
+    "$@" 2>"$_fifo"
+    rc=$?
+    wait "$_teepid" 2>/dev/null || true
+    rm -f "$_fifo"
+  else
+    # No FIFO available (rare). Capture without streaming rather than race:
+    # a complete tail matters more than seeing it live.
+    "$@" 2>"$_err"
+    rc=$?
+    [ -s "$_err" ] && cat "$_err" >&2
+  fi
   dur=$(( $(date +%s) - start ))
 fi
 
