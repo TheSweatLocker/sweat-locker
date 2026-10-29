@@ -165,7 +165,21 @@ if [ "$DETECTOR" = "1" ]; then
   fi
   rm -f "$_out"
 else
-  "$@"
+  # ══ 2026-10-29 · CAPTURE *WHY*, NOT JUST THAT IT FAILED ══════════════
+  # The heartbeat recorded label + rc + duration and nothing else, so
+  # "generate_ncaaf_game_reads.py — exit 1 after 2s" could only be explained
+  # by Andy pasting the log. It cost two rounds today: the cause was an
+  # expired ANTHROPIC_API_KEY, visible as a 401 traceback in the step log and
+  # absent from everything queryable.
+  #
+  # stdout is deliberately NOT touched. The note above is right that piping
+  # it flips Python to block buffering and merges the streams, and ~100 steps
+  # must not pay that. STDERR is where a traceback goes, so only stderr is
+  # captured — and through `tee` so it still STREAMS live, which matters
+  # because this repo has had steps hang (price_picks, 10-23) and a hang is
+  # undebuggable if its output only appears at exit.
+  _err="$(mktemp)"
+  "$@" 2> >(tee -a "$_err" >&2)
   rc=$?
   dur=$(( $(date +%s) - start ))
 fi
@@ -193,18 +207,48 @@ if [ "$rc" -ne 0 ]; then
   # Best-effort and silent: this is diagnostics, and a logging hiccup must
   # never change a step's outcome.
   if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_KEY:-}" ]; then
-    _esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-    curl -sf -m 10 -X POST "${SUPABASE_URL}/rest/v1/workflow_heartbeat" \
-      -H "apikey: ${SUPABASE_KEY}" \
-      -H "Authorization: Bearer ${SUPABASE_KEY}" \
-      -H "Content-Type: application/json" \
-      -H "Prefer: return=minimal" \
-      -d "{\"workflow\":\"${GITHUB_WORKFLOW:-unknown}\",\"event\":\"step_failed\",\"run_id\":\"${GITHUB_RUN_ID:-}\",\"meta\":{\"label\":\"$(_esc "$LABEL")\",\"rc\":${rc},\"duration_s\":${dur}}}" \
-      >/dev/null 2>&1 || true
+    # Build the payload in python so the captured stderr — which contains
+    # quotes, newlines and whatever a traceback holds — cannot break the
+    # JSON. The --gate branch above already learned this the hard way: a
+    # hand-rolled escape produced "[]" for a label containing a quote, a
+    # telemetry bug that hid the failure it existed to report.
+    _hb="$(mktemp)"
+    STEP_LABEL="$LABEL" STEP_RC="$rc" STEP_DUR="$dur" \
+    python3 - "${_err:-/dev/null}" <<'PYHB' > "$_hb" 2>/dev/null || true
+import json, os, sys
+tail = ''
+try:
+    with open(sys.argv[1], encoding='utf-8', errors='replace') as fh:
+        # Last 1200 chars: a traceback's final lines name the exception,
+        # which is the part that identifies the cause.
+        tail = fh.read()[-1200:]
+except Exception:
+    pass
+print(json.dumps({
+    'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+    'event': 'step_failed',
+    'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
+    'meta': {'label': os.environ.get('STEP_LABEL', ''),
+             'rc': int(os.environ.get('STEP_RC') or 0),
+             'duration_s': int(os.environ.get('STEP_DUR') or 0),
+             'stderr_tail': tail},
+}))
+PYHB
+    if [ -s "$_hb" ]; then
+      curl -sf -m 10 -X POST "${SUPABASE_URL}/rest/v1/workflow_heartbeat" \
+        -H "apikey: ${SUPABASE_KEY}" \
+        -H "Authorization: Bearer ${SUPABASE_KEY}" \
+        -H "Content-Type: application/json" \
+        -H "Prefer: return=minimal" \
+        --data-binary @"$_hb" >/dev/null 2>&1 || true
+    fi
+    rm -f "$_hb"
   fi
 else
   echo "ok: ${LABEL} (${dur}s)"
 fi
+# The stderr capture is a temp file on the runner; do not leak one per step.
+rm -f "${_err:-}" 2>/dev/null || true
 
 # Deliberately 0 — later steps in the job must still run. The --gate step is
 # what turns the run red.
