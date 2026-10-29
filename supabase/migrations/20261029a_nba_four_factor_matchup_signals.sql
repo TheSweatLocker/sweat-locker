@@ -127,5 +127,3 @@ WHERE NOT EXISTS (
     SELECT 1 FROM public.signal_sources
     WHERE signal_key = 'nba_foul_leverage_away' AND sport = 'NBA'
 );
-
-NOTIFY pgrst, 'reload schema';

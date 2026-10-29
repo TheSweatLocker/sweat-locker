@@ -1,5 +1,41 @@
 # 2026-10-29a — NBA gets a matchup axis
 
+## ✅ APPLIED 2026-10-29. The culprit was `NOTIFY`, not the migration.
+
+Verified live: all 14 columns return 200 through PostgREST, all 6 signal
+rows are in `signal_sources`, `nba_game_context.py --days 2` reported
+**four factors on 13/13 rows**, and the scorer fired two of them on
+tonight's slate — `nba_ball_security_away` contrib +0.07 and
+`nba_foul_leverage_away` +0.06, **class share matchup 0.15–0.18, both
+voting AWAY_RL**.
+
+**`NOTIFY pgrst, 'reload schema';` is what Andy's SQL client fails on**, and
+it reports that failure as `42P01: relation "a" does not exist`. NOTIFY
+returns no rows and the client appears to wrap each statement to fetch
+results, which cannot be done with NOTIFY. It is **removed from this file**,
+and it should not be added to future ones:
+
+| attempt | file | what happened |
+|---|---|---|
+| 1 | `ON CONFLICT`, inside BEGIN/COMMIT | INSERT failed **42P10** before reaching NOTIFY — a real defect, mine |
+| 2 | `(VALUES …) AS v(…)`, BEGIN/COMMIT | reached NOTIFY → `relation "a"` → **transaction rolled back**, so no rows |
+| 3 | 20260911c shape, BEGIN/COMMIT | same — rolled back again |
+| 4 | bare, **no BEGIN/COMMIT** | ALTER + 6 INSERTs **COMMITTED**, then NOTIFY errored — work persisted, error still displayed |
+
+Removing BEGIN/COMMIT for bisectability is what let attempt 4 persist. The
+error message was identical all three times, which is why it read as "still
+broken" when the migration had in fact succeeded.
+
+**The NOTIFY was never needed.** Supabase ships a DDL event trigger that
+issues the schema reload itself — proven here, since PostgREST served all 14
+new columns while our NOTIFY never once succeeded. This supersedes the
+"migrations end with NOTIFY pgrst" convention for this client.
+
+The lesson I should have applied three attempts earlier: **check whether the
+work landed before believing the error message.** One PostgREST query on
+`home_efg_pct` would have ended this at attempt 2.
+
+
 **The SQL file is now bare: 8 statements, zero comments, pure ASCII.** All
 the rationale that used to live in its header is in this note instead,
 because the comments are the prime suspect for two failed pastes (below).
