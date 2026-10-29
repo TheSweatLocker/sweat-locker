@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**. (R-series: next free **R37**.)
+- Next free ID: **B197**. (R-series: next free **R38**.)
 
 ---
 
@@ -2276,5 +2276,78 @@ of that noise with `does not exist on type` and is worth re-running each
 build — it is the class that ships invisible text.
 
 **Status**: client sweep COMPLETE for this build.
+
+---
+
+## R37 — THE SIGNAL TOOLTIP SHOWED USERS OUR OWN PICK RECORD (2026-10-29)
+
+`signal_attribution.result` is the **pick's** outcome, stamped onto every
+signal row that fired on that pick. `v_signal_records` counted it — and that
+view is `GRANT SELECT TO anon, authenticated` and read by the game card
+`SignalsRow` tooltip. So every signal displayed our own selection record
+instead of its own.
+
+Measured on signals with n>=25 both ways. **11 of 34 inflated:**
+
+```
+  sport signal_key                        shown n  shown%   real n   real%      gap
+  NCAAF COHORT_NCAAF_HEAVY_HOME_DOG            73   43.8%       70   60.0%   +16.2pp
+  NCAAF home_team_ats_hot_season                28   64.3%       28   50.0%   -14.3pp
+  NFL   COHORT_NFL_DIV_HOME_COVER               32   46.9%       30   33.3%   -13.5pp
+  NCAAF home_ats_cold_at_home__fade             25   52.0%       25   40.0%   -12.0pp
+  NCAAF COHORT_NCAAF_HEAVY_HOME_FAV            115   61.7%      110   50.9%   -10.8pp
+  NFL   LR_SHADOW                               90   53.3%       82   42.7%   -10.7pp
+  NFL   COHORT_NFL_HOME_FAV                     72   48.6%       67   40.3%    -8.3pp
+  NFL   OFF_RATING_GAP                          100   51.0%       93   43.0%    -8.0pp
+```
+
+The error is **not random**: it penalises a signal for DISAGREEING with the
+engine, which is the dissenting/fade voice we most want measured honestly.
+Same family as `project_signal_hit_rate_was_our_pick_rate_1028`, which fixed
+the refit and the weekly report — and left the view.
+
+**It was about to get worse, not better.** The tooltip's fetch used a bare
+`supabase` that threw a swallowed ReferenceError, so these records had never
+actually rendered ("signal chips have only ever shown glossary text"). That
+was repaired, so the next build would have started showing them.
+
+### Why the fix is a column and not SQL
+
+`signal_outcome.signal_was_right` is the one definition of the rule and it
+carries the per-sport close-line sign convention. Reimplementing that in the
+view is exactly how `feedback_publishable_view_drift` happens, so instead:
+
+* `20261029d` adds `signal_attribution.signal_was_right` and repoints
+  `v_signal_records` at it, counting only non-NULL rows.
+* `signal_attribution_grade.py` writes it at grade time.
+* `backfill_signal_was_right.py` fills the 4,080 already-graded rows; the
+  nightly runs it `--apply --only-null` as a safety net.
+
+Not-countable rows (NEUTRAL subject, cross-axis, push) are NULL and excluded
+rather than defaulted. Between the migration and the backfill the tooltip
+shows **nothing** rather than something wrong — the correct failure
+direction, and the script refuses to run before the migration.
+
+**Status**: code committed; `20261029d` + the backfill are the remaining step.
+**VERIFY**: `python mlb_pipeline/backfill_signal_was_right.py` (dry run prints
+the pooled shown-vs-real shift).
+
+### The measurement layer is now correct on all three paths
+
+With R35 and R37 closed, every path that turns outcomes into a signal record
+grades the signal's own advocated side against the actual result:
+
+```
+  game path          correct = (src_side == winner)        already sound
+  attribution path   signal_was_right(...)                 fixed 10-28
+                     kind-rule fallback fires on 11 of 4,080 rows (0.27%)
+  prop path          side the signal advocated vs outcome   fixed 10-29 (R35)
+  v_signal_records   signal_was_right                       fixed 10-29 (R37)
+```
+
+That closes the *measurement* problem. What remains is a **discovery**
+problem, which is a different thing and should not be confused for a bug:
+most measured signals simply do not have edge. R34 is the clearest case —
+every NHL and NBA prop candidate, measured honestly, fails.
 
 ---

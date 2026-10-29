@@ -828,6 +828,17 @@ bash "$RUN_STEP" --label "price_picks.py"   python price_picks.py --write
 #
 # --min-n 10 matches the two sport pipelines so a signal cannot be tiered on
 # one window here and a different one there.
+# 2026-10-29 . signal_attribution.result is the PICK's outcome stamped onto
+# every signal row that fired on it. signal_was_right grades signal_side
+# against the stored margin and close line instead, and v_signal_records --
+# the game card tooltip -- now counts THAT column. signal_attribution_grade.py
+# writes it at grade time; this is the safety net for rows graded before that
+# wiring existed, and for any row where the numbers landed late
+# (feedback_late_data_must_invalidate_derived_output). --only-null keeps it
+# cheap once it has caught up.
+bash "$RUN_STEP" --label "backfill_signal_was_right.py" \
+  python backfill_signal_was_right.py --apply --only-null
+
 bash "$RUN_STEP" --label "refit_signal_registry.py (all sports)" \
   python refit_signal_registry.py --days 90 --min-n 10
 

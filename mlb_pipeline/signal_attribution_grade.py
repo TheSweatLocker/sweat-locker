@@ -25,6 +25,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 import requests
+from signal_outcome import signal_was_right as _swr
 from dotenv import load_dotenv
 
 for _p in ('mlb_pipeline/.env', '.env'):
@@ -275,6 +276,27 @@ def run(sport: Optional[str] = None, days: int = 3) -> None:
                 'actual_total': (float(settled_game.get('home_score') or 0)
                                  + float(settled_game.get('away_score') or 0)),
             }
+            # == 2026-10-29 . GRADE THE SIGNAL, NOT JUST THE PICK ==========
+            # `result` above is the PICK's outcome, stamped onto every signal
+            # row that fired on that pick. That is the right thing to store
+            # and the wrong thing to average per signal -- and v_signal_records
+            # was averaging it, which is what the game card tooltip shows a
+            # user. Measured gap on signals with n>=25 both ways: 11 of 34
+            # inflated, worst NCAAF COHORT_NCAAF_HEAVY_HOME_FAV 61.7% shown
+            # vs 50.9% real, NFL LR_SHADOW 53.3% vs 42.7%. The error always
+            # runs the same way -- it penalises a signal for DISAGREEING with
+            # the engine, which is the dissenting voice we most want measured.
+            #
+            # signal_outcome.signal_was_right is the one definition of the
+            # rule and already handles the per-sport sign convention. Writing
+            # it here means SQL never has to reimplement that convention
+            # (feedback_publishable_view_drift) and both the view and the
+            # refit read the same column.
+            try:
+                patch['signal_was_right'] = _swr({**row, **patch}, sp)
+            except Exception as e:                             # noqa: BLE001
+                # Never lose a grade because the extra field failed.
+                print(f'  ! signal_was_right failed on id={row.get("id")}: {e}')
             pr = requests.patch(
                 f'{SB}/rest/v1/signal_attribution?id=eq.{row["id"]}',
                 headers=H_WRITE, json=patch, timeout=10,
