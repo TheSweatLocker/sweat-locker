@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**. (R-series: next free **R40**.)
+- Next free ID: **B197**. (R-series: next free **R41**.)
 
 ---
 
@@ -2525,5 +2525,89 @@ Recommend (1), staged: start by making the other writers stop touching
 **Status**: OPEN, and it gates the value of R35/R37/R38.
 **VERIFY**: `select origin, count(*), count(*) filter (where
 recommended_weight > 0) from signal_registry group by origin order by 2 desc;`
+
+---
+
+## R40 — 39 OF 42 MONEYLINE SIGNALS LOSE TO ONE WORD, IN ALL FOUR SPORTS (2026-10-29)
+
+Andy: *"I need to know that every engine is not biased in selection by taking
+favorites? NFL looks like alot of favorites even and thats a problem."*
+
+It is every sport, and it is not a tuning problem. Each enabled ml-scope
+signal was replayed against real games and graded at closing moneylines
+against one control: **take the favourite.**
+
+```
+  NHL     11 of 12 LOSE
+  NFL      8 of 10 LOSE
+  NCAAF   19 of 19 LOSE
+  NBA      1 of  1 LOSE
+  -----------------------
+  TOTAL   39 of 42 LOSE
+```
+
+Worst offenders, with the share of firings that point at the chalk:
+
+```
+  sport signal_key                       n  fav%     sig     ctl    diff
+  NCAAF ncaaf_ret_prod_mismatch_away   118    45   40.7%   82.2%   -41.5
+  NCAAF oddscrowd_rl_fade_boost_ncaaf  127    47   48.8%   79.5%   -30.7
+  NCAAF away_ml_hot_on_road            111    54   44.1%   72.1%   -27.9
+  NCAAF ncaaf_home_underdog_bark        83     1   37.3%   63.9%   -26.5
+  NCAAF ncaaf_home_field_baseline      509    70   67.0%   77.8%   -10.8
+  NFL   nfl_confluence_home             43    81   51.2%   60.5%    -9.3
+  NFL   v3_spread_nfl                   51    92   62.7%   70.6%    -7.8
+  NBA   nba_elo_home_ml_strong          43    84   60.5%   67.4%    -7.0
+  NHL   nhl_elo_home_ml_strong          70    96   68.6%   72.9%    -4.3
+```
+
+Several are chalk by construction and fire constantly:
+`ncaaf_sp_plus_edge_home` 100% favourite on 99 fires,
+`ncaaf_confluence_home` 93% on 207, `ncaaf_projected_spread` 88% on 338,
+`ncaaf_home_field_baseline` on **all 509 games**, NFL `panel_pred_spread`
+100%. The libraries are not biased toward favourites; they are *made of*
+favourite proxies.
+
+### The nuance that matters
+
+The control is not a money-maker either — NCAAF's favourite control returns
+roughly breakeven. So removing these signals does not win money; it stops us
+claiming an edge we do not have. **The edge has to come from mispricing, not
+from quality descriptions.** A signal that says "this team is good" is a
+signal the closing line already contains.
+
+### Regression, re-tested under the right lens, does NOT rescue it
+
+Andy's challenge was correct: testing regression as a standalone picker was
+the wrong lens. The right question is whether the gap predicts the margin
+**against the spread** — i.e. does it carry information the line lacks:
+
+```
+  NHL    n=200  corr +0.0751  CI [-0.0645,+0.2148]
+  NCAAF  n=353  corr +0.0816  CI [-0.0232,+0.1863]
+  NFL    n=107  corr +0.0018  CI [-0.1904,+0.1940]
+  NBA    n= 74  corr +0.1306  CI [-0.1020,+0.3632]
+```
+
+All four positive, which is mildly suggestive on its own, but **not one
+clears zero**. So the standalone NHL result (+6.55pp on the moneyline) is
+most likely reading the moneyline price structure rather than real
+information. **20261029e is written but should be HELD, not applied**, until
+a forward sample or a clearing residual test supports it.
+
+### What is actually changed, and what is not
+
+```
+  CHANGED   NHL: 12 signals disabled (11 ml losers + away_covers_as_dog)
+  CHANGED   price-aware bar live in refit_signal_registry (57ad10f7)
+            -- but per R39 it reaches only 14% of weighted rows
+  NOT DONE  NFL / NCAAF / NBA signals: measured, nothing disabled
+  HELD      20261029e (NHL regression) -- do not apply yet
+```
+
+Disabling the other 27 would empty the NFL, NCAAF and NBA boards the way
+NHL's now mostly is. That is a product call, not a code call.
+
+**Status**: OPEN, and it is the central question of the product.
 
 ---
