@@ -1009,7 +1009,22 @@ def fetch_football_picks(today: str) -> list:
                 isinstance(pp.get('_flipped_from'), dict)
                 and str(pp.get('type') or '').lower() in ('rl', 'spread')
                 and _ln is not None and abs(_ln) <= 10.5)
-            if tier not in ('PRIME', 'STRONG') and not _is_banded_flip:
+            # ══ 2026-10-29 · A HAND-SET PICK CLEARS THE TIER FLOOR ══════
+            # ANDY: "we agreed to add them manually that's why we discussed
+            # it." set_manual_pick.py's docstring promises a manual write
+            # "reaches game detail + Sweat Card + The Sharp", and the
+            # football LOCK further down already unions manual picks in as
+            # "ANDY-APPROVED PICKS ARE ADDITIVE TO THE LOCK". But this floor
+            # sits UPSTREAM of both and dropped the pick before either could
+            # act, so the contract was false for any manual pick below
+            # STRONG — tonight's GB -3.5 is LEAN and never reached the card.
+            # The floor is still right for AUTO picks; an owner decision is
+            # not an auto pick.
+            _manual_pick = bool(pp.get('_manual_correction')
+                                or pp.get('_manual_override')
+                                or pp.get('_manual_pick'))
+            if (tier not in ('PRIME', 'STRONG')
+                    and not _is_banded_flip and not _manual_pick):
                 continue
             # ══ 2026-10-26 · B209 · NFL SPREADS REFUSED ON THIS CARD ══
             # 5-13 (27.8%, ROI -47.40%) priced at what we published; the
@@ -1027,10 +1042,51 @@ def fetch_football_picks(today: str) -> list:
                     print('  !! B209 gate unavailable (import failed) -- '
                           'refusing NFL spreads by fallback')
                     _CSB = {'NFL'}
-                if 'NFL' in _CSB:
+                # ══ 2026-10-29 · THE BAN WAS MEASURED ON A BROKEN ENGINE ══
+                # ANDY: "Banning nfl spread is a no go, that's why we just
+                # changed engine right? ... we agreed to add them manually
+                # that's why we discussed it."
+                #
+                # He is right, and the dates say why. The 5-13 / ROI -47.40%
+                # that justified this ban was measured on picks the engine
+                # produced BEFORE apply_stored_edge_cap existed — and
+                # measured today, 17 of the 19 NFL picks carrying a model
+                # edge were NEGATIVE (GB -4.5 at -8.0pp, KC -4.5 at -5.2pp,
+                # PIT -4.5 at -4.6pp, several of them LEAN). A population of
+                # picks whose own model says the price is better than the
+                # model SHOULD run 27.8%. The ban was treating the symptom.
+                #
+                # So the refusal is now conditional on the thing that was
+                # actually wrong, rather than on the sport:
+                #   * a HAND-SET pick is always admitted. Andy asked for
+                #     this directly, twice, and set_manual_pick's contract
+                #     says a manual write reaches this card.
+                #   * an auto pick is admitted only with a POSITIVE stored
+                #     model edge. With the chokepoint cap in place a
+                #     negative-edge spread can no longer hold a bettable
+                #     tier anyway, so this is belt and braces.
+                #   * anything else is still refused, and says which test
+                #     it failed instead of just naming the sport.
+                #
+                # If NFL spreads with a positive edge go on to lose, that is
+                # a measurable claim on a clean population and the ban comes
+                # back on evidence rather than on a blanket.
+                _manual = bool(pp.get('_manual_correction')
+                               or pp.get('_manual_override')
+                               or pp.get('_manual_pick'))
+                _edge = pp.get('_model_edge_pp')
+                _edge_ok = isinstance(_edge, (int, float)) and float(_edge) > 0
+                if 'NFL' in _CSB and not _manual and not _edge_ok:
+                    _why = ('no stored model edge' if not isinstance(
+                        _edge, (int, float)) else f'edge {float(_edge):+.2f}pp')
                     print(f'  B209: refused NFL spread '
-                          f'{pp.get("label")} (curated 27.8%, ROI -47.4%)')
+                          f'{pp.get("label")} ({_why}; curated 27.8% was '
+                          f'measured pre-edge-gate)')
                     continue
+                if 'NFL' in _CSB and (_manual or _edge_ok):
+                    print(f'  B209 EXEMPT: NFL spread {pp.get("label")} '
+                          + ('hand-set by Andy' if _manual
+                             else f'carries a positive edge {float(_edge):+.2f}pp'))
             # ══ 2026-10-23 · FLIP OUR SHORT NCAAF SPREAD ON THIS CARD TOO ══
             # ANDY: "I do think those plays should be published on the sharp
             # and sweat card tomorow maybe not all bit the ones we really like
