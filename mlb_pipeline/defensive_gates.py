@@ -39,6 +39,42 @@ import re as _re_mod
 # (+39pts) but on n=13, too thin to act on, so NFL is excluded on purpose.
 # Only the SIDE is blocked; tier changes and the totals override are not,
 # because only the side was measured. REVERT: set to frozenset().
+# == 2026-10-28 . AND NOW THE REROUTE IS MEASURED TOO =====================
+# The note above says tier changes and the reroute were left alone "because
+# only the side was measured". The reroute is measured now, and it is the
+# harmful half.
+#
+# For every pick apply_heavy_ml_spread_reroute moved, the SPREAD we published
+# against the MONEYLINE we walked away from, each at its own stored price,
+# both judged on the same outcome:
+#
+#   sport   n     published spread        the ML we left        delta
+#   ALL   118   41.5%  roi -21.24%     66.1%  roi  -9.61%   ML +11.63pp
+#   NCAAF  49   32.7%  roi -38.08%     59.2%  roi -18.00%   ML +20.08pp
+#   NHL    33   48.5%  roi -14.49%     72.7%  roi  +2.79%   ML +17.28pp
+#   NBA    23   56.5%  roi +15.93%     78.3%  roi  -0.64%   spread better
+#   NFL    13   30.8%  roi -40.67%     53.8%  roi -25.33%   ML +15.33pp
+#
+# Split-half, the two sports with n>=30 hold:
+#   NCAAF  ML better by +24.16pp then +16.16pp
+#   NHL    ML better by  +5.79pp then +28.10pp   (its ML is PROFITABLE)
+#
+# This is our own heavy-favourite trap read backwards. The documented trap is
+# that a -200+ favourite covers -1.5 only ~29% of the time -- that is a fact
+# about the SPREAD, so "escape the juiced ML" moved the bet onto the worse
+# side of it. The reroute's own docstring argues "a 65% winner at -200 is a
+# losing bet; the same read on the spread is not", and on NCAAF/NHL the
+# measurement says the opposite.
+#
+# NBA and NFL are NOT blocked: NBA measures the other way (+15.93% on the
+# spread, n=23) and NFL is n=13. Blocking only what is measured, same
+# discipline as the side-flip set above.
+#
+# Blocked here rather than at the call sites because the reroute has three
+# entry points and a row rerouted on an EARLIER run comes back as type 'rl'
+# (see the note at apply_heavy_ml_spread_reroute).
+# REVERT: set to frozenset().
+LR_REROUTE_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF'})
 LR_SIDE_FLIP_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF'})
 
 
@@ -2206,6 +2242,19 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
         return pp
     side = str(pp.get('side') or '').upper()
     if side not in ('HOME', 'AWAY'):
+        return pp
+    # 2026-10-28: measured net-negative on these sports — see
+    # LR_REROUTE_BLOCKED_SPORTS. The pick stays on the moneyline, which is
+    # where the measurement says it should have stayed. Stamped so the
+    # decision is visible on the row rather than inferred from its absence.
+    if str(sport).upper() in LR_REROUTE_BLOCKED_SPORTS:
+        pp['_heavy_ml_reroute_refused'] = {
+            'sport': str(sport).upper(),
+            'basis': 'published spread vs the ML left behind: NCAAF 32.7% '
+                     'roi -38.08% vs 59.2% roi -18.00% (n=49); NHL 48.5% '
+                     'roi -14.49% vs 72.7% roi +2.79% (n=33); both hold '
+                     'split-half',
+        }
         return pp
 
     # The pick's OWN price. Both column spellings — they differ by sport and
