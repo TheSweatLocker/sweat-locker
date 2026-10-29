@@ -372,6 +372,18 @@ jobs:
         run: |
           cd mlb_pipeline
           python generate_nhl_game_reads.py
+          # == 2026-10-29 . THE WRITE-UP MUST AGREE WITH THE PICK ========
+          # Andy: "i want the write ups correct across all sports now and
+          # going forward". On 10-29 a refit flipped 16 NCAAF badges, the
+          # read generator then failed rc=1 on an expired Anthropic key,
+          # and the board showed 'Washington +7.5' above prose projecting
+          # "Nebraska 28.2, Washington 22.7". Nothing compared the two,
+          # because the engine, the badge and the prose are written by
+          # three different steps.
+          # Runs IMMEDIATELY after generation so the check sees what was
+          # just written. Blocks only on a write-up that declines its own
+          # pick or projects the other team; everything else warns.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "audit_read_pick_consistency.py (NHL)" python audit_read_pick_consistency.py --sport NHL --days 14
           # == 2026-10-28 . PRICE THE PICK THAT WAS JUST WRITTEN ==========
           # nightly_cross_sport.sh has carried this note since 10-02:
           # "this is the daily floor, not the ideal ... the right place is

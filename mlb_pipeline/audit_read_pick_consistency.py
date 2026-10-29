@@ -363,12 +363,39 @@ def main() -> int:
         if not a.verbose and len(fl) > 10:
             print(f'   … and {len(fl) - 10} more (--verbose for all)')
 
-    hard = [f for f in all_f if f['code'] in
-            ('PROSE_DECLINES_THE_PICK', 'PICKED_TEAM_ABSENT_FROM_PROSE',
-            'PROSE_PROJECTS_THE_OTHER_TEAM',
-             'PICK_WITH_NO_PROSE')]
-    print(f'\n  total findings: {len(all_f)}   contradictions a reader would '
-          f'SEE: {len(hard)}')
+    # ══ WHAT BLOCKS A PIPELINE, AND WHAT ONLY WARNS ═════════════════════
+    # Andy, 2026-10-29: "i want the write ups correct across all sports now
+    # and going forward". Going forward means this runs after every read
+    # generation and FAILS, so a contradiction cannot reach a card unseen.
+    #
+    # Only the two unambiguous, non-self-healing shapes block:
+    #   PROSE_DECLINES_THE_PICK        the write-up says no play, the badge
+    #                                  sells one. Never correct.
+    #   PROSE_PROJECTS_THE_OTHER_TEAM  the prose's own projected score has
+    #                                  the opponent winning. Structured, so
+    #                                  not a parsing guess.
+    # Both are fixed by regenerating that read, which is exactly what the
+    # step before this one does.
+    #
+    # The rest WARN on purpose, because each resolves itself and a step that
+    # is red for a reason nobody can action gets muted
+    # (feedback_a_detector_must_know_the_intentional_case):
+    #   BADGE_VS_ENGINE      transient while a refit lands - true for the
+    #                        minutes between the context write and the read
+    #                        rewrite.
+    #   PICK_WITH_NO_PROSE   a stub for a game not yet inside the
+    #                        generator's horizon; it fills as the week
+    #                        advances (the NFL 11-08 rows).
+    #   PICKED_TEAM_ABSENT / TOTAL_DIRECTION_ABSENT   weaker text rules,
+    #                        kept visible but never blocking.
+    BLOCKING = ('PROSE_DECLINES_THE_PICK', 'PROSE_PROJECTS_THE_OTHER_TEAM')
+    hard = [f for f in all_f if f['code'] in BLOCKING]
+    warn = [f for f in all_f if f['code'] not in BLOCKING]
+    print(f'\n  total findings: {len(all_f)}   BLOCKING: {len(hard)}   '
+          f'warnings: {len(warn)}')
+    if hard:
+        print('  >> a write-up contradicts the pick it is attached to. '
+              'Regenerate that read.')
     if not all_f:
         print('  >> every read agrees with its pick.')
     if a.warn_only:
