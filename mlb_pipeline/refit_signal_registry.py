@@ -68,7 +68,8 @@ SPORTS_WITH_CTX = {
 
 
 def _tier_for(n: int, hit_rate_frac: float,
-              blind_frac: Optional[float] = None) -> str:
+              blind_frac: Optional[float] = None,
+              be_frac: Optional[float] = None) -> str:
     """Tier a signal. With `blind_frac`, judge it against ITS OWN SIDE.
 
     ══ 2026-10-11 · THE FLAT THRESHOLDS WERE SIDE-BLIND ══
@@ -89,23 +90,43 @@ def _tier_for(n: int, hit_rate_frac: float,
     attribution paths, sports with no measured side rate), so nothing that
     worked before changes.
     """
+    # ══ 2026-10-29 · THE FLAT >=55% FALLBACK PROMOTED A BREAK-EVEN SIGNAL ══
+    # With no side baseline this branch used a flat >=55%. On a market whose
+    # breakeven is 65.8% (the NHL dog puckline, priced ~-190) that bar is
+    # ten points BELOW water, so away_covers_as_dog at 65.3% on n=98 earned
+    # VALIDATED and weight 1.00 while returning ROI -0.25%. It then became
+    # the loudest voice in the NHL engine. When the real breakeven is known
+    # from the prices the signal fired at, it is the bar.
+    se1 = 0.5 / (n ** 0.5)
+    se2 = 2.0 * se1
     if blind_frac is None:
-        if n >= 25 and hit_rate_frac <= 0.47:
+        if be_frac is None:
+            if n >= 25 and hit_rate_frac <= 0.47:
+                return 'ANTI_VALIDATED'
+            if n >= 50 and hit_rate_frac >= 0.55:
+                return 'VALIDATED'
+            if n >= 20 and hit_rate_frac >= 0.55:
+                return 'DISCOVERY'
+            return 'UNVALIDATED'
+        edge = hit_rate_frac - be_frac
+        if n >= 25 and edge < -se2:
             return 'ANTI_VALIDATED'
-        if n >= 50 and hit_rate_frac >= 0.55:
+        if n >= 50 and edge > se2:
             return 'VALIDATED'
-        if n >= 20 and hit_rate_frac >= 0.55:
+        if n >= 20 and edge > se1:
             return 'DISCOVERY'
         return 'UNVALIDATED'
 
     edge = hit_rate_frac - blind_frac
-    se1 = 0.5 / (n ** 0.5)
-    se2 = 2.0 * se1
     if n >= 25 and edge < -se2:
         return 'ANTI_VALIDATED'
-    # Must clear the juice as well as the side — beating a 48% side at
-    # 50% still loses money at -110.
-    if hit_rate_frac < 0.5238:
+    # Must clear the juice as well as the side — beating a 48% side at 50%
+    # still loses money. The bar is the breakeven of the prices this signal
+    # actually fired at, not a flat -110: 0.5238 is right for rl and total
+    # but ~6 points light on a moneyline and ~13 light on an NHL dog
+    # puckline, which is the whole of the favourite-bias mechanism.
+    _juice = be_frac if be_frac is not None else 0.5238
+    if hit_rate_frac < _juice:
         return 'UNVALIDATED'
     # The bar matches the strength of the claim the label makes.
     # VALIDATED says "proven", so it pays the full 2SE. DISCOVERY says
@@ -551,6 +572,57 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
     return _tally_game_firings(rows, sport)
 
 
+# ══ 2026-10-29 · THE JUICE BAR WAS A FLAT 52.38% ON EVERY MARKET ════════
+# _tier_for checked `hit_rate_frac < 0.5238` as its "must clear the juice"
+# floor. That number is -110. It is not the breakeven of most things we bet:
+#
+#   NHL dog puckline      prices ~-190  ->  breakeven 65.8%
+#   moneylines (median)                 ->  breakeven 58.33%
+#   rl / total (median)                 ->  breakeven 52.38%
+#
+# So on the NHL puckline a signal hitting 65.3% cleared a 52.38% bar by 13
+# points while LOSING money, and `side_baseline(NHL,'rl')` is None, so it
+# also took the no-baseline branch whose bar is a flat >=55%. That is how
+# away_covers_as_dog -- 65.3% on n=98 against a 65.8% breakeven, edge
+# -0.54pp, ROI -0.25% -- was stamped VALIDATED with weight 1.00 and became
+# the engine's single loudest voice. The favourite-side ML signals in every
+# sport where favourites win 60%+ are promoted by the same mechanism.
+#
+# The fix is to use the breakeven of the PRICES THE SIGNAL ACTUALLY FIRED
+# AT, averaged over its own firings, and to fall back to the measured
+# per-market median only when no price is stored.
+_MARKET_BE_FALLBACK = {'ml': 0.5833, 'rl': 0.5238, 'total': 0.5238,
+                       'prop': 0.5283}
+
+# Only NHL stores a spread/total price; MLB stores no price at all.
+_PRICE_COLS = {
+    'ml':    ('close_home_ml', 'close_away_ml'),
+    'rl':    ('close_puckline_home_price', 'close_puckline_away_price'),
+    'total': ('close_total_over_price', 'close_total_under_price'),
+}
+
+
+def _american_to_be(odds) -> Optional[float]:
+    """Breakeven win rate implied by American odds, as a fraction."""
+    try:
+        o = float(odds)
+    except (TypeError, ValueError):
+        return None
+    if o == 0:
+        return None
+    return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+
+
+def _firing_breakeven(market: str, src_side: str, row: dict) -> Optional[float]:
+    """Breakeven of the side this signal actually took on this game."""
+    cols = _PRICE_COLS.get(market)
+    if not cols:
+        return None
+    first_side = {'ml': 'HOME', 'rl': 'HOME', 'total': 'OVER'}[market]
+    col = cols[0] if src_side.startswith(first_side) else cols[1]
+    return _american_to_be(row.get(col))
+
+
 def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
     """{signal_key: {right, wrong, blind_sum}} from rows with primary_play.
 
@@ -568,7 +640,8 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
     except Exception:                                      # noqa: BLE001
         side_baseline = lambda *_a, **_k: None             # noqa: E731
     firings: dict[str, dict] = defaultdict(
-        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
+                 'be_sum': 0.0, 'be_n': 0, 'mkt': Counter()})
     for row in rows:
         pp = row.get('primary_play') or {}
         if isinstance(pp, str):
@@ -605,6 +678,12 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
             if _b is not None:
                 firings[base_key]['blind_sum'] += _b
                 firings[base_key]['blind_n'] += 1
+            # The breakeven of the price this signal took, per firing.
+            _be = _firing_breakeven(market, src_side, row)
+            if _be is not None:
+                firings[base_key]['be_sum'] += _be
+                firings[base_key]['be_n'] += 1
+            firings[base_key]['mkt'][market] += 1
     return dict(firings)
 
 
@@ -743,7 +822,7 @@ def merge_firings(*dicts) -> dict[str, dict]:
     out: dict[str, dict] = defaultdict(
         lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
                  'pick_right': 0, 'pick_n': 0, 'dis_n': 0, 'dis_right': 0,
-                 'mkt': Counter()})
+                 'be_sum': 0.0, 'be_n': 0, 'mkt': Counter()})
     for d in dicts:
         for k, v in d.items():
             out[k]['right'] += v.get('right', 0)
@@ -752,8 +831,9 @@ def merge_firings(*dicts) -> dict[str, dict]:
             out[k]['blind_n'] += v.get('blind_n', 0)
             # 2026-10-29: the pick control, per this docstring's own
             # warning about dropping keys the callers just started making.
-            for _k in ('pick_right', 'pick_n', 'dis_n', 'dis_right'):
+            for _k in ('pick_right', 'pick_n', 'dis_n', 'dis_right', 'be_n'):
                 out[k][_k] += v.get(_k, 0)
+            out[k]['be_sum'] += v.get('be_sum', 0.0)
             # 2026-10-27 F6: carry the market tally, per this docstring's
             # own warning about silently dropping new keys.
             _m = v.get('mkt')
@@ -867,7 +947,19 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         # measured rate for it; otherwise the flat rule (see _tier_for).
         _bn = ct.get('blind_n') or 0
         blind = (ct['blind_sum'] / _bn) if _bn >= max(10, int(n * 0.8)) else None
-        tier = _tier_for(n, hr_frac, blind)
+        # 2026-10-29: the breakeven of the prices this signal fired at.
+        # Requires the same 80% coverage as the side baseline -- a bar
+        # computed from a fifth of the firings is not this signal's bar.
+        # Falls back to the measured per-market median, which is still far
+        # closer than a flat -110 on a moneyline.
+        _en = ct.get('be_n') or 0
+        if _en >= max(10, int(n * 0.8)):
+            be_frac = ct['be_sum'] / _en
+        else:
+            _mk = ct.get('mkt') or {}
+            _dommk = max(_mk.items(), key=lambda z: z[1])[0] if _mk else ''
+            be_frac = _MARKET_BE_FALLBACK.get(_dommk)
+        tier = _tier_for(n, hr_frac, blind, be_frac)
         # == 2026-10-29 . THE PICK CONTROL, AS A GUARD ======================
         # right/wrong above no longer references the pick at all, so the
         # raw hit rate is non-circular on its own. This stays as a guard

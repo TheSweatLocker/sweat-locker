@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**. (R-series: next free **R39**.)
+- Next free ID: **B197**. (R-series: next free **R40**.)
 
 ---
 
@@ -2464,5 +2464,66 @@ eval errors, mutually exclusive, and the replay reproduced the analysis
 refresh as the season grows; the honest version precomputes the gap into
 `nhl_game_context` as a column. Also open: the same regression test on NBA
 (has xG-equivalents?), NFL and NCAAF.
+
+---
+
+## R39 — 86% OF THE ENGINE'S WEIGHTS COME FROM WRITERS WE NEVER FIXED (2026-10-29)
+
+Every correction made to `refit_signal_registry.py` today — the FADE
+inversion, the PASS inversion, the pick control, the price-aware bar —
+reaches **14% of the rows that carry weight**.
+
+`signal_registry` has **34 distinct `origin` values**. Three of the top four
+wrote within an hour of each other tonight:
+
+```
+origin                          rows   w>0  VALIDATED  last written
+  BACKFILL_2026-10-29            422   419        10   2026-10-29 22:48
+  auto_calibration_from_graded   412   180        36   2026-10-29 22:47
+  REFIT_SCRIPT                   234   131        32   2026-10-29 23:20
+  PROP_AUDIT_2026-10-29           97    86        19   2026-10-29 22:48
+  MODEL_PANEL_GRADE_2026-10-29    50    24         5   2026-10-29 18:40
+  PROP_BACKFILL_2026-10-29        38    38         0   2026-10-29 22:50
+  -------------------------------------------------------------------
+  REFIT_SCRIPT share of weighted rows:  131 / 958 = 14%
+```
+
+This was found by accident and it explains a lot. A snapshot taken before
+tonight's price-aware refit showed values the refit has never produced —
+`home_ats_cold_at_home` at 58.4% VALIDATED w=1.00, where the refit computes
+41.18% UNVALIDATED w=0; `nhl_prop_l10_extreme` at 73.3% DISCOVERY where the
+refit computes 28.25% ANTI_VALIDATED. Those are other writers' numbers,
+produced by their own uncorrected arithmetic, on the same column, the same
+night. Whichever runs last wins.
+
+This is `feedback_fix_every_writer_to_the_table` at a scale we had not
+measured: not two writers, **thirty-four**.
+
+### Why it matters more than any single signal
+
+`tier` is what the ensemble's credibility floor reads to decide whether a
+pick may reach a card, and `recommended_weight` is what decides which side
+wins a game. Both are being written by scripts that do not know a FADE
+inverts the result, that PASS is not a side, or that breakeven on an NHL dog
+puckline is 65.8% rather than 52.38%.
+
+### The fix, and it is a design decision not a patch
+
+One of:
+1. **Single authority** — `refit_signal_registry` owns `hit_rate`, `tier`,
+   `recommended_weight`; every other script writes its own columns or
+   nothing. Cleanest, needs an audit of all 34 writers.
+2. **Precedence by origin** — the consumer prefers `REFIT_SCRIPT` where it
+   exists and falls back otherwise. No writer changes, but the stale rows
+   stay visible in the table and will mislead the next reader.
+3. **Order of operations** — guarantee the refit runs last. Weakest: it
+   leaves the other writers' math wrong and silently depends on cron order.
+
+Recommend (1), staged: start by making the other writers stop touching
+`tier` and `recommended_weight`, since those two are what move a pick.
+
+**Status**: OPEN, and it gates the value of R35/R37/R38.
+**VERIFY**: `select origin, count(*), count(*) filter (where
+recommended_weight > 0) from signal_registry group by origin order by 2 desc;`
 
 ---
