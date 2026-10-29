@@ -78,12 +78,44 @@ CTX_TABLE = {
 #  Anchored to phrases the generators actually emit — verified against live
 #  prose — not a generic "pass" substring, because "pass defense", "passing
 #  game" and "pass rush" appear in almost every football read.
+#
+# == 2026-10-29 · TWO PATTERNS REMOVED AFTER THE FIRST CI RUN ==
+# `not actionable` and `too thin to clear` were dropped because a read
+# covers SEVERAL markets and those phrases usually decline a DIFFERENT one
+# than the badge sells:
+#   badge 'Portland Trail Blazers -8.5' — "projects 232.2, a negligible
+#   1.3-point lean to the under, NOT ACTIONABLE. Portland -8.5 clears the
+#   bar at ..."
+# The read declines the TOTAL and backs the SPREAD. Correct writing, and the
+# gate called it a contradiction. The Texas Tech case that motivated the
+# rule is still caught, by `this pass` plus the market-qualified form below.
+# `we pass` was removed for the same reason: my own regression case
+# "...we pass on the total because the number is efficient..." tripped a
+# SPREAD pick, because the generic pattern fired before the market check
+# could rule it out. Every "pass on the <market>" form is handled by
+# PASS_PROSE_MARKET below, which compares the named market to the badge's.
 PASS_PROSE = (
-    r'\bthis\s+pass\b', r'\bpass\s+on\s+the\s+(moneyline|spread|total|side)\b',
-    r'\bno\s+play\b', r'\bwe\s+pass\b', r'\bpassing\s+on\s+this\b',
-    r'\btoo\s+thin\s+to\s+clear\b', r'\bstaying\s+away\b',
-    r'\bnot\s+actionable\b', r'\bno\s+actionable\s+edge\b',
+    r'\bthis\s+pass\b',
+    r'\bno\s+play\b', r'\bpassing\s+on\s+this\b',
+    r'\bstaying\s+away\b', r'\bno\s+actionable\s+edge\b',
 )
+#: "pass on the moneyline" only contradicts an ML badge. Checked per market
+#  so declining the total above a spread pick is not a finding.
+PASS_PROSE_MARKET = r'\bpass(?:ing)?\s+on\s+the\s+(moneyline|spread|total|side|ml)\b'
+_MKT_WORDS = {'ml': ('moneyline', 'ml'), 'rl': ('spread', 'side'),
+              'spread': ('spread', 'side'), 'total': ('total',),
+              'pl': ('spread', 'side')}
+
+#: An engine-sub / bridge stub is NOT prose and must not be judged as prose.
+#  The NFL 11-05 and 11-08 rows read, in full, like
+#     "... back away RL · ⚠ LR shadow warns other way (p_home=0.64) — no play."
+#  which is the scorer's own summary line, not a write-up arguing a side.
+#  Those rows are already reported as PICK_WITH_NO_PROSE; counting them as
+#  contradictions too would hold a pipeline red for games the generator has
+#  not reached yet, which is the muted-step failure this file warns about.
+STUB_MARKERS = ('⚠', 'Analysis pending', 'Model conviction on',
+                'Supervised total model backs')
+STUB_MAX_CHARS = 200
 #: markets that represent a real wager (anything else is already a pass)
 ACTIONABLE = ('ml', 'rl', 'spread', 'total', 'pl')
 
@@ -191,8 +223,16 @@ def audit(sport: str, days: int, verbose: bool) -> dict:
         # 1 · the write-up declines a play the badge sells.
         #     Excluded on purpose: a badge that is already a pass/no-play,
         #     and conviction 0 rows, which ARE the pass.
-        if mkt in ACTIONABLE and label:
+        is_stub = (len(prose.strip()) < STUB_MAX_CHARS
+                   or any(s in prose for s in STUB_MARKERS))
+        if mkt in ACTIONABLE and label and not is_stub:
             hit = next((p for p in PASS_PROSE if re.search(p, low)), None)
+            if not hit:
+                # market-qualified form: only a match for THIS pick's market
+                for m2 in re.finditer(PASS_PROSE_MARKET, low):
+                    if m2.group(1) in _MKT_WORDS.get(mkt, ()):
+                        hit = PASS_PROSE_MARKET
+                        break
             if hit and (r.get('conviction') or 0) > 0:
                 m = re.search(hit, low)
                 frag = prose[max(0, m.start() - 60):m.start() + 90].replace('\n', ' ')
