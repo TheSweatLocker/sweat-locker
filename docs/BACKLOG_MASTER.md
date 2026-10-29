@@ -1957,3 +1957,100 @@ DELAYED ACTION, CORRECTLY WIRED
 INERT (correct, no effect)
   refit weight bar, tier relabel, proxy-only PASS gate, unmeasured floor
 ```
+
+## R32 — ITEMS 1, 2, 3 worked in order
+
+### Item 1 · NHL favourite lock — EXPLAINED, and one defect fixed
+
+It was logged "cause unidentified". The chain, measured end to end:
+
+**The triple count (fixed).** "The away team is on a back-to-back" and "the
+home team has 3+ days rest while its opponent has 0" are the same comparison
+from both ends, and NHL carries THREE signals for it across two classes, so
+neither the family table nor the 10-02 mirror-norm collapsed them:
+
+```
+nhl_away_b2b_fade         situational  HOME_ML  +0.32
+away_b2b_penalty          model        HOME_ML  +0.11
+home_long_rest_advantage  model        HOME_ML  +0.08
+```
+
+Over 116 stored NHL trails, **12 picks carry 2+ of them and on those they
+average 70.5% of the entire score**, with FOUR picks where they are 100% of
+it. Every instance is the away team tired, so every instance votes HOME.
+Grouped into a `rest_b2b` family. Effect tonight: Colorado **PRIME 93 /
+score 2.03 -> STRONG 88 / 1.49** (a stake-band change); Washington
+0.94 -> 0.92. NFL duplicates it too (`nfl_away_rest_edge_2plus` +
+`nfl_rest_advantage_away`).
+
+**But that is not the whole cause, and no TOP pick flipped.** The engine DOES
+produce the dog — on every measurable game the RL candidate IS the dog
+puckline and WINS its own market (PHI +1.5, NJ +1.5, CGY +1.5, SEA +1.5).
+TOP compares scores ACROSS markets, and the evidence is allocated unequally:
+
+```
+NHL, 5 dates, 34 games:   ML 73 chips (2.15/game)   RL 34 (1.00)   = 2.15x
+```
+
+Rest, goalie, Elo and money-flow signals are written as `*_ML` votes; only
+team-form/ATS are written as `*_RL`. The ML chips point HOME/favourite, the
+RL chips point AWAY/dog, and score scales with chip count. **So the
+favourite moneyline beats the dog puckline essentially always — that is the
+93% lock.** Fixing it is a design decision about comparing markets with
+unequal evidence. Recorded, not shipped.
+
+### Item 2 · BLOCKED on a migration that was never applied
+
+`reconcile_stale_side_receipts.py --apply` failed on all 47 rows:
+
+```
+23505  Key (sport, surface, game_date, source_id)=(NCAAF, game_read,
+       2026-10-17, 7743) already exists
+voided 0, replacements written 0, failed 47
+LIVE receipts still on a stale side: 122 (was 179)
+```
+
+All 47 are already VOID, so with 20261025a's partial index the insert
+succeeds. It failed, so the full constraint is still live and **20261025a was
+written on 10-25 and never applied** — there is no `_apply_` note for it
+while every comparable migration has one. Nothing was lost: the script
+inserts before it voids, so `voided 0` means it stopped cleanly.
+
+Apply note written. It unblocks 47 replacements, with **133 of 180
+candidates deliberately left alone**: 64 market-changed (the R3 decision),
+34 MLB with no start-time column, 25 where the read changed AFTER kickoff so
+the receipt stands, 10 ungradeable. The repair makes the record WORSE —
+47 VOID at +0.00u become 24 LOSS / 23 WIN at **-2.52u** — which is the point;
+a repair that improved it would be the red flag.
+
+### Item 3 · NBA projections 17.8% — THREE defects, no missing data source
+
+```
+pts     328 props  26.2%      steals  288  0.0%
+reb     310        29.4%      pra     264  0.0%
+threes  287        32.1%      blocks  222  0.0%
+ast     246        31.3%
+```
+
+1. **Two spellings of one family.** `base` is `prop_type.split('_')[0]`, the
+   board says `steals_over` / `blocks_over`, `PROP_TO_PROJ` keyed them
+   `stl` / `blk`. **510 of 1,945 props (26.2%) dropped on spelling alone**,
+   while proj_stl sat populated on 566 of 1,976 source rows and proj_blk on
+   557 — the same ~28.6% as pts/reb/ast.
+2. **The combo families are a sum we already hold.** proj_pra is populated
+   on 13 of 1,976 rows (0.7%) while the parts are at 568 each, so `pra`
+   mapped correctly and produced nothing on 264 props. A combo projection is
+   exactly the sum of its parts (E[X+Y+Z] = E[X]+E[Y]+E[Z] whatever the
+   correlation), so the derived MEAN is not an approximation — verified
+   Anthony Davis 22.0+10.6+3.1 = 35.7 vs a 34.5 line. Stamped in
+   `signals._projection_derived_from`; the variance would need the
+   covariance, so this derives the projection only.
+3. **Both reads capped at 1000.** Projections asked `limit=1000` against
+   1,976 rows; props asked no limit, which PostgREST caps at 1000 against
+   1,945. It printed "matched 401/1000" as though 1000 were the slate — same
+   family as the prop scorer seeing 22% of an NHL board. Paged:
+   **matched 401/1000 -> 1802/1945**.
+
+**And a fourth I nearly shipped:** my own derived-value stamp merged into
+`prop.get('signals')` while `signals` was not in the select list, so it would
+have BLANKED existing signals instead of merging. Caught before apply.
