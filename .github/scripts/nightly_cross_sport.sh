@@ -830,5 +830,27 @@ bash "$RUN_STEP" --label "price_picks.py"   python price_picks.py --write
 # one window here and a different one there.
 bash "$RUN_STEP" --label "refit_signal_registry.py (all sports)" \
   python refit_signal_registry.py --days 90 --min-n 10
+
+# ══ 2026-10-29 · NOTHING CHECKED THAT A READ AGREES WITH ITS OWN PICK ══
+# Andy: "i need verification that each Jerry game read write up matches the
+# picks and makes sense on nfl and ncaaf, nba, and nhl."
+#
+# Three things can disagree on one card and no step compared them:
+#   engine   <sport>_game_context.primary_play
+#   badge    jerry_reads.call_market/side/line
+#   write-up jerry_reads.short_read/long_read
+# They are written by different steps, so they drift independently. First
+# run, +14d: NFL 9, NCAAF 21, NBA 4, NHL 0 — including a badge reading
+# 'Texas Tech ML' above prose saying "This PASS on the moneyline ... too
+# thin to clear conviction thresholds".
+#
+# --warn-only ON PURPOSE, for now. There is a real backlog (14 findings a
+# reader would see), and a step that is red from the day it ships is a step
+# that gets muted (feedback_a_detector_must_know_the_intentional_case). It
+# reports into the log and the heartbeat; drop --warn-only to make it
+# blocking once the backlog is cleared, which needs the read generators to
+# re-run (they need a live ANTHROPIC_API_KEY, so CI, not local).
+bash "$RUN_STEP" --label "audit_read_pick_consistency.py" \
+  python audit_read_pick_consistency.py --days 14 --warn-only
 echo ""
 echo "══ nightly cross-sport complete ══"

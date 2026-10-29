@@ -102,6 +102,7 @@ if _env.exists():
             k, v = line.split('=', 1)
             os.environ.setdefault(k.strip(), v.strip())
 
+import re
 import requests
 
 SB = os.environ['SUPABASE_URL']
@@ -533,7 +534,37 @@ def check_imminent_context_gap(sport: str) -> tuple:
         return [], [f'{sport}: no games scheduled in the next '
                     f'{IMMINENT_HOURS}h — nothing to check']
 
+    # ══ 2026-10-29 · THE TWO SIDES ARE KEYED DIFFERENTLY ON NFL ═════════
+    # This matched schedule.game_id against context.game_id, and on NFL
+    # those are two different keyspaces:
+    #
+    #   nfl_game_results.game_id   '20261029_CAR_GB'
+    #   nfl_game_context.game_id   'ab2865e9f2d4b012de8bc6fb6de11a7c'
+    #
+    # So the check reported CAR @ GB as having no context while the row was
+    # right there, carrying close_spread 3.0 and primary_play 'GB ML'. It
+    # failed the whole NFL weekly run with
+    #   "*** DARK COLUMNS OR STALE FEEDS *** ... the builder did not finish
+    #    its write"
+    # on a slate the builder had built correctly, three lines after printing
+    # primary_play 1/1 ok — the checker contradicting itself in one output.
+    #
+    # Same family as project_nfl_game_id_mismatch_911, and exactly the
+    # reason football_game_id_alias exists. A false CRITICAL is expensive
+    # twice: it hides real misses, and a step that is red when nothing is
+    # wrong stops being read at all
+    # (feedback_a_detector_must_know_the_intentional_case).
+    #
+    # So identity is matched on what both sides genuinely agree on —
+    # (game_date, away, home) — in ADDITION to the id, never instead of it.
+    def _ident(g):
+        d = str(g.get('game_date') or '')
+        h = re.sub(r'[^a-z0-9]', '', str(g.get('home_team') or '').lower())
+        a = re.sub(r'[^a-z0-9]', '', str(g.get('away_team') or '').lower())
+        return f'{d}|{a}@{h}' if (d and h and a) else None
+
     have = {str(g.get('game_id')) for g in built if g.get('game_id')}
+    have_ident = {i for i in (_ident(g) for g in built) if i}
     missing, in_window = [], 0
     for g in scheduled:
         # Narrow to a REAL 30 hours where the schedule carries a kickoff.
@@ -551,6 +582,10 @@ def check_imminent_context_gap(sport: str) -> tuple:
                 continue              # under way, or still has time to fill
         in_window += 1
         if str(g.get('game_id')) in have:
+            continue
+        # id miss is not proof of absence — see the keyspace note above.
+        _id = _ident(g)
+        if _id and _id in have_ident:
             continue
         # A game that already has a score is finished; a started game cannot
         # be fixed and must not be asserted on.

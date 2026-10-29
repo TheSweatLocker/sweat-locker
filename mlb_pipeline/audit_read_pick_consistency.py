@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Assert every Jerry game read AGREES with the pick it is attached to.
+
+== 2026-10-29 · WHY THIS EXISTS ==
+ANDY: "i need verification that each Jerry game read write up matches the
+picks and makes sense on nfl and ncaaf, nba, and nhl."
+
+Three different things can disagree on one card and nothing checks that they
+agree:
+
+    engine      <sport>_game_context.primary_play   (what the scorer decided)
+    badge       jerry_reads.call_market/side/line   (what the card shows)
+    write-up    jerry_reads.short_read/long_read    (what the reader reads)
+
+They are written by different steps, so they drift independently. Measured
+the day this was written, after a signal-weight refit rewrote primary_play:
+
+    NCAAF   46 of 65 reads had a badge the engine no longer agreed with
+    NBA      6 of 20
+    NHL      0 of 44
+    NFL      week-locked, unmeasurable without NFL_UNLOCK_WEEK
+
+And separately, found by reading three NCAAF reads at random:
+
+    badge 'Texas Tech ML'  ·  prose "This PASS on the moneyline hinges on
+    pricing ... only 4.4 percentage points of edge — too thin to clear
+    conviction thresholds"
+
+A pick badge sitting on top of a write-up that declines the pick. Nothing
+was red.
+
+WHY ALIGNMENT ALONE IS NOT THE FIX. backfill_jerry_pick_alignment.py
+rewrites the badge to match the engine, and
+jerry_reads_dual_write.enforce_primary_play_alignment says in its own
+docstring that "the LLM's prose (short_read, long_read) is preserved
+as-is". So aligning a stale read moves the contradiction rather than
+removing it: the badge becomes 'Washington +7.5' above prose still arguing
+Nebraska -7.5. The prose has to be REGENERATED
+(generate_<sport>_game_reads.py), which needs a live ANTHROPIC_API_KEY.
+This script exists to prove that happened, and to fail loudly when it did
+not.
+
+PRECISION OVER RECALL. A checker that cries wolf gets muted
+(feedback_a_detector_must_know_the_intentional_case), so every rule here
+fires only on an unambiguous contradiction, and a read that merely looks
+unusual is left alone. The deliberately-excluded cases are listed at each
+rule.
+
+USAGE
+    python audit_read_pick_consistency.py                     # all sports
+    python audit_read_pick_consistency.py --sport NCAAF
+    python audit_read_pick_consistency.py --days 14 --verbose
+    python audit_read_pick_consistency.py --warn-only         # never exit 2
+"""
+from __future__ import annotations
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import date, timedelta
+
+import requests
+
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+SB = os.environ['SUPABASE_URL']
+KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
+H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
+
+CTX_TABLE = {
+    'MLB': 'mlb_game_context', 'NFL': 'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context', 'NBA': 'nba_game_context',
+    'NHL': 'nhl_game_context', 'NCAAB': 'ncaab_game_context',
+}
+
+#: A read whose prose declines the play must not carry an actionable badge.
+#  Anchored to phrases the generators actually emit — verified against live
+#  prose — not a generic "pass" substring, because "pass defense", "passing
+#  game" and "pass rush" appear in almost every football read.
+PASS_PROSE = (
+    r'\bthis\s+pass\b', r'\bpass\s+on\s+the\s+(moneyline|spread|total|side)\b',
+    r'\bno\s+play\b', r'\bwe\s+pass\b', r'\bpassing\s+on\s+this\b',
+    r'\btoo\s+thin\s+to\s+clear\b', r'\bstaying\s+away\b',
+    r'\bnot\s+actionable\b', r'\bno\s+actionable\s+edge\b',
+)
+#: markets that represent a real wager (anything else is already a pass)
+ACTIONABLE = ('ml', 'rl', 'spread', 'total', 'pl')
+
+
+def _page(table: str, params: dict) -> list:
+    out, off = [], 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
+                         params=dict(params, limit='1000', offset=str(off)),
+                         timeout=90)
+        if r.status_code not in (200, 206):
+            raise RuntimeError(f'{table} -> {r.status_code}: {r.text[:200]}')
+        b = r.json()
+        if not isinstance(b, list):
+            return out
+        out += b
+        if len(b) < 1000:
+            return out
+        off += 1000
+
+
+def _pp(row: dict):
+    pp = row.get('primary_play')
+    if isinstance(pp, str):
+        try:
+            pp = json.loads(pp)
+        except ValueError:
+            return None
+    return pp if isinstance(pp, dict) else None
+
+
+def _label(pp: dict) -> str:
+    for k in ('pick_label', 'label', 'call_text', 'text'):
+        v = pp.get(k)
+        if v:
+            return str(v).strip()
+    return ''
+
+
+def _norm(s) -> str:
+    """Lowercase, strip punctuation — for tolerant name containment."""
+    return re.sub(r'[^a-z0-9 ]+', ' ', str(s or '').lower()).strip()
+
+
+def _teams(ctx: dict):
+    return str(ctx.get('home_team') or ''), str(ctx.get('away_team') or '')
+
+
+def _picked_team(call_text: str, home: str, away: str):
+    """Which team the badge backs, or None for a total / unparseable badge.
+
+    Matched by NAME CONTAINMENT against the two real teams rather than by
+    vocabulary, because a label is 'Washington +7.5', 'BYU -16.5',
+    'Georgia Southern ML' or 'Ottawa Senators PL' depending on sport and
+    market (feedback_parse_a_pick_by_shape_not_vocabulary).
+    """
+    t = _norm(call_text)
+    if not t:
+        return None
+    if re.search(r'\b(over|under)\b', t):
+        return None
+    hits = []
+    for name in (home, away):
+        n = _norm(name)
+        if not n:
+            continue
+        # full name, or its last token (mascot), which is how short labels read
+        if n in t or (n.split() and n.split()[-1] in t.split()):
+            hits.append(name)
+    # ambiguous when both matched (e.g. a label naming both sides)
+    return hits[0] if len(hits) == 1 else None
+
+
+def audit(sport: str, days: int, verbose: bool) -> dict:
+    ctx_table = CTX_TABLE[sport]
+    today = date.today().isoformat()
+    end = (date.today() + timedelta(days=days)).isoformat()
+    reads = _page('jerry_reads', {
+        'select': 'game_id,game_date,call_market,call_side,call_line,'
+                  'call_text,short_read,long_read,conviction',
+        'sport': f'eq.{sport}',
+        'and': f'(game_date.gte.{today},game_date.lte.{end})'})
+    ctx = _page(ctx_table, {
+        'select': 'game_id,game_date,home_team,away_team,primary_play',
+        'and': f'(game_date.gte.{today},game_date.lte.{end})'})
+    cmap = {str(c['game_id']): c for c in ctx}
+
+    findings = []
+    checked = 0
+    for r in reads:
+        gid = str(r['game_id'])
+        c = cmap.get(gid) or {}
+        home, away = _teams(c)
+        prose = f"{r.get('short_read') or ''}\n{r.get('long_read') or ''}"
+        low = prose.lower()
+        mkt = str(r.get('call_market') or '').strip().lower()
+        label = str(r.get('call_text') or '').strip()
+        checked += 1
+
+        def add(code, detail):
+            findings.append({'sport': sport, 'game_id': gid,
+                             'game_date': r['game_date'], 'code': code,
+                             'badge': label or '(none)', 'detail': detail})
+
+        # 1 · the write-up declines a play the badge sells.
+        #     Excluded on purpose: a badge that is already a pass/no-play,
+        #     and conviction 0 rows, which ARE the pass.
+        if mkt in ACTIONABLE and label:
+            hit = next((p for p in PASS_PROSE if re.search(p, low)), None)
+            if hit and (r.get('conviction') or 0) > 0:
+                m = re.search(hit, low)
+                frag = prose[max(0, m.start() - 60):m.start() + 90].replace('\n', ' ')
+                add('PROSE_DECLINES_THE_PICK', f'...{frag.strip()}...')
+
+        # 2 · badge the engine no longer agrees with.
+        pp = _pp(c)
+        if pp:
+            eng = _label(pp)
+            if eng and label and _norm(eng) != _norm(label):
+                add('BADGE_VS_ENGINE', f'engine wants {eng!r}')
+
+        # 3 · the backed team is never named in its own write-up.
+        #     Only run when the team is unambiguous and prose is substantive,
+        #     so a thin stub is not double-reported.
+        #
+        #     == 2026-10-29 · THIS RULE'S FIRST VERSION WAS THE BUG ==
+        #     It accepted only the FULL name or the MASCOT (last token), and
+        #     reported 16 reads — 13 of 44 NHL — as never naming their own
+        #     pick. Every one was a false positive: the prose uses the CITY.
+        #       badge 'Tampa Bay Lightning ML'    prose "Hildeby's confirmed
+        #                                          in net for Tampa ..."
+        #       badge 'Nashville Predators ML'    prose "The model has
+        #                                          Nashville at roughly 50% ..."
+        #     A checker that is wrong about the normal case is worse than no
+        #     checker (feedback_a_detector_must_know_the_intentional_case),
+        #     and it nearly went into a report as 16 defects.
+        #
+        #     Now ANY token of 4+ characters counts as naming the team, which
+        #     is deliberately generous: a missed contradiction costs less than
+        #     a fabricated one. Tokens under 4 chars are skipped so 'LA',
+        #     'NY' and 'bay' cannot match half the alphabet.
+        pt = _picked_team(label, home, away)
+        if pt and len(prose.strip()) >= 200:
+            np_, pr = _norm(pt), _norm(prose)
+            toks = [t for t in np_.split() if len(t) >= 4]
+            named = (np_ and np_ in pr) or any(t in pr for t in toks)
+            if not named:
+                add('PICKED_TEAM_ABSENT_FROM_PROSE',
+                    f'{pt!r} never mentioned (tried {toks or [np_]})')
+
+        # 4 · a total pick whose prose never takes that direction.
+        if mkt == 'total':
+            side = str(r.get('call_side') or '').strip().lower()
+            if side in ('over', 'under') and not re.search(rf'\b{side}\b', low):
+                add('TOTAL_DIRECTION_ABSENT', f'prose never says {side!r}')
+
+        # 5 · an actionable badge with no write-up at all.
+        if mkt in ACTIONABLE and label and len(prose.strip()) < 60:
+            add('PICK_WITH_NO_PROSE', f'{len(prose.strip())} chars of prose')
+
+    return {'sport': sport, 'reads': checked, 'ctx': len(ctx),
+            'findings': findings}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--sport', choices=sorted(CTX_TABLE))
+    ap.add_argument('--days', type=int, default=14)
+    ap.add_argument('--verbose', action='store_true')
+    ap.add_argument('--warn-only', action='store_true')
+    a = ap.parse_args()
+    sports = [a.sport] if a.sport else ['NFL', 'NCAAF', 'NBA', 'NHL']
+
+    all_f = []
+    print(f'=== audit_read_pick_consistency · {date.today()} · +{a.days}d ===')
+    rows = []
+    for sp in sports:
+        try:
+            res = audit(sp, a.days, a.verbose)
+        except RuntimeError as e:
+            print(f'  ! {sp}: {e}')
+            continue
+        all_f += res['findings']
+        codes = {}
+        for f in res['findings']:
+            codes[f['code']] = codes.get(f['code'], 0) + 1
+        rows.append((sp, res['reads'], res['ctx'], len(res['findings']), codes))
+
+    print(f"\n{'sport':7} {'reads':>6} {'ctx':>5} {'findings':>9}  breakdown")
+    for sp, n, c, f, codes in rows:
+        print(f'{sp:7} {n:>6} {c:>5} {f:>9}  '
+              + (', '.join(f'{k}={v}' for k, v in sorted(codes.items())) or 'clean'))
+
+    by_code = {}
+    for f in all_f:
+        by_code.setdefault(f['code'], []).append(f)
+    for code in sorted(by_code):
+        fl = by_code[code]
+        print(f'\n── {code} ({len(fl)}) ' + '─' * max(0, 50 - len(code)))
+        for f in fl[: (None if a.verbose else 10)]:
+            print(f"   {f['sport']:6} {f['game_date']} {f['badge'][:34]:36} {f['detail'][:110]}")
+        if not a.verbose and len(fl) > 10:
+            print(f'   … and {len(fl) - 10} more (--verbose for all)')
+
+    hard = [f for f in all_f if f['code'] in
+            ('PROSE_DECLINES_THE_PICK', 'PICKED_TEAM_ABSENT_FROM_PROSE',
+             'PICK_WITH_NO_PROSE')]
+    print(f'\n  total findings: {len(all_f)}   contradictions a reader would '
+          f'SEE: {len(hard)}')
+    if not all_f:
+        print('  >> every read agrees with its pick.')
+    if a.warn_only:
+        return 0
+    return 2 if hard else (1 if all_f else 0)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

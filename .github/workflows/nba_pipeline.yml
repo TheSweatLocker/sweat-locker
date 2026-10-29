@@ -444,6 +444,24 @@ jobs:
       # render. Works year-round (ESPN keeps the page live in offseason
       # with rehab / surgery-recovery entries). Non-fatal — if ESPN
       # markup shifts, we get 0 rows and the card renders empty.
+      # ══ 2026-10-29 · IT HAS BEEN FAILING SILENTLY SINCE NBA OPENED ══
+      # assert_slate_freshness caught it: nba_injuries last written 192h ago
+      # against a 40h limit — i.e. nothing since roughly 10-21, the day the
+      # season started. The script is FINE: run by hand the same day it
+      # printed "86 injury rows parsed / 86/86 rows persisted", exit 0.
+      #
+      # So the step runs (nba_pipeline fires several times a day), fails in
+      # CI, and nobody hears it: `continue-on-error: true` swallows the exit
+      # code AND this was the one step here not wrapped in run_step.sh, so
+      # no step_failed heartbeat was ever recorded either. Working locally
+      # and failing in CI points at ESPN refusing the runner's IP, which is
+      # not fixable from this repo — but an invisible failure is, and that
+      # is the actual defect (feedback_green_step_that_writes_nothing).
+      #
+      # continue-on-error STAYS: stale injuries must not block the slate.
+      # run_step.sh is added so the failure lands in workflow_heartbeat with
+      # its label and rc, which is how every other failing step here gets
+      # found.
       - name: Pull NBA injuries (ESPN)
         continue-on-error: true
         env:
@@ -451,7 +469,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python nba_injuries_pull.py
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nba_injuries_pull.py" python nba_injuries_pull.py
 
       # ─── Today's context (schedule + odds + rest) ──────────────
       - name: Build NBA game context (today + next 3 days)
