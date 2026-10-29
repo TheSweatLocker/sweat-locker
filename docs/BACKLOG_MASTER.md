@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**. (R-series: next free **R38**.)
+- Next free ID: **B197**. (R-series: next free **R39**.)
 
 ---
 
@@ -2376,5 +2376,93 @@ That closes the *measurement* problem. What remains is a **discovery**
 problem, which is a different thing and should not be confused for a bug:
 most measured signals simply do not have edge. R34 is the clearest case —
 every NHL and NBA prop candidate, measured honestly, fails.
+
+---
+
+## R38 — THE BIAS, ROOT-CAUSED; AND REGRESSION, MEASURED (2026-10-29)
+
+Andy: *"picking only favourites is not data driven. regression NEEDS TO BE
+ASSESSED!"* Both halves of that, done.
+
+### Why the engine picks chalk — the actual mechanism
+
+Not a one-sided signal library. **The weights reward hit rate, not edge over
+price.** `_tier_for` judges a signal against a SIDE baseline, and where none
+exists it falls back to a flat `>=55% = VALIDATED`. `side_baseline(NHL,'rl')`
+returns `None`. NHL dog pucklines price around -190, **breakeven 65.8%**. So:
+
+```
+away_covers_as_dog   65.3% n=98   BE 65.8%   edge -0.54pp   ROI -0.25%
+                     -> rated VALIDATED, weight 1.00, the engine's top weight
+```
+
+Its hit rate **is** the price. The same mechanism rewards favourite-side ML
+signals in any sport where favourites win 60%+. That is the bias, and it is
+general, not an NHL quirk.
+
+### Every enabled NHL ML signal vs its own direction-only control
+
+**11 of 12 lose to simply taking the favourite.** The one that decided 6 of
+11 picks on 10-29:
+
+```
+  nhl_elo_home_ml_strong   68.6% n=70   control "take the favourite" 72.9%
+                           ROI +7.6%    control ROI +15.6%     96% chalk
+```
+
+All 11 disabled, each with its measurement written to `signal_sources.
+description`, reversible via `enabled`. Tonight's published board was NOT
+regenerated (games were starting).
+
+**Disabling them alone did not fix it — it RELOCATED the lock.** The board
+flipped to 7 of 11 DOGS, driven by `away_covers_as_dog`, the break-even
+signal above. So that was disabled too. NHL side picks are mostly no-play
+until the tiering fix lands: an honest empty board beats a biased one.
+
+### The fix that matters
+
+`_tier_for` must grade a firing against **the price of the side the signal
+took**, not a flat 55%. The prop path already works this way as of today
+(R35 uses `market_implied_prob`); the game path needs the same, sourced from
+the closing prices already stored on `<sport>_game_results`. One place.
+
+### REGRESSION — assessed, and it is the anti-chalk mechanism
+
+A team whose results lag its underlying process is what the market
+underprices. z-scored because the inputs are on different scales (L10
+goals/game mean 2.92 sd 0.65 vs xGF/60 mean 2.50 sd 0.44 — a raw subtraction
+would be the same-measure error):
+
+```
+regression_score = -(z(L10 GF) - z(xGF/60)) + (z(L10 GA) - z(xGA/60))
+```
+
+Priced on closing moneylines, leak-free (tendency stamp on/before the game):
+
+```
+                                    n    hit     BE     edge      ROI   dogs
+  CONTROL always the favourite    195  61.0%  60.4%   +0.58pp   +0.09%    0%
+  regression, all games           195  55.4%  53.1%   +2.28pp   +2.82%   43%
+  regression, |edge| >= 1.97       70  61.4%  54.9%   +6.55pp  +10.37%   37%
+  regression, |edge| >= 2.93       36  72.2%  55.5%  +16.71pp  +32.07%   33%
+```
+
+Holds split-half at the seeded threshold: **+8.44pp then +4.66pp**. It beats
+the favourite control and **37% of its picks are dogs** where the control is
+0%. Two-sided by construction, because it asks who is due to improve rather
+than who is better.
+
+Puckline NOT shipped: positive at every threshold (+3.01 to +6.07pp) but
+FAILS split-half (+6.08pp then -0.69pp).
+
+Replayed against 301 live rows before seeding: 53 HOME / 40 AWAY fires, 0
+eval errors, mutually exclusive, and the replay reproduced the analysis
+(n=71, +7.01pp, ROI +11.11%, 37% dogs).
+
+**Status**: `20261029e` written and ready to apply.
+**OPEN**: the z constants are fixed numbers over 500 team-games and need a
+refresh as the season grows; the honest version precomputes the gap into
+`nhl_game_context` as a column. Also open: the same regression test on NBA
+(has xG-equivalents?), NFL and NCAAF.
 
 ---
