@@ -272,6 +272,15 @@ def enrich_rest(rows: list[dict]) -> None:
         row['away_is_b2b'] = row['away_rest_days'] == 1 if row['away_rest_days'] is not None else None
 
 
+#: The four-factor columns copied onto each context row, per side. Kept in
+#: one place so the write, the migration and the signal conditions cannot
+#: drift apart. opp_orb_pct is deliberately ABSENT: it is NULL on all 30
+#: rows of the current season, so the rebounding pair is half-missing at
+#: source and a signal on it could never fire (see the apply note).
+_FOUR_FACTOR_COLS = ('efg_pct', 'opp_efg_pct', 'tov_pct', 'opp_tov_pct',
+                     'ft_rate', 'opp_ft_rate', 'orb_pct')
+
+
 def enrich_team_stats(rows: list) -> None:
     """Join nba_team_stats onto each context row.
 
@@ -303,9 +312,23 @@ def enrich_team_stats(rows: list) -> None:
                      # which is why the card showed pace 98.7 beside Team
                      # Stats' 99.0 for the same team. Not two sources
                      # disagreeing — one source, two seasons.
+                     # ══ 2026-10-28 · efg_pct WAS FETCHED AND THROWN AWAY ══
+                     # It was in this select and in FIELDS, merged per team,
+                     # and then the row assignment below never wrote it. The
+                     # four factors are the only NBA matchup axis that is NOT
+                     # reducible to net rating -- measured 10-28: the naive
+                     # off-vs-def "exploit" is algebraically IDENTICAL to the
+                     # net-rating differential ((ho+ad)-(ao+hd) == (ho-hd)-
+                     # (ao-ad)), correlates +0.688 with the line and only
+                     # +0.070 with ATS, so it is the market restated.
+                     # eFG / TOV / FTr vs the opponent's allowed rates are
+                     # genuinely separate, which is what "better offense,
+                     # exploit against a bad defense" means in basketball.
                      params={'select': 'team_name,team_abbrev,season,'
                                        'net_rating,off_rating,def_rating,'
-                                       'pace,efg_pct'},
+                                       'pace,efg_pct,opp_efg_pct,'
+                                       'tov_pct,opp_tov_pct,'
+                                       'ft_rate,opp_ft_rate,orb_pct'},
                      timeout=20)
     if r.status_code != 200:
         print(f'  ⚠ nba_team_stats fetch {r.status_code} — ratings stay NULL')
@@ -321,7 +344,9 @@ def enrich_team_stats(rows: list) -> None:
     merged: dict = {}
     rows_sorted = sorted(r.json(),
                          key=lambda t: str(t.get('season') or ''), reverse=True)
-    FIELDS = ('net_rating', 'off_rating', 'def_rating', 'pace', 'efg_pct')
+    FIELDS = ('net_rating', 'off_rating', 'def_rating', 'pace',
+              'efg_pct', 'opp_efg_pct', 'tov_pct', 'opp_tov_pct',
+              'ft_rate', 'opp_ft_rate', 'orb_pct')
     for t in rows_sorted:
         for k in (t.get('team_name'), t.get('team_abbrev')):
             if not k:
@@ -345,7 +370,16 @@ def enrich_team_stats(rows: list) -> None:
             row[f'{side}_off_rating'] = t.get('off_rating')
             row[f'{side}_def_rating'] = t.get('def_rating')
             row[f'{side}_pace'] = t.get('pace')
+            # the four factors, both ends: what a team DOES and what its
+            # opponent ALLOWS. Written only if the column exists downstream
+            # (migration 20261029a); a missing column is a 42703 on write,
+            # so _FOUR_FACTOR_COLS gates it.
+            for _f in _FOUR_FACTOR_COLS:
+                row[f'{side}_{_f}'] = t.get(_f)
     print(f'  team stats joined: {hit} sides matched, {miss} unmatched')
+    _ff = sum(1 for r_ in rows if r_.get('home_efg_pct') is not None)
+    print(f'  four factors on {_ff}/{len(rows)} rows '
+          f'(eFG / TOV / FTr, own and opponent-allowed)')
 
 
 def compute_confluence(row: dict) -> tuple:
