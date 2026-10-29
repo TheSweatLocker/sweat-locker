@@ -142,10 +142,100 @@ def _ranked(pairs: list[tuple[str, float]], higher_is_better: bool) -> dict:
     return out
 
 
+def _prune_untrusted(args, payload: list) -> int:
+    """Delete rows for teams this run does not trust. --dry-run shows only.
+
+    == 2026-10-29 · WHY A SEPARATE, OPT-IN STEP ==
+    The nightly run writes only the teams whose denominator it trusts, and
+    has never removed what a looser earlier version already wrote. Measured
+    today for NCAAF 2026: 1,330 rows over 266 teams, 655 of them written by
+    the current run for 131 teams, the other 675 frozen at 2026-10-23 with
+    league_size 266 while the fresh ones carry 131.
+
+    Two ranking universes in one table, and 20260926d makes a present
+    stat_key AUTHORITATIVE for its (sport, season) — it suppresses the
+    matview half. So a rank of 4/131 can render beside a rank of 180/266.
+
+    Measured blast radius before touching anything: ZERO of the 135 stale
+    teams appear on the upcoming NCAAF slate (111 teams over 71 games) —
+    they are FCS sides that exist in these tables only as opponents. That
+    is why this deletes nothing by default: it is an integrity repair with
+    no user-visible symptom today, so it does not belong in an unattended
+    nightly job that nobody reads the output of.
+
+    The stale VALUES are not recoverable and should not be: they were
+    computed with games=1, so they are season totals wearing a per-game
+    label (Tarleton State 509.7 "yds/g"). Rollback is a re-run of this
+    script, which rewrites every row it trusts.
+    """
+    keys = sorted({s[0] for s in SPECS})
+    back = _page('team_computed_stats', {
+        'select': 'stat_key,team,raw_value,refreshed_at,league_size',
+        'sport': 'eq.NCAAF', 'season': f'eq.{args.season}',
+        'stat_key': f'in.({",".join(keys)})'})
+    trusted = {p['team'] for p in payload}
+    doomed = sorted({r['team'] for r in back if r['team'] not in trusted})
+    n_rows = sum(1 for r in back if r['team'] not in trusted)
+    print(f'\n  PRUNE: {len(back)} rows / '
+          f'{len({r["team"] for r in back})} teams in table, '
+          f'{len(trusted)} trusted by this run')
+    print(f'  would delete {n_rows} rows across {len(doomed)} untrusted teams')
+    sizes = sorted({r.get('league_size') for r in back if r.get('league_size')})
+    print(f'  league_size values currently coexisting: {sizes}')
+    if not doomed:
+        print('  nothing to prune — one universe already.')
+        return 0
+    for t in doomed[:10]:
+        v = next((r for r in back
+                  if r['team'] == t and r['stat_key'] == 'total_yds_pg'), None)
+        extra = (f'  total_yds_pg {v["raw_value"]}  '
+                 f'refreshed {str(v["refreshed_at"])[:10]}') if v else ''
+        print(f'      {t:<26}{extra}')
+    if len(doomed) > 10:
+        print(f'      … and {len(doomed) - 10} more')
+    if args.dry_run:
+        print('  (dry run — nothing deleted)')
+        return 0
+
+    deleted = 0
+    for i in range(0, len(doomed), 50):
+        batch = doomed[i:i + 50]
+        quoted = ','.join('"' + t.replace('"', '""') + '"' for t in batch)
+        r = requests.delete(
+            f'{SB}/rest/v1/team_computed_stats',
+            headers=dict(H, **{'Prefer': 'return=minimal'}),
+            params={'sport': 'eq.NCAAF', 'season': f'eq.{args.season}',
+                    'stat_key': f'in.({",".join(keys)})',
+                    'team': f'in.({quoted})'},
+            timeout=120)
+        if r.status_code not in (200, 204):
+            print(f'  ✖ delete failed {r.status_code}: {(r.text or "")[:300]}')
+            return 1
+        deleted += len(batch)
+
+    # A 2xx is not proof. Read back and assert the table shrank to one universe.
+    after = _page('team_computed_stats', {
+        'select': 'team,league_size', 'sport': 'eq.NCAAF',
+        'season': f'eq.{args.season}', 'stat_key': f'in.({",".join(keys)})'})
+    left_over = sorted({r['team'] for r in after if r['team'] not in trusted})
+    sizes_after = sorted({r.get('league_size') for r in after
+                          if r.get('league_size')})
+    print(f'  pruned {deleted} teams · rows now {len(after)} · '
+          f'league_size now {sizes_after}')
+    if left_over:
+        print(f'  ✖ {len(left_over)} untrusted teams still present: '
+              + ', '.join(left_over[:5]))
+        return 1
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--season', type=int, default=2026)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--prune-untrusted', action='store_true',
+                    help='DELETE rows for teams this run does not trust, so '
+                         'one ranking universe is left. Honours --dry-run.')
     args = ap.parse_args()
 
     rows = _page('ncaaf_team_stats', {
@@ -222,6 +312,10 @@ def main() -> int:
         print(f'  {stat_key:<16} {size:3d} teams · best {best[0]} {best[1]}')
 
     print(f'\n  rows to write: {len(payload)}')
+
+    if args.prune_untrusted:
+        return _prune_untrusted(args, payload)
+
     if args.dry_run:
         print('  (dry run — nothing written)')
         return 0
@@ -243,11 +337,49 @@ def main() -> int:
     # class that has bitten this pipeline repeatedly).
     keys = {s[0] for s in SPECS}
     back = _page('team_computed_stats', {
-        'select': 'stat_key,team', 'sport': 'eq.NCAAF',
+        'select': 'stat_key,team,refreshed_at,league_size', 'sport': 'eq.NCAAF',
         'season': f'eq.{args.season}',
         'stat_key': f'in.({",".join(sorted(keys))})'})
     print(f'  wrote {wrote} · rows verified in table: {len(back)}')
-    return 0 if len(back) == len(payload) else 1
+
+    # ══ 2026-10-29 · VERIFY WHAT WE WROTE, NOT THE WHOLE TABLE ══════════
+    # `len(back) == len(payload)` could not pass and had been red on every
+    # run since 10-23: the read-back counts EVERY row for these stat_keys,
+    # and the table legitimately holds more than one run writes. Measured
+    # today: 1,330 rows for 266 teams, of which this run wrote 655 for the
+    # 131 it trusts. The other 135 are frozen at 2026-10-23, from before
+    # the games=1 under-count was rejected, and they carry league_size 266
+    # against the fresh rows' 131.
+    #
+    # So the step reported FAILURE while writing all 655 rows correctly,
+    # which is the muted-red-light problem: it sat in the step_failed table
+    # next to real breakage and taught us to ignore the colour.
+    #
+    # The right assertion is that every (stat_key, team) WE built is now in
+    # the table. Extra rows are reported, never failed on — they are a
+    # separate finding with its own flag below.
+    got = {(r['stat_key'], r['team']) for r in back}
+    want = {(p['stat_key'], p['team']) for p in payload}
+    missing = want - got
+    extra = got - want
+    if missing:
+        print(f'  ✖ {len(missing)} rows we wrote are NOT readable back, e.g. '
+              + ', '.join(f'{k[1]}/{k[0]}' for k in sorted(missing)[:4]))
+        return 1
+    print(f'  ✔ all {len(want)} written rows verified by identity')
+    if extra:
+        teams = sorted({t for _k, t in extra})
+        sizes = sorted({r.get('league_size') for r in back
+                        if r.get('league_size')})
+        print(f'  ! {len(extra)} rows for {len(teams)} teams this run does '
+              'NOT trust are still present (not written by us):')
+        print(f'      e.g. {", ".join(teams[:5])}')
+        print(f'      league_size values now coexisting in the table: {sizes}')
+        print('      A rank is only meaningful inside ONE universe '
+              '(20260926d), so these should be pruned:')
+        print('        python recompute_ncaaf_per_game_stats.py '
+              '--prune-untrusted --dry-run')
+    return 0
 
 
 if __name__ == '__main__':

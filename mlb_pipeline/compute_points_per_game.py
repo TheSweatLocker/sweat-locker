@@ -156,13 +156,18 @@ def run(sport: str, season: int, dry: bool, force: bool) -> int:
 
     # -- the upstream defence table defines the RANKING UNIVERSE ------------
     # Read before the universe is fixed, because it decides who is in it.
-    up = {}
+    # `games` is read alongside def_ppg because the drift gate below cannot
+    # tell a WRONG number from a LAGGING one without the denominator.
+    up, up_games = {}, {}
     try:
-        for r in _page(UPSTREAM_DEF[sport], {'select': 'team,def_ppg',
+        for r in _page(UPSTREAM_DEF[sport], {'select': 'team,def_ppg,games',
                                              'season': f'eq.{season}'}):
             v = _f(r.get('def_ppg'))
             if v is not None:
                 up[str(r['team'])] = v
+                g = _f(r.get('games'))
+                if g is not None:
+                    up_games[str(r['team'])] = int(g)
     except RuntimeError as e:
         print(f'  ! upstream def_ppg unreadable: {e}')
 
@@ -203,11 +208,61 @@ def run(sport: str, season: int, dry: bool, force: bool) -> int:
         for gap, t, o, u in gaps[:4]:
             print(f'      {t:<22} ours {o:>5.1f}   upstream {u:>5.1f}   '
                   f'gap {gap:>4.1f}')
-        over = [g for g in gaps if g[0] > MAX_PPG_DRIFT]
+        # ══ 2026-10-29 · A LAG IS NOT A DISAGREEMENT ════════════════════
+        # This gate refused to write on every run from 10-27 18:12 to
+        # 10-29, leaving NCAAF points_pg/points_allowed_pg two days stale
+        # while NFL (which runs second and passes) stayed current. The two
+        # teams it flagged were explained to the second decimal:
+        #
+        #   ours 8 games, upstream 7      drop our week 9 and we MATCH
+        #   Jacksonville State  159/7 = 22.71  vs upstream 22.71
+        #   Middle Tennessee    193/7 = 27.571 vs upstream 27.57
+        #
+        # Exactly 4 of 228 teams disagreed on game count and ALL FOUR were
+        # ours = upstream + 1: ncaaf_team_defense_stats ingests on a weekly
+        # cadence, ncaaf_game_results is same-night. JSU's extra game was a
+        # shutout (0 allowed vs a 22.7 average) and MTSU's was 44 allowed vs
+        # 27.6, which is the only reason those two crossed 1.5 pts/g while
+        # Kennesaw State and New Mexico State — same lag — stayed under it.
+        # So the threshold was sampling how EXTREME the newest game was, not
+        # whether the data is sound.
+        #
+        # A team we are AHEAD on is therefore exempt: the gap has a known
+        # cause and our own two numbers still come from one game set, which
+        # is what the card pairs (20260926d makes the computed stat_key
+        # authoritative, so points_pg and points_allowed_pg here replace
+        # upstream rather than sit beside it).
+        #
+        # A team we are BEHIND on stays in the gate — that direction means
+        # OUR results are missing a game, which is a real finding.
+        # --force is deliberately NOT the fix: forcing would have paired a
+        # week-9 points_pg against a week-8 def_ppg, the exact
+        # two-denominator bug this script exists to prevent.
+        ahead = {t for t in teams
+                 if up_games.get(t) is not None and played[t] > up_games[t]}
+        behind = {t for t in teams
+                  if up_games.get(t) is not None and played[t] < up_games[t]}
+        if ahead:
+            print(f'  {len(ahead)} teams where WE are ahead of upstream '
+                  '(exempt from the gate, gap explained by the denominator):')
+            for t in sorted(ahead)[:6]:
+                print(f'      {t:<22} ours {played[t]}g   upstream '
+                      f'{up_games[t]}g   gap {abs(ours[t] - up[t]):.1f}')
+        if behind:
+            print(f'  !! {len(behind)} teams where UPSTREAM is ahead of us — '
+                  'our results are missing games:')
+            for t in sorted(behind)[:6]:
+                print(f'      {t:<22} ours {played[t]}g   upstream '
+                      f'{up_games[t]}g')
+        over = [g for g in gaps if g[0] > MAX_PPG_DRIFT and g[1] not in ahead]
         if over and not force:
             print(f'\n  >> {len(over)} teams exceed MAX_PPG_DRIFT={MAX_PPG_DRIFT} '
-                  'pts/g. The two universes disagree, so pairing them would')
-            print('     compare different denominators. REFUSING to write.')
+                  'pts/g on the SAME game count. The two universes')
+            print('     disagree, so pairing them would compare different '
+                  'denominators. REFUSING to write.')
+            for gap, t, o, u in over[:6]:
+                print(f'      {t:<22} ours {o:>5.1f}   upstream {u:>5.1f}   '
+                      f'gap {gap:>4.1f}   ({played[t]}g both)')
             print('     Re-run with --force only once the gap is explained.')
             return 2
     else:

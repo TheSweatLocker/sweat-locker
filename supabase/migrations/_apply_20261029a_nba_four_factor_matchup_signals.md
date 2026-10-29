@@ -1,8 +1,43 @@
 # 2026-10-29a — NBA gets a matchup axis
 
 **Paste `20261029a_nba_four_factor_matchup_signals.sql` into the Supabase SQL
-editor and Run once.** Idempotent (`IF NOT EXISTS` / `ON CONFLICT DO
-NOTHING`), read-neutral — new nullable columns and new signal rows only.
+editor and Run once.** Idempotent (`IF NOT EXISTS` + a NOT-EXISTS guard),
+read-neutral — new nullable columns and new signal rows only.
+
+## ⚠ The first paste of this failed. Fixed 2026-10-29.
+
+```
+ERROR: 42P10: there is no unique or exclusion constraint matching the
+       ON CONFLICT specification
+```
+
+`ON CONFLICT (signal_key)` named a key `signal_sources` does not have. The
+table declares `UNIQUE (signal_key, sport, market_scope)`, and 20260820
+added `signal_sources_key_sport_uk (signal_key, sport)` only
+**conditionally** — so neither a one- nor two-column target is safe to
+assume. 20260911c and 20260818 both hit this and both switched to a
+NOT-EXISTS guard; this now does the same, which is idempotent whatever
+indexes are live and **cannot raise 42P10 because it has no conflict target
+at all**.
+
+**Nothing was half-applied.** The failed run rolled back whole, verified
+before editing: all 14 columns still return `42703`, and zero rows carry
+this origin.
+
+Catalog claims re-verified against the live schema:
+
+```
+all 12 inserted columns exist on signal_sources  -> 200
+negative control (bogus_col_xyz)                 -> 400 42703
+class / enabled types confirmed on a live matchup row
+the 6 signal_keys already present                -> 0  (all 6 will insert)
+live ON CONFLICT clauses remaining               -> 0  (both hits are comments)
+```
+
+A migration is no longer handed over unexecuted. `mlb_pipeline/validate_migration.py`
+runs one against the live schema in a transaction it then rolls back; it
+needs a DB password that is not in this repo, and until that is set it falls
+back to a syntax-only check **that states it cannot catch a 42P10**.
 
 ## Why
 

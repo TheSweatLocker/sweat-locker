@@ -82,7 +82,8 @@
 -- control once n>=10.
 --
 -- READ-NEUTRAL on existing data: new nullable columns, new signal rows.
--- Idempotent. Safe to re-run.
+-- Idempotent (NOT-EXISTS guard, not ON CONFLICT -- see the note at the
+-- INSERT). Safe to re-run.
 
 BEGIN;
 
@@ -111,11 +112,27 @@ COMMENT ON COLUMN public.nba_game_context.home_opp_efg_pct IS
 -- ── 2. the three matchup signals, both sides ─────────────────────────────
 -- side_expr is a quoted literal because the scorer evaluates it as an
 -- expression (see ncaaf_ground_leverage_home for the pattern this copies).
+-- 2026-10-29 fix: the first run of this migration failed with
+--   42P10: there is no unique or exclusion constraint matching the ON
+--          CONFLICT specification
+-- because `ON CONFLICT (signal_key)` names a key that does not exist. The
+-- table declares UNIQUE (signal_key, sport, market_scope) and 20260820
+-- added signal_sources_key_sport_uk (signal_key, sport) only CONDITIONALLY,
+-- so neither single-column nor two-column target is safe to assume --
+-- 20260911c and 20260818 both hit this and both switched to a NOT-EXISTS
+-- guard. Same fix here: it is idempotent whatever indexes are live.
+-- The failed run rolled back whole (verified: all 14 columns still 42703,
+-- zero rows at this origin), so nothing was half-applied.
 INSERT INTO public.signal_sources
   (signal_key, sport, class, market_scope, subject_scope,
    condition_expr, side_expr, strength_expr,
    display_prose_template, description, enabled, origin)
-VALUES
+SELECT v.signal_key::text, v.sport::text, v.class::text,
+       v.market_scope::text, v.subject_scope::text,
+       v.condition_expr::text, v.side_expr::text, v.strength_expr::text,
+       v.display_prose_template::text, v.description::text,
+       v.enabled::boolean, v.origin::text
+  FROM (VALUES
   -- SHOOTING: we shoot well, they let people shoot well
   ('nba_shooting_exploit_home', 'NBA', 'matchup', 'rl', 'game',
    'ctx.home_efg_pct is not None and ctx.away_opp_efg_pct is not None '
@@ -190,7 +207,14 @@ VALUES
    'defense conceding {home_opp_ft_rate}',
    'NBA: away draws fouls at a top-third rate vs a foul-prone opponent',
    true, 'SEEDED_NBA_FOUR_FACTOR_MATCHUP_1029')
-ON CONFLICT (signal_key) DO NOTHING;
+  ) AS v(signal_key, sport, class, market_scope, subject_scope,
+         condition_expr, side_expr, strength_expr,
+         display_prose_template, description, enabled, origin)
+ WHERE NOT EXISTS (
+   SELECT 1 FROM public.signal_sources s
+    WHERE s.signal_key = v.signal_key
+      AND s.sport      = v.sport
+ );
 
 COMMIT;
 
