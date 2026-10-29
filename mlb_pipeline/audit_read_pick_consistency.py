@@ -234,6 +234,81 @@ def audit(sport: str, days: int, verbose: bool) -> dict:
                 add('PICKED_TEAM_ABSENT_FROM_PROSE',
                     f'{pt!r} never mentioned (tried {toks or [np_]})')
 
+        # 3b · THE PROSE ARGUES THE OTHER TEAM.
+        #
+        #      == 2026-10-29 · THE ONE THAT ACTUALLY REACHED USERS ==
+        #      Rules 2 and 3 both passed on these, which is why they were
+        #      missed: the badge matched the engine, and the prose names
+        #      BOTH teams, so "is the pick mentioned" is useless here.
+        #
+        #      A refit flipped 16 NCAAF badges, and the read generator that
+        #      rewrites the prose then failed (rc=1), so the write-ups stayed
+        #      from 01:45 and kept arguing the side we had just left:
+        #        badge 'Washington +7.5'  prose "the model projects Nebraska
+        #                                  28.2, Washington 22.7"
+        #        badge 'FIU +13.5'        prose "a clear mismatch in
+        #                                  Liberty's favor"
+        #      Alignment moved the badge and preserved the prose, exactly as
+        #      enforce_primary_play_alignment documents, and nothing compared
+        #      the two.
+        #
+        #      Two high-precision shapes only, both anchored on the OPPONENT
+        #      by name, so a read that merely discusses the other team is not
+        #      flagged — only one that projects it to win or calls the edge
+        #      its own.
+        if pt and home and away:
+            opp = away if pt == home else home
+            on, pn = _norm(opp), _norm(pt)
+            opp_toks = [t for t in on.split() if len(t) >= 4]
+            pick_toks = [t for t in pn.split() if len(t) >= 4]
+            # (a) "model projects <A> 28.2, <B> 22.7" — higher score wins
+            for m in re.finditer(
+                    r'project(?:s|ed)?\s+([A-Za-z][\w .&\'-]{2,28}?)\s+'
+                    r'(\d{1,3}(?:\.\d)?)\s*(?:,|to|-|–|—|and)\s*'
+                    r'([A-Za-z][\w .&\'-]{2,28}?)\s+(\d{1,3}(?:\.\d)?)', prose):
+                a1, s1, a2, s2 = m.group(1), float(m.group(2)), m.group(3), float(m.group(4))
+                hi = _norm(a1 if s1 > s2 else a2)
+                if s1 == s2 or not hi:
+                    continue
+                hits_opp = any(t in hi for t in opp_toks)
+                hits_pick = any(t in hi for t in pick_toks)
+                if hits_opp and not hits_pick:
+                    add('PROSE_PROJECTS_THE_OTHER_TEAM',
+                        f'prose projects {a1.strip()} {s1:g}-{a2.strip()} {s2:g}, '
+                        f'badge backs {pt}')
+                    break
+            # (b) A "who does the prose favour" rule was BUILT AND REMOVED
+            #     here on 2026-10-29. Keeping the reasoning so it is not
+            #     rebuilt by the next person who notices the gap.
+            #
+            #     Matching favour/edge vocabulary against each team produced
+            #     false positives I could not defend, in both directions:
+            #       'Duke -7.5'   — prose argues FOR Duke the whole way
+            #                       ("Duke's offense running circles around
+            #                       Boston College's defense") but never in
+            #                       the words the rule knew, so the pick
+            #                       side scored zero and the read was
+            #                       flagged.
+            #       'Colorado Avalanche ML' — "goaltending favors the
+            #                       visitor by a full side", and Colorado IS
+            #                       the visitor. Agreement read as conflict.
+            #       'Notre Dame ML' — "anchors Notre Dame's case, THOUGH the
+            #                       stat sheet splits 6-11 in Miami's
+            #                       favor". A concessive clause is good
+            #                       writing, not a contradiction.
+            #     It reported 13 findings of which the ones I checked were
+            #     all wrong. That is feedback_parse_a_pick_by_shape_not_
+            #     vocabulary: a read can argue a side in unlimited phrasings
+            #     and a keyword list will never cover them.
+            #
+            #     Judging "does this paragraph argue for this side" needs a
+            #     model, not a regex. The right home for it is the read
+            #     generator's own output check, where the prompt and the
+            #     pick are both in hand. Until then (a) above is the honest
+            #     subset: a PROJECTED SCORE is structured, so naming the
+            #     opponent as the winner is unambiguous, and that is what
+            #     caught the Washington/Nebraska read.
+
         # 4 · a total pick whose prose never takes that direction.
         if mkt == 'total':
             side = str(r.get('call_side') or '').strip().lower()
@@ -290,6 +365,7 @@ def main() -> int:
 
     hard = [f for f in all_f if f['code'] in
             ('PROSE_DECLINES_THE_PICK', 'PICKED_TEAM_ABSENT_FROM_PROSE',
+            'PROSE_PROJECTS_THE_OTHER_TEAM',
              'PICK_WITH_NO_PROSE')]
     print(f'\n  total findings: {len(all_f)}   contradictions a reader would '
           f'SEE: {len(hard)}')
