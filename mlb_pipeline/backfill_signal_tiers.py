@@ -333,10 +333,28 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
     # firings reflect what reached production. They should agree, and
     # where they do not that gap is itself the finding.
     blind = (blind_sum / blind_n) if blind_n >= max(10, int(n_dec * 0.8)) else None
+    # ══ 2026-10-29 · A FLAT-52.4 "EDGE" IS NOT AN EDGE OVER ITS OWN SIDE ══
+    # The fallback was `hit_rate - 52.4`, i.e. the flat -110 breakeven, which
+    # is wrong twice over. It is not a DIRECTION control at all -- a home-ML
+    # signal at 56% scored +3.6 "edge" while a blind home ML bet already
+    # returns 53.5-57.6% by sport -- and 52.4 is not even the right
+    # breakeven for a moneyline, where the real bar is 56-58%
+    # (feedback_flat_110_inflates_every_ml_figure).
+    #
+    # So an uncontrolled row published a positive edge_pp that read exactly
+    # like a measured one. edge_pp is now NULL when there is no baseline,
+    # and baseline_pct is written beside it, so the pair always comes from
+    # ONE computation and NULL unambiguously means "flat rule, no control".
+    #
+    # Mattered because this writer runs AFTER refit_signal_registry in
+    # mlb_pipeline (step 1466 vs 692) and upserts the same (signal_name,
+    # sport) key. A merge-duplicates upsert leaves columns it omits intact,
+    # so it was replacing the refit's hit_rate/tier/weight while leaving the
+    # refit's baseline_pct behind it -- a MISMATCHED pair, one half from
+    # each system (feedback_a_pair_needs_same_measure_and_scale).
     edge_pp = (round(hit_rate - blind * 100, 1)
                if (hit_rate is not None and blind is not None)
-               else (round(hit_rate - 52.4, 1) if hit_rate is not None
-                     else None))
+               else None)
     if n_dec < 15 or hit_rate is None:
         tier = 'UNVALIDATED'
     elif _tier_for is not None:
@@ -356,6 +374,8 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
     return {
         'fires': fires, 'w': w, 'l': l, 'p': p, 'n_dec': n_dec,
         'hit_rate': hit_rate, 'edge_pp': edge_pp, 'tier': tier,
+        'baseline_pct': (round(blind * 100, 2)
+                         if blind is not None else None),
         'recommended_weight': weight,
     }
 
@@ -375,6 +395,10 @@ def write_registry(source: dict, stats: dict, dry_run: bool = False) -> bool:
         'hit_rate': stats['hit_rate'],
         'sample_n': stats['n_dec'],
         'edge_pp': stats['edge_pp'],
+        # NULL here MEANS "flat rule, no direction control" -- see the
+        # note where blind is computed. Written beside edge_pp so the
+        # two can never come from different computations.
+        'baseline_pct': stats['baseline_pct'],
         'tier': stats['tier'],
         'recommended_weight': stats['recommended_weight'],
         'direction_hint': 'FADE' if stats['tier'] == 'ANTI_VALIDATED' else 'FOLLOW',

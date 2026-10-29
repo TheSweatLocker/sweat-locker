@@ -765,6 +765,59 @@ _SIDE_BASELINE = {
 }
 
 
+#: (sport): P(the OVER wins) on a graded prop decision. UNDER is 1 - value.
+#
+# == 2026-10-29 · PROPS HAD NO DIRECTION CONTROL AT ALL ==================
+# side_baseline returns None for every prop market, so refit_signal_registry
+# judged prop signals by the FLAT rule (>=55% earns VALIDATED). Measured on
+# 10-29: 48 MLB prop signals carried w>0 on that rule with no control, at
+# hit rates of 59-71% and weight 1.0.
+#
+# Measured server-side over every graded BACK/FADE decision. A FADE INVERTS
+# the side (feedback_grade_the_side_we_published), so the OVER won when
+#   direction=over  & BACK & W   |  direction=over  & FADE & L
+#   direction=under & BACK & L   |  direction=under & FADE & W
+#
+#     MLB  OVER 48.42%  UNDER 51.58%   n=5,820
+#     NBA  OVER 48.55%  UNDER 51.45%   n=  861
+#     NHL  OVER 57.07%  UNDER 42.93%   n=  417
+#
+# NHL's over-bias is real and already logged (project_nhl_prop_over_bias_1009):
+# an NHL prop signal at 60% on OVER is barely beating blind, while the same
+# 60% in MLB is +11.6pp. The flat rule cannot tell those apart, which is
+# precisely how an inflated prop record gets manufactured.
+#
+# NFL is NOT listed: 1 gradeable row. None, not a guess, and not another
+# sport's number (the 2026-08-26 cross-sport contamination rule).
+_PROP_SIDE_BASELINE = {
+    'MLB': 0.4842,
+    'NBA': 0.4855,
+    'NHL': 0.5707,
+}
+#: measured n per sport, kept beside the rate so a thin cell stays visible.
+_PROP_SIDE_BASELINE_N = {'MLB': 5820, 'NBA': 861, 'NHL': 417}
+
+
+def prop_side_baseline(sport: Optional[str],
+                       side: Optional[str]) -> Optional[float]:
+    """Blind-bet rate for an OVER/UNDER prop side, or None if unmeasured.
+
+    `side` is the EFFECTIVE side actually backed, after a FADE has been
+    resolved — pass 'OVER'/'UNDER', not 'BACK'/'FADE'. Returns None for
+    anything else so a caller can never silently receive a rate for a side
+    this does not describe (the same failure side_baseline had with totals).
+    """
+    if not sport or not side:
+        return None
+    _s = str(side).strip().upper()
+    if _s not in ('OVER', 'UNDER'):
+        return None
+    base = _PROP_SIDE_BASELINE.get(str(sport).upper())
+    if base is None:
+        return None
+    return base if _s == 'OVER' else 1.0 - base
+
+
 def side_baseline(sport: Optional[str], market: Optional[str],
                   side: Optional[str]) -> Optional[float]:
     """Blind-bet rate for the side an opinion backs, or None if unknown.

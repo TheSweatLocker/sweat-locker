@@ -254,7 +254,8 @@ def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
                          params={'sport': f'eq.{sport}',
                                  'game_date': f'gte.{cutoff}',
                                  'result': 'in.(W,L,Win,Loss)',
-                                 'select': 'result,playbook_side,playbook_sources',
+                                 'select': 'result,playbook_side,direction,'
+                                           'playbook_sources',
                                  'order': 'id.asc',
                                  'limit': '1000', 'offset': str(off)},
                          timeout=60)
@@ -273,11 +274,34 @@ def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
             break
     print(f'  [{sport}] prop decisions graded (last {days}d): {len(rows)}')
 
-    firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
+    # ══ 2026-10-29 · GIVE THE PROP PATH A DIRECTION CONTROL ══════════════
+    # Until today this path returned right/wrong only, so blind_n stayed 0
+    # and _tier_for fell back to the FLAT >=55% rule for every prop signal.
+    # 48 MLB prop signals were carrying w>0 under it, several at w=1.0.
+    #
+    # The blind rate is per SPORT and it is not near 50%: a prop signal
+    # voting OVER has to beat 48.42% in MLB but 57.07% in NHL. The flat rule
+    # scores those identically, which is how an inflated prop record is
+    # manufactured.
+    try:
+        from ensemble_scorer import prop_side_baseline as _psb
+    except Exception:                                      # noqa: BLE001
+        _psb = lambda *_a, **_k: None                       # noqa: E731
+    firings: dict[str, dict] = defaultdict(
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
     for row in rows:
         result = str(row.get('result', '')).upper()
         won = result in ('W', 'WIN')
         pb_side = str(row.get('playbook_side', '')).upper()
+        # The decision's EFFECTIVE side: a FADE backs the opposite of the
+        # prop's own direction (feedback_grade_the_side_we_published).
+        _dir = str(row.get('direction', '')).strip().lower()
+        if _dir in ('over', 'under') and pb_side in ('BACK', 'FADE'):
+            _flip = (pb_side == 'FADE')
+            pb_eff = ('UNDER' if _flip else 'OVER') if _dir == 'over' else \
+                     ('OVER' if _flip else 'UNDER')
+        else:
+            pb_eff = None
         srcs = row.get('playbook_sources') or []
         if isinstance(srcs, str):
             try:
@@ -298,6 +322,15 @@ def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
             correct = (signal_agreed_with_pick == won)
             if correct: firings[base_key]['right'] += 1
             else:       firings[base_key]['wrong'] += 1
+            # The signal's own effective side is the decision's side when it
+            # agreed, and the opposite when it did not.
+            if pb_eff is not None:
+                sig_eff = pb_eff if signal_agreed_with_pick else (
+                    'UNDER' if pb_eff == 'OVER' else 'OVER')
+                _b = _psb(sport, sig_eff)
+                if _b is not None:
+                    firings[base_key]['blind_sum'] += _b
+                    firings[base_key]['blind_n'] += 1
     return dict(firings)
 
 
