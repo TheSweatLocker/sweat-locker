@@ -2054,3 +2054,55 @@ ast     246        31.3%
 **And a fourth I nearly shipped:** my own derived-value stamp merged into
 `prop.get('signals')` while `signals` was not in the select list, so it would
 have BLANKED existing signals instead of merging. Caught before apply.
+
+## R33 — ITEM 2 COMPLETE after the migration, and ONE integrity gap it exposed
+
+Andy applied 20261025a. The repair then completed **without my script** —
+and that is the informative part.
+
+`reconcile_stale_side_receipts.py --apply` still reported `failed 47`, but
+the replacements already existed:
+
+```
+NHL 10-26 #10588    VOID Calgary Flames ML (HOME)  +  LOSS Toronto Maple Leafs ML
+NCAAF 10-24 #11675  VOID Louisiana -10 (AWAY)      +  WIN  Southern Miss +10
+```
+
+Live ids ~3.97M against void ids 1.1-3.6M, i.e. written after the migration.
+The partial index let the **normal receipt writer** insert the correct side —
+something it had been attempting and being refused on every run. The
+reconciler's "failure" is now a stale complaint about rows that exist.
+
+**Landed state, verified:**
+
+```
+game_read receipt keys                      1,829
+keys holding void + a replacement              141
+   exactly one LIVE beside the void(s)          85   <- the repair
+   voids with no live replacement                56
+live replacements graded     46 WIN / 37 LOSS / 2 pending
+   by sport   NCAAF 37 · NHL 39 · NFL 8 · NBA 1
+migration VERIFY: keys with >1 LIVE receipt      0   <- index correct
+```
+
+### THE GAP THE MIGRATION EXPOSED
+
+My reconciler guards on "the read was finalised BEFORE the game started", so
+a side can never be chosen with hindsight. **The normal writer has no such
+guard**, and once unblocked it wrote everything, not the guarded subset:
+
+```
+83 of 85   read finalised BEFORE kickoff — clean
+ 2 of 85   read generated AFTER kickoff
+    NCAAF 2026-10-24  Indiana -7.5   LOSS   read 16:05:00  start 16:00:00
+    NCAAF 2026-10-24  Rice +8.5      WIN    read 16:03:18  start 16:00:00
+```
+
+Both within 5 minutes of kickoff and they cancel (1 W, 1 L), so the record
+impact is ~0 — but the principle is breached: those two sides were on record
+after the games began. The guard belongs in the writer, not only in the
+one-off repair (feedback_guard_belongs_at_the_chokepoint, again).
+
+**Open:** move the kickoff check into `backfill_public_receipts` so a receipt
+can never be written for a read finalised after the game started. Until then
+the exposure is 2 rows and bounded by how late a read can regenerate.
