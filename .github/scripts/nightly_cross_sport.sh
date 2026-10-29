@@ -808,5 +808,27 @@ bash "$RUN_STEP" --label "compute_sweat_rating.py"   python compute_sweat_rating
 # The rest of the gap is NOT this script: 93 of 107 misses are "no quotes for
 # this game", the jerry_reads/line_history game_id mismatch tracked as B160.
 bash "$RUN_STEP" --label "price_picks.py"   python price_picks.py --write
+
+# ══ 2026-10-29 · THE ALL-SPORTS REFIT WAS ABOUT TO DIE WITH BASEBALL ══
+# refit_signal_registry is what turns signal_attribution into the hit_rate /
+# sample_n / baseline_pct that edge_weight reads. Without a registry row a
+# signal falls to UNMEASURED_FLOOR (0.20) and votes on a guess.
+#
+# Its only all-sports invocation lived in mlb_pipeline.yml. nba_pipeline and
+# nhl_pipeline each run it with --sport for themselves, so when MLB goes
+# offline — the regular season ends in DAYS — NFL and NCAAF lose signal
+# measurement entirely and nothing goes red. That is precisely the failure
+# this workflow was created on 09-29 to prevent, for the same reason:
+# "it would have taken five other sports with it".
+#
+# Measured on 10-29 before this was added: 430 enabled GAME signals across
+# five sports, 127 measured (29.5%). NFL was 0 of 95 while NCAAF was 79 of
+# 95, because NCAAF rides the untargeted run and NFL's numbers were computed
+# and never written. Running it here took the total to 179 (41.6%).
+#
+# --min-n 10 matches the two sport pipelines so a signal cannot be tiered on
+# one window here and a different one there.
+bash "$RUN_STEP" --label "refit_signal_registry.py (all sports)" \
+  python refit_signal_registry.py --days 90 --min-n 10
 echo ""
 echo "══ nightly cross-sport complete ══"

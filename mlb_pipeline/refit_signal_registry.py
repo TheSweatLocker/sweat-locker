@@ -224,19 +224,53 @@ def _recommended_weight_for(n: int, hit_rate_frac: float, tier: str,
 
 
 def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
-    """Return {signal_key: {right, wrong}} from prop_playbook_decisions."""
+    """Return {signal_key: {right, wrong}} from prop_playbook_decisions.
+
+    == 2026-10-29 · IT WAS MEASURING A TRUNCATED, UNORDERED SUBSET ==
+    `Range: 0-9999` does NOT lift the cap: PostgREST enforces its own
+    db-max-rows and returns 1000. The run of 10-29 printed exactly
+
+        [MLB] prop decisions graded (last 90d): 1000
+        [NBA] prop decisions graded (last 90d): 1000
+        [NHL] prop decisions graded (last 90d): 1000
+
+    — three sports landing on precisely the cap, which is the signature,
+    not a coincidence. And there was no `order=`, so which 1000 arrived was
+    arbitrary and could differ between runs. Every prop signal's hit rate
+    was therefore computed on a random slice of its history
+    (feedback_never_measure_from_truncated_output,
+    feedback_unordered_data_zero_picks_a_vintage, and the same family as
+    the prop scorer seeing 22% of an NHL board).
+
+    Now paged with an explicit order, so the denominator is the whole
+    window and is reproducible.
+    """
     cutoff = (date.today() - timedelta(days=days)).isoformat()
-    r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
-                     headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-9999'},
-                     params={'sport': f'eq.{sport}',
-                             'game_date': f'gte.{cutoff}',
-                             'result': 'in.(W,L,Win,Loss)',
-                             'select': 'result,playbook_side,playbook_sources'},
-                     timeout=30)
-    if r.status_code not in (200, 206):
-        print(f'  ! prop query failed {r.status_code}: {r.text[:200]}')
-        return {}
-    rows = r.json() or []
+    rows: list = []
+    off = 0
+    while True:
+        r = requests.get(f'{SB}/rest/v1/prop_playbook_decisions',
+                         headers=H_READ,
+                         params={'sport': f'eq.{sport}',
+                                 'game_date': f'gte.{cutoff}',
+                                 'result': 'in.(W,L,Win,Loss)',
+                                 'select': 'result,playbook_side,playbook_sources',
+                                 'order': 'id.asc',
+                                 'limit': '1000', 'offset': str(off)},
+                         timeout=60)
+        if r.status_code not in (200, 206):
+            print(f'  ! prop query failed {r.status_code}: {r.text[:200]}')
+            return {}
+        batch = r.json() or []
+        if not isinstance(batch, list):
+            break
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        off += 1000
+        if off > 200000:                       # hard stop, never silent
+            print(f'  ! [{sport}] prop paging exceeded 200k rows — stopping')
+            break
     print(f'  [{sport}] prop decisions graded (last {days}d): {len(rows)}')
 
     firings: dict[str, dict] = defaultdict(lambda: {'right': 0, 'wrong': 0})
@@ -714,6 +748,24 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             'tier': tier,
             'recommended_weight': weight,
             'direction_hint': 'FADE' if tier == 'ANTI_VALIDATED' else 'FOLLOW',
+            # ══ 2026-10-29 · THE CONTROL WAS COMPUTED AND THROWN AWAY ══
+            # `blind` decides the tier and the weight above, and was then
+            # not persisted: baseline_pct was NULL on all 1,282 registry
+            # rows across every sport. So nothing downstream, and no audit,
+            # could tell a signal that BEAT its own side from one that was
+            # promoted by the flat >=55% fallback — which is where the
+            # favourite bias is manufactured, because a blind home bet
+            # already returns 53.5-57.6% by sport.
+            #
+            # Storing it makes the distinction visible: baseline_pct NULL
+            # now MEANS "judged by the flat rule, no control available",
+            # and edge_pp is the margin over the signal's own side.
+            # A number that decides a weight has to be auditable
+            # (feedback_signal_needs_a_direction_control).
+            'baseline_pct': (round(blind * 100, 2)
+                             if blind is not None else None),
+            'edge_pp': (round((hr_frac - blind) * 100, 2)
+                        if blind is not None else None),
             'origin': 'REFIT_SCRIPT',
             'last_computed_at': now,
             'updated_at': now,
