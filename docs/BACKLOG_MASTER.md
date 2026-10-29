@@ -1889,3 +1889,71 @@ Stop trying to reconstruct the past. The honest plan is:
    and say so whenever a number is quoted.
 3. Accept that the first honest ROI window for those decisions is weeks
    away, not tonight.
+
+## R31 — SMOKE TEST, and WHERE TONIGHT'S CHANGES ACTUALLY BITE
+
+33 checks across every path changed on 2026-10-28, all passing: imports,
+both live flags, the full defensive-gate chain on all five sports, the shared
+`sanitize()` guard, `dawg_rows`, the refit's two control paths, the POTD
+price resolver, and the NBA mascot join.
+
+### Correcting my own commit message on 28783a34
+
+Two of the three refit changes are **inert on current data**, and I should
+say so rather than leave the commit standing:
+
+* `_recommended_weight_for`'s new baseline bar **never binds.** It takes
+  `max(per-market breakeven, side baseline)`, and the per-market breakeven
+  already exceeds every baseline: ml 0.5833 against a max baseline of 0.576
+  (NCAAF home), rl 0.5238 against a max of 0.516 (MLB away). Correct, but no
+  effect.
+* The tier relabel has **no effect on weight.** `edge_weight` returns 0.6217
+  for VALIDATED, DISCOVERY and UNVALIDATED alike; only ANTI_VALIDATED zeroes
+  it. So demoting `nba_elo_home_ml_strong` DISCOVERY -> UNVALIDATED relabels
+  it without reducing its influence, and the 09-03 credibility gate still
+  passes it on `n=48 >= 15`.
+
+What DOES bite is the third change, the runtime baseline, and it is
+substantial. `ensemble_scorer.BREAKEVEN` is a single 0.524, so a home
+baseline above it binds:
+
+```
+sport  side      baseline   weight no-base -> with-base   delta
+NCAAF  HOME_ML      0.576        0.6398 -> 0.2937       -0.346   (-54%)
+NFL    HOME_ML      0.563        0.6398 -> 0.4100       -0.230
+NBA    HOME_ML      0.550        0.6398 -> 0.5036       -0.136
+NHL    HOME_ML      0.542        0.6398 -> 0.5519       -0.088
+MLB    HOME_ML      0.535        0.6398 -> 0.5893       -0.051
+every  AWAY_ML   0.424-0.465     0.6398 -> 0.6398       +0.000
+```
+
+**Home-moneyline signal weight is cut by up to 54%; away signals are
+untouched**, because away baselines sit below the 0.524 breakeven. That is
+the asymmetric discount the favourite-lock needed.
+
+It moved convictions only 0-2 points tonight because NBA/NHL signals carry
+no measured hit rate, so they take `edge_weight`'s floor path where the bar
+is irrelevant. **The mechanism is correctly wired and delayed-action:** as
+signals earn hit rates through the now-per-sport refit, the baseline
+discounts the home/favourite-pointing ones automatically, and the refit's
+control stops them reaching VALIDATED in the first place.
+
+So the honest ledger for the night:
+
+```
+REAL, MEASURED EFFECT
+  reroute block (NCAAF+NHL)    NHL stops betting those games; NCAAF -38.08%
+                               spread -> -18.00% ML. Split-half both sports.
+  spread prices (-650 -> -111) user-facing, 8 impossible prices -> 0
+  Clippers join                12 of 12 NBA games now carry a close line
+  POTD market guard            a prop would have booked at +136 vs -105
+COIN FLIP ON OUTCOMES
+  cap fixpoint                 NBA 91.7% -> 83.3% favourite, but the
+                               cap-violation test is 51.5% vs 51.5% in NCAAF
+DELAYED ACTION, CORRECTLY WIRED
+  side baseline                -54% on NCAAF home-ML signal weight, muted
+                               until signals are measured
+  per-sport refit + control    first weights accrue over the coming weeks
+INERT (correct, no effect)
+  refit weight bar, tier relabel, proxy-only PASS gate, unmeasured floor
+```
