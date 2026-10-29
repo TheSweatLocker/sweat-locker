@@ -10461,28 +10461,25 @@ setJerryHistory(prev => {
       } catch { setSteamSourceRecords([]); }
 
 
-      // 2026-10-19: The Fade — today's anti-public plays + its running
-      // record. Read from the jerry_cache row the generator writes, so the
-      // client never re-derives the filter: the play list a user sees is
-      // the exact one the receipts were written from.
-      try {
-        const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
-        const {data: fadeRows} = await supabase.from('jerry_cache')
-          .select('data')
-          .eq('cache_key', `fade_${todayET}`)
-          .limit(1);
-        const fd: any = fadeRows && fadeRows[0]?.data;
-        if (fd) {
-          setFadeData({
-            plays: Array.isArray(fd.plays) ? fd.plays : [],
-            record: fd.record || null,
-            backtest: fd.backtest || null,
-            filter: fd.filter || null,
-          });
-        } else {
-          setFadeData({plays:[], record:null, backtest:null, filter:null});
-        }
-      } catch { setFadeData({plays:[], record:null, backtest:null, filter:null}); }
+      // ══ 2026-10-29 · THE FADE FETCH MOVED OUT OF HERE ══════════════════
+      // ANDY: "when i go into the steam room tab and it goes to the fade i
+      // always have to swipe up to refresh page to get picks, its never just
+      // populated upon hitting tab initially."
+      //
+      // It used to live right here, near the END of fetchSteamFlags and
+      // INSIDE the outer try that wraps this whole function. So any earlier
+      // await that threw outside its own try — and this function runs a long
+      // chain of them, including an external_source_track_record read with
+      // .limit(5000) — jumped straight to `catch (e) { setSteamFlags([]) }`
+      // and these lines never ran at all. The Fade then sat empty until a
+      // pull-to-refresh re-ran the chain, which is precisely the symptom.
+      //
+      // Even when nothing threw, the Fade was the LAST thing fetched behind
+      // that chain, so the tab rendered an empty Fade first regardless.
+      //
+      // It is now its own fetchFade callback, called from the same effect, so
+      // neither an upstream failure nor upstream latency can hold it back.
+      // See fetchFade below.
 
       // The model panel for the upcoming slate (see modelVoices above).
       try {
@@ -10861,14 +10858,46 @@ setJerryHistory(prev => {
     setLedgerLoading(false);
   }, []);
 
+  // 2026-10-19: The Fade — today's anti-public plays + its running record.
+  // Read from the jerry_cache row the generator writes, so the client never
+  // re-derives the filter: the play list a user sees is the exact one the
+  // receipts were written from.
+  //
+  // 2026-10-29: lifted out of fetchSteamFlags. It is a single indexed read by
+  // cache_key, so it must not sit behind that function's long await chain or
+  // inside its outer catch — see the note at its old location.
+  const fetchFade = React.useCallback(async () => {
+    try {
+      const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+      const {data: fadeRows} = await supabase.from('jerry_cache')
+        .select('data')
+        .eq('cache_key', `fade_${todayET}`)
+        .limit(1);
+      const fd: any = fadeRows && fadeRows[0]?.data;
+      if (fd) {
+        setFadeData({
+          plays: Array.isArray(fd.plays) ? fd.plays : [],
+          record: fd.record || null,
+          backtest: fd.backtest || null,
+          filter: fd.filter || null,
+        });
+      } else {
+        setFadeData({plays:[], record:null, backtest:null, filter:null});
+      }
+    } catch { setFadeData({plays:[], record:null, backtest:null, filter:null}); }
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'steam') {
+      // fetchFade FIRST: it is one indexed row and it is what the tab opens
+      // on, so it should not queue behind the heavier fetches.
+      fetchFade();
       fetchSteamFlags();
       fetchLadder();
       fetchSharpTab();
       fetchLedger();
     }
-  }, [activeTab, fetchSteamFlags, fetchLadder, fetchSharpTab, fetchLedger]);
+  }, [activeTab, fetchFade, fetchSteamFlags, fetchLadder, fetchSharpTab, fetchLedger]);
 
   // Fetch active user notes + local dismissed-set on mount. Runs once
   // per app open — notes don't need real-time refresh (published server-side

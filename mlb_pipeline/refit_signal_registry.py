@@ -287,12 +287,47 @@ def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
         from ensemble_scorer import prop_side_baseline as _psb
     except Exception:                                      # noqa: BLE001
         _psb = lambda *_a, **_k: None                       # noqa: E731
+    # == 2026-10-29 . THE PROP PATH WAS MEASURING OUR PICK ==================
+    # `playbook_sources` stores the contributions that DROVE the decision,
+    # so a source almost always votes the side the decision took:
+    #     MLB 93.96% of 18,514 firings agreed with their own pick
+    #     NHL 67.23% of 1,007        NBA 62.27% of 2,693
+    # With `correct = (agreed == won)` that makes a signal's "hit rate"
+    # ~= the pick's hit rate. Measured on the same rows, signal-blind:
+    #     pitcher_vs_team_recent_hit_hard  65.07%  vs pick control 63.76%
+    #     pitcher_vs_team_owned            70.25%  vs           69.42%
+    #     nhl_prop_b2b_fade                63.31%  vs           63.91%
+    # - inside ~1pp every time. Those are the rows that were about to earn
+    # w=1.00. Same defect as the game path
+    # (project_signal_hit_rate_was_our_pick_rate_1028), never fixed here.
+    #
+    # pick_* is the signal-blind control: did OUR BET win on the rows this
+    # signal fired on. dis_n is how often the signal voted AGAINST the
+    # decision - the only non-circular evidence it carries. Both are
+    # carried to build_rows, which refuses VALIDATED without them.
     firings: dict[str, dict] = defaultdict(
-        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0})
+        lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
+                 'pick_right': 0, 'pick_n': 0, 'dis_n': 0, 'dis_right': 0})
     for row in rows:
         result = str(row.get('result', '')).upper()
-        won = result in ('W', 'WIN')
         pb_side = str(row.get('playbook_side', '')).upper()
+        # ══ 2026-10-29 · `result` GRADES THE LISTED SIDE, NOT OUR BET ════
+        # prop_playbook_decisions.result is computed from actual_value vs
+        # prop_line against the prop's OWN direction (verified: 32,508 rows,
+        # 0 disagreements with a recomputation from actual_value). On a FADE
+        # we back the OPPOSITE direction, so result='W' means our bet LOST.
+        #
+        # This function already knew that — pb_eff below flips the side for
+        # the baseline — but `won` was read raw, so every signal's
+        # right/wrong was INVERTED on every FADE row:
+        #     NHL 503 of 2,610 graded (19.3%)
+        #     NBA 818 of 4,540 (18.0%)
+        #     MLB 2,144 of 25,321 (8.5%)
+        # Same family as feedback_grade_the_side_we_published, and it is why
+        # the FADE cell read +37.6pp "edge" on NHL — the stored price is on
+        # the backed side while the stored result was on the listed one.
+        won_listed = result in ('W', 'WIN')
+        won = (not won_listed) if pb_side == 'FADE' else won_listed
         # The decision's EFFECTIVE side: a FADE backs the opposite of the
         # prop's own direction (feedback_grade_the_side_we_published).
         _dir = str(row.get('direction', '')).strip().lower()
@@ -315,22 +350,50 @@ def collect_prop_firings(sport: str, days: int) -> dict[str, dict]:
             # Strip __fade suffix so fade opinions count under parent
             base_key = str(key).replace('__fade', '')
             src_side = str(s.get('side', '')).upper()
-            # Signal "agreed with pick" AND pick won → correct.
-            # Signal "disagreed with pick" AND pick lost → also correct (they
-            # were voting the winning side and the winning side did win).
-            signal_agreed_with_pick = (src_side == pb_side)
-            correct = (signal_agreed_with_pick == won)
+            if src_side not in ('BACK', 'FADE'):
+                continue
+            # == 2026-10-29 . IT GRADED THE SIGNAL AGAINST THE PICK, AND
+            #                 THE PICK WAS USUALLY `PASS` ================
+            # The old rule was `correct = (src_side == pb_side) == won`:
+            # right for a BACK/FADE decision, but PASS is a decision value
+            # too, and PASS is nearly all of the table --
+            #     MLB 19,501 of 25,321 graded (77.0%)
+            #     NHL  1,870 of  2,610 (71.6%)
+            #     NBA  2,954 of  4,540 (65.1%)
+            # On a PASS row `src_side == pb_side` is False for EVERY source,
+            # so a signal that voted BACK on a prop whose listed direction
+            # WON was scored WRONG -- inverted on three quarters of the
+            # evidence. FADE voters came out right by accident, which is
+            # why the two families looked so different.
+            #
+            # A signal's record does not depend on what we did with it. It
+            # advocates a side; either that side won or it did not:
+            #     BACK -> the prop's listed direction
+            #     FADE -> the opposite direction
+            # Graded that way the pick drops out of the metric entirely,
+            # which removes the circularity the pick control was added to
+            # bound, and lets PASS rows carry their real information.
+            sig_backs_listed = (src_side == 'BACK')
+            correct = won_listed if sig_backs_listed else (not won_listed)
             if correct: firings[base_key]['right'] += 1
             else:       firings[base_key]['wrong'] += 1
-            # The signal's own effective side is the decision's side when it
-            # agreed, and the opposite when it did not.
-            if pb_eff is not None:
-                sig_eff = pb_eff if signal_agreed_with_pick else (
-                    'UNDER' if pb_eff == 'OVER' else 'OVER')
+            # The side this signal actually advocated, for its baseline.
+            if _dir in ('over', 'under'):
+                sig_eff = (_dir.upper() if sig_backs_listed
+                           else ('UNDER' if _dir == 'over' else 'OVER'))
                 _b = _psb(sport, sig_eff)
                 if _b is not None:
                     firings[base_key]['blind_sum'] += _b
                     firings[base_key]['blind_n'] += 1
+            # Does the signal add anything OVER THE PICK? Only meaningful
+            # where a pick exists, so PASS rows are excluded here even
+            # though they count above. `won` is our bet's outcome.
+            if pb_side in ('BACK', 'FADE'):
+                firings[base_key]['pick_n'] += 1
+                if won: firings[base_key]['pick_right'] += 1
+                if src_side != pb_side:
+                    firings[base_key]['dis_n'] += 1
+                    if not won: firings[base_key]['dis_right'] += 1
     return dict(firings)
 
 
@@ -679,6 +742,7 @@ def merge_firings(*dicts) -> dict[str, dict]:
     """
     out: dict[str, dict] = defaultdict(
         lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
+                 'pick_right': 0, 'pick_n': 0, 'dis_n': 0, 'dis_right': 0,
                  'mkt': Counter()})
     for d in dicts:
         for k, v in d.items():
@@ -686,6 +750,10 @@ def merge_firings(*dicts) -> dict[str, dict]:
             out[k]['wrong'] += v.get('wrong', 0)
             out[k]['blind_sum'] += v.get('blind_sum', 0.0)
             out[k]['blind_n'] += v.get('blind_n', 0)
+            # 2026-10-29: the pick control, per this docstring's own
+            # warning about dropping keys the callers just started making.
+            for _k in ('pick_right', 'pick_n', 'dis_n', 'dis_right'):
+                out[k][_k] += v.get(_k, 0)
             # 2026-10-27 F6: carry the market tally, per this docstring's
             # own warning about silently dropping new keys.
             _m = v.get('mkt')
@@ -715,6 +783,11 @@ def upsert_registry(rows: list[dict], dry_run: bool = False) -> int:
 
     total = 0
     for row in rows:
+        # 2026-10-29: build_rows carries audit-only fields prefixed with
+        # '_' (pick control, discrimination). They are NOT columns, and
+        # PostgREST 400s on an unknown key, so strip them here rather than
+        # relying on every caller to remember.
+        row = {k: v for k, v in row.items() if not k.startswith('_')}
         key = (row['signal_name'], row['sport'])
         if key in existing_ids:
             rid = existing_ids[key]
@@ -729,6 +802,35 @@ def upsert_registry(rows: list[dict], dry_run: bool = False) -> int:
             if resp.status_code in (201, 204): total += 1
             else: print(f'  ! insert {row["signal_name"]} failed {resp.status_code}: {resp.text[:150]}')
     return total
+
+
+_PICK_COLS = ('pick_control_pct', 'discrimination_pp', 'disagree_n')
+_PICK_COLS_PRESENT: Optional[bool] = None
+
+
+def _have_pick_control_cols() -> bool:
+    """True once 20261029c has been applied. Probed once per process.
+
+    A select on a missing column returns 42703 with a 400 and NO ROWS, so
+    guessing is the one thing not to do here
+    (feedback_select_star_before_concluding_absent). On any doubt this
+    returns False and the run simply prints the numbers as before -- a
+    failed probe must not cost us the refit.
+    """
+    global _PICK_COLS_PRESENT
+    if _PICK_COLS_PRESENT is None:
+        try:
+            r = requests.get(f'{SB}/rest/v1/signal_registry', headers=H_READ,
+                             params={'select': ','.join(_PICK_COLS),
+                                     'limit': '1'}, timeout=10)
+            _PICK_COLS_PRESENT = (r.status_code == 200)
+            if not _PICK_COLS_PRESENT:
+                print('  [registry] pick-control columns absent '
+                      '(20261029c not applied) - printing only')
+        except Exception as e:                                 # noqa: BLE001
+            print(f'  [registry] pick-control column probe failed: {e}')
+            _PICK_COLS_PRESENT = False
+    return _PICK_COLS_PRESENT
 
 
 def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
@@ -766,6 +868,31 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         _bn = ct.get('blind_n') or 0
         blind = (ct['blind_sum'] / _bn) if _bn >= max(10, int(n * 0.8)) else None
         tier = _tier_for(n, hr_frac, blind)
+        # == 2026-10-29 . THE PICK CONTROL, AS A GUARD ======================
+        # right/wrong above no longer references the pick at all, so the
+        # raw hit rate is non-circular on its own. This stays as a guard
+        # for one specific failure: a signal that, on the rows where it
+        # disagreed with a pick we actually made, was reliably the worse
+        # side. That is evidence no side-baseline can supply.
+        #
+        # Deliberately conservative - it can only DEMOTE, needs 30
+        # disagreements, and needs a 10pp gap, because the disagreement
+        # cell is small and a sharp rule on a small cell is how the 0.3
+        # prior got justified. feedback_signal_needs_a_direction_control.
+        _pick_n = ct.get('pick_n') or 0
+        _dis_n = ct.get('dis_n') or 0
+        pick_ctl = ((ct.get('pick_right') or 0) / _pick_n
+                    if _pick_n >= 30 else None)
+        disc_pp = None
+        if pick_ctl is not None and _dis_n >= 20:
+            _na = _pick_n - _dis_n
+            _kd = _dis_n - (ct.get('dis_right') or 0)
+            if _na >= 30:
+                _ka = (ct.get('pick_right') or 0) - _kd
+                disc_pp = round(100.0 * _ka / _na - 100.0 * _kd / _dis_n, 2)
+        if disc_pp is not None and disc_pp <= -10.0 and _dis_n >= 30:
+            if tier in ('VALIDATED', 'DISCOVERY'):
+                tier = 'UNVALIDATED'
         # 2026-10-27 F6: weight against the breakeven of the market this
         # signal actually fires on, not a flat -110.
         _mkt_ct = ct.get('mkt') or {}
@@ -778,6 +905,17 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             'sport': sport,
             'hit_rate': round(hr_frac * 100, 2),
             'sample_n': n,
+            # Stripped before the upsert (see upsert_registry); carried
+            # only so run() can print the audit table.
+            '_pick_ctl': (round(pick_ctl * 100, 2)
+                          if pick_ctl is not None else None),
+            '_disc_pp': disc_pp,
+            '_dis_n': _dis_n,
+            **({'pick_control_pct': (round(pick_ctl * 100, 2)
+                                     if pick_ctl is not None else None),
+                'discrimination_pp': disc_pp,
+                'disagree_n': _dis_n}
+               if pick_ctl is not None and _have_pick_control_cols() else {}),
             'tier': tier,
             'recommended_weight': weight,
             'direction_hint': 'FADE' if tier == 'ANTI_VALIDATED' else 'FOLLOW',
@@ -800,6 +938,11 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             'edge_pp': (round((hr_frac - blind) * 100, 2)
                         if blind is not None else None),
             'origin': 'REFIT_SCRIPT',
+            # NOT written to `notes`: 479 registry rows carry hand-written
+            # annotations there and a PATCH would erase them. 20261029c adds
+            # dedicated columns; _have_pick_control_cols() probes for them so
+            # this starts persisting the moment the migration lands, with no
+            # second deploy. Until then the numbers are printed only.
             'last_computed_at': now,
             'updated_at': now,
         })
@@ -829,6 +972,26 @@ def run(sport: str, days: int, dry_run: bool = False, min_n: int = 20) -> None:
             print(f'    {r["signal_name"]:45s} tier={r["tier"]:14s} '
                   f'hr={r["hit_rate"]}% n={r["sample_n"]} w={r["recommended_weight"]}')
 
+    # == 2026-10-29 . THE PICK CONTROL, PRINTED ==============================
+    # A prop signal is a component of the decision it is graded on, so its
+    # raw hit rate is mostly that decision's record. This table is the only
+    # honest read: pick_ctl is the signal-blind win rate on the same rows,
+    # disc is agree% - disagree%, and dis_n is how much evidence exists.
+    _audit = [r for r in rows if r.get('_pick_ctl') is not None]
+    if _audit:
+        print(f'  [{sport}] PICK CONTROL (prop path) - '
+              f'{len(_audit)} signals graded on decisions they helped make:')
+        print(f'    {"signal":42s} {"hit":>7s} {"pick_ctl":>9s} '
+              f'{"vs pick":>8s} {"disc":>8s} {"dis_n":>6s}  tier')
+        for r in sorted(_audit, key=lambda x: -(x['_disc_pp']
+                                                if x['_disc_pp'] is not None
+                                                else -999)):
+            d = ('untestable' if r['_disc_pp'] is None
+                 else f'{r["_disc_pp"]:+.2f}')
+            print(f'    {r["signal_name"][:42]:42s} {r["hit_rate"]:6.2f}% '
+                  f'{r["_pick_ctl"]:8.2f}% '
+                  f'{r["hit_rate"] - r["_pick_ctl"]:+7.2f}pp {d:>8s} '
+                  f'{r["_dis_n"]:6d}  {r["tier"]}')
     written = upsert_registry(rows, dry_run=dry_run)
     # ══ 2026-10-28 · A DRY RUN THAT SAYS "wrote" ══
     # upsert_registry returns len(rows) in dry mode, so this line printed
