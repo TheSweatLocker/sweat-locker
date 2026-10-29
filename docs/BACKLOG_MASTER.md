@@ -2258,6 +2258,17 @@ margin is thin on `prop_jerry_reads`** (447 of 1000 with NFL alone), so a
 **AUDITED, CLEAN · the Hermes `new Date(toLocaleString(...))` reparse.** All
 four matches in `app/` are comments warning against reintroducing it.
 
+**FIXED 2026-10-29 (`adecfa8a`) · two of my own tools from the same morning.**
+`audit_read_pick_consistency.py` returned non-zero on ANY finding, including
+the rules its own comment calls "kept visible but never blocking", so it went
+red on NBA x3 / NHL x2 / NFL x2 / NCAAF x1 the same day, every one with 0
+BLOCKING - a permanently-red step is a muted step. Blocking codes still exit
+2; warnings print and exit 0; `--strict` restores the old behaviour.
+`run_step.sh` captured stderr through a process substitution bash never waits
+for, so `stderr_tail` was EMPTY on every `step_failed` row it was added to
+explain - including those four. Now a FIFO with a real PID, verified capturing
+246 bytes with the traceback intact and stdout untouched.
+
 **FIXED · `ExternalPicksPanel` empty state rendered BLACK on a dark card.**
 `styles.emptyText` was referenced and never defined, so it came back
 `undefined` and the Text took React Native's default colour (#000) on a
@@ -2328,9 +2339,25 @@ rather than defaulted. Between the migration and the backfill the tooltip
 shows **nothing** rather than something wrong — the correct failure
 direction, and the script refuses to run before the migration.
 
-**Status**: code committed; `20261029d` + the backfill are the remaining step.
-**VERIFY**: `python mlb_pipeline/backfill_signal_was_right.py` (dry run prints
-the pooled shown-vs-real shift).
+**Status**: **DONE 2026-10-29.** Code `faa60a3f`; `20261029d` applied; backfill
+wrote 3,549 of 3,549 and a re-run reports 0 rows would change (idempotent).
+Pooled shift 53.1% shown (n=4,042) -> 53.4% real (n=3,549); the pooled number
+barely moves, which is the point - the error was per-signal and SIGNED, not a
+level shift, so a pooled sanity check would never have caught it. The live
+view now matches an independently measured value on **7 of 7** spot-checks:
+
+```
+  NCAAF COHORT_NCAAF_HEAVY_HOME_DOG   60.0% n= 70   (was shown 43.8%)
+  NCAAF COHORT_NCAAF_HEAVY_HOME_FAV   50.9% n=110   (was shown 61.7%)
+  NCAAF home_team_ats_hot_season       50.0% n= 28   (was shown 64.3%)
+  NFL   COHORT_NFL_DIV_HOME_COVER      33.3% n= 30   (was shown 46.9%)
+  NFL   COHORT_NFL_HOME_FAV            40.3% n= 67   (was shown 48.6%)
+  NFL   LR_SHADOW                      42.7% n= 82   (was shown 53.3%)
+  NFL   OFF_RATING_GAP                 43.0% n= 93   (was shown 51.0%)
+```
+
+**VERIFY**: `python mlb_pipeline/backfill_signal_was_right.py` (dry run; should
+report 0 rows would change).
 
 ### The measurement layer is now correct on all three paths
 
