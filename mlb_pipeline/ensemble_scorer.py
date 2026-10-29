@@ -157,8 +157,31 @@ TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
 # constant is the favourite-bias engine and why the default is unchanged
 # until a backtest says otherwise.
 # Enforce MAX_CLASS_SHARE to a true fixed point instead of one descending
-# pass. Shadow by default -- see the block in score_market() for why.
-APPLY_CAP_FIXPOINT = os.environ.get('ENSEMBLE_APPLY_CAP_FIXPOINT', '0') == '1'
+# pass.
+#
+# == LIVE 2026-10-28, on Andy's call, all sports ==========================
+# This is the only lever measured to reduce the favourite bias. It is a
+# CORRECTNESS fix to a cap that already exists and is already documented --
+# a single descending pass is not a fixed point, so the capped class landed
+# at 0.44-0.53 against a 0.40 cap.
+#
+# Measured before enabling:
+#   NBA   favourite share of side picks 91.7% -> 83.3%; LA Clippers -1.5
+#         becomes Los Angeles Lakers ML, and inflated convictions come down
+#         (PHI 67->62, DEN 70->67)
+#   MLB   tonight's PRIME moneyline is byte-identical (score 1.90, conv 84).
+#         The one surface that EARNS its tilt is untouched. n=1 game.
+#   NHL   unchanged -- its picks have <=2 contributing classes, so a 0.40
+#         cap is arithmetically impossible there (R2's 391-of-464 case)
+#   NCAAF/NFL  not yet measured; report their board change on the next slate
+#
+# Why it matters for the bias: on Detroit's ML, external_pick alone held
+# 52.4% of the score against a cap that IS feasible at 4 classes, and the
+# two chips doing it were external:dimers and external:oddscrowd -- money
+# flow followers, which follow favourites.
+#
+# REVERT is one env var: ENSEMBLE_APPLY_CAP_FIXPOINT=0
+APPLY_CAP_FIXPOINT = os.environ.get('ENSEMBLE_APPLY_CAP_FIXPOINT', '1') == '1'
 
 UNMEASURED_FLOOR = float(os.environ.get('ENSEMBLE_UNMEASURED_FLOOR', '0.20'))
 UNMEASURED_FLOOR_UNKNOWN = float(
