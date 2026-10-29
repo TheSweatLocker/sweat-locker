@@ -2142,6 +2142,40 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         ('team_season',  lambda k: 'season' in k and ('ats' in k or 'over_trend' in k or 'under_trend' in k)),
         # Team-form recent (L10 ATS/OU)
         ('team_recent',  lambda k: any(t in k for t in ['ats_hot','ats_cold','over_trend','under_trend','ml_hot','ml_cold']) and 'season' not in k),
+        # ══ 2026-10-28 · REST AND BACK-TO-BACK ARE ONE COMPARISON ══
+        # "the away team is on a back-to-back" and "the home team has 3+ days
+        # rest while its opponent has 0" are the SAME fact stated from both
+        # ends, and NHL carries THREE signals for it, in two different
+        # classes, so neither the family table nor the mirror-norm collapsed
+        # them:
+        #
+        #   nhl_away_b2b_fade        situational  HOME_ML  +0.32
+        #   away_b2b_penalty         model        HOME_ML  +0.11
+        #   home_long_rest_advantage model        HOME_ML  +0.08
+        #
+        # Measured over 116 stored NHL decision trails: 12 picks carry 2+ of
+        # them and on those they average **70.5% of the entire score**, with
+        # FOUR picks where they are 100% of it. Every instance is the away
+        # team tired, so every instance votes HOME.
+        #
+        # That is the NHL favourite lock. The engine DOES produce the dog --
+        # on both of tonight's measurable games the RL candidate is the dog
+        # puckline and it WINS its own market (PHI +1.5 LEAN 55, NJ +1.5
+        # LEAN 63) -- but TOP selection compares scores ACROSS markets, and
+        # a moneyline inflated by one fact counted three times beats a
+        # puckline carrying two honest chips every time.
+        #
+        # Same defect as the 10-02 pp-vs-pk mirror and the goalie pair, one
+        # layer out: those were two spellings of one comparison, these are
+        # three. NFL duplicates it too (nfl_away_rest_edge_2plus plus
+        # nfl_rest_advantage_away).
+        #
+        # Verified safe to group: all 16 signals in the registry whose key
+        # mentions rest/b2b/travel are genuinely that fact, so this pattern
+        # cannot swallow an unrelated signal. Dedupe runs WITHIN a side, and
+        # two different rest facts cannot favour the same side, so keeping
+        # the strongest is the whole fact.
+        ('rest_b2b',     lambda k: 'b2b' in k or 'back_to_back' in k or 'rest' in k),
     ]
     # ══ 2026-10-02 · A SIGNAL AND ITS OWN MIRROR ARE ONE OBSERVATION ══
     # Measured on 35 NHL games: nhl_home_pp_vs_weak_pk (HOME_ML) and
