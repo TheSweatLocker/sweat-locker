@@ -852,5 +852,42 @@ bash "$RUN_STEP" --label "refit_signal_registry.py (all sports)" \
 # re-run (they need a live ANTHROPIC_API_KEY, so CI, not local).
 bash "$RUN_STEP" --label "audit_read_pick_consistency.py" \
   python audit_read_pick_consistency.py --days 14 --warn-only
+
+# ══ 2026-10-29 · THE RECEIPT DRIFTED FROM THE BOARD BEFORE KICKOFF ══════
+# Andy: "We need to fix and make sure this is not an issue across other
+# games and sports (all games)." Measured that hour across every ungraded
+# game_read receipt for today forward: 13 of 31 (42%) named a pick we no
+# longer publish — NFL 11, NBA 1, NHL 1. 'LV +1.5' vs engine 'NYJ ML',
+# 'JAX -4.5' vs 'JAX -9.5', 'DET -4.5' vs 'DET ML'.
+#
+# A receipt is frozen on purpose (pick_side/line/label immutable by trigger
+# 20260918b) while the engine keeps re-deriving the pick as lines move, so
+# the longer a game sits the further the record drifts. That is also how
+# project_receipts_grade_the_opposite_side_1028 happened: 179 receipts
+# grading a side we had abandoned.
+#
+# --apply is deliberate. The guards are what make it safe, and they refuse
+# rather than guess: the game must be PROVABLY un-started from its own
+# start column, the receipt must be UNGRADED, and MLB is skipped outright
+# for having no start-time column. A receipt for a game already under way
+# is left exactly as published, because that is the honest record.
+#
+# Runs AFTER the read audit so the log shows the picks first, then the
+# record being brought in line with them.
+bash "$RUN_STEP" --label "resync_pregame_receipts.py" \
+  python resync_pregame_receipts.py --apply
+
+# The resync drops the old price on purpose — carrying an ML price onto a
+# spread replacement is the 10-28 "SAS -13.5 shown at -650" defect. So its
+# rows land UNPRICED and have to be priced in the same run that created
+# them: an unpriced receipt cannot be ROI'd or graded for CLV, and "we will
+# catch it next time" is how POTD price coverage fell 82% -> 32% (R30).
+#
+# It must be backfill_receipt_prices, NOT price_picks. Measured right after
+# wiring this: price_picks reported "wrote 12/12" and only 1 of the 13
+# replacement RECEIPTS carried a price, because price_picks prices
+# jerry_reads. Two tools, two tables, and the step name made it look done.
+bash "$RUN_STEP" --label "backfill_receipt_prices.py (after receipt resync)" \
+  python backfill_receipt_prices.py --apply
 echo ""
 echo "══ nightly cross-sport complete ══"

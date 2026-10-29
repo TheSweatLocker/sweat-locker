@@ -225,7 +225,26 @@ def audit(sport: str, days: int, verbose: bool) -> dict:
         #     and conviction 0 rows, which ARE the pass.
         is_stub = (len(prose.strip()) < STUB_MAX_CHARS
                    or any(s in prose for s in STUB_MARKERS))
-        if mkt in ACTIONABLE and label and not is_stub:
+        # ══ 2026-10-29 · A PASS-TIER READ IS ALLOWED TO SAY PASS ═════════
+        # The first CI run blocked 3 NCAAF rows for "declining the pick".
+        # Checked their engine tier and every one was non-actionable:
+        #     'Texas Tech ML'  COVERAGE   "This is a pass on the moneyline"
+        #     'LSU ML'         COVERAGE   "The engine call is PASS on the ML"
+        #     'Oregon +14'     PASS       prose projects Ohio State
+        # On a COVERAGE/PASS/SKIP read the prose saying there is no play
+        # AGREES with the engine — the app renders those dim and at lighter
+        # weight (GameDetailV2:1301) and generate_sweat_card excludes them
+        # outright (line 2580), precisely so every game can carry a read
+        # without selling it as a play.
+        #
+        # So the contradiction rules only apply where the engine is actually
+        # recommending something. Flagging a pass-tier read for admitting it
+        # is a pass is the by-design case, and a gate that fires on the
+        # by-design case gets muted
+        # (feedback_a_detector_must_know_the_intentional_case).
+        _tier = str((_pp(c) or {}).get('tier') or '').upper()
+        actionable_tier = _tier not in ('COVERAGE', 'PASS', 'SKIP', 'NO_PLAY')
+        if mkt in ACTIONABLE and label and not is_stub and actionable_tier:
             hit = next((p for p in PASS_PROSE if re.search(p, low)), None)
             if not hit:
                 # market-qualified form: only a match for THIS pick's market
@@ -296,7 +315,11 @@ def audit(sport: str, days: int, verbose: bool) -> dict:
         #      by name, so a read that merely discusses the other team is not
         #      flagged — only one that projects it to win or calls the edge
         #      its own.
-        if pt and home and away:
+        # Same tier gate as rule 1: on a COVERAGE/PASS read the prose is
+        # entitled to project the other team, because the engine is not
+        # recommending this side in the first place ('Oregon +14' is tier
+        # PASS and its prose projects Ohio State — correct, not a conflict).
+        if pt and home and away and actionable_tier:
             opp = away if pt == home else home
             on, pn = _norm(opp), _norm(pt)
             opp_toks = [t for t in on.split() if len(t) >= 4]

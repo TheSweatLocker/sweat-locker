@@ -201,6 +201,11 @@ def main():
     ap.add_argument('--tier', choices=TIERS, default='STRONG')
     ap.add_argument('--conviction', type=int, default=None)
     ap.add_argument('--label')
+    ap.add_argument('--sub',
+                    help='replacement for the one-line sub that renders under '
+                         'the badge. Omit it and a side/market change CLEARS '
+                         'the stale one, rather than printing a line about the '
+                         'pick we just abandoned.')
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--force-past-lock', action='store_true',
                     dest='force_lock')
@@ -310,10 +315,40 @@ def main():
     })
     if a.line is not None:
         new['line'] = a.line
+
+    # ══ 2026-10-29 · `sub` RENDERS UNDER THE BADGE, SO IT CANNOT STAY ════
+    # The docstring above is right that this tool overrides the CONCLUSION
+    # and not the reading — but `sub` is not the reading. It is the one line
+    # the card prints directly beneath the pick, and it is built from the
+    # pick it was written for.
+    #
+    # Tonight, after CAR @ GB was corrected from GB ML to CAR +3.5, the sub
+    # still read:
+    #       "GB · 65% vs 66% implied — no edge"
+    # i.e. a line arguing the abandoned side, and arguing it had no edge,
+    # printed under a CAR +3.5 badge. Andy saw the result and asked why the
+    # primary play and the badge disagreed.
+    #
+    # So: when the SIDE or the MARKET changes, the old sub is cleared rather
+    # than carried. Nothing is invented — a cleared sub renders nothing,
+    # which is honest, where a stale one renders a contradiction. --sub
+    # supplies a replacement when there is something true to say. A
+    # tier-only or conviction-only change leaves the sub alone, because it
+    # still describes the same pick.
+    _side_changed = str(old.get('side') or '').upper() != str(a.side or '').upper()
+    _type_changed = str(old.get('type') or '').lower() != str(a.mtype or '').lower()
+    if a.sub is not None:
+        new['sub'] = a.sub
+        print(f'  sub        : set to {a.sub!r}')
+    elif (_side_changed or _type_changed) and old.get('sub'):
+        new['sub'] = None
+        print(f'  sub        : CLEARED — the engine sub described the previous '
+              f'pick ({str(old.get("sub"))[:52]!r}). Pass --sub to set one.')
+
     new['_manual_correction'] = {
         'at': today_et(), 'by': 'andy-approved',
         'was': {k: old.get(k) for k in
-                ('side', 'type', 'tier', 'label', 'line', 'conviction')},
+                ('side', 'type', 'tier', 'label', 'line', 'conviction', 'sub')},
     }
 
     print(f'\n  engine had : {old.get("tier")}/{old.get("type")}/'
