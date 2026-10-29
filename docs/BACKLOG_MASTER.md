@@ -1691,3 +1691,57 @@ reaching users.
 **Next actions, not yet done:** make lr_v1 MERGE rather than replace (the
 10-27 recommendation, still open); and refuse to publish a read whose own
 gate declined it.
+
+## R28 — WILL TONIGHT'S ENGINE CHANGES MOVE RESULTS? No. Measured.
+
+Andy: *"Will this chnage things signifcalty, good or bad coin flip?"*
+
+**The cap fix is a COIN FLIP on outcomes.** The test it rests on: picks whose
+class-share cap was violated had one class dominating. Did they do worse?
+
+```
+pooled   VIOLATED 46.9% [36.4,57.7] -9.63%  vs  HELD 55.8% [48.1,63.1] +2.91%
+NCAAF    VIOLATED 51.5% n=66        -2.31%  vs  HELD 51.5% n=130       -2.39%
+NFL      VIOLATED 27.3% n=11                vs  HELD 65.5% n=29
+```
+
+In the only sport with an adequate sample the gap is **exactly zero**. The
+pooled -8.8pp is a sport-mix artifact plus an n=11 NFL cell, and the pooled
+CIs overlap anyway. `feedback_tier_mix_reverses_the_sign`. lr_v1-authored
+rows excluded (454) because their chip lists are damage, not evidence.
+
+So: it reduces the one-sidedness (NBA 91.7% -> 83.3%, measured on the board)
+and it is a real correctness fix, but there is NO evidence it improves win
+rate. I should not have called it "the lever". The side baseline is likewise
+0 side flips and 0-2 conviction points. **Neither will move the needle.**
+
+**WHAT IS BEST-EVIDENCED: stop lr_v1 replacing the ensemble.** Measured
+fresh tonight on `_pre_lr`, where lr_v1 flipped a moneyline side so both
+opinions are judgeable against one outcome:
+
+```
+sport    n   lr_v1 right   ensemble right      gap
+NCAAF   20         35.0%            60.0%   -25.0pp
+NHL     19         36.8%            63.2%   -26.3pp
+NFL      8         75.0%            12.5%   +62.5pp   <- inverts, n too small
+ALL     47         42.6%            53.2%   -10.6pp
+```
+
+Two independent sports, same direction, same magnitude, **replicating the
+10-27 measurement (42.0% vs 57.1%, n=50) on a different slice**. Each cell
+is under n=30 so none is individually callable by our own gate, but
+replication across two sports plus the prior n=50 is the strongest evidence
+available for any action we could take.
+
+It is also the biggest surface: lr_v1 authored **8 of 19 published picks
+tonight** and promoted 5 from COVERAGE. NFL must be excluded from any
+restriction — it inverts.
+
+**Ranked by evidence, what else to do:**
+1. lr_v1 MERGE not replace, on NCAAF + NHL only (above).
+2. NCAAF spreads: engine -10.54pp vs always-HOME, holds both halves. NFL
+   spreads -46.99pp already partly refused by B209; NCAAF is not.
+3. Publishing discipline — a conviction-0 read whose own gate declined it,
+   and 11 of 12 NBA picks published at tier COVERAGE. A trust claim, not a
+   performance claim.
+4. Measured signals (NBA 0 of 32, NHL 0 of 38). The real fix; needs weeks.
