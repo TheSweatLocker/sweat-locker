@@ -1,84 +1,78 @@
 # 2026-10-29a — NBA gets a matchup axis
 
-**Paste `20261029a_nba_four_factor_matchup_signals.sql` into the Supabase SQL
-editor and Run once.** Idempotent (`IF NOT EXISTS` + a NOT-EXISTS guard),
-read-neutral — new nullable columns and new signal rows only.
-
-## ⚠ TWO failed pastes. Now uses only a shape proven in this DB.
-
-**Attempt 2** returned `42P01: relation "a" does not exist`. There is no
-identifier `a` anywhere in the file — verified by stripping every string and
-comment, which leaves only `AS`, `s` and `v` — so Postgres did not produce
-that from this text. The client mangled the
-`INSERT … SELECT … FROM (VALUES …) AS v(…)` construct with its `::` casts.
-
-Attempt 1 reached the INSERT (it failed with 42P10), which proves the
-`ALTER`, the `COMMENT` and multi-statement execution are all fine. The fault
-was isolated to the one thing that changed.
-
-So the INSERT is now **six separate
-`INSERT … SELECT … WHERE NOT EXISTS` statements**, the shape 20260911c uses
-— verified still live in this database, 4 rows at origin
-`SEEDED_QB_SPLITS_911`. No derived table, no alias, no `::` cast, and no
-`''` escape anywhere outside comments (the one in the `COMMENT ON COLUMN`
-was reworded away). A NOT-EXISTS guard also cannot raise 42P10, since it has
-no conflict target at all.
-
-All six conditions were re-replayed through `signal_expr` **after**
-regeneration, reading the expressions back out of the file rather than
-trusting the generator:
+**The SQL file is now bare: 8 statements, zero comments, pure ASCII.** All
+the rationale that used to live in its header is in this note instead,
+because the comments are the prime suspect for two failed pastes (below).
 
 ```
-signal                        GOOD  NEAR  BLANK  stren  side
-nba_shooting_exploit_home     True False  False  0.436  HOME_RL
-nba_shooting_exploit_away     True False  False  0.436  AWAY_RL
-nba_ball_security_home        True False  False  0.426  HOME_RL
-nba_ball_security_away        True False  False  0.426  AWAY_RL
-nba_foul_leverage_home        True False  False  0.340  HOME_RL
-nba_foul_leverage_away        True False  False  0.340  AWAY_RL
-swallowed-error report: EMPTY
+python mlb_pipeline/validate_migration.py supabase/migrations/20261029a_nba_four_factor_matchup_signals.sql --parse-only
 ```
 
-NEAR is a ctx just under each gate, so the thresholds are proven to bite,
-not just to pass. **If it still fails, run the six INSERTs one at a time** —
-the error will then name which one, and they are independent.
+## HOW TO RUN IT — and how to bisect if it fails again
 
-## The first paste: 42P10
+There is **no `BEGIN`/`COMMIT`**. Every statement is independently
+idempotent (`ADD COLUMN IF NOT EXISTS`, `WHERE NOT EXISTS`), so a partial
+run is safe and re-running costs nothing. That is deliberate: it means you
+can **run the statements one at a time** and the error will name which one.
+
+| # | statement | what it does |
+|---|---|---|
+| 1 | `ALTER TABLE public.nba_game_context ADD COLUMN IF NOT EXISTS …` | 14 nullable numeric columns |
+| 2–7 | six `INSERT … SELECT … WHERE NOT EXISTS` | one matchup signal each |
+| 8 | `NOTIFY pgrst, 'reload schema'` | PostgREST picks up the columns |
+
+**If it fails again, run statement 1 alone.** If a bare `ALTER TABLE … ADD
+COLUMN IF NOT EXISTS` also returns `42P01: relation "a" does not exist`,
+then nothing in this file is the cause and the problem is in the client or
+the session — tell me that result, it is the single most useful datapoint
+left.
+
+## Three failed pastes, and what each one ruled out
+
+**Attempt 1 — `42P10: there is no unique or exclusion constraint matching
+the ON CONFLICT specification`.** Real defect, mine. `ON CONFLICT
+(signal_key)` named a key `signal_sources` does not have: the table declares
+`UNIQUE (signal_key, sport, market_scope)`, and 20260820 added
+`(signal_key, sport)` only **conditionally**. No conflict target is safe to
+assume. Also proved the rollback was whole — all 14 columns still `42703`,
+zero rows at the new origin — so nothing was ever half-applied.
+
+**Attempt 2 — `42P01: relation "a" does not exist`.** I had repaired the
+42P10 with `INSERT … SELECT … FROM (VALUES …) AS v(…)` and `::` casts, which
+was a second unproven guess rather than a fix. Blamed the derived table.
+
+**Attempt 3 — the same `42P01`, using the proven 20260911c shape.** This is
+the informative one: it **cleared the construct of blame entirely.** Six
+plain `INSERT … SELECT … WHERE NOT EXISTS` statements, the exact shape
+20260911c uses and which is still live in this database (4 rows at origin
+`SEEDED_QB_SPLITS_911`), failed identically.
+
+### What that leaves
+
+**There is no identifier `a` in the SQL code.** Verified by stripping every
+string and comment, which leaves exactly three identifiers in the whole
+INSERT: `AS`, `s`, `v`. Postgres cannot have produced `relation "a"` from
+the code, so the client is parsing something that is not code.
+
+The one thing attempts 2 and 3 share and attempt 1 did not is **the comment
+block I added**, and attempt 3's comments literally contained `` `a` `` in
+backticks plus a lot of non-ASCII (`·`, `—`, `══`). So this version removes
+both variables at once:
 
 ```
-ERROR: 42P10: there is no unique or exclusion constraint matching the
-       ON CONFLICT specification
+bytes 6394   max byte value 125 (pure ASCII)
+'--' present: no      '/*' present: no      backtick: no
+CR: no       tab: no       double-quotes: 12 (the six side_expr values)
 ```
 
-`ON CONFLICT (signal_key)` named a key `signal_sources` does not have. The
-table declares `UNIQUE (signal_key, sport, market_scope)`, and 20260820
-added `signal_sources_key_sport_uk (signal_key, sport)` only
-**conditionally** — so neither a one- nor two-column target is safe to
-assume. 20260911c and 20260818 both hit this and both switched to a
-NOT-EXISTS guard; this now does the same, which is idempotent whatever
-indexes are live and **cannot raise 42P10 because it has no conflict target
-at all**.
+The `COMMENT ON COLUMN` statement was dropped too — it was documentation,
+its prose is reproduced below, and it was one more string to mis-lex.
 
-**Nothing was half-applied.** The failed run rolled back whole, verified
-before editing: all 14 columns still return `42703`, and zero rows carry
-this origin.
+> `home_opp_efg_pct` is the eFG% that opponents of the HOME team shoot
+> against it, i.e. how well it defends the shot. Paired with `away_efg_pct`
+> to express a shooting mismatch.
 
-Catalog claims re-verified against the live schema:
-
-```
-all 12 inserted columns exist on signal_sources  -> 200
-negative control (bogus_col_xyz)                 -> 400 42703
-class / enabled types confirmed on a live matchup row
-the 6 signal_keys already present                -> 0  (all 6 will insert)
-live ON CONFLICT clauses remaining               -> 0  (both hits are comments)
-```
-
-A migration is no longer handed over unexecuted. `mlb_pipeline/validate_migration.py`
-runs one against the live schema in a transaction it then rolls back; it
-needs a DB password that is not in this repo, and until that is set it falls
-back to a syntax-only check **that states it cannot catch a 42P10**.
-
-## Why
+## Why these signals exist
 
 Andy, 2026-10-28, on the standard the engine should meet:
 
@@ -146,6 +140,12 @@ fixed — not re-fitted per run, because re-learning a threshold has cost this
 repo 2-8 points every time (the fade 55.7->47.7, the wind cutoff
 55.8->53.6).
 
+```
+efg_pct     p70 0.5423      opp_efg_pct p70 0.5538
+tov_pct     p30 0.1320      opp_tov_pct p30 0.1303
+ft_rate     p70 0.2371      opp_ft_rate p70 0.2512
+```
+
 **The rebounding exploit is deliberately NOT seeded.** `opp_orb_pct` is NULL
 on all 30 rows, so the condition could never be true, and a
 permanently-silent signal is worse than none — it reads as tested-and-quiet.
@@ -166,23 +166,40 @@ only on them at COVERAGE.
 snapshot, so testing it against games already inside that snapshot is the
 leak that produced the fake NCAAF 67.8% (z=+4.07) retracted on 09-26. They
 are seeded to **fire and accrue attribution**, and the per-sport refit wired
-on 10-28 will weight them against a direction-only control once n>=10.
+on 10-28 will weight them against a direction-only control once n>=10. With
+NBA's schedule that is roughly 1-2 weeks to n>=10, 3-5 weeks to n>=30.
 
-## Verified before shipping
+## Verified before each handover
 
-The conditions were replayed through `signal_expr` itself, not eyeballed:
+The conditions are replayed through `signal_expr` itself, read back out of
+the SQL file rather than trusting the generator:
 
 ```
-signal                GOOD ctx  expect  BLANK ctx  strength
-shooting_home             True    True      False     0.416
-shooting_away            False   False      False         -
-ball_security_home        True    True      False     0.384
-foul_leverage_home        True    True      False     0.325
+signal                        GOOD  NEAR  BLANK  stren  side
+nba_shooting_exploit_home     True False  False  0.436  HOME_RL
+nba_shooting_exploit_away     True False  False  0.436  AWAY_RL
+nba_ball_security_home        True False  False  0.426  HOME_RL
+nba_ball_security_away        True False  False  0.426  AWAY_RL
+nba_foul_leverage_home        True False  False  0.340  HOME_RL
+nba_foul_leverage_away        True False  False  0.340  AWAY_RL
+swallowed-error report: EMPTY
 ```
 
-`float` and `min` are whitelisted; a blank ctx is False everywhere (the
-None-guard working, not a swallowed NameError); `side_expr` resolves to
-`'HOME_RL'`.
+`NEAR` is a ctx sitting just **under** each gate, so the thresholds are
+proven to bite rather than merely to pass. `float` and `min` are
+whitelisted; a blank ctx is False everywhere (the None-guard working, not a
+swallowed NameError); `side_expr` resolves to `HOME_RL` / `AWAY_RL` matching
+each key's suffix; prose renders.
+
+Catalog claims checked through PostgREST:
+
+```
+all 12 inserted columns exist on signal_sources  -> 200
+negative control (bogus_col_xyz)                 -> 400 42703
+class / enabled types confirmed on a live matchup row
+the 6 signal_keys already present                -> 0  (all 6 will insert)
+20260911c's rows still live                      -> 4  (shape is proven)
+```
 
 ## After running
 
