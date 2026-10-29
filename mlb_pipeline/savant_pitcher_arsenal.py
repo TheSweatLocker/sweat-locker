@@ -47,6 +47,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+import os
+
+# == 2026-10-29 . OFF-SEASON GUARD =========================================
+# Andy: "with mlb not in season anymore ... do all the pitcher and stat
+# pullers still run ... whats the cost?" They did. Measured over 14 days of
+# start/end heartbeats, MLB workflows burn 255 of the 477 workflow minutes
+# spent per day (53%) on a sport whose last game was 2026-10-28.
+#
+# The money (~$61 of $114/month) is the small half. The real cost is this
+# script running GREEN AND EMPTY for four months, so by spring nobody knows
+# whether it still works (feedback_green_step_that_writes_nothing). The skip
+# is therefore loud.
+#
+# Fails OPEN by design: no credentials, a bad response or any exception all
+# mean RUN, because a gate must never be the reason a live sport goes dark
+# (feedback_weather_pullers_silent_noop cost NCAAF five weeks of weather).
+if __name__ == '__main__' and not os.environ.get('MLB_IGNORE_SLATE_GATE'):
+    try:
+        import subprocess as _sp, pathlib as _pl
+        _g = _pl.Path(__file__).resolve().parent / 'mlb_slate_gate.py'
+        if _g.exists():
+            _rc = _sp.run([sys.executable, str(_g), '--quiet']).returncode
+            if _rc == 1:
+                print(f'[off-season] no MLB slate - skipping {_pl.Path(__file__).name}. '
+                      f'Set MLB_IGNORE_SLATE_GATE=1 to force.')
+                sys.exit(0)
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'[off-season] gate check failed ({type(_e).__name__}) - running anyway')
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')

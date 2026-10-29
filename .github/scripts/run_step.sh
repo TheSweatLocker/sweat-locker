@@ -124,15 +124,61 @@ PYJSON
 fi
 
 DETECTOR=0
+MLB_ONLY=0
 LABEL=""
 while true; do
   case "${1:-}" in
     --detector) DETECTOR=1; shift ;;
+    --mlb-only) MLB_ONLY=1; shift ;;
     --label)    LABEL="$2"; shift 2 ;;
     *)          break ;;
   esac
 done
 [ -n "$LABEL" ] || LABEL="$*"
+
+# 2026-10-29 . SKIP MLB-ONLY WORK WHEN THERE IS NO MLB SLATE, AND SAY SO.
+# Measured from 14 days of start/end heartbeats: mlb_pipeline runs 48x at
+# 57.5 min mean and mlb_grade_overnight 42x at 19.5 min, so MLB is 255 of
+# the 477 workflow minutes we spend per day -- 53% -- for a sport whose last
+# game was 2026-10-28. The money (~$61 of $114/month) is the small half. The
+# real cost is 25 MLB-specific steps running GREEN AND EMPTY for four
+# months, so by spring nobody knows which still work
+# (feedback_green_step_that_writes_nothing).
+#
+# So a skip is RECORDED as 'step_skipped', never as a success. The gate
+# probes mlb_game_context for today/tomorrow ET and fails OPEN -- no
+# credentials, a non-200, an unreadable count, all mean RUN, because a gate
+# must never be the reason a live sport goes dark
+# (feedback_weather_pullers_silent_noop).
+#
+# Cached per job: the probe runs once, not once per step.
+if [ "$MLB_ONLY" = "1" ]; then
+  _gate_cache="${RUNNER_TEMP:-/tmp}/_mlb_slate_gate"
+  if [ ! -f "$_gate_cache" ]; then
+    if python mlb_slate_gate.py --quiet; then echo run > "$_gate_cache"
+    else echo skip > "$_gate_cache"; fi
+  fi
+  if [ "$(cat "$_gate_cache" 2>/dev/null)" = "skip" ]; then
+    echo "::notice::SKIPPED (no MLB slate): ${LABEL}"
+    _summary "- MLB-only step skipped, no slate: \`${LABEL}\`"
+    if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_KEY:-}" ]; then
+      _hbs="$(mktemp)"
+      STEP_LABEL="$LABEL" python3 - <<'PYSK' > "$_hbs" 2>/dev/null || true
+import json, os
+print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW','unknown'),
+                  'event': 'step_skipped',
+                  'run_id': os.environ.get('GITHUB_RUN_ID','local'),
+                  'meta': {'label': os.environ.get('STEP_LABEL',''),
+                           'reason': 'no MLB slate (off-season)'}}))
+PYSK
+      if [ -s "$_hbs" ]; then
+        curl -sf -m 10 -X POST "${SUPABASE_URL}/rest/v1/workflow_heartbeat"           -H "apikey: ${SUPABASE_KEY}"           -H "Authorization: Bearer ${SUPABASE_KEY}"           -H "Content-Type: application/json"           -H "Prefer: return=minimal"           --data-binary @"$_hbs" >/dev/null 2>&1 || true
+      fi
+      rm -f "$_hbs"
+    fi
+    exit 0
+  fi
+fi
 
 start=$(date +%s)
 
