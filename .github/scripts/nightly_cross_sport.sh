@@ -877,6 +877,29 @@ bash "$RUN_STEP" --label "audit_read_pick_consistency.py" \
 bash "$RUN_STEP" --label "resync_pregame_receipts.py" \
   python resync_pregame_receipts.py --apply
 
+# ══ 2026-10-29 · THE DEGEN ONLY EXISTED WHEN BASEBALL DID ════════════════
+# Andy: "no daily degen is unsat, that should be populated everyday,
+# shouldn't be as selective as the ladder."
+#
+# Both writers live ONLY in mlb_pipeline.yml (lines 1120 and 1161), so the
+# surface dies with the MLB season — the same trap that would have taken
+# NFL/NCAAF signal measurement offline, fixed in this same file today.
+#
+# And it was already patchy: jerry_cache, which is what the app reads, holds
+# only 8 daily_degen keys — 10-29, 10-24, 10-23, 10-17, 10-16, 10-15, 10-10,
+# 10-09. Everything from 10-25 to 10-28, 10-18 to 10-22 and 10-11 to 10-14 is
+# simply absent. The `daily_degen` TABLE disagrees with the cache (it has
+# 10-27 and 10-28, which the cache does not), so the two surfaces were never
+# in step either.
+#
+# The anchor is the only writer of the cache and it returned None whenever
+# fewer than 2 legs cleared conviction 70. Two fixes shipped with this:
+# the verdict allowlist (football writes a TIER into call_verdict, so a
+# `= BACK` filter saw 0 of 50 rows) and a stepped floor down to 55. Running
+# it here makes it daily and sport-agnostic.
+bash "$RUN_STEP" --label "jerry_anchor_daily_degen.py" \
+  python jerry_anchor_daily_degen.py
+
 # The resync drops the old price on purpose — carrying an ML price onto a
 # spread replacement is the 10-28 "SAS -13.5 shown at -650" defect. So its
 # rows land UNPRICED and have to be priced in the same run that created

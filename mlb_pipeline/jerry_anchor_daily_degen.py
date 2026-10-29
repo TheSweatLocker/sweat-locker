@@ -41,7 +41,12 @@ H_READ = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
-CONVICTION_THRESHOLD = 70   # min Jerry conviction to be eligible for degen leg
+CONVICTION_THRESHOLD = int(os.environ.get('DEGEN_CONV_THRESHOLD', '70'))
+#: the degen steps DOWN to this floor before giving up, so a thin board
+#  still produces a parlay. 55 is the bottom of LEAN; below it is the
+#  COVERAGE band the Sweat Card already refuses, and a parlay of coin
+#  flips is worse than no parlay.
+DEGEN_FLOOR_MIN = int(os.environ.get('DEGEN_CONV_FLOOR_MIN', '55'))
 MAX_LEGS = 4                # parlay cap
 MIN_LEGS = 2                # anything less isn't a parlay; fall back to legacy
 
@@ -66,12 +71,39 @@ def fetch_game_reads(gd: str) -> list:
     return r.json() if r.status_code == 200 else []
 
 
+#: call_verdict carries TWO different vocabularies depending on which
+#  generator wrote the row, and filtering on one of them silently empties
+#  the other.
+#
+#  == 2026-10-29 · WHY THE DEGEN WENT MISSING ON 3 OF 10 DAYS ==
+#  Andy: "no daily degen is unsat, that should be populated everyday,
+#  shouldn't be as selective as the ladder."
+#
+#  This filtered `call_verdict = BACK` and got ZERO rows today, so the
+#  parlay fell under MIN_LEGS and returned None. But today's board had
+#  plenty:
+#      prop_jerry_reads 2026-10-29: 50 rows, ALL NFL
+#      verdicts: PASS 26, STRONG 12, LEAN 11, PRIME 1    <- no BACK at all
+#      conviction >= 70: 14 rows (STRONG 9, PRIME 1, PASS 4)
+#  The MLB playbook writes BACK/FADE/PASS; the football prop generator
+#  writes a TIER into the same column. Ten eligible legs were sitting
+#  there behind a filter looking for a word football never writes.
+#
+#  So the allowlist is explicit rather than "not PASS": FADE is excluded on
+#  purpose, because a FADE means we back the OPPOSITE side of the prop and
+#  this builder does not flip the side (feedback_grade_the_side_we_published
+#  — a fade receipt that kept the prop's own direction is exactly how 72
+#  graded rows ended up contradicting themselves).
+BACKED_VERDICTS = ('BACK', 'PRIME', 'STRONG', 'LEAN')
+
+
 def fetch_prop_reads(gd: str) -> list:
     r = requests.get(f'{SUPABASE_URL}/rest/v1/prop_jerry_reads',
         headers=H_READ,
-        params={'game_date': f'eq.{gd}', 'call_verdict': 'eq.BACK',
+        params={'game_date': f'eq.{gd}',
+                'call_verdict': f'in.({",".join(BACKED_VERDICTS)})',
                 'select': 'sport,game_id,player_name,prop_type,direction,prop_line,'
-                          'book_odds,conviction,short_read',
+                          'book_odds,conviction,short_read,call_verdict',
                 'order': 'conviction.desc'},
         timeout=15)
     return r.json() if r.status_code == 200 else []
@@ -97,13 +129,39 @@ def build_jerry_parlay(gd: str) -> dict | None:
     props = fetch_prop_reads(gd)
     print(f'  game reads: {len(games)}  prop reads: {len(props)}')
 
-    # Only eligible: conviction >= threshold, no PASS markets
-    game_eligible = [g for g in games
-                     if (g.get('conviction') or 0) >= CONVICTION_THRESHOLD
-                     and (g.get('call_market') or '').lower() != 'pass']
-    prop_eligible = [p for p in props if (p.get('conviction') or 0) >= CONVICTION_THRESHOLD]
+    # ══ 2026-10-29 · STEP THE THRESHOLD DOWN RATHER THAN SKIP THE DAY ══
+    # Andy: the degen "should be populated everyday, shouldn't be as
+    # selective as the ladder." It was skipping 10-25, 10-26 and 10-29 —
+    # 3 of the last 10 days — because a flat conviction>=70 floor with a
+    # hard `return None` below MIN_LEGS means a thin board produces nothing
+    # at all. The ladder is the selective surface; this one is not supposed
+    # to be.
+    #
+    # So the floor steps down until it has a parlay, and the floor it
+    # settled on is PRINTED, so a soft day is visible rather than silent.
+    # It still refuses to go below DEGEN_FLOOR_MIN: a parlay of coin flips
+    # is worse than no parlay, and conviction under 55 is the COVERAGE band
+    # the Sweat Card already excludes.
+    _floors = [CONVICTION_THRESHOLD]
+    _f = CONVICTION_THRESHOLD - 5
+    while _f >= DEGEN_FLOOR_MIN:
+        _floors.append(_f)
+        _f -= 5
+    game_eligible, prop_eligible, _used_floor = [], [], CONVICTION_THRESHOLD
+    for _floor in _floors:
+        game_eligible = [g for g in games
+                         if (g.get('conviction') or 0) >= _floor
+                         and (g.get('call_market') or '').lower() != 'pass']
+        prop_eligible = [p for p in props
+                         if (p.get('conviction') or 0) >= _floor]
+        _used_floor = _floor
+        if len(game_eligible) + len(prop_eligible) >= MIN_LEGS:
+            break
 
-    print(f'  eligible (conv>={CONVICTION_THRESHOLD}): {len(game_eligible)} game · {len(prop_eligible)} prop')
+    print(f'  eligible (conv>={_used_floor}'
+          + (f', stepped down from {CONVICTION_THRESHOLD}'
+             if _used_floor != CONVICTION_THRESHOLD else '')
+          + f'): {len(game_eligible)} game · {len(prop_eligible)} prop')
 
     # Prefer 1 game leg + 2-3 prop legs when both available.
     # Fall back to all-props or all-games if one side is empty.
