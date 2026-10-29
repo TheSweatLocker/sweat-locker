@@ -37,6 +37,24 @@ on:
           - card_only
           - resolver_only
           - cohorts_only
+      # ══ 2026-10-29 · A WEIGHT CHANGE COULD NOT REACH USERS ══════════
+      # refit_signal_registry rewrote the signal weights today, so
+      # nfl_game_context produced different primary_play on 15 games. The
+      # app reads jerry_reads, which is written by generate_nfl_game_reads
+      # -- and BOTH the context write and the read generator honour the Thu
+      # week lock, whose only override is the NFL_UNLOCK_WEEK env var that
+      # no workflow ever set. So a mid-week engine correction was
+      # unreachable in production by design: measured on NCAAF the same
+      # day, primary_play disagreed with jerry_reads on 16 of 61 games.
+      #
+      # Default FALSE. The lock is right almost always -- it exists so a
+      # cron regen cannot move a slate subscribers were already shown. This
+      # input is the deliberate, logged exception.
+      unlock_week:
+        description: 'Override the Thursday NFL week lock (regenerates the published slate)'
+        required: false
+        default: false
+        type: boolean
 
 # 2026-09-18: serialize. Measured: 10 cron entries resolve to 8 fire
 # times with a MINIMUM GAP OF 10 MINUTES, while an observed run takes
@@ -351,6 +369,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          # Must match the reads step: the week lock restores the frozen
+          # Thursday slate, so unlocking only the read generator would write
+          # prose for a pick the context step had just reverted.
+          NFL_UNLOCK_WEEK: ${{ (github.event_name == 'workflow_dispatch' && inputs.unlock_week) && '1' || '' }}
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_game_context.py" python nfl_game_context.py
@@ -1221,6 +1243,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Empty unless the dispatcher ticked unlock_week; the generator
+          # only treats the literal '1' as an override.
+          NFL_UNLOCK_WEEK: ${{ (github.event_name == 'workflow_dispatch' && inputs.unlock_week) && '1' || '' }}
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_nfl_game_reads.py" python generate_nfl_game_reads.py
