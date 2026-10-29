@@ -36,12 +36,25 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 # Prop type base → projections column
+# ══ 2026-10-28 · THE BOARD AND THIS TABLE SPELL TWO FAMILIES DIFFERENTLY ══
+# `base` below is prop_type.split('_')[0], and the board's own vocabulary is
+# `steals_over` / `blocks_over`, not `stl` / `blk`. So every steals and
+# blocks prop fell straight through `if not proj_col: continue` -- 510 of
+# tonight's 1,945 props, 26.2% of the board, dropped on spelling alone:
+#
+#   steals_over 144 + steals_under 144 + blocks_over 111 + blocks_under 111
+#
+# The projections were there the whole time: proj_stl is populated on 566 of
+# 1,976 source rows and proj_blk on 557, the same ~28.6% as pts/reb/ast.
+# Both spellings are kept so neither vocabulary can break it again.
 PROP_TO_PROJ = {
     'pts':      'proj_pts',
     'reb':      'proj_reb',
     'ast':      'proj_ast',
     'stl':      'proj_stl',
+    'steals':   'proj_stl',      # the spelling the props board actually uses
     'blk':      'proj_blk',
+    'blocks':   'proj_blk',      # ditto
     'threes':   'proj_threes',
     'turnovers': 'proj_turnovers',
     'pra':      'proj_pra',
@@ -49,6 +62,73 @@ PROP_TO_PROJ = {
     'pa':       'proj_pa',
     'ra':       'proj_ra',
 }
+
+# ══ 2026-10-28 · THE COMBO FAMILIES ARE A SUM WE ALREADY HOLD ══
+# proj_pra is populated on 13 of 1,976 source rows (0.7%) while proj_pts,
+# proj_reb and proj_ast each sit at 568 (28.7%), so `pra` mapped correctly
+# and still produced nothing -- 264 props tonight.
+#
+# A combo projection is the SUM of its parts, exactly: E[X+Y+Z] =
+# E[X]+E[Y]+E[Z] holds whatever the correlation between them, so the derived
+# mean is not an approximation. (Its VARIANCE would need the covariance,
+# which is why this derives the projection only and asserts nothing about a
+# distribution.)
+#
+# Verified against real rows: Anthony Davis 22.0 + 10.6 + 3.1 = 35.7 against
+# a 34.5 line; Alex Sarr 16.4 + 7.2 + 2.4 = 25.9 against 19.5.
+#
+# Derived values are stamped in `signals._projection_derived_from` so a
+# derived number is never mistaken for one the source supplied.
+COMBO_PARTS = {
+    'proj_pra': ('proj_pts', 'proj_reb', 'proj_ast'),
+    'proj_pr':  ('proj_pts', 'proj_reb'),
+    'proj_pa':  ('proj_pts', 'proj_ast'),
+    'proj_ra':  ('proj_reb', 'proj_ast'),
+}
+
+
+def _paged(path: str, params: str) -> list:
+    """Read every row. PostgREST caps an unpaged request at 1000.
+
+    ══ 2026-10-28 · BOTH READS HERE WERE CAPPED ══
+    The projections load asked for `limit=1000` against a table holding
+    1,976 rows, and the props load asked for no limit at all, which
+    PostgREST silently caps at 1000 against tonight's 1,945 props. So the
+    enricher saw roughly half of each side and reported "matched 401/1000"
+    as though 1000 were the slate.
+
+    Same family as the prop scorer that saw 22% of an NHL board on 10-27.
+    A silent cap reads as thin data, never as a failure.
+    """
+    out, off = [], 0
+    while True:
+        rr = requests.get(f'{SB}/rest/v1/{path}?{params}'
+                          f'&limit=1000&offset={off}&order=id.asc',
+                          headers=H_READ, timeout=30)
+        if rr.status_code not in (200, 206):
+            print(f'  ! {path} {rr.status_code} {(rr.text or "")[:120]}')
+            return out
+        b = rr.json()
+        if not isinstance(b, list):
+            return out
+        out += b
+        if len(b) < 1000:
+            return out
+        off += 1000
+
+
+def _projection_for(proj: dict, proj_col: str):
+    """(value, derived_from) — the source value, else the sum of its parts."""
+    v = proj.get(proj_col)
+    if v is not None:
+        return float(v), None
+    parts = COMBO_PARTS.get(proj_col)
+    if not parts:
+        return None, None
+    vals = [proj.get(f) for f in parts]
+    if any(x is None for x in vals):
+        return None, None
+    return round(sum(float(x) for x in vals), 2), list(parts)
 
 
 def _et_today() -> str:
@@ -66,10 +146,7 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
     print(f'=== enrich_nba_prop_projections · {gd} · season {season} ===')
 
     # 1. Load projections into name-indexed lookup
-    r = requests.get(f'{SB}/rest/v1/nba_player_projections'
-                     f'?season=eq.{season}&select=*&limit=1000',
-                     headers=H_READ, timeout=15)
-    projs = r.json() if r.status_code == 200 else []
+    projs = _paged('nba_player_projections', f'season=eq.{season}&select=*')
     if not projs:
         print(f'  no projections for season {season} — run nba_sleeper_projections_pull.py first')
         return
@@ -78,10 +155,9 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
     print(f'  {len(proj_by_name)} player projections loaded')
 
     # 2. Load today's props
-    r = requests.get(f'{SB}/rest/v1/nba_pipeline_props'
-                     f'?game_date=eq.{gd}&select=id,player_name,prop_type,direction,prop_line,book_line',
-                     headers=H_READ, timeout=15)
-    props = r.json() if r.status_code == 200 else []
+    props = _paged('nba_pipeline_props',
+                   f'game_date=eq.{gd}&select=id,player_name,prop_type,'
+                   f'direction,prop_line,book_line,signals')
     if not props:
         print(f'  no props on {gd}')
         return
@@ -98,7 +174,7 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
         base = (prop.get('prop_type') or '').split('_')[0]  # 'pts_over' → 'pts'
         proj_col = PROP_TO_PROJ.get(base)
         if not proj_col: continue
-        projected_value = proj.get(proj_col)
+        projected_value, _derived = _projection_for(proj, proj_col)
         if projected_value is None: continue
 
         book_line = prop.get('prop_line')
@@ -119,6 +195,10 @@ def run(game_date: str | None = None, season: str | None = None, dry_run: bool =
             'proj_vs_line_edge':     edge,
             'projections_updated_at': now_iso,
         }
+        if _derived:
+            # say so on the row: a summed combo is not a sourced projection
+            patch['signals'] = dict(prop.get('signals') or {},
+                                    _projection_derived_from=_derived)
         if not dry_run:
             pr = requests.patch(f'{SB}/rest/v1/nba_pipeline_props?id=eq.{prop["id"]}',
                                 headers=H_WRITE, json=patch, timeout=10)
