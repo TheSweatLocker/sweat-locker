@@ -1569,3 +1569,50 @@ in four sports (R18). Turning it on is Andy's call, not a comment's.
 
 NOT on the list: forcing dog picks. Measured to make NCAAF worse (10-10),
 and the NHL/NBA cost signal flips split-half.
+
+## R26 — WHAT WENT LIVE (end of 2026-10-28)
+
+Andy's calls: enable the cap fix for all sports; next effort = build the
+signal measurement chain.
+
+**LIVE, each measured on real boards before flipping, each one env var to
+revert:**
+
+1. `ENSEMBLE_APPLY_CAP_FIXPOINT=1` — enforce `MAX_CLASS_SHARE` to a true
+   fixed point. NBA favourite share **91.7% -> 83.3%**; `LA Clippers -1.5`
+   becomes `Los Angeles Lakers ML`. MLB's PRIME moneyline byte-identical,
+   NCAAF sides unchanged (one conviction 74->70), NHL unaffected (<=2
+   contributing classes, cap arithmetically impossible). No pick lost.
+2. `ENSEMBLE_SIDE_BASELINE=1` — a signal must beat a blind bet on its own
+   side. Measured on five boards: **zero side changes**, favourite
+   convictions down 0-2 points.
+3. `_SIDE_BASELINE` measured for all five sports (was NFL/NCAAF only, and
+   both of those values were wrong).
+4. The direction-only control supplied to the **attribution path** of
+   `refit_signal_registry` (it existed only on the primary_play path), and
+   `_recommended_weight_for` now clears the harder of price breakeven and
+   side baseline — the tier and the weight had been using different bars.
+   `nba_elo_home_ml_strong`: **DISCOVERY w=0.3215 -> UNVALIDATED w=0.2687**.
+5. `refit_signal_registry` wired into the **NBA and NHL** pipelines. It ran
+   only from the MLB workflows, and MLB is in the World Series — when it
+   stops, those two sports would never refit again.
+6. `nba_prop_gate.py` wired after the generator and applied: 13,013 rows,
+   0 failed. NBA props now COVERAGE 8,080 / LEAN 3,513 / SKIP 2,427 with
+   signals on 1,811 of tonight's 1,945 (was 0).
+
+**NOT claimed:** the bias is not fixed. NBA and NHL still have 0 of 32 and
+0 of 38 enabled game signals with a measured hit rate. Everything above
+makes the measurement CORRECT so volume de-biases instead of entrenching;
+it does not substitute for the volume. NBA has 7 days of season at ~8
+firings per signal, under the n>=10 floor.
+
+**Still open, named:**
+* NHL's favourite lock (93% spreads / 88% ml) is NOT explained by the
+  projection mechanism — cause unidentified.
+* NFL spread **-46.99pp** and NCAAF spread **-10.54pp** vs a one-word rule,
+  both halves. Highest-volume football surfaces, strongest evidence, only
+  partly actioned (B209).
+* 8 NFL reads sit at lines no book currently posts.
+* 8 receipts froze an impossible spread price and cannot be repaired
+  (`pick_odds` freezes on first write); the guard now refuses them at
+  `sanitize()`, which both write paths call.
