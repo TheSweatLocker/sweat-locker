@@ -109,6 +109,79 @@ TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
 #   LEAN 0.5 → 0.3     (12 LEAN + 6 PASS vs 29 LEAN — filters lowest-conviction)
 # Class + margin gates unchanged — those enforce breadth-of-agreement,
 # threshold retune only reflects the compressed score scale post-calibration.
+# == 2026-10-28 . THE PRICE-PROXY GATE ======================================
+# Andy: "NBA picking favorite only is unsat ... we need to eliminate bias
+# rigth now across eveythign ... NHL as well tge engine should be predictive
+# in nature and be basing seleciton on all the data we have discussed".
+#
+# WHAT THE DECISION TRAIL ACTUALLY SHOWS, from frozen primary_play rows:
+#
+#   NBA  42 finished games carry chips, mean 1.19 chips per pick, and
+#        nba_elo_home_ml_strong alone is 24 of the firings. TONIGHT: 11 of
+#        12 picks rest on ONE chip, and that chip is nba_elo_*_ml_strong --
+#        "Elo home win prob 0.69, model favors home", weight 0.08.
+#   NHL  mean 1.80 chips; 3 of tonight's 4 picks have ZERO chips.
+#   NFL  mean 3.72, 76 distinct signals have fired.
+#   MLB  mean 6.00.
+#
+# And of the ENABLED game signals, the count with a measured hit rate is
+# MLB 11/117, NCAAF 1/81, NFL 0/81, NBA 0/32, NHL 0/38. NBA and NHL select
+# on no measured evidence at all, so the only input carrying information is
+# our own model restating who is better -- which is the market favourite.
+# That is the whole mechanism of the favourite lock: 86% of NBA spread picks
+# and 85% of its moneylines, 93%/88% for NHL.
+#
+# MEASURED AGAINST THE ONE-WORD RULE (audit_side_bias_all_sports.py), the
+# engine loses to "always FAV" / "always HOME" / "always DOG" on NCAAF ml
+# (-7.45pp), NCAAF spread (-10.54pp, holds both halves), NFL spread
+# (-46.99pp, holds both halves) and NHL spread. Only MLB ml EARNS its tilt
+# (+2.79pp). A side chosen by a price proxy carries the favourite's juice
+# and no information.
+#
+# THE GATE: if EVERY supporting chip is a price proxy, there is no read --
+# so publish no pick, rather than defaulting onto the favourite. A Pass is
+# not a bet. This does NOT invert anything: taking the dog instead would be
+# an unvalidated flip, and audit_home_away_signal_bias.py (10-10) measured
+# that forcing more road picks makes NCAAF worse, not better.
+#
+# CONSERVATIVE ON PURPOSE. A proxy is OUR MODEL restating who is better --
+# Elo win probability, a model spread/ML, the LR shadow, the anchor, or a
+# cohort defined by being the favourite. A general team-stat signal is NOT a
+# proxy: an offence or defence fact is a real matchup input the market may
+# not have priced. Measured impact on finished games before shipping:
+# MLB 0 picks change (mean 6 chips -- the gate cannot bite the one surface
+# that works), NFL 9 LEAN, NCAAF 12 LEAN, NHL 1 LEAN.
+#
+# Env kill switch so this is one flag to revert, not a redeploy.
+# The weight an UNMEASURED signal receives. See edge_weight() for why this
+# constant is the favourite-bias engine and why the default is unchanged
+# until a backtest says otherwise.
+# Enforce MAX_CLASS_SHARE to a true fixed point instead of one descending
+# pass. Shadow by default -- see the block in score_market() for why.
+APPLY_CAP_FIXPOINT = os.environ.get('ENSEMBLE_APPLY_CAP_FIXPOINT', '0') == '1'
+
+UNMEASURED_FLOOR = float(os.environ.get('ENSEMBLE_UNMEASURED_FLOOR', '0.20'))
+UNMEASURED_FLOOR_UNKNOWN = float(
+    os.environ.get('ENSEMBLE_UNMEASURED_FLOOR_UNKNOWN', '0.15'))
+
+PROXY_ONLY_PASS = os.environ.get('ENSEMBLE_PROXY_ONLY_PASS', '1') != '0'
+_PROXY_KEY_TOKENS = ('elo', 'lr_shadow', 'power_diff', 'sp_plus',
+                     'projected_spread', 'projection_contradicts',
+                     'ml_strong', 'anchor', 'v3_spread', 'v4_spread')
+
+
+def _is_price_proxy(signal_key, signal_class) -> bool:
+    """True when the chip's SIDE is our model restating the favourite."""
+    k = str(signal_key or '').lower()
+    c = str(signal_class or '').lower()
+    if any(t in k for t in _PROXY_KEY_TOKENS):
+        return True
+    # a cohort whose definition IS "the favourite" cannot name a dog
+    if c == 'cohort' and '_fav' in k:
+        return True
+    return False
+
+
 TIER_THRESHOLDS = {
     'PRIME':  {'min_score': 1.5, 'min_classes': 3, 'min_margin': 0.5},
     'STRONG': {'min_score': 0.7, 'min_classes': 2, 'min_margin': 0.3},
@@ -680,8 +753,41 @@ def edge_weight(hit_rate: Optional[float], n: int,
     if hit_rate is None or n <= 0:
         if is_recent:
             return RAMP_UP_PRIOR
-        # No proven track record — small floor if registry knows about it
-        return 0.20 if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED') else 0.15
+        # No proven track record — small floor if registry knows about it.
+        #
+        # == 2026-10-28 . THIS FLOOR IS THE FAVOURITE-BIAS ENGINE =========
+        # An UNMEASURED signal gets a flat 0.20 here. Compare what a
+        # MEASURED one earns below: it must first clear breakeven (else
+        # 0.0), then gets edge_component * n_component --
+        #
+        #     measured, 1pp over breakeven, n=40  ->  0.124
+        #     measured, BELOW breakeven           ->  0.000
+        #     UNMEASURED                          ->  0.200
+        #
+        # so being unmeasured is strictly better than being measured and
+        # mediocre, and much better than being measured and bad. That is
+        # feedback_unmeasured_signal_must_not_outweigh_measured, which cost
+        # us before at 0.3 against a family scoring 0.00-0.15.
+        #
+        # It matters most where nothing is measured at all. Enabled game
+        # signals with NO sample: NBA 32/32, NHL 38/38, NFL 81/81, NCAAF
+        # 80/81, MLB 106/117. So on NBA and NHL every weight in the pick is
+        # this constant, and the conditions that fire are form/quality
+        # descriptors ("home dominant at home", "H2H dominant") which fire
+        # for the BETTER team -- which is the market favourite. Measured
+        # firing skew: NBA 80% favourite, NCAAF 77.8%, NFL 70.4%, NHL 64.5%.
+        # Hence 86% of NBA spread picks and 85% of its moneylines are on the
+        # favourite, and the engine loses to "always FAV" on NCAAF ml
+        # (-7.45pp), NCAAF spread (-10.54pp) and NFL spread (-46.99pp).
+        #
+        # Env-configurable so the floor can be MEASURED rather than argued.
+        # Default is unchanged at 0.20/0.15: lowering it is a scoring change
+        # affecting every sport and must be backtested before it ships, not
+        # shipped and then backtested (feedback_unmeasured_signal_must_not_
+        # outweigh_measured, and the SP+ K=0.85 lesson).
+        return (UNMEASURED_FLOOR
+                if tier in ('DISCOVERY', 'UNVALIDATED', 'VALIDATED')
+                else UNMEASURED_FLOOR_UNKNOWN)
     # 2026-08-22: sample floor — n < SAMPLE_MIN_N produces noise, not
     # evidence. Below the threshold, ignore the edge formula and use
     # ramp-up prior instead. See constant docstring for CLE @ COL example.
@@ -2182,6 +2288,26 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
             # notices (feedback_coverage_pct_hides_dead_code).
             cap_audit = {'error': '%s: %s' % (type(_e).__name__, _e)}
 
+        # == 2026-10-28 . APPLYING the fixed point, behind a flag =========
+        # Andy: "we need to eliminate bias rigth now across eveythign".
+        # The cap failure above is HOW the favourite tilt gets carried.
+        # Measured on tonight's Detroit ML: 4 contributing classes, and
+        # external_pick alone holds 0.65 of 1.24 = 52.4% of the score,
+        # against a 0.40 cap that IS feasible at 4 classes. The two chips
+        # doing it are external:dimers and external:oddscrowd -- money-flow
+        # followers, which follow favourites. So an uncapped external class
+        # is a favourite vote wearing a measured sample's clothes.
+        #
+        # Still a FLAG and not a default, for the reason written above: it
+        # re-scores live picks, and tier is currently anti-predictive on
+        # game_read in four sports (R18). Turning it on is a measured
+        # decision, not a comment.
+        if (APPLY_CAP_FIXPOINT and isinstance(cap_audit, dict)
+                and cap_audit.get('live_cap_violated')):
+            _ft = cap_audit.get('total_fixed_point')
+            if _ft is not None and _ft < adjusted_total:
+                adjusted_total = _ft
+
         # 2026-08-26 aggregate FADE cap. Per-class cap doesn't restrain
         # a stack of auto-fades that split across classes (Rockies UNDER
         # PRIME 97 had 4 fades across pitcher/weather/offense — each got
@@ -2257,6 +2383,27 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                 credible = True; break
         if not credible:
             tier = 'COVERAGE'
+
+    # == 2026-10-28 . PRICE-PROXY GATE (see _is_price_proxy) ==========
+    # Capping the tier is not enough here: NBA's picks are ALREADY
+    # COVERAGE in primary_play and were published as game reads anyway,
+    # so the only lever that changes what a subscriber sees is refusing
+    # the pick outright.
+    if PROXY_ONLY_PASS and win_chips:
+        _kinds = [_is_price_proxy(c.signal_key, c.signal_class)
+                  for c in win_chips]
+        if all(_kinds):
+            _keys = sorted({str(c.signal_key) for c in win_chips})
+            print(f'    [PROXY-ONLY PASS] {market}: {winner_cand} rests only '
+                  f'on price-proxy signal(s) {_keys} — no independent read, '
+                  f'publishing no pick')
+            _np = _no_pick(market, ctx)
+            _np.cap_audit = {'proxy_only_pass': True,
+                             'proxy_signals': _keys,
+                             'refused_pick': winner_cand,
+                             'refused_tier': tier,
+                             'refused_score': round(win_score, 2)}
+            return _np
 
     # 2026-08-19: PRIME breadth lane. Traditional PRIME requires score≥1.5
     # (rare — today's Toronto pick at 1.39/1.04/9-sources is just shy).
