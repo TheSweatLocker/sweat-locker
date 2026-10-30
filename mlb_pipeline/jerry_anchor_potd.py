@@ -59,10 +59,19 @@ def today_et() -> str:
 CONTEXT_TABLE_BY_SPORT = {
     "MLB": "mlb_game_context",
     "NFL": "nfl_game_context",        # migration applied 2026-08-03
-    # "NBA": "nba_game_context",
-    # "NCAAF": "ncaaf_game_context",
-    # "NCAAB": "ncaab_game_context",
-    # "UFC": "ufc_fight_context",
+    # ══ 2026-10-30 · THESE WERE COMMENTED OUT AND IT ABORTED THE POTD ══
+    # The winner path does `if not ctx_table: return`, so a commented-out row
+    # here is not the "best-effort fallback" the note above describes — it
+    # kills the POTD outright. Today's winner (NHL Florida Panthers ML,
+    # conviction 64, the top of NHL's own range) was selected and then
+    # dropped on "no context table registered for sport=NHL".
+    # All four tables exist and the only columns this path selects are
+    # home_team and away_team, which every one of them carries.
+    "NBA": "nba_game_context",
+    "NHL": "nhl_game_context",
+    "NCAAF": "ncaaf_game_context",
+    "NCAAB": "ncaab_game_context",
+    # "UFC": "ufc_fight_context",     # fight_context shape differs; left out
 }
 
 
@@ -670,7 +679,18 @@ def run(game_date: str | None = None, threshold: int = 70,
     # 2026-09-29, so the stack that would pick for it has never been graded.
     # Andy 2026-09-30: "would like to give it a week before we add nhl to potd
     # selection, see how we are, do some calibration."
-    POTD_SPORTS = ["MLB", "NFL", "NCAAF"]
+    # ══ 2026-10-30 · NBA AND NHL ADDED — ANDY, EXPLICITLY ══
+    # "NBA and NHL are daily matchups right now and going forward, with NFL
+    # and NCAAF on select days... we need to have NBA takes and reads, and
+    # some need conviction... both can be eligible for POTD. WE NEED A POTD
+    # every day."
+    #
+    # The 9/30 "give it a week before we add NHL" note above is a month old
+    # and NHL has 293 reads now. Excluding the only two nightly sports from
+    # the pool is why POTD returned noPlay on a 16-game Friday. Eligibility
+    # inside the pool is per-sport via conviction_scale, because NBA never
+    # reaches an absolute 70 (0 of 127 reads) and NHL almost never does.
+    POTD_SPORTS = ["MLB", "NFL", "NCAAF", "NBA", "NHL"]
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/jerry_reads",
         headers=H_READ,
@@ -717,15 +737,37 @@ def run(game_date: str | None = None, threshold: int = 70,
     # Filter to eligible: conviction >= threshold, not a PASS or LEAN.
     # 2026-08-04: exclude 'lean' — Jerry's hedge state (conv 40-64) is not
     # POTD-worthy. POTD requires active PLAY conviction (≥ threshold, default 70).
+    # ══ 2026-10-30 · ONE BAR PER SPORT, NOT ONE NUMBER FOR ALL ══
+    # Andy: "NBA and NHL are daily matchups right now... NBA and NHL
+    # conviction needs to be established so we can tune as we go... both can
+    # be eligible for POTD. WE NEED A POTD every day."
+    #
+    # A flat 70 made this unreachable for exactly the two sports that play
+    # nightly: NBA hit 70 on 0 of 127 reads ever, NHL on 2.0%. A 64 in NHL is
+    # its 90th percentile; a 64 in MLB is below its median. conviction_scale
+    # maps each sport's own distribution onto a shared axis (p50->50,
+    # p75->70, p90->85) and the bar is applied there. MLB and NCAAF keep
+    # their absolute 70 via SPORT_ABSOLUTE_GATE, unchanged.
+    #
+    # The WINNER must also be chosen on the scaled axis — ranking raw
+    # conviction across sports hands every day to whichever sport happens to
+    # use the biggest numbers.
+    import conviction_scale as _cs
+    for _r in reads:
+        _r["_conv_scaled"] = _cs.scaled(_r.get("sport"), _r.get("conviction"))
     eligible = [r for r in reads
-                if (r.get("conviction") or 0) >= threshold
+                if _cs.potd_eligible(r.get("sport"), r.get("conviction"))
                 and (r.get("call_market") or "").lower() not in ("pass", "lean")]
-    # Sort by conviction desc so downstream juice/LR gates still see the
-    # best candidate first (jerry_reads was already sorted; merged list
-    # needs re-sort).
-    eligible.sort(key=lambda r: -int(r.get("conviction") or 0))
+    eligible.sort(key=lambda r: -_cs.rank_key(r.get("sport"), r.get("conviction")))
+    if eligible:
+        print(f"  per-sport bar: {len(eligible)} eligible of {len(reads)} reads")
+        for _r in eligible[:6]:
+            print(f"      {str(_r.get('sport')):6s} {str(_r.get('call_text'))[:28]:28s} "
+                  f"raw={_r.get('conviction')} scaled={_r.get('_conv_scaled'):.0f}")
     if not eligible:
-        print(f"  ⚠ no Jerry read at conviction >= {threshold} — Jerry passing on POTD today")
+        print(f"  ⚠ no read clears its own sport's bar "
+              f"(scaled >= {_cs.POTD_MIN_SCALED:.0f}; MLB/NCAAF absolute "
+              f"{_cs.SPORT_ABSOLUTE_GATE}) — Jerry passing on POTD today")
         _write_no_play(gd, dry_run, reads)
         return
 
