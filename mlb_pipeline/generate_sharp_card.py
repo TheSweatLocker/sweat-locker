@@ -1306,6 +1306,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_football_spread = 0
     dropped_b209_nfl_spread = 0
     dropped_flip_unpriced = 0
+    dropped_flip_contradiction = 0
     flipped_spread = 0
     lean_flip_admitted = 0
     flip_skips: dict = {}
@@ -1334,9 +1335,40 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             except (TypeError, ValueError):
                 continue
     _flip_px = _flip_prices(sport, _flip_need) if _flip_need else {}
+    # == 2026-10-30 . A FLIP MUST BE ALL-OR-NOTHING ACROSS SURFACES ====
+    # The flip exists twice: flip_football_spreads.py rewrites
+    # primary_play at SOURCE and refuses a game whose side is already
+    # published (it would show one number and grade another), and this
+    # composer flips again at PUBLISH time. The guard below already
+    # stops a double flip when the source one landed (_flipped_from).
+    # The other direction was missing: when the source flip REFUSED,
+    # this one went ahead, so the Sharp shipped the flipped side while
+    # every surface reading primary_play shipped the original. Tonight
+    # that put both sides of two NCAAF games on the record -- Sharp on
+    # Kent State -7 and Charlotte +8.5, the Degen on Sacramento State
+    # +8.5 and Tulane -8.5. Mutually exclusive; one surface had to lose.
+    #
+    # So this asks the SAME question the source flip asks, through the
+    # same helper, rather than a second opinion about it. If the side is
+    # already out there, the Sharp does not flip -- and does not publish
+    # the engine's side either, because that is the 18.2% half of this
+    # market. It drops the game, which is what the unpriced branch below
+    # already does for the same reason.
+    try:
+        from flip_football_spreads import receipted as _flip_receipted
+        _already_published = _flip_receipted(sport, _today_et())
+    except Exception as _e:                                # noqa: BLE001
+        # Fail CLOSED: an unknown publication state means we cannot
+        # promise all-or-nothing, and a contradiction on the record is
+        # worse than a missing pick.
+        print(f'  ! cannot read published spread sides for {sport} '
+              f'({type(_e).__name__}: {_e}) -- refusing every flip')
+        _already_published = set(_flip_need)
     if _flip_need:
         print(f'  {sport} short-spread flip candidates: {len(_flip_need)} '
-              f'games, two-sided quotes found: {len(_flip_px)}')
+              f'games, two-sided quotes found: {len(_flip_px)}, '
+              f'already published elsewhere: '
+              f'{len(_flip_need & _already_published)}')
     picks = []
     for g in rows:
         pp = g.get('primary_play') or {}
@@ -1693,6 +1725,11 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
                         or isinstance(pp.get('_unflipped_from'), dict))
         if (is_football and pick_type in ('rl', 'spread')
                 and not juice_swapped and not _src_flipped):
+            if str(g.get('game_id')) in _already_published:
+                dropped_flip_contradiction += 1
+                _k = 'side already published elsewhere'
+                flip_skips[_k] = flip_skips.get(_k, 0) + 1
+                continue
             flipped, _why = _flip_short_spread(pp, g, _flip_px)
             if flipped is None:
                 # No honest price for the other side means no bet. Dropping
@@ -1793,6 +1830,11 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     if flipped_spread:
         print(f'  {sport} SHORT spreads flipped onto the other side: '
               f'{flipped_spread} (our side of this band is 4-18, n=22)')
+    if dropped_flip_contradiction:
+        print(f'  {sport}: {dropped_flip_contradiction} short-spread '
+              f'flip(s) DROPPED - the unflipped side is already '
+              f'published on another surface, so flipping here would '
+              f'put both sides of the game on the record')
     if dropped_flip_unpriced:
         # Printed with the reasons because the usual one is "no 2+ books post
         # the flipped line", which means the market moved off our number and

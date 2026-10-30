@@ -297,12 +297,50 @@ def best_flip_quote(quotes: dict, lh_gid, side: str, flip_line: float):
 
 
 def receipted(sport: str, date: str) -> set:
-    """game_ids that already have a published spread receipt. Never touched."""
+    """game_ids whose spread side is already published. Never touched.
+
+    == 2026-10-30 . A PARLAY LEG IS A PUBLISHED SIDE ==================
+    This filtered the query on sport=eq.{sport}, and a parlay receipt
+    carries sport='MULTI' while its LEGS carry their own sport. So a Daily
+    Degen leg was invisible here -- which is what happened tonight: the
+    Degen published Sacramento State +8.5 and Tulane -8.5 as NCAAF legs,
+    this returned an empty set for NCAAF, and nothing stopped the Sharp
+    publishing the other side of both. Same blind spot
+    consistency_watchdog had to fix in its cross-surface check tonight.
+
+    Legs carry their own game_id, so they match exactly rather than by
+    name. The query no longer filters by sport at all: top-level rows are
+    matched on the receipt's sport, legs on the LEG's sport.
+
+    A VOIDed receipt does not count -- a withdrawn side is not published.
+    """
     rows = _get('public_receipts',
-                {'select': 'game_id,market', 'sport': f'eq.{sport}',
-                 'game_date': f'eq.{date}', 'limit': '500'}) or []
-    return {str(r['game_id']) for r in rows
-            if str(r.get('market') or '').lower() in ('rl', 'spread')}
+                {'select': 'game_id,market,sport,result,audit',
+                 'game_date': f'eq.{date}', 'limit': '1000'}) or []
+    want = str(sport or '').upper()
+    out = set()
+    for r in rows:
+        if str(r.get('result') or '').upper() in ('VOID', 'VOIDED'):
+            continue
+        audit = r.get('audit') if isinstance(r.get('audit'), dict) else {}
+        legs = audit.get('legs')
+        if isinstance(legs, list) and legs:
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                if str(leg.get('sport') or '').upper() != want:
+                    continue
+                if str(leg.get('type') or '').lower() not in ('rl', 'spread'):
+                    continue
+                if leg.get('game_id') is not None:
+                    out.add(str(leg['game_id']))
+            continue
+        if str(r.get('sport') or '').upper() != want:
+            continue
+        if str(r.get('market') or '').lower() in ('rl', 'spread'):
+            if r.get('game_id') is not None:
+                out.add(str(r['game_id']))
+    return out
 
 
 def run(sport: str, date: str, apply: bool,
