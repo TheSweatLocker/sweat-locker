@@ -1187,11 +1187,46 @@ def fetch_football_picks(today: str) -> list:
                 print(f"    [card] {sport} {pp.get('type')} not card-eligible "
                       f"- see CARD_INELIGIBLE_MARKETS")
                 continue
+            # ══ 2026-10-30 · THE PRICE WAS IN THE ROW ALL ALONG ══════
+            # Houston Rockets -6.5 and Detroit Pistons -8.5 were captured
+            # to public_receipts with pick_odds = NULL, so their ROI would
+            # have been priced at a guess — and a spread assumed flat -110
+            # is feedback_flat_110_inflates_every_ml_figure. The context
+            # tables carry close_spread_home_price / close_spread_away_price
+            # / close_total_*_price / *_ml_close; this composer simply never
+            # read them. receipt_invariants now REFUSES a priceless play at
+            # the chokepoint, so leaving this unfixed would silently drop
+            # the pick instead of mispricing it. Neither is acceptable:
+            # carry the real number.
+            _mk = str(pp.get('type') or '').lower()
+            _sd = str((_flip['side'] if _flip else pp.get('side')) or '').upper()
+            _odds = None
+            if _mk == 'ml':
+                _odds = (row.get('home_ml_close') if _sd == 'HOME'
+                         else row.get('away_ml_close'))
+                if _odds is None:
+                    _odds = (row.get('close_home_ml') if _sd == 'HOME'
+                             else row.get('close_away_ml'))
+                if _odds is None:
+                    _odds = pp.get('_ml_price_at_pick')
+            elif _mk in ('rl', 'spread', 'puckline', 'pl'):
+                _odds = (row.get('close_spread_home_price') if _sd == 'HOME'
+                         else row.get('close_spread_away_price'))
+            elif _mk == 'total':
+                _lab = str((_flip['label'] if _flip else pp.get('label')) or '').lower()
+                _odds = (row.get('close_total_under_price') if 'under' in _lab
+                         else row.get('close_total_over_price'))
+            # A FLIP inverts the side, so the flipped side's own price is the
+            # one that applies -- never the price of the side we left behind.
+            if _flip and _mk in ('rl', 'spread', 'puckline', 'pl'):
+                _odds = (row.get('close_spread_home_price') if _sd == 'HOME'
+                         else row.get('close_spread_away_price'))
             picks.append({
                 'sport': sport,
                 'game_id': row.get('game_id'),
                 'game': f"{row.get('away_team')} @ {row.get('home_team')}",
                 'tier': tier,
+                'odds': _odds,
                 'label': (_flip['label'] if _flip
                           else (pp.get('label') or '')),
                 'side': (_flip['side'] if _flip else pp.get('side')),

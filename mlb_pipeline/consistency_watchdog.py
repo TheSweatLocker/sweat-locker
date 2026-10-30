@@ -24,7 +24,7 @@ CLI:
   python consistency_watchdog.py --dry-run          # print + skip DB writes
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, json, os, re, sys
 import datetime as dt
 from pathlib import Path
 from typing import Optional
@@ -775,10 +775,133 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
     }
 
 
+def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
+    """Two of our surfaces published OPPOSITE sides of the same game.
+
+    == 2026-10-30 . THE FLIP GUARANTEES THIS WHENEVER A RECEIPT EXISTS ====
+    ANDY: "the plumbing and overall process is still jacked up ... it needs
+    to operate like a well oiled engine."
+
+    Tonight both NCAAF games went out with both sides published:
+        Kent State @ Sacramento State  Sharp: Kent State -7
+                                       Degen + game read: Sacramento St +8.5
+        Tulane @ Charlotte             Sharp: Charlotte +8.5
+                                       Degen + game read: Tulane -8.5
+    Those are mutually exclusive bets, so one surface loses both no matter
+    what happens on the field.
+
+    The mechanism is not randomness. flip_football_spreads applies the
+    measured short-spread flip at the SHARP COMPOSER, and it correctly
+    REFUSES to rewrite primary_play once a receipt is published ("would
+    show one number, grade another"). So the Sharp takes the flipped side
+    while every surface reading primary_play keeps the original -- the
+    refusal that protects the receipt creates the contradiction one layer
+    up. A flip has to be all-or-nothing across surfaces: either it lands at
+    source before anything publishes, or the Sharp must not publish it.
+
+    Parlay legs count as published sides. The Degen's legs were only
+    visible by flattening audit.legs, and that is where half of tonight's
+    contradiction lived.
+    """
+    problems = []
+    for sport, tbl in _CTX_TABLE.items():
+        games = requests.get(
+            f'{SB}/rest/v1/{tbl}', headers=H_R, timeout=20,
+            params={'select': 'game_id,home_team,away_team',
+                    'game_date': f'eq.{date}', 'limit': '300'})
+        if games.status_code != 200:
+            continue
+        pairs = [(g.get('away_team'), g.get('home_team'))
+                 for g in (games.json() or [])]
+        if not pairs:
+            continue
+        # NO sport filter. A parlay receipt carries sport='MULTI' while its
+        # LEGS carry their own sport, so filtering the query by sport hid
+        # the Degen's NCAAF legs entirely -- which is how half of tonight's
+        # contradiction (Tulane -8.5 vs the Sharp's Charlotte +8.5) stayed
+        # invisible. Match each leg on the leg's own sport instead.
+        rc = requests.get(
+            f'{SB}/rest/v1/public_receipts', headers=H_R, timeout=20,
+            params={'select': 'surface,sport,pick_label,audit',
+                    'game_date': f'eq.{date}', 'limit': '1000'})
+        if rc.status_code != 200:
+            continue
+        flat = []
+        for x in (rc.json() or []):
+            a = x.get('audit') if isinstance(x.get('audit'), dict) else {}
+            legs = a.get('legs')
+            if isinstance(legs, list) and legs:
+                for l in legs:
+                    if not isinstance(l, dict) or not l.get('pick'):
+                        continue
+                    if str(l.get('sport') or '').upper() != sport:
+                        continue
+                    flat.append((f"{x['surface']}/leg", str(l['pick'])))
+            elif x.get('pick_label'):
+                if str(x.get('sport') or '').upper() != sport:
+                    continue
+                flat.append((str(x['surface']), str(x['pick_label'])))
+
+        def _team(lbl: str) -> str:
+            t = str(lbl or '').strip()
+            for suf in (' ML', ' ATS', ' RL', ' PL'):
+                if t.endswith(suf):
+                    return t[:-len(suf)].strip()
+            m = re.match(r'^(.*?)\s*[-+]\d+(?:\.\d+)?$', t)
+            return (m.group(1).strip() if m else t)
+
+        # ══ ONLY PLAY-vs-PLAY COUNTS ════════════════════════════════
+        # The first run of this check flagged 6 games, and 4 of them were
+        # THE FADE opposing a game read -- which is the Fade's entire
+        # purpose. That is exactly
+        # feedback_a_detector_must_know_the_intentional_case, the trap that
+        # already got one invariant muted after it called 59 deliberate
+        # fades CRITICAL in 8 days. A game read is COVERAGE: an opinion on
+        # every game, most of it never staked, and a surface taking the
+        # other side of it is a decision, not a defect.
+        #
+        # A contradiction only matters when we STAKED BOTH SIDES -- two
+        # surfaces that publish plays, on opposite sides of one game.
+        _play = {'sweat_card', 'sharp_card', 'potd', 'dotd', 'fade',
+                 'ledger', 'daily_degen', 'prop_jerry', 'ladder'}
+
+        def _is_play(surf: str) -> bool:
+            return str(surf).split('/')[0] in _play
+
+        for away, home in pairs:
+            hits = {}
+            for surf, lbl in flat:
+                if not _is_play(surf):
+                    continue
+                t = _team(lbl)
+                if t in (away, home):
+                    hits.setdefault(t, set()).add(surf)
+            if len(hits) > 1:
+                desc = '; '.join(f'{t} on {sorted(v)}' for t, v in hits.items())
+                problems.append({
+                    'sport': sport, 'game': f'{away} @ {home}',
+                    'kind': 'OPPOSITE_SIDES', 'tier': '-',
+                    'detail': (f'both sides published - {desc} - mutually '
+                               f'exclusive, one surface must lose'),
+                })
+    if not problems:
+        return None
+    return {
+        'check_name': 'cross_surface_opposite_sides',
+        'severity': 'CRITICAL',
+        'message': (f'{len(problems)} game(s) published on BOTH sides across '
+                    f'surfaces'),
+        'detail': {'problems': problems[:25],
+                   'fix_hint': 'a flip must be all-or-nothing across '
+                               'surfaces; see the note above this check'},
+    }
+
+
 CHECKS = {
     'potd_grade_mirror':           check_potd_grade_mirror,
     'sharp_card_props_synthesis':  check_sharp_card_props_have_synthesis,
     'badge_detail_drift':          check_badge_matches_detail,
+    'cross_surface_opposite_sides': check_cross_surface_opposite_sides,
     'lean_prop_rollup':            check_lean_prop_rollup,
     'lr_shadow_coverage':          check_lr_shadow_coverage,
     'ncaaf_sides_over_sharp_card': check_ncaaf_sides_over_sharp_card,

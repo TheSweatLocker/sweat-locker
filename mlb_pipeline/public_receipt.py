@@ -319,6 +319,25 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             out['skipped'] += 1
             continue
         payload.append(r)
+    # ══ 2026-10-30 · THE REST OF THE INVARIANTS, AT THIS SAME CHOKEPOINT ══
+    # `unactionable` above refuses a line-bearing market with no line. It was
+    # the only guard of its kind, and tonight's board produced four more
+    # defects of exactly the same shape — a priceless play, a parlay whose
+    # label disagreed with its own legs, and a fade on a market already
+    # measured negative. They belong here with it rather than in each
+    # composer: a guard on one of eight sources is not a guard
+    # (feedback_guard_belongs_at_the_chokepoint).
+    try:
+        from receipt_invariants import screen as _screen
+        payload, _inv_refused = _screen(payload, surface, quiet=quiet)
+        if _inv_refused:
+            out['skipped'] += len(_inv_refused)
+            out['invariant_refused'] = len(_inv_refused)
+    except ImportError:
+        # Loud: a missing guard must not read as a clean run.
+        print(f'  !! receipt_invariants unavailable — {surface} rows written '
+              f'UNCHECKED')
+
     if out['skipped'] and not quiet:
         print(f'  ⚠ receipts ({surface}): {out["skipped"]} row(s) not captured')
     if refused:
