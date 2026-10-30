@@ -110,7 +110,12 @@ def _build_casual_summary(ctx):
     if h_em is not None and a_em is not None:
         gap = h_em - a_em
         stronger = home if gap > 0 else away
-        headlines.append((6, f'✓ KenPom efficiency favors {stronger} by {abs(gap):.1f}'))
+        # 2026-10-30: source name scrubbed from user-facing prose (R72),
+        # same rule as the Madden -> 'Sweat Stats' rebrand and the
+        # feedback_tos_scrub_source_names convention. The METRIC is the
+        # point, not whose feed it came from; column lineage (adj_em,
+        # adj_de) stays untouched internally.
+        headlines.append((6, f'✓ Efficiency ratings favor {stronger} by {abs(gap):.1f}'))
 
     # Model vs market gap (NCAAB: proj_spread positive=home fav, close_spread negative=home fav → edge = proj_sp + close_sp)
     if proj_sp is not None and close_sp is not None:
@@ -229,7 +234,8 @@ def build_struct(ctx):
 def render_prompt(templates, struct):
     ss = struct['sweat'].get('score')
     tier = struct['sweat'].get('tier') or '—'
-    confidence_tier = f'{tier} — sweat {ss}/100 (KenPom + four-factors lens)'
+    # R72: no source name in user-facing prose.
+    confidence_tier = f'{tier} — sweat {ss}/100 (efficiency + four-factors lens)'
     context_block = (
         'NCAAB GAME CONTEXT (authoritative — analyze this, do not search for scores):\n'
         + json.dumps(struct, indent=2, default=str)

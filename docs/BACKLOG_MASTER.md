@@ -3064,7 +3064,7 @@ on evidence). TOP_PICK_BARRED now also holds NCAAB:total, but that gate
 only governs ensemble_scorer and this builder has its OWN
 compute_primary_play, so the cap had to live in both.
 
-## R72 — APP SCRUB: the word "kenpom" must not appear anywhere user-facing (2026-10-30)
+## R72 — DONE 2026-10-30 — APP SCRUB: "kenpom" removed from everything user-facing
 Same class as the Madden -> "Sweat Stats" rebrand. Internal column names
 (home_adj_oe, adj_em_gap) can keep their lineage, but no narrative, label,
 tooltip, signal prose, game-card string or app copy may say "KenPom".
@@ -3073,7 +3073,7 @@ generate_*_game_reads, signal display_prose, state_message), pick the
 user-facing replacement wording, and add a guard so it cannot come back —
 the prop-family ban needed three layers before it held.
 
-## R73 — the model-consensus "same title = one opinion" note confuses users (2026-10-30)
+## R73 — DONE 2026-10-30 — model-consensus note replaced by collapsing the duplicates
 ANDY: "look at model concensus block nots that say if the tile s the same it
 is one opinion, or somehting to that affect. Why is that note there and i
 feel like its confusing to users."
@@ -3134,3 +3134,35 @@ touching side/market/tier; 7 repaired (4 NBA, 3 NHL), 0 reverted.
 Remaining: 3 NBA rows whose close_spread is genuinely still NULL.
 Forward fix needed: do not compose a spread pick until its line exists, or
 re-derive the label whenever the line lands.
+
+## R72 / R73 CLOSURE NOTES (2026-10-30)
+R72, the scrub. Four live user-facing exposures, all of which would have
+started rendering when NCAAB opened 11-03:
+  * generate_ncaab_game_reads headline  "KenPom efficiency favors X by Y"
+  * generate_ncaab_game_reads tier line "(KenPom + four-factors lens)"
+  * sport_registry[NCAAB].state_message "probable starters, KenPom refresh"
+  * signal_sources id=924 display_prose_template "(KenPom adj_de ...)"
+The app itself was already clean — its only matches are a cache key and
+table names. check_banned_vocabulary.py now guards both the live data and
+source string literals, exits 2 on any hit, and covers "madden" on the same
+rule. Column/table/cache/module names are exempt BY DESIGN: renaming data
+plumbing to satisfy a copy rule is how a migration breaks a pipeline.
+
+That guard needed two corrections before it was trustworthy, both recorded
+in it: it first flagged 7 signal_registry.notes rows (internal provenance
+that nothing in app/ reads) and a function DOCSTRING in ncaab_game_context —
+i.e. it contradicted its own stated policy that lineage is exempt. Left
+as-is it would have been the permanently-red step in
+feedback_a_detector_must_know_the_intentional_case.
+
+R73, the consensus note. It existed to surface
+project_panel_is_one_voice_1014 (27 duplicate model pairs; NHL/NCAAF totals
+at 100% side agreement), because a reader counting tiles overestimated the
+agreement behind a pick. Fixed by collapsing rather than disclaiming:
+groupVoices already returns the duplicate -> leader mapping, so models
+sharing a number now share ONE tile naming them ("v3 · v4") and the line
+reads "N model reads". Nothing hidden, nothing to disclaim.
+NEEDS AN APP STORE BUILD — client change, no OTA path.
+Still open underneath: the panel is still one voice. Collapsing makes the UI
+honest; making the voices genuinely independent (different INPUTS, per
+feedback_lens_independence_needs_different_inputs) is the real fix.

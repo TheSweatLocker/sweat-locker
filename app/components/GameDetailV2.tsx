@@ -3063,6 +3063,32 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
   const _modelTiles = rows.filter((r: any) => String(r.name) !== 'Conf'
     && r.m != null && isFinite(Number(r.m))).length;
 
+  // Fold each duplicate model into the tile whose number it actually
+  // matched. _vg.label maps a duplicate's name -> its leader's name, so a
+  // leader keeps its tile and collects the names that share it. Tiles that
+  // groupVoices never considered (no number, 'Conf', a constant-fitted
+  // voice) are passed through untouched — they were never duplicates and
+  // hiding them would change what the panel reports.
+  const _collapsedRows = (() => {
+    const sharers: Record<string, string[]> = {};
+    for (const [dup, leader] of Object.entries(_vg.label || {})) {
+      if (!dup || !leader || dup === leader) continue;
+      (sharers[leader] = sharers[leader] || []).push(dup);
+    }
+    const dupNames = new Set(Object.keys(_vg.label || {})
+      .filter(k => _vg.label[k] && _vg.label[k] !== k));
+    const out: any[] = [];
+    for (const r of rows) {
+      const nm = String(r?.name ?? '');
+      if (dupNames.has(nm)) continue;                 // folded into its leader
+      const shared = sharers[nm];
+      out.push(shared && shared.length
+        ? {...r, name: [nm, ...shared].join(' · '), _sharedWith: shared}
+        : r);
+    }
+    return out;
+  })();
+
   return (
     <View>
       {_hiddenLenses.length > 0 && (
@@ -3070,19 +3096,43 @@ function LensGrid({ctx, gamesSport, modelVoices}: any) {
           {_hiddenLenses.join(' · ')}
         </Text>
       )}
-      {/* The headline number of the whole section: a reader counts tiles to
-          judge how much agreement is behind a pick, so when tiles outnumber
-          distinct reads, say so before they count. */}
+      {/* ══ 2026-10-30 · COLLAPSE THE DUPLICATES, DO NOT DISCLAIM THEM ══
+          This line used to read:
+
+            "5 models · only 2 distinct reads — matching tiles are one
+             opinion, not several"
+
+          ANDY: "look at model consensus block notes that say if the title is
+          the same it is one opinion ... Why is that note there and i feel
+          like its confusing to users."
+
+          It was there for a real reason — project_panel_is_one_voice_1014
+          found 27 duplicate model pairs, with NHL and NCAAF totals at 100%
+          side agreement, so a reader counting tiles overestimated how much
+          agreement sat behind a pick. But the note explained the defect in
+          our vocabulary instead of fixing it: "distinct read" means nothing
+          to a subscriber, and an app that warns you about its own panel
+          reads as an app that does not trust itself.
+
+          So the tiles are now COLLAPSED. groupVoices already returns the
+          duplicate -> leader mapping, so models sharing a number share ONE
+          tile that names them ("v3 · v4"), and the count line states plainly
+          how many reads there are. Nothing is hidden — the same models are
+          still listed, on the tile whose number they actually produced —
+          and with nothing to disclaim the disclaimer is gone.
+
+          If the panel later becomes genuinely independent (different INPUTS,
+          per feedback_lens_independence_needs_different_inputs) this
+          collapses nothing and the line simply counts every tile. */}
       {_modelTiles > 0 && (
-        <Text style={{color: _vg.voices < _modelTiles ? C.warn : C.textDim,
-                      fontSize: 9, fontWeight: '700', marginBottom: 4}}>
-          {_vg.voices < _modelTiles
-            ? `${_modelTiles} models · only ${_vg.voices} distinct read${_vg.voices === 1 ? '' : 's'} — matching tiles are one opinion, not several`
-            : `${_modelTiles} models · ${_vg.voices} distinct reads`}
+        <Text style={{color: C.textDim, fontSize: 9, fontWeight: '700',
+                      marginBottom: 4}}>
+          {`${_vg.voices} model read${_vg.voices === 1 ? '' : 's'}`}
+          {_vg.voices < _modelTiles ? ' · models sharing a number share a tile' : ''}
         </Text>
       )}
       <View style={styles.lensGrid}>
-        {rows.map((r, i) => {
+        {_collapsedRows.map((r, i) => {
           const mgnSide = signSide(r.m);
           const totDir = r.t != null && closeTot != null
             ? (r.t > closeTot ? 'O' : r.t < closeTot ? 'U' : '=')
