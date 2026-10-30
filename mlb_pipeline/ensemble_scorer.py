@@ -92,7 +92,42 @@ MARKETS_BY_SPORT = {
 #
 # Football totals measured 16-32 (33.3%, n=48, z=-2.65). Barred, not unscored —
 # the market decision is still computed and stored for the shadow record.
-TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}}
+# == 2026-10-30 . NCAAB TOTALS BARRED BEFORE ITS FIRST GAME ===============
+# NCAAB opens 11-03 and its season gate flips 11-01, so this is the last
+# chance to look before it publishes. Forced the chain early
+# (ncaab_game_context --force-offseason) and it WORKS -- 7 games, 365 teams,
+# 1,528 aliases, 7/7 upserted. It produced 6 PRIME/STRONG plays, and 5 of
+# the 6 were UNDERS, each projecting 6.7-9.2 points BELOW the market. Five
+# identical-shaped picks is a calibration bias, not five edges.
+#
+# So the model was checked against history, and there is none: projected_
+# total and projected_spread are 0% populated across all 11,439 rows of
+# ncaab_game_results, as are every KenPom field. The projection driving
+# those STRONG picks has never been graded against a single game.
+#
+# What CAN be measured is the market, on the 5,027 games of 2024-25 that
+# carry a closing spread, a closing total AND a final score. Nothing in it
+# clears the 52.38% breakeven:
+#
+#   HOME covers      49.74%  -2.64pp      UNDER hits  49.38%  -3.00pp
+#   AWAY covers      50.26%  -2.12pp      OVER hits   50.62%  -1.76pp
+#   FAVOURITE        49.03%  -3.35pp
+#   UNDERDOG         50.97%  -1.41pp
+#   DOG either side  51.12%  -1.26pp   (split-half 51.61% then 50.62%)
+#
+# And one ESTABLISHED NEGATIVE, the only cell whose CI clears on either
+# side: totals posted 155-165 take the UNDER at 45.49% on n=576,
+# CI[41.5,49.6] -- an upper bound BELOW breakeven, so -6.89pp is real and
+# not noise. Tonight's five forced-run UNDERs posted at 154.75, 155.25,
+# 155.7 and 160.5: the model's output concentrates in the worst measured
+# total band in the sport.
+#
+# Barred, not unscored -- same discipline as the football totals above.
+# total_dec is still computed and written, so the shadow record accumulates
+# and this lifts on evidence. NCAAB's 65 signals also stay at weight 0,
+# which apply_signal_weight_discipline did on the grounds they were
+# UNMEASURED; this is the measurement, and it does not change the answer.
+TOP_PICK_BARRED = {'NFL': {'total'}, 'NCAAF': {'total'}, 'NCAAB': {'total'}}
 
 # Tier thresholds — v2 defaults, tune after backtest.
 # Note: LEAN.min_score can be overridden at runtime via ensemble_health

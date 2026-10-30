@@ -3012,3 +3012,54 @@ have wind_speed/wind_direction/wind_blowing_in.
 Open: audit every condition_expr/strength_expr against its own sport's
 columns. A column name that is right for one sport and wrong for another is
 exactly feedback_dict_get_on_a_guessed_column, and it fails silently.
+
+## R70 — NCAAB: the chain WORKS, the model has never been graded (2026-10-30)
+Earlier I reported NCAAB "cannot produce a pick". Wrong — it was GATED, not
+broken. season_gate puts NCAAB off-season through October and flips on
+2026-11-01, two days before the 11-03 opener, so nothing was being
+exercised. Forced early with `--force-offseason` the chain runs clean: 7
+games from the Odds API, 365 teams from ncaab_team_stats, 1,528 aliases,
+7/7 upserted.
+
+WHAT IS ACTUALLY MISSING is the validation, not the plumbing:
+    projected_total     0 of 11,439 rows populated
+    projected_spread    0 of 11,439
+    home/away_adj_oe/de 0 of 11,439   (every KenPom field)
+    pace_avg            0 of 11,439
+    close_home_ml       0 of 11,439
+    close_spread/total  5,034 (44%) — ALL of it 2024-25
+    2025-26             5,521 played games with ZERO lines
+So the projection driving NCAAB's picks has no graded record whatsoever,
+and a whole season of results cannot be priced.
+
+MEASURED BASELINE, on the 5,027 games of 2024-25 that carry a close spread,
+a close total AND a final score — nothing clears the 52.38% breakeven:
+    HOME covers      49.74%  -2.64pp     UNDER hits  49.38%  -3.00pp
+    AWAY covers      50.26%  -2.12pp     OVER hits   50.62%  -1.76pp
+    FAVOURITE        49.03%  -3.35pp
+    UNDERDOG         50.97%  -1.41pp
+    DOG either side  51.12%  -1.26pp  (split-half 51.61% / 50.62%)
+By magnitude only |spread| 15-25 (+1.43pp) and 25+ (+1.10pp) are positive
+and both CIs span breakeven. The ONE cell whose CI clears on either side
+clears on the LOSING side: totals posted 155-165 take the UNDER at 45.49%
+on n=576, CI[41.5,49.6], upper bound BELOW breakeven.
+
+So NCAAB's 65 signals stay at weight 0 — set there because they were
+unmeasured, and the measurement agrees. This is a market with no edge
+visible at this granularity, which is what a liquid market should look like.
+
+Open for NCAAB: backfill projected_total/projected_spread for 2024-25 so
+the model can be graded at all; find out why 2025-26 has 5,521 results and
+no lines; populate the KenPom columns the signals read (several of the 65
+reference adj_oe/adj_de, which are 0% — those conditions can never fire).
+
+## R71 — NCAAB totals: one calibration bias restated five times (2026-10-30)
+`ncaab_game_context.compute_primary_play` rule 2 is "STRONG OVER/UNDER when
+model total vs market differs by >= 5 points". The model sits
+systematically 6.7-9.2 points BELOW market, so that rule produced 5 STRONG
+UNDERs out of 6 top plays — not five edges, one bias five times. Every one
+posted at 154.75-160.5, i.e. inside the 155-165 band measured at 45.49%.
+Capped to COVERAGE via NCAAB_TOTAL_TIER_CAP (visible, still recorded, lifts
+on evidence). TOP_PICK_BARRED now also holds NCAAB:total, but that gate
+only governs ensemble_scorer and this builder has its OWN
+compute_primary_play, so the cap had to live in both.

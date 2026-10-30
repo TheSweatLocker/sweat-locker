@@ -327,6 +327,13 @@ def sweat_tier(score):
     return "PASS"
 
 
+#: Tier ceiling for an NCAAB total. 'COVERAGE' keeps the pick visible on the
+#: game card with its number stated honestly, while stopping every curated
+#: surface from treating it as a play (they filter PRIME/STRONG). Raise this
+#: only when NCAAB totals have a graded record that clears breakeven.
+NCAAB_TOTAL_TIER_CAP = "COVERAGE"
+
+
 def compute_primary_play(ctx, alias_map=None):
     """Analog of mlb_game_context.compute_primary_play. Spreads/totals/ML
     only (no NCAAB props in v1).
@@ -366,15 +373,50 @@ def compute_primary_play(ctx, alias_map=None):
             "signal_floor": 85,
         }
 
-    # 2. STRONG total — big model disagreement on total
+    # 2. TOTAL — COVERAGE ONLY. See NCAAB_TOTAL_TIER_CAP.
+    # ══ 2026-10-30 · THIS RULE MANUFACTURED FIVE IDENTICAL PICKS ═══════
+    # Forced the chain early, two days before the 11-01 season gate opens,
+    # and this rule produced 6 PRIME/STRONG plays of which 5 were UNDERS
+    # projecting 6.7-9.2 points below market. The rule fires on
+    # abs(total_edge) >= 5.0 and the model sits systematically ~7-9 points
+    # LOW, so it does not find five edges -- it restates one calibration
+    # bias five times.
+    #
+    # The projection behind it has never been graded: projected_total is 0%
+    # populated across all 11,439 rows of ncaab_game_results, as is every
+    # KenPom field. And the market CAN be measured, on the 5,027 games of
+    # 2024-25 carrying a close spread, a close total and a final score:
+    #
+    #   UNDER hits 49.38%  (-3.00pp)     OVER hits 50.62%  (-1.76pp)
+    #   totals posted 155-165: UNDER 45.49% on n=576, CI[41.5,49.6]
+    #
+    # That band is the only cell in the whole study whose confidence
+    # interval clears breakeven on either side, and it clears it on the
+    # LOSING side -- an upper bound of 49.6% against a 52.38% breakeven.
+    # Tonight's five UNDERs posted at 154.75, 155.25, 155.7 and 160.5, i.e.
+    # concentrated in the worst measured total band in the sport.
+    #
+    # Capped rather than deleted: the pick is still computed, still stored
+    # and still visible on the game card, so the shadow record accumulates
+    # and this lifts on evidence instead of a hunch -- the same discipline
+    # the football totals bar uses. TOP_PICK_BARRED also now holds
+    # NCAAB:total, but that gate only governs ensemble_scorer and this
+    # builder has its OWN compute_primary_play, so the cap has to live here
+    # too (feedback_fix_every_writer_to_the_table).
     if total_edge is not None and abs(total_edge) >= 5.0:
         side = "Over" if total_edge > 0 else "Under"
         return {
             "type": "total",
-            "tier": "STRONG",
+            "tier": NCAAB_TOTAL_TIER_CAP,
             "label": f"{side} {close_total}",
-            "sub": f"Model projects {ctx.get('projected_total'):.1f} vs market {close_total} ({total_edge:+.1f})",
+            "sub": (f"Model projects {ctx.get('projected_total'):.1f} vs market "
+                    f"{close_total} ({total_edge:+.1f}) — INFO ONLY: NCAAB "
+                    f"totals measured {'45.5% in the 155-165 band' if (close_total is not None and 155 <= float(close_total) < 165) else '49.4%'} "
+                    f"vs 52.38% breakeven, and this projection has no graded record"),
             "signal_floor": 72,
+            "_total_cap": {"from": "STRONG", "to": NCAAB_TOTAL_TIER_CAP,
+                           "basis": "ncaab 2024-25 n=5027: UNDER 49.38%, "
+                                    "155-165 band 45.49% n=576 CI[41.5,49.6]"},
         }
 
     # 3. STRONG ML — moderate confluence + meaningful spread edge
@@ -387,12 +429,12 @@ def compute_primary_play(ctx, alias_map=None):
             "signal_floor": 70,
         }
 
-    # 4. LIGHT total
+    # 4. LIGHT total — same cap, same reason as rule 2 above.
     if total_edge is not None and abs(total_edge) >= 3.0:
         side = "Over" if total_edge > 0 else "Under"
         return {
             "type": "total",
-            "tier": "LIGHT",
+            "tier": NCAAB_TOTAL_TIER_CAP,
             "label": f"{side} {close_total}",
             "sub": f"Model {ctx.get('projected_total'):.1f} vs line {close_total}",
             "signal_floor": 60,
@@ -619,15 +661,32 @@ def run():
 
     n = upsert_context(rows)
     print(f"  ✓ upserted {n}/{len(rows)} rows")
-    # Show top PRIME/STRONG plays for visibility
-    primes = [r for r in rows if r.get("sweat_tier") in ("PRIME", "STRONG")]
-    if primes:
-        print(f"\n  Top plays ({len(primes)} PRIME/STRONG):")
-        for r in sorted(primes, key=lambda x: -(x.get("sweat_score") or 0))[:5]:
+    # ══ 2026-10-30 · THIS LOG ANNOUNCED PLAYS THAT CANNOT PUBLISH ══════
+    # It selected on `sweat_tier` and printed "Top plays (6 PRIME/STRONG)"
+    # while all six stored primary_play.tier = COVERAGE and could not reach
+    # a single curated surface. The two are different measurements sharing a
+    # vocabulary: sweat_tier is how far our PROJECTION sits from the close,
+    # primary_play.tier is the engine's confidence in the actual play after
+    # the gates. generate_sweat_card carries the same warning for the same
+    # reason. A log that calls a COVERAGE row a STRONG play is how someone
+    # concludes a sport is live when it is not.
+    _bettable = [r for r in rows
+                 if str((r.get("primary_play") or {}).get("tier") or '').upper()
+                 in ("PRIME", "STRONG")]
+    _shadow = [r for r in rows if r.get("sweat_tier") in ("PRIME", "STRONG")]
+    print(f"\n  BETTABLE (primary_play PRIME/STRONG): {len(_bettable)}")
+    for r in sorted(_bettable, key=lambda x: -(x.get("sweat_score") or 0))[:5]:
+        pp = r.get("primary_play") or {}
+        print(f"    {r['away_team']} @ {r['home_team']} | "
+              f"{pp.get('tier')} | {pp.get('label', '-')}")
+    if _shadow:
+        print(f"  shadow only (high sweat_tier, pick NOT bettable): "
+              f"{len(_shadow)}")
+        for r in sorted(_shadow, key=lambda x: -(x.get("sweat_score") or 0))[:5]:
             pp = r.get("primary_play") or {}
             print(f"    {r['away_team']} @ {r['home_team']} | "
-                  f"{r['sweat_tier']} {r['sweat_score']} | "
-                  f"{pp.get('label', '-')} ({pp.get('sub', '')[:50]})")
+                  f"sweat {r['sweat_tier']} {r['sweat_score']} -> pick "
+                  f"{pp.get('tier') or 'none'} | {pp.get('label', '-')}")
 
 
 if __name__ == "__main__":
