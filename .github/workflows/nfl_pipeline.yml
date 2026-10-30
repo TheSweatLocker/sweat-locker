@@ -1420,6 +1420,19 @@ jobs:
           # still restores OLD.pick_locked_at; it starts working the moment
           # 20260929d + 20260929c are applied.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL unlock-beyond-slate)" python lock_football_slate.py --sport NFL --unlock-beyond-slate
+          # ══ 2026-10-29 · BALANCE THE SLATE, BEFORE IT LOCKS ══════════
+          # Andy: "force the engine to pick at least 4 dawg spreads a week".
+          # Placed here for the same reason flip_football_spreads is: after
+          # the lock stamp, enforce_pick_lock refuses any side change with a
+          # SILENT 204 and logs it to pick_lock_drift. The first manual run
+          # of apply_dog_floor reported "promoted 4" and wrote nothing for
+          # exactly that reason. jerry_pick_scrub, below, realigns the reads.
+          #
+          # Dog floor FIRST (it adds dog picks), then the chalk cap, so the
+          # cap measures the slate the floor has already balanced and does
+          # not cut chalk it no longer needs to.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_dog_floor.py (NFL)" python apply_dog_floor.py --sport NFL --allow-cz --apply
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_chalk_cap.py (NFL)" python apply_chalk_cap.py --sport NFL --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL)" python lock_football_slate.py --sport NFL
 
       # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and

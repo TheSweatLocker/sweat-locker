@@ -681,6 +681,19 @@ jobs:
           # any flip no 2+ books actually post. POTD is gated separately in
           # jerry_anchor_potd on Andy's instruction that POTD not change.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "flip_football_spreads.py" python flip_football_spreads.py --apply
+          # ══ 2026-10-29 · BALANCE THE SLATE, BEFORE IT LOCKS ══════════
+          # Andy: "force the engine to pick at least 4 dawg spreads a week".
+          # Placed here for the same reason flip_football_spreads is: after
+          # the lock stamp, enforce_pick_lock refuses any side change with a
+          # SILENT 204 and logs it to pick_lock_drift. The first manual run
+          # of apply_dog_floor reported "promoted 4" and wrote nothing for
+          # exactly that reason. jerry_pick_scrub, below, realigns the reads.
+          #
+          # Dog floor FIRST (it adds dog picks), then the chalk cap, so the
+          # cap measures the slate the floor has already balanced and does
+          # not cut chalk it no longer needs to.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_dog_floor.py (NCAAF)" python apply_dog_floor.py --sport NCAAF --allow-cz --apply
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_chalk_cap.py (NCAAF)" python apply_chalk_cap.py --sport NCAAF --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NCAAF)" python lock_football_slate.py --sport NCAAF
 
       # 2026-09-19: same gap as NFL — jerry_pick_scrub supports NCAAF but
