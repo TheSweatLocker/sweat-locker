@@ -2680,3 +2680,39 @@ two problems need opposite fixes and should not be conflated.
 carries `primary_play._chalk_cap.was` with its original tier.
 
 ---
+
+### R42 — The OddsCrowd spread feed is DARK on both football slates
+`line_snapshot` has **0 rl rows for NFL 11-01 (0/12) and NCAAF 10-31 (0/47)**.
+That feed is the source the one validated football spread edge was measured on
+(fade public bets>=65: 58.9%, n=107, ROI +12.4%, holds both halves — it had
+n=183 NFL rl rows historically). With it dark, `apply_dog_floor` has to fall
+back to cz/fr splits behind `--allow-cz`, an unvalidated source with its own
+documented breakage (10/07). **Restoring this feed is the highest-value item
+on this list**: it converts the dog floor from "the engine's own conviction,
+unproven ordering" into a measured edge. Check the puller's sport/market args
+and whether the NFL rl endpoint changed shape.
+
+### R43 — Two PRIME dog spreads carry `side=None`
+`ARI +8.5` (12-06) and `MIA +7.0` (12-27) are tier PRIME with `side: None`.
+A pick with a label and no side cannot be graded or reliably rendered, and
+PRIME is the loudest thing we publish.
+
+### R44 — NFL stores one market under two names
+`primary_play.type` is `rl` on ensemble-written rows and `spread` on 13 others,
+all future-dated, all with `conviction=None` and `_model_edge_pp=None`. Two
+producers, one market. Any query keyed on one name silently misses the other —
+this is what made an earlier dog-spread count come back 7 instead of 9.
+
+### R45 — `consensus_fade_*` is a DIFFERENT fade and reads as the validated one
+`detect_consensus_fade.py` fades **handicapper** consensus (75%+ of picks on a
+side, gated on audit calibration). The validated edge fades **public money**
+from `line_snapshot`. The column names collide, and `consensus_fade_flag` is
+NULL on all 13 NFL games anyway. Rename or namespace one of them before the
+two get wired into the same scorer.
+
+### R46 — Any script writing `primary_play` must verify the readback
+`enforce_pick_lock` refuses a side change with a **204 and zero rows affected**,
+byte-identical to success. `apply_dog_floor` reported "promoted 4" and wrote
+nothing. `apply_dog_floor.write_play()` now confirms by reading the row back;
+every other producer that writes `primary_play` needs the same treatment or it
+can report a green step over an empty write.
