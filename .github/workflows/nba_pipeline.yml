@@ -909,6 +909,22 @@ jobs:
             python compute_align_status_nba.py --date "$d"
           done
 
+      # ══ 2026-10-30 · conviction_rank ══
+      # The ensemble's `conviction` saturates at win_score 3.0 and is
+      # sport-blind, so NBA's picks all land in a few points of each other and
+      # cannot be ranked against one another. stamp_conviction_rank writes a
+      # separate per-sport-normalised `_conviction_rank` (plus the inputs, so
+      # weekly attribution can retune the spans) and leaves `conviction`
+      # alone, because model_edge consumes that one as a win probability.
+      - name: Stamp conviction_rank (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python stamp_conviction_rank.py --sport NBA --days 5
+
       - name: Write line_snapshot from oddscrowd data (NBA)
         continue-on-error: true
         env:

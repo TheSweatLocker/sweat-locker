@@ -124,3 +124,78 @@ if __name__ == '__main__':
     for sp, c in (('NHL', 64), ('NBA', 53), ('NCAAF', 56)):
         print(f'   {sp:6s} raw {c} -> scaled {scaled(sp, c):5.1f}  '
               f'eligible={potd_eligible(sp, c)}')
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-10-30 · conviction_rank — a SEPARATE number that actually separates
+#
+# Andy: "NBA and NHL conviction needs to be established so we can tune as we
+# go... we need NBA takes and reads and some need conviction."
+#
+# The compression is in the ensemble formula, which is sport-blind:
+#     conviction = 50 + min(win_score*10, 30) + min(margin*20, 15)
+# That saturates at win_score = 3.0. Measured spans of the ensemble's own
+# score and margin, per sport, off stored primary_play rows:
+#
+#     sport   score p50   p90    max  | margin p90   max   | conv p50  max
+#     NBA          0.07  0.11   0.20  |        0.11  0.20  |       52   65
+#     NHL          0.17  0.73   1.28  |        0.48  1.20  |       59   78
+#     NFL          0.21  0.98   2.25  |        0.86  1.34  |       55   86
+#     NCAAF        0.43  1.43   3.51  |        1.23  2.50  |       61  100
+#
+# NCAAF reaches 3.51 and uses the whole range. NBA's MAXIMUM is 0.20, which
+# buys 2 points of the available 30 — so every NBA pick lands on 51-53 and no
+# NBA pick can ever be ranked above another.
+#
+# WHY THIS IS A NEW FIELD AND NOT A REWRITE OF `conviction`
+# `conviction` is consumed as a WIN PROBABILITY, not as a display score:
+# model_edge.edge_pp() is literally `conviction - implied_prob*100`, and that
+# edge drives NO_EDGE_TIER_CAP, which is what demotes a pick to COVERAGE when
+# the price is better than our number. Rescaling NBA conviction from 51 to 75
+# would print a ~20pp edge on every NBA pick, switch off the cap that is
+# currently telling the truth, and manufacture plays out of nothing. That is
+# the exact failure this repo has paid for before.
+#
+# So: `conviction` stays the probability. `conviction_rank` is the per-sport
+# 0-100 separation number — what POTD ranks on, what orders a card, and what
+# weekly attribution tunes. Two numbers because they answer two questions.
+
+#: sport -> (score_p90, margin_p90), measured 2026-10-30 on primary_play.
+#: Re-run _score_spans.py and edit these as the seasons move.
+SIGNAL_SPANS = {
+    'NBA':   (0.11, 0.11),
+    'NHL':   (0.73, 0.48),
+    'NFL':   (0.98, 0.86),
+    'NCAAF': (1.43, 1.23),
+    'MLB':   (2.48, 1.50),
+    'NCAAB': (0.73, 0.48),   # provisional, mirrors NHL until NCAAB has rows
+}
+
+#: p90 lands here, leaving headroom above it so an exceptional night can
+#: still stand out instead of clipping with everything else at 100.
+_P90_TARGET = 0.75
+RANK_FLOOR, RANK_CEIL = 40.0, 97.0
+
+
+def rank_from_signals(sport: str, win_score, margin) -> float | None:
+    """Per-sport 0-100 separation score from the ensemble's own signals.
+
+    p90 of a sport's score/margin maps to the same place for every sport, so
+    a decisive NBA pick and a decisive NCAAF pick read alike. Weighted 2:1
+    toward score over margin, matching the 30:15 split of the formula this
+    replaces for ranking purposes.
+    """
+    try:
+        s = float(win_score)
+    except (TypeError, ValueError):
+        s = 0.0
+    try:
+        m = max(0.0, float(margin))
+    except (TypeError, ValueError):
+        m = 0.0
+    sp = str(sport or '').upper()
+    s_p90, m_p90 = SIGNAL_SPANS.get(sp, (1.0, 1.0))
+    s_n = min(1.0, (s / (s_p90 / _P90_TARGET)) if s_p90 > 0 else 0.0)
+    m_n = min(1.0, (m / (m_p90 / _P90_TARGET)) if m_p90 > 0 else 0.0)
+    combined = (2.0 * s_n + 1.0 * m_n) / 3.0
+    return round(RANK_FLOOR + (RANK_CEIL - RANK_FLOOR) * combined, 1)

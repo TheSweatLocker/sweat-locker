@@ -801,6 +801,22 @@ jobs:
           cd mlb_pipeline
           python write_line_snapshot.py --sport NCAAF
 
+      # ══ 2026-10-30 · conviction_rank ══
+      # `conviction` is sport-blind and saturates at win_score 3.0, so a
+      # sport whose scores run small cannot rank its own picks against each
+      # other. This writes a separate per-sport-normalised `_conviction_rank`
+      # plus the inputs, so weekly attribution can retune the spans, and
+      # leaves `conviction` alone because model_edge consumes that as a win
+      # probability. Runs AFTER primary_play is final for the day.
+      - name: Stamp conviction_rank (NCAAF)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python stamp_conviction_rank.py --sport NCAAF --days 9
+
       - name: Resolve NCAAF external picks (post-game)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
