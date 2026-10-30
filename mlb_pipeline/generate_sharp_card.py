@@ -2179,6 +2179,38 @@ def run(dry_run: bool = False, force: bool = False):
     except Exception as _e:
         print(f'  ⚠️  [guard] refit override call failed non-fatal: {_e}')
 
+    # ══ 2026-10-30 · THE FLIP HAS TO HAPPEN AT THE ENGINE, NOT HERE ══
+    # Andy: "why does the engine say Tulane -8.5 but you like Charlotte?"
+    # Because the flip was happening in TWO places with different timing.
+    # flip_football_spreads.py flips primary_play — the engine level, so every
+    # surface inherits it — and runs in ncaaf_pipeline. This composer ALSO
+    # flipped, at composition time, and it runs in mlb_pipeline. Two
+    # independent workflows, so whichever fired first won:
+    #   game_read / jerry_reads : Tulane -8.5   (engine, unflipped)
+    #   Sharp Card              : Charlotte +8.5 (composer, flipped)
+    # Opposite sides of one game on two surfaces. Worse, once this composer
+    # wrote its receipt the engine flip then REFUSED the game — "receipt
+    # already published, would show one number and grade another" — so the
+    # engine could never catch up and the split was permanent.
+    #
+    # Fix: run the engine flip here as a guard first, idempotently, exactly
+    # as the refit override above. primary_play is then already the flipped
+    # side before anything is composed, so the Sharp, the reads and the
+    # receipts all quote one number. Also wired into nfl_pipeline, which
+    # never called it at all.
+    print(f'  [guard] running flip_football_spreads first (idempotent)')
+    try:
+        import subprocess as _sp2
+        _p2 = _sp2.run(['python', str(Path(__file__).parent / 'flip_football_spreads.py'),
+                        '--apply'],
+                       capture_output=True, text=True, timeout=300)
+        _t2 = '\n'.join((_p2.stdout or '').splitlines()[-6:])
+        print(f'  [guard] spread flip completed rc={_p2.returncode}')
+        if _t2:
+            print(f'  [guard] tail: {_t2}')
+    except Exception as _e:
+        print(f'  ⚠️  [guard] spread flip call failed non-fatal: {_e}')
+
     sources = _fetch_all(today)
     print(f'  fetched: MLB ctx={len(sources["mlb_ctx"])} props={len(sources["mlb_props"])} '
           f'NFL={len(sources["nfl_ctx"])} NCAAF={len(sources["ncaaf_ctx"])} '

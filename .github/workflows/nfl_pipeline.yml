@@ -1447,7 +1447,27 @@ jobs:
           # Dog floor FIRST (it adds dog picks), then the chalk cap, so the
           # cap measures the slate the floor has already balanced and does
           # not cut chalk it no longer needs to.
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_dog_floor.py (NFL)" python apply_dog_floor.py --sport NFL --allow-cz --apply
+          # ══ 2026-10-30 · --allow-cz REMOVED. THE FALLBACK FEED INVERTS ══
+          # Measured 10-29 on the same games, share of tickets on the
+          # FAVOURITE: MIN cz 37 / OddsCrowd 80, LAC 70/41, Maryland 76/35,
+          # Old Dominion 62/30 — four of four crossing the 50 mark. Two dog
+          # picks shipped as "public fades" with the public ON those dogs.
+          # apply_dog_floor's own docstring calls --allow-cz a diagnostic
+          # switch, not a fallback, and it was live in this workflow nightly.
+          # With it gone the floor promotes on line_snapshot only, and
+          # promotes fewer picks on nights OddsCrowd is thin. That is correct:
+          # fewer honest dogs beats more dogs pointed the wrong way.
+          # ══ 2026-10-30 · THE ENGINE FLIP NEVER RAN ON NFL ══
+          # flip_football_spreads.py flips primary_play so every surface
+          # inherits one side, and MAX_MAGNITUDE_BY_SPORT already carries
+          # 'NFL': 10.5 — but this workflow only ever mentioned the script in
+          # a comment and never called it. So the Sharp flipped NFL spreads at
+          # composition time while game_read kept the unflipped side, which is
+          # the Tulane -8.5 / Charlotte +8.5 split Andy caught on NCAAF.
+          # Runs BEFORE the dog floor so the floor sees final sides.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "flip_football_spreads.py (NFL)" python flip_football_spreads.py --sport NFL --apply
+
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_dog_floor.py (NFL)" python apply_dog_floor.py --sport NFL --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_chalk_cap.py (NFL)" python apply_chalk_cap.py --sport NFL --apply
           # The floor replaces primary_play, so the card subtitle and the
           # read are left describing the market it replaced -- on a spread
