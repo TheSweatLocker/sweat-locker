@@ -2951,3 +2951,64 @@ problems today, neither a false positive:
 Signal agreement says WHICH SIDE; it says nothing about whether the
 projection clears the POSTED NUMBER. Promoting a pick can EXPOSE an
 incoherence that was always there, because the watchdog exempts COVERAGE.
+
+## R67 — the chooser: ranked on a scale, now ranked on a record (2026-10-30)
+`top_market = max(eligible, key=conviction)` compared convictions ACROSS
+markets, and conviction is not the same measure in each. NCAAF's ml MEDIAN
+(80) sits above its rl MAXIMUM (65), so an NCAAF spread opinion could never
+outrank a moneyline one — ML won 124 of 131 NCAAF tie-breaks (95%), NFL 56%,
+NHL 54%, NBA 61%.
+
+Normalising the scale ALONE was simulated and REJECTED: within-market
+percentile moved NFL off ml onto rl on 8 games and NCAAF on 48, and at the
+time NFL rl measured -8.48pp against ml +6.33pp. An unbiased chooser that
+ignores which market wins is measurably worse. MARKET_EDGE_PP now ranks on
+the measured per-(sport, market) edge, conviction decides within a market,
+and an unmeasured (sport, market) falls back to conviction alone.
+
+Limitation stated rather than hidden: where two edges are close the larger
+point estimate wins even though the gap is inside noise (NFL ml n=38 vs rl
+n=35). An earlier version bucketed edges onto a 2pp grid to make those tie,
+but a fixed grid cannot express "within 2pp" — NFL's +6.33 and +4.66, 1.67pp
+apart, landed in different buckets anyway, so the comment claimed a tie the
+code did not deliver. Bucketing removed.
+
+## R68 — spread FAVOURITES are the measured loser; dogs are a consequence (2026-10-30)
+The favourite bias is not ML-vs-spread, it is which SIDE of the spread.
+Graded spread receipts since the 09-19 pricing floor:
+
+    scope      side        W-L      hit%    BE%     edge      ROI
+    pooled     DOG         81-66    55.10%  52.83%  +2.27pp   +4.75%
+    pooled     FAVOURITE  105-113   48.17%  52.11%  -3.95pp   -8.09%
+    NFL        FAVOURITE   10-17    37.04%  52.56% -15.52pp  -29.17%
+    NCAAF      FAVOURITE   66-72    47.83%  52.61%  -4.78pp   -9.46%
+    NHL        FAVOURITE   12-15    44.44%  48.58%  -4.13pp  -11.10%
+    NBA        FAVOURITE   13-9     59.09%  53.34%  +5.76pp   +9.36%  POSITIVE
+
+NFL's rl market reading -8.48pp overall is ENTIRELY its favourites; NFL
+spread DOGS are +4.66pp. SPREAD_FAV_REFUSED drops the favourite candidate
+for NFL/NCAAF/NHL, so the dog wins the market mechanically. NBA is excluded
+because its favourites measured POSITIVE, and MLB has n=4 per side.
+
+Why refuse the favourite rather than promote the dog: the favourite side is
+negative in EVERY half of all three sports (NFL -21.95 then -9.55; NCAAF
+-6.49 then -3.08; NHL -3.20 then -5.00) while the DOG side FAILS split-half
+(-1.15pp then +5.65pp). Removing a measured loser needs no new claim.
+
+Combined effect on the 10-31 NCAAF slate: markets ml 41->30, rl 4->16; side
+mix FAV 29 / DOG 17; bettable picks 5 -> 20 (10 PRIME, 10 STRONG).
+
+## R69 — a 28-season validated edge referenced a column that does not exist (2026-10-30)
+`ncaaf_high_wind_under` has a CORRECT condition (`ctx.wind >= 15`) and a
+BROKEN strength_expr: `min((int(ctx.wind_speed) - 10) / 20.0, 1.0)`.
+Neither ncaaf_game_context nor nfl_game_context has a `wind_speed` column —
+both call it `wind` — so the expression raised TypeError on every row and
+the signal could never contribute strength. This is the one lens validated
+on 28 seasons (WIND>=12 -> UNDER, 55.8% CI[52.9,58.6], 17 of 26 seasons).
+Fixed to `float(ctx.wind)` and replayed against live rows. The four MLB
+signals using `ctx.wind_speed` are CORRECT — mlb_game_context really does
+have wind_speed/wind_direction/wind_blowing_in.
+
+Open: audit every condition_expr/strength_expr against its own sport's
+columns. A column name that is right for one sport and wrong for another is
+exactly feedback_dict_get_on_a_guessed_column, and it fails silently.

@@ -2199,6 +2199,163 @@ def _humanize_signal_key(key: str) -> str:
     return s
 
 
+# == 2026-10-30 . THE SPREAD FAVOURITE IS THE MEASURED LOSER ===============
+# ANDY has asked repeatedly why every surface lands on favourites. The
+# chooser is part of it, but the chooser is NOT the fixable part: ranked by
+# raw conviction it prefers the moneyline, and measured per (sport, market)
+# on graded receipts the moneyline is genuinely the BEST market in MLB
+# (+9.67pp n=190), NFL (+6.33pp n=38) and NHL (+1.46pp n=202). Normalising
+# the chooser's scale alone would have pushed NFL from its +6.33pp market
+# into its -8.48pp one on 8 games and NCAAF on 48. Measured, that is worse.
+#
+# The real split is not ML-vs-spread, it is WHICH SIDE of the spread.
+# Graded spread receipts since the 2026-09-19 pricing floor, by side:
+#
+#   scope        side        W-L     hit%    BE%     edge      ROI
+#   pooled       DOG         81-66   55.10%  52.83%  +2.27pp   +4.75%
+#   pooled       FAVOURITE  105-113  48.17%  52.11%  -3.95pp   -8.09%
+#   NFL          FAVOURITE   10-17   37.04%  52.56% -15.52pp  -29.17%
+#   NCAAF        FAVOURITE   66-72   47.83%  52.61%  -4.78pp   -9.46%
+#   NHL          FAVOURITE   12-15   44.44%  48.58%  -4.13pp  -11.10%
+#   NBA          FAVOURITE   13-9    59.09%  53.34%  +5.76pp   +9.36%  <- POSITIVE
+#
+# So NFL's spread market reading -8.48pp overall is ENTIRELY its
+# favourites; NFL spread DOGS are +4.66pp.
+#
+# WHY THIS REFUSES THE FAVOURITE RATHER THAN PROMOTING THE DOG
+# The favourite side is negative in EVERY half of every sport below
+# (NFL -21.95 then -9.55; NCAAF -6.49 then -3.08; NHL -3.20 then -5.00),
+# while the DOG side FAILS split-half (-1.15pp then +5.65pp) -- its edge
+# sits entirely in the recent half. Removing an unearned loser needs no new
+# claim; asserting the dog is a winner does, and the data will not carry it
+# (feedback_signal_needs_a_direction_control). A spread has two sides, so
+# the dog follows mechanically from the refusal without us claiming it.
+#
+# NBA IS DELIBERATELY ABSENT: its spread favourites measured +5.76pp, the
+# opposite direction, and gating a sport against its own measurement is how
+# feedback_tier_mix_reverses_the_sign happened. MLB has n=4 per side -- too
+# few to gate either way.
+# == 2026-10-30 . THE CHOOSER RANKED MARKETS ON A SCALE, NOT A RECORD =====
+# `top_market = max(eligible, key=conviction)` compares convictions ACROSS
+# markets, and conviction does not mean the same thing in each. Measured
+# from _ensemble_all_markets over 09-15..10-30:
+#
+#   sport   market   p25  p50  p75  p90  max
+#   NCAAF   ml        67   80   88   96  100
+#   NCAAF   rl        51   53   55   56   65     <- ml MEDIAN is above rl MAX
+#   NFL     ml        52   59   75   77   88
+#   NFL     rl        52   53   54   55   59
+#   NHL     ml        53   54   59   68   78
+#   NHL     rl        53   54   55   55   56
+#   NBA     ml        51   52   52   54   67
+#   NBA     rl        52   52   53   53   56
+#
+# An NCAAF spread opinion can therefore NEVER outrank a moneyline one, and
+# it shows: ML won 124 of 131 NCAAF tie-breaks (95%), NFL 56%, NHL 54%,
+# NBA 61%. Same class as TIER_THRESHOLDS_BY_SPORT above -- one absolute
+# number compared across incompatible scales.
+#
+# NORMALISING THE SCALE ALONE WAS MEASURED AND REJECTED. Ranking by
+# within-market percentile moved NFL off ml onto rl on 8 games and NCAAF on
+# 48 -- and at the time NFL rl was -8.48pp against ml +6.33pp, so the
+# "unbiased" chooser was measurably worse. A scale fix that ignores which
+# market actually WINS is not a fix.
+#
+# So the chooser ranks on the RECORD. Graded receipts since the 09-19
+# pricing floor, hit% minus break-even, per (sport, market):
+#
+#   sport   ml                rl                  total
+#   MLB     +9.67pp n=190     (n<15)              -7.56pp n=91
+#   NFL     +6.33pp n=38      -8.48pp n=72 *      (barred)
+#   NCAAF   -1.99pp n=158     -2.60pp n=258 *     -9.81pp n=31
+#   NHL     +1.46pp n=202     -5.52pp n=30 *      +3.43pp n=33
+#   NBA     -1.82pp n=44      +2.34pp n=27        -3.89pp n=33
+#
+# (*) those rl figures POOL both sides. Split by side, the favourite is the
+# whole loss and SPREAD_FAV_REFUSED below now removes it, so the rl market
+# these weights describe is dog-only going forward: NFL dogs +4.66pp n=35,
+# NCAAF dogs +2.74pp n=103. The rl entries here use the DOG figure for the
+# two sports where the favourite is refused, because that is the market the
+# chooser can now actually select.
+#
+# Conviction still decides WITHIN a market. It is only barred from deciding
+# BETWEEN them, which is the comparison it was never calibrated for.
+#
+# A (sport, market) with no entry falls back to raw conviction -- the old
+# behaviour -- rather than being assumed good or bad. MLB rl has n=4.
+MARKET_EDGE_PP = {
+    'MLB':   {'ml': +9.67, 'total': -7.56},
+    'NFL':   {'ml': +6.33, 'rl': +4.66},
+    'NCAAF': {'ml': -1.99, 'rl': +2.74, 'total': -9.81},
+    'NHL':   {'ml': +1.46, 'rl': -5.52, 'total': +3.43},
+    'NBA':   {'ml': -1.82, 'rl': +2.34, 'total': -3.89},
+}
+
+def _market_rank_key(sport: str, market: str, conviction) -> tuple:
+    """Sort key for choosing BETWEEN markets: record first, then conviction.
+
+    Ranks on the measured edge point estimate. An earlier version bucketed
+    edges onto a 2pp grid so that near-equal markets would "tie" and let
+    conviction decide -- but a fixed grid cannot express "within 2pp of each
+    other", and NFL's ml (+6.33) and rl (+4.66), 1.67pp apart, landed in
+    different buckets anyway. The comment claimed a tie the code did not
+    deliver, which is feedback_comment_asserting_a_measurement, so the
+    bucketing is gone rather than left to mislead.
+
+    What this means in practice: where two markets' edges are close, the
+    larger point estimate wins even though the difference is inside noise on
+    n=30-70 (NFL ml n=38 vs rl n=35). That is a real limitation, not a
+    hidden one -- it is simply the least arbitrary order available, and it
+    is strictly better than the raw-conviction comparison it replaces,
+    which was ordering markets by an uncalibrated scale.
+
+    Conviction still decides WITHIN a market, and for any (sport, market)
+    with no measured entry it decides alone -- the legacy behaviour.
+    """
+    try:
+        conv = float(conviction)
+    except (TypeError, ValueError):
+        conv = 0.0
+    tbl = MARKET_EDGE_PP.get(str(sport or '').upper())
+    if not tbl or market not in tbl:
+        return (0.0, conv)          # unmeasured -> legacy conviction order
+    return (tbl[market], conv)
+
+
+SPREAD_FAV_REFUSED = {
+    'NFL':   'spread favourites -15.52pp, ROI -29.17% on n=27, both halves',
+    'NCAAF': 'spread favourites -4.78pp, ROI -9.46% on n=138, both halves',
+    'NHL':   'puckline favourites -4.13pp, ROI -11.10% on n=27, both halves',
+}
+
+
+def _home_is_favourite(sport: str, ctx: dict):
+    """True/False, or None when the line cannot be resolved.
+
+    Uses the per-sport sign convention already proven in this module's
+    top-pick gate: NFL flips to nflverse (positive close_spread = home
+    FAVOURITE) while NCAAF/NBA/NHL keep a handicap (negative = home fav).
+    Measured against results at 44/0 and 287/10 on those two formulas, so
+    getting it backwards would refuse exactly the dogs we want to keep.
+    A sport or a row we cannot resolve returns None and is left alone.
+    """
+    sp = str(sport or '').upper()
+    raw = ctx.get('close_spread')
+    if raw is None and sp == 'NHL':
+        for k in ('close_puckline_home', 'close_puckline'):
+            if ctx.get(k) is not None:
+                raw = ctx.get(k)
+                break
+    try:
+        cs = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if cs == 0:
+        return None
+    home_line = cs if sp == 'NCAAF' else -cs
+    return home_line < 0
+
+
 def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                    lean_override: Optional[float] = None,
                    sport: Optional[str] = None) -> MarketDecision:
@@ -2208,6 +2365,22 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     lean_override: when set, raises the LEAN min_score threshold. Used
     by soft_tighten status when ensemble is on a cold streak."""
     candidates = CANDIDATES_BY_MARKET[market]
+
+    # The spread favourite is refused where it is MEASURED negative in both
+    # halves -- see SPREAD_FAV_REFUSED. Dropping the candidate (rather than
+    # capping the tier afterwards) means the dog wins the market by default,
+    # which is the mechanical consequence of the refusal and not a separate
+    # claim that dogs win.
+    _fav_note = None
+    if market == 'rl' and str(sport or '').upper() in SPREAD_FAV_REFUSED:
+        _hf = _home_is_favourite(sport, ctx)
+        if _hf is not None:
+            _fav_side = 'HOME_RL' if _hf else 'AWAY_RL'
+            if _fav_side in candidates:
+                candidates = [c for c in candidates if c != _fav_side]
+                _fav_note = (f'{_fav_side} refused: '
+                             f'{SPREAD_FAV_REFUSED[str(sport).upper()]}')
+
     market_ops = [op for op in opinions if op.side in candidates]
 
     if not market_ops:
@@ -2605,6 +2778,9 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
 
     scored.sort(key=lambda t: -t[1])
     winner_cand, win_score, win_chips, win_shares, win_classes = scored[0]
+    if _fav_note:
+        print(f'    [spread-fav] {sport}: {_fav_note} -> publishing '
+              f'{winner_cand}')
     runner_score = scored[1][1] if len(scored) > 1 else 0.0
     margin = win_score - runner_score
     # 2026-08-21: capture runner-up side + its top 3 contribs for
@@ -3058,9 +3234,14 @@ def score_game(sport: str, ctx: dict) -> PerGameDecision:
     if _eligible:
         # Fall back to the full list only if EVERY eligible market passed, so a
         # barred market never wins while a real side pick exists.
-        top_market = max(_eligible, key=lambda p: p[1].conviction)[0]
+        # Ranked on the RECORD, then conviction -- see MARKET_EDGE_PP.
+        top_market = max(_eligible,
+                         key=lambda p: _market_rank_key(sport, p[0],
+                                                        p[1].conviction))[0]
     elif picks:
-        top_market = max(picks, key=lambda p: p[1].conviction)[0]
+        top_market = max(picks,
+                         key=lambda p: _market_rank_key(sport, p[0],
+                                                        p[1].conviction))[0]
         if top_market in _barred:
             print(f'    [totals-bar] {sport}: only a total scored; '
                   f'publishing it as the top pick would be the measured -17.5u '
