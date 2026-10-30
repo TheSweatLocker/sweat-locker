@@ -3806,6 +3806,46 @@ def build_card():
                         print(f"  🔒 football LOCKED — reusing {len(_locked_fb)} published "
                               f"pick(s); fresh compose wanted {len(_new_ids)} "
                               f"({len(_new_ids ^ _old_ids)} would have changed)")
+                    # ══ 2026-10-30 · THE LOCK PROTECTS THE BET, NOT A GAP ══
+                    # A reused pick comes back as the WHOLE published
+                    # payload, and today's published payload predates the
+                    # price fix -- so Detroit Pistons -8.5 came back with
+                    # odds=null and receipt_invariants refused it, meaning
+                    # the lock's protection deleted the pick from the
+                    # record instead of preserving it.
+                    #
+                    # The lock exists so a published SIDE/LINE/TIER cannot
+                    # change under a user. A missing PRICE is not part of
+                    # that promise: filling it does not alter the bet, and
+                    # leaving it empty makes the play ungradeable. So
+                    # metadata-only fields are backfilled from the fresh
+                    # compose while every field the lock actually guards is
+                    # left exactly as published.
+                    _FILLABLE = ('odds', 'line', 'game', 'player_team',
+                                 'sub', 'conviction')
+                    # Keyed on EVERY fresh pick, not just flipped ones.
+                    # _flip_by_gid holds only picks carrying a flipped_from
+                    # value, and Detroit Pistons -8.5 has none -- so the
+                    # first version of this backfill looked up an empty dict
+                    # and the stale locked copy won silently, with its price
+                    # still missing. The lookup has to cover the whole fresh
+                    # compose.
+                    _fresh_by_gid = {str(_x.get('game_id')): _x
+                                     for _x in football_picks
+                                     if isinstance(_x, dict) and _x.get('game_id')}
+                    _filled = 0
+                    for _p in _merged:
+                        _f2 = _fresh_by_gid.get(str(_p.get('game_id')))
+                        if not _f2:
+                            continue
+                        for _k in _FILLABLE:
+                            if _p.get(_k) is None and _f2.get(_k) is not None:
+                                _p[_k] = _f2[_k]
+                                _filled += 1
+                    if _filled:
+                        print(f"  ↻ football lock: backfilled {_filled} "
+                              f"missing metadata field(s) from the fresh "
+                              f"compose (side/line/tier untouched)")
                     football_picks = _merged
     except Exception as _e:
         print(f"  ⚠ football lock check failed ({_e}) — composing fresh")
@@ -3839,6 +3879,62 @@ def build_card():
     # Resolved here, where both lists finally exist, and the GAME-SIDE pick
     # wins: it carries the engine's tier and conviction, while the fade is
     # `tracking` evidence on NBA.
+    # ══ 2026-10-30 · THE LOCK REINSTATED A REFUSED PICK ════════════════
+    # The coherence gate in fetch_football_picks refused Houston Rockets
+    # -6.5, and the card published it anyway at STRONG with odds=null,
+    # because the football LOCK reuses the previously published picks:
+    #     "football LOCKED — reusing 2 published pick(s); fresh compose
+    #      wanted 1"
+    # The lock exists to stop picks CHURNING mid-day, which is right. It
+    # must not protect a pick that contradicts our own number, and a
+    # reused pick also carries the OLD payload, which is where the null
+    # price came from. So the gate runs again HERE, after every merge
+    # (fresh, locked, manual) has settled -- the chokepoint all provenances
+    # pass. Third place this check was needed, which is the lesson in
+    # feedback_fix_every_writer_to_the_table.
+    #
+    # Needs projected_spread, which a card entry does not carry, so the
+    # involved rows are re-fetched by game_id. One small query.
+    if football_picks:
+        try:
+            from retier_from_sport_bars import coherence_ok as _coh2
+            _by_sport: dict = {}
+            for _p in football_picks:
+                if _p.get('game_id'):
+                    _by_sport.setdefault(str(_p.get('sport') or '').upper(),
+                                         set()).add(str(_p['game_id']))
+            _proj: dict = {}
+            for _sp, _gids in _by_sport.items():
+                _tbl = _CTX_TABLE.get(_sp)
+                if not _tbl or not _gids:
+                    continue
+                _rows = sb_get(_tbl, {
+                    'select': 'game_id,projected_spread',
+                    'game_id': f'in.({",".join(sorted(_gids))})'}) or []
+                for _r in _rows:
+                    _proj[(_sp, str(_r.get('game_id')))] = _r
+            _kept = []
+            for _p in football_picks:
+                _row = _proj.get((str(_p.get('sport') or '').upper(),
+                                  str(_p.get('game_id'))))
+                if _row is None:
+                    _kept.append(_p)
+                    continue
+                _pp_like = {'type': _p.get('type'), 'side': _p.get('side'),
+                            'line': _p.get('line')}
+                _ok2, _why2 = _coh2(_p.get('sport'), _row, _pp_like)
+                if _ok2:
+                    _kept.append(_p)
+                else:
+                    print(f'  ⛔ card (post-lock): REFUSED '
+                          f'{_p.get("label")!r} ({_p.get("tier")}) — {_why2}')
+            if len(_kept) != len(football_picks):
+                print(f'  ✓ post-lock coherence: {len(football_picks)} → '
+                      f'{len(_kept)} football picks')
+                football_picks = _kept
+        except ImportError:
+            print('  !! post-lock coherence gate unavailable')
+
     _fb_games = {str(p.get('game_id')) for p in football_picks
                  if p.get('game_id')}
     if _fb_games and top_8_curated:

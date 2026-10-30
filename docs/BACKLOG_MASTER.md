@@ -3063,3 +3063,26 @@ Capped to COVERAGE via NCAAB_TOTAL_TIER_CAP (visible, still recorded, lifts
 on evidence). TOP_PICK_BARRED now also holds NCAAB:total, but that gate
 only governs ensemble_scorer and this builder has its OWN
 compute_primary_play, so the cap had to live in both.
+
+## R72 — APP SCRUB: the word "kenpom" must not appear anywhere user-facing (2026-10-30)
+Same class as the Madden -> "Sweat Stats" rebrand. Internal column names
+(home_adj_oe, adj_em_gap) can keep their lineage, but no narrative, label,
+tooltip, signal prose, game-card string or app copy may say "KenPom".
+Needs: grep app/ and every prose builder (ncaab_*, analyst_facts,
+generate_*_game_reads, signal display_prose, state_message), pick the
+user-facing replacement wording, and add a guard so it cannot come back —
+the prop-family ban needed three layers before it held.
+
+## R73 — the model-consensus "same title = one opinion" note confuses users (2026-10-30)
+ANDY: "look at model concensus block nots that say if the tile s the same it
+is one opinion, or somehting to that affect. Why is that note there and i
+feel like its confusing to users."
+That note is almost certainly the surfacing of
+project_panel_is_one_voice_1014 — 27 duplicate model pairs, with NHL and
+NCAAF totals at 100% side agreement, i.e. the "panel" was several labels on
+one underlying opinion. The note was an honest internal disclosure, but it
+reads to a user as the app doubting itself. Decide: either make the panel
+genuinely independent (different INPUTS, per
+feedback_lens_independence_needs_different_inputs) and delete the note, or
+collapse the duplicate voices into one named model so there is nothing to
+disclaim. Do not just hide the note while the panel is still one voice.
