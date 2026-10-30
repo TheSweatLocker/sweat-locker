@@ -1142,13 +1142,26 @@ def _flip_prices(sport: str, game_ids: set) -> dict:
         return {}
     lo = d0.isoformat()
     hi = (d0 + timedelta(days=2)).isoformat()
+    # ══ 2026-10-30 · THE WINDOW HAD NO UPPER BOUND ON THE SERVER ══
+    # `hi` was only ever applied in Python, after the fetch. The server saw
+    # commence_time >= today with no ceiling and an ORDER BY captured_at
+    # DESC, so it sorted every future-scheduled row in line_history — and as
+    # the schedule filled out it started returning
+    #   HTTP 500 57014 canceling statement due to statement timeout
+    # on NCAAF, which this function reports and then returns {} for. A flip
+    # with no prices is "no book posts the other side", so the 10-30 Sharp
+    # dropped both NCAAF flip candidates and composed 0 items.
+    # hi_excl is one day past the Python ceiling (which keeps
+    # commence_time[:10] <= hi), so the bound can only ever discard rows
+    # Python was going to discard anyway.
+    hi_excl = (d0 + timedelta(days=3)).isoformat()
     want = {str(x) for x in game_ids if x}
     latest: dict = {}
     for pg in range(6):
         params = {'select': 'game_id,side,line,price,book,captured_at,'
                             'commence_time',
                   'sport': f'eq.{sport}', 'market': 'eq.spread',
-                  'commence_time': f'gte.{lo}',
+                  'commence_time': [f'gte.{lo}', f'lt.{hi_excl}'],
                   'order': 'captured_at.desc',
                   'limit': '1000', 'offset': str(pg * 1000)}
         try:

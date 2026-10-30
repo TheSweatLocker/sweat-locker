@@ -213,6 +213,210 @@ def _matches_pitcher_hint(mlb_game, home_sp_name, away_sp_name):
     return home_ok and away_ok
 
 
+def _resolve_dawgs(week_ago, yesterday):
+    """Grade every pending Dawg of the Day.
+
+    Extracted 2026-10-30 so --regrade-dawg can re-walk one date without
+    running the whole resolver (and re-touching every other surface).
+    """
+    # --- Resolve Dawg of the Day results ---
+    print('\nResolving Dawg of the Day picks...')
+    # A WRONG grade can only be corrected by re-deriving it, and the normal
+    # pass only sees result IS NULL. --regrade-dawg=YYYY-MM-DD re-walks every
+    # Dawg on that date and overwrites what is there, so a grade written by a
+    # defective rule (see the 10-28 cross-sport stamp below) has a sanctioned
+    # repair path instead of a hand-written UPDATE.
+    _regrade = None
+    for _a in sys.argv[1:]:
+        if _a.startswith('--regrade-dawg='):
+            _regrade = _a.split('=', 1)[1].strip()
+    if _regrade:
+        _q = f'game_date=eq.{_regrade}'
+        print(f'  REGRADE MODE — re-deriving every Dawg on {_regrade}')
+    else:
+        _q = (f'result=is.null&game_date=gte.{week_ago}'
+              f'&game_date=lte.{yesterday}')
+    r_dawg = requests.get(
+        f'{SUPABASE_URL}/rest/v1/daily_dawg?{_q}&select=*',
+        headers=HEADERS
+    )
+    pending_dawgs = r_dawg.json() if r_dawg.status_code == 200 else []
+    print(f'Found {len(pending_dawgs)} pending Dawg picks')
+
+    # ══ 2026-10-30 · ONE DAWG PER SPORT, EACH GRADED FROM ITS OWN ROW ══
+    # Until 10-28 there was exactly one Dawg a day and it was always MLB, so
+    # this block read scores from mlb_game_results and PATCHed by game_date
+    # alone. generate_dawg_multisport now writes one Dawg PER SPORT per date
+    # (on_conflict=sport,game_date). On 10-28 the MLB row's 'Loss' AND the
+    # MLB final_score were stamped onto the NHL row — Seattle Kraken ML,
+    # which actually WON 5-4 — so the Dawg record showed a loss it did not
+    # take and a score from a different game. Three defects, one assumption:
+    #   1. PATCH game_date=eq.X hits every sport's row on that date.
+    #   2. Scores were read only from mlb_game_results, so a non-MLB Dawg
+    #      could never find its game and fell through to the MLB-only
+    #      postponed / self-heal path.
+    #   3. team is now 'Seattle Kraken ML' (call_text, with the market
+    #      suffix), so a team-NAME equality test can never match.
+    # Fixes: PATCH by id, grade from the jerry_read the Dawg was lifted from
+    # when it agrees on side/market, else from that sport's results table
+    # using pick_side. Nothing is graded off a table that isn't the game's.
+    RESULTS_BY_SPORT = {
+        'MLB': 'mlb_game_results', 'NFL': 'nfl_game_results',
+        'NCAAF': 'ncaaf_game_results', 'NBA': 'nba_game_results',
+        'NHL': 'nhl_game_results', 'NCAAB': 'ncaab_game_results',
+    }
+
+    dawg_resolved = 0
+    for dawg in pending_dawgs:
+        try:
+            d_sport = str(dawg.get('sport') or 'MLB').upper()
+            d_market = str(dawg.get('market') or 'ml').lower()
+            d_label = dawg.get('team') or d_sport
+            res_table = RESULTS_BY_SPORT.get(d_sport)
+            if not res_table:
+                print(f'  Dawg skip {dawg["game_date"]} {d_label}: no results table for {d_sport}')
+                continue
+            # Identity: patch THIS row, never every row sharing the date.
+            if dawg.get('id') is not None:
+                dawg_filter = f'id=eq.{dawg["id"]}'
+            else:
+                dawg_filter = f'game_date=eq.{dawg["game_date"]}&sport=eq.{d_sport}'
+
+            # The multisport generator records the jerry_read it lifted.
+            # grade_jerry_reads already graded that read against this sport's
+            # own results, so it is the authority — but only where it still
+            # describes the same bet we published.
+            sig = dawg.get('signals') if isinstance(dawg.get('signals'), dict) else {}
+            jr_id = sig.get('jerry_read_id')
+            jr_result = None
+            if jr_id:
+                jr = requests.get(
+                    f'{SUPABASE_URL}/rest/v1/jerry_reads?id=eq.{jr_id}'
+                    '&select=result,call_side,call_market,call_line',
+                    headers=HEADERS
+                )
+                jd = jr.json() if jr.status_code == 200 else []
+                if jd and jd[0].get('result') and str(jd[0]['result']) != 'None':
+                    same_side = (dawg.get('pick_side') is None
+                                 or str(jd[0].get('call_side')) == str(dawg.get('pick_side')))
+                    same_mkt = str(jd[0].get('call_market') or '').lower() == d_market
+                    if same_side and same_mkt:
+                        jr_result = str(jd[0]['result']).title()
+                    else:
+                        print(f'  Dawg {dawg["game_date"]} {d_label}: read {jr_id} '
+                              f'describes a different bet '
+                              f'({jd[0].get("call_market")}/{jd[0].get("call_side")} '
+                              f'vs {d_market}/{dawg.get("pick_side")}) — not transferring')
+
+            gr = requests.get(
+                f'{SUPABASE_URL}/rest/v1/{res_table}?game_id=eq.{dawg["game_id"]}'
+                '&select=home_team,away_team,home_score,away_score,home_win',
+                headers=HEADERS
+            )
+            gr_data = gr.json() if gr.status_code == 200 else []
+            has_scores = bool(gr_data) and gr_data[0].get('home_score') is not None
+            # Derive teams for API verification — try existing row, then matchup parse.
+            d_home = d_away = None
+            if gr_data:
+                d_home = gr_data[0].get('home_team')
+                d_away = gr_data[0].get('away_team')
+            if not (d_home and d_away):
+                parts = (dawg.get('matchup') or '').split(' @ ')
+                if len(parts) == 2:
+                    d_away, d_home = parts[0].strip(), parts[1].strip()
+
+            score_txt = (f"{d_away} {gr_data[0]['away_score']} @ "
+                         f"{d_home} {gr_data[0]['home_score']}") if has_scores else None
+
+            # A graded read settles it even if the score row is still thin —
+            # but the final_score we display must come from THIS game only.
+            if jr_result and jr_result in ('Win', 'Loss', 'Push'):
+                body = {'result': jr_result}
+                if score_txt:
+                    body['final_score'] = score_txt
+                requests.patch(
+                    f'{SUPABASE_URL}/rest/v1/daily_dawg?{dawg_filter}',
+                    headers=HEADERS, json=body,
+                )
+                dawg_resolved += 1
+                print(f'  🐕 {dawg["game_date"]} [{d_sport}] {d_label} → {jr_result} (from read {jr_id})')
+                continue
+
+            # Postponement check is now API-authoritative — see _is_postponed.
+            # Both _is_postponed and the self-heal below talk to the MLB API,
+            # so they stay gated to MLB.
+            if not has_scores:
+                if d_sport == 'MLB' and _is_postponed(
+                        dawg['game_date'], False, home_team=d_home, away_team=d_away):
+                    requests.patch(
+                        f'{SUPABASE_URL}/rest/v1/daily_dawg?{dawg_filter}',
+                        headers=HEADERS,
+                        json={'result': 'Push', 'final_score': 'Postponed'},
+                    )
+                    dawg_resolved += 1
+                    print(f'  🐕 {dawg["game_date"]} [{d_sport}] {d_label} → Push (postponed, API-confirmed)')
+                    continue
+                # Self-heal: if MLB API has a final score but our row doesn't,
+                # backfill mlb_game_results inline and grade off the live data.
+                if d_sport == 'MLB':
+                    state, score = _fetch_mlb_game_state(d_home, d_away, dawg['game_date'])
+                    if state == 'final' and score:
+                        _backfill_score_to_results(dawg['game_id'], d_home, d_away, dawg['game_date'], score)
+                        gr_data = [{'home_team': d_home, 'away_team': d_away,
+                                    'home_score': score['home_score'],
+                                    'away_score': score['away_score'],
+                                    'home_win': score['home_win']}]
+                        has_scores = True
+                        score_txt = (f"{d_away} {score['away_score']} @ "
+                                     f"{d_home} {score['home_score']}")
+                        print(f'  🩹 {dawg["game_date"]} {d_label}: backfilled score from MLB API ({score["away_score"]}-{score["home_score"]})')
+                    else:
+                        continue  # still pending — leave the row as-is
+                else:
+                    continue  # still pending — leave the row as-is
+
+            g = gr_data[0]
+            home_win = g.get('home_win')
+            if home_win is None:
+                continue  # scores present but outcome not derived yet
+
+            # Only the moneyline can be settled from home_win. A spread Dawg
+            # (market=rl) needs its own line and is left for the read above
+            # rather than graded on the wrong rule.
+            if d_market != 'ml':
+                print(f'  Dawg {dawg["game_date"]} [{d_sport}] {d_label}: market={d_market} '
+                      f'needs its own line — left pending')
+                continue
+
+            # pick_side is authoritative where the generator wrote it; the
+            # team-name compare is the legacy MLB path, and `team` may now
+            # carry a market suffix, so match on a prefix rather than equality.
+            side = str(dawg.get('pick_side') or '').upper()
+            if side in ('HOME', 'AWAY'):
+                dawg_won = (side == 'HOME') == bool(home_win)
+            else:
+                lbl = str(d_label)
+                dawg_won = ((g.get('home_team') and lbl.startswith(g['home_team']) and home_win)
+                            or (g.get('away_team') and lbl.startswith(g['away_team'])
+                                and home_win is False))
+            result = 'Win' if dawg_won else 'Loss'
+
+            body = {'result': result}
+            if score_txt:
+                body['final_score'] = score_txt
+            requests.patch(
+                f'{SUPABASE_URL}/rest/v1/daily_dawg?{dawg_filter}',
+                headers=HEADERS, json=body,
+            )
+            dawg_resolved += 1
+            print(f'  🐕 {dawg["game_date"]} [{d_sport}] {d_label} → {result}')
+        except Exception as e:
+            print(f'  Dawg error: {e}')
+
+    print(f'Done! {dawg_resolved} Dawg picks resolved')
+    return dawg_resolved
+
+
 def run():
     print('Resolving game results...')
     # Get games missing scores from last 7 days OR stuck at 0-0 (which is
@@ -720,80 +924,8 @@ def run():
     elif void_targets:
         print(f'Found {len(void_targets)} stale unresolved but all PATCH calls failed')
 
-    # --- Resolve Dawg of the Day results ---
-    print('\nResolving Dawg of the Day picks...')
-    r_dawg = requests.get(
-        f'{SUPABASE_URL}/rest/v1/daily_dawg?result=is.null&game_date=gte.{week_ago}&game_date=lte.{yesterday}&select=*',
-        headers=HEADERS
-    )
-    pending_dawgs = r_dawg.json() if r_dawg.status_code == 200 else []
-    print(f'Found {len(pending_dawgs)} pending Dawg picks')
-
-    dawg_resolved = 0
-    for dawg in pending_dawgs:
-        try:
-            # Pull the finalized game row — should have scores by now
-            gr = requests.get(
-                f'{SUPABASE_URL}/rest/v1/mlb_game_results?game_id=eq.{dawg["game_id"]}&select=home_team,away_team,home_score,away_score,home_win',
-                headers=HEADERS
-            )
-            gr_data = gr.json()
-            has_scores = bool(gr_data) and gr_data[0].get('home_score') is not None
-            # Derive teams for API verification — try existing row, then matchup parse.
-            d_home = d_away = None
-            if gr_data:
-                d_home = gr_data[0].get('home_team')
-                d_away = gr_data[0].get('away_team')
-            if not (d_home and d_away):
-                parts = (dawg.get('matchup') or '').split(' @ ')
-                if len(parts) == 2:
-                    d_away, d_home = parts[0].strip(), parts[1].strip()
-            # Postponement check is now API-authoritative — see _is_postponed.
-            if not has_scores:
-                if _is_postponed(dawg['game_date'], False, home_team=d_home, away_team=d_away):
-                    requests.patch(
-                        f'{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{dawg["game_date"]}',
-                        headers=HEADERS,
-                        json={'result': 'Push', 'final_score': 'Postponed'},
-                    )
-                    dawg_resolved += 1
-                    print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → Push (postponed, API-confirmed)')
-                    continue
-                # Self-heal: if MLB API has a final score but our row doesn't,
-                # backfill mlb_game_results inline and grade off the live data.
-                state, score = _fetch_mlb_game_state(d_home, d_away, dawg['game_date'])
-                if state == 'final' and score:
-                    _backfill_score_to_results(dawg['game_id'], d_home, d_away, dawg['game_date'], score)
-                    gr_data = [{'home_team': d_home, 'away_team': d_away,
-                                'home_score': score['home_score'],
-                                'away_score': score['away_score'],
-                                'home_win': score['home_win']}]
-                    has_scores = True
-                    print(f'  🩹 {dawg["game_date"]} {dawg["team"]}: backfilled score from MLB API ({score["away_score"]}-{score["home_score"]})')
-                else:
-                    continue  # still pending — leave the row as-is
-
-            g = gr_data[0]
-            home_win = g.get('home_win')
-            # Dawg picked their team's ML. Did that team win?
-            dawg_won = (dawg['team'] == g['home_team'] and home_win) or \
-                       (dawg['team'] == g['away_team'] and home_win is False)
-            result = 'Win' if dawg_won else 'Loss'
-
-            requests.patch(
-                f'{SUPABASE_URL}/rest/v1/daily_dawg?game_date=eq.{dawg["game_date"]}',
-                headers=HEADERS,
-                json={
-                    'result': result,
-                    'final_score': f"{g['away_team']} {g['away_score']} @ {g['home_team']} {g['home_score']}",
-                }
-            )
-            dawg_resolved += 1
-            print(f'  🐕 {dawg["game_date"]} {dawg["team"]} ML → {result}')
-        except Exception as e:
-            print(f'  Dawg error: {e}')
-
-    print(f'Done! {dawg_resolved} Dawg picks resolved')
+    # --- Resolve Dawg of the Day results (see _resolve_dawgs) ---
+    _resolve_dawgs(week_ago, yesterday)
 
     # ─── Resolve Sweat Card top_8 curated picks ──────────────────────────
     # Walks the curated 8-pick set on each pending sweat_card_YYYY-MM-DD
@@ -1405,7 +1537,14 @@ def run_card_only():
 
 
 if __name__ == '__main__':
-    if '--card-only' in sys.argv:
+    if any(a.startswith('--regrade-dawg=') for a in sys.argv[1:]):
+        # Repair path only: re-derive the named date's Dawg grades and touch
+        # nothing else. A wrong grade is invisible to the normal pass, which
+        # looks for result IS NULL.
+        _t = _et_today()
+        _resolve_dawgs((_t - timedelta(days=7)).isoformat(),
+                       (_t - timedelta(days=1)).isoformat())
+    elif '--card-only' in sys.argv:
         run_card_only()
     else:
         run()
