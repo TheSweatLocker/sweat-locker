@@ -91,6 +91,10 @@ H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json'}
 
 ACTIONABLE = ('LEAN', 'STRONG', 'PRIME')
+# The validated fade's measured hit rate minus the -110 breakeven a spread
+# carries: 58.9 - 52.38. Used as the bar a priced edge must clear to block a
+# fade, so the two claims are compared in the same unit.
+FADE_MARGIN_PP = 58.9 - 52.38
 # NFL close_spread is a home MARGIN (nflverse); the others are betting lines.
 CTX = {'NFL': ('nfl_game_context', True), 'NCAAF': ('ncaaf_game_context', False)}
 
@@ -296,15 +300,24 @@ def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override,
 
         # ---- public money, on the FAVOURITE (what the fade needs) --------
         fav = 'HOME' if dog == 'AWAY' else 'AWAY'
+        # A snapshot row carries ONE side's percentage, keyed by pick_side.
+        # The other side is its complement -- a two-way market -- and not
+        # deriving it threw away half the feed: on LV @ NYJ the row is
+        # pick_side HOME with bets 31, so the dog sits at 69 and should be
+        # vetoed, but oc_dog_bets stayed None and the veto silently fell
+        # through to the cz value even with --allow-cz off. It also printed
+        # "67% favourite / 45% dog", two numbers from two sources that do
+        # not sum to 100.
         oc_row = oc.get(r['game_id'])
         oc_fav_bets = oc_dog_bets = None
         if oc_row:
             b = _f(oc_row.get('bets_pct'))
-            if b is not None:
-                if str(oc_row.get('pick_side')) == fav:
-                    oc_fav_bets = b
-                elif str(oc_row.get('pick_side')) == dog:
-                    oc_dog_bets = b
+            side = str(oc_row.get('pick_side'))
+            if b is not None and side in ('HOME', 'AWAY'):
+                if side == fav:
+                    oc_fav_bets, oc_dog_bets = b, 100.0 - b
+                else:
+                    oc_dog_bets, oc_fav_bets = b, 100.0 - b
         a_b, h_b = _cz_rl_bets(r.get('splits_summary'))
         cz_fav_bets = h_b if fav == 'HOME' else a_b
         cz_dog_bets = h_b if dog == 'HOME' else a_b
@@ -337,6 +350,38 @@ def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override,
             src = src or 'dog_ml_edge'
 
         if src is None:
+            continue
+
+        # ══ NEVER OVERWRITE A PICK WITH A POSITIVE MEASURED EDGE ════════
+        # This is the mirror of apply_chalk_cap's exemption. DEN +1.5 is a
+        # validated fade (65% of tickets on KC), but the pick it would
+        # replace is KC ML carrying _model_edge_pp +9.9 -- our win
+        # probability genuinely beating the price, which is the only kind
+        # of disagreement that pays. Trading a measured edge for a
+        # signal-based one to satisfy a dog floor is the same mistake the
+        # chalk cap was taught not to make, and it would publish the two
+        # sides of one game as our opinion within a week.
+        # A VALIDATED fade outranks a SMALL measured edge, because the two
+        # are the same unit. The fade's own measured margin over breakeven
+        # is 58.9 - 52.38 = 6.52pp, so a pick whose edge is below that is
+        # the weaker of the two claims. The first version of this guard
+        # blocked USC +6.5 -- a 68% fade -- to protect Ohio State ML at
+        # +1.0pp, which is noise. Anything at or above the bar still wins:
+        # KC ML +9.9pp, Kansas State ML +8.5pp, Marshall ML +20.7pp. An
+        # ensemble-only or cz/fr candidate never overrides a priced edge,
+        # however small, since neither has a measured margin to compare.
+        _cur_edge = _f(pp.get('_model_edge_pp'))
+        _override = (src == 'fade_oddscrowd'
+                     and _cur_edge is not None and _cur_edge < FADE_MARGIN_PP)
+        if (_cur_edge is not None and _cur_edge > 0 and not _override
+                and str(pp.get('tier')) in ACTIONABLE):
+            cands.append({'row': r, 'pp': pp, 'dog': dog, 'line': line,
+                          'already': False, 'score': 0.0, 'why': [],
+                          'veto': (f'the published pick {pp.get("label")} carries a '
+                                   f'positive measured edge +{_cur_edge:.1f}pp; a '
+                                   f'floor does not outrank a priced edge'),
+                          'conv': ens_conv, 'label': ens_label, 'src': src,
+                          'fav_bets': oc_fav_bets, 'dog_bets': oc_dog_bets})
             continue
 
         dog_bets = oc_dog_bets if oc_dog_bets is not None else cz_dog_bets
@@ -378,9 +423,49 @@ def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override,
     return cands
 
 
+def revert_all(tbl, rows, unlock, apply_it):
+    """Undo every dog-floor promotion in `rows`, restoring _pre_dog_floor.
+
+    Needed because a promotion stores its own justification. When the
+    evidence behind it changes -- the oddscrowd feed coming back on
+    2026-10-29 contradicted the cz/fr fallback on most games -- the stored
+    reason, the card subtitle and the read all keep quoting the old number.
+    LAC +6.5 was promoted on "70% of tickets on the favourite" from cz/fr
+    while the validated feed said 41%. Re-deriving beats patching, so this
+    reverts and the normal pass rebuilds from whatever the data now says.
+    """
+    n = 0
+    for r in rows:
+        pp = _pp(r)
+        if not pp or not isinstance(pp.get('_dog_floor'), dict):
+            continue
+        pre = pp.get('_pre_dog_floor') or {}
+        new = {k: v for k, v in pp.items()
+               if k not in ('_dog_floor', '_pre_dog_floor')}
+        for k, v in pre.items():
+            if k == 'model_edge_pp':
+                if v is not None:
+                    new['_model_edge_pp'] = v
+            else:
+                new[k] = v
+        print(f"  revert {r['away_team']}@{r['home_team']}: "
+              f"{pp.get('label')} -> {pre.get('label')} {pre.get('tier')}")
+        if not apply_it:
+            continue
+        ok, detail = write_play(tbl, r['game_id'], new, unlock=unlock)
+        if ok:
+            n += 1
+        else:
+            print(f'      ! NOT reverted: {detail}')
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', required=True, choices=sorted(CTX))
+    ap.add_argument('--revert', action='store_true',
+                    help='undo every dog-floor promotion in range, then exit; '
+                         'use before re-deriving on changed evidence')
     ap.add_argument('--date', help='single game_date; default = all from today on')
     ap.add_argument('--until', help='end game_date (inclusive) when --date is not set')
     ap.add_argument('--min-dogs', type=int, default=4,
@@ -415,6 +500,13 @@ def main() -> int:
     if not isinstance(rows, list):
         print(f'  ! read failed: {str(rows)[:200]}')
         return 2
+
+    if a.revert:
+        print(f'=== apply_dog_floor --revert · {a.sport}'
+              f'{"" if a.apply else " [DRY RUN]"} ===')
+        n = revert_all(tbl, rows, a.unlock, a.apply)
+        print(f'  reverted {n} pick(s)' if a.apply else '  DRY RUN - nothing written')
+        return 0
 
     oc = fetch_oddscrowd_rl(a.sport, {r['game_id'] for r in rows})
     qb_outs = {}
@@ -467,7 +559,15 @@ def main() -> int:
             new = dict(pp)
             new['_pre_dog_floor'] = {'type': pp.get('type'), 'side': pp.get('side'),
                                      'tier': pp.get('tier'), 'label': pp.get('label'),
-                                     'conviction': pp.get('conviction')}
+                                     'conviction': pp.get('conviction'),
+                                     'model_edge_pp': pp.get('_model_edge_pp')}
+            # _model_edge_pp belongs to the market we just REPLACED. Left in
+            # place it reads as this bet's edge and it is a moneyline number:
+            # BAL +3 carried -2.8pp and LAC +6.5 carried -3.0pp, our own copy
+            # arguing against our own spread. We have no spread edge to put
+            # there, so the honest value is absent, and the original is kept
+            # above for audit.
+            new.pop('_model_edge_pp', None)
             new['_dog_floor'] = {'reason': c['why'], 'source': c['src'],
                                  'score': round(c['score'], 2),
                                  'fav_bets_pct': c.get('fav_bets'),
