@@ -392,6 +392,13 @@ def _coherence_ok(sport, ctx_row, pp):
     return True, ''
 
 
+#: game_id -> the context row a cross-sport leg was built from, filled by
+#: fetch_primary_play_legs. A SIDE CHANNEL on purpose: these rows must reach
+#: the conflict filter in run() without riding along inside the published leg
+#: payload, which is user-facing JSON.
+_CTX_BY_GID: dict = {}
+
+
 def fetch_primary_play_legs():
     """Candidate legs from other sports' primary_play. MLB is excluded —
     its game legs come from the NRFI/spread path below, and double-sourcing
@@ -540,6 +547,8 @@ def fetch_primary_play_legs():
                 conv = int(conv)
             except (TypeError, ValueError):
                 conv = 70 if tier == 'STRONG' else 80
+            if g.get('game_id') is not None:
+                _CTX_BY_GID[g['game_id']] = g
             out.append({
                 'pick': pp.get('label') or f'{side} {mkt}'.strip(),
                 'type': mkt.upper() or 'ML',
@@ -1284,7 +1293,25 @@ def run():
     # in "Boston Red Sox ML STRONG" for the same matchup.
     try:
         from primary_play_gate import primary_play_conflicts
-        games_by_id = {g.get('game_id'): g for g in games if g.get('game_id')}
+        # == 2026-10-30 . THIS FILTER HAS NEVER SEEN A NON-MLB LEG =======
+        # `games` is fetch_todays_games(), which queries mlb_game_context and
+        # nothing else. Every cross-sport leg's game_id therefore missed this
+        # map, `g or {}` below handed primary_play_conflicts an empty dict,
+        # and that returns None for every market -- verified by calling it.
+        # So the 2026-08-19 conflict filter has been a silent no-op on every
+        # leg it was pointed at since cross-sport legs became the whole pool,
+        # which is why tonight's watchdog shows two NCAAF games published on
+        # BOTH sides across surfaces.
+        #
+        # _CTX_BY_GID carries the rows fetch_primary_play_legs already
+        # fetched, so this costs no extra request and assumes nothing about
+        # game_id format -- the formats genuinely differ per sport
+        # ('401909283' vs 'ncaaf_20261030_Baylor_UCF'), which is how the
+        # mismatch hid. MLB wins a key collision because its row is the
+        # fuller one (select=*).
+        games_by_id = dict(_CTX_BY_GID)
+        games_by_id.update({g.get('game_id'): g for g in games
+                            if g.get('game_id')})
         pre_ct = len(candidates)
         clean = []
         for c in candidates:
@@ -1296,7 +1323,18 @@ def run():
             if ctype == 'prop':
                 # Props aren't a side/total pick — pass through.
                 clean.append(c); continue
-            if ctype == 'ml':
+            if ctype in ('rl', 'spread'):
+                # == 2026-10-30 . 'RL' WAS NOT IN THIS TAXONOMY AT ALL ====
+                # fetch_primary_play_legs emits type=mkt.upper(), so a spread
+                # leg arrives as 'RL' -- which matched none of the branches
+                # below and fell through to the pass-through `else`. Stacked
+                # on the MLB-only games_by_id above, that gave spread legs
+                # TWO independent ways to skip this filter, and spread legs
+                # are most of the cross-sport pool (3 of 3 surviving legs
+                # tonight). Found by replaying the filter and seeing every
+                # leg print "pass-through".
+                market = 'rl'
+            elif ctype == 'ml':
                 market = 'rl' if sub == 'runline' else 'ml'
             elif ctype == 'total':
                 market = 'over' if sub == 'over' else 'under' if sub == 'under' else 'total'
