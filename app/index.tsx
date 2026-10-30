@@ -16481,12 +16481,31 @@ setJerryHistory(prev => {
     if (Array.isArray(_tags) && _tags.length) {
       // Best-evidenced tag on this game, so a card with two cohorts shows
       // the one with the most history rather than whichever came first.
+      // ══ 2026-10-29 · A COHORT ABOUT THE OTHER SIDE IS NOT EVIDENCE ══
+      // Andy, on the home-fav chip: "I dont like the 48% Home fav badge
+      // seems meaningless." It became worse than meaningless once
+      // apply_dog_floor started publishing road dogs: measured the same
+      // day, 16 of 63 weekend games rendered a chip naming the side we did
+      // NOT take -- "HOME FAV 48%" sitting next to PHI +6, "HEAVY HOME DOG
+      // 52%" next to Tulane -8.5.
+      //
+      // A cohort describes the GAME, so it is not false; but a chip on our
+      // own pick card reads as the reason for the pick, and pointing it at
+      // the opposite team makes the card look like it disagrees with
+      // itself. Where the tag names a side, keep it only when that side is
+      // ours. Side-neutral tags (outdoor_under, dome_over) are unaffected.
+      const _pickSide = String(ctxAny?.primary_play?.side || '').toUpperCase();
       let _best: any = null;
       for (const t of _tags) {
         const rec = cohortRecords?.[String(t)];
         if (!rec || Number(rec.sample_n || 0) < 30) continue;
+        const _tag = String(t);
+        const _namesHome = /_home(_|$)/.test(_tag);
+        const _namesAway = /_away(_|$)/.test(_tag);
+        if (_namesHome && _pickSide === 'AWAY') continue;
+        if (_namesAway && _pickSide === 'HOME') continue;
         if (!_best || Number(rec.sample_n || 0) > Number(_best.rec.sample_n || 0)) {
-          _best = {tag: String(t), rec};
+          _best = {tag: _tag, rec};
         }
       }
       if (_best) {

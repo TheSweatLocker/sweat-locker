@@ -55,6 +55,7 @@ rescue block as a belt-and-suspenders check.
 """
 
 from __future__ import annotations
+import re
 import argparse, os, sys, datetime as dt
 from pathlib import Path
 
@@ -229,8 +230,11 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         params={
             'sport': f'eq.{sport}',
             'game_id': f'in.({ids})',
+            # generated_at is required by the stale-prose timing guard below
+            # (a read written before a pick change is stale by construction).
+            # Left out of the select it reads as NULL and the guard is dead.
             'select': 'id,game_id,call_market,call_side,call_line,call_text,'
-                      'short_read,long_read,audit_notes,conviction',
+                      'short_read,long_read,audit_notes,conviction,generated_at',
         },
         headers=H_READ, timeout=30,
     )
@@ -437,8 +441,84 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         conv_drift = (isinstance(_pp_conv, (int, float))
                       and j.get('conviction') != int(_pp_conv))
 
+        # ══ 2026-10-29 · PROSE CAN ARGUE A SIDE WITHOUT RECOMMENDING IT ══
+        # Computed HERE, above the gate, because the gate skips the row
+        # before any prose logic runs — and once a prior pass has fixed the
+        # call fields, `drift` is False while the prose is still wrong.
+        # Measured today after apply_dog_floor moved four NFL picks to the
+        # dog: the first scrub pass logged DRIFT on all four and scrubbed
+        # prose on ONE, and a second pass saw no drift at all.
+        #
+        #   NE @ MIA   card MIA +7    prose "New England sits -8.5 over
+        #                             Miami ... the Dolphins rank 31st in
+        #                             offensive pass EPA"
+        #   LAC @ LA   card LAC +6.5  prose "Rams laying a touchdown at home
+        #                             against a Chargers team mired in
+        #                             dysfunction"
+        #
+        # Neither contains a recommendation cue, so _prose_cross_market and
+        # _same_market_side_flip both miss them; both unambiguously argue
+        # the side we did not take, and the NE read quotes a line (-8.5)
+        # that is not the stored close (-7.0). Same failure class as parsing
+        # a pick by vocabulary instead of by shape.
+        #
+        # The shape is mention asymmetry: prose that names the team we did
+        # NOT take at least twice more than the team we DID is not analysis
+        # of our call. The 2+ margin keeps a single stray reference, or an
+        # opponent named once in passing, from tripping it.
+        #
+        # MUST go through _team_aliases with WORD BOUNDARIES. The first
+        # version of this counted the raw ctx value as a substring, and NFL
+        # stores abbreviations: 'ne' matches inside "defense", "line" and
+        # "offensive", 'la' inside "Atlanta" and "played". It fired on
+        # IND @ JAX and LV @ NYJ, two games whose pick never moved, and the
+        # two real catches were accidents of the same bug. Aliases also fix
+        # the opposite half -- the prose says "New England" and "Dolphins",
+        # never "NE" or "MIA", so the honest spelling never matched at all.
+        _prose_mentions_other = False
+        try:
+            _blob = f'{orig_short_pre} {orig_long_pre}'.lower()
+
+            def _mentions(_team):
+                n = 0
+                for _al in _team_aliases(_team, sport):
+                    n += len(re.findall(rf'\b{re.escape(_al)}\b', _blob))
+                return n
+            _o = (c.get('away_team') or '') if pp_side == 'HOME' else (c.get('home_team') or '')
+            _p = (c.get('home_team') or '') if pp_side == 'HOME' else (c.get('away_team') or '')
+            if _blob.strip() and _o and _p and _o != _p:
+                _prose_mentions_other = (_mentions(_o) - _mentions(_p)) >= 2
+        except Exception:
+            _prose_mentions_other = False
+
+        # ══ AND THE DETECTOR MUST KNOW THE INTENTIONAL CASE ══════════════
+        # Mention asymmetry ALONE over-fires in the opposite direction. On
+        # a big-underdog pick the favourite is naturally the story: the
+        # unguarded version flagged 12 NCAAF reads whose pick never moved,
+        # among them Navy +30.5 against Notre Dame and Washington +7.5 at
+        # Nebraska. Prose about Navy +30.5 that discusses Notre Dame at
+        # length is doing its job, not contradicting the card.
+        #
+        # So asymmetry only counts when the read PREDATES the pick change.
+        # A read generated before the pick moved is stale by construction;
+        # one generated after is presumed deliberate. Any mutator that
+        # stamps its own time (apply_dog_floor writes _dog_floor.applied_at)
+        # therefore invalidates its read automatically, and nothing else is
+        # touched.
+        if _prose_mentions_other:
+            _changed_at = None
+            for _k in ('_dog_floor', '_chalk_cap', '_lr_coin_flip_overruled'):
+                _m = pp.get(_k)
+                if isinstance(_m, dict) and _m.get('applied_at'):
+                    _changed_at = str(_m['applied_at'])
+                    break
+            _gen = str(j.get('generated_at') or '')
+            # No change stamp, or a read written after it -> leave it alone.
+            if not _changed_at or (_gen and _gen >= _changed_at):
+                _prose_mentions_other = False
+
         if not drift and not stale_prose and not _pass_prose_mismatch \
-                and not conv_drift:
+                and not conv_drift and not _prose_mentions_other:
             continue
 
         new_text = _derive_call_text(pp, c['home_team'], c['away_team'])
@@ -547,9 +627,10 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # since pp.type/side may already have been rewritten during
         # ensemble scoring — the signal is the "OC-dissent flip" phrase
         # itself, which guarantees prose staleness regardless.
+
         _hard_bad_prose = (
             (_prose_cross_market or _same_market_side_flip) and (drift or stale_prose)
-        ) or _oc_dissent_flip or _pass_prose_mismatch
+        ) or _oc_dissent_flip or _pass_prose_mismatch or _prose_mentions_other
         if _hard_bad_prose:
             # 2026-09-16 STOP-NULLING: previously wrote short_read = None
             # and let the client render "analysis pending". That path relied

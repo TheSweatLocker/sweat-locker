@@ -204,6 +204,48 @@ def write_play(tbl, game_id, new_pp, unlock=False):
     return True, f'written via --unlock (lock re-armed at {str(stamp)[:19]})'
 
 
+def fetch_qb_outs(sport, season, week):
+    """{team: [(player, status, body_part)]} for QBs OUT or DOUBTFUL.
+
+    == WHY THIS IS A VETO (2026-10-29) ==================================
+    The first run promoted PHI +6 off ensemble conviction 54. Jalen Hurts
+    was OUT (calf) and Jerry's own prose on that game said so in as many
+    words -- "every model projection on this game was built with him in the
+    lineup" -- and concluded the card demands a PASS. The ensemble number
+    the floor ranked on was computed with a quarterback who is not playing.
+
+    A QB listed OUT or DOUBTFUL on the side we are backing therefore vetoes
+    the candidate. A backup QB being out is a harmless false positive: it
+    removes one name from a pool of candidates. Backing a dog whose starter
+    is out, on a projection that assumed otherwise, is not harmless. That
+    asymmetry is the whole argument for erring toward the veto.
+    """
+    if sport != 'NFL':
+        return {}
+    out = {}
+    try:
+        rows, off = [], 0
+        while True:
+            b = requests.get(f'{SB}/rest/v1/nfl_injuries', headers=H_READ, params={
+                'select': 'team,player_name,position,injury_status,body_part',
+                'season': f'eq.{season}', 'week': f'eq.{week}',
+                'position': 'eq.QB', 'limit': 1000, 'offset': off},
+                timeout=40).json()
+            if not isinstance(b, list):
+                return {}
+            rows += b
+            if len(b) < 1000:
+                break
+            off += 1000
+        for x in rows:
+            if str(x.get('injury_status', '')).upper() in ('OUT', 'DOUBTFUL', 'IR'):
+                out.setdefault(str(x.get('team')), []).append(
+                    (x.get('player_name'), x.get('injury_status'), x.get('body_part')))
+    except Exception as e:
+        print(f'  ! injury read failed ({e}) - proceeding WITHOUT the QB veto')
+    return out
+
+
 def _cz_rl_bets(splits):
     """(away_bets_pct, home_bets_pct) from splits_summary.rl, or (None, None)."""
     if not isinstance(splits, dict):
@@ -218,7 +260,8 @@ def _cz_rl_bets(splits):
     return (g('AWAY'), g('HOME'))
 
 
-def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override):
+def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override,
+                    qb_outs=None):
     """One best dog candidate per game, with full provenance."""
     cands = []
     for r in rows:
@@ -297,6 +340,15 @@ def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override):
             continue
 
         dog_bets = oc_dog_bets if oc_dog_bets is not None else cz_dog_bets
+        # ---- QB veto: never back a dog whose starter is out ------------
+        dog_team = r['home_team'] if dog == 'HOME' else r['away_team']
+        qb_veto = None
+        for nm, st, bp in (qb_outs or {}).get(str(dog_team), []):
+            qb_veto = (f'{nm} (QB) is {st}'
+                       + (f' - {bp}' if bp else '')
+                       + f' for {dog_team}; the ensemble number was computed '
+                         f'with him in the lineup')
+            break
         # ---- sub-threshold public tilt, as a TIE-BREAK ONLY -------------
         # The fade above is a threshold rule because that is how it was
         # measured. But between two ensemble dogs of equal conviction the
@@ -312,8 +364,9 @@ def build_candidates(rows, margin, fade_bets, allow_cz, oc, veto_override):
                            f'{dog_bets:.0f}% dog ({tilt:+.1f})')
 
         # ---- the veto that keeps this a signal, not a quota --------------
-        veto = None
-        if dog_bets is not None and dog_bets >= fade_bets and ens_conv < veto_override:
+        veto = qb_veto
+        if (veto is None and dog_bets is not None and dog_bets >= fade_bets
+                and ens_conv < veto_override):
             veto = (f'public is {dog_bets:.0f}% ON THE DOG - the fade points the '
                     f'other way and ensemble conv {ens_conv:.0f} < {veto_override:.0f}')
 
@@ -339,6 +392,8 @@ def main() -> int:
     ap.add_argument('--promote-tier', default='LEAN', choices=['LEAN', 'STRONG'])
     ap.add_argument('--allow-cz', action='store_true',
                     help='permit the cz/fr split fallback (unvalidated source)')
+    ap.add_argument('--ignore-injuries', action='store_true',
+                    help='skip the QB-out veto (diagnostic only)')
     ap.add_argument('--unlock', action='store_true',
                     help='clear pick_locked_at to write, then re-arm the lock; '
                          'needed only on a slate already frozen')
@@ -347,7 +402,7 @@ def main() -> int:
 
     tbl, margin = CTX[a.sport]
     sel = ('game_id,game_date,home_team,away_team,close_spread,'
-           'primary_play,splits_summary')
+           'primary_play,splits_summary,season_week')
     parts = [f'select={sel}', 'order=game_date.asc', 'limit=1000']
     if a.date:
         parts.append(f'game_date=eq.{a.date}')
@@ -362,14 +417,23 @@ def main() -> int:
         return 2
 
     oc = fetch_oddscrowd_rl(a.sport, {r['game_id'] for r in rows})
+    qb_outs = {}
+    if not a.ignore_injuries:
+        wk = next((x.get('season_week') or x.get('week') for x in rows
+                   if x.get('season_week') or x.get('week')), None)
+        if wk is not None:
+            qb_outs = fetch_qb_outs(a.sport, 2026, int(wk))
     print(f'=== apply_dog_floor · {a.sport} · floor {a.min_dogs} dogs/slate · '
           f'fade>={a.fade_bets:.0f}%{"" if a.apply else " [DRY RUN]"} ===')
+    if qb_outs:
+        print('  QB veto active: '
+              + ', '.join(f'{t} ({v[0][0]} {v[0][1]})' for t, v in sorted(qb_outs.items())))
     print(f'  {len(rows)} games read · oddscrowd rl coverage {len(oc)}/{len(rows)}'
           + ('' if oc else '  <- VALIDATED SOURCE IS DARK on this slate'))
 
     bydate = collections.defaultdict(list)
     for c in build_candidates(rows, margin, a.fade_bets, a.allow_cz, oc,
-                              a.veto_override_conv):
+                              a.veto_override_conv, qb_outs):
         bydate[c['row']['game_date']].append(c)
 
     promoted = failed = 0
