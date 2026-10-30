@@ -359,6 +359,30 @@ CONTEXT_TABLES = [
 ]
 
 
+def _coherence_ok(sport, ctx_row, pp):
+    """Does our own projection cover the number this leg would lay?
+
+    Delegates to retier_from_sport_bars.coherence_ok -- the gate written for
+    this same pick earlier today -- so the sign conventions live in exactly
+    one place. If it cannot be imported the gate fails OPEN, because a
+    cross-sport pool that silently empties is the failure mode this file has
+    already had twice; but it says so, loudly, rather than looking like a
+    quiet day (feedback_green_step_that_writes_nothing).
+    """
+    try:
+        from retier_from_sport_bars import coherence_ok
+    except Exception as e:                                   # noqa: BLE001
+        print(f'  ! coherence gate UNAVAILABLE ({type(e).__name__}: {e}) -- '
+              f'degen legs are NOT being checked against our projection')
+        return True, ''
+    try:
+        return coherence_ok(sport, ctx_row, pp)
+    except Exception as e:                                   # noqa: BLE001
+        print(f'  ! coherence gate raised on {pp.get("label")!r} '
+              f'({type(e).__name__}: {e}) -- leg left in')
+        return True, ''
+
+
 def fetch_primary_play_legs():
     """Candidate legs from other sports' primary_play. MLB is excluded —
     its game legs come from the NRFI/spread path below, and double-sourcing
@@ -368,13 +392,14 @@ def fetch_primary_play_legs():
     out = []
     dropped_game_leg_juice = 0
     dropped_game_leg_negative_edge = 0
+    dropped_game_leg_incoherent = 0
     for sport, table, home_ml, away_ml in CONTEXT_TABLES:
         try:
             r = requests.get(
                 f'{SUPABASE_URL}/rest/v1/{table}',
                 headers=hdr, timeout=20,
                 params={'select': f'game_id,home_team,away_team,primary_play,'
-                                  f'{home_ml},{away_ml}',
+                                  f'projected_spread,{home_ml},{away_ml}',
                         'game_date': f'eq.{gd}',
                         'primary_play': 'not.is.null', 'limit': '200'})
             if r.status_code not in (200, 206):
@@ -471,6 +496,36 @@ def fetch_primary_play_legs():
             if _epp is not None and _epp < 0:
                 dropped_game_leg_negative_edge += 1
                 continue
+
+            # == 2026-10-30 . THE EDGE GATE READ THE PROSE, NOT THE NUMBER ==
+            # The 10-28 gate above only fires when primary_play.sub happens
+            # to carry a stated edge string ("65% vs 70% implied"). Its own
+            # note concedes 596 of 620 historical legs carry no such string,
+            # so 96% of legs were never checked at all -- and tonight's slip
+            # shipped Houston Rockets -6.5 at STRONG through that hole:
+            #
+            #   Houston @ Dallas   close_spread 6.5   projected_spread 5.5
+            #   -> we laid -6.5 while our own number has Houston by 5.5
+            #
+            # Its signals are all side-of-the-game prose ("The Money is on
+            # this side", "Elo home win prob 0.31", "ORtg gap +5") -- every
+            # one an argument for WHICH SIDE, none an argument that the
+            # projection clears the POSTED NUMBER. That is the same
+            # distinction retier_from_sport_bars already had to learn, on
+            # this exact pick, earlier today.
+            #
+            # So this calls THAT gate rather than restating it: one
+            # implementation, one sign-convention table, and a sport whose
+            # convention is unproven is skipped rather than guessed
+            # (feedback_edge_formula_sign_audit). Reaching for the stored
+            # numbers instead of the rendered sentence is the fix --
+            # feedback_parse_a_pick_by_shape_not_vocabulary.
+            _coh_ok, _coh_why = _coherence_ok(sport, g, pp)
+            if not _coh_ok:
+                dropped_game_leg_incoherent += 1
+                print(f'  [daily_degen] refused {pp.get("label")!r} '
+                      f'({sport}): {_coh_why}')
+                continue
             conv = pp.get('conviction')
             try:
                 conv = int(conv)
@@ -489,6 +544,10 @@ def fetch_primary_play_legs():
                 'sport': sport,
                 'signals': [s for s in [pp.get('sub')] if s][:3],
             })
+    if dropped_game_leg_incoherent:
+        print(f'  [daily_degen] game legs refused as INCOHERENT (our own '
+              f'projection does not cover the number we would lay): '
+              f'{dropped_game_leg_incoherent}')
     if dropped_game_leg_negative_edge:
         print(f'  [daily_degen] game legs refused for a NEGATIVE stated edge '
               f'(our pct below the market implied pct): '
