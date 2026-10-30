@@ -3086,3 +3086,51 @@ genuinely independent (different INPUTS, per
 feedback_lens_independence_needs_different_inputs) and delete the note, or
 collapse the duplicate voices into one named model so there is nothing to
 disclaim. Do not just hide the note while the panel is still one voice.
+
+## R74 — on NBA our read agrees with heavy public money 4 of 4 (2026-10-30)
+ANDY: "Wasnt the pick on sweat card magic spread why would primary play be
+raptors spread". The proximate cause was the Fade being wired into the Sweat
+Card without checking the game read (fixed). The underlying finding is worse.
+
+Every game where the Fade flagged heavy public money AND we hold a read,
+compared side by side:
+
+    scope   agrees with public   opposes
+    NBA           4 (100%)          0
+    NCAAF         7                 6
+    NFL           0                 1
+    TOTAL        11 (61.1%)         7
+
+    Detroit @ Brooklyn   80% public AWAY | read AWAY (Detroit -8.5)   AGREES
+    Orlando @ Toronto    77% public HOME | read HOME (Toronto -5.5)   AGREES
+    Lakers @ GSW         76% public AWAY | read AWAY (Lakers -3.5)    AGREES
+    Indiana @ Miami      67% public HOME | read HOME (Miami -8.5)     AGREES
+
+On NBA the engine is indistinguishable from public money on these games, so
+The Fade is fading OUR OWN read, and the two surfaces are structurally
+opposed. That is the same mechanism as the favourite bias — the public backs
+favourites and so does NBA's engine — seen from the other side.
+
+NCAAF is roughly balanced, which is what independence should look like.
+
+Next: measure whether the public side actually LOSES on NBA (the fade thesis
+is unvalidated there, evidence='tracking'), and whether NBA's read carries
+any information the public line does not. If it does not, NBA game reads are
+a restatement of the market and should not carry a bettable tier at all —
+consistent with the 10-30 finding that the closing line beats both NBA
+projections (corr +0.60 vs +0.28/+0.26 on n=69).
+
+## R75 — a frozen label can outlive the missing number (2026-10-30)
+4 of 6 NBA spread picks tonight stored primary_play.line = None while the
+context row HAD a close_spread, so they rendered as "Toronto Raptors RL" and
+"Boston Celtics ATS" — no number, unactionable for a user and ungradeable
+for the resolver (public_receipt.unactionable refuses exactly this). Cause:
+the label was built BEFORE the odds pull landed, fell through
+_label_from_candidate's no-line branch, and the pick lock froze it while
+ctx.close_spread filled in behind it. Two fallbacks were visible in the same
+column — "ATS" from _market_label and the older hardcoded "RL".
+repair_spread_labels.py re-derives line+label from the context row without
+touching side/market/tier; 7 repaired (4 NBA, 3 NHL), 0 reverted.
+Remaining: 3 NBA rows whose close_spread is genuinely still NULL.
+Forward fix needed: do not compose a spread pick until its line exists, or
+re-derive the label whenever the line lands.

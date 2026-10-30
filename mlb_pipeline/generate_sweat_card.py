@@ -2059,6 +2059,55 @@ def fetch_fade_plays(game_date: str) -> list:
         if not pl.get('label') or not pl.get('sport'):
             continue
         out.append(pl)
+    # ══ 2026-10-30 · A CARD PLAY MAY NOT CONTRADICT ITS OWN GAME READ ══
+    # ANDY: "We have magic on sweat card but Raptors RL in primary play? WTF"
+    # He is right and it was this wiring. The card carried Orlando Magic
+    # +5.5 while the game's primary_play was Toronto Raptors -5.5 -- a user
+    # tapping from the card into game detail saw the opposite side of the
+    # same game. Same on Lakers/Golden State.
+    #
+    # The Fade is MEANT to oppose the public, and our game read frequently
+    # AGREES with the public, so a fade reaching the card will contradict
+    # the read by construction. That is fine on the Fade's own tab, where
+    # the thesis is stated; it is not fine on the Sweat Card, which sits one
+    # tap from the read. check_cross_surface_opposite_sides deliberately
+    # exempts a game_read as COVERAGE, so this contradiction is invisible to
+    # it -- the card is the surface that has to refuse.
+    #
+    # Each play is annotated with the read's side and the opposing ones are
+    # dropped here rather than at composition, so the slot refills from the
+    # next candidate instead of going empty.
+    _keep = []
+    for _p in out:
+        _gid, _sp = str(_p.get('game_id') or ''), str(_p.get('sport') or '').upper()
+        _tbl = _CTX_TABLE.get(_sp)
+        if not _gid or not _tbl:
+            _keep.append(_p)
+            continue
+        try:
+            _cr = sb_get(_tbl, {'select': 'game_id,primary_play',
+                                'game_id': f'eq.{_gid}', 'limit': '1'}) or []
+        except Exception:
+            _keep.append(_p)
+            continue
+        _rpp = (_cr[0].get('primary_play') if _cr else None) or {}
+        _rside = str(_rpp.get('side') or '').upper()
+        _fside = str(_p.get('side') or '').upper()
+        _rmkt = str(_rpp.get('type') or '').lower()
+        _fmkt = str(_p.get('market') or '').lower()
+        # Only a SAME-MARKET opposite side is a contradiction. The read
+        # taking a total while the fade takes a spread is two opinions about
+        # two different bets, not a disagreement.
+        if (_rside and _fside and _rside != _fside
+                and _rmkt in ('rl', 'spread') and _fmkt in ('rl', 'spread')):
+            print(f'    [card] fade {_p.get("label")!r} DROPPED — the game '
+                  f'read takes {_rpp.get("label")!r} ({_rside}), the '
+                  f'opposite side of the same spread')
+            continue
+        _p['_read_side'] = _rside or None
+        _keep.append(_p)
+    out = _keep
+
     # Strongest public lean first -- that IS the fade thesis, so it is the
     # right ranking key rather than a conviction the fade never computes.
     out.sort(key=lambda z: -(float(z.get('public_pct') or 0)))
