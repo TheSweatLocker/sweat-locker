@@ -149,6 +149,55 @@ def coherence_ok(sport: str, ctx_row: dict, pp: dict) -> tuple[bool, str]:
     return True, ''
 
 
+#: A projection has to disagree by at least this much to count as taking the
+#: other side. Same number consistency_watchdog check C uses, and for the same
+#: reason: under a point is agreement on a model with multi-point error.
+SIDE_DISAGREEMENT = 1.0
+
+
+def side_ok(sport: str, ctx_row: dict, pp: dict) -> tuple[bool, str]:
+    """False when our own projection favours the OTHER team.
+
+    == 2026-10-30 . COHERENCE AND SIDE ARE DIFFERENT QUESTIONS ===========
+    coherence_ok above asks "does our number clear the posted line", which
+    only means anything on a spread. It returns True for every moneyline --
+    so tonight's Daily Degen shipped UCF ML at LEAN while our own
+    projected_spread (-1.81, NCAAF home-positive) favours BAYLOR by 1.8.
+    Not a thin edge: the wrong side by our own model. Its own signal string
+    even said so -- "55% vs 54% implied - no edge" -- and it shipped anyway
+    because nothing refused it.
+
+    This mirrors consistency_watchdog check C, which already DETECTS this
+    nightly and flagged it CRITICAL tonight. Detecting is not refusing: the
+    watchdog runs after publication, so it can only tell us what already
+    went out. Moving the same test to the composer is the difference between
+    a report and a gate.
+
+    The two copies are a known cost. What is NOT duplicated is the sign
+    convention -- that is imported from the watchdog by both gates in this
+    module, because every sign bug this repo has shipped (two in the
+    watchdog alone) came from a second copy of that table. If check C's
+    threshold or orientation changes, this must change with it.
+    """
+    hp = _PROJ_HOME_POS.get(str(sport or '').upper())
+    if hp is None:
+        return True, ''          # convention unproven for this sport -- skip
+    ps = ctx_row.get('projected_spread')
+    side = str(pp.get('side') or '').upper()
+    if ps is None or side not in ('HOME', 'AWAY'):
+        return True, ''
+    try:
+        norm = float(ps) * (1.0 if hp else -1.0)       # +ve = home favoured
+    except (TypeError, ValueError):
+        return True, ''
+    proj_side = 'HOME' if norm > 0 else 'AWAY'
+    if abs(norm) >= SIDE_DISAGREEMENT and proj_side != side:
+        return False, (f'pick is {side} but our projected_spread favours '
+                       f'{proj_side} by {abs(norm):.1f} - the wrong side by '
+                       f'our own model')
+    return True, ''
+
+
 def _f(v):
     try:
         x = float(v)

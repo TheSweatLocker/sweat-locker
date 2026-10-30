@@ -360,27 +360,36 @@ CONTEXT_TABLES = [
 
 
 def _coherence_ok(sport, ctx_row, pp):
-    """Does our own projection cover the number this leg would lay?
+    """Does our own projection agree with this leg at all?
 
-    Delegates to retier_from_sport_bars.coherence_ok -- the gate written for
-    this same pick earlier today -- so the sign conventions live in exactly
-    one place. If it cannot be imported the gate fails OPEN, because a
+    Two questions, both delegated to retier_from_sport_bars so the sign
+    conventions live in exactly one place: side_ok ("does our projection
+    favour the team we took") and coherence_ok ("does it clear the number we
+    would lay"). The first catches moneylines, which the second cannot
+    judge -- tonight's slip shipped UCF ML against our own projection and
+    Houston -6.5 past our own number, one of each. If it cannot be imported the gate fails OPEN, because a
     cross-sport pool that silently empties is the failure mode this file has
     already had twice; but it says so, loudly, rather than looking like a
     quiet day (feedback_green_step_that_writes_nothing).
     """
     try:
-        from retier_from_sport_bars import coherence_ok
+        from retier_from_sport_bars import coherence_ok, side_ok
     except Exception as e:                                   # noqa: BLE001
         print(f'  ! coherence gate UNAVAILABLE ({type(e).__name__}: {e}) -- '
               f'degen legs are NOT being checked against our projection')
         return True, ''
-    try:
-        return coherence_ok(sport, ctx_row, pp)
-    except Exception as e:                                   # noqa: BLE001
-        print(f'  ! coherence gate raised on {pp.get("label")!r} '
-              f'({type(e).__name__}: {e}) -- leg left in')
-        return True, ''
+    for gate in (side_ok, coherence_ok):
+        # side first: taking the wrong team is worse than missing the number,
+        # and it is the one that reads clearly in a refusal line.
+        try:
+            ok, why = gate(sport, ctx_row, pp)
+        except Exception as e:                               # noqa: BLE001
+            print(f'  ! {gate.__name__} raised on {pp.get("label")!r} '
+                  f'({type(e).__name__}: {e}) -- leg left in')
+            continue
+        if not ok:
+            return False, why
+    return True, ''
 
 
 def fetch_primary_play_legs():
