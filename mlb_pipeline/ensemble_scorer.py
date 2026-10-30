@@ -211,6 +211,88 @@ TIER_THRESHOLDS = {
     'LEAN':   {'min_score': 0.3, 'min_classes': 1, 'min_margin': 0.1},
 }
 
+# == 2026-10-30 . ONE ABSOLUTE BAR FOR SIX SPORTS IS A SCALE ERROR =========
+# ANDY: "NBA and NHL conviction nees to be estbalished sow e cna tune as we
+# go ... it cna be fucking bias thats all i am saskin."
+#
+# The bars above are absolute SCORE values, and the score is a sum of
+# per-signal contributions -- so what a sport can reach is set by how many
+# signals its library has, not by how good the pick is. Measured over
+# 2026-09-15..10-30 from frozen primary_play rows (winning score):
+#
+#   sport   n     p50     p85     max    picks resting on ONE class
+#   NBA     89   0.070   0.110   0.620   81 of 89  (91%)
+#   NHL    131   0.170   0.650   1.490   77 of 131 (59%)
+#   NFL    159   0.180   0.830   2.050   67 of 159 (42%)
+#   NCAAF  342   0.720   1.570   3.530   59 of 342 (17%)
+#
+# NBA HIGHEST SCORE EVER RECORDED is 0.620 against a STRONG bar of 0.700.
+# Not "rarely STRONG" -- NBA has never produced a pick that could reach it,
+# and min_classes=2 independently excludes 91% of its board. NCAAF MEDIAN
+# is already over the bar. That is the whole mechanism behind the empty
+# surfaces: 86 of 89 NBA picks and 89 of 131 NHL picks sat at COVERAGE, and
+# every card surface filters to PRIME/STRONG, so NBA and NHL could not
+# contribute a single play to the Sweat Card, the Sharp, the ladder or POTD.
+# Same class of mistake as feedback_a_pair_needs_same_measure_and_scale: two
+# sports scores are the same MEASURE on wildly different SCALES.
+#
+# THE RULE BELOW IS NOT A LOOSENING. For each global bar we measured what
+# percentile it occupies in the sports where it demonstrably works (NFL and
+# NCAAF), then set NBA and NHL bars to that SAME percentile of their own
+# distribution -- identical selectivity, their own scale:
+#
+#   PRIME  score 1.50 -> NFL p98 / NCAAF p82  -> target p90
+#   STRONG score 0.70 -> NFL p77 / NCAAF p48  -> target p62
+#   LEAN   score 0.30 -> NFL p59 / NCAAF p35  -> target p47
+#
+# Replayed over the same history, NFL and NCAAF come out BYTE-IDENTICAL
+# (the control that this touches nothing already working); NBA goes
+# 86 COVERAGE / 3 LEAN -> 43 COVERAGE / 10 LEAN / 36 bettable, NHL
+# 89/24/18 -> 60 COVERAGE / 27 LEAN / 44 bettable.
+#
+# min_classes is lowered ONLY to the strictest count the sport can actually
+# supply (>=10% of its picks). NBA reaches 2 classes on 9% of picks, so its
+# bar is 1; NHL reaches 2 on 41% (comparable to NFL 58%) and keeps 2.
+TIER_THRESHOLDS_BY_SPORT = {
+    'NBA': {
+        'PRIME':  {'min_score': 0.12, 'min_classes': 1, 'min_margin': 0.07},
+        'STRONG': {'min_score': 0.08, 'min_classes': 1, 'min_margin': 0.06},
+        'LEAN':   {'min_score': 0.07, 'min_classes': 1, 'min_margin': 0.04},
+    },
+    'NHL': {
+        'PRIME':  {'min_score': 0.82, 'min_classes': 3, 'min_margin': 0.17},
+        'STRONG': {'min_score': 0.23, 'min_classes': 2, 'min_margin': 0.17},
+        'LEAN':   {'min_score': 0.17, 'min_classes': 1, 'min_margin': 0.10},
+    },
+}
+
+# == WHY NBA AND NHL STOP AT STRONG ========================================
+# A relative bar earns a sport its place on the ladder; it does not earn the
+# TOP of the ladder. At the percentiles above NBA would mint 11 PRIME in 89
+# picks -- proportionally more than NCAAF -- off single-class picks, and of
+# the ENABLED game signals the number with a measured hit rate is NBA 0 of
+# 32 and NHL 0 of 38 (project_engine_selects_on_zero_measured_signals_1028).
+# PRIME is the tier subscribers stake most on; it cannot rest on signals
+# that have never been measured.
+#
+# This costs no plays today: every card surface admits STRONG, so a capped
+# pick still reaches the Sweat Card, the Sharp, the ladder and POTD.
+# RE-ENTRY CONDITION, so this is tunable rather than permanent: remove a
+# sport here once >=10 of its enabled game signals carry a measured hit rate
+# on sample_n >= 30 in signal_registry.
+MAX_TIER_BY_SPORT = {'NBA': 'STRONG', 'NHL': 'STRONG'}
+
+#: sports whose bars are percentile-derived rather than absolute
+RELATIVE_BAR_SPORTS = frozenset(TIER_THRESHOLDS_BY_SPORT)
+
+_TIER_RANK = {'COVERAGE': 1, 'LEAN': 2, 'STRONG': 3, 'PRIME': 4}
+
+
+def bars_for(sport) -> dict:
+    """Tier bars for a sport -- its own if percentile-derived, else global."""
+    return TIER_THRESHOLDS_BY_SPORT.get(str(sport or '').upper(),
+                                        TIER_THRESHOLDS)
+
 _HEALTH_STATE_CACHE: dict = {}
 
 
@@ -2540,10 +2622,17 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # lean_override kept as informational (no longer gates PASS).
     _ = lean_override  # unused post-8/17 but preserved for future tightening
 
-    # Tier assignment: must clear score, class count, AND margin
+    # Tier assignment: must clear score, class count, AND margin.
+    # Bars are per-sport where the absolute scale is unreachable -- see
+    # TIER_THRESHOLDS_BY_SPORT and MAX_TIER_BY_SPORT.
+    _sport_u = str(sport or '').upper()
+    _bars = bars_for(_sport_u)
+    _ceiling = MAX_TIER_BY_SPORT.get(_sport_u)
     tier = 'LEAN'
     for candidate_tier in ('PRIME', 'STRONG'):
-        th = TIER_THRESHOLDS[candidate_tier]
+        if _ceiling and _TIER_RANK[candidate_tier] > _TIER_RANK[_ceiling]:
+            continue
+        th = _bars[candidate_tier]
         if (win_score >= th['min_score']
                 and win_classes >= th['min_classes']
                 and margin >= th['min_margin']):
@@ -2564,7 +2653,18 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # PRIME/STRONG already have multi-signal / high-score thresholds
     # that make single-noise-signal survival impossible; gate only
     # bites at the LEAN floor where thin data leaked through.
-    if tier == 'LEAN':
+    # == 2026-10-30 . THE GATE PREMISE EXPIRED FOR RELATIVE BARS =======
+    # The paragraph above argues PRIME/STRONG need no credibility check
+    # because their "multi-signal / high-score thresholds make
+    # single-noise-signal survival impossible". That held while every
+    # sport faced the absolute 0.7/1.5 bars. NBA STRONG bar is now 0.08
+    # on one class, which a single unmeasured chip clears on its own -- so
+    # for the percentile-barred sports the check has to cover every
+    # bettable tier, not just the LEAN floor. Verified against tonight
+    # board before shipping: the picks this promotes carry chips at
+    # n=20..51, so nothing real is lost to it.
+    if tier == 'LEAN' or (tier in ('PRIME', 'STRONG')
+                          and _sport_u in RELATIVE_BAR_SPORTS):
         credible = False
         for chip in win_chips:
             t = (chip.tier or '').upper()

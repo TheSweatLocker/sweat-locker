@@ -2806,3 +2806,41 @@ fires on 10-31 (Kansas State ML +102, STRONG, MC 70.3%, edge +20.8pp). Worth
 deciding whether a LEAN with a strong MC edge should be ladder-eligible, and
 noting that rung's LR p=0.42 contradicts its MC 70.3% — two model numbers
 disagreeing on the same pick.
+
+## R57 — the Sweat Card top_8 game pool is MLB-ONLY (2026-10-30)
+`generate_sweat_card.fetch_game_context()` is literally
+`sb_get("mlb_game_context", ...)`, so `curate_top_8` can never consider a
+non-MLB game pick. With MLB at 0 games on 10-30 the top_8 could only ever
+hold the POTD. Non-MLB picks reach the card through `fetch_football_picks`
+into the `football_picks` section instead, which is why the step logs
+"football picks appended: 2 (0 NFL + 0 NCAAF)" — the two were NBA and the
+counter only prints NFL/NCAAF. The app prefers `unified_top_picks`
+(= top_8 + football_picks), so users were not seeing a 1-pick card, but
+every top_8-denominated figure (`top_8_summary`, the yesterday recap) is
+MLB-only and understates the record. Fix: give `fetch_game_context` the
+same `_in_season_sports()` / `_CTX_TABLE` treatment football already has,
+then collapse the two sections.
+
+## R58 — 406 receipts carry NULL pick_odds; POTD and DotD worst (2026-10-30)
+Measured over 9,593 receipts since the 2026-09-19 pricing floor:
+    market=potd  108 NULL of 141 (76.6%)     market=dotd  21 of 23 (91.3%)
+    market=rl    112 NULL of 583 (19.2%)     market=total 39 of 291 (13.4%)
+    market=ml     51 NULL of 747 ( 6.8%)     market=prop  70 of 7,641 (0.9%)
+ZERO of them are graded Win/Loss today, so no published ROI is currently
+wrong — this is a pending defect, not an active one. But any grade that
+lands on these prices them at a guess, and a spread assumed flat -110 is
+the mistake in feedback_flat_110_inflates_every_ml_figure. Root cause for
+the card path: `public_receipt.sweat_card_rows` reads `it.get('odds')` and
+the POTD/DotD `add({...})` entries in `curate_top_8` never set `odds`. The
+fade entries added 2026-10-30 DO carry `our_price`. Fix every writer to the
+table, not one (feedback_fix_every_writer_to_the_table).
+
+## R59 — today's NCAAF game detail disagrees with the Sharp, unfixably (2026-10-30)
+`ncaaf_game_context` for 10-30 holds Tulane -8.5 with NO `_flipped_from`
+stamp, while `public_receipts` holds a `sharp_card` row for Charlotte +8.5
+— the flip of that same game. `flip_football_spreads --sport NCAAF --date
+2026-10-30` correctly REFUSES both games ("RECEIPT ALREADY PUBLISHED —
+would show one number, grade another"), so today cannot be made coherent
+without understating the record. This is the forward fix: the engine flip
+has to run BEFORE the composer freezes a receipt, which is what the
+2026-10-30 guard in generate_sharp_card does for future slates.

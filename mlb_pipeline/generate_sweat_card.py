@@ -1948,7 +1948,68 @@ _PROP_LABEL_RE = re.compile(
     r"^(.+?)\s+(over|under)\s+([0-9]+(?:\.[0-9]+)?)\s*(.*)$")
 
 
-def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
+# == 2026-10-30 . THE CARD NEVER LOOKED AT OUR BEST-MEASURED FAMILY =======
+# ANDY: "lets fix the sweat card and get at least 4 plays up".
+#
+# curate_top_8 draws from games, props, potd, dawg and total_edges. The Fade
+# is absent from that list -- and the fade is the ONE family in this repo
+# that has cleared breakeven on a split-half-stable sample: fading heavy
+# public money on SPREADS, +12.4% on n=107, re-measured 59.83% on n=117
+# (project_the_fade_is_the_one_real_edge_1019). Tonight it published 6 NBA
+# plays, 4 of them dogs, every one with a receipt -- and the dashboard
+# showed none of them while carrying two favourites and a POTD.
+#
+# EVIDENCE IS CARRIED, NOT ASSUMED. generate_the_fade stamps each play with
+# `evidence`: 'validated' where that sport+market cleared its own backtest,
+# 'tracking' where it has not. NBA opened 10-21 and its fade rows are
+# `tracking`, so they come onto the card as LEAN, not STRONG -- the play is
+# surfaced, the confidence is not invented. A sport+market that was measured
+# NEGATIVE is in FADE_BANNED and never reaches this function at all.
+FADE_CARD_MAX = 2
+
+#: evidence -> the tier a fade play may claim on the card
+FADE_EVIDENCE_TIER = {'validated': 'STRONG', 'tracking': 'LEAN'}
+
+
+def fetch_fade_plays(game_date: str) -> list:
+    """Today's published Fade plays, newest cache row wins.
+
+    Reads the same jerry_cache row the Fade surface serves, so the card can
+    never show a fade play the Fade tab does not have.
+    """
+    try:
+        rows = sb_get('jerry_cache',
+                      {'select': 'cache_key,data,created_at',
+                       'cache_key': f'eq.fade_{game_date}',
+                       'order': 'created_at.desc', 'limit': '1'}) or []
+    except Exception as e:
+        print(f'  ! fade fetch failed ({e}) -- card composes without it')
+        return []
+    if not rows:
+        return []
+    data = rows[0].get('data')
+    plays = data.get('plays') if isinstance(data, dict) else None
+    if not isinstance(plays, list):
+        return []
+    out = []
+    for pl in plays:
+        if not isinstance(pl, dict):
+            continue
+        if str(pl.get('game_date') or game_date) != game_date:
+            continue
+        if not pl.get('label') or not pl.get('sport'):
+            continue
+        out.append(pl)
+    # Strongest public lean first -- that IS the fade thesis, so it is the
+    # right ranking key rather than a conviction the fade never computes.
+    out.sort(key=lambda z: -(float(z.get('public_pct') or 0)))
+    print(f'  fade candidates for the card: {len(out)} '
+          f'({", ".join(str(z.get("label")) for z in out[:4])})')
+    return out
+
+
+def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
+                 fades=None):
     """Pick the 8 highest-conviction plays for tonight's social card.
 
     The 8 set IS the receipts unit. Each pick records source_table +
@@ -2513,6 +2574,49 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d"):
             "source_key": today_et(),  # game_date is the lookup key
             "narrative_hint": (dawg.get("narrative") or "")[:200],
         })
+
+    # 2.5 FADE — see FADE_CARD_MAX. Placed after the POTD/DotD anchors and
+    # before the game-side pool so a fade can never displace an anchor, and
+    # capped so it cannot flood the card. add() already refuses a duplicate
+    # play signature, so a fade on a game the engine also picked is dropped
+    # here rather than shown twice.
+    _fade_added = 0
+    for _fp in (fades or []):
+        if _fade_added >= FADE_CARD_MAX:
+            break
+        _ev = str(_fp.get('evidence') or 'tracking').strip().lower()
+        _tier = FADE_EVIDENCE_TIER.get(_ev)
+        if not _tier:
+            print(f'    [card] fade {_fp.get("label")!r} evidence={_ev!r} '
+                  f'not in FADE_EVIDENCE_TIER — refusing rather than guessing')
+            continue
+        _pub = _fp.get('public_pct')
+        _why = str(_fp.get('reason') or '').strip()
+        if add({
+            "type": str(_fp.get('market') or 'rl').lower(),
+            "icon": "🎯",
+            "sport": str(_fp.get('sport') or '').upper(),
+            "label": _fp.get('label'),
+            "game": _fp.get('matchup'),
+            "line": _fp.get('line'),
+            "side": _fp.get('side'),
+            "game_id": _fp.get('game_id'),
+            # the fade's real price, so the receipt is not priced at a guess
+            "odds": _fp.get('our_price'),
+            "conviction": None,
+            "tier": _tier,
+            "tier_source": f'fade_evidence:{_ev}',
+            "source_table": "jerry_cache.fade",
+            "source_key": f"fade:{_fp.get('game_id')}:{_fp.get('market')}",
+            "narrative_hint": _why[:200],
+            "_fade": {"evidence": _ev, "public_pct": _pub,
+                      "public_side": _fp.get('public_side'),
+                      "books": _fp.get('our_price_books')},
+        }):
+            _fade_added += 1
+            print(f'    [card] fade added ({_ev} -> {_tier}): '
+                  f'{_fp.get("label")} @ {_fp.get("our_price")} '
+                  f'(public {_pub}% on {_fp.get("public_side")})')
 
     # 3. Game-side candidates — Jerry-driven single source of truth (2026-08-06).
     #
@@ -3256,6 +3360,7 @@ def build_card():
     # then off. Prevents empty cards on cold weeks while still respecting
     # the calibration data when it has signal. Returns the picks list +
     # which gate ended up being used (logged for transparency).
+    _fade_plays = fetch_fade_plays(today_et())
     top_8_curated = []
     gate_used = "30d"
     for window in ("30d", "60d", "90d", "off"):
@@ -3263,7 +3368,8 @@ def build_card():
         # (otherwise cached 30d rates would short-circuit the looser checks)
         global _COHORT_RATES_30D, _COHORT_RATES_60D, _COHORT_RATES_90D
         _COHORT_RATES_30D = _COHORT_RATES_60D = _COHORT_RATES_90D = None
-        top_8_curated = curate_top_8(games, props, potd, dawg, total_edges, gate_window=window)
+        top_8_curated = curate_top_8(games, props, potd, dawg, total_edges,
+                                     gate_window=window, fades=_fade_plays)
         gate_used = window
         if len(top_8_curated) >= MIN_CARD_PICKS:
             break
