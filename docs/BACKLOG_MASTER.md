@@ -2844,3 +2844,23 @@ would show one number, grade another"), so today cannot be made coherent
 without understating the record. This is the forward fix: the engine flip
 has to run BEFORE the composer freezes a receipt, which is what the
 2026-10-30 guard in generate_sharp_card does for future slates.
+
+## R60 — recompute_ncaaf_primary_play --lookback 7 reaches ALREADY-PLAYED games (2026-10-30)
+`--lookback` defaults to **7**, so `--date 2026-10-31 --days 1` does not mean
+"tomorrow". A dry-run on 10-30 reported `changed=65 rerouted=37`, and of the
+date-stamped changes in its output **15 were 2026-10-24** (played six days
+earlier), 1 was 10-28, and only **3 were 10-31** — the slate that matters.
+
+Under the pick lock this is harmless: `_pp_locked` refuses any game that
+already has a `primary_play`, which is all of them. But the whole point of
+`NCAAF_PICK_EMERGENCY_UNLOCK=1` is to switch that refusal OFF — and then the
+same run rewrites picks for games that have already been played and graded.
+That is exactly `project_receipts_grade_the_opposite_side_1028`: the frozen
+receipt keeps what we published, `primary_play` becomes something else, and
+the two grade different sides.
+
+So an unlocked recompute MUST be scoped: `--lookback 0`, and a forward
+`--days` window that stops before the next lock boundary. Better fix: refuse
+any game whose `kickoff_utc` is in the past regardless of lookback — a
+rewrite of a played game is never correct, locked or not. Same chokepoint
+principle as feedback_guard_belongs_at_the_chokepoint.
