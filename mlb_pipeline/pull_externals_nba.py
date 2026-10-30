@@ -21,7 +21,14 @@ PULLER = SportPuller(
     sport='NBA',
     ctx_table='nba_game_context',
     results_table='nba_game_results',
-    oddscrowd_sport_slug='basketball',
+    # ══ 2026-10-30 · THE GENERIC SLUG IS ONE GLOBAL FEED, NOT A SPORT FILTER ══
+    # /games/upcoming/basketball, /hockey, /football and /ncaab all return the
+    # SAME ten links, probed live on 10-30: {nhl: 2, ncaaf: 3, nba: 5}. So
+    # asking for 'basketball' got NBA five of its own games by luck of the
+    # global feed, and that is why nba_game_context had oddscrowd_snapshot on
+    # 1 of 21 forward games while the pull logged status=success.
+    # /games/upcoming/nba returns ten links, all nba. League slug always.
+    oddscrowd_sport_slug='nba',
     league_slug='nba',
     horizon_days=2,
 )
