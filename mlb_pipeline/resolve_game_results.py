@@ -925,7 +925,15 @@ def run():
         print(f'Found {len(void_targets)} stale unresolved but all PATCH calls failed')
 
     # --- Resolve Dawg of the Day results (see _resolve_dawgs) ---
-    _resolve_dawgs(week_ago, yesterday)
+    # ══ 2026-10-30 · THE RETURN VALUE IS NOT OPTIONAL ══════════════════
+    # Extracting this block into _resolve_dawgs (1ffd4234, earlier today)
+    # dropped `dawg_resolved` from run()'s scope while the zero-state check
+    # below still read it -> NameError on every run, after grading had
+    # already happened. MLB Pipeline Daily and resolve_chain have been
+    # failing on it since. Same class as
+    # feedback_augmented_assign_rebinds_in_closure: a refactor that moves a
+    # counter into a function has to carry its binding back out.
+    dawg_resolved = _resolve_dawgs(week_ago, yesterday)
 
     # ─── Resolve Sweat Card top_8 curated picks ──────────────────────────
     # Walks the curated 8-pick set on each pending sweat_card_YYYY-MM-DD
