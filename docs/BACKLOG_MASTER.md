@@ -2744,3 +2744,32 @@ listing or probing by date slug rather than by ID band.
 LAC sat at 59% of tickets and 84% of money on the dog — opposite shapes in one
 game. The n=107 validation used bets only. Measure the money version (and the
 divergence between them) as its own signal before letting either steer a pick.
+
+### R50 — 18 NHL `rl` reads carry no line, 56 of 348 reads carry no price
+10-16..10-29. A puck-line read with `call_line` NULL is not a pick and cannot
+be graded on its own terms; the 56 unpriced rows (NBA 23, NHL 15, NCAAF 5,
+UFC 13) are silently excluded from every ROI number, so the ROI n and the W-L
+n differ on the same surface. 12 NBA reads also have `call_market` NULL, and
+2026020208 published at **conviction 0**. Either price and line the read at
+publish or refuse to publish it.
+
+### R51 — The NBA results step did not run for 10-29
+`nba_game_results` held 3 shell rows with no scores — the only played date
+since 10-21 missing them — which left 3 jerry_reads and 3 receipts NULL into
+the next morning. `nba_resolve_results.py --date 2026-10-29` wrote 3/3 on the
+first try, so the data was there all along. Needs the
+`feedback_green_step_that_writes_nothing` treatment: assert the output moved.
+
+### R52 — 3 recent `sync_receipt_grades` conflicts need a human
+`sync_receipt_grades` reports 544 conflicts, most of them the known frozen-
+receipt-vs-mutable-source family. These three are recent enough to matter:
+10-17 prop `Nick Martinez Over 3.5 Hits Allowed` (receipt VOID, source LOSS),
+05-09 POTD `NRFI` (WIN vs VOID), 05-10 POTD `Under 9.0` (PUSH vs WIN). The
+10-28 `Seattle Kraken ML` conflict is CLOSED — the receipt was right and
+`daily_dawg` was wrong (commit 1ffd4234).
+
+### R53 — 8 `daily_dawg` rows carry a `final_score` from a different game
+Same date-keyed family as the 10-28 cross-sport stamp. 5 are April–June MLB
+(two cross-game, three `'Postponed'`), one is 06-06 with a bare `'6-3'`.
+Re-derive them with `--regrade-dawg` once the pre-multisport rows' identity
+is confirmed.
