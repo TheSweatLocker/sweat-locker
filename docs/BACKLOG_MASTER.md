@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B197**. (R-series: next free **R41**.)
+- Next free ID: **B197**. (R-series: next free **R42**.)
 
 ---
 
@@ -2609,5 +2609,74 @@ Disabling the other 27 would empty the NFL, NCAAF and NBA boards the way
 NHL's now mostly is. That is a product call, not a code call.
 
 **Status**: OPEN, and it is the central question of the product.
+
+---
+
+## R41 — WHAT SHIPPED FOR THE 10-31 / 11-01 SLATE (2026-10-29)
+
+Andy: *"we can still fix saturday and sunday nfl ncaaf picks, they cant be
+bias like this again this week, it just cant."*
+
+### Two things done, both reversible
+
+**1. Cut 55 signals that lose to the one-word control.** Every enabled NFL
+and NCAAF signal was replayed against real games and graded at closing
+prices against "take the favourite" (moneyline) and "take the favourite ATS"
+(spread). Disabled per market scope so a key that wins on one market and
+loses on the other keeps the winning row:
+
+```
+             ml-scope        rl-scope
+  NFL        8 of 10 cut     9 of 21 cut
+  NCAAF     19 of 19 cut    24 of 38 cut
+  ---------------------------------------
+  55 rows disabled; NFL keeps 100 enabled, NCAAF 67
+```
+
+The spread libraries are far healthier than the moneyline ones. NFL keeps 12
+spread signals that beat the control, several strongly:
+`nfl_penalty_home_undisciplined` +25.0pp, `home_team_ats_cold` +22.6pp,
+`away_ats_hot_on_road` +17.1pp. NCAAF keeps 14, best
+`ncaaf_home_spread_edge` +16.9pp.
+
+**2. `apply_chalk_cap.py`** — a slate-level gate that demotes the WEAKEST
+chalk picks to COVERAGE until the slate is inside a cap. It never flips a
+side; flipping would be fabrication. Default max 65% chalk with a floor of 5
+side picks per date, both flags.
+
+### Result on the actual board
+
+```
+  NCAAF 10-31   18 chalk / 1 dog = 95%   ->  demoted 14  ->  4C/1D = 80%
+  NCAAF 10-30+31 combined                    7 actionable, 5C/2D = 71%
+  NFL   all dates                            0 demoted - every slate is 1-4
+                                             picks, so the floor binds
+```
+
+### Why this is a cap and not a cure, stated plainly
+
+The engine has no dog opinions to promote. Every enabled NCAAF spread signal
+pointing at dogs was measured and NOT ONE clears the 52.4% an ATS bet needs:
+`ncaaf_experience_edge_early_away` 38.2%, `away_covers_as_dog` 43.8%,
+`ncaaf_ol_weight_adv_away` 44.2%, `ncaaf_away_spread_edge` 46.9%. The
+survivors are home-flavoured (`ncaaf_ol_weight_adv_home` 72% fav,
+`home_ats_hot_at_home` 77%, `ncaaf_ground_leverage_home` 75%) precisely
+because the away variants are the ones that lose.
+
+So balance cannot be created by promotion without inventing an opinion. It
+can only be created by publishing LESS. Publishing 18 chalk picks asserts 18
+independent edges; we do not have 18. Five honest picks is a better product
+than nineteen padded ones.
+
+### The separate problem this exposed
+
+**NFL 11-01 has exactly ONE actionable pick** (NYJ ML, LEAN 56). The other
+11 games are COVERAGE. NFL's board is not chalk-biased — 67% with 8 dogs
+across the season, the healthiest of the four — it is nearly EMPTY. Those
+two problems need opposite fixes and should not be conflated.
+
+**Revert**: `update signal_sources set enabled = true where description like
+'DISABLED 2026-10-29 for the 10-31/11-01 slate%'`, and each demoted pick
+carries `primary_play._chalk_cap.was` with its original tier.
 
 ---
