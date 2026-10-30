@@ -1187,6 +1187,30 @@ def fetch_football_picks(today: str) -> list:
                 print(f"    [card] {sport} {pp.get('type')} not card-eligible "
                       f"- see CARD_INELIGIBLE_MARKETS")
                 continue
+            # ══ 2026-10-30 · THE CARD REFUSES AN INCOHERENT PICK ══════
+            # Houston Rockets -6.5 reached this card at STRONG while our own
+            # projection had Houston by 5.5 -- laying a number our number
+            # does not cover. consistency_watchdog caught it as CRITICAL
+            # only AFTER publication, and the demotion at source was
+            # reverted by a lock trigger (R65), so the card kept rendering
+            # it. A surface that cannot be corrected at source has to be
+            # able to refuse at composition.
+            #
+            # Imported, never restated: retier_from_sport_bars.coherence_ok
+            # takes its sign table from consistency_watchdog, so all three
+            # read one proven convention. A sport whose convention is
+            # unproven is skipped rather than guessed.
+            try:
+                from retier_from_sport_bars import coherence_ok as _coh
+                _ok, _why = _coh(sport, row, pp)
+                if not _ok:
+                    print(f'  ⛔ {sport} card: REFUSED {pp.get("label")!r} '
+                          f'({tier}) — {_why}')
+                    continue
+            except ImportError:
+                print('  !! coherence gate unavailable — card composing '
+                      'UNCHECKED')
+
             # ══ 2026-10-30 · THE PRICE WAS IN THE ROW ALL ALONG ══════
             # Houston Rockets -6.5 and Detroit Pistons -8.5 were captured
             # to public_receipts with pick_odds = NULL, so their ROI would
@@ -2044,7 +2068,7 @@ def fetch_fade_plays(game_date: str) -> list:
 
 
 def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
-                 fades=None):
+                 fades=None, exclude_games=None):
     """Pick the 8 highest-conviction plays for tonight's social card.
 
     The 8 set IS the receipts unit. Each pick records source_table +
@@ -2577,9 +2601,37 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             or (f"{_game_obj.get('away_team')} @ {_game_obj.get('home_team')}"
                 if _game_obj.get('away_team') and _game_obj.get('home_team') else None)
         )
+        # ══ 2026-10-30 · THE POTD ENTRY CARRIED NO PRICE ══════════════
+        # sweat_card_rows reads it.get('odds') and this entry never set it,
+        # which is most of why 108 of 141 POTD receipts (76.6%) carry NULL
+        # pick_odds (R58). receipt_invariants now REFUSES a priceless play,
+        # so without this the POTD would be dropped from the record rather
+        # than mispriced. The price is right there on the POTD payload.
+        # The POTD payload carries NO price: its keys are game/score/sport/
+        # anchor/context/matchup/narrative/confidence/leanDisplay and that is
+        # all. The number lives in daily_best_bet_history.odds_american --
+        # the same row the POTD surface's own receipt is built from, which is
+        # why that receipt reads 105 while this card entry read null.
+        _potd_odds = None
+        try:
+            _bb = sb_get('daily_best_bet_history',
+                         {'select': 'odds_american,sport,lean',
+                          'bet_date': f'eq.{today_et()}', 'limit': '3'}) or []
+            for _r in _bb:
+                if _r.get('odds_american') is not None:
+                    _potd_odds = _r['odds_american']
+                    break
+        except Exception as _e:
+            print(f'  ⚠ POTD price lookup failed ({type(_e).__name__}) — '
+                  f'entry will carry no odds and be refused at capture')
+        if _potd_odds is None:
+            print('  ⚠ POTD has no price in daily_best_bet_history — '
+                  'receipt_invariants will refuse this row rather than '
+                  'let it grade at a guess')
         add({
             "type": "POTD",
             "icon": "🏆",
+            "odds": _potd_odds,
             # 2026-10-04: carry the POTD's own sport. Without it this entry hit
             # the blanket 'MLB' default below, so today's NFL POTD (BUF -7)
             # was written to public_receipts as sport=MLB while the `potd`
@@ -2624,6 +2676,30 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
         if not _tier:
             print(f'    [card] fade {_fp.get("label")!r} evidence={_ev!r} '
                   f'not in FADE_EVIDENCE_TIER — refusing rather than guessing')
+            continue
+        # ══ 2026-10-30 · A FADE MUST NOT CONTRADICT THE CARD ══════════
+        # The fade source added here ranks by public %, and tonight its top
+        # play was Brooklyn Nets +7.5 on the very game whose Detroit
+        # Pistons -8.5 the card already carried. Publishing both sides of
+        # one game as PLAYS is the defect
+        # check_cross_surface_opposite_sides was written for, and a card
+        # that contradicts itself is worse than a card one play shorter.
+        # add() already blocks a same-game ML/total/RL conflict by
+        # signature, but a fade arrives with its own label and line, so the
+        # game has to be checked directly.
+        _fg = str(_fp.get('game_id') or '')
+        # exclude_games carries the games the GAME-SIDE section already holds.
+        # Without it the conflict was only caught in a post-pass, which
+        # dropped the fade and left its slot EMPTY -- so the card lost a play
+        # instead of taking the next non-conflicting fade. Checked here, the
+        # loop simply moves on to the next candidate and the slot refills.
+        if _fg and _fg in {str(x) for x in (exclude_games or ())}:
+            print(f'    [card] fade {_fp.get("label")!r} SKIPPED — game-side '
+                  f'card already holds game {_fg}')
+            continue
+        if _fg and any(str(_p.get('game_id') or '') == _fg for _p in picks):
+            print(f'    [card] fade {_fp.get("label")!r} SKIPPED — the card '
+                  f'already holds a play on game {_fg}')
             continue
         _pub = _fp.get('public_pct')
         _why = str(_fp.get('reason') or '').strip()
@@ -3396,6 +3472,18 @@ def build_card():
     # the calibration data when it has signal. Returns the picks list +
     # which gate ended up being used (logged for transparency).
     _fade_plays = fetch_fade_plays(today_et())
+    # Pre-fetch the game-side picks purely to learn which GAMES they hold.
+    # football_picks proper is assembled later (locks, caps, manual merges);
+    # this is the same pure read, used only to keep a fade off a game the
+    # card already plays. Cheap, and it is what lets the fade slot refill.
+    try:
+        _fb_pre = fetch_football_picks(today) or []
+        _fb_pre_games = {str(p.get('game_id')) for p in _fb_pre
+                         if p.get('game_id')}
+    except Exception as _e:
+        print(f'  ⚠ game-side pre-fetch failed ({type(_e).__name__}) — fade '
+              f'conflicts will only be caught in the post-pass')
+        _fb_pre_games = set()
     top_8_curated = []
     gate_used = "30d"
     for window in ("30d", "60d", "90d", "off"):
@@ -3404,7 +3492,8 @@ def build_card():
         global _COHORT_RATES_30D, _COHORT_RATES_60D, _COHORT_RATES_90D
         _COHORT_RATES_30D = _COHORT_RATES_60D = _COHORT_RATES_90D = None
         top_8_curated = curate_top_8(games, props, potd, dawg, total_edges,
-                                     gate_window=window, fades=_fade_plays)
+                                     gate_window=window, fades=_fade_plays,
+                                     exclude_games=_fb_pre_games)
         gate_used = window
         if len(top_8_curated) >= MIN_CARD_PICKS:
             break
@@ -3738,6 +3827,33 @@ def build_card():
     _fb_cap = max(5, len(_fb_keep))
     football_picks = (_fb_keep + _fb_auto)[:_fb_cap]
     football_picks.sort(key=lambda p: -(p.get('conviction') or 0))
+
+    # ══ 2026-10-30 · THE TWO SECTIONS COULD CONTRADICT EACH OTHER ══════
+    # curate_top_8 runs BEFORE football_picks exists, so the fade guard
+    # inside it cannot see the game-side picks. Tonight that let Brooklyn
+    # Nets +7.5 (fade, top_8) sit beside Detroit Pistons -8.5 (game side,
+    # football_picks) -- both sides of one game, both published as PLAYS,
+    # on one card. This is R57's two-section split doing real damage rather
+    # than just understating a denominator, and it is the same defect
+    # check_cross_surface_opposite_sides flags across surfaces.
+    # Resolved here, where both lists finally exist, and the GAME-SIDE pick
+    # wins: it carries the engine's tier and conviction, while the fade is
+    # `tracking` evidence on NBA.
+    _fb_games = {str(p.get('game_id')) for p in football_picks
+                 if p.get('game_id')}
+    if _fb_games and top_8_curated:
+        _before = len(top_8_curated)
+        _dropped = [p for p in top_8_curated
+                    if str(p.get('source_table') or '').startswith('jerry_cache.fade')
+                    and str(p.get('game_id')) in _fb_games]
+        if _dropped:
+            top_8_curated = [p for p in top_8_curated if p not in _dropped]
+            for _d in _dropped:
+                print(f'  ⛔ card: dropped fade {_d.get("label")!r} — the '
+                      f'game-side card already holds a play on game '
+                      f'{_d.get("game_id")}')
+            print(f'  ✓ cross-section contradiction check: {_before} → '
+                  f'{len(top_8_curated)} top_8')
     if _fb_keep:
         print(f'  ✋ football cap {_fb_cap}: {len(_fb_keep)} protected '
               f'(approved/published) + {len(football_picks) - len(_fb_keep)} '
