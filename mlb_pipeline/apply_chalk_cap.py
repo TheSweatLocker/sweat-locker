@@ -83,6 +83,22 @@ def main() -> int:
         sp = r.get('close_spread')
         if side not in ('HOME', 'AWAY') or sp is None: continue
         home_fav = (float(sp) > 0) if margin else (float(sp) < 0)
+        # ══ 2026-10-29 · A PRICED EDGE IS NEVER THE WEAKEST THING ON THE
+        #                SLATE ════════════════════════════════════════════
+        # The cap cuts the weakest chalk, but "weakest" cannot mean a pick
+        # whose own model edge beats the price. After the LR coin-flip
+        # overrule restored Iowa ML (+15.0pp), Air Force ML (+16.6pp) and
+        # KC ML (+9.9pp), a conviction-ordered cap would have cut exactly
+        # those -- the only picks on the board with a measured reason to
+        # exist -- to satisfy a ratio. Positive measured edge is therefore
+        # EXEMPT, and the cap operates on the rest.
+        try:
+            _e = pp.get('_model_edge_pp')
+            _e = float(_e) if _e is not None else None
+        except (TypeError, ValueError):
+            _e = None
+        if _e is not None and _e > 0:
+            continue
         bydate[r['game_date']].append({
             'row': r, 'pp': pp, 'side': side,
             'chalk': (side == 'HOME') == home_fav,

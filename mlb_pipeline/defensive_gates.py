@@ -1226,9 +1226,49 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
         # Existing total/rl picks left alone — LR-COIN only kills ML.
         if pred['suggested_side'] == 'NONE':
             if was_ml:
-                # 2026-09-03 REVISED: keep original label + demote tier
-                # to COVERAGE. UI LOW-CONVICTION chip communicates the
-                # coin-flip verdict without erasing the ensemble's take.
+                # ══ 2026-10-29 · A COIN FLIP IS NOT EVIDENCE AGAINST A
+                #                MEASURED EDGE ════════════════════════════
+                # Andy: "why dont we have an opinion yet why cant we give
+                # locks high confidence pick i am losing customers by the day
+                # because of the complete lack of conviction in anything."
+                #
+                # This branch is a large part of the answer. Measured on the
+                # 10-30-onward board it demoted 43 NFL and 7 NCAAF picks,
+                # including the best-priced plays we had:
+                #
+                #   Air Force ML  LEAN   conv 69  edge +16.6pp  LR p=0.48
+                #   Iowa ML       STRONG conv 78  edge +15.0pp  LR p=0.51
+                #   KC ML         LEAN   conv 64  edge  +9.9pp  LR p=0.52
+                #
+                # `_model_edge_pp` is our own win probability minus the
+                # price's implied probability. When it is positive the
+                # ensemble is not "confident but wrong" -- it disagrees with
+                # the MARKET, which is the only disagreement that pays. A
+                # second model landing in [0.45,0.55] means THAT model has no
+                # opinion; it is not evidence the first one is wrong.
+                #
+                # And the override is measured to LOSE where it is judgeable:
+                # 42.0% vs the ensemble's 57.1% on n=50 side flips
+                # (project_lr_v1_override_erases_attribution_1027).
+                #
+                # So the demotion now needs LR's no-opinion AND the absence
+                # of a positive measured edge. A negative or missing edge
+                # still demotes exactly as before.
+                try:
+                    _edge = old_pp.get('_model_edge_pp')
+                    _edge = float(_edge) if _edge is not None else None
+                except (TypeError, ValueError):
+                    _edge = None
+                if _edge is not None and _edge > 0:
+                    old_pp['_lr_ml_shadow'] = pred
+                    old_pp['_lr_coin_flip_overruled'] = {
+                        'p_home_win': pred.get('p_home_win'),
+                        'model_edge_pp': round(_edge, 2),
+                        'reason': 'LR has no opinion; the ensemble has a '
+                                  'positive edge over the price, so the '
+                                  'tier stands',
+                    }
+                    return old_pp
                 old_pp['_lr_ml_shadow'] = pred
                 old_pp['_pre_lr_tier'] = old_pp.get('tier')
                 old_pp['tier'] = 'COVERAGE'
