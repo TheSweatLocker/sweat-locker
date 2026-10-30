@@ -1433,6 +1433,12 @@ jobs:
           # not cut chalk it no longer needs to.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_dog_floor.py (NFL)" python apply_dog_floor.py --sport NFL --allow-cz --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "apply_chalk_cap.py (NFL)" python apply_chalk_cap.py --sport NFL --apply
+          # The floor replaces primary_play, so the card subtitle and the
+          # read are left describing the market it replaced -- on a spread
+          # pick that subtitle is the engine's moneyline sentence, which
+          # quoted a NEGATIVE edge under a published LEAN. Runs before
+          # jerry_pick_scrub so the scrub sees copy that already agrees.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "dogfloor_read_copy.py (NFL)" python dogfloor_read_copy.py --sport NFL --apply
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "lock_football_slate.py (NFL)" python lock_football_slate.py --sport NFL
 
       # 2026-09-24 PUBLISH GATE FOR NFL. This audit existed since 08-10 and

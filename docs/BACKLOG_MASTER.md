@@ -2716,3 +2716,31 @@ byte-identical to success. `apply_dog_floor` reported "promoted 4" and wrote
 nothing. `apply_dog_floor.write_play()` now confirms by reading the row back;
 every other producer that writes `primary_play` needs the same treatment or it
 can report a green step over an empty write.
+
+### R42 — CLOSED 2026-10-29. Root cause: a weekly sport on a daily default
+Not a dead feed and not an ID mismatch (100% of snapshot game_ids resolved
+against ctx). `compute_align_status_{nfl,ncaaf}` defaulted to **today ET** and
+both workflows called them bare; NFL plays Thu/Sun/Mon. `compute_and_write`
+emits both `align_status` and `oddscrowd_snapshot`, and `write_line_snapshot`
+flattens the latter into `line_snapshot`, so one date default blanked the app's
+alignment strip AND went the validated fade dark. Both now take `--days`
+(default 8). Coverage 3/179 -> 12/12 NFL, 40/50 NCAAF. Commit de17a96f.
+
+### R47 — cz/fr splits CONTRADICT the validated feed, they are not just weaker
+Measured on the same games, share of tickets on the FAVOURITE:
+`MIN@DET cz 37 / OC 80`, `LAC@LA cz 70 / OC 41`, `Maryland cz 76 / OC 35`,
+`Old Dominion cz 62 / OC 30`. Four of four inverted across the 50 mark. Any
+signal built on `splits_summary` needs re-measuring against `line_snapshot`
+before it is trusted, and `--allow-cz` on apply_dog_floor should be treated as
+a diagnostic switch, not a fallback.
+
+### R48 — OddsCrowd lists 10 games at a time, so a 50-game Saturday is partial
+NCAAF coverage is 40 of 50 even with the sweep fixed: the listing page carries
+10 links and the probe band walks a few IDs either side. The ensemble-only dogs
+on the board are exactly the games with no split to check. Worth paging the
+listing or probing by date slug rather than by ID band.
+
+### R49 — The fade is measured on BETS; the feed also carries MONEY
+LAC sat at 59% of tickets and 84% of money on the dog — opposite shapes in one
+game. The n=107 validation used bets only. Measure the money version (and the
+divergence between them) as its own signal before letting either steer a pick.
