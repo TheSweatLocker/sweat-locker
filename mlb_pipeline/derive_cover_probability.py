@@ -68,16 +68,43 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'return=representation'}
 
 #: sport -> (ctx table, results table, spread column, bridge column or None,
-#:           spread_is_home_margin, fallback sd)
+#:           spread_is_home_margin, fallback sd, check_spread_from)
+#:
+#: ══ 2026-10-30 · THE CHECK WAS READING THE WRONG LINE (R54) ══════════════
+#: NFL failed the sign check at 93% and so never got a cover probability,
+#: which is what kept it off the ladder. The sign was never the problem.
+#:
+#: `nfl_game_context.close_spread` is a LIVE Odds API snapshot, written each
+#: pull from `_pick_book(event, 'spreads')`. That is the right number for an
+#: upcoming game — but the moment a game leaves the odds feed the row stops
+#: being refreshed, so a PLAYED game keeps whatever mid-week line was last
+#: pulled. `nfl_game_results.close_spread` comes from nflverse and is the
+#: true close. Measured over 272 bridged rows: 209 agree, 63 disagree, and
+#: on the disagreeing rows ctx matches NOTHING else in its own table (43) or
+#: just the open line (20) — the signature of a stale snapshot, not a sign
+#: flip (only 3 of 272 were exact negations) and not a projection leak.
+#:
+#: Arbitrated against `line_history`, which holds real per-book posted
+#: quotes and is independent of both: on the disagreeing games books posted
+#: the RESULTS number 19 times and the CTX number once. (results.close_spread
+#: also agrees with results.spread_result 100/100, but spread_result is
+#: computed from that same column, so that check is circular and proves
+#: nothing on its own — feedback_lens_independence_needs_different_inputs.)
+#:
+#: So each source is correct for a different job, and `check_spread_from`
+#: says which to use: the CHECK only ever looks at played games, so it takes
+#: the authoritative close from results; the WRITE targets forward games,
+#: where ctx holds the live line and a results row is only a pre-game
+#: estimate. Nothing is repaired here — ctx is not wrong about the future.
 CFG = {
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results', 'close_spread',
-              None, False, 20.38),
+              None, False, 20.38, 'ctx'),
     'NFL': ('nfl_game_context', 'nfl_game_results', 'close_spread',
-            'results_game_id', True, 14.54),
+            'results_game_id', True, 14.54, 'results'),
     'NHL': ('nhl_game_context', 'nhl_game_results', 'close_puckline',
-            None, False, 2.05),
+            None, False, 2.05, 'ctx'),
     'NBA': ('nba_game_context', 'nba_game_results', 'close_spread',
-            None, False, 16.22),
+            None, False, 16.22, 'ctx'),
 }
 
 MIN_AGREEMENT = 97.0
@@ -122,19 +149,24 @@ def check(sports):
     """Replay the threshold against known spread_result. Returns {sport: pct}."""
     agree = {}
     for sport in sports:
-        ctbl, rtbl, spcol, bridge, is_margin, _sd = CFG[sport]
+        ctbl, rtbl, spcol, bridge, is_margin, _sd, spread_from = CFG[sport]
         sel = f'game_id,{spcol}' + (f',{bridge}' if bridge else '')
         ctx = page(ctbl, {'select': sel})
-        res = {str(r['game_id']): r for r in
-               page(rtbl, {'select': 'game_id,home_score,away_score,spread_result'})}
+        _rsel = 'game_id,home_score,away_score,spread_result'
+        if spread_from == 'results':
+            _rsel += f',{spcol}'
+        res = {str(r['game_id']): r for r in page(rtbl, {'select': _rsel})}
         ok = tot = 0
         for c in ctx:
-            sp = _f(c.get(spcol))
-            if sp is None:
-                continue
             key = str(c.get(bridge)) if bridge else str(c['game_id'])
             g = res.get(key)
             if not g or g.get('home_score') is None:
+                continue
+            # the CHECK grades played games, so it reads the authoritative
+            # close; see check_spread_from in CFG.
+            sp = _f(g.get(spcol)) if spread_from == 'results' \
+                else _f(c.get(spcol))
+            if sp is None:
                 continue
             sr = str(g.get('spread_result') or '').lower()
             if sr not in ('home_covered', 'away_covered'):
@@ -166,7 +198,9 @@ def run(sports, days, dry_run):
         if pct < MIN_AGREEMENT:
             print(f'  {sport:6s} SKIPPED — sign check {pct:.2f}% on n={n}')
             continue
-        ctbl, _rt, spcol, _b, is_margin, fb_sd = CFG[sport]
+        # the WRITE targets forward games, where ctx holds the live
+        # line; check_spread_from applies only to the check above.
+        ctbl, _rt, spcol, _b, is_margin, fb_sd, _sf = CFG[sport]
         rows = page(ctbl, {'select': f'game_id,game_date,{spcol},mc_probabilities',
                            'game_date': [f'gte.{lo}', f'lte.{hi}']})
         wrote = skipped = failed = 0

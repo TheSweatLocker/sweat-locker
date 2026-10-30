@@ -2864,3 +2864,46 @@ So an unlocked recompute MUST be scoped: `--lookback 0`, and a forward
 any game whose `kickoff_utc` is in the past regardless of lookback — a
 rewrite of a played game is never correct, locked or not. Same chokepoint
 principle as feedback_guard_belongs_at_the_chokepoint.
+
+## R61 — signal_registry.sample_n is EXACTLY 2x the attribution count (NFL confirms) (2026-10-30)
+Measured per signal on NFL, own-outcome count from
+`signal_attribution.signal_was_right` vs what `signal_registry` claims:
+
+    signal                          own            registry
+    power_diff_edge                 44.44% n=9     61.11% n=18
+    nfl_offense_mismatch_home_edge  44.44% n=9     61.11% n=18
+    nfl_confluence_home             40.00% n=10    55.00% n=20
+    v3_spread_nfl                   53.85% n=13    65.38% n=26
+    nfl_penalty_home_undisciplined  37.50% n=8     25.00% n=16
+    nfl_penalty_away_undisciplined  50.00% n=16    52.94% n=34
+
+n is 2x in every case, and the hit rate is INFLATED in 5 of 6. This is the
+same double-count recorded for NCAAF in apply_signal_weight_discipline's
+note, so it is not sport-specific — it is the refit. The three NFL signals
+whose registry row matches attribution EXACTLY (OFF_RATING_GAP 42.55% n=94,
+LR_SHADOW 43.37% n=83, COHORT_NFL_HOME_FAV 41.18% n=68) are the three
+already refit from attribution, and all three correctly sit at weight 0.
+Fix the refit to dedupe before any weighting decision trusts sample_n.
+
+## R62 — NFL's five "measured" registry signals are dead code (2026-10-30)
+`nfl_edge_pct_strong` (51.2% n=1455), `nfl_edge_pct_supports` (51.1%
+n=3058), `player_l10_vs_line_extreme` (50.2% n=1539) and
+`legacy_conviction_strong` (49.5% n=1440) all carry weight 0.300 and all sit
+BELOW the 52.38% spread breakeven on samples of 1,400-3,000. They look like
+the worst weighting in the repo — but they have **zero** rows in
+signal_attribution and fire on **none** of the 14 forward NFL picks. Their
+huge n comes from some other (legacy) backtest, not the per-pick record. So
+they are unverifiable rather than actively harmful; do not de-weight on an
+unverifiable number, and do not count them as NFL's evidence base either.
+The signals that actually drive NFL picks are external:dimers,
+nfl_confluence_home, power_diff_edge, nfl_offense_mismatch_home_edge,
+panel_pred_spread and v3_spread_nfl.
+
+## R63 — the NFL weight cap cannot reach Sunday while the lock holds (2026-10-30)
+cap_unmeasured_signal_weight.py lowered 80 evidence-free NFL game signals
+from the blanket 0.300 to 0.153 (the most any evidenced NFL signal holds).
+But pick_lock._WEEKLY_LOCK['NFL'] is (Thu 8am -> Mon), so NFL picks are
+frozen now and the new weights cannot change this Sunday's board without an
+unlock. They take effect naturally in the Tue/Wed generation window. Decide
+per week whether an in-window NFL regeneration is wanted; if it is, it needs
+the same forward-only scoping as R60.
