@@ -1157,13 +1157,24 @@ def _flip_prices(sport: str, game_ids: set) -> dict:
     hi_excl = (d0 + timedelta(days=3)).isoformat()
     want = {str(x) for x in game_ids if x}
     latest: dict = {}
-    for pg in range(6):
-        params = {'select': 'game_id,side,line,price,book,captured_at,'
+    # ══ 2026-10-30 · DEEP OFFSET IS WHAT TIMED OUT ══
+    # The window bound above was not enough: paging with offset=0..5000 and an
+    # ORDER BY makes the server sort the whole matching set again for every
+    # page, and the deep pages intermittently blow the statement timeout
+    # (measured: offset 3000 took 2.6s against 0.36s at offset 0, and in
+    # production it returned 57014 outright). Keyset paging on the primary key
+    # walks the same rows with no sort and no re-scan, and the loop stops as
+    # soon as every wanted game has a two-sided quote, so a 3-game Friday does
+    # not pay for a 50-game Saturday.
+    last_id = None
+    for _pg in range(12):
+        params = {'select': 'id,game_id,side,line,price,book,captured_at,'
                             'commence_time',
                   'sport': f'eq.{sport}', 'market': 'eq.spread',
                   'commence_time': [f'gte.{lo}', f'lt.{hi_excl}'],
-                  'order': 'captured_at.desc',
-                  'limit': '1000', 'offset': str(pg * 1000)}
+                  'order': 'id.desc', 'limit': '1000'}
+        if last_id is not None:
+            params['id'] = f'lt.{last_id}'
         try:
             r = requests.get(f'{SB}/rest/v1/line_history', params=params,
                              headers=H_READ, timeout=30)
@@ -1191,9 +1202,19 @@ def _flip_prices(sport: str, game_ids: set) -> dict:
                 continue
             k = (gid, str(row.get('side') or '').lower(), ln,
                  str(row.get('book')))
-            if k not in latest:      # ordered desc, so first seen is newest
+            # id.desc, and ids are assigned in capture order, so the first
+            # time a (game, side, line, book) is seen it is the newest quote.
+            if k not in latest:
                 latest[k] = pr
+        if batch:
+            last_id = min(int(x['id']) for x in batch)
         if len(batch) < 1000:
+            break
+        # Stop as soon as every wanted game has a quote on both sides.
+        _two_sided = set()
+        for (gid, side, _ln, _bk) in latest:
+            _two_sided.add(gid)
+        if want and want <= _two_sided:
             break
     pool: dict = {}
     for (gid, side, ln, _book), pr in latest.items():

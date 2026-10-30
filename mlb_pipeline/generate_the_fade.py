@@ -140,7 +140,30 @@ TRACKING_MIN_N = 150
 #: 'MLB': 1.0.
 #:
 #: DO NOT add a sport here from the results-table column alone.
-_HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}
+#: ══ 2026-10-30 · NBA ORIENTATION DERIVED, AS THIS BLOCK DEMANDS ══
+#: Derived the way the note above requires — on the table THIS script reads
+#: (nba_game_context, not nba_game_results, because two tables in one sport
+#: can disagree and that is the whole reason this map exists):
+#:
+#:     corr(nba_game_context.close_spread, actual home margin) = -0.5135
+#:     n = 78 context rows that still have a final score
+#:     ctx.close_spread == results.close_spread on 75 of 77 overlapping rows
+#:
+#: Negative corr means a negative home number goes with a positive home
+#: margin — an ordinary betting spread — so home_handicap = +close_spread,
+#: the same sign as NCAAF, and the independent results-table check agrees
+#: (ml-confirmed favourite on 2,436 of 2,445 graded NBA games, 6 contradicted).
+#: n=78 is thin for a hit rate but this is an ORIENTATION, not an edge claim.
+#:
+#: Adding the sign only makes NBA spreads expressible. It does NOT claim an
+#: edge: ('NBA','rl') is absent from FADE_VALIDATED, so every NBA fade
+#: publishes as `tracking`, which is how NBA/NHL totals are already handled.
+#: Measured on the deduped publish-time snapshot: NBA rl fade 53.73% n=67,
+#: i.e. unproven, not disproven.
+#:
+#: NHL is deliberately still absent, and now for a measured reason rather
+#: than an unverified one — see FADE_BANNED.
+_HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0, 'NBA': 1.0}
 
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
        'MLB': 'mlb_game_context', 'NHL': 'nhl_game_context',
@@ -196,6 +219,36 @@ OPP = {'HOME': 'AWAY', 'AWAY': 'HOME', 'OVER': 'UNDER', 'UNDER': 'OVER'}
 FADE_BANNED = {
     ('MLB', 'total'): 'fade 46.3%, ROI -11.7%, n=281',
     ('NCAAF', 'total'): 'fade 50.6%, ROI -3.4%, n=170',
+    # ══ 2026-10-30 · THE NHL PUCK LINE FADE IS INVERTED, MEASURED ══
+    # Deduped to one row per (game, market) at the EARLIEST snapshot — the
+    # one we would actually hold at publish time — and graded off
+    # nhl_game_results:
+    #     fade NHL rl   20-35   36.36%  n=55   and WORSE in the late half
+    #                                          (44.4% early -> 28.6% late)
+    #     follow        35-20   63.64%
+    # The fade is not merely unproven here, it is pointed the wrong way, which
+    # is project_split_flags_opposite_by_sport_1012 showing up again.
+    #
+    # Separately, the NHL puck line must never be scored at a flat -110. The
+    # dog +1.5 closes around -195 (median of 200 rows with a real price), so
+    # "the dog covers 63.5%" is -4.66% ROI against a 64.57% breakeven, not the
+    # +21% a -110 assumption prints. Both sides lose to the vig; this market is
+    # efficiently priced and has no fade side.
+    ('NHL', 'rl'): 'fade 36.4% n=55, inverted — following is 63.6%',
+    # ══ 2026-10-30 · NBA AND NHL TOTALS ARE NO LONGER UNMEASURED ══
+    # The B151 note above left these as `tracking` on n=6 and n=10, which was
+    # right at the time. Both leagues have now played enough. Deduped to the
+    # earliest snapshot per (game, market) and graded off *_game_results, at
+    # the live >= 65% threshold:
+    #     NBA total fade  15-18  45.45%  ROI -13.22%  n=33
+    #     NHL total fade  16-18  47.06%  ROI -10.16%  n=34
+    # And NBA gets WORSE as the threshold rises (>=70: 37.50%, -28.41%, n=24),
+    # which is the opposite of what an edge does. Both clear the n>=30 gate in
+    # the wrong direction, so they are refused on evidence like MLB and NCAAF
+    # totals before them. This is what retired the five NBA totals that would
+    # otherwise have been tonight's padding.
+    ('NBA', 'total'): 'fade 45.5%, ROI -13.2%, n=33 (worse at 70: 37.5%)',
+    ('NHL', 'total'): 'fade 47.1%, ROI -10.2%, n=34',
 }
 
 #: (sport, market) the 10-19 backtest actually covers. Everything else that
