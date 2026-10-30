@@ -528,7 +528,7 @@ def main() -> int:
                               a.veto_override_conv, qb_outs):
         bydate[c['row']['game_date']].append(c)
 
-    promoted = failed = 0
+    promoted = failed = locked_out = 0
     for d in sorted(bydate):
         cs = bydate[d]
         have = [c for c in cs if c['already']]
@@ -584,13 +584,32 @@ def main() -> int:
             if ok:
                 promoted += 1
                 print(f'                 -> {detail}')
+            elif str(detail).startswith('REFUSED by the pick lock'):
+                # ══ 2026-10-30 · A LOCK REFUSAL IS NOT A STEP FAILURE ══
+                # NFL's lock runs Thu 8am -> Mon, so between those days
+                # EVERY write here is refused by design and the old
+                # `if failed: return 1` exited 1 on every run. "NFL Pipeline
+                # Weekly" has therefore been red five days a week, and a
+                # permanently-red step is a muted step
+                # (feedback_a_detector_must_know_the_intentional_case) --
+                # it hid the two REAL NFL failures sitting next to it.
+                # Counted and reported loudly, but it does not fail the run:
+                # the lock doing its job is the system working.
+                locked_out += 1
+                print(f'                 . LOCKED, not written: {detail}')
             else:
                 failed += 1
                 print(f'                 ! NOT WRITTEN: {detail}')
     print()
     if a.apply:
         print(f'  promoted {promoted} dog pick(s)'
+              + (f' · {locked_out} held by the pick lock' if locked_out else '')
               + (f' · {failed} REFUSED' if failed else ''))
+        if locked_out and not promoted:
+            print(f'  i the pick lock is active for this sport - {locked_out} '
+                  f'write(s) held. Expected inside the lock window; re-run '
+                  f'with --unlock only if the slate genuinely must move.')
+        # Only a genuine write error fails the step. See the lock note above.
         if failed:
             return 1
     else:

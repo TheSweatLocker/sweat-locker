@@ -2907,3 +2907,47 @@ frozen now and the new weights cannot change this Sunday's board without an
 unlock. They take effect naturally in the Tue/Wed generation window. Decide
 per week whether an in-window NFL regeneration is wanted; if it is, it needs
 the same forward-only scoping as R60.
+
+## R64 — NBA and NHL pipelines were TIMING OUT, not failing (2026-10-30)
+NBA had not completed a run since 10-25; NHL since 10-28. Every run between
+was CANCELLED at exactly the job cap — NBA 20.3-20.4m against
+`timeout-minutes: 20`, NHL 25.2-25.4m against 25. Profiled from NBA run
+41101309926 the steps sum to 21.4m of real work with no runaway step
+(player props 4.62m, Sleeper enrichment 4.08m, Jerry reads 2.98m, externals
+2.10m, L10 backfill 2.10m, grading 2.79m). The caps were set pre-season.
+Both raised to 45m. NHL's successful runs were already 21.3-24.4m for days
+beforehand, so this was predictable from its own duration trend — worth a
+watchdog on "run duration within 20% of the cap".
+
+Second-order: 13.6m of NBA's 21.4m is prop work, and NBA props are entirely
+COVERAGE with their two highest-volume signals measured BELOW breakeven
+(nba_prop_season_hit_pct_high 47.6% n=3,614; nba_prop_l5_hot 46.8% n=468).
+Most of that spend produces nothing publishable.
+
+## R65 — nba_game_context has a trigger that reverts tier on a PARTIAL write (2026-10-30)
+Demoting Houston Rockets -6.5 from STRONG returned HTTP 200 and the readback
+showed `tier` still STRONG — while the `_retier` audit stamp DID land,
+announcing `to: COVERAGE`. So the row carried an audit trail claiming a
+demotion the live field never took. nba_game_context has no
+`pick_locked_at` column, so this is not enforce_pick_lock; some other
+trigger preserves `primary_play->tier` during the daily lock window while
+accepting every other key. Same partial-write class as
+project_potd_partial_mirror_faked_a_win_1015.
+retier_from_sport_bars now restores the row and records `_retier_refused`
+(the attempt) instead of `_retier` (an outcome that did not happen). The
+trigger itself still needs identifying — a writer that silently keeps one
+JSON key is going to bite something else.
+
+## R66 — card_self_contradiction has been CRITICAL since 10-25 (2026-10-30)
+This is why "Daily Card (sport-agnostic surfaces)" fails every run. Two real
+problems today, neither a false positive:
+  * NBA Houston Rockets -6.5 STRONG — projection has Houston by 5.5 while
+    the pick lays -6.5. Promoted by retier_from_sport_bars on signal
+    agreement alone; the coherence gate added 2026-10-30 now refuses this,
+    but the demotion is blocked by the NBA lock (see R65) so it is STILL
+    PUBLISHED at STRONG on today's Sweat Card.
+  * NCAAF Baylor @ UCF LEAN — pick HOME but projected_spread favours AWAY
+    by 1.8. Pre-dates today.
+Signal agreement says WHICH SIDE; it says nothing about whether the
+projection clears the POSTED NUMBER. Promoting a pick can EXPOSE an
+incoherence that was always there, because the watchdog exempts COVERAGE.

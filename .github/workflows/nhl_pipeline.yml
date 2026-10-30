@@ -37,7 +37,13 @@ on:
 jobs:
   nhl-pipeline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # == 2026-10-30 . SAME TIMEOUT WALL AS NBA ==========================
+    # NHL last completed 10-28; every run since was CANCELLED at 25.2-25.4m,
+    # exactly this cap. Its successful runs on 10-23..10-25 already took
+    # 21.3-24.4m, so it was running within a minute of the ceiling for days
+    # before it crossed it -- the failure was predictable from its own
+    # duration trend. Raised with the same reasoning as NBA.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

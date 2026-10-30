@@ -78,6 +78,76 @@ CTX_TABLE = {
 
 MIN_CREDIBLE_N = 15
 
+#: Shortfall, in points, at which our own projection is taken to CONTRADICT
+#: the line we published. Same value consistency_watchdog uses, and for the
+#: same reason: a 0.2 gap on a model with multi-point error is agreement.
+COHERENCE_SHORTFALL = 1.0
+
+
+def _proj_conventions():
+    """The PROVEN projected_spread orientation per sport.
+
+    Imported from consistency_watchdog rather than restated. That check has
+    already shipped TWO sign-convention bugs of its own (an away-pick false
+    positive, then an NFL home-margin one), so a second copy of this table
+    is the last thing this repo needs -- and a sport missing from it must be
+    SKIPPED, not guessed, which is what produced both false alarms.
+    """
+    try:
+        from consistency_watchdog import _PROJ_HOME_POSITIVE
+        return dict(_PROJ_HOME_POSITIVE)
+    except Exception as e:
+        print(f'  ! cannot import projection conventions ({type(e).__name__}) '
+              f'-- coherence gate DISABLED, promotions unchecked')
+        return {}
+
+
+_PROJ_HOME_POS = _proj_conventions()
+
+
+def coherence_ok(sport: str, ctx_row: dict, pp: dict) -> tuple[bool, str]:
+    """False when our own projection does not cover the line we published.
+
+    == 2026-10-30 . THE RE-TIER PROMOTED A SELF-CONTRADICTING PICK ========
+    The first apply of this script moved Houston Rockets -6.5 from COVERAGE
+    to STRONG on signal agreement alone (score 0.620, 3 classes -- NBA's
+    best-evidenced pick on the slate) and it went onto the Sweat Card. The
+    Daily Card watchdog then flagged it CRITICAL: our projection has Houston
+    by 5.5 while we published -6.5, so our own number does not cover the
+    line we are laying.
+
+    Both facts were true at once. Signal agreement says WHICH SIDE; it says
+    nothing about whether the projection clears the POSTED NUMBER, and a
+    tier is a claim about the bet, not about the side. The watchdog only
+    judges picks at PRIME/STRONG/LEAN, so a COVERAGE pick is exempt -- which
+    means promoting a pick can EXPOSE an incoherence that was always there.
+    Any promotion therefore has to clear the same bar the published surface
+    is held to.
+    """
+    market = str(pp.get('type') or '').lower()
+    if market not in ('rl', 'spread'):
+        return True, ''
+    hp = _PROJ_HOME_POS.get(str(sport or '').upper())
+    if hp is None:
+        return True, ''          # convention unproven for this sport -- skip
+    ps, line = ctx_row.get('projected_spread'), pp.get('line')
+    side = str(pp.get('side') or '').upper()
+    if ps is None or line is None or side not in ('HOME', 'AWAY'):
+        return True, ''
+    try:
+        norm = float(ps) * (1.0 if hp else -1.0)       # +ve = home favoured
+        ln = float(line)
+    except (TypeError, ValueError):
+        return True, ''
+    if ln >= 0:
+        return True, ''          # taking points, not laying them
+    need = abs(ln)
+    got = norm if side == 'HOME' else -norm
+    if (need - got) >= COHERENCE_SHORTFALL:
+        return False, (f'projection has {side} by {got:.1f} but the pick lays '
+                       f'{ln:+g} - our own number does not cover it')
+    return True, ''
+
 
 def _f(v):
     try:
@@ -175,7 +245,8 @@ def run(date_from: str, days: int, apply: bool, sports: list[str]):
     tot_w = tot_f = 0
     for sport in sports:
         tbl = CTX_TABLE[sport]
-        rows = page(tbl, {'select': 'game_id,game_date,primary_play',
+        rows = page(tbl, {'select': 'game_id,game_date,primary_play,'
+                                    'projected_spread',
                           'game_date': [f'gte.{date_from}', f'lte.{hi}']})
         moved = same = noinfo = failed = 0
         print(f'\n  {sport}  {len(rows)} games  (bars {bars_for(sport)["STRONG"]}'
@@ -193,6 +264,12 @@ def run(date_from: str, days: int, apply: bool, sports: list[str]):
             old = str(pp.get('tier') or '').upper()
             new = tier_for(sport, win, margin, classes, chips)
             new, cap_reason = apply_edge_cap(pp, new)
+            # A promotion must clear the published surface's own bar.
+            if new in ('PRIME', 'STRONG', 'LEAN'):
+                _ok, _why = coherence_ok(sport, row, pp)
+                if not _ok:
+                    new = 'COVERAGE'
+                    cap_reason = f'incoherent: {_why}'
             if new == old:
                 same += 1
                 continue
@@ -228,6 +305,30 @@ def run(date_from: str, days: int, apply: bool, sports: list[str]):
                 failed += 1
                 print(f'      ! NOT CONFIRMED (HTTP {pr.status_code}) '
                       f'{row["game_id"]}')
+                # ══ 2026-10-30 · A REFUSED WRITE CAN STILL LAND HALF ══
+                # nba_game_context has no pick_locked_at column, so the
+                # refusal here is a TRIGGER that reverts primary_play->tier
+                # while accepting every other key. Houston Rockets -6.5 was
+                # left with tier=STRONG and a _retier stamp announcing
+                # to=COVERAGE: the audit trail claiming a demotion the live
+                # field never took. That is the partial-write class of
+                # project_potd_partial_mirror_faked_a_win_1015, and a stamp
+                # that lies is worse than no stamp. So restore the row and
+                # record the ATTEMPT instead of the outcome.
+                _keep = dict(pp)
+                _keep.pop('_retier', None)
+                _keep['_retier_refused'] = {
+                    'wanted': new, 'kept': old, 'why': cap_reason,
+                    'at': datetime.now(timezone.utc).isoformat(),
+                    'note': 'tier write reverted by a lock trigger',
+                }
+                _rb = requests.patch(
+                    f'{SB}/rest/v1/{tbl}', headers=H_WRITE, timeout=60,
+                    params={'game_id': f'eq.{row["game_id"]}',
+                            'game_date': f'eq.{row["game_date"]}'},
+                    json={'primary_play': _keep})
+                print(f'        restored row (HTTP {_rb.status_code}); '
+                      f'tier stays {old}')
         print(f'    {sport}: {moved} re-tiered, {same} unchanged, '
               f'{noinfo} no ensemble trail, {failed} failed')
         tot_w += moved

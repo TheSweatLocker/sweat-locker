@@ -78,7 +78,25 @@ on:
 jobs:
   nba-pipeline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # == 2026-10-30 . THE CAP WAS SET PRE-SEASON AND THE JOB OUTGREW IT ==
+    # NBA had not completed a single run since 10-25: every run was either a
+    # failure or a CANCELLATION at exactly 20.3-20.4m -- the signature of this
+    # timeout, not of a bug. Profiled from run 41101309926, the steps sum to
+    # 21.4m of real work against a 20m cap, with no runaway step:
+    #     Generate NBA player props              4.62m
+    #     Enrich NBA props (Sleeper projections) 4.08m
+    #     Generate NBA game reads (Jerry)        2.98m
+    #     Pull + resolve NBA external picks      2.10m
+    #     Backfill NBA prop L10 (ESPN game logs) 2.10m  <- cancelled here
+    #     Grade NBA props + playbook             2.79m
+    # Preseason this fit; an in-season board does not. 45m leaves headroom
+    # without hiding a genuine hang -- a run that reaches 45m IS a bug.
+    #
+    # Worth noting for later: 13.6m of the 21.4m is prop work, and NBA props
+    # are currently all COVERAGE with their two highest-volume signals
+    # measured BELOW breakeven (47.6% n=3,614; 46.8% n=468). Most of that
+    # spend produces nothing publishable.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
