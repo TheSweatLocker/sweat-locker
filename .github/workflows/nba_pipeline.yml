@@ -916,6 +916,25 @@ jobs:
       # separate per-sport-normalised `_conviction_rank` (plus the inputs, so
       # weekly attribution can retune the spans) and leaves `conviction`
       # alone, because model_edge consumes that one as a win probability.
+      # ══ 2026-10-30 · COVER PROBABILITY, OR THE LADDER STAYS PARKED ══
+      # steam_room_ladder reads a COVER probability for a spread pick, and
+      # only the NBA simulator ever wrote one. NCAAF/NFL/NHL published
+      # mc_p_home (outright win), a different question, so every spread
+      # candidate came back win_prob=None and the edge gate saw -999. This
+      # derives P(home covers) from the margin mean and sd those simulators
+      # already publish, and self-checks the threshold against spread_result
+      # on completed games before writing anything (NFL currently FAILS that
+      # check at 93% because ctx.close_spread disagrees with
+      # results.close_spread on 46 of 100 games -- logged, not papered over).
+      - name: Derive cover probability (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python derive_cover_probability.py --sport NBA --days 8
+
       - name: Stamp conviction_rank (NBA)
         continue-on-error: true
         env:

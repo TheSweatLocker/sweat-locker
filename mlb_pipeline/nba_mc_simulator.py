@@ -170,13 +170,38 @@ def load_team_stats():
     rows = page('nba_team_stats', {'select': '*'})
     if not rows:
         return {}, None, None
+    # ══ 2026-10-30 · THE LATEST SEASON LABEL IS NOT THE LATEST RATINGS ══
+    # Two writers disagree about which season they own, and this loader
+    # believed the newer label:
+    #   nba_four_factors_pull  writes the CURRENT season (2026-27) -- pace,
+    #                          eFG, TOV, ORB, and NO ratings
+    #   nba_elo train          writes resolve_season(), which stays on
+    #                          2025-26 until 200 games are finished -- the
+    #                          ratings, and nothing else
+    # So 2026-27 existed with pace on all 30 teams and off_rating NULL on all
+    # 30. seasons[-1] picked it, offs came back empty, and this function
+    # returned lg=None -- which aborted the simulator with "nba_team_stats
+    # unusable" on EVERY run. mc_probabilities was therefore empty on all 21
+    # forward NBA games, which blinded steam_room_ladder (it needs a model
+    # probability and treats None as -999 edge) and left the NBA engine with
+    # no model number at all.
+    # Walk seasons newest-first and take the newest one that actually carries
+    # ratings. The chosen label is already reported as mc_stats_season, so a
+    # prior-season vintage stays visible rather than silently assumed current.
     seasons = sorted({str(x.get('season')) for x in rows if x.get('season')})
-    season = seasons[-1]
-    sub = [x for x in rows if str(x.get('season')) == season]
-    offs = [_f(x.get('off_rating')) for x in sub]
-    offs = [v for v in offs if v is not None]
+    season, sub, offs = None, [], []
+    for cand in reversed(seasons):
+        c_sub = [x for x in rows if str(x.get('season')) == cand]
+        c_offs = [v for v in (_f(x.get('off_rating')) for x in c_sub)
+                  if v is not None]
+        if c_offs:
+            season, sub, offs = cand, c_sub, c_offs
+            if cand != seasons[-1]:
+                print(f'  ⚠ newest season {seasons[-1]} has no off_rating — '
+                      f'falling back to {cand} (reported as mc_stats_season)')
+            break
     if not offs:
-        return {}, season, None
+        return {}, (seasons[-1] if seasons else None), None
     lg = statistics.fmean(offs)
     by = {}
     for x in sub:

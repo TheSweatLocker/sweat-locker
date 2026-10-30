@@ -2773,3 +2773,36 @@ Same date-keyed family as the 10-28 cross-sport stamp. 5 are April–June MLB
 (two cross-game, three `'Postponed'`), one is 06-06 with a bare `'6-3'`.
 Re-derive them with `--regrade-dawg` once the pre-multisport rows' identity
 is confirmed.
+
+### R54 — NFL ctx.close_spread disagrees with results.close_spread on 46%
+Measured 10-30 on the 100 NFL games where both exist: they match on **54**.
+The gaps are not rounding — `NO@NYG ctx -15.5 vs results -1.5`,
+`SEA@DEN ctx 7.5 vs results -2.5`, `CHI@ATL ctx -9.5 vs results -1.5`. The
+sign convention is NOT the problem (reading ctx as a home margin agrees with
+`spread_result` 93/100; as a betting spread, 78/100). So the NFL engine has
+been picking against a line that is often not the posted line, which is the
+same family as project_jerry_published_fake_lines_1019 but larger — up to 14
+points. This also blocks `derive_cover_probability` on NFL, whose self-check
+refuses to write below 97% agreement. Find which writer fills
+nfl_game_context.close_spread and whether it is a stale open, a different
+book, or a team-order bug.
+
+### R55 — nba_elo and nba_four_factors_pull write DIFFERENT seasons
+`nba_four_factors_pull` writes the current season (2026-27: pace, eFG, TOV,
+ORB, no ratings). `nba_elo train` writes `resolve_season()`, which stays on
+2025-26 until 200 games finish, and writes the ratings. So 2026-27 carried
+pace on 30 teams and `off_rating` NULL on 30, `nba_mc_simulator.load_team_stats`
+took `seasons[-1]`, got no ratings and aborted with "nba_team_stats unusable"
+on every run — which is why mc_probabilities was empty on all 21 forward NBA
+games and the ladder could not evaluate NBA at all. Loader now walks seasons
+newest-first for one that actually has ratings (commit below), but the two
+writers should agree on a season rather than being reconciled by a reader.
+
+### R56 — LADDER: tier gate excludes LEAN, which is most of the board
+`LADDER_TIER_MIN = {'PRIME','STRONG'}`. On 10-30 every NCAAF pick was LEAN and
+every NBA/NHL pick was COVERAGE, so zero candidates existed in any sport — the
+ladder was correctly parked, not broken. With cover probabilities derived it
+fires on 10-31 (Kansas State ML +102, STRONG, MC 70.3%, edge +20.8pp). Worth
+deciding whether a LEAN with a strong MC edge should be ladder-eligible, and
+noting that rung's LR p=0.42 contradicts its MC 70.3% — two model numbers
+disagreeing on the same pick.
