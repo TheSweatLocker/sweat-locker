@@ -4074,3 +4074,35 @@ says that is our commitment:
 My earlier recommendation to correct Syracuse was wrong; the availability
 test added to the tool is what caught it. A line the market has since moved
 off is not a defect.
+
+### R112 — compute_align_status_nba / _nhl never got the `--days` flag
+`project_align_status_daily_default_1029` fixed exactly this on NFL and
+NCAAF: one function writes BOTH `align_status` and `oddscrowd_snapshot`, and
+a bare daily call left both dark (**0 of 310** forward games), which took
+`line_snapshot` dark and made the fade unreachable. The fix was `--days 8`.
+
+`compute_align_status_nba.py` and `compute_align_status_nhl.py` still take
+only `--date`, defaulting to today ET. No `--days`. Classic
+feedback_fix_every_writer_to_the_table: the repair went to two of the four
+writers of that column.
+
+NOT what bit on 10-31 -- today's gap is upstream and benign (see below) --
+but it is the same hole waiting, and it will bite the moment either sport
+needs a forward window.
+
+### Not a defect, checked: NBA/NHL money flow for 10-31 had simply not posted
+Andy asked for the fade read across NCAAF, NBA and NHL. NBA and NHL had no
+public money share, so the chain was walked by hand rather than assumed:
+
+    line_snapshot       newest NBA 10-30T13:42, NHL 10-30T20:08, none today
+    oddscrowd_snapshot  NBA 10/10 and NHL 3/3 on 10-30; 0 of 7 and 0 of 10 today
+    external_picks      10-31 is NCAAF only -- NBA zero rows, NHL 7 covers
+                        rows and no oddscrowd, vs NBA/oddscrowd 37 on 10-30
+    compute_align_status_nba  "7 games - 0 external rows"
+    pull_externals_nba --source oddscrowd  "0 picks from 30 fetches"
+
+The fetcher is fine -- it pulled 37 NBA rows yesterday. OddsCrowd had not
+published splits for tonight at 11am ET with tips at 7-10pm. Re-run
+`pull_externals_{nba,nhl}.py --source oddscrowd`, then
+`compute_align_status_{nba,nhl}.py`, then `write_line_snapshot.py` once the
+source fills, and the fade read becomes available for both.
