@@ -3983,3 +3983,83 @@ fade edge is measured against. It is also one of the four R109 stale lines.
 Its only support is projection VALUE (our model has Utah State by 3.36 vs a
 market -7.5, so +7.5 carries 4.14 points), which is real but is the single
 family backing it.
+
+### R110 — THE PICK LOCK FIX WAS LIVE FOR 21 HOURS AND WAS REVERTED. 799 LINE REFRESHES EATEN SINCE
+Today's two genuinely stale NCAAF lines could not be corrected. The PATCH
+returned HTTP 200 with the full row echoed back and the readback still
+showed the old number -- `enforce_pick_lock` silently reverted
+`primary_play`, the same shape as the receipt freeze.
+
+It should not have. `20261007a_pick_lock_freezes_side_not_number.sql` exists
+for exactly this, after Andy on 10-07: "I need the line movement to assessed
+and not stale lines post as picks thats what i need just fix the systems."
+Under that version today's change is explicitly allowed -- same side
+(HOME/HOME), same market (rl/rl), same team at the head of the label
+(`Western Michigan` both), kickoff not passed -- and the function says so in
+as many words: "Same bet, new number. Let it through."
+
+**It is not a missing migration. It is a REGRESSION.** `pick_lock_drift`
+proves it, because every insert in 20261007a supplies a non-null `reason`:
+
+    reasons present ONLY 2026-10-07T22:52 -> 2026-10-08T19:03   (367 rows)
+    every refusal after 10-08T19:03 has reason = NULL           (4,164 rows)
+    newest refusal 2026-10-31T13:59  reason = NULL
+
+So it was applied on the 7th, ran about 21 hours, and the function body was
+replaced on the 8th. The likeliest cause is a migration replay whose history
+did not contain 20261007a -- it would stop at `20260929d_pick_lock_allow_unlock`
+and restore the old body. That matters for the fix: **re-apply through the
+recorded migration path, not as a loose paste, or the next push reverts it
+again.** Nothing in the repo after 20261007a redefines the function.
+
+THE COST, counted on refusals whose side AND market AND team are unchanged
+-- i.e. pure line refreshes the deployed trigger ate:
+
+    799 total      NFL 497      NCAAF 302
+
+That is the mechanism behind `project_nfl_stale_line_and_inverted_weights_1030`
+seen from the other end: NFL has been publishing month-old numbers because
+the refresher was being refused 497 times and nothing read the step log.
+Examples: `PIT -3` -> `PIT -5.5`, `CHI -1.5` -> `CHI -4.5`,
+`SF -2.5` -> `SF +5.5` (favourite to dog, the exact BAL -6.5 -> BAL +3.5
+case 20261007a's own header describes).
+
+CANNOT BE FIXED FROM HERE. DDL needs a DB password, which is not in the repo
+and not in GH secrets -- only the pooler host is, per validate_migration.py.
+Andy has to apply it. `validate_migration.py` passes it parse-clean (8
+statements, 0 malformed); full execution validation needs SUPABASE_DB_URL.
+
+CONFIRM BY ARTEFACT, NOT BY THE CLIENT. The file ends in
+`NOTIFY pgrst, 'reload schema'`, which makes the SQL client report
+`42P01 relation "a" does not exist` whether the migration failed or fully
+succeeded (feedback_notify_pgrst_breaks_andys_sql_client). After applying,
+run `check_pick_lock_version.py`: a non-null `reason` on the next refusal is
+the only proof.
+
+### R111 — my own first verdict on R110 was wrong, and why
+`check_pick_lock_version.py` first asked whether ANY refusal had ever carried
+a reason, found 367, and printed "20261007a IS LIVE". Wrong question: the
+reasons all sit in a 21-hour window three weeks ago. "Has it ever worked" and
+"is it working now" are different questions and only the second one matters,
+so the check now judges on the NEWEST refusal. Its number-only counter also
+compared just the team head, which counted `PIT -4.5` -> `PIT ML` (market
+change) and side flips as line refreshes and inflated 799 to 1,089; it now
+requires side and type to match too.
+
+### Corrected: the two line fixes applied are ZERO, not two
+`refresh_unposted_pick_lines.py` reports `corrected=0 failed=2`. Nothing was
+written. Both remain as published:
+    Western Michigan -12.5  (market -14.0, 10 of 11 books)
+    Ole Miss -13.5          (market -11.5, 6 books)
+They are blocked on R110 and will grade at the published numbers.
+
+### Left alone deliberately, and this is the right outcome
+Three more looked stale on a single snapshot and are honest commitments --
+the number WAS available when we first published, and first-publisher-wins
+says that is our commitment:
+    Syracuse +10.5   published 10-30T22:09, posted until 10-30T23:56
+    Iowa State +8.5  published 10-30T22:09, posted until 10-31T13:26
+    Georgia -12.5    published 10-20T18:57, posted until 10-31T12:26
+My earlier recommendation to correct Syracuse was wrong; the availability
+test added to the tool is what caught it. A line the market has since moved
+off is not a defect.
