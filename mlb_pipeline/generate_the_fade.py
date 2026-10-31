@@ -338,6 +338,41 @@ def latest_public_splits(date: str) -> dict:
 _LH_SIDE = {'HOME': 'home', 'AWAY': 'away', 'OVER': 'over', 'UNDER': 'under'}
 
 
+def lh_game_id(sport: str, game_id: str, date: str, away: str,
+               home: str) -> str:
+    """The id line_history keys this game under (R80).
+
+    NFL is the ONE sport whose line_history id disagrees with its
+    {sport}_game_context id. line_history stores '20261101_MIN_DET', i.e.
+    {YYYYMMDD}_{away}_{home}, while nfl_game_context stores a 32-char
+    hash, so a join on game_id returns 0 of 12 NFL games. NCAAF, NBA and
+    NHL share one id across both tables and need no translation:
+
+        line_history   NFL 20261109_BUF_MIN   NCAAF ncaaf_20261107_...
+                       NBA 401909101          NHL   2026020231
+        game_context   NFL c1d3fcec25aaeb...  NCAAF ncaaf_20261024_...
+                       NBA 401909089          NHL   2026020055
+
+    THE CONSEQUENCE WAS NOT A MISSING COLUMN, IT WAS AN EMPTY SURFACE.
+    price_faded_side found no rows, returned (None, 0), and
+    receipt_invariants rule (1) REFUSES a priceless play on a play
+    surface -- 'rl' is in PRICE_REQUIRED_MARKETS and 'fade' is in
+    PLAY_SURFACES. So every NFL fade was refused at capture from the
+    moment those invariants moved to the chokepoint on 10-30, which is
+    why exactly ONE NFL fade receipt exists in the table (3980420,
+    10-29, itself unpriced) and none since.
+
+    Found the night before an NFL Sunday carrying 7 validated fade
+    candidates. A guard that silently empties the one surface we have
+    evidence for is worse than the defect it was guarding against.
+    """
+    if str(sport or '').upper() != 'NFL':
+        return game_id
+    if not (date and away and home):
+        return game_id            # cannot build it; let the join miss
+    return '%s_%s_%s' % (str(date).replace('-', ''), away, home)
+
+
 def price_faded_side(sport: str, game_id: str, market: str, side: str,
                      line) -> tuple:
     """(price, books) for OUR side at OUR line, from posted two-sided quotes.
@@ -528,7 +563,8 @@ def build_plays(date: str) -> list[dict]:
             label = f'{fade.title()} {ct:g}'
 
         _our_px, _our_bk = price_faded_side(
-            sport, gid, mkt, fade, line)
+            sport, lh_game_id(sport, gid, date, away, home),
+            mkt, fade, line)
         plays.append({
             'sport': sport, 'game_id': gid, 'game_date': date,
             'market': 'total' if mkt == 'total' else 'rl',

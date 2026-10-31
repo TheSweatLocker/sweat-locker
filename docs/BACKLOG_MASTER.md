@@ -4389,3 +4389,53 @@ A screening failure refuses the batch rather than writing unscreened.
 7 ungraded PASS read receipts retired (both 10-31 both-sides games among
 them). The 29 already-settled PASS reads are LEFT as history — that is
 Andy's call, not a side effect of shipping a rule.
+
+## 2026-10-31 (late) · NFL Sunday readiness
+
+### R80-RESOLVED · NFL line_history keys disagree, and it EMPTIED the fade
+`line_history` keys NFL as `{YYYYMMDD}_{away}_{home}` (20261101_MIN_DET);
+`nfl_game_context` keys it as a 32-char hash. NFL is the ONLY sport where
+those differ — NCAAF, NBA and NHL share one id across both tables.
+
+The consequence was not a missing column, it was an empty surface:
+`price_faded_side` joined on the context id, got 0 rows, returned (None, 0),
+and `receipt_invariants` rule (1) refuses a priceless play on a play surface
+(`rl` is in PRICE_REQUIRED_MARKETS, `fade` is in PLAY_SURFACES). So every
+NFL fade was refused at capture from the moment the invariants moved to the
+chokepoint on 10-30 — which is why exactly ONE NFL fade receipt exists
+(3980420, 10-29, itself unpriced) and none after.
+
+Fixed with `lh_game_id()`, which translates only NFL and leaves every other
+sport untouched. Verified: `our_price` went null -> -102 on MIN +3, and all
+7 validated NFL spread fades now price.
+
+Found the night before an NFL Sunday carrying 7 fade candidates.
+
+### R126 · the fade quotes ctx.close_spread, not the MODAL POSTED line
+The fade picks its line from `ctx.close_spread` and then prices that exact
+number. On NFL that column is the one documented to freeze stale
+(project_nfl_stale_line_and_inverted_weights_1030), so the surface can quote
+a number only a minority of books still post. Measured on 2026-11-01, books
+captured 20:26:
+
+    MIN  ctx +3     modal +3.5 across 9 books (2 at +3)   <- KEY NUMBER
+    DEN  ctx +1.5   modal +1.0 across 6 books (4 at +1.5)
+    WAS  ctx -6     modal -6   across 9  -> match
+    NYJ  ctx -1.5   modal -1.5 across 6  -> match
+    IND  ctx +10    modal +10  across 10 -> match
+    DAL  ctx -7     modal -7   across 11 -> match
+    PIT  ctx -3.5   modal -3.5 across 10 -> match
+
+2 of 7 mismatch, and MIN's is across the key number 3 — +3.5 is materially
+better for the dog than +3, and 9 of 11 books post it. The surface should
+quote the modal posted line and price THAT, the way
+refresh_unposted_pick_lines already does. Not changed the night before a
+Sunday slate; it alters which number every football fade publishes.
+
+### NFL 2026-11-01 state (for the morning audit)
+    12 games, 12 jerry_reads, contexts present, 0 cross-surface contradictions
+    tier mix  COVERAGE 7, LEAN 5   ->  STRONG+ = 0, so NFL gives the
+              Sweat Card football appendix (PRIME+STRONG) NOTHING
+    conviction min 51 median 55 max 65  ->  POTD gate is 70, so no NFL POTD
+    207 of 220 NFL receipts for 11-01 are already VOID — the future-dated
+              rows voided after the 10-28 backfill incident, not a new bug
