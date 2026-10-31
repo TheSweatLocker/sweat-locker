@@ -3420,3 +3420,36 @@ Steam Room -- it is the largest clearly-negative bucket; (b) ask whether the
 surface should publish at all outside MLB until a bucket clears, which is a
 product call not a code one; (c) note the Sweat Card (+4.59%, n=221) and the
 Fade (+7.02%, n=74) are both positive, so the volume could move there.
+
+## R87 · NCAAB CAN NEVER BE BETTABLE: TWO ID SCHEMES, TWO DATES — 2026-10-30
+Andy: "The Steam Room needs to find a way to play nba, ncaab when online and
+all other sports when live. THIS IS A MUST."
+The Sharp took 0 of 3 bettable NCAAB picks. Its own dry-run says why:
+"NCAAB no-market-price drops: 3 (ML pick with no book moneyline —
+unbettable)". Every NCAAB game has close_spread/close_total/home_ml_close/
+away_ml_close NULL while the engine still forms an ML opinion on it.
+ROOT CAUSE, and it is not the season gate:
+  ncaab_game_context  game_id = 32-char MD5 ('cf863e45a3252d...'),
+                      game_date = 2026-10-30 for all 7 rows, prices NULL
+  ncaab_game_results  game_id = slug ('ncaab_20261101_Villanova_Notre_Dame'),
+                      game_date = 11-01..11-03, prices PRESENT
+The same 7 matchups exist in both tables under incompatible id schemes AND
+dates 2-4 days apart, so no join can carry the prices across. Same family as
+R80 (line_snapshot vs nfl_game_results) and
+project_ncaaf_game_id_is_built_from_team_names.
+Also note ncaab_odds_pull.py writes to ncaab_game_RESULTS, not _context, and
+its dry run today returns full prices for all 7 games (sp/tot/both MLs) — so
+the DATA is fine and available right now. This is purely a wiring defect.
+SEASON GATE IS A RED HERRING: season_gate SEASON_WINDOWS['NCAAB']=(11,4) so
+is_sport_in_season flips true on 2026-11-01, but fixing the date will not
+fix the join. NCAAB would still be priceless on 11-01.
+SECOND DEFECT, flag for confirmation: ncaab_game_context dates all 7 games
+2026-10-30 while the Odds API commence times put them 11-01..11-03. The
+feed's commence_time is authoritative, so the context builder looks to be
+stamping the run date rather than the tip date — the daily-default family
+(project_align_status_daily_default_1029,
+feedback_window_from_runner_clock_is_a_day_ahead). If so the games are also
+on the wrong day in the app.
+FIX: bridge the ids (bridge_football_game_ids.py is the existing pattern) or
+have ncaab_odds_pull write context rows keyed the way the context builder
+keys them. Then re-check the dates.
