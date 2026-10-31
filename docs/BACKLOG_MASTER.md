@@ -3366,3 +3366,25 @@ disagree (0 of 56 units, measure_family_weight_leverage.py). Public money is
 the one family that argues against the favourite, so NBA is precisely where
 this ordering fix would create the disagreement that makes weighting mean
 anything.
+
+## R84 RESOLVED · UN-VOIDED, THEY WILL GRADE — 2026-10-30
+Andy: "unvoid so they grade." Done and confirmed by readback:
+  3981856  Orlando Magic +5.5        result VOID -> NULL  (top_8 rank 2)
+  3981857  Golden State Warriors +3.5 result VOID -> NULL  (top_8 rank 3)
+Both live-captured, both gradeable (side + line + game_id present), both
+carrying tier_source=fade_evidence:tracking.
+3981655 Houston Rockets -6.5 LEFT VOID on purpose — that one failed
+coherence (our projection had Houston by 5.5 against a -6.5 line), which is
+a property of the pick, not of our bookkeeping.
+Tonight's Sweat Card therefore grades five NBA plays across three slots
+(76ers ML, Detroit -8.5, Minnesota -7.5, Orlando +5.5, Golden State +3.5).
+That is the honest denominator: the card really did show all five across the
+evening. The reversal could not be stamped on the rows because audit is
+immutable by trg_freeze_receipt_identity — R76 (no void_reason column) is
+what makes that necessary, and it is now blocking an audit trail in both
+directions.
+NOT A DEFECT, checked and cleared: receipts carry surface-shaped `market`
+values ('potd', 'dotd', 'parlay', 'chalk_parlay', 'game', 'fight'). I
+briefly read the 76ers POTD's market='potd' with a null line as ungradeable.
+It is not — market='potd' grades at 311 of 313 (99.4%). My test was naive,
+the convention is deliberate.
