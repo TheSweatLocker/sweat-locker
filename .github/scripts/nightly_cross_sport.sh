@@ -239,6 +239,27 @@ bash "$RUN_STEP" --label "compute_schedule_strength.py (SOS/SOR, all sports)"   
 # Runs AFTER grading so it sees the night's fresh results.
 bash "$RUN_STEP" --label "refresh_card_grades.py (re-resolve past cards)"   python refresh_card_grades.py --days 35 --apply || true
 
+# == 2026-10-31 . THE RECOMPOSE SHORTFALL (R115) ==
+# refresh_card_grades re-resolves the picks that are IN the blob. It cannot see
+# a pick the blob DROPPED: a recompose replaces a pick in its slot and
+# jerry_cache keeps only the final composition, while public_receipts keeps
+# every pick that was ever live. On 10-30 that rendered a 5-0 night as 2-0, and
+# the same shortfall sat on 26 of the last 30 cards -- 34-25 (57.6%, n=59) on
+# the home screen against 74-60-1 (54.8%, n=135) in the receipts.
+#
+# The two steps are COMPLEMENTS and must both run, in this order:
+#   refresh_card_grades   settles Pending picks that ARE in the blob
+#   reconcile_...         restores picks that are NOT, and corrects any grade
+#                         the blob has wrong against that pick's own receipt
+#                         (it found 'Cleveland Guardians ML' displayed as a
+#                         Loss where its receipt says Win)
+#
+# Runs AFTER refresh_card_grades, which reports "written" off the status code
+# without a readback (R116) -- this one confirms by READBACK. Without this step
+# the next recompose re-creates the shortfall and the home screen regresses by
+# morning, which is why it is wired here and not left to a hand run.
+bash "$RUN_STEP" --label "reconcile_card_recap_to_receipts.py (recompose shortfall)"   python reconcile_card_recap_to_receipts.py --days 35 --apply || true
+
 # ══ 2026-10-04 · MARGIN-BASED SOS/SOR + THE SWEAT RATING ══
 # compute_schedule_strength above rates on WIN PERCENTAGE only. These rate on
 # opponent-adjusted MARGIN, which beat it out of sample on all six sports

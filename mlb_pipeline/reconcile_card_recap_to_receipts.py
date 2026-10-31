@@ -112,6 +112,57 @@ def result_word(res) -> str:
     return 'Pending'
 
 
+def anchor_fields(x) -> dict:
+    """Carry the receipt's IDENTITY onto the item, not just its text.
+
+    == 2026-10-31 . THIS SCRIPT MINTED 3 DUPLICATE RECEIPTS ==============
+    The first version of this function did not exist: an added item carried
+    only pick/line/odds/tier/result. public_receipt.sweat_card_rows anchors
+    a card item with
+
+        anchor = source_key or game_id or id      (':' prefix stripped)
+        if not anchor: anchor = f'{game}|{label}'
+        source_id = f'{market}:{anchor}'
+
+    and the duplicate guard is a PARTIAL UNIQUE INDEX on
+    (sport, surface, game_date, source_id). With no game_id my items
+    anchored on the fallback, so a pick already in the table as
+
+        3981656  rl:401909279               capture_mode=live
+
+    came back from backfill_public_receipts a second time as
+
+        3982789  rl:|Detroit Pistons -8.5   capture_mode=reconstructed
+
+    Different key, same bet. The index could not see the twin, so the insert
+    was legal. Three 10-30 NBA WINs duplicated that way, and because both
+    copies read WIN, the card record and the receipts AGREED on a number
+    that was 3 wins too high -- a blob-vs-receipts check cannot catch it
+    (feedback_dedupe_key_shape_must_match).
+
+    So the dedupe key has to match in SHAPE, which means copying the anchor
+    the card itself uses. For a prop that anchor is the structured identity
+    "{player}|{prop_type}|{line}", which is also what lets
+    grade_public_receipts find the row at all (the 2026-10-04 lesson quoted
+    inside sweat_card_rows).
+    """
+    out = {}
+    if x.get('game_id'):
+        out['game_id'] = x['game_id']
+    if x.get('matchup'):
+        out['game'] = x['matchup']
+    if x.get('conviction') is not None:
+        out['conviction'] = x['conviction']
+    # native items key off `label`; sweat_card_rows reads label-then-pick
+    if x.get('pick_label'):
+        out['label'] = x['pick_label']
+    if str(x.get('market') or '').lower() in ('prop', 'props') \
+            and x.get('player_name') and x.get('prop_type'):
+        out['source_key'] = '%s|%s|%s' % (x['player_name'], x['prop_type'],
+                                          x.get('pick_line'))
+    return out
+
+
 def summarise(items) -> dict:
     w = l = p = pend = 0
     for it in items:
@@ -153,7 +204,8 @@ def run_date(date: str, apply: bool) -> int:
     rr = requests.get(f'{SB}/rest/v1/public_receipts', headers=H_R, timeout=60,
                       params={'select': 'id,sport,market,tier,pick_label,'
                                         'pick_line,pick_odds,result,'
-                                        'published_at',
+                                        'published_at,game_id,matchup,'
+                                        'conviction,player_name,prop_type',
                               'game_date': f'eq.{date}',
                               'surface': 'eq.sweat_card',
                               'order': 'published_at.asc'})
@@ -176,7 +228,7 @@ def run_date(date: str, apply: bool) -> int:
         for x in receipts:
             if norm(x.get('pick_label')) in have:
                 continue
-            added.append({
+            item = {
                 'sport': x.get('sport'),
                 'type': ('POTD' if str(x.get('market') or '').lower() == 'potd'
                          else str(x.get('market') or '').lower()),
@@ -187,7 +239,9 @@ def run_date(date: str, apply: bool) -> int:
                 'result': result_word(x.get('result')),
                 '_from_receipt': x.get('id'),
                 '_added_by': 'reconcile_card_recap_to_receipts',
-            })
+            }
+            item.update(anchor_fields(x))
+            added.append(item)
         orphans = [norm(it.get('pick') or it.get('label'))
                    for it in items if isinstance(it, dict)
                    and norm(it.get('pick') or it.get('label'))

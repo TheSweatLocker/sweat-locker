@@ -4196,3 +4196,100 @@ correctly found nothing to prune.
 ### Checked and NOT user-facing
 `sp_plus_matchup_total` being negative (R104) appears nowhere in `app/`, so
 it is a data-quality item rather than something on screen.
+
+## 2026-10-31 · "is everything surfacing to users correct and we stand behind it"
+
+### R115-RESOLVED · the reconciler is wired into both daily chains
+`reconcile_card_recap_to_receipts.py --days 35 --apply` now runs directly
+after `refresh_card_grades.py` in BOTH places that chain exists:
+`.github/scripts/nightly_cross_sport.sh:261` and
+`mlb_pipeline/resolve_all_now.py:292`. They are complements, not
+alternatives: `refresh_card_grades` settles Pending picks that ARE in the
+blob, the reconciler restores picks that are NOT and corrects grades the
+blob has wrong against their own receipts.
+
+### R118 · the ML juice cap has ONE call site, and it is not card composition
+`defensive_gates._ml_odds_too_juiced(ctx, side, max_juice=-300)` is called
+only at `defensive_gates.py:1282`, inside the LR ML override path. Nothing
+re-checks the price when the composite picks a chalk ML directly, which is
+how `Colorado Avalanche ML` reached the home card at -385 published /
+-425 live (breakeven 81.0%) against a written cap of -300 and a POTD cap
+of -250.
+
+Ruled out first: the gate reads
+`close_home_ml or home_ml_odds or home_ml_close`, and one of those names
+resolves on ALL SIX sports (NHL carries `close_home_ml` AND
+`home_ml_close`), so this is NOT a guessed-column failure. The gate works;
+it simply is not asked. `apply_ml_juice_cap_to_card.py` applies it to the
+published card and The Sharp as a stopgap — the real fix is to call it
+during composition.
+
+### R119 · the card has no cross-component dedupe
+The Sweat Card is "recap + POTD + Dawg + composite, top-8 curated". When
+the composite independently lands on the POTD's game, one bet takes two of
+the eight slots AND gets two receipts, so a single result moves the card
+record by two. `Marshall ML (Jerry 81/100)` (PRIME, -145) and
+`Marshall ML` (STRONG, -142) both rendered today.
+
+Every label-based duplicate check in this repo walks past it, because those
+are two different strings. `dedupe_card_same_bet_twice.py` keys on
+(sport, market, side) for ml/rl with a doubleheader guard, and on game_id
+for totals — a label key would also have been WRONG the other way, since
+10-03 carries two `under 7.0` on different games with distinct source_id
+hashes. One case in 30 days. The composer should not emit it at all.
+
+### R120 · two reconciled card items cannot be anchored
+`repair_reconciled_card_item_identity.py` gave every reconciler-added card
+item the anchor its receipt holds, so `backfill_public_receipts` can match
+it. Two cannot be fixed, because their own receipts carry neither a
+game_id nor a prop identity:
+  * 2026-10-24 `Milwaukee Brewers ML` (receipt 3695947)
+  * 2026-10-17 `Over 6.5` (receipt 2557706)
+They remain at duplication risk on any future backfill. Needs the receipt
+backfilled with a game_id, which means resolving which game it was.
+
+### R121 · a fade and a game read on OPPOSITE sides of the same spread
+Two NCAAF games today publish both sides:
+  * Mississippi State @ Texas — fade `Texas -20.5` (3982387) vs read
+    `Mississippi State +20.5` (3982308, tier=PASS, conv=40)
+  * Minnesota @ Indiana — fade `Indiana -20.5` (3982381) vs read
+    `Minnesota +20.5` (3982315, tier=PASS, conv=40)
+
+In both the public is on the dog (70/68 and 69/65 on tickets/money), so the
+fade is the validated side (football spreads, tickets >=65: 58.9%, n=107,
+ROI +12.4%) and the read is an explicit PASS on the public side — on a
+sport where conviction is an anti-signal (NCAAF top decile 36.67%, ROI
+-33.76%, n=30).
+
+NOT treated as a defect: a read and a pick are different surfaces with
+different denominators, and `GameDetailV2.tsx:1060` renders a
+COVERAGE/PASS/SKIP read dim and low-conviction. But a user can see both,
+and both grade. ANDY'S CALL whether a PASS read should publish as a priced,
+graded receipt at all.
+
+### R122 · tier=PASS reads publish as priced, graded receipts
+12 `game_read` receipts at tier=PASS have already graded (vs COVERAGE 92,
+LEAN 33, STRONG 25). A PASS is the engine saying "no play", so it inflates
+the read denominator with non-plays. Not touched — changing it rewrites
+history on 12 settled rows.
+
+### RESOLVED today
+* 4 UFC `sharp_card` receipts frozen at `pick_odds=1` with decimal odds in
+  the label (R98) — VOIDED. Two were superseded duplicates of correctly
+  priced receipts (3982406/-267, 3982407/-294); two were plays WITHDRAWN by
+  the juice cap at -417 and -308 that would still have graded. Not
+  repairable in place: `pick_label` is frozen and `pick_odds` is set-once,
+  so a PATCH to the real price is silently refused.
+* 3 duplicate receipts this reconciler minted (3982789/90/91, 10-30 NBA,
+  all WIN) — VOIDED, live twins kept. Cause: added card items carried no
+  game_id, so `public_receipt.sweat_card_rows` anchored them on its
+  `f'{game}|{label}'` fallback, giving a different `source_id` from the
+  live row and defeating the partial unique index on
+  (sport, surface, game_date, source_id). The reconciler now copies the
+  receipt's anchor; 50+ items across 30 days were backfilled.
+
+  WORTH NOTING: the home card figure was NOT wrong. `top_8_summary` counts
+  blob items, each present once, so the card still read 74-60-1. The
+  duplicates inflated the RECEIPT-derived records instead. And an earlier
+  blob-vs-receipts check could not have caught it either way, because that
+  comparison keys on the label and a dict collapses duplicates.

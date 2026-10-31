@@ -283,6 +283,17 @@ def main() -> int:
     if not ok:
         fails.append('refresh_card_grades')
 
+    # refresh_card_grades settles the picks that ARE in the blob; it cannot see
+    # one a recompose dropped, and it reports "written" off the status code
+    # without a readback (R116). public_receipts keeps every pick that was ever
+    # live, so the receipts are the authority on BOTH composition and grade.
+    # Complement, never a replacement -- see R115.
+    ok, _ = run('card recap vs receipts',
+                ['reconcile_card_recap_to_receipts.py',
+                 '--days', str(args.days + 1), '--apply'])
+    if not ok:
+        fails.append('reconcile_card_recap_to_receipts')
+
     # ── 5. ROLLUPS. Records the app reads. ─────────────────────────────
     if not args.skip_rollup:
         print('\n5. rebuild records')
