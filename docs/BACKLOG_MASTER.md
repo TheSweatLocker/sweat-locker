@@ -4106,3 +4106,60 @@ published splits for tonight at 11am ET with tips at 7-10pm. Re-run
 `pull_externals_{nba,nhl}.py --source oddscrowd`, then
 `compute_align_status_{nba,nhl}.py`, then `write_line_snapshot.py` once the
 source fills, and the fade read becomes available for both.
+
+### R113 — THE HOME SCREEN SHOWS 44% OF THE CARD'S PLAYS, AND THE MISSING HALF IS A COIN FLIP
+ANDY: "Noticed sweat card recap only ahs 3 plays and not graded on home
+page." Both halves are the same cause. For 2026-10-30:
+
+    public_receipts (surface=sweat_card)  5 WIN + 1 VOID
+    jerry_cache.sweat_card_2026-10-30
+      unified_top_picks   3 items   <- the 3 on screen
+      top_8               2 items
+      top_8_summary       {"wins":2,...,"resolved":2}
+
+A 5-0 night rendered as 2-0. The row's `fetched_at` is 22:20:34, the exact
+second Minnesota -7.5 was published: a recompose replaced Orlando Magic +5.5
+and Golden State Warriors +3.5 in the same slots. **The blob keeps only the
+FINAL composition; the receipts keep every pick that was ever live.** Andy's
+10-30 ruling settles which is right -- "unvoid so they grade", because "the
+card really did show five picks to whoever was looking across the evening".
+
+`refresh_card_grades.py` cannot fix it: that re-resolves PENDING grades on
+picks already in the blob, and all three of these already read 'Win'. The
+defect is the COMPOSITION, not the grading.
+
+**IT IS NOT ONE DAY.** RecapStrip.tsx builds both the yesterday figure and
+the CARD L30D rollup by summing `top_8_summary` across the last 30
+`sweat_card_%` rows. Over those 30 days, **26 of 30 change**:
+
+    STORED (home screen):  34-25      57.6%   n=59   (1 pending)
+    RECEIPTS:              71-62-1    53.0%   n=134  (11 pending)
+    delta:                 wins +37, losses +37, pushes +1
+
+So the home screen shows **44% of the plays**, the missing 75 are almost
+exactly 50/50, and the displayed hit rate is inflated by **4.6 points**.
+Correcting it is the honest direction and it LOWERS the headline number --
+which is the whole point of "we show the receipts", but it is a public-record
+change and therefore Andy's call, not mine.
+
+APPLIED SO FAR: 2026-10-30 only (the day he flagged), readback-confirmed,
+2-0 -> 5-0. The remaining 25 days are a one-line backfill:
+`python reconcile_card_recap_to_receipts.py --days 30 --apply`.
+
+VOIDs stay excluded, deliberately: Houston Rockets -6.5 was withdrawn for
+failing coherence (our own projection had Houston by 5.5 while we laid -6.5),
+which is a property of the pick rather than bookkeeping.
+
+### R114 — blob picks with NO receipt behind them
+The reconciler reports these and leaves them alone, because a pick shown with
+no receipt is its own bug and inventing one would be worse:
+    2026-10-17  'Nick Martinez Over 3.5 Hits Allowed (Jerry 82/100)' (x2 forms)
+    2026-10-16  'Gavin Williams Over 6.5 Ks - proj 8.7'
+Also on 2026-10-16: **102 voided sweat_card receipts** on a single day, which
+is worth its own look -- that is not a normal void rate.
+
+### R115 — wire the reconciler into the daily chain
+It must run AFTER grading and BEFORE the home screen is read, in the same
+place `refresh_card_grades.py` runs, or every recompose re-creates the
+shortfall for that day. The two are complements: refresh_card_grades settles
+Pending picks that ARE in the blob; this one restores picks that are not.
