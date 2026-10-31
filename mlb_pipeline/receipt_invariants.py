@@ -147,6 +147,12 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+#: Two surfaces quoting the same bet this far apart in IMPLIED
+#: PROBABILITY are disagreeing, not reading two different books.
+#: Calibrated on the October live rows -- see the note in the loop.
+PRICE_GAP_PP = 1.0
+
+
 def check_line_coherence(rows: list, surface: str,
                          quiet: bool = False) -> list:
     """Flag a receipt whose NUMBER disagrees with one already published.
@@ -177,10 +183,35 @@ def check_line_coherence(rows: list, surface: str,
         return []
     hdr = {'apikey': key, 'Authorization': f'Bearer {key}'}
     LINE_MKT = {'rl', 'spread', 'puckline', 'pl', 'total'}
+    # 'potd' is not a market, it is a SLOT. The same bet goes out as
+    # market='potd' on the POTD surface and market='ml' on the card, so
+    # comparing the raw key makes one play look like two bets and the
+    # disagreement never surfaces. Marshall ML went out at -145 (potd) and
+    # -142 (sweat_card) this morning for exactly that reason.
+    MKT_ALIAS = {'potd': 'ml', 'moneyline': 'ml',
+                 'spread': 'rl', 'puckline': 'rl', 'pl': 'rl'}
+    PRICED_MKT = LINE_MKT | {'ml'}
+
+    def _mkt(v):
+        m = str(v or '').lower()
+        return MKT_ALIAS.get(m, m)
+
+    def _imp(o):
+        # Implied win probability, so a gap means the same thing at every
+        # price: ten cents at -110 is noise, ten cents at -400 is not.
+        try:
+            o = float(o)
+        except (TypeError, ValueError):
+            return None
+        if o == 0:
+            return None
+        return 100.0 / (o + 100.0) if o > 0 else abs(o) / (abs(o) + 100.0)
+
     want = [r for r in rows
-            if str(r.get('market') or '').lower() in LINE_MKT
+            if _mkt(r.get('market')) in PRICED_MKT
             and r.get('game_id') is not None
-            and r.get('pick_line') is not None]
+            and (r.get('pick_line') is not None
+                 or r.get('pick_odds') is not None)]
     if not want:
         return []
     gids = sorted({str(r['game_id']) for r in want})
@@ -200,35 +231,63 @@ def check_line_coherence(rows: list, surface: str,
         return []
     for row in want:
         gid = str(row['game_id'])
-        mkt = str(row.get('market') or '').lower()
+        mkt = _mkt(row.get('market'))
         side = str(row.get('pick_side') or '').upper()
         for p in prior:
             if str(p.get('game_id')) != gid:
                 continue
-            if str(p.get('market') or '').lower() != mkt:
+            if _mkt(p.get('market')) != mkt:
                 continue
             if str(p.get('result') or '').upper() in ('VOID', 'VOIDED'):
                 continue
-            if p.get('pick_line') is None:
-                continue
             if side and str(p.get('pick_side') or '').upper() != side:
                 continue
-            try:
-                same = abs(float(p['pick_line'])
-                           - float(row['pick_line'])) < 0.01
-            except (TypeError, ValueError):
-                same = False
-            if same:
+            # LINE first: taking a different number is the worse error, and
+            # it is the one that made this check exist. Compared only when
+            # BOTH carry a line -- a missing line is its own defect, and
+            # calling that a disagreement would bury the real ones.
+            if (p.get('pick_line') is not None
+                    and row.get('pick_line') is not None):
+                try:
+                    same_line = abs(float(p['pick_line'])
+                                    - float(row['pick_line'])) < 0.01
+                except (TypeError, ValueError):
+                    same_line = False
+                if not same_line:
+                    msg = (f'{row.get("pick_label")!r} publishes '
+                           f'{row["pick_line"]} but {p.get("surface")} '
+                           f'already published {p["pick_line"]} on the same '
+                           f'side of this game at '
+                           f'{str(p.get("published_at"))[:19]} -- call '
+                           f'public_receipt.frozen_quote() before displaying '
+                           f'a number')
+                    found.append((row, msg))
+                    if not quiet:
+                        print(f'  ! line incoherence [{surface}]: {msg}')
+                    break
+            # PRICE second. 24 of 60 multi-surface bets in October disagreed
+            # on the line; 14 more agreed on the line and disagreed on the
+            # PRICE, and a moneyline carries no line at all -- so a
+            # line-only test cannot see either group. The threshold is
+            # calibrated on those rows: ordinary book-to-book variation
+            # (-110/-112, -142/-145) sits at 0.2-0.7pp of implied
+            # probability, the genuine disagreements (-105/-110, -138/-148,
+            # -200/-190) start at 1.15pp. 1.0pp separates them.
+            a, b = _imp(p.get('pick_odds')), _imp(row.get('pick_odds'))
+            if a is None or b is None:
+                break
+            gap = abs(a - b) * 100.0
+            if gap < PRICE_GAP_PP:
                 break
             msg = (f'{row.get("pick_label")!r} publishes '
-                   f'{row["pick_line"]} but {p.get("surface")} already '
-                   f'published {p["pick_line"]} on the same side of this '
-                   f'game at {str(p.get("published_at"))[:19]} -- call '
-                   f'public_receipt.frozen_quote() before displaying a '
-                   f'number')
+                   f'{row.get("pick_odds")} but {p.get("surface")} already '
+                   f'published {p.get("pick_odds")} on the same bet at '
+                   f'{str(p.get("published_at"))[:19]} '
+                   f'({gap:.2f}pp of implied probability apart) -- call '
+                   f'public_receipt.frozen_quote() before displaying a price')
             found.append((row, msg))
             if not quiet:
-                print(f'  ! line incoherence [{surface}]: {msg}')
+                print(f'  ! price incoherence [{surface}]: {msg}')
             break
     return found
 

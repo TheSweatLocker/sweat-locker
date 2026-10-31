@@ -3618,3 +3618,29 @@ disagrees visible at capture, which is how the remaining ones get found.
 ALSO OPEN on this same game: game_read published the LAKERS while the fade
 and card published GOLDEN STATE. That is R78's missing intent marker, not a
 line problem.
+
+### R92 — POTD receipts carry no game_id, so no game-keyed check can see them
+`daily_best_bet_history` stores the matchup as a STRING (`"Marshall @ Old
+Dominion"`) and has no game_id column, so all **334 potd receipts ever
+written are unkeyed (0%)**. Consequences: `frozen_quote` and
+`check_line_coherence` both key on game_id and are blind to the POTD;
+`grade_game_market_receipts` cannot reach it either (hence the separate
+`grade_potd.py` path). Today Marshall ML went out at **-145 (potd) and -142
+(sweat_card/sharp_card)** — the same bet, and nothing could compare them.
+
+DO NOT derive the id from the team names. That is the defect behind
+`project_ncaaf_five_team_name_mismatch_1021` (21 duplicate game rows, one
+with home/away inverted) and `project_nhl_stl_name_mismatch_1013`. The fix
+belongs upstream: `jerry_anchor_potd` already reads a context row when it
+chooses, so it should persist that row's game_id into
+`daily_best_bet_history` (needs a column add), and `public_receipt`'s potd
+builder passes it through. UFC is the other unkeyed surface (4 rows today) —
+a fight has no game_id in this schema at all, which is a separate question.
+
+### R93 — six UFC Sharp receipts still carry a decimal price in pick_odds
+`_compose_ufc` is fixed (2026-10-31) but the six already-published rows still
+hold `pick_odds` 1 or 2. `_repair_ufc_decimal_odds.py --apply` is written,
+dry-run clean, and converts each from the decimal still printed in its own
+label (1.375 -> -267 etc., matching the same fights' game_read prices). The
+write was blocked by the sandbox classifier and needs Andy's go-ahead. Until
+then those rows score a WIN as +0.01u and understate the Sharp's ROI.

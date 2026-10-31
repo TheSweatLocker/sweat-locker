@@ -1899,18 +1899,77 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     return picks
 
 
+#: Below this, odds_picked_side_median is DECIMAL, not American.
+#: American prices never fall strictly between -100 and +100, so the band
+#: is unambiguous and the test needs no feed-version flag.
+_DECIMAL_ODDS_CEILING = 100.0
+
+
+def _decimal_to_american(d: float) -> int:
+    """Decimal price -> American. 1.375 -> -267, 2.50 -> +150.
+
+    == 2026-10-31 . THE UFC FEED SPEAKS DECIMAL AND NOTHING TRANSLATED IT =
+    `odds_picked_side_median` carries a DECIMAL price (1.24, 1.34, 1.375).
+    _compose_ufc passed it straight through as if it were American, which
+    broke four things at once and none of them raised:
+
+      1. pick_odds stored 1.375 into an int column -> 1. A price of +1 is
+         not a price any book posts, and settle() scores a WIN on it as
+         +0.01u, so every UFC row quietly understated the Sharp's ROI.
+      2. The label rendered "Zach Reese ML  (+1.24)" to users -- we showed
+         a number no sportsbook has ever hung.
+      3. `halve` tests `odds <= -180`. A decimal price is always POSITIVE,
+         so the heavy-favourite stake cut could never fire, and -417 chalk
+         went out at full units.
+      4. SOLE_PICK_ML_JUICE_MAX (-300) never saw a real price either.
+
+    Converted, tonight's four read -417 / -308 / -294 / -267, which match
+    the same fights' game_read prices exactly -- that agreement is what
+    confirms the field is decimal rather than a differently-scaled American.
+
+    UFC's own live record is the reason this matters: 13-8, 61.9%, but
+    ROI -12.83% (n=21, under the n>=30 gate, so directional only). Winning
+    most of your bets and losing money is the heavy-favourite signature,
+    and the juice cap is the control that exists to catch it.
+    """
+    if d <= 1.0:            # decimal 1.0 pays nothing; not a tradeable price
+        return 0
+    return int(round((d - 1.0) * 100.0)) if d >= 2.0         else -int(round(100.0 / (d - 1.0)))
+
+
 def _compose_ufc(ufc_reads: list) -> list[dict]:
     picks = []
+    shadow_juice = []
     for r in ufc_reads:
         inp = r.get('input_snapshot') or {}
         if not isinstance(inp, dict): continue
         side = r.get('call_side')
         picked = inp.get('fighter_a') if side == 'A' else inp.get('fighter_b')
-        odds = inp.get('odds_picked_side_median')
+        raw = inp.get('odds_picked_side_median')
+        try:
+            raw = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            raw = None
+        # A decimal price converts; anything already outside the decimal band
+        # is taken as American so a feed that switches units later still works.
+        odds = None
+        if raw is not None:
+            odds = (_decimal_to_american(raw)
+                    if abs(raw) < _DECIMAL_ODDS_CEILING else int(raw))
+            if odds == 0:
+                print(f'  ! UFC {picked}: unusable price {raw!r} -- dropped')
+                continue
         base = _units_for_tier(inp.get('ev_tier'))
         halve = 0.5 if (odds is not None and odds <= -180) else 1.0
         units = base * halve
         if units <= 0: continue
+        # SHADOW, not a gate. Andy's standing instruction is that the Sharp
+        # must not get thinner, so the existing -300 ceiling is REPORTED on
+        # UFC rather than applied -- it has never run on this path, and
+        # turning it on here would drop live picks on a surface he is
+        # protecting. The count is what he needs to make that call.
+        if odds is not None and odds < SOLE_PICK_ML_JUICE_MAX:
+            shadow_juice.append(f'{picked} @ {odds}')
         odds_str = f'  ({"+" if odds and odds > 0 else ""}{odds})' if odds else ''
         picks.append({
             'sport': 'UFC',
@@ -1923,6 +1982,10 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
             'line': None,
             'units': units,
         })
+    if shadow_juice:
+        print(f'  UFC juice SHADOW: {len(shadow_juice)} pick(s) past '
+              f'SOLE_PICK_ML_JUICE_MAX ({SOLE_PICK_ML_JUICE_MAX}) and kept '
+              f'-- {", ".join(shadow_juice)}')
     return picks
 
 
