@@ -3797,3 +3797,84 @@ purely a Fade pick. Both are legitimate (the Fade is our best live surface at
 +7.02% n=74, and it assigns its own tier via tier_source=fade_evidence), but
 a reader comparing the card to Game Detail sees a STRONG play the game page
 calls COVERAGE. The card should show WHICH surface earned the tier.
+
+## === 2026-10-31 · COMBING ncaaf_game_context COLUMN BY COLUMN (214 cols) ===
+Andy: "comb through 20 games looking at every single piece of data we have
+the engine assesses or should assess and figure out if we agree." Grading
+picks against four summary rules was not that. Reading all 214 columns
+turned up five defects, each measured over all 47 games before being written
+down. Reproduce with `_ncaaf_data_defects_1031.py`.
+
+### R102 — 41 of 47 PICKS WERE LOCKED BEFORE THE STATS THEY REST ON
+`pick_locked_at` is **2026-10-29T01:42 / 14:12** on 41 of today's 47 games.
+`team_form_enriched_at` and `team_tendencies_updated_at` are
+**2026-10-30T22:02**. So the pick was frozen on Wednesday, the team stats it
+is supposed to be built from were replaced ~32 hours later, and **nothing
+re-evaluates the locked pick against the new numbers**.
+
+This is the single biggest finding on the slate. It means today's NCAAF board
+is an opinion formed on stale inputs, and every per-game "do we agree"
+question is really "do we agree with Wednesday". It also explains how a pick
+can contradict the very stats printed beside it in Game Detail -- the page
+renders the fresh numbers, the pick remembers the old ones.
+
+Same computed-once-never-re-run shape as the stale QB fields
+(project_qb_starter_chain_is_backward_looking_1023) and the v4 feature
+blindness. The lock itself is correct -- users must not see the call move --
+but a lock is not a reason to skip RE-SCORING: the right behaviour is to
+re-score, keep the published side, and flag the row when the fresh data no
+longer supports it, rather than silently carrying the old verdict.
+
+### R103 — projected_spread disagrees with our OWN predicted points, on ALL 47
+`model_pred_home_points` minus `model_pred_away_points` does not equal
+`projected_spread` on a single game. Median gap **4.28 pts**, max **16.65**:
+
+    UTEP @ North Dakota State   points imply +18.20   projected_spread +34.85
+    Stanford @ Louisville       points imply +13.50   projected_spread +25.45
+    Notre Dame @ Navy           points imply -10.40   projected_spread -20.32
+
+`projected_spread` tracks the SP+ rating differential (`sp_gap` -11.5 to
+-8.01 on Ohio State @ USC, about 0.7x), while the points come from a separate
+scoring projection. Neither is reconciled to the other.
+
+This is not cosmetic. `ncaaf_projected_spread` is the **highest-weighted
+signal in the whole ensemble** (weight 0.91, hit 0.707, n=348) and it fires
+off the MORE EXTREME of the two numbers, so every "model projects an N-point
+edge" claim is systematically inflated against the market. It is also what
+Game Detail shows users as our projection. Decide which is the projection,
+derive the other from it, and re-measure the signal's hit rate afterwards --
+0.707 was earned by the inflated version.
+
+### R104 — sp_plus_matchup_total is NEGATIVE: it is not a total
+Stored in a column named `..._total`, its values are -44.5, -28.4, -24.4,
+-16.5, -15.0 while `projected_total` reads 52-61 and matches the predicted
+points sum exactly (56.76 vs 56.8). All 47 games differ by at least 1; the
+worst is **101.26 apart**. Whatever is written here is a differential or a
+gap, not a matchup total, and anything keyed on it reads a nonsense number.
+
+### R105 — 14 columns are EMPTY on every game: families the engine never weighs
+    consensus_fade_flag / _n / _note / _pct / _side   (a whole fade family)
+    matched_patterns                                  (pattern matching)
+    primary_play_shadow_v2, shadow_v2_generated_at    (the v2 shadow)
+    home_returning_production_def, away_..._def       (only offence populated)
+    sweat_tier_current, team_trends_updated_at
+    close_locked_at, season_week
+
+Andy's engine-selection standard names ATS situational, team-stat mismatches
+and model consensus; the consensus-fade family and matched_patterns are
+exactly that machinery, present as schema and never filled. Either populate
+or drop them -- an empty column reads as "no signal" rather than "no data",
+which is feedback_zero_rows_is_a_wiring_error at the column level.
+
+### R106 — thin columns a signal would see only a fraction of
+    15/47  home_talent, away_talent, home/away_rz_td_rate, ..._opp_rz_td_rate
+     7/47  home_ap_rank      8/47  away_ap_rank
+
+Red-zone efficiency and 247 talent are on under a third of the slate, so any
+signal gated on them scores a subset and its n is not the slate's n.
+
+### NOT a defect — checked and cleared
+  * `h2h_last5_avg_*` with `games_played = 0`: **0 of 47**. 34 of 47 have real
+    h2h games. I suspected this from one row and it does not hold.
+  * `home_sp_plus_off == away_sp_plus_off`: **1 of 47** (Ohio State @ USC,
+    both 38.7). One game is coincidence at this precision, not a bug.
