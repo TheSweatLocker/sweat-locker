@@ -4605,3 +4605,57 @@ is deterministic: on a spread the line is the handicap from our side so
 higher is always better; on a total an OVER wants a lower bar and an UNDER
 a higher one. Six cases unit-checked including a favourite (-7 -> -6.5 is
 giving less, so better).
+
+### R131 🚨 THE NBA ML MODEL'S BIGGEST FEATURE READS A COLUMN THAT DOES NOT EXIST
+Found while answering "what shape should lr_v1 attribution take". It is the
+best possible argument for recording imputation.
+
+`models/nba_ml_logreg.json` has 4 features:
+
+    close_spread    beta -0.3130    in nba_game_context, 100% populated
+    close_total     beta +0.0294    in nba_game_context, 100% populated
+    close_home_ml   beta -0.1364    NOT A COLUMN
+    close_away_ml   beta +0.6376    NOT A COLUMN   <- the LARGEST beta
+
+The data exists and is 100% populated on all 21 scored rows -- under
+`home_ml_close` / `away_ml_close`. Pure spelling mismatch between the
+training table and the context table. mlb_ml_logreg_predict does
+
+    v = _to_float(ctx.get(f))
+    if v is None: v = medians[i]
+
+so both price features are silently pinned to the TRAINING MEDIAN on every
+single NBA game, including the one carrying more than double the weight of
+any other.
+
+WHAT IT COSTS (recomputed offline on the 21 scored games, nothing written):
+
+    as-is   p_home_win 0.5249 .. 0.6506   spread 0.1257   HOME on 21 of 21
+    fixed   p_home_win 0.3973 .. 0.6988   spread 0.3015   3 side flips
+    PRIME-capable games (p>=.65 or <=.35):  1  ->  6
+
+A model whose dominant feature is a constant leans on its intercept, so it
+predicts HOME on every game and cannot leave a narrow band. That is a
+causal explanation for two things already in the backlog as mysteries:
+the NBA favourite/home lock, and "NBA reaches the POTD gate of 70 on 0 of
+127 reads" / "NBA's max score EVER is 0.620".
+
+NOT SHIPPED. It is a bug fix -- feed the model the price it was trained on
+-- but it changes NBA pick SELECTION on a live surface (3 of 21 flips), and
+pick composition is Andy's call. The alias is one dict:
+    {'close_home_ml': 'home_ml_close', 'close_away_ml': 'away_ml_close'}
+Measured by `_measure_lr_imputation_1031.py` and the what-if in the session
+scratchpad. NEEDS A GREEN LIGHT, then re-measure the NBA record after.
+
+CHECK THE OTHER MODELS THE SAME WAY before trusting them: of features the
+context actually carries, imputation on SCORED rows is NFL 0 of 7, NCAAF
+0 of 6, NHL 0 of 4, MLB 35 of 107 (3.8% of |z|, n=1 so thin), NBA 2 of 4
+(37.4% of |z|). Only NBA is broken, and only NBA has a name mismatch.
+
+MY FIRST CUT OF THIS MEASUREMENT WAS WRONG and the correction is the
+method lesson: sampling every context row in the window reported NHL at
+4-of-4 imputed and 100% of |z| from medians, which would mean a constant
+p_home_win. The stored NHL values are distinct per game (10-29: 7 of 7
+distinct, 0.4415..0.6653), so the figure was an artifact of a window that
+was mostly FUTURE games whose features are not populated yet. Measure
+imputation only on rows the model actually SCORED.
