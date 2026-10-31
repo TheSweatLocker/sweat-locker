@@ -373,6 +373,73 @@ def lh_game_id(sport: str, game_id: str, date: str, away: str,
     return '%s_%s_%s' % (str(date).replace('-', ''), away, home)
 
 
+def modal_posted_line(sport: str, game_id: str, market: str,
+                      side: str) -> tuple:
+    """(modal line, books at it, total books) at the NEWEST capture.
+
+    == 2026-10-31 . R126 . WE QUOTE THE CONTEXT, NOT THE CONSENSUS ======
+    The line this surface publishes comes from `ctx.close_spread`, and on
+    NFL that is the column documented to freeze stale once a game leaves
+    the feed. So we can publish a number only a minority of books post.
+    On the 2026-11-01 board, captured 20:26 the night before:
+
+        MIN  context +3     modal +3.5 across 9 of 11 books  <- KEY NUMBER
+        DEN  context +1.5   modal +1.0 across 6 of 11 books
+
+    MIN's crosses the key number 3, and +3.5 is materially better for the
+    dog -- it is the difference between a push and a win on a 3-point
+    Detroit margin.
+
+    THIS DOES NOT CHANGE THE PUBLISHED LINE, and deliberately so. I
+    measured the swap first and the evidence does not support shipping it:
+    of 46 fade spread receipts only 3 had a comparable divergence, 0 of 3
+    changed the graded outcome, and 30 of 37 NCAAF comparisons had fewer
+    than 3 books at the capture being compared. Worse, my own method has a
+    confound -- it compared against the EARLIEST capture on file, which can
+    predate the pick, and a dog's number generally shrinks as money arrives,
+    so "the modal line was always better" may be an artifact of the
+    timestamp rather than a real finding. n=3 with a timing confound is not
+    a basis for changing the number every football fade publishes
+    (feedback_dont_fade_prime_on_pattern_alone).
+
+    What is safe and useful is to SURFACE it: record the consensus beside
+    our quote so the divergence is visible in the run log and in the pick's
+    own audit, instead of being invisible until someone joins the tables by
+    hand. Then the better number reaches Andy, and the decision to move the
+    line stays his with the evidence in front of him.
+    """
+    want = _LH_SIDE.get(str(side or '').upper())
+    if want is None:
+        return None, 0, 0
+    mkt = 'total' if str(market).lower() == 'total' else 'spread'
+    rows = page('line_history',
+                {'select': 'side,line,book,captured_at',
+                 'sport': f'eq.{sport}', 'game_id': f'eq.{game_id}',
+                 'market': f'eq.{mkt}'})
+    if not rows:
+        return None, 0, 0
+    newest = max(str(r.get('captured_at') or '') for r in rows)
+    # one quote per book at that capture, so a book posting twice cannot
+    # manufacture a consensus (the same collapse price_faded_side makes)
+    latest = {}
+    for r in rows:
+        if str(r.get('captured_at') or '') != newest:
+            continue
+        if str(r.get('side') or '').lower() != want:
+            continue
+        lv = f(r.get('line'))
+        if lv is None:
+            continue
+        latest[str(r.get('book') or '?')] = lv
+    if not latest:
+        return None, 0, 0
+    cnt = {}
+    for v in latest.values():
+        cnt[v] = cnt.get(v, 0) + 1
+    modal = max(cnt.items(), key=lambda kv: (kv[1], -abs(kv[0])))[0]
+    return modal, cnt[modal], len(latest)
+
+
 def price_faded_side(sport: str, game_id: str, market: str, side: str,
                      line) -> tuple:
     """(price, books) for OUR side at OUR line, from posted two-sided quotes.
@@ -490,6 +557,7 @@ def build_plays(date: str) -> list[dict]:
             _feed_max_by_sport[_sp] = _t
     _feed_max = max(_feed_max_by_sport.values(), default='')
     _lags = []
+    _line_notes = []        # R126: consensus vs our quote
 
     def _lag_hours(ts: str, sport: str):
         """How far behind this SPORT's newest snapshot this one sits."""
@@ -562,9 +630,34 @@ def build_plays(date: str) -> list[dict]:
             line = ct
             label = f'{fade.title()} {ct:g}'
 
-        _our_px, _our_bk = price_faded_side(
-            sport, lh_game_id(sport, gid, date, away, home),
-            mkt, fade, line)
+        _lh_gid = lh_game_id(sport, gid, date, away, home)
+        _our_px, _our_bk = price_faded_side(sport, _lh_gid, mkt, fade, line)
+        # R126: the consensus beside our quote. Reported, never substituted
+        # -- see modal_posted_line for why the swap is not shipped.
+        _mod_ln, _mod_bk, _tot_bk = modal_posted_line(sport, _lh_gid, mkt,
+                                                      fade)
+        if (_mod_ln is not None and line is not None
+                and abs(_mod_ln - float(line)) >= 0.5 and _mod_bk >= 3):
+            # WHICH WAY IS BETTER IS DIRECTION-DEPENDENT, and the first
+            # run proved it: on 2026-11-01 the books' number was better
+            # for us on 'MIN +3' (+3.5, more points for a dog) and on
+            # 'Over 43.5' (43, a lower bar) but WORSE on 'Over 38.5'
+            # (39.5) and on 'DEN +1.5' (+1). A blanket "take the modal
+            # line" would have handed us the worse number half the time,
+            # which is the other half of why the swap is not shipped.
+            #
+            # On a spread the line is the handicap from OUR side, so
+            # higher is always better. On a total it depends on the side:
+            # an OVER wants a lower bar, an UNDER a higher one.
+            if mkt == 'total':
+                _better = (_mod_ln < float(line)) if fade == 'OVER' \
+                    else (_mod_ln > float(line))
+            else:
+                _better = _mod_ln > float(line)
+            _line_notes.append(
+                f'{label}: we quote {float(line):+g}, books post '
+                f'{_mod_ln:+g} ({_mod_bk} of {_tot_bk}) — '
+                f'{"BETTER" if _better else "worse"} for us')
         plays.append({
             'sport': sport, 'game_id': gid, 'game_date': date,
             'market': 'total' if mkt == 'total' else 'rl',
@@ -576,6 +669,11 @@ def build_plays(date: str) -> list[dict]:
             # number. None when fewer than 2 books post it -- an honestly
             # unpriced leg beats a fabricated one.
             'our_price': _our_px, 'our_price_books': _our_bk,
+            # R126: what books actually post for this side at the
+            # newest capture. Recorded, never substituted.
+            'modal_posted_line': _mod_ln,
+            'modal_posted_books': _mod_bk,
+            'books_posting': _tot_bk,
             # the public side's price, for the 'were they getting a worse
             # number' question. NOT our price.
             'public_odds': f(s.get('odds_pick')),
@@ -604,6 +702,12 @@ def build_plays(date: str) -> list[dict]:
     else:
         print('  split freshness: NO snapshots loaded -- wiring error, '
               'not an empty slate')
+    if _line_notes:
+        print(f'  ! R126 line divergence on {len(_line_notes)} '
+              f'pick(s) -- we publish the context number, books '
+              f'post another:')
+        for _n in _line_notes:
+            print(f'      {_n}')
     if skipped:
         print(f'  filtered out: {dict(skipped)}')
     return plays

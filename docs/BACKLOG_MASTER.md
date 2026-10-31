@@ -4548,3 +4548,60 @@ Of the 55 unattributed overrides since the fix, 9 had an ensemble_v2 prior
 (NHL 2, NFL 6, NBA 1) -- a genuine remaining leak. Both `_pre_lr` sites
 carry the audit, so there is a third mutation path that builds a fresh pick
 and does not. Small but real, and the same class as the original 457.
+
+### R126 · MEASURED, AND DELIBERATELY NOT SHIPPED
+The fade takes its line from `ctx.close_spread` and prices that exact
+number. On NFL that is the column documented to freeze stale, so the
+surface can publish a number only a minority of books post. On 2026-11-01,
+books captured 20:26 the night before:
+
+    MIN  context +3     modal +3.5 across 9 of 11 books   <- KEY NUMBER 3
+    DEN  context +1.5   modal +1.0 across 6 of 11 books
+    WAS -6, NYJ -1.5, IND +10, DAL -7, PIT -3.5  all match
+
+MIN's crosses the key number: +3.5 is the difference between a push and a
+win on a 3-point Detroit margin.
+
+I MEASURED THE SWAP BEFORE SHIPPING IT AND THE EVIDENCE DOES NOT SUPPORT
+IT. Across all 46 fade spread receipts ever written:
+
+    context MATCHES modal            8
+    context DIFFERS from modal       3
+    under 3 books at that capture   35   <- not comparable
+    graded, modal grades the same    3
+    graded, modal FLIPS the result   0 of 3
+
+AND MY OWN METHOD HAS A CONFOUND I could not remove: it compares against
+the EARLIEST capture on file, which can predate the pick. A dog's number
+generally shrinks as money arrives, so "the modal line was always better"
+(+1.5, +1, +1, all in our favour) may be an artifact of the timestamp
+rather than a real finding. n=3 with a timing confound is not a basis for
+changing the number every football fade publishes
+(feedback_dont_fade_prime_on_pattern_alone).
+
+WHAT SHIPPED INSTEAD: the consensus is now RECORDED beside our quote --
+`modal_posted_line`, `modal_posted_books`, `books_posting` on every play,
+so it reaches the receipt audit -- and any divergence >= 0.5 points with at
+least 3 books prints in the run log. The published number does not change.
+The information now reaches a human instead of requiring a hand join across
+two tables with different key formats.
+
+EXIT CONDITION: once there are enough comparable receipts captured at
+publish time (not the earliest capture), re-measure and decide the swap on
+evidence. The measurement script is `_measure_fade_line_source_1031.py`.
+
+AND THE DIVERGENCE CUTS BOTH WAYS, which the first live run proved and is
+the other half of why the swap is not shipped. On 2026-11-01 the books'
+number was BETTER for us on two picks and WORSE on two:
+
+    MIN +3        books +3.5 (9 of 11)   BETTER  more points for a dog
+    Over 43.5     books +43  (7 of 11)   BETTER  a lower bar
+    Over 38.5     books +39.5 (6 of 11)  worse   a higher bar
+    DEN +1.5      books +1   (6 of 11)   worse   fewer points
+
+A blanket "take the modal line" would have handed us the worse number half
+the time. The run log now tags each divergence BETTER/worse for us, which
+is deterministic: on a spread the line is the handicap from our side so
+higher is always better; on a total an OVER wants a lower bar and an UNDER
+a higher one. Six cases unit-checked including a favourite (-7 -> -6.5 is
+giving less, so better).
