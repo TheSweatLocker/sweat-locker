@@ -213,6 +213,82 @@ def resolve_pick(pick: dict, look: dict, side_look: dict | None = None) -> str |
     return look.get((player, stat))
 
 
+#: lists a graded pick can live in. top_8 feeds top_8_summary; football_picks
+#: is graded too (see the note at the resolve loop) and is a receipt source.
+_GRADED_LISTS = ('top_8', 'football_picks')
+
+
+def _confirm_written(key: str, want_summary: dict, want_results: dict):
+    """Re-READ the row and check every change actually landed.
+
+    == 2026-10-31 . R116 . "written" OVER A ROW THAT NEVER CHANGED ======
+    This script printed
+
+        Texas -6.5    None -> Loss
+        written
+
+    while jerry_cache kept reading 'Pending'. The old check was
+
+        body = pr.json() if pr.content else []
+        ok = (pr.status_code in (200, 204) and body
+              and (body[0]['data'].get('top_8_summary') or {})
+                  .get('wins') == w)
+
+    and it passes while nothing is written, for three separate reasons:
+
+      * IT ASSERTS A FIGURE THAT WAS ALREADY TRUE. A pending -> Loss
+        transition does not change `wins`, so the OLD row satisfies the
+        test. Every grade that is not a win is unverified by it.
+      * IT READS THE PATCH'S OWN ECHO. `Prefer: return=representation`
+        returns the row the server ended up with, so if a trigger reverts
+        the write it echoes the PRE-write row and the assertion is made
+        against the state we were trying to change
+        (feedback_204_is_not_a_write).
+      * A 204 HAS NO BODY, so `body` is empty, `ok` is falsy, and a
+        successful minimal-return write printed "WRITE FAILED".
+
+    So: an independent GET, and assert the thing that was supposed to
+    change -- each pick's new result, by label -- not an aggregate that
+    may be identical either way.
+    """
+    r = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H, timeout=60,
+                     params={'select': 'data', 'cache_key': f'eq.{key}'})
+    if r.status_code != 200:
+        return False, f'readback HTTP {r.status_code}'
+    rows = r.json()
+    if not rows:
+        return False, 'readback found no row'
+    data = rows[0].get('data')
+    if isinstance(data, str):            # the column can come back as text
+        try:
+            data = json.loads(data)
+        except Exception:                                      # noqa: BLE001
+            return False, 'readback data is not parseable JSON'
+    if not isinstance(data, dict):
+        return False, 'readback data is not an object'
+    got = {}
+    for name in _GRADED_LISTS:
+        for it in (data.get(name) or []):
+            if isinstance(it, dict):
+                got[_norm_label(it.get('label') or it.get('pick'))] = \
+                    str(it.get('result') or '')
+    missing = [lbl for lbl in want_results if lbl not in got]
+    if missing:
+        return False, f'{len(missing)} pick(s) not found on readback'
+    wrong = [(lbl, got[lbl], wanted)
+             for lbl, wanted in want_results.items()
+             if got[lbl] != wanted]
+    if wrong:
+        lbl, g, wanted = wrong[0]
+        return False, (f'{len(wrong)} pick(s) still wrong, e.g. {lbl!r} '
+                       f'reads {g!r}, wanted {wanted!r}')
+    if (data.get('top_8_summary') or {}) != want_summary:
+        return False, (f'top_8_summary is '
+                       f'{json.dumps(data.get("top_8_summary"))}, wanted '
+                       f'{json.dumps(want_summary)}')
+    return True, ''
+
+
 def _et_today_date() -> date:
     """Today in ET, not on the runner's clock.
 
@@ -240,6 +316,7 @@ def main() -> int:
     today = _et_today_date()
     changed_rows = 0
     changed_picks = 0
+    failed_writes = 0
     print(f'=== refresh card grades · last {args.days} days ===\n')
     # 2026-10-04: the range started at 1, so TODAY's card was never
     # refreshed — `--days 1` looked only at yesterday. Today's card showed
@@ -299,14 +376,23 @@ def main() -> int:
             pr = requests.patch(f'{SB}/rest/v1/jerry_cache', headers=H_W, timeout=60,
                                 params={'cache_key': f'eq.{key}'},
                                 data=json.dumps({'data': blob}))
-            body = pr.json() if pr.content else []
-            ok = (pr.status_code in (200, 204) and body
-                  and (body[0]['data'].get('top_8_summary') or {}).get('wins') == w)
-            print(f'    {"written" if ok else "WRITE FAILED " + str(pr.status_code)}')
+            want = {}
+            for lbl, _was, now in fixed:
+                want[_norm_label(lbl)] = now
+            ok, why = _confirm_written(key, new, want)
+            print(f'    {"written" if ok else "NOT CONFIRMED -- " + why}')
+            if not ok:
+                failed_writes += 1
     print(f'\n{changed_picks} pick(s) across {changed_rows} card(s) '
           f'{"updated" if args.apply else "would update"}')
     if not args.apply and changed_rows:
         print('re-run with --apply')
+    # R116: a write this script could not CONFIRM must not exit 0. The
+    # nightly chain reads the exit code, and "written" printed over a row
+    # that never changed is the whole defect being fixed here.
+    if failed_writes:
+        print(f'!! {failed_writes} card write(s) NOT CONFIRMED on readback')
+        return 1
     return 0
 
 
