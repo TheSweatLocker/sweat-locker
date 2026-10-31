@@ -3754,3 +3754,46 @@ it follows Andy's 10-30 ruling (`_unvoid_published_card_picks.py`): the
 Sharp really did show them to whoever was looking this morning, and a
 record that drops the plays it later wishes it had not made is not a
 record. The understated ROI is the open half, and it needs the R96 decision.
+
+### R99 — TWO public feeds, one declared source, different public SIDE in 34%
+`line_snapshot` and `ncaaf_game_context.oddscrowd_snapshot` both report
+`source='oddscrowd'` and carry different numbers for the same game+market.
+On today's 38 NCAAF games where both hold an rl public side:
+
+  * **13 (34%) name a DIFFERENT public side**
+  * **9 would produce a different FADE decision** at the 65% ticket threshold
+
+Worst cases: California @ NC State (LS AWAY 37% vs OC HOME 81%), UTEP @ North
+Dakota State (LS AWAY 75% vs OC HOME 32%), Louisiana Tech @ South Alabama
+(LS HOME 68% vs OC AWAY 39%). Not drift and not a clean inversion -- 37 and
+81 do not complement.
+
+`generate_the_fade` reads **line_snapshot** and is right to; its backtest
+(football spreads, bets>=65: 63-44, 58.9%, ROI +12.4%, n=107) was measured
+on that feed. But **Game Detail renders the context copy**, so the money-flow
+stat a user sees beside a play can name the opposite public side from the one
+the play was built on. A user checking our work sees us contradict ourselves.
+
+Needed: decide which copy is authoritative, make the other derive from it,
+and have the UI read the same one the pick was made from. Do NOT average
+them (project_cz_splits_contradict_oddscrowd_1029).
+
+### R100 — line_snapshot under-captured today: 14 NCAAF rows vs 128 yesterday
+Normal cadence is 7-15 captures/day. Today produced 2 capture times and 14
+NCAAF rows, so every fade trigger for a 47-game Saturday slate fired on the
+**10-30 03:48** snapshot, ~32h before kickoff. Mitigated in fact -- 13 of the
+15 triggering lines are UNCHANGED since (only Louisiana Tech and
+South Carolina @ Oklahoma moved, 1pt each) -- so the triggers are still live.
+But that is luck, not design: nothing checks snapshot age before firing.
+Add a staleness guard that refuses or flags a fade whose trigger snapshot
+predates the current line.
+
+### R101 — a card can publish a tier the engine never assigned
+`Louisville -22.5` is on the Sweat Card at **STRONG** while
+`ncaaf_game_context.primary_play` rates that game **COVERAGE conv=56**. And
+`Oklahoma -3.5` is on the card although the engine's primary_play for
+South Carolina @ Oklahoma is **Over 44.5 (total, PASS)** -- Oklahoma -3.5 is
+purely a Fade pick. Both are legitimate (the Fade is our best live surface at
++7.02% n=74, and it assigns its own tier via tier_source=fade_evidence), but
+a reader comparing the card to Game Detail sees a STRONG play the game page
+calls COVERAGE. The card should show WHICH surface earned the tier.
