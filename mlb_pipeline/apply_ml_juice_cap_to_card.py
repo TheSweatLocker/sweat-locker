@@ -76,7 +76,7 @@ H_W.update({'Content-Type': 'application/json',
             'Prefer': 'return=representation'})
 
 MAX_JUICE = -300                      # defensive_gates._ml_odds_too_juiced
-BLOBS = ('top_8', 'unified_top_picks')
+from card_summaries import CARD_LISTS as BLOBS   # includes football_picks
 VOIDS = ('VOID', 'VOIDED')
 SPORTS = ('NCAAF', 'NFL', 'NBA', 'NHL', 'MLB', 'NCAAB')
 #: the same fallback chain the gate uses, plus each table's own spelling

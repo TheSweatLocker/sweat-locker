@@ -42,6 +42,33 @@ from __future__ import annotations
 #: (list key, summary key). Both pairs the app actually reads.
 PAIRS = (('top_8', 'top_8_summary'),
          ('unified_top_picks', 'unified_summary'))
+
+# ══ 2026-10-31 · A CARD BLOB HAS THREE LISTS, NOT TWO ════════════════
+# Withdrawing a pick has to touch EVERY list, and the two consumers do not
+# read the same pair:
+#
+#     top_8              rendered (its summary is RecapStrip's headline)
+#                        AND a receipt source
+#     unified_top_picks  rendered (the list users scroll, and CARD RESULT)
+#     football_picks     a RECEIPT SOURCE ONLY -- public_receipt
+#                        .sweat_card_rows reads ('top_8', 'football_picks')
+#
+# I withdrew 'Colorado Avalanche ML' at -385 and the duplicate
+# 'Marshall ML' from top_8 and unified_top_picks, and voided their
+# receipts. Both were back on the card three hours later:
+#
+#     19:16/19:19  removed from the 2 rendered lists, receipts VOIDed
+#     20:24        backfill_public_receipts re-minted them FROM
+#                  football_picks, which still held both -- and the
+#                  partial unique index excludes voided rows, so inserting
+#                  the same source_id again was legal
+#     21:16        the reconciler saw live receipts and restored both
+#                  picks to the rendered lists
+#
+# So a withdrawal that misses football_picks is not a withdrawal; it is a
+# three-hour delay (feedback_prop_family_ban_three_layer -- ban it in
+# every layer, not the one you happen to be looking at).
+CARD_LISTS = ('top_8', 'unified_top_picks', 'football_picks')
 WON = ('WIN', 'W', 'WON')
 LOST = ('LOSS', 'L', 'LOST')
 PUSHED = ('PUSH', 'TIE')

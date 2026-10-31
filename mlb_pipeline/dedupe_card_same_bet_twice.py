@@ -83,7 +83,7 @@ H_W = dict(H_R)
 H_W.update({'Content-Type': 'application/json',
             'Prefer': 'return=representation'})
 
-BLOBS = ('top_8', 'unified_top_picks')
+from card_summaries import CARD_LISTS as BLOBS   # includes football_picks
 VOIDS = ('VOID', 'VOIDED')
 #: higher wins the slot
 TIER_RANK = {'PRIME': 5, 'STRONG': 4, 'LEAN': 3, 'COVERAGE': 2, 'PASS': 1}
@@ -122,6 +122,20 @@ def side(lbl):
 
 def rank(it):
     return TIER_RANK.get(str(it.get('tier') or '').upper(), 0)
+
+
+def norm_lbl(v):
+    return ' '.join(str(v or '').split()).lower()
+
+
+def bet_key(it):
+    """The identity of the bet, or None when it cannot be judged."""
+    mk = market(it.get('type'))
+    sd = side(it.get('pick') or it.get('label'))
+    if mk in ('ml', 'rl') and sd and sd not in ('over', 'under'):
+        return ('SIDE', str(it.get('sport') or ''), mk, sd)
+    gid = it.get('game_id')
+    return (str(gid), mk, sd) if gid else None
 
 
 def run_date(date: str, apply: bool) -> int:
@@ -190,12 +204,48 @@ def run_date(date: str, apply: bool) -> int:
                 print('      DROP %r tier=%s odds=%s'
                       % (r.get('pick') or r.get('label'), r.get('tier'),
                          r.get('odds')))
-                dropped_labels.append(r.get('pick') or r.get('label'))
+                dropped_labels.append((k, norm_lbl(r.get('pick')
+                                                   or r.get('label'))))
             drop.extend(id(r) for r in rest)
         if drop:
             blob[name] = [it for it in items
                           if not (isinstance(it, dict) and id(it) in drop)]
             changed = True
+
+    # ══ 2026-10-31 · PURGE THE LOSING VARIANT FROM EVERY LIST ════════
+    # The duplicate is ACROSS lists, not only within one. On 10-31 the POTD
+    # 'Marshall ML (Jerry 81/100)' and the composite 'Marshall ML' both sat
+    # in top_8, and the composite ALSO sat in football_picks. Deduping each
+    # list independently leaves the loser in football_picks, which is a
+    # RECEIPT SOURCE -- public_receipt.sweat_card_rows reads
+    # ('top_8', 'football_picks'). So backfill_public_receipts re-mints its
+    # receipt and the reconciler puts the pick back on the card. That round
+    # trip took three hours on 10-31 and undid both of this morning's
+    # withdrawals.
+    #
+    # Matched on the bet KEY *and* the losing label, not the label alone:
+    # 10-03 carries two 'under 7.0' on different games, and a label-only
+    # purge would take both. A total keys on game_id, so a different game
+    # is a different key and cannot be caught by this.
+    if dropped_labels:
+        losers = set(dropped_labels)
+        for name in BLOBS:
+            items = blob.get(name)
+            if not isinstance(items, list):
+                continue
+            keep = []
+            for it in items:
+                if isinstance(it, dict) and (
+                        bet_key(it),
+                        norm_lbl(it.get('pick') or it.get('label'))
+                ) in losers:
+                    continue
+                keep.append(it)
+            if len(keep) != len(items):
+                print('  %s [%s] purged %d losing variant(s) this list still '
+                      'carried' % (date, name, len(items) - len(keep)))
+                blob[name] = keep
+                changed = True
 
     if not changed:
         return 0

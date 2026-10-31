@@ -4439,3 +4439,49 @@ Sunday slate; it alters which number every football fade publishes.
     conviction min 51 median 55 max 65  ->  POTD gate is 70, so no NFL POTD
     207 of 220 NFL receipts for 11-01 are already VOID — the future-dated
               rows voided after the 10-28 backfill incident, not a new bug
+
+### R127 · A CARD BLOB HAS THREE LISTS AND I WITHDREW FROM TWO
+Both of this morning's withdrawals were back on the card by 21:16. Timeline:
+
+    19:16/19:19  'Colorado Avalanche ML' -385 and the duplicate
+                 'Marshall ML' removed from top_8 + unified_top_picks,
+                 their receipts VOIDed, readbacks CONFIRMED
+    20:24        backfill_public_receipts minted NEW reconstructed
+                 receipts with the SAME source_id (3982894, 3982895)
+    21:16        the nightly reconciler saw live receipts and restored
+                 both picks to the rendered lists
+
+Two causes, both mine:
+  * `football_picks` is a RECEIPT SOURCE -- public_receipt.sweat_card_rows
+    reads ('top_8', 'football_picks'), while my scripts edited
+    ('top_8', 'unified_top_picks'). The pick never left football_picks, so
+    the backfill re-minted it from there.
+  * the partial unique index on (sport, surface, game_date, source_id)
+    EXCLUDES voided rows, so re-inserting the same source_id is legal.
+    Voiding a receipt therefore does not withdraw a pick on its own --
+    exactly the risk named in repair_reconciled_card_item_identity's own
+    docstring, which I wrote this morning and then did not apply here.
+
+Fixed with `card_summaries.CARD_LISTS` = the three lists, used by the two
+scripts that REMOVE. The reconciler deliberately stays on the two rendered
+lists, because it only ever ADDS and football_picks is the sport-specific
+NFL/NCAAF appendix: restoring an NBA or NHL pick into it would misfile it
+AND mint a receipt for it. Addition and removal are not symmetric.
+
+The dedupe also needed a cross-list purge: the duplicate was ACROSS lists
+(POTD in top_8, composite in top_8 AND football_picks), so deduping each
+list independently left the loser in the receipt source. Matched on the bet
+KEY plus the losing label, never the label alone -- 10-03 carries two
+'under 7.0' on different games and a label-only purge would take both.
+
+`void_card_duplicate_bet_receipts.py` handles the graded case the dedupe
+correctly refuses: 3982894 'Marshall ML' read WIN alongside the POTD's WIN,
+so one result moved the card record twice. Gated on same sport + market +
+team, same result, a reconstructed loser and a higher-tier survivor; a
+result DISAGREEMENT is reported for a human rather than voided.
+
+### R128 · football_picks carries a priceless copy of a priced pick
+`New Mexico -14.5` sits in football_picks with odds=None while top_8 and
+unified_top_picks carry it at -110. Same source_id so the receipt dedupes
+to the priced one, but a receipt source holding a priceless row is one
+backfill ordering away from writing it.

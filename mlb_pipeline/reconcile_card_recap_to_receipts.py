@@ -85,6 +85,17 @@ WON = ('WIN', 'W', 'WON')
 LOST = ('LOSS', 'L', 'LOST')
 PUSHED = ('PUSH', 'TIE')
 #: the two lists RecapStrip and the home card read
+# ══ 2026-10-31 · ADDITION AND REMOVAL ARE NOT SYMMETRIC ══════════════
+# A card blob has three lists (card_summaries.CARD_LISTS) and a WITHDRAWAL
+# must touch all three, because public_receipt.sweat_card_rows reads
+# ('top_8', 'football_picks') and leaving a pick in football_picks lets the
+# backfill re-mint its receipt -- which is exactly how a -385 ML and a
+# duplicate came back three hours after being pulled.
+#
+# ADDING is different. football_picks is a SPORT-SPECIFIC list (it is the
+# NFL/NCAAF appendix) and it is a receipt source, so restoring an NBA or
+# NHL pick into it would both misfile it and mint a receipt for it. This
+# script only ever adds, so it stays on the two rendered lists.
 BLOBS = ('top_8', 'unified_top_picks')
 from card_summaries import PAIRS as _PAIRS
 
