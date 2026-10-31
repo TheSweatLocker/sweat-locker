@@ -3219,3 +3219,18 @@ public-money fade on spreads (+12.4% n=107), the short football spread flip
 (62.0% n=121), wind>=12 UNDER (55.8%, 17 of 26 seasons). Give a
 market-structure family real weight, THEN re-run the leverage script; if
 disagreement has risen the fitter becomes worth writing.
+
+## R80 · line_snapshot CANNOT JOIN NFL RESULTS — 2026-10-30
+Measuring the public-money fade per sport: NCAAF joined 995/1000 (99.5%),
+NBA 224/224, NHL 174/174, MLB 2013/2025 — and NFL **0 of 58**.
+line_snapshot.game_id carries the Odds API hash while nfl_game_results keys
+on the schedule id (20260910_NE_SEA), the mismatch
+resolve_nfl_results.fetch_result_map already documents and that left every
+NFL pick ungraded until 09-11.
+So NFL public money is UNMEASURED, not edgeless — do not read its absence
+from the fade table as "no edge there"
+(feedback_zero_rows_is_a_wiring_error).
+FIX: bridge_football_game_ids.py already exists for this family; point it at
+line_snapshot, or match on (away, home, week-bucket) exactly as
+check_pipeline_health does. NFL is the sport where family disagreement is
+highest (42.5%), so it is the one most likely to benefit.
