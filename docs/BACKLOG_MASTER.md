@@ -3272,3 +3272,30 @@ NEXT: a spread-only signal on heavy money share, side = OPPOSITE of
 pick_side, per-sport (NCAAF + MLB on; NHL OFF, it inverts at 38.9% both
 halves; NBA/NFL unmeasured, NFL blocked by R80). Do not pool the two
 predicates under one weight — they are not the same evidence.
+
+## R81 RESOLVED · NOT A CODE BUG — AN OFF SWITCH AND AN ORDERING GAP — 2026-10-30
+Replayed signal 753 (oddscrowd_rl_fade_boost_ncaaf) through the scorer's own
+evaluate_bool/evaluate_str/evaluate_float against live rows. On all 11
+NCAAF games since 10-30 carrying rl.fade=='boost' it returns
+cond=True, side='HOME_RL'/'AWAY_RL', strength=0.30 — it would emit an
+Opinion on every one. The expression layer is healthy; the isinstance fix
+took.
+It records nothing for two stacked reasons:
+  1. enabled=False on 753, the NCAAF rl variant — _load_sources never hands
+     it to the loop. The NCAAF *total* variant (754) IS enabled and totals
+     measure 48.5% n=198, no edge. The off switch is on the useful one.
+  2. For the variants that ARE enabled, the data lands too late. On 64 of 93
+     NCAAF rows with both timestamps, oddscrowd_snapshot.pulled_at is AFTER
+     pick_locked_at/computed_at — Kent State @ Sacramento State was computed
+     10-29 14:12 and its snapshot arrived 10-30 22:03, 32 HOURS later. At
+     scoring time the condition is honestly False.
+Weight is NOT the blocker: edge_weight returns a 0.20 floor for
+hit_rate=None, which is MORE than a measured signal one point over
+breakeven earns (0.124) — the favourite-bias floor documented at
+ensemble_scorer.py:1006.
+FIX, in order: (a) move the oddscrowd/align_status pull BEFORE the scoring
+step so the data exists when the engine reads it — same ordering shape as
+R77's flip; (b) only then decide enablement, and decide it on R82's
+measurement (the enabled variants key on the predicate that does not clear).
+Sanity check worth keeping: on Tulane @ Charlotte the signal says HOME_RL =
+Charlotte, the exact side the Sharp published via the flip tonight.
