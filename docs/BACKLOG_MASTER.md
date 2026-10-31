@@ -3299,3 +3299,46 @@ R77's flip; (b) only then decide enablement, and decide it on R82's
 measurement (the enabled variants key on the predicate that does not clear).
 Sanity check worth keeping: on Tulane @ Charlotte the signal says HOME_RL =
 Charlotte, the exact side the Sharp published via the flip tonight.
+
+## R83 · THE BACKFILL ERASES LIVE RECEIPT PROVENANCE — 2026-10-30
+Live prop capture shipped yesterday (26f62394, 10-29, "Prop Jerry gets a
+live receipt capture — it never had one"). Since then, prop_jerry receipts
+for 2026-11-01 games: **189 reconstructed, 1 live**. Same date, same games.
+Leading cause: backfill_public_receipts.py:148 does
+`_r.setdefault('capture_mode','reconstructed')` on the PAYLOAD, so every
+backfilled row carries 'reconstructed', and the on_conflict upsert
+overwrites whatever was stored. capture_mode is NOT protected —
+trg_freeze_receipt_identity names only `NEW.audit := OLD.audit`
+(20260918a/b), so audit is immutable and capture_mode is not. A live
+capture followed by a backfill therefore loses its own provenance.
+WHY IT MATTERS: of 19,283 graded prop receipts, 19,282 are reconstructed.
+The LIVE record for the whole app is 672 graded bets, and props contribute
+ONE of them. Every prop percentage in the product is a reconstruction, and
+on surfaces where both modes exist the reconstructed half reads 59.40%
+/+5.06% against the live half's 56.00% /-3.65% — so reconstructed rows
+flatter, which means the negative NFL prop numbers are if anything
+optimistic.
+FIX: make capture_mode first-write-wins. Either add it to the freeze trigger
+beside audit, or have the backfill omit the column on conflict so it cannot
+downgrade an existing live row. Same shape as
+feedback_fix_every_writer_to_the_table.
+
+## R84 · I VOIDED TWO PUBLISHED PICKS FOR A BOOKKEEPING REASON — 2026-10-30
+Orlando Magic +5.5 (receipt 3981856, section=top_8 rank=2) and Golden State
+Warriors +3.5 (3981857, rank=3) were published to the Sweat Card at
+21:53:31 and replaced by Minnesota -7.5 at 22:20:35 — live, pre-game, for
+~27 minutes. I voided both as "orphaned after the recompose". That is
+erasing plays users could act on, for a reason that is ours and not the
+pick's, and it is exactly the denominator loss 20261025a warns about ("the
+only available remedy ... is to void it and lose the play from the
+denominator entirely"). Both carried tier_source=fade_evidence:tracking,
+i.e. they came from the market-structure path, and Andy independently named
+Magic +5.5 as one of the night's good picks.
+Houston -6.5 (3981655) is NOT in this class — it was voided for a coherence
+failure, our own projection not covering the line we laid, which is a
+property of the pick.
+DECISION NEEDED: un-void 3981856 and 3981857 so they grade. The competing
+concern is double counting, since Minnesota -7.5 replaced them in the same
+slot and grading all three gives the card 5 NBA picks for 3 slots. The
+honest answer is probably to grade all of them and record that the card was
+recomposed, rather than delete the earlier version.
