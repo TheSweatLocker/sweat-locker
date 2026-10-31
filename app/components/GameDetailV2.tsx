@@ -2079,11 +2079,57 @@ function oddsFromSummary(summary: any): {ml: any; rl: any; total: any} | null {
 }
 
 function MoneyFlow({ctx, sport}: any) {
-  // Prefer splits_summary (multi-source aggregate). Fallback to
-  // oddscrowd_snapshot for ctxs that haven't been re-aggregated yet.
+  // ══ 2026-10-31 · SHOW THE FEED THE PICK WAS MADE FROM (R99) ══
+  //
+  // These bars name a public SIDE, and a user reads that side as our
+  // reason for the play. It has to be the side the play was actually
+  // made from, and it was not. On the 10-31 slate the side this card
+  // showed disagreed with the side the fade fired on in 48 of 170
+  // markets — 28.2%, and 26 of those were at a public share the fade
+  // acts on:
+  //
+  //   NCAAF  ml  7/29   rl 13/45   total  9/45
+  //   NBA    ml  1/7    rl  4/7    total  4/7
+  //   NHL    ml  1/10   rl  6/10   total  3/10
+  //
+  // It is not a parsing bug. Every one of the 186 side-pairs in
+  // splits_summary sums to exactly 100, so the aggregate is well
+  // formed — the two feeds disagree on the underlying data. Kansas @
+  // TCU moneyline:
+  //
+  //   oddscrowd / line_snapshot   HOME  86% tickets  89% money
+  //   splits_summary              HOME  93% tickets  14% money
+  //                               AWAY   7% tickets  86% money
+  //
+  // The ticket shares roughly agree; the MONEY is inverted, on a row
+  // whose own sources_agree is 1. That is the cz/fr inversion already
+  // documented on 10-29, when the favourite ticket share crossed 50 on
+  // 4 of 4 games checked (MIN 37->80, LAC 70->41, Maryland 76->35,
+  // ODU 62->30) and we published two dogs the public was ON.
+  //
+  // So oddscrowd wins, for one reason that outranks source count: it is
+  // the feed the only validated edge we have was MEASURED on — fade
+  // heavy public football spreads, 58.9%, n=107, ROI +12.4% — and
+  // generate_the_fade.py:303 fires on line_snapshot, of which
+  // oddscrowd_snapshot is the context mirror (identical bets/money/pick
+  // on every market checked). A card that contradicts the pick is worse
+  // than a card with fewer sources.
+  //
+  // Merged PER MARKET, not whole-object, so this cannot lose the
+  // cz/fr-only coverage that moved this card onto splits_summary on
+  // 09-07: oddscrowd wins each market it has, splits_summary fills the
+  // rest. SplitsSummaryPanel below is untouched — it is explicitly the
+  // multi-source breakdown and carries its own confirmation chips.
   const fromSummary = oddsFromSummary(ctx?.splits_summary);
-  const src = fromSummary || (ctx?.oddscrowd_snapshot as any);
-  if (!src || typeof src !== 'object') {
+  const fromOddscrowd = (ctx?.oddscrowd_snapshot
+                         && typeof ctx.oddscrowd_snapshot === 'object')
+    ? (ctx.oddscrowd_snapshot as any) : null;
+  const src = (fromOddscrowd || fromSummary) ? {
+    ml:    fromOddscrowd?.ml    ?? fromSummary?.ml    ?? null,
+    rl:    fromOddscrowd?.rl    ?? fromSummary?.rl    ?? null,
+    total: fromOddscrowd?.total ?? fromSummary?.total ?? null,
+  } : null;
+  if (!src || (!src.ml && !src.rl && !src.total)) {
     // No source attribution. When money data is missing, we say nothing about
     // provenance (competitive moat — see feedback re: Action Network model).
     // Hidden rather than "no data" copy since presence is itself a signal.

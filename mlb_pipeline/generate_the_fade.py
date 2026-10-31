@@ -87,6 +87,26 @@ H_WRITE = {**H, 'Content-Type': 'application/json',
 #: toward the 52.38% breakeven. Env-overridable so it can be tuned on
 #: evidence rather than by editing code.
 FADE_MIN_PUBLIC = float(os.environ.get('FADE_MIN_PUBLIC', '65'))
+# ══ 2026-10-31 · A FADE ON A STALE SPLIT IS A FADE ON NOTHING (R100) ══
+# Measured BY RECENCY, NOT BY AGE. The obvious guard -- refuse a snapshot
+# older than N hours -- would block this script every morning: the pull
+# cadence has a median gap of 1.50h but a p90 of 8.58h and a max of 29.15h
+# (n=669 consecutive pulls), because the feed goes quiet overnight. Today's
+# newest pull before the 10:56 fade run was 03:27, so an absolute 6h bound
+# would have refused the entire slate on a feed that was working perfectly.
+#
+# What actually signals staleness is a game falling BEHIND THE FEED: the
+# puller refreshed other games in the latest cycle and not this one. So the
+# bound is the lag between this game/market's newest snapshot and the newest
+# snapshot anywhere in the loaded set. Overnight everything is equally old
+# and the lag is ~0, which is the correct answer -- the data is current, the
+# market is just closed (feedback_verify_freshness_by_recency_not_date).
+#
+# On the 10-31 slate every one of 170 game/markets sat within 0.6h of the
+# feed max, so this blocks nothing in normal operation. It exists for the
+# 10-29 failure mode, where compute_align_status defaulted to TODAY on a
+# weekly sport and left line_snapshot dark on 0 of 310 forward games.
+FADE_MAX_LAG_H = float(os.environ.get('FADE_MAX_LAG_H', '6'))
 
 #: Markets allowed. Spreads and totals only - see the moneyline note above.
 FADE_MARKETS = ('rl', 'spread', 'total')
@@ -412,10 +432,38 @@ def build_plays(date: str) -> list[dict]:
 
     plays = []
     skipped = defaultdict(int)
+    # the freshest thing the feed produced, across every sport and market.
+    # Computed from the loaded set rather than re-queried, so it is exactly
+    # the data these picks are made from.
+    _feed_max = max((str(z.get('snapshot_ts') or '')
+                     for z in splits.values()), default='')
+    _lags = []
+
+    def _lag_hours(ts: str):
+        """How far this snapshot sits behind the newest one in the feed."""
+        if not ts or not _feed_max:
+            return None
+        try:
+            a = dt.datetime.fromisoformat(str(_feed_max).replace('Z', '+00:00'))
+            b = dt.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            return None
+        return (a - b).total_seconds() / 3600.0
+
     for (sport, gid, mkt), s in splits.items():
         c = ctx.get((sport, gid))
         if not c:
             skipped['not on this slate'] += 1
+            continue
+        _lag = _lag_hours(s.get('snapshot_ts'))
+        if _lag is None:
+            skipped['snapshot has no usable timestamp'] += 1
+            continue
+        _lags.append(_lag)
+        if _lag > FADE_MAX_LAG_H:
+            # the puller refreshed the feed and skipped this game
+            skipped[f'split {_lag:.1f}h behind the feed '
+                    f'(cap {FADE_MAX_LAG_H:g}h)'] += 1
             continue
         _ban = FADE_BANNED.get((sport, mkt))
         if _ban:
@@ -488,6 +536,19 @@ def build_plays(date: str) -> list[dict]:
                        f' — this fades them'),
         })
     plays.sort(key=lambda p: -p['public_pct'])
+    # Printed every run, not only on a breach. A guard whose normal readings
+    # are invisible is a guard nobody can tell has gone wrong
+    # (feedback_green_step_that_writes_nothing).
+    if _lags:
+        _ls = sorted(_lags)
+        print(f'  split freshness: feed newest {_feed_max[:16]} · '
+              f'lag behind it median {_ls[len(_ls) // 2]:.1f}h '
+              f'max {_ls[-1]:.1f}h · cap {FADE_MAX_LAG_H:g}h · '
+              f'{sum(1 for x in _ls if x > FADE_MAX_LAG_H)} of {len(_ls)} '
+              f'over')
+    else:
+        print('  split freshness: NO snapshots loaded -- wiring error, '
+              'not an empty slate')
     if skipped:
         print(f'  filtered out: {dict(skipped)}')
     return plays
