@@ -4163,3 +4163,36 @@ It must run AFTER grading and BEFORE the home screen is read, in the same
 place `refresh_card_grades.py` runs, or every recompose re-creates the
 shortfall for that day. The two are complements: refresh_card_grades settles
 Pending picks that ARE in the blob; this one restores picks that are not.
+
+### R113 RESOLVED — home card record now matches the receipts
+    was shown  34-25     57.6%  n=59    (44% of the plays)
+    now shown  74-60-1   54.8%  n=135   (delta 0 against receipts)
+26 of 30 rows backfilled. Grade MIRRORING added after `refresh_card_grades`
+reported "written" on Texas -6.5 while the blob kept reading 'Pending' --
+it trusted the status code. That pass also found a WRONG grade on screen:
+`Cleveland Guardians ML` displayed as Loss where its receipt says Win.
+Texas -6.5 settled from the inverted twin (see commit). Still open: R115,
+wiring the reconciler into the daily chain, or a recompose re-creates it.
+
+### R116 — refresh_card_grades reports "written" without a readback
+It printed `Texas -6.5  None -> Loss ... written` and the blob still read
+'Pending' afterwards. Same class as feedback_204_is_not_a_write, and the
+reconciler now compensates by mirroring grades from receipts — but the
+script itself should confirm its own writes rather than trusting the status.
+
+### R117 — the same pick carries two different grades in two lists
+`sweat_card_2026-10-16`: the Nick Martinez prop reads **'Void' in top_8 and
+'Pending' in unified_top_picks**, against a receipt-vs-source conflict of
+VOID against LOSS that `sync_receipt_grades` already flags for a human.
+Not picked unilaterally — it decides what the record says about that play.
+
+### NOT a defect, and I nearly broke it
+I read four `sweat_card_2026-10-16` rows as blank because `pick` was null.
+They store the text under **`label`** instead — Nick Martinez, Appalachian
+State ML and Memphis -7 are all real picks. A prune keyed on `pick` alone
+would have deleted four real plays. The detector checks both keys and
+correctly found nothing to prune.
+
+### Checked and NOT user-facing
+`sp_plus_matchup_total` being negative (R104) appears nowhere in `app/`, so
+it is a data-quality item rather than something on screen.

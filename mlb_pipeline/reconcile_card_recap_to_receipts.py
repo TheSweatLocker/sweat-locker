@@ -192,6 +192,35 @@ def run_date(date: str, apply: bool) -> int:
                    for it in items if isinstance(it, dict)
                    and norm(it.get('pick') or it.get('label'))
                    not in {norm(x.get('pick_label')) for x in receipts}]
+        # == ALSO MIRROR THE GRADE OF PICKS ALREADY IN THE BLOB ========
+        # Adding the missing picks is only half of it. A pick that IS in the
+        # blob can still carry a stale result, and refresh_card_grades
+        # reported "written" on Texas -6.5 while the blob kept reading
+        # 'Pending' -- it trusted the status code. The receipts are the
+        # authority on a grade, so where the blob disagrees with its own
+        # receipt the receipt wins. Only fills or corrects against a
+        # receipt that HAS a decided result; a null receipt result never
+        # overwrites a decided blob result.
+        by_label = {norm(x.get('pick_label')): x for x in receipts}
+        regraded = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            rx = by_label.get(norm(it.get('pick') or it.get('label')))
+            if not rx or not rx.get('result'):
+                continue
+            want = result_word(rx.get('result'))
+            if str(it.get('result') or '') == want:
+                continue
+            regraded.append((it.get('pick') or it.get('label'),
+                             it.get('result'), want))
+            it['result'] = want
+            it['_grade_from_receipt'] = rx.get('id')
+        if regraded:
+            changed = True
+            for lbl, was, now in regraded:
+                print(f'      ~ {lbl!r} result {was!r} -> {now!r} '
+                      f'(from its receipt)')
         if added:
             blob[name] = items + added
             changed = True
