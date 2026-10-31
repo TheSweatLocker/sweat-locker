@@ -3342,3 +3342,27 @@ concern is double counting, since Minnesota -7.5 replaced them in the same
 slot and grading all three gives the card 5 NBA picks for 3 slots. The
 honest answer is probably to grade all of them and record that the card was
 recomposed, rather than delete the earlier version.
+
+## R85 · THE SAME ORDERING BUG IN NBA, NHL AND MLB — 2026-10-30
+NCAAF fixed this run: the externals pull, alignment/oddscrowd snapshot and
+line_snapshot steps moved from ~400 lines BELOW the recompute to directly
+above it. Audited the other four:
+  NFL    ALREADY CORRECT — externals #52, alignment #55, line_snapshot #56,
+         recompute #57. Nothing to do.
+  NBA    BROKEN, and structurally harder. `Build NBA game context` is step
+         493 and that is where scoring happens — there is no separate
+         recompute step — while `ScoresAndOdds scrape` is 871, `Compute
+         alignment` 910 and `Write line_snapshot` 965. The obstacle: the
+         aligner WRITES oddscrowd_snapshot INTO nba_game_context, so the
+         rows must already exist; and if the context builder upserts over
+         them it may null the column it just received. Fixing this needs the
+         context build split into "build rows" then "score", or the aligner
+         proven non-destructive against a freshly built row.
+  NHL    Same shape as NBA — verify before changing.
+  MLB    Recompute #26, external aggregation #106. Broken, but off-season,
+         so lowest urgency.
+WHY NBA MATTERS MOST: NBA is the live sport where evidence families NEVER
+disagree (0 of 56 units, measure_family_weight_leverage.py). Public money is
+the one family that argues against the favourite, so NBA is precisely where
+this ordering fix would create the disagreement that makes weighting mean
+anything.

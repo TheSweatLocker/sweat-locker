@@ -367,6 +367,67 @@ jobs:
         run: |
           cd mlb_pipeline
           python refresh_market_lines.py --sport NCAAF --days-ahead 10
+      # == 2026-10-30 . THE ENGINE SCORED BEFORE ITS MARKET DATA ARRIVED ==
+      # These three steps used to sit ~400 lines BELOW the recompute, so
+      # every market signal read the PREVIOUS run's data. Measured: on 64
+      # of 93 NCAAF rows oddscrowd_snapshot.pulled_at was AFTER the pick
+      # was computed -- Kent State @ Sacramento State scored 10-29 14:12
+      # and its public-money snapshot landed 10-30 22:03, 32 hours later.
+      # That is why all 8 oddscrowd_direction signals have 0 attribution
+      # rows in 4,763 despite conditions that evaluate True on 11 of 11
+      # live games when replayed (R81).
+      #
+      # Moved as a block and kept in the same relative order. All three are
+      # continue-on-error and nothing between here and their old position
+      # writes what they read, so this only makes their output FRESHER for
+      # the recompute that follows.
+
+
+      - name: External source aggregation pull
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Sat cron uses --refresh mode (subset of sources for late-week updates)
+          if [ "${{ github.event.schedule }}" = "0 12 * * 6" ]; then
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py --refresh
+          else
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py
+          fi
+
+
+      # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
+      # ncaaf_game_context. Prerequisite for sharp-split signals to fire
+      # on NCAAF games (registry exists but was silent because
+      # oddscrowd_snapshot was never populated). Runs after externals
+      # pull so OC data is fresh in external_picks.
+      - name: Compute alignment + oddscrowd snapshot
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_align_status_ncaaf.py
+
+
+      # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
+      # cross-sport classify_line_moves.py --sport ALL step can generate
+      # line_movement_flags for NCAAF.
+      - name: Write line_snapshot from oddscrowd data
+        if: steps.mode.outputs.mode == 'full'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NCAAF
+
 
       - name: Recompute NCAAF primary_play with enriched signals
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
@@ -725,21 +786,6 @@ jobs:
           cd mlb_pipeline
           python jerry_pick_scrub.py --sport NCAAF
 
-      - name: External source aggregation pull
-        if: steps.mode.outputs.mode == 'full'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          # Sat cron uses --refresh mode (subset of sources for late-week updates)
-          if [ "${{ github.event.schedule }}" = "0 12 * * 6" ]; then
-            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py --refresh
-          else
-            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaaf.py" python pull_externals_ncaaf.py
-          fi
-
       # 2026-09-25: report dark sources. NCAAF has 3 stub fetchers (covers,
       # vsin, bettingpros — zero picks ever) plus dimers + action dark since
       # 09-17 for want of Playwright, all logging status='success'. NCAAF pulls
@@ -782,34 +828,6 @@ jobs:
         run: |
           cd mlb_pipeline
           python detect_consensus_fade.py --sport NCAAF
-
-      # 2026-08-22: Compute alignment + write oddscrowd_snapshot to
-      # ncaaf_game_context. Prerequisite for sharp-split signals to fire
-      # on NCAAF games (registry exists but was silent because
-      # oddscrowd_snapshot was never populated). Runs after externals
-      # pull so OC data is fresh in external_picks.
-      - name: Compute alignment + oddscrowd snapshot
-        if: steps.mode.outputs.mode == 'full'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python compute_align_status_ncaaf.py
-
-      # 2026-08-22: Flatten oddscrowd_snapshot into line_snapshot so the
-      # cross-sport classify_line_moves.py --sport ALL step can generate
-      # line_movement_flags for NCAAF.
-      - name: Write line_snapshot from oddscrowd data
-        if: steps.mode.outputs.mode == 'full'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python write_line_snapshot.py --sport NCAAF
 
       # ══ 2026-10-30 · conviction_rank ══
       # `conviction` is sport-blind and saturates at win_score 3.0, so a
