@@ -4006,11 +4006,22 @@ proves it, because every insert in 20261007a supplies a non-null `reason`:
     newest refusal 2026-10-31T13:59  reason = NULL
 
 So it was applied on the 7th, ran about 21 hours, and the function body was
-replaced on the 8th. The likeliest cause is a migration replay whose history
-did not contain 20261007a -- it would stop at `20260929d_pick_lock_allow_unlock`
-and restore the old body. That matters for the fix: **re-apply through the
-recorded migration path, not as a loose paste, or the next push reverts it
-again.** Nothing in the repo after 20261007a redefines the function.
+replaced on the 8th. The likeliest cause is unknown. I asserted a migration replay
+and cannot support that: there is no `supabase/config.toml` and no CLI on
+PATH, so `supabase db push` is not a working path in this repo -- migrations
+are applied by pasting into the Supabase SQL editor. Nothing in the repo
+after 20261007a redefines the function, so the replacement came from outside
+the repo and the cause is genuinely not established. **Treat recurrence as
+likely and re-check after any schema work**, rather than trusting a theory.
+
+RE-APPLY FILE: `20261031a_reapply_pick_lock_side_not_number.sql`. It carries
+ONLY the function (20261007a's table/column/index statements already landed
+-- `pick_lock_drift.reason` exists and returns 200), with the function body
+byte-identical to 20261007a, verified. No BEGIN/COMMIT, since a single
+statement needs no transaction and a trailing failure must not roll back
+good work. No `NOTIFY pgrst`, which is what makes the SQL client report
+42P01 whether it failed or succeeded, and which is unnecessary here because
+no new API surface is exposed -- only an existing function's body changes.
 
 THE COST, counted on refusals whose side AND market AND team are unchanged
 -- i.e. pure line refreshes the deployed trigger ate:
