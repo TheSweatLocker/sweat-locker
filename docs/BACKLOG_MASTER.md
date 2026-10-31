@@ -3495,3 +3495,45 @@ done here, that is a live CRITICAL detector and deserves its own review.
 And the context dates all 7 games 10-30 while the feed says 11-01..11-03
 (see R87 original) -- prices are keyed on the event id so the bridge is
 unaffected, but the dates are still wrong somewhere.
+
+## R89 · NBA AND NHL SCORE ONCE, EARLY, ON AN INCOMPLETE ROW — 2026-10-30
+Andy: the Steam Room is "bleeding out by not getting enough selections" and
+MUST play NBA. The Sharp takes almost no NBA because the ENGINE has almost
+no NBA opinion: 86 of 107 games COVERAGE over 14 days, 17 bettable, and the
+Sharp took 5 of those 17. Supply, not standards.
+CAUSE: nba_game_context._apply_ensemble runs INSIDE `Build NBA game context`
+(workflow step 493) and scores the row the builder holds in memory at that
+moment. Everything that enriches the row lands afterwards — injuries (521),
+Monte Carlo (551), the splits scrape (871), splits aggregator (880),
+alignment/oddscrowd_snapshot (910), cover probability (947), line_snapshot
+(965). NBA then NEVER re-scores. NCAAF (step 26) and NFL (step 57) both have
+a "Recompute primary_play with enriched signals" step; NBA and NHL never got
+one. Confirmed the builder does NOT write oddscrowd_snapshot, so an earlier
+aligner would survive its upsert — but that alone would not help, because
+the scorer reads the in-memory row, not the DB row.
+MEASURED by re-scoring tonight's stored rows as they now stand:
+  NBA  9 of 10 picks change — 5 promoted, 2 demoted, 2 lateral.
+       Bettable would go 2 -> 5. Demotions include Detroit -7.5 and
+       Houston -6.5, the latter being the pick whose receipt was voided
+       tonight for failing its own coherence check.
+  NHL  3 of 3 promoted — and ALL THREE are OVER totals, the same shape as
+       NCAAB's five identical UNDERs: one calibration bias restated, in a
+       market measured at 43.2% and unstable.
+BUILT, AND DELIBERATELY AS A SHADOW: recompute_ensemble_primary_play.py
+--sport NBA|NHL. One script, not a third copy of the 373-line NCAAF one — it
+calls each sport's OWN _apply_ensemble so the season gate, defensive gates
+and apply_to_pick come along and cannot drift from the build path. Honours
+pick_lock per sport, preserves manual overrides, never erases a pick when
+the recompute goes quiet, stamps updated_at (the leak guards compare it to
+tip-off), and confirms writes by readback.
+WHY SHADOW AND NOT LIVE: NBA has 0 of 32 enabled game signals with a
+measured hit rate, so promoting these swaps one unmeasured opinion for
+another. And the repo already ran this experiment — lr_v1 overwrote
+primary_play on 457 picks and LOST on the judgeable flips, 42.0% against the
+ensemble's 57.1% on n=50. Shadow goes to
+jerry_cache.ensemble_recompute_shadow_{SPORT}_{date}.
+NEXT: wire it into the NBA/NHL workflows in shadow mode so a graded record
+accumulates, then promote only if it beats the live pick. NOT wired tonight
+on purpose — both workflows have a timeout history (bumped 20/25 -> 45
+minutes earlier today) and adding an untested scoring step to a
+timeout-prone pipeline is how tonight's other defects were born.
