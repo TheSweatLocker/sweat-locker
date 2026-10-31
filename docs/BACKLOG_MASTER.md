@@ -3388,3 +3388,35 @@ values ('potd', 'dotd', 'parlay', 'chalk_parlay', 'game', 'fight'). I
 briefly read the 76ers POTD's market='potd' with a null line as ungradeable.
 It is not — market='potd' grades at 311 of 313 (99.4%). My test was naive,
 the convention is deliberate.
+
+## R86 · THE STEAM ROOM'S ONLY POSITIVE BUCKET IS OUT OF SEASON — 2026-10-30
+Cut the Steam Room's live record down (audit_live_surface_roi.py
+--surface sharp_card). 314 live graded bets, -7.07% overall, and the loss is
+concentrated, not diffuse:
+    ml   MLB     54  68.5% [56.1,80.9]  ROI +17.32%   <- the only edge
+    rl   STRONG  69  42.0% [30.4,53.7]  ROI -18.38%   <- the leak
+    rl   NFL     16  31.2%              ROI -40.72%
+    rl   NHL     23  39.1% [19.2,59.1]  ROI -20.29%
+    prop STRONG  41  46.3% [31.1,61.6]  ROI -20.01%
+    ml   NCAAF   30  46.7% [28.8,64.5]  ROI -19.60%
+    rl   NCAAF   50  48.0% [34.2,61.8]  ROI  -8.88%
+    prop MLB     91  52.7% [42.5,63.0]  ROI  -9.44%
+TWO CONCLUSIONS.
+1. The single positive bucket is MLB moneylines, which is the edge already
+   established independently (project_mlb_ml_is_the_one_real_edge: live
+   63-29, 68.48%, +18.83%, n=92). MLB is out of season, so the Steam Room
+   right now has NO positive bucket in its live record. Its 83 items over
+   the last 14 days are all drawn from buckets that lose.
+2. Confidence is an anti-signal on spreads: STRONG spreads -18.38% (n=69)
+   against LEAN spreads -4.60% (n=14). Same shape as
+   generate_sharp_card's own flip note ("our conviction on this market is an
+   anti-signal") and project_nfl_curated_spread_is_the_leak (-45.9%).
+HONEST LIMIT: rl STRONG's CI is [30.4,53.7], upper bound just above the
+52.38 breakeven -- a credible negative, not a proven one. And MLB ml's lower
+bound of 56.1 sits AT the bottom of the ML breakeven band, so even the good
+bucket is marginal by the correct standard.
+CANDIDATE ACTIONS, cheapest first: (a) stop publishing STRONG spreads on the
+Steam Room -- it is the largest clearly-negative bucket; (b) ask whether the
+surface should publish at all outside MLB until a bucket clears, which is a
+product call not a code one; (c) note the Sweat Card (+4.59%, n=221) and the
+Fade (+7.02%, n=74) are both positive, so the volume could move there.
