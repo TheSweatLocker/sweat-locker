@@ -432,19 +432,37 @@ def build_plays(date: str) -> list[dict]:
 
     plays = []
     skipped = defaultdict(int)
-    # the freshest thing the feed produced, across every sport and market.
-    # Computed from the loaded set rather than re-queried, so it is exactly
-    # the data these picks are made from.
-    _feed_max = max((str(z.get('snapshot_ts') or '')
-                     for z in splits.values()), default='')
+    # ══ PER SPORT, NOT GLOBALLY ══════════════════════════════════════
+    # The first version of this took the newest snapshot across ALL sports
+    # as the reference, and that is wrong because the puller refreshes the
+    # DAY'S slate: a sport that is not playing today is legitimately hours
+    # or days behind one that is. Measured 2026-10-31 19:49Z:
+    #
+    #     NHL    newest 19:49      lag  0.0h
+    #     NBA    newest 18:18      lag  1.5h
+    #     NCAAF  newest 18:00      lag  1.8h
+    #     NFL    newest 10-30 03:59   lag 39.8h   <- Sunday's slate
+    #     MLB    newest 10-28 23:42   lag 68.1h   <- season over
+    #
+    # A global reference would therefore have refused every NFL fade on an
+    # NFL Sunday, on data that is perfectly current for a Saturday night.
+    # The question the guard has to ask is "did the puller refresh this
+    # sport and skip this game", which is a within-sport comparison.
+    _feed_max_by_sport: dict = {}
+    for (_sp, _g, _m), _z in splits.items():
+        _t = str(_z.get('snapshot_ts') or '')
+        if _t > _feed_max_by_sport.get(_sp, ''):
+            _feed_max_by_sport[_sp] = _t
+    _feed_max = max(_feed_max_by_sport.values(), default='')
     _lags = []
 
-    def _lag_hours(ts: str):
-        """How far this snapshot sits behind the newest one in the feed."""
-        if not ts or not _feed_max:
+    def _lag_hours(ts: str, sport: str):
+        """How far behind this SPORT's newest snapshot this one sits."""
+        ref = _feed_max_by_sport.get(sport, '')
+        if not ts or not ref:
             return None
         try:
-            a = dt.datetime.fromisoformat(str(_feed_max).replace('Z', '+00:00'))
+            a = dt.datetime.fromisoformat(str(ref).replace('Z', '+00:00'))
             b = dt.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
         except (TypeError, ValueError):
             return None
@@ -455,7 +473,7 @@ def build_plays(date: str) -> list[dict]:
         if not c:
             skipped['not on this slate'] += 1
             continue
-        _lag = _lag_hours(s.get('snapshot_ts'))
+        _lag = _lag_hours(s.get('snapshot_ts'), sport)
         if _lag is None:
             skipped['snapshot has no usable timestamp'] += 1
             continue
@@ -541,8 +559,9 @@ def build_plays(date: str) -> list[dict]:
     # (feedback_green_step_that_writes_nothing).
     if _lags:
         _ls = sorted(_lags)
-        print(f'  split freshness: feed newest {_feed_max[:16]} · '
-              f'lag behind it median {_ls[len(_ls) // 2]:.1f}h '
+        print(f'  split freshness: newest per sport '
+              f'{ {k: v[:16] for k, v in sorted(_feed_max_by_sport.items())} } '
+              f'· lag within sport median {_ls[len(_ls) // 2]:.1f}h '
               f'max {_ls[-1]:.1f}h · cap {FADE_MAX_LAG_H:g}h · '
               f'{sum(1 for x in _ls if x > FADE_MAX_LAG_H)} of {len(_ls)} '
               f'over')
