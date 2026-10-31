@@ -273,9 +273,17 @@ def preserve_published(sport: str, table: str, context: dict,
         # Wrapped, and placed strictly AFTER the restore, because of the note
         # directly above: nothing may sit between the lock's decision and its
         # application, and a missed recovery must never cost the lock.
+        #
+        # 2026-10-31: `sport` is now passed. Without it the recovery could
+        # only parse a number already present in the label, so a bare
+        # "Portland Trail Blazers ATS" stayed lineless and the lock kept it
+        # over a rebuild that wanted "Portland Trail Blazers -7.5". The
+        # close_spread fallback needs the sport to know the sign convention,
+        # and refuses rather than guesses for a sport that has none proven.
         try:
             from defensive_gates import recover_total_line as _rtl
-            context[field] = _rtl(context[field], context) or context[field]
+            context[field] = (_rtl(context[field], context, sport)
+                              or context[field])
         except Exception:                                  # noqa: BLE001
             pass
         if old_lbl != new_lbl:

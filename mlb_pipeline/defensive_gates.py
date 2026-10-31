@@ -2738,7 +2738,98 @@ def apply_nfl_big_favourite_spread_cap(pp: dict | None, ctx: dict) -> dict | Non
 _TRAILING_LINE_RE = _re_mod.compile(r'(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$')
 
 
-def recover_pick_line(pp: dict | None, ctx: dict) -> dict | None:
+def _recover_spread_from_close(pp: dict, ctx: dict,
+                              sport: str | None, ptype: str) -> dict:
+    """A bare 'ATS' label has no number to parse, so read close_spread.
+
+    == 2026-10-31 . "LOS ANGELES LAKERS ATS" COULD NEVER BE GRADED =====
+    The label-parse above recovers a line when the number is already in the
+    label ("MIA +7.0"). It finds nothing on a label that is just a team and
+    a market word, and those are the ones that stay unactionable: four NBA
+    game reads on 10-30 -- Lakers ATS, Raptors RL, Heat ATS, Celtics ATS --
+    went out with line=null and were still ungradeable the next morning,
+    alongside three more tonight (Cavaliers / Trail Blazers / Hawks ATS).
+    12 receipts on finished dates are a line market with no line.
+
+    It compounds with the lock. pick_lock restores the published pick over
+    the rebuild, so when the rebuild finally knew the number -- tonight it
+    wanted 'Portland Trail Blazers -7.5' and held 'Portland Trail Blazers
+    ATS' -- the better row was discarded and the lineless one kept. That is
+    the same shape Andy's Blackhawks total hit, and the fix is the same one
+    the lock already documents: filling in the number is not changing the
+    pick. The side stays, the market stays, and close_spread is the number
+    the pick was always implicitly against.
+
+    THE SIGN IS THE WHOLE RISK, so it is not guessed:
+      * the convention comes from one table, _CHP_FOR_RECOVERY, and a sport
+        absent from it is SKIPPED. NHL and NCAAB are absent.
+      * PUCKLINE is skipped outright whatever the sport. It is a fixed
+        +/-1.5 market whose labels deliberately carry no number
+        ("Tampa Bay Lightning RL"), so for it line=null is correct and
+        "recovering" one would invent a bet.
+      * verified against the rebuild's own output on two independent games:
+        Portland away at Utah with close_spread +7.5 yields -7.5, and
+        Atlanta away at New Orleans with +4.5 yields -4.5, matching the
+        labels the rebuild produced.
+
+    With no close_spread the pick genuinely has no number and is left alone
+    -- inventing one is feedback_consensus_line_must_be_posted.
+    """
+    if ptype == 'puckline':
+        return pp
+    hp = _CHP_FOR_RECOVERY.get(str(sport or '').upper())
+    if hp is None:
+        print(f'  ! {ptype} pick {pp.get("label")!r} has no line and '
+              f'sport={sport!r} has no PROVEN close_spread orientation '
+              f'-- left as-is rather than guessing the side of the number')
+        return pp
+    side = str(pp.get('side') or '').upper()
+    if side not in ('HOME', 'AWAY'):
+        return pp
+    raw = ctx.get('close_spread')
+    try:
+        cs = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        cs = None
+    if cs is None:
+        print(f'  ! {ptype} pick {pp.get("label")!r} has no line and no '
+              f'close_spread ({raw!r}) -- unactionable, left as-is')
+        return pp
+    # hp True  => positive close_spread means HOME is favoured, so the home
+    #             team's own betting line is the negation.
+    # hp False => negative close_spread means HOME is favoured, so the home
+    #             team's line is close_spread as stored.
+    home_line = -cs if hp else cs
+    line = home_line if side == 'HOME' else -home_line
+    pp['line'] = line
+    pp['_line_recovered_from'] = 'close_spread'
+    lbl = str(pp.get('label') or '')
+    # Keep the team, drop the bare market word, append the real number.
+    for word in (' ATS', ' RL', ' SPREAD'):
+        if lbl.upper().endswith(word):
+            lbl = lbl[: -len(word)]
+            break
+    if lbl.strip():
+        pp['label'] = f'{lbl.strip()} {line:+g}'
+    # ASCII only: this print now runs INSIDE pick_lock's except-pass,
+    # and pick_lock's own note records a UnicodeEncodeError in a print
+    # making the lock fail open on a cp1252 console.
+    print(f'  - {ptype} pick had no line and no number in its label '
+          f'-- recovered {line:+g} from close_spread={cs:+g} '
+          f'({sport} home-positive={hp}), label now {pp.get("label")!r}')
+    return pp
+
+
+#: close_spread orientation: does a POSITIVE close_spread mean the HOME team
+#: is favoured? Proven 2026-10-20 by two methods on n=2132-7338; this is the
+#: same table consistency_watchdog._CLOSE_HOME_POSITIVE carries, and a sport
+#: ABSENT from it is unproven and must be SKIPPED rather than guessed
+#: (NHL and NCAAB are deliberately absent).
+_CHP_FOR_RECOVERY = {'NFL': True, 'NCAAF': False, 'NBA': False, 'MLB': False}
+
+
+def recover_pick_line(pp: dict | None, ctx: dict,
+                      sport: str | None = None) -> dict | None:
     """Give a pick its number back, or say it has none.
 
     ══ 2026-10-23 · "PUBLISHED AT 0, WE BEAT MARKET BY 6.5" ══
@@ -2806,9 +2897,10 @@ def recover_pick_line(pp: dict | None, ctx: dict) -> dict | None:
                 print(f'  · {ptype} pick had no line — recovered '
                       f'{pp["line"]:+g} from its own label '
                       f'{pp.get("label")!r}')
+                return pp
             except (TypeError, ValueError):
                 pass
-        return pp
+        return _recover_spread_from_close(pp, ctx, sport, ptype)
 
     if ptype not in ('total', 'totals'):
         return pp
@@ -2932,7 +3024,7 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
       - Publish gate LAST — reads final pp state after all demotes and
         hard-caps PRIMEs that don't earn PRIME rigor
     """
-    pp = recover_pick_line(pp, ctx)
+    pp = recover_pick_line(pp, ctx, sport)
     pp = apply_oc_flip_gate(pp, ctx)
     pp = apply_mc_dissent_gate(pp, ctx)
     pp = apply_juice_trap_gate(pp, ctx, sport=sport)

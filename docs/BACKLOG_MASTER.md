@@ -3644,3 +3644,42 @@ dry-run clean, and converts each from the decimal still printed in its own
 label (1.375 -> -267 etc., matching the same fights' game_read prices). The
 write was blocked by the sandbox classifier and needs Andy's go-ahead. Until
 then those rows score a WIN as +0.01u and understate the Sharp's ROI.
+
+### R94 — nba_game_context makes its OWN Odds API call instead of reading the priced copy
+Today NBA was the only live sport with no market data: `nba_game_context`
+held **0 of 7** rows with close_spread/close_total/any ML column, while NHL
+(10/10) and NCAAF (47/47) were fine. The scrape was NOT the problem --
+`nba_odds_pull.py` had already written all 7 games fully priced into
+`nba_game_results`, and the odds pull deliberately "adopts the league's
+canonical game id so results and context join". The context builder never
+looks there: it issues a second, independent Odds API request and leaves
+every price column NULL when that one comes back empty.
+
+Consequence chain: no market -> primary_play has market/line None and
+tier COVERAGE -> nothing clears `_is_any_tier` -> **zero NBA on the Sweat
+Card and zero on The Sharp tonight**, which reads as a tier-gate problem
+and is not one. Same shape as `project_align_status_daily_default_1029`
+("Scrape was FINE").
+
+Fix: when the live lookup yields no market for a game_id, fall back to
+`nba_game_results` for that id. Re-running the builder by hand priced all
+7 immediately, so this is a resilience gap, not a broken feed. Check NHL
+and NCAAB builders for the same duplicated call.
+
+### R95 — the lock's own log line reports pre-recovery labels
+With the spread recovery wired in, the run prints
+`recovered -7.5 ... label now 'Portland Trail Blazers -7.5'` and then
+`[LOCK] keeping published 'Portland Trail Blazers ATS' (rebuild wanted
+'Portland Trail Blazers -7.5')`. The stored value IS the recovered one --
+`old_lbl`/`new_lbl` are captured before the recovery runs, so the message
+is stale, not wrong. Cosmetic, but it reads as if the fix did not apply.
+
+### R96 — two receipt repairs are written and blocked on permission
+Both are dry-run clean and readback-confirming; the sandbox classifier
+refused the PATCH:
+  * `_repair_ufc_decimal_odds.py --apply` — 6 UFC Sharp rows (R93).
+  * `_repair_lineless_game_reads.py --date 2026-10-31 --apply` — 3 NBA
+    game reads captured before any line existed (Cavaliers/Trail
+    Blazers/Hawks ATS -> -8.5/-7.5/-4.5 from their own context rows).
+    Receipts are first-write-wins, so re-running the generator cannot fix
+    them and they will be ungradeable tomorrow exactly as 10-30's four were.
