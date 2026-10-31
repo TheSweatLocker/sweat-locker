@@ -108,6 +108,36 @@ SHARP_CARD_ITEM_CAP = 36  # 20 cut the football flips off (2026-10-24)
 # compounding math on a 3-leg parlay of -300 legs still pays +170,
 # so a juiced fav is fine as a parlay leg, not as a sole play.
 SOLE_PICK_ML_JUICE_MAX = -300
+
+#: Does a POSITIVE close_spread mean the HOME team is favoured?
+#:
+#: == 2026-10-30 . THE JUICE SWAP ASSUMED ONE CONVENTION FOR EVERY SPORT =
+#: The swap below converted an over-juiced ML into a spread with
+#:     spread_line = -sp if side == 'HOME' else sp
+#: and a comment asserting close_spread is "away-perspective (positive =
+#: home favored)". That is the MLB/NFL convention. NCAAF, NBA and NCAAB
+#: store the OPPOSITE sign, so on those sports the swap published the
+#: pick-side line with its sign inverted -- Iowa St. would have shipped as
+#: "+13.5" when the real line is -13.5. It only surfaced now because NCAAB
+#: had no prices at all until tonight, so the swap could never fire.
+#:
+#: Base table is consistency_watchdog._CLOSE_HOME_POSITIVE, the proven one.
+#: NCAAB is added here on direct evidence rather than inference: across all
+#: 7 priced games the sign of close_spread agreed with the MONEYLINE about
+#: which side is favoured 7 of 7 (ncaab_odds_pull keeps the Odds API home
+#: sign, where a home favourite is negative). It belongs in the watchdog
+#: table too, but that is a live CRITICAL detector and promoting it there
+#: is a separate, reviewed change.
+#:
+#: A sport ABSENT here is SKIPPED, never guessed. Both sign bugs this repo
+#: has shipped came from guessing (feedback_edge_formula_sign_audit).
+try:
+    from consistency_watchdog import _CLOSE_HOME_POSITIVE as _CHP_BASE
+    _CLOSE_HOME_POSITIVE_SWAP = {**_CHP_BASE, "NCAAB": False}
+except Exception:                                          # noqa: BLE001
+    _CLOSE_HOME_POSITIVE_SWAP = {"NFL": True, "NCAAF": False,
+                                 "NBA": False, "MLB": False,
+                                 "NCAAB": False}
 LEDGER_ML_JUICE_MAX    = -450  # ledger-only; documented for the composer that builds parlays
 # 2026-09-11 TIGHTER CAPS. Prior 25/12/10/10 quotas + 50 global produced
 # 46-item cards on active MLB days (see 9/11: 13 MLB sides + 32 MLB
@@ -1307,6 +1337,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     dropped_b209_nfl_spread = 0
     dropped_flip_unpriced = 0
     dropped_flip_contradiction = 0
+    dropped_swap_unproven = 0
     flipped_spread = 0
     lean_flip_admitted = 0
     flip_skips: dict = {}
@@ -1667,12 +1698,24 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
             try:
                 if float(side_ml) < SOLE_PICK_ML_JUICE_MAX:
                     close_spread = g.get('close_spread')
+                    _hp = _CLOSE_HOME_POSITIVE_SWAP.get(
+                        str(sport or '').upper())
+                    if _hp is None:
+                        # Convention unproven for this sport -- refuse rather
+                        # than publish a line whose sign we are guessing.
+                        dropped_swap_unproven += 1
+                        continue
                     if close_spread is not None:
-                        # Store convention: our `close_spread` is stored
-                        # away-perspective (positive = home favored by
-                        # that many). Compute the pick-side line.
+                        # Pick-side line under the sport's OWN convention.
+                        # hp True  (NFL): positive close_spread = home favoured
+                        #   -> HOME lays -sp, AWAY takes +sp
+                        # hp False (NCAAF/NBA/NCAAB): negative = home favoured
+                        #   -> HOME lays  sp, AWAY takes -sp
                         sp = float(close_spread)
-                        spread_line = -sp if side == 'HOME' else sp
+                        if _hp:
+                            spread_line = -sp if side == 'HOME' else sp
+                        else:
+                            spread_line = sp if side == 'HOME' else -sp
                         team = g.get('home_team') if side == 'HOME' else g.get('away_team')
                         sign = '+' if spread_line > 0 else ''
                         pick_type = 'spread'
@@ -1830,6 +1873,10 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
     if flipped_spread:
         print(f'  {sport} SHORT spreads flipped onto the other side: '
               f'{flipped_spread} (our side of this band is 4-18, n=22)')
+    if dropped_swap_unproven:
+        print(f'  {sport}: {dropped_swap_unproven} over-juiced ML(s) '
+              f'DROPPED - no proven close_spread sign convention for this '
+              f'sport, so the juice swap would guess the line sign')
     if dropped_flip_contradiction:
         print(f'  {sport}: {dropped_flip_contradiction} short-spread '
               f'flip(s) DROPPED - the unflipped side is already '

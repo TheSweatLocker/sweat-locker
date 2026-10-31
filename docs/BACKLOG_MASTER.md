@@ -3453,3 +3453,45 @@ on the wrong day in the app.
 FIX: bridge the ids (bridge_football_game_ids.py is the existing pattern) or
 have ncaab_odds_pull write context rows keyed the way the context builder
 keys them. Then re-check the dates.
+
+## R87 RESOLVED + R88 · NCAAB IS BETTABLE; A SIGN BUG WAS HIDING BEHIND IT — 2026-10-30
+Andy: "The Steam Room needs to find a way to play nba, ncaab when online and
+all other sports when live. THIS IS A MUST." Built to completion.
+THREE defects, each of which alone made NCAAB unbettable:
+ 1. PRICES NEVER REACHED THE CONTEXT. ncaab_odds_pull wrote only
+    ncaab_game_results under a slug id while the engine and the Sharp read
+    ncaab_game_context keyed by the ODDS API EVENT ID. Verified the context
+    game_id IS the event id, 7 of 7, so no name or date matching was needed.
+    Added patch_context() to the puller: PATCH-only (never upsert, the
+    context builder owns row creation), price columns only, open_* left
+    untouched so the line-movement record survives, and both alias families
+    written (close_home_ml for the Sharp, home_ml_close for the puller's own
+    convention) because filling one was the whole defect.
+ 2. primary_play HAD NO `side`. All four return branches of
+    ncaab_game_context.compute_primary_play carried type/tier/label/sub and
+    no side, so generate_sharp_card computed side_ml=None and the no-price
+    gate refused a pick whose price was on the row. Added `side` to all four
+    (plus `line` on the totals), and backfilled the 6 stored picks by
+    deriving the side from projected_spread exactly as the writer derives
+    `fav`, then VALIDATING against the stored label -- 6 of 6 agreed.
+ 3. R88 · THE JUICE SWAP GUESSED THE SIGN CONVENTION. Fixing 1 and 2
+    activated a path that had never been able to fire on NCAAB. The
+    over-juiced-ML swap used `spread_line = -sp if HOME else sp` with a
+    comment asserting close_spread is "away-perspective (positive = home
+    favored)" -- the MLB/NFL convention. NCAAF, NBA and NCAAB store the
+    OPPOSITE sign, so Iowa St. would have published as "+13.5" when the real
+    line is -13.5, and Villanova as "+7.5" instead of -7.5. Now keyed on
+    consistency_watchdog._CLOSE_HOME_POSITIVE, with NCAAB added on direct
+    evidence (sign of close_spread agreed with the MONEYLINE about which
+    side is favoured, 7 of 7), and a sport absent from the table is DROPPED
+    rather than guessed.
+RESULT, verified by composing the real rows: the Sharp goes 2 -> 5 items,
+NCAAB 0 -> 3, all correctly signed and priced -- Gonzaga ML -221 (inside the
+-300 cap), Iowa St. -13.5 at -110 and Villanova -7.5 at -110 (both swapped
+off unplayable -1070 and -321 moneylines).
+STILL OPEN: NCAAB should be promoted into the watchdog's own
+_CLOSE_HOME_POSITIVE table so its checks cover the sport -- deliberately not
+done here, that is a live CRITICAL detector and deserves its own review.
+And the context dates all 7 games 10-30 while the feed says 11-01..11-03
+(see R87 original) -- prices are keyed on the event id so the bridge is
+unaffected, but the dates are still wrong somewhere.

@@ -167,6 +167,130 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     return row
 
 
+#: The context table the ENGINE and the SHARP read. This puller has always
+#: written ncaab_game_results only, which is why every NCAAB pick was
+#: priceless -- see the block comment on patch_context.
+CTX_TABLE = 'ncaab_game_context'
+
+#: Price columns, written under BOTH alias families on purpose.
+#: generate_sharp_card reads close_home_ml/close_away_ml for NCAAB (its own
+#: comment at line ~481 documents the per-sport alias mess: NFL/NCAAF use
+#: close_home_ml, MLB/NBA/NHL use home_ml_close) while this puller's row
+#: builder writes home_ml_close. They are two names for one number, and
+#: filling only one is the entire defect, so both are set from the same
+#: value. Nothing else on the row is touched.
+
+
+def event_to_ctx_patch(event: dict, aliases: dict):
+    """(odds-api event id, price-only patch) for ncaab_game_context.
+
+    Keyed on the ODDS API EVENT ID, which IS ncaab_game_context.game_id --
+    verified 7 of 7 against live rows, so no name or date matching is
+    needed and none is attempted.
+    """
+    home_raw, away_raw = event.get('home_team'), event.get('away_team')
+    if not aliases.get(home_raw) or not aliases.get(away_raw):
+        return None
+    eid = event.get('id')
+    if not eid:
+        return None
+    home_spread = _consensus_spread(event, home_raw)
+    total = _consensus_total(event)
+    hml = _consensus_ml(event, home_raw)
+    aml = _consensus_ml(event, away_raw)
+    if home_spread is None and total is None and hml is None and aml is None:
+        return None          # nothing posted yet; do not blank the row
+    patch = {
+        'close_spread': home_spread,
+        'close_total': total,
+        'home_ml_close': hml,
+        'away_ml_close': aml,
+        'close_home_ml': hml,
+        'close_away_ml': aml,
+    }
+    return eid, patch
+
+
+def patch_context(pairs: list, dry_run: bool = False) -> dict:
+    """Carry the posted prices onto the rows the engine actually reads.
+
+    == 2026-10-30 . NCAAB WAS UNBETTABLE BECAUSE THE PRICES NEVER ARRIVED =
+    ANDY: "The Steam Room needs to find a way to play nba, ncaab when
+    online and all other sports when live. THIS IS A MUST."
+
+    The Sharp took 0 of 3 bettable NCAAB picks, and its own dry run said
+    why: "NCAAB no-market-price drops: 3 (ML pick with no book moneyline --
+    unbettable)". Every ncaab_game_context row had close_spread,
+    close_total and both moneylines NULL while the engine still formed an
+    ML opinion on it -- an opinion with no market anchor at all.
+
+    The data was never missing. This puller fetches full spreads, totals
+    and both moneylines for every game and writes them to
+    ncaab_game_RESULTS under a slug id (ncaab_20261101_Villanova_Notre_Dame)
+    while the context rows are keyed by the Odds API event id
+    (cf863e45a3252d...) and dated differently again. Two tables, two key
+    schemes, no join -- the same family as R80 (line_snapshot vs
+    nfl_game_results) and the NCAAF team-name ids.
+
+    PATCH, never upsert. The context builder owns row creation; this only
+    fills price columns on rows that already exist, so a schedule the
+    builder has not seen yet cannot be conjured here. Rows with no context
+    match are counted and named rather than silently dropped.
+
+    open_* is deliberately NOT touched. Those columns are already populated
+    and an opening price is not a closing one; overwriting them would
+    destroy the only line-movement record NCAAB has.
+
+    Confirms by READBACK. A PostgREST PATCH that matches no row returns
+    200 with an empty body, which is indistinguishable from success
+    (feedback_204_is_not_a_write).
+    """
+    out = {'patched': 0, 'no_ctx_row': 0, 'unconfirmed': 0}
+    if not pairs:
+        return out
+    for eid, patch in pairs:
+        if dry_run:
+            print(f'  [DRY] ctx {eid} sp={patch["close_spread"]} '
+                  f'tot={patch["close_total"]} '
+                  f'ml={patch["close_home_ml"]}/{patch["close_away_ml"]}')
+            out['patched'] += 1
+            continue
+        r = requests.patch(
+            f'{SB}/rest/v1/{CTX_TABLE}', headers=H_WRITE, timeout=30,
+            params={'game_id': f'eq.{eid}'}, json=patch)
+        # == 2026-10-30 . 204 HERE MEANS WRITTEN, NOT MISSING ============
+        # H_WRITE carries Prefer: return=minimal, so a SUCCESSFUL patch
+        # returns 204 with an empty body. My first version read that empty
+        # body as "no such row" and reported "0 priced, 7 with no context
+        # row" on the run that in fact priced all seven. A verifier that
+        # cries failure on success hides a real miss just as effectively as
+        # one that cries success on failure, so the confirmation is now an
+        # explicit GET that does not depend on Prefer semantics at all.
+        if r.status_code not in (200, 201, 204):
+            out['unconfirmed'] += 1
+            print(f'  ! ctx {eid} HTTP {r.status_code} {r.text[:120]}')
+            continue
+        chk = requests.get(
+            f'{SB}/rest/v1/{CTX_TABLE}', headers=H_READ, timeout=30,
+            params={'game_id': f'eq.{eid}',
+                    'select': 'game_id,close_home_ml,close_spread'})
+        rows = chk.json() if chk.status_code == 200 else []
+        if not rows:
+            out['no_ctx_row'] += 1
+            print(f'  · no ncaab_game_context row for event {eid} -- the '
+                  f'context builder has not created it yet, so there is '
+                  f'nothing to price')
+            continue
+        if rows[0].get('close_home_ml') != patch['close_home_ml']:
+            out['unconfirmed'] += 1
+            print(f'  ! ctx {eid} NOT CONFIRMED: close_home_ml reads '
+                  f'{rows[0].get("close_home_ml")!r}, expected '
+                  f'{patch["close_home_ml"]!r} -- a trigger may be '
+                  f'refusing the write')
+            continue
+        out['patched'] += 1
+    return out
+
 def _normalize_batch_keys(rows: list) -> list:
     """Union keys + backfill None across rows (PGRST102 batch upsert requirement).
     Per feedback_postgrest_batch_normalize_keys memory."""
@@ -305,7 +429,7 @@ def run(dry_run: bool = False) -> None:
     if not events:
         print('  (offseason or no lines posted)'); return
 
-    rows, skipped, lh_pairs = [], [], []
+    rows, skipped, lh_pairs, ctx_pairs = [], [], [], []
     for event in events:
         if not is_pregame(event):
             continue
@@ -315,6 +439,11 @@ def run(dry_run: bool = False) -> None:
             continue
         rows.append(row)
         lh_pairs.append((event, row['game_id'], row['game_date']))
+        # Same pregame filter and same alias gate -- the context patch must
+        # not see an event the results row already refused.
+        cp = event_to_ctx_patch(event, aliases)
+        if cp is not None:
+            ctx_pairs.append(cp)
     if skipped:
         print(f'  ⚠ skipped {len(skipped)} events w/ unmapped teams:')
         for h, a in skipped[:8]:
@@ -325,6 +454,17 @@ def run(dry_run: bool = False) -> None:
     written = upsert_games(rows, dry_run=dry_run)
     prefix = '[DRY] ' if dry_run else '✓ '
     print(f'\n{prefix}wrote {written} rows to ncaab_game_results')
+
+    # The half that was missing: carry the same prices onto the rows the
+    # engine and the Sharp actually read. Without this NCAAB is priceless
+    # and every pick is dropped as unbettable.
+    ctx = patch_context(ctx_pairs, dry_run=dry_run)
+    print(f"{prefix}ncaab_game_context: {ctx['patched']} priced, "
+          f"{ctx['no_ctx_row']} with no context row, "
+          f"{ctx['unconfirmed']} unconfirmed")
+    if ctx['unconfirmed']:
+        print('  ! an unconfirmed patch means the write did not stick - '
+              'check for a trigger before trusting the slate')
 
 
 def main():

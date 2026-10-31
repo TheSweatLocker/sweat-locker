@@ -356,6 +356,25 @@ def compute_primary_play(ctx, alias_map=None):
         spread_edge = round(float(proj_spread) + float(close_spread), 2)
     abs_edge = abs(spread_edge) if spread_edge is not None else 0.0
     fav = home_team if (proj_spread is not None and float(proj_spread) > 0) else away_team
+    # == 2026-10-30 . NCAAB PICKS HAD NO `side`, SO THEY COULD NOT BE BET ==
+    # ANDY: "The Steam Room needs to find a way to play nba, ncaab when
+    # online and all other sports when live. THIS IS A MUST."
+    #
+    # The Sharp dropped 100% of NCAAB picks as "ML pick with no book
+    # moneyline". Half of that was prices never reaching this table (fixed
+    # in ncaab_odds_pull.patch_context). The other half is here: every dict
+    # this function returns carries type/tier/label/sub and NO `side`, so
+    # generate_sharp_card line ~1583 computes
+    #     side_ml = home_ml if side == 'HOME' else away_ml if ... else None
+    # which is None for every NCAAB row, and the no-price gate then refuses
+    # a pick whose price was sitting right there on the row.
+    #
+    # `label` alone cannot stand in for it: parsing "Gonzaga ML lean" back
+    # into a side is exactly feedback_parse_a_pick_by_shape_not_vocabulary.
+    # The side is known HERE -- it is whether `fav` is the home team -- so
+    # it is recorded here. Every other sport stores it and NCAAB is the
+    # only one that did not.
+    ml_side = 'HOME' if fav == home_team else 'AWAY'
 
     proj_total = ctx.get("projected_total")
     close_total = ctx.get("close_total") or ctx.get("open_total")
@@ -368,6 +387,7 @@ def compute_primary_play(ctx, alias_map=None):
         return {
             "type": "ml",
             "tier": "PRIME",
+            "side": ml_side,
             "label": f"{fav} ML",
             "sub": f"PRIME confluence ({conf} signals, {abs_edge:.1f} edge)",
             "signal_floor": 85,
@@ -408,6 +428,8 @@ def compute_primary_play(ctx, alias_map=None):
         return {
             "type": "total",
             "tier": NCAAB_TOTAL_TIER_CAP,
+            "side": side.upper(),
+            "line": close_total,
             "label": f"{side} {close_total}",
             "sub": (f"Model projects {ctx.get('projected_total'):.1f} vs market "
                     f"{close_total} ({total_edge:+.1f}) — INFO ONLY: NCAAB "
@@ -424,6 +446,7 @@ def compute_primary_play(ctx, alias_map=None):
         return {
             "type": "ml",
             "tier": "STRONG",
+            "side": ml_side,
             "label": f"{fav} ML lean",
             "sub": f"STRONG confluence ({conf} signals, {abs_edge:.1f} edge)",
             "signal_floor": 70,
@@ -435,6 +458,8 @@ def compute_primary_play(ctx, alias_map=None):
         return {
             "type": "total",
             "tier": NCAAB_TOTAL_TIER_CAP,
+            "side": side.upper(),
+            "line": close_total,
             "label": f"{side} {close_total}",
             "sub": f"Model {ctx.get('projected_total'):.1f} vs line {close_total}",
             "signal_floor": 60,
