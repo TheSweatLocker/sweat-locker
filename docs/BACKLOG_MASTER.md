@@ -3878,3 +3878,55 @@ signal gated on them scores a subset and its n is not the slate's n.
     h2h games. I suspected this from one row and it does not hold.
   * `home_sp_plus_off == away_sp_plus_off`: **1 of 47** (Ohio State @ USC,
     both 38.7). One game is coincidence at this precision, not a bug.
+
+### R107 — RESOLVED · the POTD's own reason argued for the team we did NOT take
+Marshall @ Old Dominion shipped as today's Pick of the Day:
+
+    label  'Marshall ML'   side=AWAY  tier=STRONG  conviction=81
+    sub    'Old Dominion +2.5 - Our spread model lands on this side at
+            conviction 56.'
+
+Illinois @ Maryland had the same shape (`'Illinois ML'` /
+`'Maryland +2.5 - 76% of tickets sit on the favourite, so we are taking the
+points'`). `sub` is the sentence the app renders under the pick, so a user
+reading the POTD saw a case for the other side, quoting a different
+conviction (56) from the one on the pick (81). 2 of 55 team-specific picks
+across all five sports today; NFL/NBA/NHL/NCAAB were clean.
+
+ROOT CAUSE, from the rows' own `audit_note`:
+
+    2026-10-29 dog floor REVERTED: promoted on a cz/fr reading that put the
+    public on the FAVOURITE; the validated oddscrowd feed puts 70% of
+    tickets on [the other side]
+
+`apply_dog_floor` promoted the home dog off the cz/fr splits feed;
+`dogfloor_read_copy` wrote the subtitle for that promotion, which is exactly
+its documented job. The promotion was then reverted -- correctly, since
+cz/fr inverts the public side
+(project_cz_splits_contradict_oddscrowd_1029) -- but **the revert path has
+no copy step**, so the pick went back to the moneyline and the sentence
+stayed with the withdrawn spread. The Illinois row went through the lr_v1
+override on top (`_engine: lr_v1`, `audit_note: LR override p=0.38`), so two
+different replacement paths produced the same wreckage.
+
+FIXED with `repair_stale_pick_prose.py` (both rows patched, readback
+confirmed). The guard is on the OUTPUT -- does the subtitle name the side we
+published -- rather than on the dog-floor revert, because every writer that
+replaces `primary_play` after the prose is composed leaves the same mess and
+this codebase has several: `apply_dog_floor`, the lr_v1 override, the chalk
+cap, the ML reroute, the pick lock. Replacement prose is rebuilt from the
+row's OWN `_ensemble_sources` filtered to the published side, in the format
+`_compose_ensemble_sub` already uses; where no usable prose exists for that
+side the sub is left alone rather than invented.
+
+STILL TO WIRE: run it as a post-pass in all five sport workflows, after
+every primary_play writer. Until then it is a manual repair and tomorrow's
+revert will re-create the defect. Also worth a `check_card_integrity` assert.
+
+### R108 — an ml pick carries the spread's line
+Both repaired rows have `type: 'ml'` with `line: 2.5` -- the line belongs to
+the withdrawn spread, and it reached the receipt (`Marshall ML line=2.5`,
+`Illinois ML line=2.5`). A moneyline has no line. Same leftover as the prose,
+from the same revert; harmless to grading since ML grades on the result, but
+it is a wrong number on a published row and it feeds the line-coherence
+check.
