@@ -3930,3 +3930,56 @@ the withdrawn spread, and it reached the receipt (`Marshall ML line=2.5`,
 from the same revert; harmless to grading since ML grades on the result, but
 it is a wrong number on a published row and it feeds the line-coherence
 check.
+
+### R109 — 4 of 27 spread picks publish a line the market has moved off
+Comparing each spread pick's own `primary_play.line` against its own row's
+current `close_spread` (NCAAF close_spread IS the home betting line):
+
+    Bowling Green @ Western Michigan  published -12.5, market -13.5
+    Colorado State @ Utah State       published  +6.5, market  +7.5
+    Oklahoma State @ Iowa State       published  +8.5, market  +9.5
+    Auburn @ Ole Miss                 published -13.5, market -11.5
+
+Two different harms, and the first is the serious one:
+
+  * **Western Michigan -12.5 is a number a user cannot get.** The market is
+    -13.5. If it is graded at -12.5 our record is scored on a line nobody
+    could bet, which overstates it by a point on a key number.
+  * Colorado State +6.5 and Iowa State +8.5 show LESS than the market
+    offers (+7.5, +9.5), so a user following us leaves a point behind, and
+    +6.5 vs +7.5 crosses 7.
+
+This is a different gap from the one `frozen_quote` closed on 10-30. That
+handles surface-vs-surface (two cards disagreeing). This is pick-vs-its-own-
+current-market: nothing re-checks a locked pick's line against the row it
+lives on. Same root as R102 -- the pick is frozen 10-29 and the market keeps
+moving -- so the fix belongs with the re-score, not in a separate pass:
+re-score, keep the side, refresh the NUMBER, and flag when the number has
+moved through a key value (3, 7, 10).
+
+### Assessment delivered — the 20-game NCAAF dossier
+`_ncaaf_dossier_1031.py` walks all 20 data families per game and votes each
+FOR/AGAINST the published side; `_build_ncaaf_dossier_html.py` renders it.
+The tally has to be read by pick TYPE: a heavy AGAINST count is the expected
+signature of a FADE (our only out-of-sample filter opposes the team data by
+construction), and only means incoherence on a MODEL-ALIGNED pick.
+
+    strongest agreement   Clemson @ Florida State 13-2, Kansas State @
+                          Colorado 13-3, New Mexico @ San Jose State 12-2,
+                          Miami @ North Carolina 12-2
+    heavy AGAINST, BY DESIGN (fades)
+                          Ohio State @ USC 3-12, SMU @ Syracuse 3-12,
+                          Boston College @ Duke 3-11
+    heavy AGAINST, NOT a fade — the one genuine problem
+                          Colorado State @ Utah State 6-8
+
+Colorado State +6.5 is the only pick on the board with no defensible basis:
+all four model families say HOME outright (sp_plus, EPA, MC 0.561, LR
+0.6225), its own three ensemble sources all vote HOME_ML, the dog covers
+25.0% in that role, the line moved 6 points toward Utah State, `line_snapshot`
+has NO ticket data so the fade cannot license the flip, and by the money
+predicate 79% is on Colorado State -- the side we took, which is the cell the
+fade edge is measured against. It is also one of the four R109 stale lines.
+Its only support is projection VALUE (our model has Utah State by 3.36 vs a
+market -7.5, so +7.5 carries 4.14 points), which is real but is the single
+family backing it.
