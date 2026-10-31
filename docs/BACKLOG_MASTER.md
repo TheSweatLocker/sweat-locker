@@ -3537,3 +3537,46 @@ accumulates, then promote only if it beats the live pick. NOT wired tonight
 on purpose — both workflows have a timeout history (bumped 20/25 -> 45
 minutes earlier today) and adding an untested scoring step to a
 timeout-prone pipeline is how tonight's other defects were born.
+
+## R90 · THE SCRIPT THAT RECORDS WHAT MAKES A PICK WAS NEVER WIRED IN — 2026-10-30
+Andy, on tonight's NBA picks: "however we got to those picks we need to
+assess as a baseline."
+Captured the recipe. Only TWO NBA picks carried a bettable tier, and both
+rest on the same two signals:
+  Detroit -8.5 STRONG  conv 61 score 0.43  close 7.5  proj 10.8
+      external:oddscrowd        w=0.34 n=46  AWAY  contrib 0.17
+      nba_elo_away_ml_strong    w=0.26 n=20  AWAY  contrib 0.26
+  Houston -6.5 STRONG  conv 67 score 0.55  close 6.5  proj  5.5
+      external:oddscrowd        w=0.52 n=46  AWAY  contrib 0.26
+      nba_elo_away_ml_strong    w=0.44 n=20  AWAY  contrib 0.25
+      nba_offense_mismatch_away w=0.20 n=0   AWAY  contrib 0.11
+Minnesota -7.5 and 76ers ML did NOT come from primary_play — the card
+composed them (76ers is COVERAGE in primary_play, Minnesota's primary_play
+is a total).
+THE PROBLEM WITH CALLING IT A BASELINE TODAY: external:oddscrowd, the
+heaviest weight on both picks, has NEVER been attributed on NBA. Its n=46 is
+borrowed from NCAAF (39) + NFL (8), and in NCAAF it measures 46.2%
+CI[30.5,61.8] — below a coin flip. nba_elo_away_ml_strong is NBA n=10 at
+70.0% CI[41.6,98.4], promising and not quotable.
+nba_offense_mismatch_away is n=0 carrying the unmeasured 0.20 floor.
+CAUSE: attribute_ensemble_sources.py reads primary_play._ensemble_sources
+and writes the real drivers to signal_attribution. It is wired into ZERO
+workflows — grep of .github/workflows returns nothing. Its own docstring,
+dated 2026-10-27, was written for Andy's standard and records the same table
+of missing attribution (NBA 0, NHL 0). signal_attribution_snapshot.py, which
+IS wired, only writes a hardcoded family list (OFF_RATING_GAP, LR_SHADOW,
+SPLITS_SHARP, ANCHOR, GOAT, COHORT_*) and never touches _ensemble_sources.
+RAN IT, all sports, --apply: 368 rows written, 0 failed. Attribution now:
+  MLB 358 rows / 21 signals   NBA 107 / 18   NCAAF 3286 / 107
+  NFL 1106 / 85               NHL 274 / 36
+Both of tonight's drivers now carry rows with their SIDE recorded and
+signal_was_right=None pending results, so tonight becomes the first graded
+datapoint of a real baseline rather than an anecdote.
+NEXT, and it is small: wire attribute_ensemble_sources.py into all five
+sport workflows, AFTER primary_play is written. Right now tonight's run is a
+one-off and tomorrow's picks will go unrecorded again.
+ALSO LIVE TONIGHT — a natural A/B: the published picks came from the
+early-row score, and R89's shadow holds what the completed row would say.
+The shadow DEMOTES Detroit and Houston. If Detroit covers, the early read
+beat the late read and R89 should not be promoted; if it does not, the
+ordering fix has its first evidence. Either way it is measured, not argued.
