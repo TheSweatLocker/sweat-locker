@@ -3166,3 +3166,56 @@ NEEDS AN APP STORE BUILD — client change, no OTA path.
 Still open underneath: the panel is still one voice. Collapsing makes the UI
 honest; making the voices genuinely independent (different INPUTS, per
 feedback_lens_independence_needs_different_inputs) is the real fix.
+
+## R76 · A VOID HAS NOWHERE TO RECORD WHY — 2026-10-30
+Voided receipt 3981345 (the incoherent +622 Daily Degen) plus the three
+Sweat Card orphans. `result='VOID'` landed on all four; the REASON did not.
+`trg_freeze_receipt_identity` does `NEW.audit := OLD.audit` (20260918b), so
+the audit blob is immutable once set — correct design, the receipt is the
+record — and 20261025a added void+replace without a reason column. So the
+schema can void a play but cannot say why, and four receipts now carry a
+bare VOID nobody can explain later.
+FIX: either `void_reason`/`voided_at`/`voided_by` columns (new columns are
+not named by the freeze trigger, so they stay writable), or an append-only
+`receipt_voids` table keyed on receipt id — the latter fits "a void is
+history and history should accumulate" from 20261025a's own note.
+
+## R77 · THE FLIP CURE IS ORDERING, NOT THE GUARD — 2026-10-30
+1a94baac stops the Sharp flipping a game whose side another surface already
+published, which prevents the contradiction but costs the pick. The flip
+exists in TWO places: flip_football_spreads.py (source, receipt-aware) and
+generate_sharp_card.py (compose). The real fix is to run the source flip
+BEFORE any surface publishes, so it lands once for everyone and the composer
+copy can be deleted. Until then the Sharp loses these picks to whichever
+surface publishes first.
+
+## R78 · THE FADE STAMPS NO INTENT — 2026-10-30
+2 of tonight's 4 cross-surface CRITICALs are NBA Fade-vs-our-own-card
+(Brooklyn against our Detroit, Indiana against our Miami). The Sharp's
+deliberate flips carry `audit.reason` starting "fades our own", so they are
+machine-readable as intentional; the Fade's receipts carry `reason=''`. With
+no marker there is no way to distinguish "fading the public", which is the
+surface's job, from "accidentally opposing our own pick", which is a defect.
+Also live: the Fade published Minnesota -7.5 identical to the Sweat Card, so
+the same bet is double-counted in the composite record.
+FIX: have generate_the_fade stamp what it is fading (public side + pct), then
+teach consistency_watchdog to flag only the unmarked case.
+
+## R79 · A FAMILY-WEIGHT REFIT CANNOT MOVE THE ENGINE — 2026-10-30
+Measured before building the fitter (measure_family_weight_leverage.py).
+Families agree on the side in 931 of 1,076 units (86.5%); a weight can only
+change the other 13.5%, and on MLB (0/202) and NBA (0/56) it can change
+NOTHING. In the units where it could act the majority vote does not clear
+breakeven on its CI: NCAAF 51.0% n=96 CI[41.0,61.0] against a 52.1% blanket
+home rate, NFL 58.3% n=48 CI[44.4,72.3]. Following the minority is worse,
+44.1% n=145.
+Cause: 2,755 of 3,584 attributed signal sides (76.9%) say HOME. The library
+almost always says one thing, so the vote has nothing to decide — the same
+finding as project_engine_selects_on_zero_measured_signals_1028 seen from
+the output end.
+NEXT: the lever is evidence that can argue the OTHER side, and every
+candidate that has ever cleared is MARKET structure, not team data — the
+public-money fade on spreads (+12.4% n=107), the short football spread flip
+(62.0% n=121), wind>=12 UNDER (55.8%, 17 of 26 seasons). Give a
+market-structure family real weight, THEN re-run the leverage script; if
+disagreement has risen the fitter becomes worth writing.
