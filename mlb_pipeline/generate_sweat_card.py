@@ -86,6 +86,148 @@ HEADERS = {
 # EXIT CONDITION: if the puckline record turns, delete the entry. One constant.
 CARD_INELIGIBLE_MARKETS = {('NHL', 'rl')}
 
+# ══ 2026-10-31 · R118 · THE ML JUICE CEILING, AT COMPOSITION ══════════
+# 'Colorado Avalanche ML' reached the home card at -385 published, -425
+# live: a breakeven of 81.0%. Three thresholds already existed and it was
+# past all of them --
+#     defensive_gates._ml_odds_too_juiced(..., max_juice=-300)
+#     jerry_anchor_potd  POTD ML gate -250 (Andy 08-03, loosened 09-12)
+#     generate_sharp_card.SOLE_PICK_ML_JUICE_MAX = -300
+# -- so this is a rule we already wrote, not a new one.
+#
+# It got through because _ml_odds_too_juiced has exactly ONE call site,
+# defensive_gates.py:1282, inside the LR ML override path: it guards a
+# model override, not card composition. I checked the likelier explanation
+# first and it was wrong -- the gate reads
+# `close_home_ml or home_ml_odds or home_ml_close` and one of those names
+# resolves on all six sports, so it is not a guessed-column failure. The
+# gate works; nothing asked it.
+#
+# Enforced here, where every candidate passes, rather than in one of the
+# contributing composers (feedback_guard_belongs_at_the_chokepoint). Reads
+# the pick's OWN published price, which is the number the user would be
+# betting, not a context column that can disagree with it.
+CARD_ML_JUICE_MAX = -300
+
+
+def _card_is_ml(pick) -> bool:
+    """Is this pick a moneyline, however its surface spells it."""
+    t = str(pick.get('type') or '').lower()
+    if t in ('ml', 'potd', 'moneyline'):
+        # a POTD is a labelled ML on this card; dotd/props are not
+        lbl = str(pick.get('label') or pick.get('pick') or '').upper()
+        return t != 'potd' or ' ML' in lbl
+    return False
+
+
+def drop_overjuiced_ml(picks, where=''):
+    """Remove ML picks priced worse than CARD_ML_JUICE_MAX.
+
+    A pick with NO price is left alone: that is a different defect, and
+    receipt_invariants already refuses a priceless play at capture. Silence
+    about a missing price here would hide it twice.
+    """
+    keep, dropped = [], []
+    for p in picks or []:
+        o = None
+        try:
+            o = float(p.get('odds'))
+        except (TypeError, ValueError):
+            o = None
+        if _card_is_ml(p) and o is not None and o < CARD_ML_JUICE_MAX:
+            dropped.append((p, o))
+            continue
+        keep.append(p)
+    for p, o in dropped:
+        be = 100.0 * abs(o) / (abs(o) + 100.0)
+        print(f'  🚫 {where}ML juice cap: dropped '
+              f'{str(p.get("label") or p.get("pick"))!r} at {o:+g} '
+              f'(breakeven {be:.1f}%, cap {CARD_ML_JUICE_MAX:+g})')
+    return keep
+
+
+# ══ 2026-10-31 · R119 · ONE BET, ONE SLOT ════════════════════════════
+# The Sweat Card is "recap + POTD + Dawg + composite, top-8 curated", and
+# the POTD and the composite are separate components with no dedupe
+# between them. On 10-31 both landed on Marshall:
+#     1. Marshall ML (Jerry 81/100)   -145  PRIME   type=POTD
+#     4. Marshall ML                  -142  STRONG  type=ml
+# One bet took two of eight slots AND got two receipts, so a single
+# Marshall result would move the card record by TWO.
+#
+# KEYED ON THE SIDE, NOT THE LABEL. Those are two different strings, which
+# is why every label-based duplicate check in this repo walked past it. A
+# label key is also wrong in the other direction: 10-03 carries two
+# 'under 7.0' on DIFFERENT games with distinct source_id hashes, same text,
+# different bets. So totals and props key on game_id, and only ml/rl with a
+# team-shaped side key on the side (feedback_dedupe_key_shape_must_match).
+_TIER_RANK_CARD = {'PRIME': 5, 'STRONG': 4, 'LEAN': 3, 'LIGHT': 2,
+                   'COVERAGE': 1, 'PASS': 0, 'SKIP': 0}
+
+
+def _card_side_of(pick) -> str:
+    s = ' '.join(str(pick.get('label') or pick.get('pick') or '').split())
+    s = re.sub(r'\s*\([^)]*\)\s*$', '', s)
+    s = re.sub(r'\s+(ML|[+-]?\d+(?:\.\d+)?)$', '', s, flags=re.I)
+    return s.strip().lower()
+
+
+def _card_bet_key(pick):
+    """The identity of the BET, or None when it cannot be judged safely."""
+    t = str(pick.get('type') or '').lower()
+    mkt = {'potd': 'ml', 'moneyline': 'ml', 'spread': 'rl'}.get(t, t)
+    sd = _card_side_of(pick)
+    if mkt in ('ml', 'rl') and sd and sd not in ('over', 'under'):
+        return ('SIDE', str(pick.get('sport') or '').upper(), mkt, sd)
+    gid = pick.get('game_id') or pick.get('source_key')
+    if gid:
+        return (str(gid), mkt, sd)
+    return None
+
+
+def dedupe_one_bet_per_slot(picks, where=''):
+    """Keep the highest-tier copy of each bet, drop the rest."""
+    groups, order = {}, []
+    for p in picks or []:
+        k = _card_bet_key(p)
+        if k is None:
+            order.append(('keep', p))      # unjudgeable: never dropped
+            continue
+        if k not in groups:
+            groups[k] = []
+            order.append(('group', k))
+        groups[k].append(p)
+    out, dropped = [], []
+    for kind, val in order:
+        if kind == 'keep':
+            out.append(val)
+            continue
+        grp = groups[val]
+        if len(grp) == 1:
+            out.append(grp[0])
+            continue
+        # DOUBLEHEADER GUARD. A team really can appear twice on one date on
+        # the same market -- MLB plays two. If two copies both name a
+        # game_id and the ids differ, they are two bets, not one.
+        gids = {str(p.get('game_id')) for p in grp if p.get('game_id')}
+        if len(gids) > 1:
+            print(f'  ℹ {where}one-bet-one-slot: {len(grp)} copies of '
+                  f'{val!r} across {sorted(gids)} — left alone, that is a '
+                  f'doubleheader not a duplicate')
+            out.extend(grp)
+            continue
+        grp = sorted(grp, key=lambda p: (
+            _TIER_RANK_CARD.get(str(p.get('tier') or '').upper(), 0),
+            float(p.get('conviction') or 0)), reverse=True)
+        out.append(grp[0])
+        dropped.extend(grp[1:])
+        print(f'  🚫 {where}one bet, one slot: kept '
+              f'{str(grp[0].get("label") or grp[0].get("pick"))!r} '
+              f'(tier={grp[0].get("tier")}), dropped '
+              + ', '.join(repr(str(d.get('label') or d.get('pick')))
+                          + f' (tier={d.get("tier")})' for d in grp[1:]))
+    return out
+
 
 def _card_market_blocked(pick):
     """True when this (sport, market) must not reach the curated card."""
@@ -4065,6 +4207,29 @@ def build_card():
     #   1. Conviction DESC (highest first)
     #   2. Sport-in-season priority tiebreak (football Sept-Jan, MLB Apr-Sep)
     #   3. Cap: 5 on multi-sport peak days (Sat/Sun), else 4
+    # ══ 2026-10-31 · THE TWO GATES, BEFORE THE CAP IS EVEN SIZED ═════
+    # R118 (ML juice ceiling) and R119 (one bet, one slot). Placed here,
+    # ahead of _sports_present, for two reasons:
+    #
+    #   * the cap is sized from how many sports CONTRIBUTE. If the juice
+    #     cap drops a sport's only card pick -- which is exactly what
+    #     happened to NHL on 10-31, where 'Colorado Avalanche ML' at -385
+    #     was the single NHL entry -- then sizing the cap first counts a
+    #     sport that ends up contributing nothing.
+    #   * a duplicate or an over-juiced ML removed AFTER the
+    #     [:_unified_cap] slice has already consumed one of the eight
+    #     slots, so the card ships short while a legitimate pick sits just
+    #     outside the cap.
+    #
+    # top_8_curated is gated too, not only the unified list: it is emitted
+    # as card['top_8'], it is what public_receipt.sweat_card_rows turns
+    # into receipts, and RecapStrip builds the yesterday headline from its
+    # summary. A gate on one of the two lists is not a gate
+    # (feedback_fix_every_writer_to_the_table).
+    top_8_curated = drop_overjuiced_ml(top_8_curated or [], 'top_8: ')
+    top_8_curated = dedupe_one_bet_per_slot(top_8_curated, 'top_8: ')
+    football_picks = drop_overjuiced_ml(football_picks, 'football: ')
+
     # Sport tag on each pick lets app render sport emoji + drive tap-to-detail.
     _weekday = datetime.now(timezone.utc).weekday()  # Mon=0..Sun=6
     _multi_sport_peak = _weekday in (5, 6) and bool(football_picks)  # Sat/Sun w/ football
@@ -4145,6 +4310,10 @@ def build_card():
     _unified_candidates.sort(
         key=lambda p: (-p.get('_calibrated', 0.0), -p.get('_conviction', 0))
     )
+    # dedupe AFTER the sort so the survivor is the better-ranked copy where
+    # tier ties, and before the cap so a duplicate never eats a slot
+    _unified_candidates = dedupe_one_bet_per_slot(_unified_candidates,
+                                                  'unified: ')
     unified_top_picks = _unified_candidates[:_unified_cap]
     # Re-rank 1..N. Both source lists carry their own `rank` (MLB's is its
     # position in top_8; football has none at all), so without this the
