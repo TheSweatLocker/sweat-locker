@@ -3721,3 +3721,36 @@ Three legitimate remedies, in increasing order of commitment:
 Scope note: tonight's 3 affected rows are COVERAGE-tier **game reads**, not
 card plays -- no user was shown a play. The cost is 3 ungraded reads, same
 as 10-30's four.
+
+### R97 — the publish lock ranks decks by ITEM COUNT, so a correctness fix can never win
+Regenerating The Sharp with the UFC decimal bug fixed was REFUSED:
+
+    sharp_card_2026-10-31 already published (9 items, 0 PRIME) - new deck
+    (PRIME 0, STRONG 7, conv 359.0) is not better than current (PRIME 0,
+    STRONG 9, conv 359.0), skipping.
+
+The two decks are the same picks; the new one simply drops two plays that
+breach our own juice ceiling. Because "better" is measured as PRIME count,
+then STRONG count, then summed conviction, **any republish that REMOVES a
+bad pick scores worse than the version containing it** and is rejected.
+Needed `--force` to ship a fix Andy had explicitly ordered.
+
+The lock is right to resist churn; it is wrong that it cannot tell
+"recomposed into different picks" from "same picks, two withdrawn for
+discipline". Suggested: compare the pick SET, and allow a republish that is
+a strict SUBSET of the live deck with no new picks added, since that can
+only ever be a withdrawal. Summed conviction is already an equal-or-worse
+signal here (359.0 in both decks, identical).
+
+### R98 — tonight's UFC receipts still carry odds=1 and cannot be fixed
+The app is now correct (`Jacobe Smith ML (-267)`, units 1.0), but
+`public_receipts` 3982400-3982403 are frozen at `pick_odds` 1 by
+`freeze_receipt_identity`'s set-once rule (R96). So the RECORD will score
+Smith and Rodriguez as +0.01u on a win while the app showed -267/-294, and
+Reese/Santos keep live receipts for plays the Sharp has now withdrawn.
+
+Leaving those two receipts live and gradeable is the deliberate choice, and
+it follows Andy's 10-30 ruling (`_unvoid_published_card_picks.py`): the
+Sharp really did show them to whoever was looking this morning, and a
+record that drops the plays it later wishes it had not made is not a
+record. The understated ROI is the open half, and it needs the R96 decision.

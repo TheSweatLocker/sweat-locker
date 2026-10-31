@@ -1904,6 +1904,11 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
 #: is unambiguous and the test needs no feed-version flag.
 _DECIMAL_ODDS_CEILING = 100.0
 
+#: Apply SOLE_PICK_ML_JUICE_MAX to UFC moneylines. Set False to go back to
+#: shadow-only (the log keeps printing the count either way). See the note
+#: in _compose_ufc -- Andy promoted this on 2026-10-31.
+UFC_ENFORCE_ML_JUICE_CAP = True
+
 
 def _decimal_to_american(d: float) -> int:
     """Decimal price -> American. 1.375 -> -267, 2.50 -> +150.
@@ -1963,13 +1968,34 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
         halve = 0.5 if (odds is not None and odds <= -180) else 1.0
         units = base * halve
         if units <= 0: continue
-        # SHADOW, not a gate. Andy's standing instruction is that the Sharp
-        # must not get thinner, so the existing -300 ceiling is REPORTED on
-        # UFC rather than applied -- it has never run on this path, and
-        # turning it on here would drop live picks on a surface he is
-        # protecting. The count is what he needs to make that call.
+        # == 2026-10-31 . ANDY PROMOTED THIS FROM SHADOW TO ENFORCED ====
+        # Shipped as a shadow earlier today, because his standing rule was
+        # that the Sharp must not get thinner. He then overrode it on
+        # seeing what the decimal bug had put in front of users: "If picks
+        # are incorrectly labeled in app causing users to act on somehting
+        # that we dont believe in is unacceptable fix it."
+        #
+        # -417 IS something we do not believe in, and not as a matter of
+        # taste -- SOLE_PICK_ML_JUICE_MAX is our own stated ceiling for a
+        # sole ML play, and UFC's live record is the case for it: 13-8,
+        # 61.9%, ROI -12.83% (n=21, under the n>=30 gate, so directional).
+        # Winning most of your bets and losing money is what laying heavy
+        # chalk looks like.
+        #
+        # The ceiling could never fire here before: a decimal price is
+        # always positive, so no UFC pick had ever been tested against it.
+        # Enforcing it costs volume -- tonight 2 of 4 UFC picks, taking the
+        # Sharp from 9 items to 7 -- which is the trade he chose. Revert by
+        # setting UFC_ENFORCE_ML_JUICE_CAP False; the shadow log stays
+        # either way so the count is never lost.
         if odds is not None and odds < SOLE_PICK_ML_JUICE_MAX:
             shadow_juice.append(f'{picked} @ {odds}')
+            if UFC_ENFORCE_ML_JUICE_CAP:
+                print(f'  ! UFC {picked} @ {odds} is past '
+                      f'SOLE_PICK_ML_JUICE_MAX ({SOLE_PICK_ML_JUICE_MAX}) '
+                      f'-- DROPPED, a sole ML play at this juice is one we '
+                      f'do not believe in')
+                continue
         odds_str = f'  ({"+" if odds and odds > 0 else ""}{odds})' if odds else ''
         picks.append({
             'sport': 'UFC',
@@ -1983,8 +2009,9 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
             'units': units,
         })
     if shadow_juice:
-        print(f'  UFC juice SHADOW: {len(shadow_juice)} pick(s) past '
-              f'SOLE_PICK_ML_JUICE_MAX ({SOLE_PICK_ML_JUICE_MAX}) and kept '
+        verb = 'DROPPED' if UFC_ENFORCE_ML_JUICE_CAP else 'kept (shadow only)'
+        print(f'  UFC juice cap: {len(shadow_juice)} pick(s) past '
+              f'SOLE_PICK_ML_JUICE_MAX ({SOLE_PICK_ML_JUICE_MAX}) {verb} '
               f'-- {", ".join(shadow_juice)}')
     return picks
 
