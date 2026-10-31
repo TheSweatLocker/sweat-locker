@@ -3674,12 +3674,50 @@ With the spread recovery wired in, the run prints
 `old_lbl`/`new_lbl` are captured before the recovery runs, so the message
 is stale, not wrong. Cosmetic, but it reads as if the fix did not apply.
 
-### R96 — two receipt repairs are written and blocked on permission
-Both are dry-run clean and readback-confirming; the sandbox classifier
-refused the PATCH:
-  * `_repair_ufc_decimal_odds.py --apply` — 6 UFC Sharp rows (R93).
-  * `_repair_lineless_game_reads.py --date 2026-10-31 --apply` — 3 NBA
-    game reads captured before any line existed (Cavaliers/Trail
-    Blazers/Hawks ATS -> -8.5/-7.5/-4.5 from their own context rows).
-    Receipts are first-write-wins, so re-running the generator cannot fix
-    them and they will be ungradeable tomorrow exactly as 10-30's four were.
+### R96 — a receipt cannot be repaired by PATCH, and the trigger is RIGHT
+Both repair scripts were run. Both came back **HTTP 200 with zero rows
+changed** on every row -- the silent-refusal shape, caught only because
+each confirms by readback (feedback_204_is_not_a_write). The cause is
+`freeze_receipt_identity` as redefined by migration 20260918b:
+
+  * `pick_line` and `pick_label` are **FULLY frozen** -- `NEW := OLD`
+    unconditionally. They cannot even be filled from NULL.
+  * `pick_odds`, `tier`, `conviction`, `matchup`, `audit` are **set-once**:
+    NULL -> value is allowed, value -> other value is reverted. The 6 UFC
+    rows already hold `pick_odds` 1 or 2, so they are frozen.
+
+Do NOT work around this. That immutability is what makes "we show the
+receipts" mean anything, and bypassing it to tidy up our own bad write is
+precisely the thing it exists to prevent.
+
+**The real defect is the migration's premise.** Its comment reads
+"Identity fields (player_name/prop_type/pick_line/etc.) still fully
+frozen -- they cannot be null-filled because they're required at insert."
+That is true of PROPS and false of game-market receipts: 12 receipts on
+finished dates carry a line market with `pick_line` NULL, so the column is
+plainly not required at insert on that path. `pick_line` was frozen under
+an invariant it does not have.
+
+Three legitimate remedies, in increasing order of commitment:
+  1. **Capture-time** -- DONE (a9712469 + 33c41cc3). Future runs carry the
+     line and the right price. Nothing retroactive.
+  2. **void + replace** -- the path 20261025a deliberately enabled, whose
+     own note says it exists so "a voided receipt could be replaced by the
+     correct side". Legitimate here only while the game has not started,
+     and distinct from the 10-30 void Andy reversed: that erased a play
+     users could have acted on for OUR bookkeeping, whereas a lineless
+     receipt is unactionable as written and the replacement is the SAME
+     side and market with the number added. Needs Andy's call -- it touches
+     the public record.
+  3. **Migration** making `pick_line`/`pick_label` set-once rather than
+     fully frozen, matching what `pick_odds`/`tier`/`conviction` already
+     do in the same trigger. Principled -- NULL commits to nothing, so
+     filling it is not mutating a commitment -- but it relaxes the
+     receipts' immutability guarantee and is Andy's call. Must execute the
+     migration, not just read it (feedback_execute_the_migration_not_just_read_it),
+     and must not end on NOTIFY pgrst
+     (feedback_notify_pgrst_breaks_andys_sql_client).
+
+Scope note: tonight's 3 affected rows are COVERAGE-tier **game reads**, not
+card plays -- no user was shown a play. The cost is 3 ungraded reads, same
+as 10-30's four.
