@@ -187,9 +187,14 @@ def public_won(market: str, side: str, res: dict):
 
 def closing_snapshots():
     """One row per (sport, game_id, market): the latest snapshot."""
+    # bets_pct is selected even though the money-share table does not
+    # use it: run_divergence needs it, and an explicit SELECT that omits
+    # a column hands the caller a KeyError or a silent blank rather than
+    # an error (feedback_explicit_select_silent_blanks). Leaving it out
+    # made the whole follow table print EMPTY on the first run.
     snap = page('line_snapshot',
                 {'select': 'sport,game_id,market,pick_side,money_pct,'
-                           'snapshot_ts'})
+                           'bets_pct,snapshot_ts'})
     if snap is None:
         return None
     latest = {}
@@ -291,13 +296,109 @@ def run(heavy: float, min_n: int) -> int:
     return 0
 
 
+def run_divergence(min_div: float, min_n: int) -> int:
+    """The OTHER predicate: money share exceeding bets share, followed.
+
+    == 2026-10-30 . THE LIVE SIGNALS USE THIS ONE, AND IT DOES NOT WORK ==
+    The engine already has a public-money family -- signal_sources class
+    `oddscrowd_direction`, eight rows, several enabled. They do NOT key on
+    money share. align_status_common.py:196 sets
+
+        fade_note = 'boost'   # money heavier than bets = sharp
+
+    so `fade == 'boost'` means money% > bets% and side_expr takes `pick`,
+    the side the money is on. Despite "fade" in every one of their names
+    they are FOLLOW-the-sharp-money signals, and side_expr is right for
+    that.
+
+    Which means the money-share table above does not judge them, and my
+    first reading of their enablement as "backwards" was comparing two
+    different predicates. This measures theirs.
+
+    It does not clear anywhere. NCAAF rl -- the market with the most data --
+    is 45.5% at >=10pp, actively negative, and its halves run 54.5 -> 36.4.
+    MLB ml reaches 57.1% n=191 and is stable across halves (56.8 / 57.3),
+    but ML breakeven RISES with the price to 56-58%, so that is breakeven,
+    not edge (feedback_flat_110_inflates_every_ml_figure).
+
+    So the engine's live public-money family fires on a predicate with no
+    measured support, while the predicate that DOES clear on spreads --
+    heavy money share, faded -- has no signal at all.
+    """
+    latest = closing_snapshots()
+    if latest is None:
+        return 2
+    results = {}
+    for sport, tbl in RESULT_TABLE.items():
+        rows = page(tbl, {'select': 'game_id,game_date,home_win,'
+                                    'spread_result,total_result'})
+        if rows is None:
+            return 2
+        for x in rows:
+            results[(sport, str(x['game_id']))] = x
+
+    agg = collections.defaultdict(lambda: [0, 0, []])
+    for (sport, gid, market), r in latest.items():
+        res = results.get((sport, gid))
+        if not res:
+            continue
+        try:
+            div = float(r['money_pct']) - float(r['bets_pct'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if div < min_div:
+            continue
+        w = public_won(market, r.get('pick_side'), res)
+        if w is None:
+            continue
+        a = agg[(sport, market)]
+        a[1] += 1
+        if w:
+            a[0] += 1
+        a[2].append((str(res.get('game_date')), w))
+
+    print(f'\n=== FOLLOW the sharp side (money% - bets% >= {min_div:g}pp) '
+          f'— the predicate the LIVE signals use ===')
+    print(f'{"sport":6s} {"mkt":6s} {"n":>5s} {"win%":>7s} {"95% CI":>16s}'
+          f'   split-half            verdict')
+    for (sport, market), (w, n, ds) in sorted(agg.items()):
+        if n < min_n:
+            continue
+        lo, hi = ci95(w, n)
+        ds.sort()
+        h = len(ds) // 2
+        e, l = ds[:h], ds[h:]
+        ew = sum(1 for _, x in e if x)
+        lw = sum(1 for _, x in l if x)
+        pct = 100.0 * w / n
+        if market == 'ml':
+            verdict = 'ML breakeven 56-58% - at best breakeven'
+        elif pct < 50.0:
+            verdict = 'NEGATIVE - following loses'
+        elif lo > BREAKEVEN_SPREAD:
+            verdict = 'clears'
+        else:
+            verdict = 'does not clear'
+        print(f'{sport:6s} {market:6s} {n:5d} {pct:6.1f}% '
+              f'[{lo:5.1f},{hi:5.1f}]  {100.0 * ew / max(1, len(e)):5.1f}%'
+              f' n={len(e):<4d}/{100.0 * lw / max(1, len(l)):5.1f}% '
+              f'n={len(l):<4d} {verdict}')
+    print('\nThe live oddscrowd_direction signals key on THIS predicate. '
+          'Nothing here clears, and NCAAF rl is negative.')
+    return 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--heavy', type=float, default=65.0,
                     help='minimum money_pct on the public side (default 65)')
+    ap.add_argument('--min-div', type=float, default=10.0,
+                    help='minimum money%%-bets%% for the follow table')
     ap.add_argument('--min-n', type=int, default=30)
     a = ap.parse_args()
-    raise SystemExit(run(a.heavy, a.min_n))
+    rc = run(a.heavy, a.min_n)
+    rc2 = run_divergence(a.min_div, a.min_n)
+    raise SystemExit(rc or rc2)
 
 
 if __name__ == '__main__':

@@ -3234,3 +3234,41 @@ FIX: bridge_football_game_ids.py already exists for this family; point it at
 line_snapshot, or match on (away, home, week-bucket) exactly as
 check_pipeline_health does. NFL is the sport where family disagreement is
 highest (42.5%), so it is the one most likely to benefit.
+
+## R81 · THE oddscrowd FADE FAMILY HAS NEVER FIRED ONCE — 2026-10-30
+signal_sources class `oddscrowd_direction`: 8 rows, several enabled
+(689 MLB ml, 736/737/738 NFL ml/rl/total, 754 NCAAF total, 786 NBA ml).
+Attribution rows for ANY of them, ever: **0 of 4,763**. The only oddscrowd
+keys in signal_attribution are `external:oddscrowd` (48 rows), a different
+family.
+NOT the old isinstance bug — the conditions now use the whitelisted
+`is_dict` and read correctly. And NOT missing data: oddscrowd_snapshot is
+populated on 93 of 123 NCAAF rows since 10-24, with `fade=='boost'` on 24
+rl / 21 total / 24 ml games, 50 of 79 NBA, 49 of 94 NHL. So the predicate
+is TRUE on real games and the signal still records nothing.
+NFL is the exception that may be its own bug: only 14 of 178 rows populated,
+so the 10-29 align_status fix did not take for NFL.
+NEXT: replay one NCAAF game through the scorer's signal loop with a known
+`fade=='boost'` row and find where it is dropped — market_scope='*' against
+a per-market gate is the first suspect, since every other family in the
+table scopes to a specific market.
+
+## R82 · THE LIVE PUBLIC-MONEY PREDICATE IS THE ONE THAT DOES NOT WORK — 2026-10-30
+Two different predicates live in this family and only one has edge.
+align_status_common.py:196 sets `fade_note = 'boost'  # money heavier than
+bets = sharp`, so the signals fire on money% > bets% (divergence) and
+side_expr takes `pick`, the money side. They are FOLLOW signals despite
+"fade" in every name, and side_expr is correct for that.
+Measured, closing snapshot, graded from {sport}_game_results:
+  FOLLOW on divergence >=10pp    NCAAF rl 45.5% n=88  (54.5 -> 36.4) NEGATIVE
+                                 MLB rl   50.2% n=227 (54.9 -> 45.6) no
+                                 MLB ml   57.1% n=191 (56.8 / 57.3) = ML BE
+  FADE on money share >=65%      NCAAF rl 59.2% n=130 (55.4 / 63.1) CLEARS
+                                 MLB rl   55.2% n=366 (55.2 / 55.2) CLEARS
+So the engine's live family keys on the predicate with no measured support
+— negative on NCAAF spreads — while the predicate that clears on spreads
+has no signal at all.
+NEXT: a spread-only signal on heavy money share, side = OPPOSITE of
+pick_side, per-sport (NCAAF + MLB on; NHL OFF, it inverts at 38.9% both
+halves; NBA/NFL unmeasured, NFL blocked by R80). Do not pool the two
+predicates under one weight — they are not the same evidence.
