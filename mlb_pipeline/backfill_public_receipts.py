@@ -147,6 +147,42 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     for _r in rows:
         _r.setdefault('capture_mode', 'reconstructed')
         _sanitize(_r)
+    # ══ 2026-10-31 · THE INVARIANTS RAN ON ONE WRITER OF TWO ══
+    # public_receipt.capture() screens every row through receipt_invariants
+    # at its own chokepoint. THIS writer never did, so every invariant --
+    # the priceless play, the leg-count mismatch, the market measured
+    # negative, and as of today the tier=PASS no-play (R121/R122) -- was
+    # enforced on live publishes and ignored on everything reconstructed.
+    # That is the same one-root-cause-two-writers shape as the 42P10 note
+    # below and the future-date guard above it
+    # (feedback_fix_every_writer_to_the_table).
+    #
+    # Screened per surface, because the rules are surface-dependent: a
+    # market in FADE_BANNED is refused on 'fade' and allowed on a game
+    # read, so screening the whole batch under one surface label would
+    # apply the wrong rule to most of it.
+    try:
+        from receipt_invariants import screen as _screen
+        _by_surface: dict[str, list] = {}
+        for _r in rows:
+            _by_surface.setdefault(str(_r.get('surface') or ''), []).append(_r)
+        _kept: list[dict] = []
+        for _surf, _batch in _by_surface.items():
+            _k, _ref = _screen(_batch, _surf or 'unknown')
+            _kept.extend(_k)
+        if len(_kept) != len(rows):
+            print(f'  receipt_invariants: {len(rows) - len(_kept)} of '
+                  f'{len(rows)} reconstructed row(s) refused')
+        rows = _kept
+    except Exception as _e:                                    # noqa: BLE001
+        # A screening failure must not silently pass every row. Refuse the
+        # batch instead: a backfill can be re-run, a frozen bad receipt
+        # cannot be corrected.
+        print(f'  ⚠ receipt_invariants unavailable ({_e}) — batch refused '
+              f'rather than written unscreened')
+        return 0
+    if not rows:
+        return 0
     # ══ 2026-10-28 · THE FUTURE GUARD WAS ON ONE SOURCE OF EIGHT ══
     # backfill_jerry_reads got the "game day or earlier only" rule on 10-22
     # (see its own block below for why: pick_side/pick_line/pick_label are

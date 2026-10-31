@@ -199,25 +199,15 @@ def run_date(date: str, apply: bool) -> int:
 
     if not changed:
         return 0
-    # the summary must be recomputed from what is left, or the card still
-    # reports the double-count it no longer renders
-    w = l = p = pend = 0
-    for it in (blob.get('top_8') or []):
-        if not isinstance(it, dict):
-            continue
-        r = str(it.get('result') or '').upper()
-        if r in ('WIN', 'W', 'WON'):
-            w += 1
-        elif r in ('LOSS', 'L', 'LOST'):
-            l += 1
-        elif r in ('PUSH', 'TIE'):
-            p += 1
-        else:
-            pend += 1
-    blob['top_8_summary'] = {'wins': w, 'losses': l, 'pushes': p,
-                             'pending': pend, 'resolved': w + l + p}
+    # BOTH summaries recomputed from what is LEFT, or the card still
+    # reports a double-count it no longer renders -- and the CARD RESULT
+    # line under the visible list reads from unified_summary, not
+    # top_8_summary (card_summaries).
+    from card_summaries import recompute as _recompute
+    for _k, _o, _n in _recompute(blob):
+        print('  %s %s: %s -> %s' % (date, _k, json.dumps(_o),
+                                     json.dumps(_n)))
     blob['_same_bet_deduped_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
-    print('  %s top_8_summary -> %s' % (date, json.dumps(blob['top_8_summary'])))
     if not apply:
         return 0
 
@@ -228,8 +218,10 @@ def run_date(date: str, apply: bool) -> int:
     back = pr.json() if pr.status_code in (200, 201) else []
     if back:
         b = jd(back[0].get('data')) or {}
-        ok = (b.get('top_8_summary') == blob['top_8_summary']
-              and len(b.get('top_8') or []) == len(blob.get('top_8') or []))
+        from card_summaries import PAIRS as _PAIRS
+        ok = all(b.get(_sk) == blob.get(_sk) for _lk, _sk in _PAIRS) and all(
+            len(b.get(_lk) or []) == len(blob.get(_lk) or [])
+            for _lk, _sk in _PAIRS)
     print('  %s HTTP %s %s' % (date, pr.status_code,
                                'CONFIRMED' if ok else 'NOT CONFIRMED'))
     if not ok:

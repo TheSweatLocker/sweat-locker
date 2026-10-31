@@ -211,21 +211,11 @@ def main() -> int:
                               if not (isinstance(it, dict)
                                       and id(it) in drop_ids)]
         if surf == 'Sweat Card':
-            w = l = p = pend = 0
-            for it in (blob.get('top_8') or []):
-                r = str(it.get('result') or '').upper() if isinstance(it, dict) else ''
-                if r in ('WIN', 'W', 'WON'):
-                    w += 1
-                elif r in ('LOSS', 'L', 'LOST'):
-                    l += 1
-                elif r in ('PUSH', 'TIE'):
-                    p += 1
-                else:
-                    pend += 1
-            blob['top_8_summary'] = {'wins': w, 'losses': l, 'pushes': p,
-                                     'pending': pend, 'resolved': w + l + p}
-            print('      top_8_summary -> %s'
-                  % json.dumps(blob['top_8_summary']))
+            # both summaries, from the lists as they now stand
+            from card_summaries import recompute as _recompute
+            for _k, _o, _n in _recompute(blob):
+                print('      %s: %s -> %s' % (_k, json.dumps(_o),
+                                              json.dumps(_n)))
         blob['_ml_juice_capped_at'] = now.isoformat()
         if not a.apply:
             continue

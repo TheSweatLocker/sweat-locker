@@ -144,6 +144,37 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     if market in ('ml', 'rl', 'spread', 'puckline', 'pl') and not row.get('pick_side'):
         return 'WARN', f'{market} receipt carries no pick_side'
 
+    # ══ (5) 2026-10-31 · A DECLARED NO-PLAY IS NOT A PLAY (R121/R122) ══
+    # tier=PASS is the engine saying it has no opinion worth acting on, and
+    # SKIP is the same statement. Published as a receipt with a line, a
+    # price and a result, a PASS becomes a graded bet: 12 of them had
+    # already settled into the read record (against COVERAGE 92, LEAN 33,
+    # STRONG 25), inflating the denominator with non-plays.
+    #
+    # It also put us on BOTH sides of two games on 10-31. Mississippi
+    # State @ Texas and Minnesota @ Indiana each published a fade on the
+    # favourite -- the public was on the dog at 70/68 and 69/65
+    # tickets/money, which is the validated side -- against a tier=PASS
+    # read on the dog at conviction 40, on a sport where conviction is an
+    # anti-signal (NCAAF top decile 36.67%, ROI -33.76%, n=30). Both
+    # graded. One had to lose.
+    #
+    # REFUSING THE RECEIPT DOES NOT HIDE THE READ. GameDetailV2 renders a
+    # read from the sport context's primary_play, not from public_receipts,
+    # and GameDetailV2.tsx:1060 already draws a COVERAGE/PASS/SKIP label
+    # dim and low-conviction. So the read stays on screen, exactly as
+    # written, and simply stops being scored as a bet nobody was told to
+    # make.
+    #
+    # Scoped to reads. A PASS should never reach a play surface at all, and
+    # if one ever does, rule (1) and the tier gates upstream are the place
+    # that gets argued about -- not here.
+    if surface not in PLAY_SURFACES:
+        tier = str(row.get('tier') or '').upper()
+        if tier in ('PASS', 'SKIP'):
+            return 'REFUSE', (f'tier={tier} is a declared no-play — it must '
+                              f'not publish as a priced, graded receipt')
+
     return None, None
 
 
@@ -334,6 +365,24 @@ if __name__ == '__main__':
         # a priceless COVERAGE row warns, it is not deleted
         ({'sport': 'NBA', 'market': 'rl', 'pick_label': 'Lakers ATS',
           'pick_odds': None, 'pick_side': 'HOME'}, 'game_read', 'WARN'),
+        # R121/R122: the two 10-31 reads that sat opposite our own fade.
+        ({'sport': 'NCAAF', 'market': 'rl', 'pick_label': 'Minnesota +20.5',
+          'pick_odds': -108, 'pick_side': 'AWAY', 'tier': 'PASS'},
+         'game_read', 'REFUSE'),
+        ({'sport': 'NCAAF', 'market': 'rl',
+          'pick_label': 'Mississippi State +20.5', 'pick_odds': -110,
+          'pick_side': 'AWAY', 'tier': 'SKIP'}, 'game_read', 'REFUSE'),
+        # the tiers that ARE an opinion still publish
+        ({'sport': 'NCAAF', 'market': 'rl', 'pick_label': 'Minnesota +20.5',
+          'pick_odds': -108, 'pick_side': 'AWAY', 'tier': 'COVERAGE'},
+         'game_read', None),
+        ({'sport': 'NCAAF', 'market': 'rl', 'pick_label': 'Minnesota +20.5',
+          'pick_odds': -108, 'pick_side': 'AWAY', 'tier': 'LEAN'},
+         'game_read', None),
+        # and a PASS on a PLAY surface is not this rule's business
+        ({'sport': 'NCAAF', 'market': 'rl', 'pick_label': 'Texas -20.5',
+          'pick_odds': -110, 'pick_side': 'HOME', 'tier': 'PASS'},
+         'fade', None),
     ]
     ok = True
     for row, surf, want in cases:

@@ -86,6 +86,7 @@ LOST = ('LOSS', 'L', 'LOST')
 PUSHED = ('PUSH', 'TIE')
 #: the two lists RecapStrip and the home card read
 BLOBS = ('top_8', 'unified_top_picks')
+from card_summaries import PAIRS as _PAIRS
 
 
 def _et_today() -> str:
@@ -287,13 +288,23 @@ def run_date(date: str, apply: bool) -> int:
             print(f'      ! {len(orphans)} blob pick(s) with NO receipt, '
                   f'left alone: {orphans}')
 
-    old_sum = blob.get('top_8_summary')
-    new_sum = summarise(blob.get('top_8') or [])
-    if old_sum != new_sum:
-        blob['top_8_summary'] = new_sum
+    # ══ 2026-10-31 · BOTH SUMMARIES, OR THE SCREEN CONTRADICTS ITSELF ══
+    # This used to recompute top_8_summary only. The blob carries TWO
+    # lists and TWO summaries, and the app reads both: RecapStrip takes
+    # the yesterday headline from top_8_summary, index.tsx:13904 takes the
+    # CARD RESULT line under the visible list from unified_summary. Adding
+    # picks to both lists and re-summarising one left 10-30 showing a 5-0
+    # headline above a five-pick list whose own record read 3-0.
+    from card_summaries import recompute as _recompute
+    _sum_changes = _recompute(blob)
+    if _sum_changes:
         changed = True
-    print(f'  {date} top_8_summary: {json.dumps(old_sum)} -> '
-          f'{json.dumps(new_sum)}   ({voided} voided receipt(s) excluded)')
+    for _k, _old, _new in _sum_changes:
+        print(f'  {date} {_k}: {json.dumps(_old)} -> {json.dumps(_new)}')
+    if not _sum_changes:
+        print(f'  {date} summaries already match their lists')
+    print(f'  {date} ({voided} voided receipt(s) excluded)')
+    new_sum = blob.get('top_8_summary')
 
     if not changed:
         print(f'  {date}: already consistent, nothing to write')
@@ -311,7 +322,9 @@ def run_date(date: str, apply: bool) -> int:
         b = back[0].get('data')
         if isinstance(b, str):
             b = json.loads(b)
-        ok = (b or {}).get('top_8_summary') == new_sum
+        # verify BOTH summaries landed, not just the headline one
+        ok = all((b or {}).get(_k) == blob.get(_k)
+                 for _lk, _k in _PAIRS)
     if not ok:                       # readback, never the status code
         g = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H_R, timeout=60,
                          params={'cache_key': f'eq.{key}', 'select': 'data'})
@@ -320,7 +333,9 @@ def run_date(date: str, apply: bool) -> int:
             b = gj[0].get('data')
             if isinstance(b, str):
                 b = json.loads(b)
-            ok = (b or {}).get('top_8_summary') == new_sum
+            # verify BOTH summaries landed, not just the headline one
+        ok = all((b or {}).get(_k) == blob.get(_k)
+                 for _lk, _k in _PAIRS)
     print(f'  {date} HTTP {pr.status_code} '
           f'{"CONFIRMED" if ok else "NOT CONFIRMED -- nothing changed"}')
     return 0 if ok else 1

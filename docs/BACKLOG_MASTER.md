@@ -4293,3 +4293,99 @@ history on 12 settled rows.
   duplicates inflated the RECEIPT-derived records instead. And an earlier
   blob-vs-receipts check could not have caught it either way, because that
   comparison keys on the label and a dict collapses duplicates.
+
+## 2026-10-31 (later) · fade verification + the second card summary
+
+### R123 · A CARD BLOB HAS TWO SUMMARIES AND I RECOMPUTED ONE
+ANDY: "Also says 5-0 yesterday but on sweat card recap below only shows 3
+plays and says 3-0."
+
+Both numbers were on screen at once because they come from different keys:
+
+    top_8             -> top_8_summary    RecapStrip.tsx:129   (headline)
+    unified_top_picks -> unified_summary  index.tsx:13904      (CARD RESULT)
+
+index.tsx has carried the reason since 09-21 — "read the summary that
+matches the list actually on screen". reconcile_card_recap_to_receipts
+added the missing picks to BOTH lists and re-summarised only the first, so
+10-30 showed a 5-0 headline above a five-pick list whose own record read
+3-0.
+
+Fixed in `card_summaries.py`, one helper that recomputes every summary from
+the list it describes, now called by the reconciler, the same-bet dedupe and
+the juice cap — the sanitize lesson, since two copies of a normaliser drift.
+A summary whose list is ABSENT is left alone rather than zeroed, because a
+missing list is a different bug and must not be papered over with 0-0.
+
+Backfilled 30 days. The corrections cut BOTH ways and some were flattering
+us: 10-10 went 2-3 -> 2-6, 10-12 1-2 -> 1-3, 10-13 1-1 -> 1-2, while 10-30
+went 3-0 -> 5-0 and 10-06 3-1 -> 6-0. Afterwards 33 of 35 days match their
+lists exactly; the 2 exceptions are 09-28, an EMPTY day where a null
+summary and 0-0-0 render identically under the app's `resolved > 0` guard.
+
+### FADE GRADING VERIFIED (Andy asked)
+`verify_fade_grading.py`. Recomputes every fade from raw home_score /
+away_score and the receipt's own frozen pick_side and pick_line. It
+deliberately does NOT read spread_result / run_line_result / close_spread,
+because those are derived and close_spread freezes stale once a game leaves
+the feed, so checking a grade against them is circular.
+
+    last 3 days   9 graded, 9 correct, 0 wrong,  15 ungraded (today, live)
+    last 60 days  82 graded, 82 correct, 0 wrong
+    record        STORED 43-36-3 54.4% ROI +3.91% n=79
+                  RECOMPUTED 43-36-3 54.4% ROI +3.91% n=79   delta 0
+
+Per market, recomputed independently:
+    NBA   rl      3-2-0   60.0%  +14.54%  n=5
+    NBA   total  12-16-0  42.9%  -18.19%  n=28   BANNED
+    NCAAF rl     10-3-0   76.9%  +46.85%  n=13
+    NCAAF total   2-1-0   66.7%  +27.27%  n=3    BANNED
+    NHL   total  16-14-3  53.3%   +1.81%  n=30   BANNED
+
+I floated NBA rl as "losing and still publishing" off the surface_records
+aggregate (NBA fade 15-18, -13.23%, n=33) and that was WRONG: that figure
+is NBA total (n=28, already banned) plus NBA rl (n=5). Per market there is
+no unbanned losing market on this surface.
+
+MY VERIFIER INVENTED A DEFECT BEFORE IT FOUND NONE. First pass reported a
+SIDE/LABEL CONFLICT on receipt 3980420, 'GB -3.5' with pick_side=HOME. NFL
+receipts store a HASH game_id while nfl_game_results keys on
+'20261029_CAR_GB' (R80), so the direct lookup missed and my fallback
+matched ANY game containing 'GB' — it found GB @ DET. The real game was
+CAR @ GB, GB won 27-19, the -3.5 covered, and the stored WIN was correct.
+Now keyed on the receipt's own `matchup` with BOTH teams required. A loose
+key invents a defect exactly as readily as it hides one.
+
+### R124 · surface_records.hit_rate is on TWO SCALES
+Live surfaces store a FRACTION, model/legacy surfaces store a PERCENT:
+
+    FRACTION  fade .421-1.000   game_read .333-.692   dawg, ladder,
+              ledger, mlb_sides, nba_sides, ncaaf_sides
+    PERCENT   fade_public_ats 54.39-60.0   model_jerry 38.0-52.08
+              model_primary_play, model_matchup, model_monte_carlo, ...
+
+surface_records IS user-facing (AdaptiveRecordChips, HomeStreakBanner,
+index.tsx), so a consumer that picks one convention misreads the other by
+100x. Not yet traced to a specific rendered number — the app's hit_rate
+reads in GameDetailV2/LineMovementTab come from other tables — so this is
+logged, not claimed as live breakage.
+
+### R125 · prop_jerry publishes tier=SKIP on a PLAY surface
+77 `prop_jerry` receipts carry tier=SKIP since 09-21 (COVERAGE 213, LEAN
+173, STRONG 91, LIGHT 53, PRIME 51, None 342). 19 have graded (11-8). The
+new invariant rule (5) is scoped to READ surfaces, so these are untouched:
+prop tiers may be a different taxonomy and PASS/SKIP on a play surface is
+an upstream tier-gate question, not a receipt-shape one. Also 5 sharp_card
+tier=PASS rows exist (10-24, 10-27) and are all already settled history.
+
+### R121/R122 RESOLVED (forward) — see receipt_invariants rule (5)
+A tier=PASS/SKIP receipt on a read surface is now REFUSED at both
+chokepoints: public_receipt.capture() already screened, and
+backfill_public_receipts.upsert_batch now screens too — it never did, so
+every invariant was enforced on live publishes and ignored on everything
+reconstructed. Screened per surface, since the rules are surface-dependent.
+A screening failure refuses the batch rather than writing unscreened.
+
+7 ungraded PASS read receipts retired (both 10-31 both-sides games among
+them). The 29 already-settled PASS reads are LEFT as history — that is
+Andy's call, not a side effect of shipping a rule.
