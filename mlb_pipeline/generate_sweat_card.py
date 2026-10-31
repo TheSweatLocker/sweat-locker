@@ -1282,6 +1282,56 @@ def fetch_football_picks(today: str) -> list:
                 # primary_play write is the single source both cards read.
                 'manual': bool(pp.get('_manual_correction')),
             })
+        # == 2026-10-30 . PUBLISH THE NUMBER THIS SLATE ALREADY COMMITTED ==
+        # ANDY, on tonight's dog spreads. Lakers @ Golden State went out as
+        # Warriors +1.5 (-108) on the Fade at 13:51 and Warriors +3.5 (-115)
+        # here at 21:53 -- same side, two points apart. Orlando @ Toronto
+        # agreed on +5.5 but priced it -105 there and -110 here.
+        #
+        # Neither composer mis-derived anything. Both read close_spread at
+        # their own run time and that column moves with the money: 89% of it
+        # came in on the Lakers and the spread walked 1.5 -> 3.5 across the
+        # eight hours between the two publishes.
+        #
+        # So the first surface to publish a side COMMITS the number, and
+        # every surface after it shows that number -- the same
+        # first-publisher-wins rule publish_lock already applies to tier.
+        # Overrides are printed, never silent, because a number changing
+        # under a user is exactly what this is meant to stop.
+        try:
+            from public_receipt import frozen_quote as _fq
+            _reconciled = 0
+            for _pk in picks:
+                _mkt = str(_pk.get('type') or '').lower()
+                if _mkt not in ('rl', 'spread', 'total', 'puckline', 'pl'):
+                    continue
+                _q = _fq(sport.upper(), _pk.get('game_id'), _mkt,
+                         _pk.get('side'))
+                if not _q or _q.get('line') is None:
+                    continue
+                try:
+                    _same = abs(float(_q['line'])
+                                - float(_pk.get('line'))) < 0.01
+                except (TypeError, ValueError):
+                    _same = False
+                if _same:
+                    continue
+                print(f'  = {sport} sweat: {_pk.get("label")!r} line '
+                      f'{_pk.get("line")} -> {_q["line"]} to match the '
+                      f'number {_q["surface"]} already published '
+                      f'({str(_q.get("published_at"))[:19]})')
+                _pk['line'] = _q['line']
+                if _q.get('odds') is not None:
+                    _pk['odds'] = _q['odds']
+                _pk['_line_committed_by'] = _q.get('surface')
+                _reconciled += 1
+            if _reconciled:
+                print(f'  {sport} sweat: {_reconciled} line(s) aligned to '
+                      f'the slate commitment')
+        except Exception as _fe:                            # noqa: BLE001
+            print(f'  ! {sport} sweat: line-commitment check unavailable '
+                  f'({type(_fe).__name__}: {_fe}) -- numbers may disagree '
+                  f'with another surface')
         if _skipped_past:
             print(f'  ⏭  {sport} sweat: skipped {_skipped_past} already-played games')
         if _skipped_wrong_et_date:

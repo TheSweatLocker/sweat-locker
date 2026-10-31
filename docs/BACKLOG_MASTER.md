@@ -3580,3 +3580,41 @@ early-row score, and R89's shadow holds what the completed row would say.
 The shadow DEMOTES Detroit and Houston. If Detroit covers, the early read
 beat the late read and R89 should not be promoted; if it does not, the
 ordering fix has its first evidence. Either way it is measured, not argued.
+
+## R91 · THE SAME SIDE WENT OUT AT TWO DIFFERENT NUMBERS — 2026-10-30
+Andy, on tonight's dog spreads. Every receipt for Lakers @ Golden State:
+    10-29 22:41  game_read   Los Angeles Lakers ATS      line=None
+    10-30 13:51  fade        Golden State Warriors +1.5  -108
+    10-30 21:53  sweat_card  Golden State Warriors +3.5  -115
+Two surfaces on the same side two points apart, and a third on the OTHER
+side with no number. Orlando @ Toronto has the milder form: both said Magic
++5.5, priced -105 and -110.
+CAUSE: nobody mis-derived it. generate_the_fade derives its line from
+ctx.close_spread (line 452, home_handicap = sgn * cs) and so does the card,
+each at its own run time -- and close_spread is a LIVE odds column. 89% of
+money came in on the Lakers and the spread walked 1.5 -> 3.5 over the eight
+hours between the two publishes. Same column
+project_nfl_stale_line_and_inverted_weights_1030 found freezing stale.
+FIX, three parts:
+ 1. public_receipt.frozen_quote(sport, game_id, market, side) returns the
+    line+price of the EARLIEST live receipt for that key -- what the first
+    user actually saw. VOIDed receipts skipped. None means nothing is
+    committed yet and the caller becomes the commitment. Same
+    first-publisher-wins rule publish_lock uses for tier.
+ 2. receipt_invariants.check_line_coherence(), wired into
+    public_receipt.capture(), WARNs when a receipt's number disagrees with
+    one already published for the same game+market+side. One batched read.
+    WARN not REFUSE deliberately: refusing the second receipt leaves a pick
+    visible with NO receipt, which cannot be graded at all.
+ 3. generate_sweat_card consults frozen_quote before publishing and aligns
+    line+odds to the commitment, printing every override.
+VERIFIED on tonight's real collision: the invariant flags Warriors +3.5
+against the fade's +1.5 with the surface and timestamp, and frozen_quote
+returns {line 1.5, odds -108, surface fade} for that key and
+{line 5.5, odds -105} for Orlando.
+STILL TO WIRE: the Fade, Steam Room, Ledger and Degen composers. They are
+not broken by this change -- the invariant now makes any of them that
+disagrees visible at capture, which is how the remaining ones get found.
+ALSO OPEN on this same game: game_read published the LAKERS while the fade
+and card published GOLDEN STATE. That is R78's missing intent marker, not a
+line problem.

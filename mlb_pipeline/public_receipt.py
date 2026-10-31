@@ -284,6 +284,74 @@ def _live_keys(payload: list):
     return seen
 
 
+#: markets whose published NUMBER has to be identical across surfaces
+_LINE_MARKETS = {'rl', 'spread', 'puckline', 'pl', 'total'}
+
+
+def frozen_quote(sport: str, game_id, market: str, side: str | None = None):
+    """The line and price ALREADY published for this game+market+side.
+
+    == 2026-10-30 . THREE SURFACES, THREE DIFFERENT NUMBERS ============
+    ANDY, on tonight's dog spreads. Lakers @ Golden State went out as:
+
+        10-29 22:41  game_read   Los Angeles Lakers ATS   line=None
+        10-30 13:51  fade        Golden State Warriors +1.5  -108
+        10-30 21:53  sweat_card  Golden State Warriors +3.5  -115
+
+    Two surfaces on the same side at numbers two points apart, and a third
+    on the OTHER side with no number at all. Orlando @ Toronto has the
+    milder form: both surfaces said Magic +5.5 but priced it -105 and -110.
+
+    Nobody mis-derived anything. Every composer reads close_spread at its
+    own run time, and close_spread is a LIVE odds column that moves --
+    89% of money came in on the Lakers and the spread walked 1.5 -> 3.5
+    across the eight hours between the two publishes
+    (project_nfl_stale_line_and_inverted_weights_1030 documents the same
+    column freezing stale once a game leaves the feed).
+
+    So a surface cannot publish a number by looking at the board; it has to
+    publish the number THIS SLATE already committed to. This returns that
+    commitment: the EARLIEST live receipt for the key, which is what the
+    first user to look actually saw. Same first-publisher-wins rule
+    publish_lock already uses for tier.
+
+    VOIDed receipts are skipped -- a withdrawn number is not a commitment.
+    Returns None when nothing is published yet, which means the caller is
+    free to set the number and becomes the commitment for everyone after.
+    """
+    mkt = str(market or '').lower()
+    if mkt not in _LINE_MARKETS or game_id is None:
+        return None
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/public_receipts', headers=H_READ, timeout=20,
+            params={'game_id': f'eq.{game_id}',
+                    'sport': f'eq.{str(sport or "").upper()}',
+                    'select': 'surface,market,pick_side,pick_line,pick_odds,'
+                              'result,published_at',
+                    'order': 'published_at.asc'})
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:                                      # noqa: BLE001
+        return None
+    if not isinstance(rows, list):
+        return None
+    want = str(side or '').upper() or None
+    for x in rows:
+        if str(x.get('market') or '').lower() != mkt:
+            continue
+        if str(x.get('result') or '').upper() in ('VOID', 'VOIDED'):
+            continue
+        if x.get('pick_line') is None:
+            continue
+        if want and str(x.get('pick_side') or '').upper() != want:
+            continue
+        return {
+            'line': x.get('pick_line'), 'odds': x.get('pick_odds'),
+            'surface': x.get('surface'), 'side': x.get('pick_side'),
+            'published_at': x.get('published_at'),
+        }
+    return None
+
 def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             quiet: bool = False) -> dict:
     """Write live receipts. Returns {'written': n, 'failed': n, 'skipped': n}.
@@ -333,6 +401,19 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         if _inv_refused:
             out['skipped'] += len(_inv_refused)
             out['invariant_refused'] = len(_inv_refused)
+        # 2026-10-30: the same side went out at two different numbers on two
+        # surfaces eight hours apart (Warriors +1.5 then +3.5). WARN only --
+        # refusing the second receipt would leave a pick visible with no
+        # receipt behind it, which cannot be graded at all. The cure is
+        # composers calling frozen_quote(); this is how the unwired ones
+        # stay visible.
+        try:
+            from receipt_invariants import check_line_coherence as _coh
+            _mismatch = _coh(payload, surface, quiet=quiet)
+            if _mismatch:
+                out['line_incoherent'] = len(_mismatch)
+        except Exception as _ce:                           # noqa: BLE001
+            print(f'  ! line-coherence check unavailable ({_ce})')
     except ImportError:
         # Loud: a missing guard must not read as a clean run.
         print(f'  !! receipt_invariants unavailable — {surface} rows written '

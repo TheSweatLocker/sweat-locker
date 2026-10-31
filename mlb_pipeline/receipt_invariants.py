@@ -147,6 +147,91 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def check_line_coherence(rows: list, surface: str,
+                         quiet: bool = False) -> list:
+    """Flag a receipt whose NUMBER disagrees with one already published.
+
+    == 2026-10-30 . THE SAME SIDE WENT OUT AT TWO DIFFERENT NUMBERS =====
+    Lakers @ Golden State shipped as Warriors +1.5 (-108) on the Fade at
+    13:51 and Warriors +3.5 (-115) on the Sweat Card at 21:53. Orlando @
+    Toronto shipped Magic +5.5 at -105 and again at -110. Nobody
+    mis-derived it: every composer reads close_spread at its own run time
+    and that column moves with the money.
+
+    WARN, never REFUSE. Refusing the second receipt would leave a pick
+    visible on a surface with NO receipt behind it, which is worse than a
+    disagreeing one -- an unrecorded play cannot be graded at all
+    (feedback_green_step_that_writes_nothing). The cure is composers
+    calling public_receipt.frozen_quote before they display a number; this
+    is how we SEE the ones that have not been wired yet.
+
+    One batched read per capture, keyed on the game_ids in the payload.
+    """
+    import os
+
+    import requests
+
+    sb = os.environ.get('SUPABASE_URL')
+    key = os.environ.get('SUPABASE_KEY')
+    if not sb or not key:
+        return []
+    hdr = {'apikey': key, 'Authorization': f'Bearer {key}'}
+    LINE_MKT = {'rl', 'spread', 'puckline', 'pl', 'total'}
+    want = [r for r in rows
+            if str(r.get('market') or '').lower() in LINE_MKT
+            and r.get('game_id') is not None
+            and r.get('pick_line') is not None]
+    if not want:
+        return []
+    gids = sorted({str(r['game_id']) for r in want})
+    found = []
+    try:
+        enc = ','.join(f'"{g}"' for g in gids)
+        r = requests.get(
+            f'{sb}/rest/v1/public_receipts', headers=hdr, timeout=20,
+            params={'game_id': f'in.({enc})',
+                    'select': 'game_id,surface,market,pick_side,pick_line,'
+                              'pick_odds,result,published_at',
+                    'order': 'published_at.asc'})
+        prior = r.json() if r.status_code == 200 else []
+    except Exception:                                      # noqa: BLE001
+        return []
+    if not isinstance(prior, list):
+        return []
+    for row in want:
+        gid = str(row['game_id'])
+        mkt = str(row.get('market') or '').lower()
+        side = str(row.get('pick_side') or '').upper()
+        for p in prior:
+            if str(p.get('game_id')) != gid:
+                continue
+            if str(p.get('market') or '').lower() != mkt:
+                continue
+            if str(p.get('result') or '').upper() in ('VOID', 'VOIDED'):
+                continue
+            if p.get('pick_line') is None:
+                continue
+            if side and str(p.get('pick_side') or '').upper() != side:
+                continue
+            try:
+                same = abs(float(p['pick_line'])
+                           - float(row['pick_line'])) < 0.01
+            except (TypeError, ValueError):
+                same = False
+            if same:
+                break
+            msg = (f'{row.get("pick_label")!r} publishes '
+                   f'{row["pick_line"]} but {p.get("surface")} already '
+                   f'published {p["pick_line"]} on the same side of this '
+                   f'game at {str(p.get("published_at"))[:19]} -- call '
+                   f'public_receipt.frozen_quote() before displaying a '
+                   f'number')
+            found.append((row, msg))
+            if not quiet:
+                print(f'  ! line incoherence [{surface}]: {msg}')
+            break
+    return found
+
 def screen(rows: list, surface: str, quiet: bool = False) -> tuple[list, list]:
     """Split rows into (keep, refused) and print every decision loudly."""
     keep, refused, warned = [], [], []
