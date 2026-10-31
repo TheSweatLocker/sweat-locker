@@ -4485,3 +4485,66 @@ result DISAGREEMENT is reported for a human rather than voided.
 unified_top_picks carry it at -110. Same source_id so the receipt dedupes
 to the priced one, but a receipt source holding a priceless row is one
 backfill ordering away from writing it.
+
+## 2026-10-31 (late) · lr_v1 attribution: the merge works, the gap is upstream
+
+### THE CARRY FIX IS REAL (verified on live rows, not by reading the code)
+`_carry_ensemble_audit` (added 10-27) is called at both `_pre_lr` sites.
+Measured on every overridden pick since 2026-09-15, split at the fix date:
+
+    sport   era      kept  erased   kept%
+    NHL     before      0     175    0.0%
+    NHL     after      14       6   70.0%
+    NFL     before      2      26    7.1%
+    NFL     after      12      46   20.7%
+    NCAAF   before      0     110    0.0%
+    NCAAF   after      27       2   93.1%
+    NBA     before      0      13    0.0%
+    NBA     after       7       1   87.5%
+    TOTAL   before      2     328    0.6%  (n=330)
+    TOTAL   after      61      56   52.1%  (n=117)
+
+### R129 · lr_v1 ORIGINATES PICKS WITH NO SIGNAL RECORD AT ALL
+NFL's 20.7% looked like the fix failing. It is not erasure. The CONTROL --
+picks the override never touched, same era -- separates it:
+
+    sport   untouched          touched
+    NHL     100.0% (n=57)       70.0% (n=20)
+    NFL      86.3% (n=95)       20.7% (n=58)
+    NCAAF   100.0% (n=55)       93.1% (n=29)
+    NBA     100.0% (n=45)       87.5% (n=8)
+
+and the prior engine on every unattributed override names the cause:
+
+    prior _pre_lr.engine of the 55 unattributed:  lr_v1 46, ensemble_v2 9
+
+46 of them had a PRIOR pick that was ITSELF lr_v1, so there was never an
+ensemble record to carry. Across all sports since 10-01:
+
+    _engine=ensemble_v2                      532 picks, 532 with sources (100%)
+    _engine=lr_v1                            347 picks,  62 with sources (17.9%)
+    _engine=legacy_nfl_compute_primary_play   13 picks,   0 with sources
+
+So lr_v1 writes NO per-signal attribution of its own; the 62 that have one
+are the carried ensemble_v2 records. 285 live picks carry no signal record
+because the engine that made them does not produce one.
+
+THIS IS THE BLOCKER ON THE ENGINE SELECTION STANDARD. Andy 10/27: "every
+signal recorded per pick and attributed WEEKLY so weighting can be tuned
+per sport." Weights cannot be tuned for a pick whose reasons were never
+recorded, and a third of live picks are in that state.
+
+NOT FIXED UNILATERALLY, because the shape is a real decision: lr_v1 is a
+logistic regression, so its honest "signals" are its features and their
+contributions, not ensemble_v2's weighted signal library. It already stores
+`_lr_p_home_win`, `_model_edge_pp` and `_lr_model_version`. Emitting those
+AS an `_ensemble_sources`-shaped record would make a regression look like a
+signal panel, which is worse than the gap -- that is the
+feedback_lens_independence_needs_different_inputs mistake in another form.
+ANDY'S CALL on the shape.
+
+### R130 · 9 overridden picks still lose a REAL ensemble_v2 record
+Of the 55 unattributed overrides since the fix, 9 had an ensemble_v2 prior
+(NHL 2, NFL 6, NBA 1) -- a genuine remaining leak. Both `_pre_lr` sites
+carry the audit, so there is a third mutation path that builds a fresh pick
+and does not. Small but real, and the same class as the original 457.
