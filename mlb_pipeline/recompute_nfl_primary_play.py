@@ -26,7 +26,7 @@ CLI:
   python recompute_nfl_primary_play.py --dry-run
 """
 from __future__ import annotations
-import argparse, json, os, sys, time
+import argparse, json, os, re, sys, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -275,6 +275,35 @@ def _pp_locked(game_id, new_pp):
         return False  # a gap is not a change
     old = published.get('label') if isinstance(published, dict) else published
     new = new_pp.get('label') if isinstance(new_pp, dict) else new_pp
+
+    # ══ 2026-10-31 · THE SAME RULE AS THE DB TRIGGER, NOT A SECOND ONE ══
+    # This used to `return True` unconditionally once lock_active('NFL') was
+    # true, so with the week lock on it refused EVERY write — including a
+    # line-only refresh whose label is byte-identical. NE @ MIA was stored
+    # with label 'NE -7' and line +7.0, a sign error that would have graded
+    # backwards, and the normalizer could not fix it: no label change, so no
+    # message printed, and the write refused anyway.
+    #
+    # 20261007a fixed exactly this reasoning in enforce_pick_lock: a pick is
+    # its SIDE, its MARKET and the TEAM at the head of the label; the number
+    # after the team belongs to the market and is allowed to move. patch_pp's
+    # own note already flags the danger here — "two layers with different
+    # rules" — so this mirrors the trigger instead of inventing a second
+    # policy. If the trigger would let it through, so does this.
+    #
+    # Team head is everything up to the LAST space, the same as the
+    # trigger's regexp_replace(lbl, '\s+\S+$', ''): college names contain
+    # spaces, and taking the first token would read "Penn State" and "Penn
+    # Quakers" as one team.
+    def _head(lbl):
+        return re.sub(r'\s+\S+$', '', str(lbl or '')).strip()
+
+    same_side = (isinstance(published, dict) and isinstance(new_pp, dict)
+                 and published.get('side') == new_pp.get('side')
+                 and published.get('type') == new_pp.get('type')
+                 and _head(old) and _head(old) == _head(new))
+    if same_side:
+        return False          # same bet, new number — the market moving
     if old != new:
         print(f'  🔒 NFL lock: kept published {old!r} (recompute wanted {new!r})')
     return True

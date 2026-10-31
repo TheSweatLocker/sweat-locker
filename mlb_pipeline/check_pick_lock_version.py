@@ -122,16 +122,64 @@ def main() -> int:
         first = min(str(x['attempted_at']) for x in with_reason)[:16]
         last = max(str(x['attempted_at']) for x in with_reason)[:16]
         print(f'  reasons span {first} -> {last}')
+    # == A SUCCESSFUL NUMBER-ONLY WRITE IS THE POSITIVE PROOF ==========
+    # Judging on the newest REFUSAL alone has a hole: once the fix is live,
+    # number-only writes stop being refused, so the newest refusal is
+    # forever the last one from the broken era and the verdict stays
+    # "reverted" no matter what. No refusal is evidence of SUCCESS.
+    #
+    # So look for the behaviour only 20261007a permits: a line refresh that
+    # LANDED on a locked, not-yet-started row. refresh_unposted_pick_lines
+    # stamps `_line_refreshed` on every one, so those stamps are the
+    # artefact. Checked AFTER the newest refusal, the two together say which
+    # body is live.
     newest = rows[0] if rows else None
-    live_new = bool(newest and newest.get('reason'))
+    newest_refusal = str(newest.get('attempted_at') or '') if newest else ''
+    # The key alone is not enough: 13 of 15 rows carrying `_line_refreshed`
+    # have it present but EMPTY (was/now/by all null), written by something
+    # else in a different shape. Counting those put the figure at 15 when
+    # only 2 were real. So require the stamp this tool writes AND a non-null
+    # new value -- a marker that proves nothing is worse than no marker.
+    landed = []
+    for t in ('ncaaf_game_context', 'nfl_game_context'):
+        g = requests.get(f'{SB}/rest/v1/{t}', headers=H, timeout=90,
+                         params={'select': 'game_id,primary_play',
+                                 'primary_play->_line_refreshed': 'not.is.null',
+                                 'limit': 500})
+        if g.status_code != 200:
+            continue
+        for x in g.json():
+            pp = x.get('primary_play')
+            if isinstance(pp, str):
+                try:
+                    pp = __import__('json').loads(pp)
+                except Exception:
+                    continue
+            ref = (pp or {}).get('_line_refreshed') or {}
+            if (isinstance(ref, dict)
+                    and ref.get('now') is not None
+                    and ref.get('by') == 'refresh_unposted_pick_lines'):
+                landed.append((t, x))
+    print(f'  line refreshes that LANDED on a locked row: {len(landed)}')
+    live_new = bool(landed) or bool(newest and newest.get('reason'))
     verdict = ('20261007a IS LIVE' if live_new else
                'AN OLDER VERSION IS LIVE' +
                (' -- it was live once and has been REVERTED' if with_reason
                 else ' -- 20261007a has never run'))
+    if landed:
+        print(f'  -> a number-only write succeeded on a locked row, which the '
+              f'older body forbids')
+    elif newest_refusal:
+        print(f'  -> no landed refresh found; judging on the newest refusal '
+              f'at {newest_refusal[:16]}')
     print(f'\n  VERDICT: {verdict}')
     if newest:
         print(f'  newest refusal {str(newest.get("attempted_at"))[:16]} '
               f'reason={newest.get("reason")!r}')
+    if live_new and with_reason and not (newest and newest.get('reason')):
+        print('  (the newest REFUSAL predates the fix, which is expected: '
+              'once the number is allowed\n   through it is no longer '
+              'refused, so no new refusal gets logged.)')
     if with_reason and not live_new:
         print('  The reasoned window proves it applied once, so something '
               'replaced the\n  function body afterwards. The likeliest cause '
