@@ -4659,3 +4659,78 @@ p_home_win. The stored NHL values are distinct per game (10-29: 7 of 7
 distinct, 0.4415..0.6653), so the figure was an artifact of a window that
 was mostly FUTURE games whose features are not populated yet. Measure
 imputation only on rows the model actually SCORED.
+
+---
+
+## 2026-10-31 · NEW OPEN ITEMS
+
+### R132 · NFL keys its own tables differently from every other sport
+**0 of 316** `nfl_game_context` game_ids appear in `nfl_game_results`.
+Found while deriving the `projected_spread` sign per sport for the fade
+shadow: NFL first resolved on **n=0 rows**, which reads as "no data" and was
+not — the ID join finds nothing at all. Joining on
+`(game_date, home_team, away_team)` recovers 108 rows with both a projection
+and a result.
+
+This is the broader form of R80, which I had scoped to `line_history` only
+(`20261101_MIN_DET` vs a 32-char context hash). It is not one table, it is
+the sport. **Anything joining NFL context to NFL results by id is silently
+reading zero rows and reporting it as absence.** Audit every such join
+before trusting a per-sport NFL figure.
+
+### R133 · 189 NFL prop receipts for 11-01 are VOID with no reason recorded
+All published 2026-10-28 for a 2026-11-01 slate (97 of them
+`anytime_td_over`), leaving **1 live prop receipt for a full NFL Sunday**
+while `nfl_pipeline_props` holds **520 rows, 200 of them publishable**
+(18 PRIME, 93 STRONG, 89 LEAN; 417 priced inside -300..+150).
+
+Voiding receipts published four days early is plausibly the 10-22
+future-receipt rule working as designed. But `audit.void` is absent on all
+189, so nothing in the record says which rule fired or why — and a void
+nobody can explain later is not a record
+(`feedback_a_detector_must_know_the_intentional_case`). Confirm the cause
+first, then backfill reasons; do not assume it was deliberate.
+
+Note alongside: prior Sundays carried only 45–49 prop rows each, tomorrow
+carries 520. Tomorrow is the first NFL Sunday scored since the 10-28
+`limit or 500` fix, so any pre-10-28 NFL prop denominator is a random
+subset (`project_prop_scorer_saw_a_fifth_of_the_slate_1028`).
+
+### R134 · 11 prop_jerry live duplicate bets
+Same prop, same game, same line, two `source_id`s because the prop was
+published from two different source rows: NFL 9 on 09-27 (e.g. Jameson
+Williams OVER 51.5 as `111677` and `119520`), MLB 2 on 09-26. Both copies
+carry the SAME grade, so there is no contradiction — but each is counted
+twice wherever receipts are summed.
+
+Found by the all-surface duplicate scan that caught the sweat_card pair:
+13 extra live rows in 10,251 live receipts since 09-01, 7 WIN / 6 LOSS. The
+`_bet_key` guard added to `capture()` today prevents future ones. These 11
+pre-date it and need a cleanup pass that keeps the earlier `published_at`
+and refuses any pair whose results disagree.
+
+### R135 · week and lineup_state are dead on nfl_pipeline_props
+`week` and `lineup_state` are NULL on **every row on every date checked**
+(10-12 n=49, 10-19 n=45, 10-26 n=45, 11-01 n=520). Not a tomorrow-specific
+defect — the columns are never populated.
+
+Matters because NFL prop playbook grading keys on `(season, week)`
+(`project_prop_playbook_grading_was_mlb_only_1028`), and a null week cannot
+join. Also means "is this player actually starting" is unanswerable from the
+prop row, which is the question behind the 10-28 void-rate work.
+
+### R136 · splits_summary still contradicts oddscrowd on the public side
+Live tonight on 2 of 3 NBA games measured: Cleveland @ Milwaukee rl —
+`splits_summary` says AWAY 74% of tickets, `oddscrowd_snapshot` says HOME
+85%. Sacramento @ Memphis rl — `splits_summary` HOME 79%, `oddscrowd` AWAY
+81%. Atlanta @ New Orleans is the one that agrees (both on Atlanta).
+
+This is `project_cz_splits_contradict_oddscrowd_1029` unresolved, and it
+decides which side a fade takes. The fade reads `oddscrowd` and is therefore
+right; anything still reading `splits_summary` as a fallback is inverted on
+roughly two games in three.
+
+### CLOSED TODAY
+* the 5-0 / 7-0 card ledger split — `a07631aa`
+* the fade coherence gate — measured and deliberately NOT shipped,
+  shadow instead — `a1011413`
