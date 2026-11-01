@@ -519,6 +519,72 @@ def price_faded_side(sport: str, game_id: str, market: str, side: str,
     return am, len(prices)
 
 
+# == 2026-10-31 - THE PROJECTION GAP IS SHADOWED, NOT GATED ==========
+# ANDY asked for a coherence gate after tonight's Cleveland -9.5: our own
+# projected_spread had Cleveland by 4.2 into a 9.5 line, a 5.3-point
+# disagreement against the side we were laying. It is the shape he withdrew
+# on 10-30 ("close 6.5, our projected_spread 5.5"), five times worse, and
+# refusing it felt obviously right.
+#
+# It is not. Measured on every gradeable fade spread receipt
+# (_measure_fade_projection_gap_1031.py), n=25:
+#
+#     control, no filter                18-7   72.0%   ROI +65.15%
+#     gap bucket [-99,-5)  (the worst)   4-0  100.0%   ROI +89.57%
+#     NCAAF gap < 0                      8-2           ROI +71.45%
+#                      vs NCAAF control                ROI +67.29%
+#
+# Every candidate gate from -6 to 0 DROPS a set that beat the control:
+# 'gap >= -1' keeps 72.52% and discards 6-4 at +54.1%. The cell a coherence
+# gate removes first is the best cell we have. That also matches
+# project_dog_selection_needs_market_data_1030, where the projection gap
+# came out INVERTED (>=3pts 51.2% vs <0pts 78.9%) -- the fade is a
+# contrarian engine, and disagreeing with our own projection is part of
+# how it works, not a defect in it.
+#
+# So the gap is RECORDED on every play and WARNED about in the log, and it
+# refuses nothing (feedback_suppression_gate_needs_shadow: shadow a
+# suppression gate, exit on evidence). When n is large enough to split, the
+# audit field is already there to measure.
+#
+# The sign is DERIVED, never assumed: `projected_spread` does not share one
+# convention across sports (feedback_edge_formula_sign_audit), so these come
+# from correlating projected home margin against ACTUAL home margin:
+#     NBA    corr -0.161 n=146  -> a HOME HANDICAP, negate it
+#     NCAAF  corr +0.465 n=454  -> already the home margin
+#     NFL    corr +0.239 n=108  -> already the home margin
+#
+# NFL first resolved on n=0 rows, which looked like "no data" and was not:
+# ZERO of 316 nfl_game_context game_ids appear in nfl_game_results, so the
+# ID join finds nothing. That is the broader form of R80 -- NFL keys its
+# tables differently from every other sport -- and it is its own open item.
+# Joining on (game_date, home_team, away_team) recovers 108 rows. The
+# correlation is weak and the signed projection's MAE is 9.66 points, which
+# is consistent with project_spread_residual_unpredictable_1018; the SIGN is
+# all this needs, and a weak projection is one more reason not to gate on it.
+#
+# NHL and MLB have no graded fade spread history, so they stay out: a sport
+# absent from this dict gets projection_gap=None. Never guessed.
+_PROJ_SIGN = {'NBA': -1.0, 'NCAAF': 1.0, 'NFL': 1.0}
+
+
+def projection_gap(sport: str, ctx_row: dict, side: str, line) -> float | None:
+    """Our own projected cover margin for the side we are taking.
+
+    Positive: our projection expects this bet to cover. Negative: our own
+    number says it does not. None when the sport's sign is unproven or the
+    projection is absent -- a guessed sign would invert the meaning.
+    """
+    s = _PROJ_SIGN.get(str(sport).upper())
+    ps = f(ctx_row.get('projected_spread')) if ctx_row else None
+    ln = f(line)
+    if s is None or ps is None or ln is None:
+        return None
+    home_margin = s * ps
+    ours = home_margin if str(side).upper() == 'HOME' else -home_margin
+    return round(ours + ln, 2)
+
+
 def build_plays(date: str) -> list[dict]:
     """Today's fade plays. One per (game, market) at most."""
     splits = latest_public_splits(date)
@@ -527,7 +593,8 @@ def build_plays(date: str) -> list[dict]:
     ctx = {}
     for sport, tbl in CTX.items():
         for c in page(tbl, {'select': 'game_id,game_date,away_team,home_team,'
-                                      'close_spread,close_total',
+                                      'close_spread,close_total,'
+                                      'projected_spread',
                             'game_date': f'eq.{date}'}):
             ctx[(sport, str(c.get('game_id')))] = c
     print(f'  context rows for {date}: {len(ctx)}')
@@ -558,6 +625,7 @@ def build_plays(date: str) -> list[dict]:
     _feed_max = max(_feed_max_by_sport.values(), default='')
     _lags = []
     _line_notes = []        # R126: consensus vs our quote
+    _gap_notes = []         # our projection vs the number we lay
 
     def _lag_hours(ts: str, sport: str):
         """How far behind this SPORT's newest snapshot this one sits."""
@@ -658,8 +726,17 @@ def build_plays(date: str) -> list[dict]:
                 f'{label}: we quote {float(line):+g}, books post '
                 f'{_mod_ln:+g} ({_mod_bk} of {_tot_bk}) — '
                 f'{"BETTER" if _better else "worse"} for us')
+        # our own number on the side we are taking -- recorded, never a gate
+        _pgap = (projection_gap(sport, c, fade, line)
+                 if mkt != 'total' else None)
+        if _pgap is not None and _pgap <= -3.0:
+            _gap_notes.append(
+                f'{label}: our projection has this side by '
+                f'{_pgap - f(line):+.1f} into a {f(line):+g} line '
+                f'-> {_pgap:+.1f} short of covering')
         plays.append({
             'sport': sport, 'game_id': gid, 'game_date': date,
+            'projection_gap': _pgap,
             'market': 'total' if mkt == 'total' else 'rl',
             'matchup': f'{away} @ {home}',
             'side': fade, 'line': line, 'label': label,
@@ -708,6 +785,18 @@ def build_plays(date: str) -> list[dict]:
               f'post another:')
         for _n in _line_notes:
             print(f'      {_n}')
+    # Shadow only. These plays are PUBLISHED -- the measurement that would
+    # justify refusing them says the opposite (see _PROJ_SIGN). Printed so a
+    # human can see the disagreement the engine is choosing to accept.
+    if _gap_notes:
+        print(f'  ~ projection gap: {len(_gap_notes)} play(s) lay a number '
+              f'our own projection does not reach (SHADOW, not a filter):')
+        for _n in _gap_notes:
+            print(f'      {_n}')
+    _measured = sum(1 for _p in plays
+                    if _p.get('projection_gap') is not None)
+    print(f'  projection_gap recorded on {_measured}/{len(plays)} play(s) '
+          f'(sports with a PROVEN sign: {",".join(sorted(_PROJ_SIGN))})')
     if skipped:
         print(f'  filtered out: {dict(skipped)}')
     return plays
@@ -854,7 +943,9 @@ def main() -> int:
                           # threshold is better WITHOUT needing new data
                           'evidence': p.get('evidence'),
                           'public_odds': p.get('public_odds'),
-                          'our_price_books': p.get('our_price_books')},
+                          'our_price_books': p.get('our_price_books'),
+                          # shadowed, never a filter -- see _PROJ_SIGN
+                          'projection_gap': p.get('projection_gap')},
             } for p in plays]
             n = capture(rows, surface='fade')
             print(f'  receipts captured: {n}/{len(rows)}')
