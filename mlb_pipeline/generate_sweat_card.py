@@ -921,6 +921,37 @@ def fetch_dawg():
     return rows[0] if rows else None
 
 
+def _relabel_to_line(label, line, mkt) -> str:
+    """Rewrite the number inside a pick label to `line`.
+
+    == 2026-11-01 - THE LABEL SAID +10, THE LINE SAID 7.5 ==
+    The slate-commitment guard below aligned `line` and `odds` to the
+    number this slate already published and left `label` untouched, so
+    today's card carried 'IND +10' with line=7.5: the text a subscriber
+    reads and the number it grades at were 2.5 points apart. Same family
+    as feedback_consensus_line_must_be_posted -- the displayed number has
+    to be the one we settle.
+
+    Totals are unsigned ('Under 54.5'); sides carry an explicit sign
+    ('IND +10', 'WAS -6'). Returns the label unchanged when it has no
+    number to rewrite, so an odd label shape can never be mangled.
+    """
+    if not label or line is None:
+        return label
+    try:
+        ln = float(line)
+    except (TypeError, ValueError):
+        return label
+    txt = '%g' % ln if str(mkt or '').lower() == 'total' else '%+g' % ln
+    # the LAST number in the label is the handicap/total on every shape
+    # we publish; anchor to the end so a team name with digits is safe.
+    m = list(re.finditer(r'[-+]?\d+(?:\.\d+)?', str(label)))
+    if not m:
+        return label
+    last = m[-1]
+    return str(label)[:last.start()] + txt + str(label)[last.end():]
+
+
 def fetch_top_props():
     today = today_et()
     rows = sb_get(
@@ -1449,7 +1480,23 @@ def fetch_football_picks(today: str) -> list:
                     continue
                 _q = _fq(sport.upper(), _pk.get('game_id'), _mkt,
                          _pk.get('side'))
-                if not _q or _q.get('line') is None:
+                if not _q:
+                    continue
+                # == 2026-11-01 . PRICE BEFORE THE LINE COMPARISON ==
+                # This block used to `continue` as soon as the line
+                # AGREED, which skipped applying the committed PRICE. A
+                # hand-set pick carries no odds (set_manual_pick has no
+                # --odds), so 'WAS -6' -- whose line already matched --
+                # shipped with odds=None and receipt_invariants refused
+                # it: published on the card, no receipt, never graded.
+                # The committed price is owed to the pick whether or not
+                # the number moved.
+                if _pk.get('odds') is None and _q.get('odds') is not None:
+                    _pk['odds'] = _q['odds']
+                    print(f'  = {sport} sweat: {_pk.get("label")!r} priced '
+                          f'{_q["odds"]:+d} from the {_q["surface"]} row '
+                          f'this slate already published')
+                if _q.get('line') is None:
                     continue
                 try:
                     _same = abs(float(_q['line'])
@@ -1465,6 +1512,16 @@ def fetch_football_picks(today: str) -> list:
                 _pk['line'] = _q['line']
                 if _q.get('odds') is not None:
                     _pk['odds'] = _q['odds']
+                # the label is what the subscriber reads; leaving it on the
+                # pre-alignment number publishes a pick that grades at a
+                # different handicap than it advertises
+                _relabelled = _relabel_to_line(_pk.get('label'), _q['line'],
+                                               _mkt)
+                if _relabelled != _pk.get('label'):
+                    print(f'    label {_pk.get("label")!r} -> '
+                          f'{_relabelled!r} so the text matches the number')
+                    _pk['_label_before_commit'] = _pk.get('label')
+                    _pk['label'] = _relabelled
                 _pk['_line_committed_by'] = _q.get('surface')
                 _reconciled += 1
             if _reconciled:
@@ -4175,6 +4232,44 @@ def build_card():
                 football_picks = _kept
         except ImportError:
             print('  !! post-lock coherence gate unavailable')
+
+    # == 2026-11-01 . THE POTD AND A FOOTBALL PICK ARE ONE BET ==
+    # MIN +3.5 went out as the POTD (odds -120, no line) AND as an rl
+    # football pick on the same game (line 3.0, odds -104): two live
+    # receipts, two prices, one wager, and the name shown twice on one
+    # card. public_receipt._bet_key cannot catch it -- the potd row
+    # carries no game_id, and 'potd' vs 'rl' are different markets, so
+    # both dedupe arms miss. Measured when found: 3 of 108 live POTDs
+    # had a same-label sibling (1 WIN, 1 LOSS, plus today), so this is
+    # rare rather than systemic -- and it is still one bet counted twice
+    # on the surface the record is built from.
+    #
+    # The POTD already occupies rank 1 of top_8, so the game is on the
+    # card either way; the duplicate adds nothing but a second count.
+    # Keyed on (sport, game) because those are the only two fields both
+    # shapes share -- the potd item has no game_id and its LABEL carries
+    # the POTD's own line (+3.5) rather than the card's (+3).
+    try:
+        _potd_games = set()
+        for _t in (top_8_curated or []):
+            if str(_t.get('type') or '').upper() != 'POTD':
+                continue
+            if _t.get('game'):
+                _potd_games.add((str(_t.get('sport') or '').upper(),
+                                 str(_t.get('game'))))
+        if _potd_games and football_picks:
+            _keep_fb, _dropped_fb = [], []
+            for _p in football_picks:
+                _k = (str(_p.get('sport') or '').upper(), str(_p.get('game')))
+                (_dropped_fb if _k in _potd_games else _keep_fb).append(_p)
+            for _d in _dropped_fb:
+                print(f'  = card: dropped football pick {_d.get("label")!r} '
+                      f'- the POTD already holds {_d.get("game")} '
+                      f'(one bet, one count)')
+            if _dropped_fb:
+                football_picks = _keep_fb
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  !! POTD/football dedupe skipped: {_e}')
 
     _fb_games = {str(p.get('game_id')) for p in football_picks
                  if p.get('game_id')}

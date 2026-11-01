@@ -40,6 +40,14 @@ import sys
 
 import requests
 
+# the final status line prints U+2713/U+26A0; on a cp1252 console that
+# raised UnicodeEncodeError AFTER both upserts had already succeeded,
+# turning a clean write into a traceback and a non-zero exit.
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:                                              # noqa: BLE001
+    pass
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENV = os.path.join(_HERE, '.env')
 if os.path.exists(_ENV):
@@ -123,9 +131,21 @@ def main() -> int:
         print('  [DRY] nothing written. Re-run with --apply.')
         return 0
 
+    # ══ 2026-11-01 · A POTD WITH NO PRICE CANNOT BE GRADED ══════════
+    # This dict never carried the price, though the column exists and is
+    # named `odds_american`. --odds reached only jerry_cache's
+    # context.odds, so receipt_invariants REFUSED the sweat_card row:
+    #   "potd receipt with no pick_odds -- a graded play with no price is
+    #    priced at a guess"
+    # i.e. the hand-set POTD published to the card and then produced NO
+    # receipt at all. Measured blast radius when found: 383 of 487 potd
+    # receipts (78.6%) carry NULL pick_odds. An ML POTD graded at an
+    # assumed -110 is the exact error feedback_flat_110_inflates_every_ml_figure
+    # describes, so the absent price is not a cosmetic gap.
     hist = {'bet_date': date, 'sport': a.sport, 'game': matchup,
             'lean': a.label, 'narrative': narrative, 'result': None,
-            'resolved_at': None, 'sweat_score': a.score}
+            'resolved_at': None, 'sweat_score': a.score,
+            'odds_american': a.odds}
     up = requests.post(f'{SB}/rest/v1/daily_best_bet_history'
                        f'?on_conflict=bet_date',
                        headers=HW_UP, timeout=30, data=json.dumps(hist))
@@ -140,13 +160,34 @@ def main() -> int:
                  or g.get('commence_time_utc')},
         'matchup': matchup, 'leanDisplay': a.label, 'narrative': narrative,
         'pipelineGenerated': False, 'sport': a.sport,
-        'score': {'total': a.score, 'source': 'manual'},
         'context': {'market': a.mtype, 'side': a.side, 'line': a.line,
                     'odds': a.odds},
         '_manual': {'by': 'andy', 'at': now.isoformat(),
                     'why': 'engine passed (top conviction below threshold); '
                            'pick selected on measured supports, not score'},
     }
+    # ══ 2026-11-01 · A NULL SCORE TOOK THE APP DOWN ═════════════════
+    # ANDY, live: "the app isnt working right now, says somehting went
+    # wrong" / "Objects are not valid as a react child. Found object with
+    # keys (total, source)".
+    #
+    # Those are this dict's keys. The {total, source} SHAPE is fine --
+    # 10-31 carried {"total": 81, "source": "jerry_conviction"} and
+    # rendered. What broke was `total: null`, which happens on every run
+    # of THIS script that omits --score: the client falls back to
+    # rendering the whole object when the number is missing, and an
+    # object as a React child is a hard crash, not a blank.
+    #
+    # So the key is written only when there is a real number to put in
+    # it. 2026-10-27, -28 and -29 carried no `score` key at all and
+    # rendered correctly, which is the shape being matched here.
+    #
+    # The wider lesson: a manual path must emit a payload shape the app
+    # has actually rendered before. A field present-but-null is a
+    # different shape from a field absent.
+    if a.score is not None:
+        payload['score'] = {'total': a.score, 'source': 'manual'}
+
     cu = requests.post(f'{SB}/rest/v1/jerry_cache?on_conflict=cache_key',
                        headers=HW_UP, timeout=30,
                        data=json.dumps({
@@ -160,7 +201,8 @@ def main() -> int:
     # a 204 is not a write — read both back
     b1 = requests.get(f'{SB}/rest/v1/daily_best_bet_history', headers=H,
                       timeout=30, params={'bet_date': f'eq.{date}',
-                                          'select': 'lean,sport,result',
+                                          'select': 'lean,sport,result,'
+                                                    'odds_american',
                                           'limit': '1'})
     b2 = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H, timeout=30,
                       params={'cache_key': f'eq.best_bet_{date}',
@@ -170,11 +212,15 @@ def main() -> int:
     if isinstance(c, str):
         c = json.loads(c)
     print(f'  re-read history: lean={h.get("lean")!r} sport={h.get("sport")} '
-          f'result={h.get("result")!r}')
+          f'result={h.get("result")!r} '
+          f'odds_american={h.get("odds_american")!r}')
     print(f'  re-read cache  : leanDisplay={c.get("leanDisplay")!r} '
           f'noPlay={c.get("noPlay")!r}')
+    # the price is part of the write, so it is part of the verification:
+    # without it the card publishes and the receipt is refused downstream
     ok = (h.get('lean') == a.label and c.get('leanDisplay') == a.label
-          and not c.get('noPlay'))
+          and not c.get('noPlay')
+          and (a.odds is None or h.get('odds_american') == a.odds))
     print('  ✓ POTD set on both surfaces' if ok
           else '  ⚠ MISMATCH — one surface did not take the write')
     return 0 if ok else 1
