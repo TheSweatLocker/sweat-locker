@@ -219,6 +219,27 @@ def _sid(*parts: Any) -> str:
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 
+def _bet_key(sport, surf, gd, row):
+    """One wager's identity, independent of whatever source_id names it.
+
+    None when the row carries no game_id: a parlay/ledger slip is identified
+    by its own source_id, and two slips on one night can share a label.
+    """
+    gid = row.get('game_id')
+    if gid in (None, '', 'None'):
+        return None
+    lbl = re.sub(r'[^a-z0-9]', '', str(row.get('pick_label') or '').lower())
+    if not lbl:
+        return None
+    line = row.get('pick_line')
+    try:
+        line = f'{float(line):g}'
+    except (TypeError, ValueError):
+        line = ''
+    return (sport, surf, gd, str(gid), str(row.get('market') or ''),
+            lbl, line)
+
+
 def _live_keys(payload: list):
     """Keys already holding a NON-VOID receipt, or None if unknowable.
 
@@ -245,10 +266,27 @@ def _live_keys(payload: list):
     Returns None when the read fails. The caller must then NOT pre-filter,
     because an empty set would read as "nothing exists yet" and would
     duplicate the entire card.
+
+    == 2026-10-31 - A source_id IS NOT THE IDENTITY OF A BET ==
+    First-write-wins on source_id alone let ONE wager be recorded twice:
+    Orlando Magic +5.5 held 'rl:401909281:rl' from the live card and
+    'rl:401909281' from the reconciler, both live, both WIN, so 2026-10-30
+    read 7-0 in the ledger while the card blob said 5-0. _card_anchor now
+    makes both writers agree, but source_id is frozen by 20260918b, so the
+    five rows written under the old shape keep it -- and the next capture of
+    one of those games would mint the canonical id beside the legacy one and
+    duplicate it again.
+
+    So return a SECOND set keyed on the bet itself:
+    (sport, surface, date, game_id, market, normalised label, line). A bet
+    already live under any source_id is already recorded. Only rows carrying
+    a game_id take part -- a parlay's identity is its slip, not a game, and
+    two slips on one night legitimately share a label.
     """
     if not payload:
-        return set()
+        return set(), set()
     seen = set()
+    bets = set()
     groups = {(str(r.get('sport')), str(r.get('surface')),
                str(r.get('game_date'))) for r in payload}
     for sport, surf, gd in groups:
@@ -257,7 +295,8 @@ def _live_keys(payload: list):
             try:
                 resp = requests.get(
                     f'{SB}/rest/v1/public_receipts', headers=H_READ,
-                    params={'select': 'source_id,result',
+                    params={'select': 'source_id,result,game_id,market,'
+                                      'pick_label,pick_line',
                             'sport': f'eq.{sport}', 'surface': f'eq.{surf}',
                             'game_date': f'eq.{gd}',
                             'limit': '1000', 'offset': str(off)},
@@ -276,12 +315,16 @@ def _live_keys(payload: list):
             if not isinstance(batch, list):
                 return None
             for row in batch:
-                if str(row.get('result') or '').strip().lower() != 'void':
-                    seen.add((sport, surf, gd, str(row.get('source_id'))))
+                if str(row.get('result') or '').strip().lower() == 'void':
+                    continue
+                seen.add((sport, surf, gd, str(row.get('source_id'))))
+                bk = _bet_key(sport, surf, gd, row)
+                if bk:
+                    bets.add(bk)
             if len(batch) < 1000:
                 break
             off += 1000
-    return seen
+    return seen, bets
 
 
 #: markets whose published NUMBER has to be identical across surfaces
@@ -438,16 +481,30 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         return out
     # First-write-wins enforced in code, not by ON CONFLICT — see _live_keys
     # for why the partial index of 20261025a cannot be an arbiter here.
-    existing = _live_keys(payload)
-    if existing is None:
+    _keys = _live_keys(payload)
+    if _keys is None:
         print(f'  ⚠ receipts ({surface}): cannot verify what is already '
               f'recorded — refusing to write rather than duplicate the card')
         out['failed'] = len(payload)
         return out
-    fresh = [r for r in payload
-             if (str(r.get('sport')), str(r.get('surface')),
-                 str(r.get('game_date')),
-                 str(r.get('source_id'))) not in existing]
+    existing, live_bets = _keys
+    fresh, dup_bets = [], 0
+    for r in payload:
+        ident = (str(r.get('sport')), str(r.get('surface')),
+                 str(r.get('game_date')), str(r.get('source_id')))
+        if ident in existing:
+            continue
+        bk = _bet_key(str(r.get('sport')), str(r.get('surface')),
+                      str(r.get('game_date')), r)
+        if bk and bk in live_bets:
+            # same wager, different source_id — see _live_keys
+            dup_bets += 1
+            continue
+        fresh.append(r)
+    if dup_bets and not quiet:
+        print(f'  receipts ({surface}): {dup_bets} row(s) already live under '
+              f'a different source_id, not duplicated')
+        out['dup_bet'] = dup_bets
     already = len(payload) - len(fresh)
     if already:
         out['already'] = already
@@ -930,6 +987,44 @@ def prop_jerry_rows(reads: list, sport: str) -> list[dict]:
     return out
 
 
+def _card_anchor(it: dict, market: str, label: Any) -> str:
+    """The identity of a card pick, independent of which writer composed it.
+
+    == 2026-10-31 - ONE BET, TWO IDENTITIES, BOTH COUNTED ==
+
+    `source_key` is composed by whichever engine supplied the pick, and the
+    fade's shape is three-part: 'fade:401909281:rl'. The old code stripped
+    only the FIRST segment, leaving '401909281:rl', while the same pick
+    reaching the card without a source_key anchored on the bare game_id,
+    '401909281'. One bet, two source_ids -- and the partial unique index on
+    (sport, surface, game_date, source_id) cannot see they are one bet, so
+    both stay live and both count.
+
+    That is what made 2026-10-30 read 7-0 in the receipt ledger while the
+    card blob held 5 picks and said 5-0: Orlando Magic +5.5 and Golden State
+    +3.5 were each counted twice, both WINs. The blob was right; the ledger
+    that feeds surface_records was not.
+
+    For every market but prop the GAME is the identity, so anchor on game_id
+    and let source_key fill in only when there is no game_id -- POTD/DotD
+    anchor on the date. Props keep source_key, which carries
+    'player|prop_type|line'; a game_id would collapse every prop in a game
+    into one row (the defect fixed on 10-04).
+    """
+    if market != 'prop':
+        gid = it.get('game_id')
+        if gid not in (None, '', 'None'):
+            return str(gid)
+    anchor = it.get('source_key') or it.get('game_id') or it.get('id')
+    if isinstance(anchor, str) and ':' in anchor:
+        anchor = anchor.split(':', 1)[1]
+        if market and anchor.endswith(':' + market):
+            anchor = anchor[:-(len(market) + 1)]
+    if not anchor:
+        anchor = f'{it.get("game") or ""}|{label}'
+    return str(anchor)
+
+
 def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
     """Shape a published Sweat Card into receipt rows.
 
@@ -964,11 +1059,7 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
             # ML/total, a prop id (sometimes "table:id") for props, and the
             # DATE for POTD/DotD — which is why market has to be part of
             # the key, or the day's POTD and DotD collapse into one row.
-            anchor = it.get('source_key') or it.get('game_id') or it.get('id')
-            if isinstance(anchor, str) and ':' in anchor:
-                anchor = anchor.split(':', 1)[1]
-            if not anchor:
-                anchor = f'{it.get("game") or ""}|{label}'
+            anchor = _card_anchor(it, market, label)
             # ══ 2026-10-04 · A PROP RECEIPT MUST CARRY ITS OWN IDENTITY ══
             # These rows were written with player_name, prop_type, pick_line
             # and pick_side ALL NULL, with everything packed into source_id as
