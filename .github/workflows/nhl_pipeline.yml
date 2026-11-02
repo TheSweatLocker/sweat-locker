@@ -448,6 +448,7 @@ jobs:
           cd mlb_pipeline
           python nhl_generate_props.py
 
+
       # ══ 2026-10-21 · COLLAPSE SUPERSEDED PROP ROWS ══
       #
       # MUST run after the generator and BEFORE backfill_prop_lookback. Same
@@ -555,6 +556,44 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "promote_playbook_conviction.py (NHL)" \
             python promote_playbook_conviction.py --sport NHL
+
+      # == 2026-11-02 - NHL SCORED 77,919 PROPS AND PUBLISHED NONE ========
+      # ANDY: "What are we doing to fix nba and nhl prop we have been doing
+      # this song and dance for over a week and still 0 today everyday."
+      #
+      # Everything above this line worked. nba_generate_props writes the
+      # board, the gate runs, the playbook scorer runs, conviction gets
+      # promoted -- and then nothing consumed it, because
+      # generate_prop_jerry_synthesis was only ever invoked by mlb_pipeline
+      # and nfl_pipeline, and NHL was commented out of its PROPS_TABLE:
+      #
+      #     sport   source props   prop_jerry_reads
+      #     MLB           38,695             11,487
+      #     NFL            5,150              4,844
+      #     NHL           77,919                  0   <-- here
+      #     NHL           77,919                  0
+      #
+      # Placed AFTER promote_playbook_conviction on purpose: the synthesizer
+      # reads tier and conviction off the prop row, so running it earlier
+      # would score every prop against a pre-promotion tier.
+      #
+      # This does NOT put NHL props on a card by itself. prop_cell_allowlist
+      # still gates publishing to measured cells and NHL has ZERO -- because
+      # NHL props have never been graded, and they were never graded
+      # because they never became reads. Every read will be a PASS until
+      # that record exists, which is exactly how it breaks the circle
+      # read. That is the point -- the reads start a graded record so the
+      # gate can open later on evidence
+      # (feedback_unmeasured_signal_must_not_outweigh_measured).
+      - name: Prop Jerry reads (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python generate_prop_jerry_synthesis.py --sport NHL --days 0 --force --tier-gate NONE
 
       # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator + signal
       # calibration. Silent no-op during offseason (NHL 2026-27 season opens

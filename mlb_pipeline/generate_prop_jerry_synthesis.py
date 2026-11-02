@@ -39,11 +39,46 @@ MODEL = 'claude-haiku-4-5-20251001'
 PROMPT_VERSION = 'prop_synthesis_v1'
 
 # Sport → table. Add sports as their prop pipelines ship.
+#
+# ══ 2026-11-02 · NBA AND NHL SCORED 96,237 PROPS AND THREW THEM ALL AWAY ══
+# ANDY: "What are we doing to fix nba and nhl prop we have been doing this
+# song and dance for over a week and still 0 today everyday for nba and nhl
+# props."
+#
+# The answer was these two commented-out lines. NBA sat commented out and
+# NHL was never added, so this synthesizer never looked at either table --
+# and no workflow invoked it for them, only mlb_pipeline and nfl_pipeline:
+#
+#     sport   source props   prop_jerry_reads
+#     MLB           38,695             11,487
+#     NFL            5,150              4,844
+#     NBA           18,318                  0
+#     NHL           77,919                  0
+#
+# Nothing was broken. The sports were never switched on. Both pipelines
+# score props nightly and the output had no consumer.
+#
+# ══ THE TRAP THIS CREATES, AND WHY ENABLING IT IS STILL RIGHT ══
+# prop_cell_allowlist gates non-MLB publishing to cells with a measured
+# record: NFL has 5 cells, NBA 2 (ast_under/LEAN, pra_under/LEAN), NHL 0.
+# NHL has 0 because NHL props have never been graded -- and they have never
+# been graded because they never became reads. Circular, and the only way
+# out is to start writing reads so a graded record can accumulate.
+#
+# So enabling these does NOT put NHL props on a card tomorrow. The cell gate
+# still demotes an unmeasured cell to PASS, exactly as designed
+# (feedback_unmeasured_signal_must_not_outweigh_measured). What it does is
+# start the shadow record that lets the gate open later on evidence instead
+# of on a hunch -- the same mechanism as NCAAB_ML_TIER_CAP.
+#
+# UFC stays commented out: no ufc_pipeline_props table exists, so naming it
+# would 404 the read rather than skip it.
 PROPS_TABLE = {
     'MLB': 'mlb_pipeline_props',
     'NFL': 'nfl_pipeline_props',      # enabled 2026-08-03 for Week 1 launch
-    # 'NBA': 'nba_pipeline_props',
-    # 'UFC': 'ufc_pipeline_props',
+    'NBA': 'nba_pipeline_props',      # enabled 2026-11-02 (18,318 props waiting)
+    'NHL': 'nhl_pipeline_props',      # enabled 2026-11-02 (77,919 props waiting)
+    # 'UFC': 'ufc_pipeline_props',    # table does not exist yet
 }
 
 

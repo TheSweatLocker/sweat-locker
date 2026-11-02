@@ -49,7 +49,15 @@ H_WRITE = {**H_READ, "Content-Type": "application/json",
 
 
 def today_et() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
+    # Same -4 defect as the hard lock below: between 00:00 and 01:00 ET in
+    # EST this lands on TOMORROW and the whole run targets the wrong slate
+    # (feedback_window_from_runner_clock_is_a_day_ahead).
+    try:
+        from sweat_dates import et_today as _et_today_shared
+        return _et_today_shared()
+    except Exception:                                          # noqa: BLE001
+        return (datetime.now(timezone.utc)
+                - timedelta(hours=4)).strftime("%Y-%m-%d")
 
 
 # Sport → game context table registry (2026-08-03 sport-universalization).
@@ -558,7 +566,22 @@ def run(game_date: str | None = None, threshold: int = 70,
     # the POTD, it can't flip mid-day. Emergency override:
     # POTD_EMERGENCY_UNLOCK=1 (distinct env so --force can't slip past).
     from datetime import datetime as _dt2, timedelta as _td2, timezone as _tz2
-    _et_hour = (_dt2.now(_tz2.utc) - _td2(hours=4)).hour
+    # ══ 2026-11-02 · THIRD PRIVATE COPY OF THE ET CONVERSION TODAY ══════
+    # Was `utcnow() - 4h`. EST began 2026-11-01, so the constant reads an
+    # hour fast and this HARD LOCK -- the one that refuses even --force --
+    # sealed the day's headline play from 11:00 ET instead of 12:00.
+    #
+    # Caught by it refusing a correction Andy had just approved: at 11:25 ET
+    # it printed "12:00 ET past 12:00 lock. Republish REFUSED even with
+    # --force". potd_publish_lock.py had the identical bug and was fixed
+    # minutes earlier; this file does not call it, it reimplements it. That
+    # is feedback_fix_every_writer_to_the_table, and sweat_dates.et_date_of
+    # was the first of the three today.
+    try:
+        from sweat_dates import et_now as _et_now_shared
+        _et_hour = _et_now_shared().hour
+    except Exception:                                          # noqa: BLE001
+        _et_hour = (_dt2.now(_tz2.utc) - _td2(hours=4)).hour
     # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Matches Sharp/Sweat
     # card lock bump — late-morning corrections land before freeze.
     # 2026-09-19 Andy: morning output stays. 15 → 12, in step with the
