@@ -2172,7 +2172,27 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
     # for the rest of the day. Backend re-scoring flows to tomorrow's
     # cron, not today's locked publication.
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour  # EDT — TODO: DST switch
+    # == 2026-11-02 - THE LOCK HOUR WAS AN HOUR FAST IN EST ==========
+    # Was `(utcnow() - 4h).hour`, carrying the comment
+    # `# EDT - TODO: DST switch`. EST began 2026-11-01, so the constant
+    # reads one hour fast and this lock sealed the card from 11:00 ET
+    # instead of 12:00 ET, every day, through the winter.
+    #
+    # Caught live: at 12:05 ET it refused a republish saying
+    # "13:00 ET past 12:00 lock". The republish it refused was today's
+    # first-ever NBA prop content, after nba_pipeline had not run and
+    # generate_prop_jerry_synthesis had NBA commented out of its
+    # PROPS_TABLE. The hour it stole is an hour of correctable card.
+    #
+    # Fourth file today with a private copy of the ET conversion and the
+    # same defect: sweat_dates.et_date_of, potd_publish_lock._et_hour,
+    # jerry_anchor_potd, and here. 252 files still hold
+    # `timedelta(hours=4)` (feedback_universal_vs_sport_specific).
+    try:
+        from sweat_dates import et_now as _et_now_shared
+        _et_hour = _et_now_shared().hour
+    except Exception:                                          # noqa: BLE001
+        _et_hour = (_dt.now(_tz.utc) - _td(hours=4)).hour
     # 2026-09-18 Andy approved: bump lock 11 → 15 ET. Gives late-morning
     # window for view fixes / migration reloads to land before the card
     # freezes. Prior 11am lock trapped 5am cron output when a fix landed
