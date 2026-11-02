@@ -4,6 +4,7 @@ Every user-reported bug in the 2026-09-08 session was "two sources of
 truth for the same fact":
   - POTD result in jerry_cache vs daily_best_bet_history
   - POTD IDENTITY (sport + game) across the same two surfaces
+  - surface_records.hit_rate stored in the declared unit (fraction)
   - LEAN props graded in mlb_pipeline_props vs surface_records
   - NCAAF record in sharp_card vs ncaaf_sides
   - Prop graph data in mlb_pipeline_props vs prop_jerry_reads
@@ -263,6 +264,94 @@ def check_potd_identity_mirror(date: str) -> Optional[dict]:
                            'Repair the history row BY ID, never by bet_date '
                            '(feedback_grade_each_row_not_the_date), and void '
                            'any receipt reconstructed from the bad row.')},
+    }
+
+
+def check_surface_record_units(date: str) -> Optional[dict]:
+    """surface_records.hit_rate must be a FRACTION on every recent row.
+
+    == 2026-11-02 - ONE COLUMN, TWO UNITS ==============================
+    ANDY: "not seeing a record on the fade".
+
+    The cause of THAT was the fade not running at all (daily_card hit its
+    45-minute timeout three times on 11-01), not this. But measuring it
+    turned up a real ambiguity worth a guard: the same column held 0.579
+    and 54.49.
+
+    Measured across all 362 rows on 2026-11-02:
+
+        fraction            296
+        "percent"            66  -- of which 26 are hit_rate 0.0 with ZERO
+                                    wins, where both units are identical and
+                                    the label is arbitrary
+        genuine percent      40  -- ALL last_computed_at 2026-10-07, ALL
+                                    from compute_fade_records.py and
+                                    consensus_scorecard.py
+
+    So the live writer (compute_surface_records.py:1716, `round(hit, 3)`)
+    was already consistent on all 310 rows it wrote today, and the two
+    percent writers have both been converted to fractions. This check is
+    what stops a third one reintroducing it.
+
+    WINDOWED TO 7 DAYS ON PURPOSE. The 40 legacy rows are record history
+    from before the convention settled; nothing reads this column raw
+    (verified across app/ -- no consumer selects surface_records.hit_rate),
+    and rewriting old numbers into new units would be worse than one
+    documented discontinuity. Including them would make this permanently
+    red, and a permanently-red step is a muted step
+    (feedback_a_detector_must_know_the_intentional_case). Measured on the
+    7-day window today: 0 violations.
+
+    Zero-win rows are skipped because 0.0 is both units at once -- a row
+    that cannot disagree is not evidence either way.
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/surface_records', headers=H_R,
+                         params={'select': 'surface,sport,window_key,hit_rate,'
+                                           'wins,losses,last_computed_at',
+                                 'last_computed_at': f'gte.{(dt.datetime.fromisoformat(date) - dt.timedelta(days=7)).date().isoformat()}',
+                                 'limit': '2000'}, timeout=20)
+        rows = (r.json() if r.status_code == 200 else []) or []
+    except Exception as e:                                     # noqa: BLE001
+        print(f'  surface_record_units: read failed ({type(e).__name__}) '
+              f'— no verdict')
+        return None
+    if not rows:
+        return None
+    bad = []
+    for x in rows:
+        try:
+            hr = float(x['hit_rate'])
+            w, l = int(x['wins']), int(x['losses'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        n = w + l
+        if n == 0 or w == 0:
+            continue                      # 0.0 is both units at once
+        frac = float(w) / n
+        if abs(hr - frac) < 0.005:
+            continue                      # fraction, as required
+        looks_pct = abs(hr - frac * 100.0) < 0.5
+        bad.append({'surface': x.get('surface'), 'sport': x.get('sport'),
+                    'window_key': x.get('window_key'),
+                    'stored': hr, 'expected_fraction': round(frac, 3),
+                    'unit': 'percent' if looks_pct else 'neither',
+                    'computed': str(x.get('last_computed_at'))[:19]})
+    if not bad:
+        return None
+    return {
+        'check_name': 'surface_record_units',
+        'severity': 'WARNING',
+        'message': (f'{len(bad)} surface_records row(s) written in the last 7 '
+                    f'days store hit_rate in the WRONG UNIT. The column is a '
+                    f'FRACTION; a percent here reads as a 100x better or '
+                    f'worse record depending on the consumer.'),
+        'detail': {'rows': bad[:10],
+                   'convention': ('fraction, i.e. wins/(wins+losses) — '
+                                  'compute_surface_records.py:1716'),
+                   'fix': ('divide by 100 in the offending writer. '
+                           'compute_fade_records.py and consensus_scorecard.py '
+                           'were converted on 2026-11-02.')},
     }
 
 
@@ -1021,6 +1110,7 @@ def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
 CHECKS = {
     'potd_grade_mirror':           check_potd_grade_mirror,
     'potd_identity_mirror':        check_potd_identity_mirror,
+    'surface_record_units':        check_surface_record_units,
     'sharp_card_props_synthesis':  check_sharp_card_props_have_synthesis,
     'badge_detail_drift':          check_badge_matches_detail,
     'cross_surface_opposite_sides': check_cross_surface_opposite_sides,

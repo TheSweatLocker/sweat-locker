@@ -359,11 +359,61 @@ def main() -> int:
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--today', action='store_true',
                     help="publish today's qualifying plays instead of the record")
+    ap.add_argument('--once-daily', action='store_true',
+                    help='exit early if the record was already computed today')
     args = ap.parse_args()
     thr = args.threshold
 
     if args.today:
         return publish_today(thr, args.apply)
+
+    # ══ 2026-11-02 · GATE ON THE DATA, NOT THE WALL CLOCK ═══════════════
+    # ANDY: "not seeing a record on the fade".
+    #
+    # fade_public_ats has been frozen since 2026-10-07T02:00 -- the day the
+    # step was added -- with last_pick_date 2026-10-05. It is scheduled, in
+    # mlb_oddscrowd_refresh.yml, and it has never once run on a schedule.
+    # The step gated itself on the wall clock:
+    #
+    #     HOUR=$(date -u +%H)
+    #     if [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ] || dispatch; then
+    #
+    # GitHub delivers this repo's crons 3 to 9 HOURS late (measured over 23
+    # runs of nba_pipeline's 12:00 slot: min 3.0h, median 4.9h, max 9.0h).
+    # So a run scheduled at 12:00 UTC STARTS somewhere between 15:00 and
+    # 21:00, and `date -u +%H` is never 12 or 13. The only reason those
+    # three rows exist at all is that the gate also admits
+    # workflow_dispatch, and someone ran it by hand on 10-07.
+    #
+    # The step's own comment warns against this exact failure -- "a
+    # schedule-string gate is exactly how clv_weekly_rollup's Sunday check
+    # silently never matched" -- and then replaces it with a wall-clock gate
+    # that fails for the same underlying reason: the run does not execute
+    # when it is scheduled.
+    #
+    # A once-a-day job must therefore ask "has this already been done
+    # today?", which is true whenever the run lands. Same lesson as
+    # feedback_verify_freshness_by_recency_not_date.
+    if args.once_daily:
+        _today = dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d')
+        try:
+            _ex = page('surface_records',
+                       {'select': 'sport,last_computed_at',
+                        'surface': 'eq.fade_public_ats'})
+        except Exception as _e:                                # noqa: BLE001
+            # fail OPEN: better to recompute than to skip on a read error
+            print(f'  once-daily check failed ({type(_e).__name__}) '
+                  f'— recomputing anyway')
+            _ex = []
+        _done = [r for r in (_ex or [])
+                 if str(r.get('last_computed_at'))[:10] == _today]
+        if _done:
+            print(f'=== The Fade record: already computed today '
+                  f'({len(_done)} row(s) stamped {_today}) — skipping. '
+                  f'Pass --apply without --once-daily to force. ===')
+            return 0
+        print(f'  once-daily: no fade_public_ats row stamped {_today} '
+              f'— computing')
 
     print(f'=== The Fade · ATS only · public >= {thr:.0f}% of tickets · '
           f'{"APPLY" if args.apply else "REPORT"} ===\n')
@@ -434,7 +484,27 @@ def main() -> int:
                 'window_key': f'tickets_{int(thr)}pct',
                 'wins': w, 'losses': l, 'pushes': p,
                 'picks_count': len(qual),
-                'hit_rate': round(w / n * 100, 2),
+                # ══ 2026-11-02 · FRACTION, to match the table ═══════
+                # surface_records.hit_rate is a FRACTION on every one of the
+                # 310 rows the live writer (compute_surface_records.py:1716,
+                # `round(hit, 3)`) produced today. This writer stored a
+                # PERCENT, so the same column carried 0.579 and 54.49 and a
+                # reader could not tell which it was holding without
+                # recomputing wins/(wins+losses) itself.
+                #
+                # Measured 2026-11-02 across all 362 rows: 296 fraction, 66
+                # "percent" -- but 26 of those 66 are hit_rate 0.0 with zero
+                # wins, where the two units are identical and the label is
+                # arbitrary. The genuine percent rows are 40, ALL last
+                # computed 2026-10-07, ALL from this writer and
+                # consensus_scorecard.py. So this was the only live source of
+                # the ambiguity.
+                #
+                # Pre-10-08 rows are deliberately NOT rewritten: they are
+                # record history, nothing reads this column raw
+                # (verified across app/), and silently restating old numbers
+                # in new units is worse than one documented discontinuity.
+                'hit_rate': round(w / n, 3),
                 'units_net': round(u, 2),
                 'roi_pct': round(u / len(qual) * 100, 2),
                 'epoch_start': dates[0] if dates else None,

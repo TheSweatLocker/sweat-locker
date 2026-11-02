@@ -33,7 +33,11 @@ on:
 jobs:
   refresh-oddscrowd:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # 2026-11-02: 10 -> 25. The fade record reads 64,981 archive rows
+    # and takes over two minutes on its own; with the refresh steps
+    # ahead of it a 10-minute job is a second way for it to produce
+    # nothing.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repo
@@ -135,11 +139,24 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
+          # == 2026-11-02 - THE WALL-CLOCK GATE NEVER MATCHED =========
+          # This was:
+          #     HOUR=$(date -u +%H)
+          #     if [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ] || dispatch
+          #
+          # GitHub delivers this repo's crons 3-9 HOURS late (measured over
+          # 23 runs of nba_pipeline's 12:00 slot: min 3.0h, median 4.9h,
+          # max 9.0h), so a run scheduled at 12:00 STARTS between 15:00 and
+          # 21:00 and `date -u +%H` is never 12 or 13. fade_public_ats was
+          # frozen at 2026-10-07T02:00 -- the day this step was added --
+          # with last_pick_date 10-05, and those rows exist only because the
+          # gate also admits workflow_dispatch and it was run by hand that
+          # day. It has never once run on a schedule, which is what Andy saw
+          # as "not seeing a record on the fade".
+          #
+          # The comment above warns against a schedule-STRING gate for this
+          # very reason and then used a wall-CLOCK gate that fails the same
+          # way. So the once-a-day decision now asks the DATA whether today
+          # is already done, which is true whenever the run lands.
           cd mlb_pipeline
-          HOUR=$(date -u +%H)
-          if [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ] \
-             || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python compute_fade_records.py --apply
-          else
-            echo "skip: record recomputes on the 12/13 UTC shot only (now ${HOUR} UTC)"
-          fi
+          python compute_fade_records.py --apply --once-daily

@@ -332,7 +332,11 @@ def main() -> int:
         rows.append({'sport': sport, 'surface': f'voter_{v}',
                      'window_key': 'ats_vs_close', 'wins': w, 'losses': l,
                      'pushes': p, 'picks_count': n,
-                     'hit_rate': round(w / n * 100, 2),
+                     # 2026-11-02: FRACTION, matching surface_records' live convention
+                     # (compute_surface_records.py:1716). This wrote a
+                     # PERCENT into the same column -- see the note in
+                     # compute_fade_records.py for the measurement.
+                     'hit_rate': round(w / n, 3),
                      'units_net': round(u, 2),
                      'roi_pct': round(u / (n + p) * 100, 2) if n + p else None,
                      'last_computed_at': now})
@@ -345,7 +349,11 @@ def main() -> int:
         rows.append({'sport': sport, 'surface': 'panel_consensus',
                      'window_key': k.replace(' ', '_'), 'wins': w, 'losses': l,
                      'pushes': p, 'picks_count': n,
-                     'hit_rate': round(w / n * 100, 2),
+                     # 2026-11-02: FRACTION, matching surface_records' live convention
+                     # (compute_surface_records.py:1716). This wrote a
+                     # PERCENT into the same column -- see the note in
+                     # compute_fade_records.py for the measurement.
+                     'hit_rate': round(w / n, 3),
                      'units_net': round(u, 2),
                      'roi_pct': round(u / (n + p) * 100, 2) if n + p else None,
                      'last_computed_at': now})
