@@ -39,6 +39,13 @@ set -uo pipefail
 
 TALLY="${STEP_FAILURE_TALLY:-${RUNNER_TEMP:-/tmp}/pipeline_step_failures}"
 FINDINGS="${TALLY}_findings"
+# 2026-11-02 . EVERY step's duration, not only the failures.
+# On 2026-11-01 all three daily_card runs were killed by the job's
+# 45-minute timeout, taking The Fade, The Sharp and daily_degen to
+# zero receipts. Nothing could say WHICH step ate the clock, because
+# duration was only ever recorded on `event: step_failed` -- and every
+# step that day succeeded. A job does not have to fail a step to fail.
+DURATIONS="${TALLY}_durations"
 
 _summary() {
   # GITHUB_STEP_SUMMARY is absent when running locally; fall back to stdout.
@@ -48,6 +55,56 @@ _summary() {
 }
 
 if [ "${1:-}" = "--gate" ]; then
+  # ══ 2026-11-02 · WHERE THE CLOCK WENT ════════════════════════════════
+  # Reported first, and always, because the 11-01 failure was a job that
+  # ran out of time with every step green. The slowest steps are named in
+  # the step summary and the whole table is posted to workflow_heartbeat so
+  # it survives the log's expiry and can be queried later.
+  if [ -s "$DURATIONS" ]; then
+    _tot=$(awk -F'	' '{s+=$1} END {print s+0}' "$DURATIONS")
+    _nst=$(wc -l < "$DURATIONS" | tr -d ' ')
+    echo "::notice::step timing: ${_nst} steps, ${_tot}s total. Slowest:"
+    sort -rn "$DURATIONS" | head -8 | while IFS=$'	' read -r d l; do
+      echo "::notice::  - ${d}s  ${l}"
+    done
+    _summary ""
+    _summary "### ⏱ ${_nst} steps, ${_tot}s total"
+    _summary ""
+    _summary '```'
+    sort -rn "$DURATIONS" | head -12 >> "${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
+    _summary '```'
+    if [ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_KEY:-}" ]; then
+      python3 - "$DURATIONS" <<'PYDUR' > /tmp/_sl_stepdur.json 2>/dev/null || true
+import json, os, sys
+rows = []
+try:
+    for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
+        if not line.strip():
+            continue
+        part = line.rstrip('
+').split('	', 1)
+        if len(part) == 2:
+            try:
+                rows.append({'label': part[1], 'duration_s': int(part[0])})
+            except ValueError:
+                pass
+except Exception:
+    rows = []
+rows.sort(key=lambda z: -z['duration_s'])
+print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+                  'event': 'step_durations',
+                  'sport': 'MULTI',
+                  'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
+                  'meta': {'steps': len(rows),
+                           'total_s': sum(z['duration_s'] for z in rows),
+                           'slowest': rows[:20]}}))
+PYDUR
+      if [ -s /tmp/_sl_stepdur.json ]; then
+        curl -sf -m 10 -X POST "${SUPABASE_URL}/rest/v1/workflow_heartbeat"           -H "apikey: ${SUPABASE_KEY}"           -H "Authorization: Bearer ${SUPABASE_KEY}"           -H "Content-Type: application/json"           -H "Prefer: return=minimal"           --data-binary @/tmp/_sl_stepdur.json >/dev/null 2>&1 || true
+      fi
+      rm -f /tmp/_sl_stepdur.json
+    fi
+  fi
   # Findings first: reported, never fatal. A nightly that finds things is a
   # nightly that is working.
   if [ -s "$FINDINGS" ]; then
@@ -319,6 +376,11 @@ PYHB
 else
   echo "ok: ${LABEL} (${dur}s)"
 fi
+# Recorded on BOTH paths, which is the point: a step that succeeds slowly is
+# what starves the steps behind it.
+mkdir -p "$(dirname "$DURATIONS")" 2>/dev/null || true
+printf '%s	%s
+' "$dur" "$LABEL" >> "$DURATIONS" 2>/dev/null || true
 # The stderr capture is a temp file on the runner; do not leak one per step.
 rm -f "${_err:-}" 2>/dev/null || true
 

@@ -83,7 +83,18 @@ concurrency:
 jobs:
   surfaces:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # ══ 2026-11-02 · RAISED 45 -> 90 ══════════════════════════════════
+    # 45 was never hit in 30 runs (2.6-21.0m) and then was hit by ALL
+    # THREE runs on NFL Sunday, killing the back half of the job — the
+    # Steam Room surfaces, the Ladder, the Ledger, the watchdog and the
+    # matview refresh. The slate that makes this job longest is the slate
+    # whose output matters most, so a wall tuned to quiet days silently
+    # removes the busy ones.
+    #
+    # 90 is headroom, not a diagnosis: the 11-01 runs were killed
+    # mid-flight so their true length is unknown. The step-duration report
+    # below is what will say where the time actually goes.
+    timeout-minutes: 90
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -509,15 +520,26 @@ jobs:
       # Placed with the other Steam Room surfaces, which is where it
       # belongs - The Fade is a Steam Room tab - and BEFORE the receipts
       # capture above would be wrong: this writes its own receipts.
-      - name: Steam Room — The Fade
-        working-directory: mlb_pipeline
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          PYTHONIOENCODING: utf-8
-        run: |
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "generate_the_fade.py" python generate_the_fade.py
+      # ══ 2026-11-02 · MOVED OUT TO .github/workflows/the_fade.yml ══
+      # It was HERE, at the back of ~30 steps, and on 2026-11-01 all three
+      # runs hit this job's 45-minute timeout (45.1m / 45.1m / 45.1m,
+      # against 2.6-21.0m on each of the previous 30 runs). Every step from
+      # this point on was skipped, and because the end-heartbeat is
+      # `if: always()` the runs still looked complete. Receipts written:
+      #
+      #                   10-30   10-31   11-01
+      #     fade              6      27       0
+      #     sharp_card        2      11       0
+      #     daily_degen       1       1       0
+      #
+      # The Fade is the only football surface with a measured positive
+      # record (26-12, +30.3% ROI on its validated markets), it runs in
+      # seconds, and it was losing its slot to the most expensive job in
+      # the repo on the one day of the week it matters most.
+      #
+      # It now has its own workflow on a 2-hourly cron. NOT duplicated here
+      # as a backup: the cache row is merged read-then-write, so a second
+      # concurrent writer can lose a play between the two.
 
       - name: Steam Room — Ladder + Ledger
         working-directory: mlb_pipeline

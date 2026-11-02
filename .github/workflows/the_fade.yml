@@ -1,0 +1,142 @@
+# The Fade — its own workflow, because it was starved out of daily_card.
+#
+# ══ 2026-11-01 · WHAT HAPPENED ══════════════════════════════════════════
+# ANDY: "not seeing a record on the fade" ... "we are getting detroyed in
+# football".
+#
+# The Fade is the ONE football surface with a measured positive record:
+# 26-12, 68.4%, +30.3% ROI on the markets it was validated on (NFL/NCAAF
+# spreads + runlines). On 2026-11-01 — the biggest NFL slate of the week —
+# it published NOTHING. Zero receipts, and no `fade_2026-11-01` cache row at
+# all, where 10-31 had 27 receipts.
+#
+# The cause was not the script, the data, or the schedule. It was the job
+# clock. `daily_card` carries `timeout-minutes: 45`, and the Steam Room
+# steps sit at the END of ~30 steps. Measured from this repo's own
+# workflow_heartbeat, start -> end per run:
+#
+#     10-22 .. 10-31   30 runs    2.6m .. 21.0m
+#     11-01  11:41Z               45.1m   <-- killed at the timeout
+#     11-01  17:00Z               45.1m   <-- killed at the timeout
+#     11-01  20:53Z               45.1m   <-- killed at the timeout
+#
+# All three of Sunday's runs hit the wall. Everything after the timeout was
+# skipped, and `if: always()` meant the end-heartbeat still fired, so the
+# run looked like it had completed. Receipts written per surface:
+#
+#                   10-30   10-31   11-01
+#     fade              6      27       0
+#     sharp_card        2      11       0
+#     daily_degen       1       1       0
+#     sweat_card       14      12       3
+#
+# Three surfaces fully dark and one gutted, plus the Ladder, the Ledger, the
+# consistency watchdog and the matview refresh. The biggest slate of the
+# week is exactly the day the job runs longest, so the surfaces at the back
+# of the queue lose on precisely the days they matter most. Putting the
+# cheapest, highest-value one at the mercy of the most expensive one was the
+# mistake.
+#
+# ══ WHY A FREQUENT CRON, NOT A WELL-CHOSEN ONE ══════════════════════════
+# GitHub delivers this repo's crons HOURS late — measured on daily_card's
+# own 05:00 slot, actual starts ran 09:18Z to 11:41Z, i.e. 4.3-6.7h behind.
+# A single cleverly-timed run cannot be aimed at a 1:00pm ET kickoff under
+# that much jitter.
+#
+# A delay shifts the PHASE of a schedule, not its FREQUENCY. So the fix is
+# frequency: run every two hours and let whichever run lands in the window
+# where the splits are fresh and the games have not started do the
+# publishing. The script is idempotent by construction — the cache row is
+# merged, not replaced, and receipts dedupe on
+# `fade:{sport}:{game_id}:{market}` — so extra runs cost seconds and change
+# nothing.
+#
+# The matching half of this fix is in generate_the_fade.py: a kickoff guard,
+# because a run that lands at 7pm ET must publish NOTHING for a 1pm game
+# rather than booking a post-game pick as a live play.
+#
+# ══ ONE WRITER ══════════════════════════════════════════════════════════
+# The step was REMOVED from daily_card.yml rather than left in place as a
+# backup. The cache merge reads the row and writes it back whole, so two
+# concurrent writers can lose a play between the read and the write. One
+# writer, serialised against itself.
+
+name: The Fade
+
+on:
+  schedule:
+    # Every two hours. Under this repo's 3.5-6h cron delay the phase is
+    # unpredictable but the cadence is not: something lands every ~2h, so
+    # there is always a run in the pre-kickoff window on every slate.
+    - cron: '5 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: the-fade
+  cancel-in-progress: false
+
+jobs:
+  fade:
+    runs-on: ubuntu-24.04
+    # The script runs in seconds. 10 minutes is generous and, unlike 45,
+    # cannot quietly swallow the step this workflow exists to run.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Same minimal set daily_card installs. generate_the_fade imports
+          # requests + dotenv (via mlb_lib) and nothing heavier.
+          pip install requests python-dotenv python-dateutil pytz
+
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"the_fade\",\"event\":\"start\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\"}" || true
+
+      - name: The Fade
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "generate_the_fade.py" python generate_the_fade.py
+
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"the_fade\",\"event\":\"end\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\"}" || true
+
+      - name: Gate — fail the run if the step failed
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate

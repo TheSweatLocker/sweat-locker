@@ -188,6 +188,47 @@ _HOME_HANDICAP_SIGN = {'NFL': -1.0, 'NCAAF': 1.0, 'NBA': 1.0}
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
        'MLB': 'mlb_game_context', 'NHL': 'nhl_game_context',
        'NBA': 'nba_game_context'}
+
+# ══ 2026-11-02 · A FADE PUBLISHED AFTER KICKOFF IS NOT A PICK ══════════
+# On 2026-11-01 this script was never reached: all three daily_card runs hit
+# the job's 45-minute timeout (45.1m, 45.1m, 45.1m, against 3-21m on each of
+# the previous ten days), so The Fade, The Sharp and daily_degen all wrote
+# ZERO receipts on the biggest slate of the week.
+#
+# Re-running it by hand that evening showed the second half of the problem.
+# It happily built `MIN +3` and `IND +10` from splits whose games had kicked
+# off at 1:00pm ET and finished hours earlier. Nothing in this file has ever
+# asked whether a game had started. Had the run survived the timeout, it
+# would have published two post-game picks as live plays, and the receipt
+# would have graded them — a retroactive pick, which is the one thing this
+# surface was built not to do (see the `backtest` note in main()).
+#
+# So: no play is built for a game that has started, and the kickoff column
+# is read per sport because all four spell it differently.
+#
+#     nfl_game_context    kickoff_utc          179 of 179 populated
+#     ncaaf_game_context  kickoff_utc          185 of 185
+#     nba_game_context    commence_time_utc    121 of 121
+#     nhl_game_context    commence_time        136 of 136
+#
+# 621 of 621 rows since 10-20 carry a kickoff, so this guard FAILS CLOSED:
+# a missing kickoff on a sport that always has one is an anomaly, not a
+# reason to publish blind. That is the opposite of posted_line_check.py,
+# which fails open — there, a dark feed must not move a published number;
+# here, a dark feed must not publish a started game.
+#
+# MLB is deliberately absent: mlb_game_context has NO start-time column at
+# all. MLB is out of season (newest split 10-28) and every MLB fade market
+# is already in FADE_BANNED, so nothing is lost today — but when MLB comes
+# back, every MLB play will be refused with a named reason in the skip
+# counter rather than silently vanishing. Give it a column before April.
+KICKOFF_COL = {'NFL': 'kickoff_utc', 'NCAAF': 'kickoff_utc',
+               'NBA': 'commence_time_utc', 'NHL': 'commence_time'}
+
+#: minutes of lead time a published play must still have. 0 = refuse only
+#: once the game has actually started. Env-overridable so it can be raised
+#: on evidence without editing code.
+FADE_MIN_LEAD_MIN = float(os.environ.get('FADE_MIN_LEAD_MIN', '0'))
 OPP = {'HOME': 'AWAY', 'AWAY': 'HOME', 'OVER': 'UNDER', 'UNDER': 'OVER'}
 
 
@@ -277,6 +318,17 @@ FADE_BANNED = {
 #: spread number's credibility.
 FADE_VALIDATED = {('NCAAF', 'rl'), ('NCAAF', 'spread'),
                   ('NFL', 'rl'), ('NFL', 'spread')}
+
+
+def _parse_ts(v):
+    """An ISO timestamp as an aware UTC datetime, or None. Never raises."""
+    if not v:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
 def f(v):
@@ -592,12 +644,25 @@ def build_plays(date: str) -> list[dict]:
     # context for the slate, per sport, so a play can carry teams + the line
     ctx = {}
     for sport, tbl in CTX.items():
-        for c in page(tbl, {'select': 'game_id,game_date,away_team,home_team,'
-                                      'close_spread,close_total,'
-                                      'projected_spread',
-                            'game_date': f'eq.{date}'}):
+        # the kickoff column is named differently in every one of these
+        # tables, so it is appended per sport rather than shared. An
+        # explicit select naming a column the table lacks returns 42703 and
+        # sb_get answers EMPTY -- feedback_explicit_select_silent_blanks.
+        _sel = ('game_id,game_date,away_team,home_team,'
+                'close_spread,close_total,projected_spread')
+        _kc = KICKOFF_COL.get(sport)
+        if _kc:
+            _sel += ',' + _kc
+        for c in page(tbl, {'select': _sel, 'game_date': f'eq.{date}'}):
+            if _kc:
+                c['_kickoff'] = c.get(_kc)
             ctx[(sport, str(c.get('game_id')))] = c
     print(f'  context rows for {date}: {len(ctx)}')
+    _no_kick = sum(1 for k, v in ctx.items()
+                   if KICKOFF_COL.get(k[0]) and not v.get('_kickoff'))
+    if _no_kick:
+        print(f'  ! {_no_kick} context row(s) carry NO kickoff -- those '
+              f'games will be refused (fail-closed)')
 
     plays = []
     skipped = defaultdict(int)
@@ -639,10 +704,27 @@ def build_plays(date: str) -> list[dict]:
             return None
         return (a - b).total_seconds() / 3600.0
 
+    _now = dt.datetime.now(dt.timezone.utc)
     for (sport, gid, mkt), s in splits.items():
         c = ctx.get((sport, gid))
         if not c:
             skipped['not on this slate'] += 1
+            continue
+        # ── kickoff first. A started game is not a candidate for any
+        # later test, so it must not reach the lag or ban counters either
+        # -- otherwise the skip tally reads as a freshness problem.
+        if sport not in KICKOFF_COL:
+            skipped[f'{sport}: no kickoff column in {CTX[sport]} '
+                    f'(refused, see KICKOFF_COL)'] += 1
+            continue
+        _ko = _parse_ts(c.get('_kickoff'))
+        if _ko is None:
+            skipped[f'{sport}: kickoff missing or unparseable (refused)'] += 1
+            continue
+        _lead_min = (_ko - _now).total_seconds() / 60.0
+        if _lead_min < FADE_MIN_LEAD_MIN:
+            skipped['game already started' if _lead_min <= 0
+                    else f'under {FADE_MIN_LEAD_MIN:g}min to kickoff'] += 1
             continue
         _lag = _lag_hours(s.get('snapshot_ts'), sport)
         if _lag is None:
@@ -776,6 +858,15 @@ def build_plays(date: str) -> list[dict]:
               f'max {_ls[-1]:.1f}h · cap {FADE_MAX_LAG_H:g}h · '
               f'{sum(1 for x in _ls if x > FADE_MAX_LAG_H)} of {len(_ls)} '
               f'over')
+    elif skipped.get('game already started'):
+        # 2026-11-02: the kickoff guard runs BEFORE the lag test, so a
+        # slate that has finished legitimately reaches here with no lags
+        # recorded. Saying "wiring error" on the intentional case is how a
+        # real one stops being noticed
+        # (feedback_a_detector_must_know_the_intentional_case).
+        print(f'  split freshness: not measured -- all '
+              f'{skipped["game already started"]} candidate game(s) had '
+              f'already started')
     else:
         print('  split freshness: NO snapshots loaded -- wiring error, '
               'not an empty slate')
@@ -825,17 +916,161 @@ def graded_record() -> dict:
             'tracking_min_n': TRACKING_MIN_N}
 
 
+def play_key(z) -> tuple:
+    """A play's identity. Matches the receipt source_id, deliberately."""
+    return (z.get('sport'), str(z.get('game_id')), z.get('market'))
+
+
+def merge_plays(prior: list, fresh: list, now_iso: str) -> tuple:
+    """Today's row merged with this run's plays. Pure, so it is testable.
+
+    == 2026-11-02 - WHY A MERGE AND NOT A REPLACE =======================
+    The cache row is upserted whole every run. Once the kickoff guard
+    starts refusing started games, a 6pm run recomputes a SHORTER list than
+    the noon run, so a plain replace would unpublish the day's calls - the
+    tab would shrink and the losers would disappear from the surface that
+    exists to be the receipt. A record that quietly drops its losers is
+    worth nothing.
+
+    A prior play keeps the identity it was published under: its line, its
+    label, its price. The only thing a later run may change is `started`.
+    Returns (merged, newly_published).
+    """
+    fresh_keys = {play_key(z) for z in fresh}
+    merged, seen = [], set()
+    for z in prior:
+        k = play_key(z)
+        if k in seen:                    # a prior row that already doubled
+            continue
+        seen.add(k)
+        z = dict(z)
+        z['started'] = k not in fresh_keys
+        merged.append(z)
+    added = []
+    for z in fresh:
+        k = play_key(z)
+        if k in seen:
+            continue
+        seen.add(k)
+        z = dict(z)
+        z['started'] = False
+        z.setdefault('first_published_at', now_iso)
+        merged.append(z)
+        added.append(z)
+    return merged, added
+
+
+def _self_test() -> int:
+    """Proves the merge cannot unpublish a play. Run: --self-test"""
+    print('merge_plays self-test')
+    noon = [{'sport': 'NFL', 'game_id': 'G1', 'market': 'rl',
+             'label': 'MIN +3.5', 'line': 3.5, 'our_price': -120},
+            {'sport': 'NFL', 'game_id': 'G2', 'market': 'total',
+             'label': 'Under 54.5', 'line': 54.5, 'our_price': -110}]
+    noon_m, noon_add = merge_plays([], noon, 'T0')
+    assert len(noon_m) == 2 and len(noon_add) == 2, noon_m
+    assert all(z['first_published_at'] == 'T0' for z in noon_m)
+    assert all(z['started'] is False for z in noon_m)
+    print('  noon: 0 prior + 2 fresh -> 2 published, 2 receipts  ok')
+
+    # 6pm: G1 has kicked off so build_plays no longer returns it; G3 is new.
+    six = [{'sport': 'NFL', 'game_id': 'G2', 'market': 'total',
+            'label': 'Under 54.5', 'line': 54.5, 'our_price': -110},
+           {'sport': 'NFL', 'game_id': 'G3', 'market': 'rl',
+            'label': 'NYG +7', 'line': 7.0, 'our_price': -105}]
+    six_m, six_add = merge_plays(noon_m, six, 'T1')
+    by = {play_key(z): z for z in six_m}
+    assert len(six_m) == 3, six_m
+    assert by[('NFL', 'G1', 'rl')]['started'] is True, \
+        'a started game must be KEPT and flagged, never dropped'
+    assert by[('NFL', 'G1', 'rl')]['label'] == 'MIN +3.5', \
+        'the published label must stay frozen'
+    assert by[('NFL', 'G1', 'rl')]['first_published_at'] == 'T0', \
+        'it must keep its ORIGINAL publish time'
+    assert by[('NFL', 'G2', 'total')]['started'] is False
+    assert [play_key(z) for z in six_add] == [('NFL', 'G3', 'rl')], six_add
+    print('  6pm:  started play KEPT (label+time frozen), 1 new -> 1 receipt  ok')
+
+    # a line move in a later run must NOT rewrite a published number
+    moved = [{'sport': 'NFL', 'game_id': 'G2', 'market': 'total',
+              'label': 'Under 56', 'line': 56.0, 'our_price': -130}]
+    m3, a3 = merge_plays(six_m, moved, 'T2')
+    assert {play_key(z) for z in m3} == {('NFL', 'G1', 'rl'),
+                                        ('NFL', 'G2', 'total'),
+                                        ('NFL', 'G3', 'rl')}
+    g2 = [z for z in m3 if play_key(z) == ('NFL', 'G2', 'total')][0]
+    assert g2['line'] == 54.5 and g2['label'] == 'Under 54.5', g2
+    assert a3 == [], 'a line move is not a new play'
+    print('  line move: published 54.5 held, 0 new receipts  ok')
+
+    # an empty run must never empty the row
+    m4, a4 = merge_plays(six_m, [], 'T3')
+    assert len(m4) == 3 and a4 == []
+    assert all(z['started'] is True for z in m4)
+    print('  empty run: 3 plays retained, none unpublished  ok')
+
+    # a doubled prior row collapses rather than compounding
+    m5, _ = merge_plays(noon_m + noon_m, [], 'T4')
+    assert len(m5) == 2, m5
+    print('  doubled prior row collapses to 2  ok')
+    print('self-test PASSED')
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--self-test', action='store_true',
+                    help='prove the merge cannot unpublish a play')
     a = ap.parse_args()
+    if a.self_test:
+        return _self_test()
     date = a.date or today_et()
     print(f'=== generate_the_fade · {date} · '
           f'public >= {FADE_MIN_PUBLIC:g}% · '
           f'{"DRY RUN" if a.dry_run else "WRITING"} ===')
 
     plays = build_plays(date)
+
+    # ══ 2026-11-02 · THE CACHE MUST NOT UNPUBLISH TODAY'S PLAYS ═══════
+    # The cache row is upserted whole on every run, so once the kickoff
+    # guard above starts dropping started games, a 6pm run would REPLACE
+    # the eight plays published at noon with the two that had not kicked
+    # off yet. The tab would show a shrinking list and the day's published
+    # calls would vanish from the surface that is supposed to be the
+    # receipt. A record that quietly loses its losers is worth nothing.
+    #
+    # So the run MERGES: everything already in today's row is kept with
+    # the identity it was published under, and this run only ADDS plays it
+    # has not seen before. `started` is stamped for the client, which can
+    # grey a play out rather than being handed a list that got shorter.
+    _prior = []
+    if not a.dry_run:
+        try:
+            _r = requests.get(f'{SB}/rest/v1/jerry_cache', headers=H,
+                              params={'select': 'data',
+                                      'cache_key': f'eq.fade_{date}'},
+                              timeout=60)
+            if _r.status_code == 200 and _r.json():
+                _prior = list((_r.json()[0].get('data') or {}).get('plays')
+                              or [])
+        except Exception as e:                                 # noqa: BLE001
+            # fail LOUD: a read failure here would silently look like
+            # "nothing was published yet" and unpublish the day.
+            print(f'  ⚠ could not read the existing fade row for '
+                  f'{date} ({type(e).__name__}: {e}) -- REFUSING to '
+                  f'overwrite it')
+            return 1
+
+    _merged, _new_plays = merge_plays(
+        _prior, plays, dt.datetime.now(dt.timezone.utc).isoformat())
+    if _prior or _new_plays:
+        print(f'  cache merge: {len(_prior)} already published today '
+              f'({sum(1 for z in _merged if z.get("started"))} now started) '
+              f'+ {len(_new_plays)} new = {len(_merged)}')
+    plays_for_cache = _merged
+
     _ev = {}
     for _p in plays:
         _ev[_p.get('evidence')] = _ev.get(_p.get('evidence'), 0) + 1
@@ -850,7 +1085,7 @@ def main() -> int:
           f"hit {rec['hit_rate']}%  units {rec['units']:+}  "
           f"ROI {rec['roi_pct']}%  [{rec['confidence']}]")
 
-    payload = {'date': date, 'plays': plays, 'record': rec,
+    payload = {'date': date, 'plays': plays_for_cache, 'record': rec,
                'filter': {'min_public_pct': FADE_MIN_PUBLIC,
                           'markets': list(FADE_MARKETS),
                           'moneyline_excluded_because':
@@ -922,7 +1157,10 @@ def main() -> int:
                       timeout=60)
     print(f'\n  cache write: HTTP {r.status_code}')
 
-    # 2. receipts, so the record grades itself the way every other surface does
+    # 2. receipts, so the record grades itself the way every other surface
+    #    does -- for the plays THIS run published, never for ones already
+    #    on the row (capture would be a no-op, but the count would lie).
+    plays = _new_plays
     if plays:
         try:
             from public_receipt import capture
