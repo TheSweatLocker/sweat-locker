@@ -124,6 +124,54 @@ def _is_real_pick(lean) -> bool:
     return not any(p in s for p in PLACEHOLDER_LEANS)
 
 
+#: Anchor strings written by a HUMAN decision rather than by the engine.
+#: Kept in step with jerry_anchor_potd._MANUAL_ANCHORS.
+MANUAL_ANCHORS = ('manual_owner_pick',)
+
+
+def is_manual_potd(data) -> bool:
+    """True when this payload records a human POTD decision.
+
+    == 2026-11-02 - THE HOLE THIS CLOSES ================================
+    On 2026-11-01 Andy's hand-set POTD (NFL, MIN +3.5 at -120) was
+    OVERWRITTEN in daily_best_bet_history with an NBA pick: sport NBA, game
+    "Boston Celtics @ Orlando Magic", odds -110, sweat_score 53. `lean` and
+    `narrative` survived, so the record row argued for a Minnesota football
+    play while claiming it was a Boston basketball game - and a second POTD
+    receipt (id 4067290) was reconstructed from the corrupted row, sharing
+    `source_id = potd:2026-11-01` with the correct one.
+
+    This function is the reason it happened. `potd_locked` had exactly two
+    tests, and a hand-set pick passed both:
+
+      1. HARD LOCK   - requires the ET hour to be >= 12. The overwrite
+                       landed in the 11:41Z run, computed here as 07:00 ET.
+      2. ANCHOR LOCK - tested `anchor == 'jerry_synthesis_v1'` ONLY. A
+                       manual POTD carries `anchor='manual_owner_pick'`
+                       plus a `_manual` stamp, so it matched nothing.
+
+    Verified against the live row before the fix:
+
+        $ python potd_publish_lock.py --date 2026-11-01
+        POTD 2026-11-01: unlocked
+          unlocked (ET 06:00, existing lean 'MIN +3.5')
+
+    jerry_anchor_potd.py had this same miss and it was fixed there on
+    10-25 (`_is_manual_potd`, see _MANUAL_ANCHORS). The fix was applied to
+    ONE writer and not to the shared lock that this module's own header
+    calls "the single implementation every writer asks" - so play_of_day.py,
+    which dutifully asks the lock, was told the day was open. Patching one
+    writer and leaving the chokepoint is exactly
+    feedback_fix_every_writer_to_the_table, and a lock that cannot see a
+    hand-set decision is feedback_lock_must_see_a_manual_decision.
+    """
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get('_manual'), dict):
+        return True
+    return str(data.get('anchor') or '') in MANUAL_ANCHORS
+
+
 def potd_locked(game_date: str, force: bool = False,
                 dry_run: bool = False, verbose: bool = True) -> tuple:
     """-> (locked: bool, reason: str). Fail OPEN on an unreachable DB.
@@ -174,6 +222,17 @@ def potd_locked(game_date: str, force: bool = False,
                     data = json.loads(data)
                 except Exception:                              # noqa: BLE001
                     data = {}
+            # MANUAL LOCK first, and NOT overridable by `force`. A
+            # hand-set play is a publication: --force may override the
+            # engine republishing over itself, never a human decision.
+            # Only POTD_EMERGENCY_UNLOCK=1 (handled above) clears it.
+            if is_manual_potd(data):
+                _who = ((data or {}).get('_manual') or {}).get('by') or '?'
+                return True, (
+                    f'MANUAL LOCK — best_bet_{game_date} is a hand-set POTD '
+                    f'({str((data or {}).get("leanDisplay"))[:40]!r}, set by '
+                    f'{_who}). --force does NOT override a hand-set play; '
+                    f'clear it by hand or use POTD_EMERGENCY_UNLOCK=1.')
             if (data or {}).get('anchor') == 'jerry_synthesis_v1':
                 if force:
                     return False, 'anchor lock present but force given'
@@ -189,13 +248,41 @@ def potd_locked(game_date: str, force: bool = False,
                    f'{str(existing_lean)[:40]!r})')
 
 
+def _self_test() -> int:
+    """The 11-01 hole, as a test. Pure: no DB."""
+    print('potd_publish_lock self-test')
+    manual = {'anchor': 'manual_owner_pick', 'leanDisplay': 'MIN +3.5',
+              '_manual': {'by': 'andy'}}
+    assert is_manual_potd(manual) is True
+    # a manual stamp alone is enough, even if the anchor is something else
+    assert is_manual_potd({'_manual': {'by': 'andy'}}) is True
+    # the engine's own anchor is NOT manual -- it stays force-overridable
+    assert is_manual_potd({'anchor': 'jerry_synthesis_v1'}) is False
+    assert is_manual_potd({}) is False
+    assert is_manual_potd(None) is False
+    assert is_manual_potd('a string payload') is False
+    # a _manual key of the wrong type must not be read as a decision
+    assert is_manual_potd({'_manual': True}) is False
+    print('  manual payload recognised, engine payload still not  ok')
+    assert _is_real_pick('MIN +3.5') is True
+    assert _is_real_pick('No Play (discipline pass)') is False
+    assert _is_real_pick('Pending') is False
+    assert _is_real_pick(None) is False
+    print('  real-pick test unchanged  ok')
+    print('self-test PASSED')
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=(dt.datetime.now(dt.timezone.utc)
                                        - dt.timedelta(hours=4)).date()
                     .isoformat())
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--self-test', action='store_true')
     a = ap.parse_args()
+    if a.self_test:
+        return _self_test()
     locked, why = potd_locked(a.date, force=a.force)
     print(f'POTD {a.date}: {"LOCKED" if locked else "unlocked"}')
     print(f'  {why}')

@@ -3,6 +3,7 @@
 Every user-reported bug in the 2026-09-08 session was "two sources of
 truth for the same fact":
   - POTD result in jerry_cache vs daily_best_bet_history
+  - POTD IDENTITY (sport + game) across the same two surfaces
   - LEAN props graded in mlb_pipeline_props vs surface_records
   - NCAAF record in sharp_card vs ncaaf_sides
   - Prop graph data in mlb_pipeline_props vs prop_jerry_reads
@@ -142,6 +143,126 @@ def check_potd_grade_mirror(date: str) -> Optional[dict]:
                    f'Home / Receipts / calendar will display conflicting values.',
         'detail': {'mismatches': mismatches[:10],
                    'fix': 'python jerry_anchor_potd.py  (writes both surfaces now)'},
+    }
+
+
+def check_potd_identity_mirror(date: str) -> Optional[dict]:
+    """The two POTD surfaces must agree on WHICH BET the day's play is.
+
+    == 2026-11-02 - THE FIELDS NOBODY WAS WATCHING ======================
+    check_potd_grade_mirror above compares `result` and the no-play `lean`.
+    It compares nothing else, so on 2026-11-01 this happened unobserved:
+
+        jerry_cache  sport NFL  game 'MIN @ DET'                    -120
+        history      sport NBA  game 'Boston Celtics @ Orlando Magic'  -110
+        history lean 'MIN +3.5'   <- preserved, so the row argued for a
+                                     Minnesota football play while naming a
+                                     Boston basketball game
+
+    A second POTD receipt (id 4067290) was then reconstructed from the
+    corrupted row, sharing `source_id = potd:2026-11-01` with the correct
+    one, so the day had two headline bets. `lean` and `result` both still
+    matched, which is exactly why the existing check stayed green.
+
+    MEASURED BEFORE SHIPPING (_measure_potd_identity_drift_1102.py), on all
+    138 dates present in both surfaces, 2026-04-19 .. 2026-11-01:
+
+        sport  1 of 138   (11-01 only)
+        game   3 of 138   (05-30, 08-22, 11-01)
+        odds   1 of 138   but COMPARABLE on only 1 of 138
+
+    All three `game` disagreements are genuine corruptions rather than
+    formatting noise - 08-22 is the SDP/NRFI incident named in the header of
+    20260828_potd_atomic_write.sql, and 05-30 is a second one that was never
+    reported. So this fires on 3 of 138 dates and every firing is a real
+    defect, which is the bar a CRITICAL has to clear
+    (feedback_a_detector_must_know_the_intentional_case).
+
+    ODDS IS DELIBERATELY NOT CHECKED. It is comparable on 1 of 138 dates
+    because POTD cache payloads almost never carry a price; a check that can
+    only fire on one row asserts nothing. That absence is its own finding and
+    belongs with the 383-of-487 NULL-odds POTD receipts, not here.
+
+    Only compares where BOTH surfaces hold a value. A missing value is a
+    coverage question, not a contradiction, and conflating the two is how a
+    detector starts crying wolf (feedback_column_presence_is_not_contamination).
+    """
+    def _n(v):
+        return ' '.join(str(v or '').strip().lower().split())
+
+    def _ident(data, row_sport):
+        if not isinstance(data, dict):
+            return None, None
+        g = data.get('game') if isinstance(data.get('game'), dict) else {}
+        matchup = g.get('matchup') or data.get('matchup')
+        if not matchup and g.get('away_team') and g.get('home_team'):
+            matchup = '%s @ %s' % (g.get('away_team'), g.get('home_team'))
+        return (data.get('sport') or row_sport), matchup
+
+    since = (dt.datetime.fromisoformat(date) - dt.timedelta(days=7)).date().isoformat()
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/jerry_cache', headers=H_R,
+            params={'cache_key': f'like.best_bet_2026-%',
+                    'select': 'cache_key,data,sport', 'limit': '400'},
+            timeout=20)
+        cache = {}
+        for row in (r.json() if r.status_code == 200 else []) or []:
+            d = row.get('data') or {}
+            if isinstance(d, str) or not isinstance(d, dict) or d.get('noPlay'):
+                continue
+            dd = str(row['cache_key']).replace('best_bet_', '')
+            if dd < since:
+                continue
+            sp, mu = _ident(d, row.get('sport'))
+            cache[dd] = {'sport': sp, 'game': mu,
+                         'lean': d.get('leanDisplay')}
+        if not cache:
+            return None
+        r2 = requests.get(
+            f'{SB}/rest/v1/daily_best_bet_history', headers=H_R,
+            params={'bet_date': f'gte.{since}',
+                    'select': 'bet_date,sport,game,lean,result',
+                    'limit': '30'}, timeout=20)
+        hist = {str(x['bet_date']): x
+                for x in ((r2.json() if r2.status_code == 200 else []) or [])}
+    except Exception as e:                                     # noqa: BLE001
+        # A read failure is not a finding. Saying nothing is correct here;
+        # the step-failure tally is what reports a broken check.
+        print(f'  potd_identity_mirror: read failed ({type(e).__name__}) '
+              f'— no verdict')
+        return None
+
+    bad = []
+    for d, c in sorted(cache.items()):
+        h = hist.get(d)
+        if not h:
+            continue
+        if c['sport'] and h.get('sport') and _n(c['sport']) != _n(h['sport']):
+            bad.append({'date': d, 'field': 'sport',
+                        'jerry_cache': c['sport'], 'history': h['sport'],
+                        'history_lean': str(h.get('lean'))[:40]})
+        if c['game'] and h.get('game') and _n(c['game']) != _n(h['game']):
+            bad.append({'date': d, 'field': 'game',
+                        'jerry_cache': c['game'], 'history': h['game'],
+                        'history_lean': str(h.get('lean'))[:40]})
+    if not bad:
+        return None
+    return {
+        'check_name': 'potd_identity_mirror',
+        'severity': 'CRITICAL',
+        'message': (f'{len(bad)} POTD identity disagreement(s) between '
+                    f'jerry_cache and daily_best_bet_history. The record row '
+                    f'names a DIFFERENT BET than the published play, so the '
+                    f'grade will be looked up against the wrong game.'),
+        'detail': {'disagreements': bad[:10],
+                   'measured': ('3 of 138 dates historically, all genuine '
+                                'corruptions — see '
+                                '_measure_potd_identity_drift_1102.py'),
+                   'fix': ('jerry_cache is the published surface and wins. '
+                           'Repair the history row BY ID, never by bet_date '
+                           '(feedback_grade_each_row_not_the_date), and void '
+                           'any receipt reconstructed from the bad row.')},
     }
 
 
@@ -899,6 +1020,7 @@ def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
 
 CHECKS = {
     'potd_grade_mirror':           check_potd_grade_mirror,
+    'potd_identity_mirror':        check_potd_identity_mirror,
     'sharp_card_props_synthesis':  check_sharp_card_props_have_synthesis,
     'badge_detail_drift':          check_badge_matches_detail,
     'cross_surface_opposite_sides': check_cross_surface_opposite_sides,

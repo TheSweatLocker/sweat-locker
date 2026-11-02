@@ -505,6 +505,27 @@ def _nk_team(s) -> str:
     return re.sub(r'[^a-z0-9]', '', s.lower())
 
 
+def _num(*vals):
+    """The first value that is really a number, else None.
+
+    2026-11-02: `sweat_score` was filled with `data.get('confidence')` as a
+    fallback, and on a hand-set POTD that field holds a WORD ('lean'). A
+    string into a numeric column 400s the whole upsert, so one unusable
+    fallback would have silently cost the grade.
+    """
+    for v in vals:
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            return v
+        if isinstance(v, str):
+            try:
+                return float(v)
+            except ValueError:
+                continue
+    return None
+
+
 def _history_identity_ok(date_str: str, graded_matchup) -> tuple[bool, str]:
     """May a grade be mirrored onto the history row for this date?
 
@@ -756,7 +777,14 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
                 'sport': data.get('sport') or row.get('sport'),
                 'game': _g.get('matchup') or data.get('matchup'),
                 'lean': data.get('leanDisplay'),
-                'sweat_score': _score.get('total') or data.get('confidence'),
+                # 2026-11-02: was `_score.get('total') or
+                # data.get('confidence')`. On a hand-set POTD `confidence`
+                # is a WORD -- the 11-01 payload holds 'lean' -- and
+                # sweat_score is numeric, so the whole mirror would have
+                # 400'd and the grade would never have landed. Only a real
+                # number is eligible.
+                'sweat_score': _num(_score.get('total'),
+                                    data.get('confidence')),
                 'narrative': data.get('narrative'),
             }
             # Never overwrite a good existing value with None. This makes
@@ -771,10 +799,22 @@ def grade_potd(date_str: str, dry_run: bool = False) -> str:
                 date_str, mirror.get('game') or _g.get('matchup')
                 or data.get('matchup'))
             if not _ok:
+                # 2026-11-02 . THIS USED TO POP ONLY THREE KEYS.
+                # result, narrative and resolved_at were dropped and
+                # `sport`, `game`, `lean` and `sweat_score` were left in
+                # the payload -- so a grade that had just been judged
+                # UNSAFE to apply still rewrote the row's IDENTITY to the
+                # game it had mismatched on. A gate that blocks the verdict
+                # and lets the pick through is worse than no gate: it
+                # produces a row that is internally inconsistent, which is
+                # what 11-01 looked like (lean 'MIN +3.5' on game 'Boston
+                # Celtics @ Orlando Magic').
+                #
+                # If the identity does not match, nothing is mirrored.
                 print(f'  {date_str}: REFUSING to mirror grade — {_why}')
-                mirror.pop('result', None)
-                mirror.pop('narrative', None)
-                mirror.pop('resolved_at', None)
+                print(f'      dropped the WHOLE mirror, identity included: '
+                      f'{sorted(k for k in mirror if k != "bet_date")}')
+                raise _SkipMirror()
             if not any(k not in ('bet_date',) for k in mirror):
                 print(f'  {date_str}: nothing left to mirror after the '
                       f'identity gate')
