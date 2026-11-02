@@ -172,12 +172,55 @@ def check_potd_identity_mirror(date: str) -> Optional[dict]:
         game   3 of 138   (05-30, 08-22, 11-01)
         odds   1 of 138   but COMPARABLE on only 1 of 138
 
-    All three `game` disagreements are genuine corruptions rather than
-    formatting noise - 08-22 is the SDP/NRFI incident named in the header of
-    20260828_potd_atomic_write.sql, and 05-30 is a second one that was never
-    reported. So this fires on 3 of 138 dates and every firing is a real
-    defect, which is the bar a CRITICAL has to clear
+    All three `game` disagreements are real rather than formatting noise, so
+    this fires on 3 of 138 dates and every firing is a genuine defect, which
+    is the bar a CRITICAL has to clear
     (feedback_a_detector_must_know_the_intentional_case).
+
+    == 2026-11-02, LATER - WHICH SIDE IS WRONG, AND IT IS NOT THE RECORD ==
+    I first wrote here that 05-30 and 08-22 were corruptions of the POTD
+    RECORD, and told Andy repairing them "could flip a recorded Win to a
+    Loss" and was his call. That was wrong, and the direction matters more
+    than the count.
+
+    daily_best_bet_history IS the record. The app reads POTD from it and
+    only from it (app/index.tsx:6538 for the 120-day Receipts history,
+    :6629 for the last 14, app/components/RecapCard.tsx:83). Nothing in the
+    client reads best_bet_* out of jerry_cache.
+
+    The app WRITES that cache key, though, with the anon key and RLS off
+    schema-wide (app/index.tsx:7063 upserts jerry_cache with
+    cache_key `best_bet_${today}` and `data: supabaseCache.data` whenever it
+    generates a narrative -- project_anon_key_can_write_1021). So a client
+    can replace the cached payload hours after publication, and fetched_at
+    shows exactly that on both dates:
+
+        date         cache created   cache last written   gap
+        2026-05-30   11:30:23        14:33:06             +3h
+        2026-08-22   10:50:14        19:23:20             +8.5h
+        2026-11-01   11:10:32        11:43:42             +33m   (control)
+
+    while the history row on each date was written by the server within a
+    second of the cache being created.
+
+    Corroborated independently for 08-22: jerry_reads for that day carries
+    'San Diego Padres ML' with result Win, matching the HISTORY row (MIN @
+    SD, Padres ML -135, Win) and not the cache (TOR @ NYY NRFI, Loss). And
+    the 05-30 cache payload was never graded at all -- result stayed NULL --
+    which is what a client artifact looks like, not a published play.
+
+    Scale: over all 179 history rows and 200 cache rows, exactly 2 dates
+    disagree, and both are this shape.
+
+    So a firing of this check means THE CACHE IS STALE. The record needed no
+    repair, no recorded Win was flipped, and the 11-01 repair that made
+    history match the cache was still correct there because that cache had
+    not been overwritten with a different game (33-minute gap, same
+    matchup, and the live receipt id 4023352 agrees: MIN @ DET, MIN +3.5,
+    -120, LOSS).
+
+    The remaining exposure is the client write itself, which is the open
+    item, not the two historical rows.
 
     ODDS IS DELIBERATELY NOT CHECKED. It is comparable on 1 of 138 dates
     because POTD cache payloads almost never carry a price; a check that can

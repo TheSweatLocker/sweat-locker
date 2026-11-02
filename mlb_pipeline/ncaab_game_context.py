@@ -380,6 +380,59 @@ def sweat_tier(score):
 #: only when NCAAB totals have a graded record that clears breakeven.
 NCAAB_TOTAL_TIER_CAP = "COVERAGE"
 
+#: Tier ceiling for an NCAAB MONEYLINE, same mechanism and same reason as
+#: the totals cap above.
+#:
+#: ══ 2026-11-02 · 62 OF 119 GAMES CARRIED A "STRONG" ML AT A LOCK PRICE ══
+#: These rows were invisible until today because ncaab_game_context filed
+#: every game under the job run date. Correcting that put the real slate on
+#: the board and the badges with it:
+#:
+#:     primary_play type=ml on 2026-11-02:  69 rows
+#:        tier STRONG 62,  LIGHT_LEAN 7
+#:        61 carry a price: range -100000 .. -105, MEDIAN -10000
+#:        50 of 61 worse than -300;  55 of 61 worse than -200
+#:        ten at -100000 -- risk 1,000 to win 1 -- on 28.5 to 40.5 point
+#:        favourites: "Illinois ML lean", STRONG, spread -40.5
+#:
+#: A STRONG badge on a 40-point favourite's moneyline is not a play, and
+#: "2/4 lens lean" is not a reason to make one.
+#:
+#: MEASURED, and it is not a juice problem -- it is the whole market.
+#: 4,981 NCAAB favourite-ML plays carrying a close price and a final score,
+#: ROI at each row's own price:
+#:
+#:     price band          n     win%   breakeven   edge pp     ROI
+#:     -100000..-1000    930   95.70%     95.78%     -0.08    -0.10%
+#:       -1000..-500     573   86.04%     87.13%     -1.10    -1.22%
+#:        -500..-300     769   77.89%     79.00%     -1.11    -1.41%
+#:        -300..-250     390   70.26%     73.40%     -3.14    -4.29%
+#:        -250..-200     501   69.26%     69.23%     +0.03    +0.01%
+#:        -200..-150     853   60.38%     63.26%     -2.88    -4.44%
+#:        -150..-100     959   53.49%     56.37%     -2.88    -5.08%
+#:
+#: NOT ONE BAND CLEARS BREAKEVEN. The heavy end holds split-half by date
+#: (-1.20% n=1136 early, -0.45% n=1136 late): fairly priced, so a "lean"
+#: adds nothing but vig. There is no price at which to let this through, so
+#: a juice threshold would have been the wrong fix.
+#:
+#: AND THE ENGINE'S OWN SELECTION CANNOT BE MEASURED. ncaab_game_results
+#: carries projected_spread on 0 of 11,529 rows, and projected_total,
+#: home_adj_em, away_adj_em and adj_em_gap on 0 as well -- so there is no
+#: way to reconstruct which side this function would have taken on a past
+#: game, and no way to show it beats the blanket control above. An
+#: unmeasured selection must not outweigh a measured one
+#: (feedback_unmeasured_signal_must_not_outweigh_measured), and it
+#: certainly must not outweigh a measured NEGATIVE.
+#:
+#: Capped rather than deleted, for the same reason as the totals: the pick
+#: is still computed, still stored and still shown on the game card with its
+#: side and number, so a shadow record accumulates and this lifts on
+#: evidence. Raise it only when NCAAB ML has a graded record of OUR picks
+#: that clears breakeven -- which first requires persisting projected_spread
+#: into ncaab_game_results so the question can be asked at all.
+NCAAB_ML_TIER_CAP = "COVERAGE"
+
 
 def compute_primary_play(ctx, alias_map=None):
     """Analog of mlb_game_context.compute_primary_play. Spreads/totals/ML
@@ -433,11 +486,16 @@ def compute_primary_play(ctx, alias_map=None):
     if conf >= 4 and abs_edge >= 2.0:
         return {
             "type": "ml",
-            "tier": "PRIME",
+            "tier": NCAAB_ML_TIER_CAP,
             "side": ml_side,
             "label": f"{fav} ML",
             "sub": f"PRIME confluence ({conf} signals, {abs_edge:.1f} edge)",
             "signal_floor": 85,
+            "_ml_cap": {"from": "PRIME", "to": NCAAB_ML_TIER_CAP,
+                        "why": "NCAAB favourite ML is negative or flat in "
+                               "every price band, n=4,981; and our own "
+                               "selection is unmeasurable (projected_spread "
+                               "0 of 11,529 result rows)"},
         }
 
     # 2. TOTAL — COVERAGE ONLY. See NCAAB_TOTAL_TIER_CAP.
@@ -492,11 +550,16 @@ def compute_primary_play(ctx, alias_map=None):
     if conf >= 2 and abs_edge >= 1.5:
         return {
             "type": "ml",
-            "tier": "STRONG",
+            "tier": NCAAB_ML_TIER_CAP,
             "side": ml_side,
             "label": f"{fav} ML lean",
             "sub": f"STRONG confluence ({conf} signals, {abs_edge:.1f} edge)",
             "signal_floor": 70,
+            "_ml_cap": {"from": "STRONG", "to": NCAAB_ML_TIER_CAP,
+                        "why": "NCAAB favourite ML is negative or flat in "
+                               "every price band, n=4,981; and our own "
+                               "selection is unmeasurable (projected_spread "
+                               "0 of 11,529 result rows)"},
         }
 
     # 4. LIGHT total — same cap, same reason as rule 2 above.

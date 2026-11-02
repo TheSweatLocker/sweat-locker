@@ -76,6 +76,11 @@ if _env.exists():
         if '=' in line and not line.startswith('#'):
             k, v = line.split('=', 1); os.environ.setdefault(k.strip(), v.strip())
 
+#: The moneyline tier ceiling lives in ncaab_game_context so both writers
+#: of primary_play share one number. See the measurement table beside it,
+#: and the note in resolve() below for why this file needed it too.
+from ncaab_game_context import NCAAB_ML_TIER_CAP  # noqa: E402
+
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
@@ -236,6 +241,54 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
     if majority_count < 2 and tier in ('PRIME', 'STRONG'):
         tier = 'LIGHT_LEAN'  # Not enough lens agreement
 
+    # ══ 2026-11-02 · THIS IS THE WRITER THAT WINS, AND IT WAS UNCAPPED ══
+    # ncaab_game_context.compute_primary_play got a moneyline tier cap first.
+    # It was the wrong file: this resolver is a POST-HOC PATCH that runs
+    # afterwards and REPLACES primary_play, so every stored badge came from
+    # here. The stored blobs proved it -- signal_floor 60 and a
+    # "{n}/4 lens lean" sub, which only rule 3 below emits
+    # (feedback_fix_every_writer_to_the_table).
+    #
+    # WHAT WAS ON THE BOARD, visible from today because the game_date repair
+    # put the real slate on the right day:
+    #     69 ml badges on 2026-11-02, 62 of them STRONG
+    #     61 with a price: -100000 .. -105, MEDIAN -10000
+    #     ten at -100000 on 28.5-to-40.5-point favourites
+    #
+    # MEASURED, 4,981 NCAAB favourite-ML plays with a close price and a
+    # final score, ROI at each row's own price:
+    #     -100000..-1000  n=930  95.70% vs BE 95.78%   -0.10%
+    #       -1000..-500   n=573  86.04% vs BE 87.13%   -1.22%
+    #        -500..-300   n=769  77.89% vs BE 79.00%   -1.41%
+    #        -300..-250   n=390  70.26% vs BE 73.40%   -4.29%
+    #        -250..-200   n=501  69.26% vs BE 69.23%   +0.01%
+    #        -200..-150   n=853  60.38% vs BE 63.26%   -4.44%
+    #        -150..-100   n=959  53.49% vs BE 56.37%   -5.08%
+    # Not one band clears breakeven; the heavy end holds split-half by date
+    # (-1.20% n=1136 / -0.45% n=1136). So a juice threshold would have been
+    # the wrong shape of fix -- there is no price at which to let it through.
+    #
+    # And our own selection is UNMEASURABLE: ncaab_game_results carries
+    # projected_spread on 0 of 11,529 rows, and every adj_em field on 0, so
+    # there is no way to show these four lenses beat the blanket control
+    # above (feedback_unmeasured_signal_must_not_outweigh_measured).
+    #
+    # Capped, not deleted -- same discipline as NCAAB_TOTAL_TIER_CAP. The
+    # pick keeps its side, label and number, stays on the game card, and a
+    # shadow record accumulates so this can lift on evidence. Lifting it
+    # first requires persisting projected_spread into ncaab_game_results.
+    #
+    # `side` IS NOW RECORDED. The 2026-10-30 fix added it to
+    # compute_primary_play and not here, so this writer overwrote it away
+    # again -- which is why The Sharp still dropped NCAAB ML picks as
+    # "no book moneyline" and why a price lookup on the stored rows returned
+    # None on all 64. majority_side is the side; it was known here all along.
+    ml_side = ('HOME' if majority_side == 'home'
+               else 'AWAY' if majority_side == 'away' else None)
+    _ML_CAP_WHY = ('NCAAB favourite ML is negative or flat in every price '
+                   'band, n=4,981; and our own selection is unmeasurable '
+                   '(projected_spread 0 of 11,529 result rows)')
+
     # Primary play selection
     primary_play = None
 
@@ -251,24 +304,30 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
     if majority_count >= 3 and effective_edge >= 2.0 and fav_team and tier in ('PRIME', 'STRONG'):
         primary_play = {
             'type': 'ml',
-            'tier': tier,
+            'tier': NCAAB_ML_TIER_CAP,
+            'side': ml_side,
             'label': f'{fav_team} ML',
             'sub': f'{majority_count}/4 lens agreement, {effective_edge:.1f}pt edge (kenpom aligned)',
             'signal_floor': 85 if tier == 'PRIME' else 72,
             'lenses_agreeing': side_votes[majority_side],
             'lenses_dissenting': side_votes['home' if majority_side == 'away' else 'away'],
+            '_ml_cap': {'from': tier, 'to': NCAAB_ML_TIER_CAP,
+                        'why': _ML_CAP_WHY},
         }
     # 1b. 3+/4 lens agreement AGAINST kenpom — still shippable via lens count,
     # but no KenPom-edge promotion (lens count alone drives tier)
     elif majority_count >= 3 and not kenpom_in_majority and fav_team and tier in ('STRONG',):
         primary_play = {
             'type': 'ml',
-            'tier': 'STRONG',
+            'tier': NCAAB_ML_TIER_CAP,
+            'side': ml_side,
             'label': f'{fav_team} ML',
             'sub': f'{majority_count}/4 lens agreement (kenpom dissents — {majority_count}-lens override)',
             'signal_floor': 70,
             'lenses_agreeing': side_votes[majority_side],
             'lenses_dissenting': side_votes['home' if majority_side == 'away' else 'away'],
+            '_ml_cap': {'from': 'STRONG', 'to': NCAAB_ML_TIER_CAP,
+                        'why': _ML_CAP_WHY},
         }
     # 2. STRONG total with 3+/3 lens agreement (Jerry doesn't vote totals)
     elif total_majority >= 3 and total_edge is not None and abs(total_edge) >= 3.5:
@@ -285,11 +344,14 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
     elif majority_count >= 2 and effective_edge >= 1.5 and fav_team and tier != 'PASS':
         primary_play = {
             'type': 'ml',
-            'tier': tier,
+            'tier': NCAAB_ML_TIER_CAP,
+            'side': ml_side,
             'label': f'{fav_team} ML lean',
             'sub': f'{majority_count}/4 lens lean, {effective_edge:.1f}pt edge',
             'signal_floor': 60,
             'lenses_agreeing': side_votes[majority_side],
+            '_ml_cap': {'from': tier, 'to': NCAAB_ML_TIER_CAP,
+                        'why': _ML_CAP_WHY},
         }
     # 4. LIGHT total
     elif total_majority >= 2 and total_edge is not None and abs(total_edge) >= 3.0 and tier != 'PASS':
