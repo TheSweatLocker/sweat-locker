@@ -95,7 +95,62 @@ HDR = {'apikey': KEY, 'Authorization': 'Bearer ' + KEY,
        'Content-Type': 'application/json'}
 #: NBA's first regular-season date. Earlier ctx rows are preseason and are
 #: deliberately left alone rather than filled.
-SEASON_OPEN = '2026-10-21'
+# ══ 2026-11-02 · GENERALISED TO NHL, AND PUT ON A SCHEDULE ═════════════
+# This started as a one-off recovery for 5 NBA games stranded by the
+# Clippers alias bug (see WHY above). It is now the thing that keeps the
+# morning card from composing blind, because the real gap is not historical.
+#
+# MEASURED 2026-11-02 05:00 ET. Every NBA context row for TODAY carried a
+# NULL close_spread and close_total -- all 15 of them -- while line_history
+# held 19,094 NBA quotes covering all 15 games, newest capture 10:26Z, and
+# 15 of 15 joined on game_id. The data was there and the column was empty.
+#
+# WHY: nba_game_context.py fills close_spread from a LIVE Odds API call at
+# run time (nba_game_context.py:208). So the lines can only appear when the
+# pipeline runs -- and that is far too late:
+#
+#   stage                                     lands (UTC)      ET
+#   daily_card composes + locks the card      09:18-11:41   04:18-06:41
+#   Sweat Card HARD LOCK                            --         12:00
+#   nba_pipeline fills NBA ctx + reads        16:53-17:52   11:53-12:52
+#   nhl_pipeline                              17:10-17:52   12:10-12:52
+#
+# Measured cron delay for those pipelines, 23 and 22 observed runs:
+# nba 0 12 * * * -> min 3.0h, median 4.9h, max 9.0h; nhl 5 12 * * * ->
+# min 3.3h, median 5.1h, max 9.1h. A single cron cannot be aimed through
+# that, which is why this runs OFTEN instead of early -- the same reasoning
+# as .github/workflows/the_fade.yml. Delay moves a schedule's phase, not
+# its frequency.
+#
+# So NBA market data lands roughly six hours after the card that should
+# carry it was already built and frozen. Andy, 11-01: "your nba picks have
+# been solid sio far when hand ucrated" -- hand-curated is the only way an
+# NBA play has been able to reach a card at all.
+#
+# It fills NULLS ONLY (the `never overwrite something already stored` line
+# below), so it cannot fight the pipeline: whichever runs first wins and the
+# other is a no-op. line_history is polled continuously and costs no Odds
+# API quota.
+SPORTS = {
+    'NBA': {'table': 'nba_game_context', 'kickoff': 'commence_time_utc',
+            # the 10-21 opener. Earlier rows are PRESEASON and books barely
+            # line them -- 60 of 65 historical NULLs were preseason and are
+            # not a defect (project_situational_records_include_preseason_playoffs_1022).
+            'season_open': '2026-10-21'},
+    'NHL': {'table': 'nhl_game_context', 'kickoff': 'commence_time',
+            'season_open': '2026-10-07',
+            # nhl_game_context has NO close_spread_home_price /
+            # close_spread_away_price. Naming them in an explicit select
+            # returns 42703 and the read comes back EMPTY, which reads as
+            # "no rows to fill" rather than as an error
+            # (feedback_explicit_select_silent_blanks -- third time in two
+            # days). So the optional columns are declared per sport and the
+            # select is built from what the table has.
+            'no_cols': ('close_spread_home_price',
+                        'close_spread_away_price')},
+}
+
+SEASON_OPEN = '2026-10-21'          # rebound per --sport in main()
 #: ET calendar day. A UTC "today" is tomorrow in ET for 4-5 hours a night
 #: (feedback_window_from_runner_clock_is_a_day_ahead).
 TODAY = (dt.datetime.now(dt.timezone.utc)
@@ -174,34 +229,42 @@ def _consensus(quotes, side):
     return line, int(round(statistics.median(prices))), len(qs), len(at)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--apply', action='store_true')
-    a = ap.parse_args()
+def run_sport(sport: str, a) -> int:
+    """Fill one sport's context close lines. Returns 0 on success."""
+    CFG = SPORTS[sport]
+    season_open = CFG['season_open']
     print('=' * 94)
-    print('FILL nba_game_context CLOSE LINES FROM line_history  (%s)'
-          % ('APPLY' if a.apply else 'DRY RUN'))
+    print('FILL %s CLOSE LINES FROM line_history  (%s)'
+          % (CFG['table'], 'APPLY' if a.apply else 'DRY RUN'))
     print('=' * 94)
 
-    ctx = paged('nba_game_context',
-                'game_id,game_date,home_team,away_team,close_spread,'
-                'close_total,home_ml_close,away_ml_close,'
-                'close_spread_home_price,close_spread_away_price,'
-                'close_total_over_price,close_total_under_price',
+    _cols = ['game_id', 'game_date', 'home_team', 'away_team',
+             'close_spread', 'close_total', 'home_ml_close', 'away_ml_close',
+             'close_spread_home_price', 'close_spread_away_price',
+             'close_total_over_price', 'close_total_under_price']
+    _absent = set(CFG.get('no_cols') or ())
+    ctx = paged(CFG['table'],
+                ','.join(c for c in _cols if c not in _absent),
                 'game_date.asc')
+    if not ctx:
+        # 0 rows here is a WIRING ERROR, not an empty slate
+        # (feedback_zero_rows_is_a_wiring_error).
+        print('  !! read 0 rows from %s — treating as a FAILURE, not as '
+              '"nothing to do"' % CFG['table'])
+        return 1
     pre = [c for c in ctx if c.get('close_spread') is None
-           and str(c['game_date'])[:10] < SEASON_OPEN]
+           and str(c['game_date'])[:10] < season_open]
     # A game that has not been played yet has no CLOSING line, by definition.
     # ctx carries the forward schedule, so the first version of this counted
     # 24 "targets" when only 5 were real and the rest simply had not closed.
     future = [c for c in ctx if c.get('close_spread') is None
               and str(c['game_date'])[:10] > TODAY]
     targets = [c for c in ctx if c.get('close_spread') is None
-               and SEASON_OPEN <= str(c['game_date'])[:10] <= TODAY]
+               and season_open <= str(c['game_date'])[:10] <= TODAY]
     print('  ctx rows: %d   missing close_spread: %d'
           % (len(ctx), len(pre) + len(targets) + len(future)))
     print('  of those, PRESEASON (before %s): %d - left alone by design'
-          % (SEASON_OPEN, len(pre)))
+          % (season_open, len(pre)))
     print('  of those, NOT YET PLAYED (after %s): %d - nothing has closed'
           % (TODAY, len(future)))
     print('  regular-season played targets: %d' % len(targets))
@@ -223,9 +286,23 @@ def main():
         for _aw in [aw] + MATCHUP_ALIASES.get(str(aw), []):
             for _hm in [hm] + MATCHUP_ALIASES.get(str(hm), []):
                 cands.append('%s @ %s' % (_aw, _hm))
+        # 2026-11-02: GAME_ID FIRST. The matchup join below was written for
+        # games whose id had been MINTED wrong, where the id joins to
+        # nothing. That is the historical case. For a current slate the id
+        # is the reliable key -- measured today, 15 of 15 NBA context rows
+        # for 11-02 join line_history on game_id -- and it cannot be fooled
+        # by two feeds spelling a team differently, which is what the alias
+        # table below exists to paper over.
+        rows, st = req('GET', 'line_history',
+                       {'select': _sel, 'sport': 'eq.%s' % sport,
+                        'game_id': 'eq.%s' % c.get('game_id'),
+                        'order': 'captured_at.desc', 'limit': '400'})
+        if isinstance(rows, list) and rows:
+            by_match[key] += rows
+            continue
         for cand in cands:
             rows, st = req('GET', 'line_history',
-                           {'select': _sel, 'sport': 'eq.NBA',
+                           {'select': _sel, 'sport': 'eq.%s' % sport,
                             'matchup': 'eq.%s' % cand,
                             'order': 'captured_at.desc', 'limit': '400'})
             if not isinstance(rows, list):
@@ -264,8 +341,27 @@ def main():
         hl, hp, nb, nat = _consensus(sp, 'home')
         _al, awp, _nb2, _n2 = _consensus(sp, 'away')
         if hl is not None:
-            # home-perspective, negative when home is favoured
-            fill['close_spread'] = hl if hl < 0 else -hl
+            # ══ 2026-11-02 · THIS WAS `hl if hl < 0 else -hl` ═══════════
+            # i.e. -abs(hl), which forces the spread NEGATIVE on every
+            # game. The comment it carried -- "negative when home is
+            # favoured" -- is a description of the CONVENTION, and it was
+            # implemented as if it were a rule that the number is always
+            # negative. A home DOG at +5.5 was therefore stored as -5.5:
+            # the right magnitude attached to the wrong team.
+            #
+            # Caught the same hour it was applied, by cross-checking the
+            # stored spread against the moneyline favourite: 3 of 15 NBA
+            # games for 11-02 said home favoured by the spread and home
+            # DOG by the price (TOR @ LAC, DET @ CHA, ATL @ IND -- all
+            # three home dogs). A magnitude cannot express a side
+            # (feedback_magnitude_cannot_express_a_side).
+            #
+            # The convention, measured on 89 games where the pipeline had
+            # already populated the column: ctx close_spread == the
+            # HOME-SIDE line exactly as line_history posts it, 45 exact
+            # against 2 for the negation, the rest line movement. NHL is
+            # the same, 13 of 14. So it is stored as posted, signed.
+            fill['close_spread'] = hl
             if hp is not None:
                 fill['close_spread_home_price'] = hp
             if awp is not None:
@@ -295,6 +391,28 @@ def main():
         if hml is not None or aml is not None:
             print('     ml    : %d book(s) -> home %s / away %s'
                   % (nb, hml, aml))
+        # ══ 2026-11-02 · THE SPREAD AND THE PRICE MUST NAME THE SAME
+        # FAVOURITE. The -abs() bug above was invisible in this script's own
+        # output -- every line printed looked like a plausible spread. What
+        # exposed it was asking a SECOND source the same question: the
+        # moneyline. A row where the spread says the home team is favoured
+        # and the price says it is the dog is internally contradictory and
+        # must not be written, whatever produced it.
+        _cs = fill.get('close_spread')
+        _mh = fill.get('home_ml_close')
+        _ma = fill.get('away_ml_close')
+        if _cs is not None and _mh is not None and _ma is not None:
+            if (float(_cs) < 0) != (float(_mh) < float(_ma)):
+                print('     !! REFUSED: spread %+g says home %s but the '
+                      'moneyline (%s / %s) says home %s -- not writing a '
+                      'self-contradictory row'
+                      % (_cs, 'favoured' if float(_cs) < 0 else 'dog',
+                         _mh, _ma,
+                         'favoured' if float(_mh) < float(_ma) else 'dog'))
+                continue
+
+        # a column this table does not have would 400 the whole PATCH
+        fill = {k: v for k, v in fill.items() if k not in _absent}
         # never overwrite something already stored
         fill = {k: v for k, v in fill.items() if c.get(k) is None}
         if not fill:
@@ -312,7 +430,7 @@ def main():
 
     ok = fail = 0
     for gid, fill in plans:
-        _x, st = req('PATCH', 'nba_game_context',
+        _x, st = req('PATCH', CFG['table'],
                      {'game_id': 'eq.%s' % gid}, fill,
                      {'Prefer': 'return=minimal'})
         if st in (200, 204):
@@ -324,9 +442,9 @@ def main():
     print('  patched %d, failed %d' % (ok, fail))
 
     # A 204 is not a write - read the values back.
-    back = paged('nba_game_context',
+    back = paged(CFG['table'],
                  'game_id,game_date,close_spread,close_total',
-                 'game_date.asc', game_date='gte.%s' % SEASON_OPEN)
+                 'game_date.asc', game_date='gte.%s' % season_open)
     still = [b for b in back if b.get('close_spread') is None]
     print('  regular-season ctx rows still missing close_spread: %d of %d'
           % (len(still), len(back)))
@@ -334,6 +452,20 @@ def main():
         print('     %s %s' % (str(b['game_date'])[:10], b['game_id']))
     return 0
 
+
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--sport', default='ALL',
+                    choices=sorted(SPORTS) + ['ALL'])
+    a = ap.parse_args()
+    sports = sorted(SPORTS) if a.sport == 'ALL' else [a.sport]
+    rc = 0
+    for sp in sports:
+        rc |= run_sport(sp, a)
+    return rc
 
 if __name__ == '__main__':
     sys.exit(main())

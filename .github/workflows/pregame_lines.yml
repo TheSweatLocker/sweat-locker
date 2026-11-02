@@ -1,0 +1,121 @@
+# Pre-game market lines for NBA and NHL, from line_history.
+#
+# ══ 2026-11-02 · WHY THIS EXISTS ════════════════════════════════════════
+# ANDY: "Thne theer is issue with NBA as well" ... and, on hand-picking NBA
+# the day before, "your nba picks have been solid sio far when hand ucrated".
+# Hand-curated has been the ONLY way an NBA play could reach a card.
+#
+# Measured 2026-11-02 at 05:00 ET: every one of the 15 NBA context rows for
+# the day carried a NULL close_spread AND a NULL close_total, while
+# line_history already held 19,094 NBA quotes covering all 15 games, newest
+# capture 10:26Z, 15 of 15 joining on game_id. The data existed and the
+# column the engine reads was empty.
+#
+# nba_game_context.py fills close_spread from a LIVE Odds API call at run
+# time, so the lines can only appear when the NBA pipeline runs. That is far
+# too late to matter:
+#
+#   stage                                     lands (UTC)      ET
+#   daily_card composes + locks the card      09:18-11:41   04:18-06:41
+#   Sweat Card HARD LOCK                            --         12:00
+#   nba_pipeline fills NBA ctx + reads        16:53-17:52   11:53-12:52
+#   nhl_pipeline                              17:10-17:52   12:10-12:52
+#
+# NBA market data therefore lands about six hours after the card that should
+# have carried it was built, and after the noon hard lock. The engine is not
+# declining to pick NBA; it is being asked before it can know anything.
+#
+# ══ FREQUENCY, NOT TIMING ═══════════════════════════════════════════════
+# Measured cron delay for those two pipelines, from this repo's own
+# workflow_heartbeat (23 and 22 observed runs):
+#
+#   nba_pipeline  0 12 * * *   min 3.0h   median 4.9h   max 9.0h
+#   nhl_pipeline  5 12 * * *   min 3.3h   median 5.1h   max 9.1h
+#
+# A 3-to-9 hour spread cannot be aimed with one well-chosen cron, so this
+# runs every two hours and lets whichever run lands before the card do the
+# work. Same reasoning as the_fade.yml: delay moves a schedule's phase, not
+# its frequency. The script costs seconds, reads no Odds API quota, and
+# fills NULLS ONLY -- so whichever of this and the pipeline runs first wins
+# and the other is a no-op. It cannot fight the authoritative writer.
+#
+# NHL is included for redundancy rather than need: NHL fills its own
+# same-day lines correctly today (0 of 125 rows missing since 10-21), so
+# this is cover for the day its pipeline lands at the far end of that 9-hour
+# tail.
+
+name: Pre-game lines (NBA + NHL)
+
+on:
+  schedule:
+    # Every two hours, offset from the_fade.yml so the two do not queue
+    # against each other.
+    - cron: '35 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: pregame-lines
+  cancel-in-progress: false
+
+jobs:
+  lines:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv python-dateutil pytz
+
+      - name: Heartbeat — start
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"pregame_lines\",\"event\":\"start\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\"}" || true
+
+      - name: Fill NBA + NHL context close lines
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "fill_ctx_close_from_line_history.py" \
+            python fill_ctx_close_from_line_history.py --sport ALL --apply
+
+      - name: Heartbeat — end
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat" \
+               -H "apikey: $SUPABASE_KEY" \
+               -H "Authorization: Bearer $SUPABASE_KEY" \
+               -H "Content-Type: application/json" \
+               -H "Prefer: return=minimal" \
+               -d "{\"workflow\":\"pregame_lines\",\"event\":\"end\",\"sport\":\"MULTI\",\"run_id\":\"${{ github.run_id }}\"}" || true
+
+      - name: Gate — fail the run if the step failed
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --gate
