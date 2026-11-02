@@ -42,6 +42,8 @@ ODDS_SPORT = 'basketball_ncaab'
 # season and the 2026-27 opener is 2026-11-03, so every NCAAB card
 # would have launched on 2025-26 final ratings. See ncaab_season.py.
 from ncaab_season import season_label  # noqa: E402
+from posted_line import posted_consensus as _posted_consensus  # noqa: E402
+from posted_line import posted_price as _posted_price  # noqa: E402
 SEASON = season_label()
 
 
@@ -94,7 +96,21 @@ def fetch_odds_api() -> tuple[list, int]:
 
 
 def _consensus_spread(event: dict, home_raw: str) -> Optional[float]:
-    """Average home spread across books (Odds API convention: home spread as-is)."""
+    """The home spread the MOST books posted (Odds API convention: as-is).
+
+    ══ 2026-11-02 · AVERAGED, SO IT RETURNED UNPOSTABLE NUMBERS ══════════
+    Was `round(sum(vals) / len(vals), 2)`. The .2 rounding is the tell: a
+    spread is never a hundredth of a point, so the only thing two decimals
+    can express is an average. Measured on the columns these three
+    functions feed, NCAAB close_spread held 33 of 75 values that are not a
+    multiple of 0.5 (-34.9, -33.75, -31.25) and close_total 46 of 75
+    (133.1, 133.9, 135.7), against 0 of ~316 in NFL and 0 of ~114 in NBA.
+
+    This writer and ncaab_game_context._avg_market_line both populate those
+    columns and both averaged. Fixing one and leaving the other is
+    feedback_fix_every_writer_to_the_table, so both move in this commit.
+    See posted_line.py for the measurement table and the tie-break rules.
+    """
     vals = []
     for book in event.get('bookmakers', []):
         for m in book.get('markets', []):
@@ -103,10 +119,11 @@ def _consensus_spread(event: dict, home_raw: str) -> Optional[float]:
                 if o.get('name') == home_raw:
                     pt = _f(o.get('point'))
                     if pt is not None: vals.append(pt)
-    return round(sum(vals) / len(vals), 2) if vals else None
+    return _posted_consensus(vals)
 
 
 def _consensus_total(event: dict) -> Optional[float]:
+    """The total the MOST books posted. See _consensus_spread for why."""
     vals = []
     for book in event.get('bookmakers', []):
         for m in book.get('markets', []):
@@ -115,10 +132,15 @@ def _consensus_total(event: dict) -> Optional[float]:
                 if o.get('name') == 'Over':
                     pt = _f(o.get('point'))
                     if pt is not None: vals.append(pt)
-    return round(sum(vals) / len(vals), 1) if vals else None
+    return _posted_consensus(vals)
 
 
 def _consensus_ml(event: dict, team_raw: str) -> Optional[int]:
+    """An actually-quoted price, not the mean of the quotes.
+
+    A mean price is a price no book showed, and every ROI figure computed
+    from it inherits that (feedback_flat_110_inflates_every_ml_figure).
+    """
     vals = []
     for book in event.get('bookmakers', []):
         for m in book.get('markets', []):
@@ -126,7 +148,7 @@ def _consensus_ml(event: dict, team_raw: str) -> Optional[int]:
             for o in m.get('outcomes', []):
                 if o.get('name') == team_raw and o.get('price') is not None:
                     vals.append(int(o['price']))
-    return int(sum(vals) / len(vals)) if vals else None
+    return _posted_price(vals)
 
 
 def event_to_row(event: dict, aliases: dict) -> Optional[dict]:

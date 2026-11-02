@@ -148,6 +148,39 @@ SPORTS = {
             # select is built from what the table has.
             'no_cols': ('close_spread_home_price',
                         'close_spread_away_price')},
+    # ══ 2026-11-02 · NCAAB JOINS ON (DATE + RESOLVED TEAMS) ═══════════════
+    # Its ids CANNOT join. line_history mints a composed string
+    # ('ncaab_20261103_Milwaukee_USC'); ncaab_game_context stores an
+    # md5-style hash ('aba48d8d67ce2a195effdea02236b8f0'). Nothing bridges
+    # those but the teams and the day.
+    #
+    # On 11-02 I wrote that bridging them "needs a team-name alias layer"
+    # and that building one by guess was the risk. The layer already
+    # existed: ncaab_team_aliases, 365 rows, 361 with odds_api_name AND
+    # espn_id, built deliberately as "a PERMANENT lookup table -- not
+    # runtime fuzzy matching". ncaab_team_resolver reads it and now covers
+    # 244 of 244 ctx names and 150 of 150 line_history names.
+    #
+    # The join was still dead for a second reason, which was the real one:
+    # ncaab_game_context filed every row under the JOB RUN DATE
+    # (today_et()), so 136 of 138 rows sat on the wrong day. Measured over
+    # the 78 distinct NCAAB games line_history holds:
+    #       before the date repair   1 of 78 matched a ctx row
+    #       after                   75 of 78
+    # The 3 misses are two games ctx does not carry and one where the feeds
+    # disagree on the tip date. Neither is a name failure.
+    'NCAAB': {'table': 'ncaab_game_context', 'kickoff': 'game_time_et',
+              # 2026-27 opens 11-01. There is no NCAAB preseason to exclude.
+              'season_open': '2026-11-01',
+              # This table has NONE of the four price columns. Naming one in
+              # an explicit select returns 42703 and the read comes back
+              # EMPTY, which reads as "no rows to fill"
+              # (feedback_explicit_select_silent_blanks).
+              'no_cols': ('close_spread_home_price',
+                          'close_spread_away_price',
+                          'close_total_over_price',
+                          'close_total_under_price'),
+              'join': 'alias'},
 }
 
 SEASON_OPEN = '2026-10-21'          # rebound per --sport in main()
@@ -279,6 +312,50 @@ def run_sport(sport: str, a) -> int:
     by_match = collections.defaultdict(list)
     _sel = ('game_id,matchup,commence_time,market,side,line,price,book,'
             'captured_at')
+
+    # ── alias-join sports (NCAAB) ────────────────────────────────────────
+    # One bulk read indexed by (ET play date, canonical home, canonical
+    # away), because neither the id nor the raw matchup string can be
+    # matched for this sport. Built once per run, not per game.
+    _alias_idx = {}
+    if CFG.get('join') == 'alias':
+        try:
+            from ncaab_team_resolver import resolve, resolve_matchup
+            from sweat_dates import et_date_of
+        except ImportError as _e:
+            print('  !! ncaab_team_resolver unavailable (%s) — cannot join '
+                  'this sport by name. Failing rather than reporting an '
+                  'empty slate.' % _e)
+            return 1
+        # PAGED, not one big limit. A plain limit=100000 comes back as
+        # exactly 1000 rows -- PostgREST caps the page server-side -- and
+        # the first cut of this indexed 41 of the 78 games from that
+        # truncated read, then reported "quotes found: 0" as though the
+        # board were empty (feedback_never_measure_from_truncated_output).
+        _lh = paged('line_history', _sel, 'captured_at.desc',
+                    sport='eq.%s' % sport,
+                    commence_time='gte.%sT00:00:00Z' % season_open)
+        if not isinstance(_lh, list):
+            print('  !! line_history bulk read failed')
+            return 1
+        if not _lh:
+            print('  !! line_history returned 0 %s quotes since %s — WIRING '
+                  'ERROR, not an empty board.' % (sport, season_open))
+            return 1
+        _unres = 0
+        for _q in _lh:
+            _a, _h = resolve_matchup(_q.get('matchup'))
+            if not _a or not _h:
+                _unres += 1
+                continue
+            _d = et_date_of(_q.get('commence_time'))
+            if not _d:
+                continue
+            _alias_idx.setdefault((_d, _h, _a), []).append(_q)
+        print('  [alias join] %d quotes -> %d games indexed by (date, home, '
+              'away); %d quotes whose teams did not resolve'
+              % (len(_lh), len(_alias_idx), _unres))
+
     for c in targets:
         aw, hm = c.get('away_team'), c.get('home_team')
         key = ('%s @ %s' % (aw, hm)).strip().lower()
@@ -286,6 +363,24 @@ def run_sport(sport: str, a) -> int:
         for _aw in [aw] + MATCHUP_ALIASES.get(str(aw), []):
             for _hm in [hm] + MATCHUP_ALIASES.get(str(hm), []):
                 cands.append('%s @ %s' % (_aw, _hm))
+        if CFG.get('join') == 'alias':
+            # The ctx names go through the SAME resolver as the feed names,
+            # so a ctx row spelled 'Georgia St Panthers' and a quote spelled
+            # 'Georgia State Panthers' land on one key. A name that does not
+            # resolve is SKIPPED, never guessed: a wrong team is a wrong
+            # game, and a wrong game is a wrong line on a published pick.
+            _ch, _ca = resolve(hm), resolve(aw)
+            if not _ch or not _ca:
+                print('  %s  %s @ %s — team name does not resolve against '
+                      'ncaab_team_aliases (home=%r away=%r). Skipped; add '
+                      'the spelling to alt_names on the canonical row.'
+                      % (str(c['game_date'])[:10], aw, hm, _ch, _ca))
+                continue
+            _hit = _alias_idx.get((str(c['game_date'])[:10], _ch, _ca))
+            if _hit:
+                by_match[key] += _hit
+            continue
+
         # 2026-11-02: GAME_ID FIRST. The matchup join below was written for
         # games whose id had been MINTED wrong, where the id joins to
         # nothing. That is the historical case. For a current slate the id

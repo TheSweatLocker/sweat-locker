@@ -102,6 +102,72 @@ def _banned(sport, market) -> Optional[str]:
 LINE_HALF_POINT_MARKETS = ('spread', 'rl', 'total', 'puckline', 'pl')
 
 
+# ══ 2026-11-02 · WHAT A RECEIPT PATCH CANNOT CHANGE ═══════════════════════
+# A PATCH of a frozen column returns **HTTP 200 having changed nothing**, so
+# a repair script reports success and writes no repair. That is
+# feedback_fix_the_cache_not_the_frozen_receipt, and I walked into it again
+# today trying to re-file 44 mis-dated NCAAB receipts onto their real play
+# date: 44 of 44 came back 200 with the old date.
+#
+# The authority is freeze_receipt_identity in
+# 20260918a_public_receipts.sql ("identity fields FROZEN after insert; only
+# result / actual_value / graded_at may change"), amended by
+# 20260918b_receipt_enrichment_allow.sql.
+#
+# `audit` is the trap inside the trap. 20260918b freezes it only once it is
+# non-NULL:
+#       IF OLD.audit IS NOT NULL THEN NEW.audit := OLD.audit;
+# so the FIRST write lands and every correction after it is silently
+# dropped. My re-file wrote `refiled_at` into 44 previously-NULL audit blobs
+# while the date itself did not move, and those stamps can no longer be
+# removed or corrected. They are internal provenance only (nothing in app/
+# reads public_receipts), but they now describe a change that did not
+# happen, which is exactly the defect in
+# feedback_comment_asserting_a_measurement.
+#
+# So: check here BEFORE patching, and if a receipt genuinely must be
+# re-issued, use void+replace
+# (20261025a_receipt_void_allows_replacement.sql) — a decision about a
+# published record, not a clerical repair.
+FROZEN_RECEIPT_COLS = frozenset({
+    'sport', 'surface', 'market', 'game_date', 'published_at', 'player_name',
+    'prop_type', 'pick_side', 'pick_line', 'pick_odds',
+})
+#: Writable exactly once, then frozen. Treat a non-NULL value as final.
+WRITE_ONCE_RECEIPT_COLS = frozenset({'audit'})
+#: The only columns a grade is allowed to move.
+MUTABLE_RECEIPT_COLS = frozenset({'result', 'actual_value', 'graded_at'})
+
+
+def check_receipt_patch(body: dict, existing: Optional[dict] = None
+                        ) -> list[str]:
+    """Reasons `body` would not take as a PATCH on public_receipts.
+
+    Empty list means every key is writable. Pass `existing` (the row as
+    stored) so the write-once columns can be judged — without it, a
+    write-once column is only reported as needing that check, because
+    whether it lands depends on the stored value rather than the payload.
+
+    Call this instead of discovering the freeze from a 200 that changed
+    nothing.
+    """
+    out: list[str] = []
+    for k in sorted(body):
+        if k in FROZEN_RECEIPT_COLS:
+            out.append(f'{k}: frozen by freeze_receipt_identity — a PATCH '
+                       f'returns 200 and changes nothing. Use void+replace '
+                       f'if the row must be re-issued.')
+        elif k in WRITE_ONCE_RECEIPT_COLS:
+            if existing is None:
+                out.append(f'{k}: write-once (frozen once non-NULL). Pass '
+                           f'the stored row to check whether it is already '
+                           f'set.')
+            elif existing.get(k) is not None:
+                out.append(f'{k}: already set, so this write is silently '
+                           f'dropped. Its first value is final.')
+    return out
+
+
 def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     """-> (severity, reason). severity is 'REFUSE', 'WARN' or None."""
     market = str(row.get('market') or '').lower()
@@ -439,5 +505,31 @@ if __name__ == '__main__':
             ok = False
         print(f'  {flag} [{surf}] {row.get("pick_label")!r} -> {got} '
               f'(wanted {want}){"  " + str(why) if why else ""}')
+
+    # ── check_receipt_patch ───────────────────────────────────────────────
+    # The case that matters is the one that cost 44 rows today: game_date
+    # looks like an ordinary column and is not one.
+    print('\ncheck_receipt_patch:')
+    patch_cases = [
+        # (body, existing, expect_blocked_keys)
+        ({'game_date': '2026-11-02'}, None, ['game_date']),
+        ({'result': 'WIN', 'graded_at': 'now'}, None, []),
+        ({'audit': {'x': 1}}, {'audit': None}, []),
+        ({'audit': {'x': 1}}, {'audit': {'already': True}}, ['audit']),
+        ({'audit': {'x': 1}}, None, ['audit']),
+        ({'pick_odds': -120, 'result': 'LOSS'}, None, ['pick_odds']),
+        ({'game_date': '2026-11-02', 'audit': {}}, {'audit': {'a': 1}},
+         ['audit', 'game_date']),
+    ]
+    for body, existing, want_keys in patch_cases:
+        reasons = check_receipt_patch(body, existing)
+        got_keys = sorted(r.split(':')[0] for r in reasons)
+        good = got_keys == sorted(want_keys)
+        if not good:
+            ok = False
+        print(f'  {"ok  " if good else "FAIL"} {sorted(body)} '
+              f'existing={existing} -> blocked {got_keys} '
+              f'(wanted {sorted(want_keys)})')
+
     print('\nself-test', 'PASSED' if ok else 'FAILED')
     raise SystemExit(0 if ok else 1)

@@ -49,6 +49,9 @@ WRITE_HEADERS = {**READ_HEADERS, "Content-Type": "application/json",
 # season and the 2026-27 opener is 2026-11-03, so every NCAAB card
 # would have launched on 2025-26 final ratings. See ncaab_season.py.
 from ncaab_season import season_label  # noqa: E402
+from sweat_dates import et_date_of  # noqa: E402
+from posted_line import posted_consensus as _posted_consensus  # noqa: E402
+from posted_line import posted_price as _posted_price  # noqa: E402
 SEASON = season_label()
 ODDS_SPORT_KEY = "basketball_ncaab"
 
@@ -140,7 +143,44 @@ def canonical_team(odds_name, alias_map):
 # ─── model: projections + confluence + sweat score ─────────────────────────
 
 def _avg_market_line(bookmakers, market_key, outcome_filter=None):
-    """Average a numeric market line across books (spread, total)."""
+    """The market line the MOST books posted (spread, total), or None.
+
+    ══ 2026-11-02 · THIS AVERAGED, AND AN AVERAGE IS NOT A LINE ══════════
+    It was `sum(vals) / len(vals)`. Average 157.5 and 158.0 across six books
+    and you store 157.8333, which no book posted -- so a read taken from
+    this column records a bet nobody could place.
+
+    That is where the receipts voided on 11-02 came from:
+
+        Under 157.83333333333334
+        Under 154.16666666666666
+        Under 149.25
+
+    I attributed those to projected_total in the commit that voided them.
+    The measurement says this column is enough on its own. Asked of every
+    context table, "is the stored market number a multiple of 0.5":
+
+        NFL     all four columns   ~316 rows      0 violations
+        NBA     all four columns   ~114 rows      0
+        NHL     open_total          230           4
+        NCAAF   close_total         718           9
+        NCAAB   close_spread         75          33
+        NCAAB   close_total          75          46   <-- 61%
+
+    NCAAB was the outlier because NCAAB was the sport that averaged.
+
+    posted_line.posted_consensus takes the MODE instead -- the line the most
+    books posted -- breaking ties toward the median and then toward the
+    smaller magnitude, so the result is always a value that appears in the
+    quotes. It does not round a genuine quarter-point board; the job is to
+    stop inventing numbers, not to impose a convention on a real one.
+    (feedback_consensus_line_must_be_posted,
+     project_jerry_published_fake_lines_1019)
+
+    ncaab_odds_pull.py writes these same columns and had the same bug; it is
+    fixed in the same commit, because fixing one writer and leaving the
+    other is feedback_fix_every_writer_to_the_table.
+    """
     vals = []
     for bm in bookmakers or []:
         for mkt in bm.get("markets", []):
@@ -152,11 +192,18 @@ def _avg_market_line(bookmakers, market_key, outcome_filter=None):
                 pt = o.get("point")
                 if pt is not None:
                     vals.append(float(pt))
-    return sum(vals) / len(vals) if vals else None
+    return _posted_consensus(vals)
 
 
 def _avg_ml(bookmakers, team_name):
-    """Average ML price for a team."""
+    """The ML price to store for a team: an actually-quoted one, or None.
+
+    Was `int(sum(vals) / len(vals))`. A mean price is less obviously fake
+    than a mean LINE because prices move continuously, but it is still a
+    price no book showed, and every ROI figure computed from it inherits
+    that (feedback_flat_110_inflates_every_ml_figure). posted_price takes
+    the quoted price nearest the median.
+    """
     vals = []
     for bm in bookmakers or []:
         for mkt in bm.get("markets", []):
@@ -165,7 +212,7 @@ def _avg_ml(bookmakers, team_name):
             for o in mkt.get("outcomes", []):
                 if o.get("name") == team_name and o.get("price") is not None:
                     vals.append(int(o["price"]))
-    return int(sum(vals) / len(vals)) if vals else None
+    return _posted_price(vals)
 
 
 def compute_projections(home, away):
@@ -477,6 +524,50 @@ def build_context_row(event, team_stats, alias_map):
     if not away_raw or not home_raw:
         return None
 
+    # ══ 2026-11-02 · game_date WAS THE RUN DATE, NOT THE GAME DATE ════════
+    # This row used `"game_date": today_et()`. The Odds API /odds endpoint
+    # returns every UPCOMING event, not today's slate, so every game it
+    # knows about was filed under the day the job happened to run.
+    #
+    # MEASURED, the whole table (_ncaab_datebug.py):
+    #   138 rows, ALL stamped game_date = 2026-11-01
+    #   136 of 138 disagree with their own game_time_et
+    #   real tip dates span 2026-11-01 .. 2027-03-06
+    #   e.g. Duke @ Florida tips 2026-12-01 and was filed as 11-01
+    #
+    # Three things broke downstream, and I had mis-diagnosed all three:
+    #
+    #  * The line fill could not join. line_history NCAAB holds 78 distinct
+    #    games over 11-01/11-02; joining on (ET date, resolved teams) matched
+    #    1. Not a name problem — the alias resolver returns 0 unresolved on
+    #    both sides. The DATES simply never lined up. On 11-02 I wrote that
+    #    bridging the keys "needs a team-name alias layer" and that building
+    #    one by guess was the risk. ncaab_team_aliases already IS that layer
+    #    (365 rows, 361 with odds_api_name AND espn_id) and it resolves
+    #    98.8% of ctx names / 100% of line_history names as-is.
+    #
+    #  * "close_spread NULL on 46% of rows" was not a scrape failure. Most of
+    #    those rows are games weeks or months away that have no close yet.
+    #    I reported it as a gap in the data; it was a gap in the DATE.
+    #
+    #  * Anything asking for "today's NCAAB slate" by game_date got 119 games
+    #    plus a scattering out to March 2027.
+    #
+    # Same family as project_align_status_daily_default_1029 (a daily default
+    # on a weekly sport) and the three cases in sweat_dates' own docstring.
+    # The fix is the one that already exists: et_date_of, which is now
+    # zoneinfo-backed because two NCAAB games tip at 04:59 UTC and the -4
+    # constant put them on the wrong day.
+    #
+    # No date -> no row. A wrong date is worse than a missing one, because a
+    # missing one announces itself and this one did not for months.
+    game_date = et_date_of(event.get("commence_time"))
+    if not game_date:
+        print(f'  ⚠ skipped {away_raw} @ {home_raw}: commence_time '
+              f'{event.get("commence_time")!r} is unparseable, so there is no '
+              f'play date. Not guessing one.')
+        return None
+
     away_canonical = canonical_team(away_raw, alias_map)
     home_canonical = canonical_team(home_raw, alias_map)
 
@@ -508,7 +599,7 @@ def build_context_row(event, team_stats, alias_map):
 
     row = {
         "game_id": event.get("id"),
-        "game_date": today_et(),
+        "game_date": game_date,
         "season": SEASON,
         "home_team": home_canonical,
         "away_team": away_canonical,
@@ -662,9 +753,13 @@ def upsert_context(rows):
 def run():
     print(f"NCAAB game context — {today_et()}")
     events = fetch_odds_games()
-    print(f"  {len(events)} games from Odds API")
+    # The /odds endpoint returns UPCOMING events, not a single slate — which
+    # is exactly why game_date must come from commence_time (see
+    # build_context_row). Saying "today" here is what made the old behaviour
+    # look intentional.
+    print(f"  {len(events)} upcoming games from Odds API")
     if not events:
-        print("  (offseason or no games today — nothing to write)")
+        print("  (offseason or no upcoming games — nothing to write)")
         return
     team_stats = fetch_team_stats()
     print(f"  {len(team_stats)} teams loaded from ncaab_team_stats")

@@ -91,6 +91,30 @@ def et_date_of(ts: Optional[str]) -> str:
     Z. Returns '' for anything unparseable rather than guessing a date —
     a wrong date is worse than a missing one, because a missing one
     announces itself downstream.
+
+    ══ 2026-11-02 · THE -4 CONSTANT WAS WRONG FOR ONE SPORT ═══════════════
+    The module docstring argued the -4 constant was safe for a GAME time
+    because "a one-hour error cannot move a game across midnight unless it
+    kicks between 11pm and midnight ET — which no slate does."
+
+    NCAAB does. Measured across every context table, 1,688 games
+    (_et_offset_impact.py):
+
+        nfl_game_context      316 games   0 dates change
+        ncaaf_game_context    719 games   0
+        nba_game_context      188 games   0
+        nhl_game_context      327 games   0
+        ncaab_game_context    138 games   2   <-- both tip 04:59 UTC
+
+    04:59 UTC is 00:59 under -4 (so the UTC date) and 23:59 the PREVIOUS
+    day under EST. Two NCAAB games were therefore being assigned tomorrow's
+    date. Small, but it is the same class of defect as the three in the
+    module docstring, and it lands on a sport whose game_date is being
+    repaired today for an unrelated reason.
+
+    So this now matches et_now(): zoneinfo, with the constant kept only as
+    the no-tzdata fallback. The constant stays exported because the
+    game-date helpers above were measured against it.
     """
     if not ts:
         return ''
@@ -102,8 +126,12 @@ def et_date_of(ts: Optional[str]) -> str:
         return s[:10] if len(s) >= 10 and s[4] == '-' else ''
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
-    return (dt.astimezone(_dt.timezone.utc)
-            - _dt.timedelta(hours=ET_OFFSET_HOURS)).strftime('%Y-%m-%d')
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+    except Exception:
+        return (dt.astimezone(_dt.timezone.utc)
+                - _dt.timedelta(hours=ET_OFFSET_HOURS)).strftime('%Y-%m-%d')
 
 
 def et_days_ago(n: int) -> str:
