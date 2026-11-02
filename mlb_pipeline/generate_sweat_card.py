@@ -110,6 +110,58 @@ CARD_INELIGIBLE_MARKETS = {('NHL', 'rl')}
 CARD_ML_JUICE_MAX = -300
 
 
+def _prop_side_odds(prop):
+    """The posted price for the SIDE this prop pick takes, or None.
+
+    == 2026-11-02 - NO PROP ON THE SWEAT CARD HAS EVER CARRIED A PRICE ==
+    _build_prop_pick never set an "odds" key. Every prop pick the card has
+    published went out priceless, for every sport including MLB, and the
+    receipt_invariants rule shipped on 11-01 refuses them outright:
+
+        *** receipt_invariants (sweat_card): REFUSED 2 row(s) ***
+            NFL prop "D'Andre Swift Under 17.5 Rush Attempts": prop receipt
+            with no pick_odds - a graded play with no price is priced at a
+            guess
+
+    So today's two football props reached the card and could not be
+    receipted at all. The guard is right: a prop graded at an assumed -110
+    inflates every figure computed from it
+    (feedback_flat_110_inflates_every_ml_figure), and The Sharp carried the
+    same two picks at -117 and +135 -- neither of which is -110.
+
+    All three prop tables carry book_over_odds / book_under_odds and a
+    direction, so the side's price is always derivable from the row the pick
+    was built from. Preference order:
+
+      1. _resolved_odds  stamped by prop_cell_allowlist.eligible, already
+                         side-aware, and the number The Sharp publishes, so
+                         both surfaces quote one price for one pick
+      2. book_*_odds     the live book price at scrape time
+      3. close_*_odds    MLB/NFL only, usually NULL when the card is built
+
+    Returns None rather than a default. Priceless is a visible refusal;
+    -110 is an invisible lie.
+    """
+    def _num(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
+
+    got = _num(prop.get('_resolved_odds'))
+    if got is not None:
+        return int(round(got))
+    d = str(prop.get('direction') or '').strip().lower()
+    if d not in ('over', 'under'):
+        return None
+    for col in ('book_%s_odds' % d, 'close_%s_odds' % d):
+        got = _num(prop.get(col))
+        if got is not None:
+            return int(round(got))
+    return None
+
+
 def _card_is_ml(pick) -> bool:
     """Is this pick a moneyline, however its surface spells it."""
     t = str(pick.get('type') or '').lower()
@@ -960,7 +1012,16 @@ def fetch_top_props():
             "game_date": f"eq.{today}",
             # 2026-09-18: pull `id` so the pick can carry a STABLE source_id.
             # See the source_key comment below — prop_line drifts, id doesn't.
-            "select": "id,player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup",
+            # 2026-11-02: book_over_odds / book_under_odds added. Without
+            # them _prop_side_odds has nothing to read and every prop
+            # pick stays priceless, which receipt_invariants now
+            # refuses outright. All three prop tables carry both
+            # columns; close_*_odds are NOT named here because
+            # nba_pipeline_props lacks them and naming a missing
+            # column returns 42703, which reads back as an EMPTY
+            # slate rather than an error
+            # (feedback_explicit_select_silent_blanks).
+            "select": "id,player_name,player_team,prop_type,prop_line,direction,tier,conviction,signals,matchup,book_over_odds,book_under_odds",
             "order": "conviction.desc",
             # 2026-09-18: 50 → 300. On days when all top-50 by conviction
             # are banned batter unders (hr/rbis/total_bases/runs all at
@@ -3541,6 +3602,9 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             "source_id": prop.get("id"),
             "source_key": f"{player}|{prop.get('prop_type')}|{prop.get('prop_line')}",
             "narrative_hint": narrative_hint,
+            # 2026-11-02: this key did not exist, so every prop pick the
+            # card published was priceless. See _prop_side_odds.
+            "odds": _prop_side_odds(prop),
         }
 
     # 5. CATEGORY LOCKS — reserve a slot for the two highest-edge cohorts
