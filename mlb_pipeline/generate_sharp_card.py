@@ -85,6 +85,33 @@ PROP_PLAYBOOK_ENABLED = False
 # (1) Drop LEAN-tier picks from football (NCAAF/NFL) sections. MLB
 # still includes LEAN props (historically profitable). Football LEAN is
 # noisier + more visible on Sat slate.
+#
+# ══ 2026-11-02 · MEASURED, AND THE STATED REASON DOES NOT HOLD ═════════
+# "Football LEAN is noisier" was never measured. It is now, on every graded
+# football receipt carrying a real price since 08-01, ROI at each row's own
+# odds (_measure_side_cells_1102.py):
+#
+#     NCAAF rl    STRONG -13.9% n=117    LEAN  +0.3% n=91
+#     NFL   rl    STRONG -60.4% n= 19    LEAN +14.6% n=30
+#     NCAAF ml    STRONG  +2.8% n= 97    LEAN  -7.7% n=28
+#     NFL   ml    STRONG +10.5% n= 14    LEAN -20.2% n= 9
+#
+# On football SPREADS, LEAN beats STRONG on both sports. On MONEYLINES it
+# is the other way round. So this flag drops the better spread tier and
+# keeps the worse one — the tier inversion, applied as a publishing rule.
+#
+# IT IS STILL False, and this is the important part: that does NOT make
+# football LEAN spreads a buy. NFL rl LEAN is n=30 with one split half at
+# n=8, and NCAAF rl LEAN FAILS the split-half test (early +3.0% n=48, late
+# -2.7% n=43). Football spreads are not profitable at ANY tier; flipping
+# this flag would publish more of a measured-negative population to fill a
+# tab. A dark Steam Room is a product problem, not a reason to bet.
+#
+# The Sunday fix is to give The Sharp football content that DOES measure
+# positive — the allowlisted prop cells in _compose_non_mlb_props (R140),
+# and the fade, which runs 26-12 / +30.3% on football spreads. Not a looser
+# tier gate (feedback_dont_fade_prime_on_pattern_alone, and the standing
+# rule that a slope is not a betting rule).
 FOOTBALL_INCLUDE_LEAN = False
 
 # (2) Fade the "chalky STRONG" trap — football STRONG picks where spread
@@ -826,6 +853,106 @@ def _condense_prop_read(short_read) -> str:
         if 'SIGNAL COVERAGE' in ln.upper():
             return ln.lstrip('✅⚠🚨 ').strip()[:160]
     return ''
+
+
+def _compose_non_mlb_props(today: str) -> list[dict]:
+    """Allowlisted NFL/NBA props for The Sharp. [] when none qualify.
+
+    ══ 2026-11-02 · R140 · THE SHARP COULD NOT CARRY A FOOTBALL PROP ════
+    ANDY, 10-23: "still need to ensure we are having plays on the nfl
+    though on the sharp on sundays, it needs to not kill the sharp." On
+    2026-11-01 — twelve NFL games — The Sharp published `count: 0,
+    items: []`.
+
+    Two separate reasons, and only one of them is a tier problem:
+
+      * every football pick that day was COVERAGE or LEAN, and
+        FOOTBALL_INCLUDE_LEAN is False, so the sides pool was empty; and
+      * the prop fetch reads `mlb_pipeline_props` and nothing else
+        (line 488), exactly as the Sweat Card did until 19046f8a. With no
+        MLB slate the prop section was empty BY CONSTRUCTION.
+
+    This fixes the second. It does NOT raise the football LEAN floor, and
+    the measurement is why — see the note beside FOOTBALL_INCLUDE_LEAN.
+
+    The gate is prop_cell_allowlist, the same measured one the Sweat Card
+    and Prop Jerry use, and it is the only thing that decides eligibility:
+    cells clear n>=30, ROI>0 at their own price, and positive in BOTH date
+    halves. Ranked by the cell's measured ROI, never by conviction, which
+    is measured INVERTED on NFL props (PRIME -8.4% vs LEAN -0.2% on 4,805
+    priced rows). Validated on this surface's sibling population: kept rows
+    +7.2% against dropped -7.8% on n=2,812.
+
+    Deliberately NOT routed through _compose_mlb_props. That function
+    carries the MLB playbook join, refit_conviction, the direction-flip
+    guard against prop_jerry_reads and prop_ban_policy — all MLB-specific.
+    Reusing it would mean faking those inputs for a sport they were never
+    measured on, which is how a "fix" ships a loss.
+    """
+    try:
+        from prop_cell_allowlist import PROP_TABLE, eligible, MAX_NON_MLB
+    except ImportError as _e:                                  # noqa: BLE001
+        print(f'  ⚠ prop_cell_allowlist unavailable ({_e}) — no non-MLB '
+              f'props. Fix the import rather than ignoring this line.')
+        return []
+
+    out: list[dict] = []
+    for sport in ('NFL', 'NBA', 'NHL'):
+        tbl = PROP_TABLE.get(sport)
+        if not tbl:
+            continue
+        # ONLY columns all three prop tables share. nba_/nhl_pipeline_props
+        # have no player_team, opp_team or position, and naming one returns
+        # 42703 — which reads back as an EMPTY SLATE, not an error. I
+        # shipped exactly that bug in the Sweat Card version of this on
+        # 11-01 (feedback_explicit_select_silent_blanks).
+        rows = _get(f'{SB}/rest/v1/{tbl}',
+                    params={'select': 'id,player_name,matchup,prop_type,'
+                                      'prop_line,direction,tier,conviction,'
+                                      'book_over_odds,book_under_odds,game_id',
+                            'game_date': f'eq.{today}'})
+        if not rows:
+            print(f'  [sharp] {sport} props: 0 rows from {tbl} for {today}')
+            continue
+        picked = eligible(sport, rows)
+        if not picked:
+            print(f'  [sharp] {sport} props: {len(rows)} rows, no '
+                  f'allowlisted cell (measured, not an oversight)')
+            continue
+        for r in picked:
+            side = str(r.get('direction') or '').upper()
+            line = r.get('prop_line')
+            odds = r.get('_resolved_odds')
+            out.append({
+                'sport': sport,
+                'market': 'prop',
+                'pick': (f"{r.get('player_name')} {side} {line} "
+                         f"{r.get('prop_type')}"),
+                'game': r.get('matchup'),
+                'game_id': r.get('game_id'),
+                # The cell's record IS the tier here. It is capped at STRONG
+                # because no non-MLB prop cell has been measured at PRIME,
+                # and a PRIME badge on an unmeasured cell is a claim.
+                'tier': 'STRONG',
+                'why': (f"measured cell {r.get('prop_type')} / "
+                        f"{str(r.get('tier')).upper()}: ROI "
+                        f"{r.get('_cell_roi'):+.1f}% on n={r.get('_cell_n')}"),
+                'odds': odds,
+                'line': line,
+                'player_name': r.get('player_name'),
+                'units': _TIER_UNITS.get('STRONG', 2.0),
+                'id': r.get('id'),
+                'source_table': r.get('_source_table'),
+                'cell_roi': r.get('_cell_roi'),
+                'cell_n': r.get('_cell_n'),
+            })
+            print(f'  [sharp] {sport} prop eligible: {r.get("player_name")} '
+                  f'{r.get("prop_type")} {line} @ {odds:+g} '
+                  f'cell ROI {r.get("_cell_roi"):+.1f}% n={r.get("_cell_n")}')
+    if len(out) > MAX_NON_MLB:
+        print(f'  [sharp] non-MLB props capped {len(out)} -> {MAX_NON_MLB}')
+        out = out[:MAX_NON_MLB]
+    return out
 
 
 def _compose_mlb_props(mlb_props: list, playbook: list) -> list[dict]:
@@ -2480,9 +2607,16 @@ def run(dry_run: bool = False, force: bool = False):
     nhl       = _compose_other_sport_sides(sources['nhl_ctx'], 'NHL')
     ufc       = _compose_ufc(sources['ufc_reads'])
 
-    all_items = [*mlb_sides, *mlb_props, *nfl, *ncaaf, *ncaab, *nba, *nhl, *ufc]
+    # R140, 2026-11-02: the prop fetch above reads mlb_pipeline_props only,
+    # so on a day with no MLB slate the prop section was empty by
+    # construction and an NFL Sunday could produce `items: []`.
+    other_props = _compose_non_mlb_props(today)
+
+    all_items = [*mlb_sides, *mlb_props, *other_props,
+                 *nfl, *ncaaf, *ncaab, *nba, *nhl, *ufc]
 
     print(f'  composed: MLB sides={len(mlb_sides)} MLB props={len(mlb_props)} '
+          f'non-MLB props={len(other_props)} '
           f'NFL={len(nfl)} NCAAF={len(ncaaf)} NCAAB={len(ncaab)} '
           f'NBA={len(nba)} NHL={len(nhl)} UFC={len(ufc)}  TOTAL={len(all_items)}')
 
