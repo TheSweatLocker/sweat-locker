@@ -350,7 +350,104 @@ def parse_synthesis(raw: str, prop_type: str | None = None) -> dict:
     return {'short_read': take, 'call_verdict': verdict, 'conviction': conv}
 
 
+#: Kill switch. `false` restores the pre-2026-11-02 behaviour exactly.
+PROP_CELL_GATE_ON = (os.environ.get('PROP_CELL_GATE_ENABLED', 'true').lower()
+                     != 'false')
+_GATE_TALLY: dict = {}
+
+
+def _apply_cell_gate(sport: str, prop: dict, parsed: dict) -> None:
+    """Demote a non-MLB read to PASS unless its cell has a measured record.
+
+    ══ 2026-11-02 · THE BIGGEST MEASURED DRAIN IN FOOTBALL ══════════════
+    ANDY: "we are getting detroyed in football and the product outright
+    sucks". Item 3 of the plan: publish from cells with a record instead of
+    from `tier`.
+
+    NFL prop_jerry receipts since 09-01, graded and carrying a real price:
+
+        ALL        n=2812  50.7%  ROI  -4.2%
+          PRIME    n=  97  52.6%      -2.7%
+          STRONG   n=1111  50.6%      -4.1%
+          LEAN     n=1201  51.8%      -2.4%
+          LIGHT    n= 104  46.2%     -13.0%
+
+    NOT ONE TIER IS POSITIVE, and 739 of these were published on 11-01
+    alone. Tier does not rank this surface, so ordering or gating by it
+    cannot help; the question is WHICH CELLS, not which tier.
+
+    prop_cell_allowlist.py answers that, and it was re-validated on THIS
+    surface rather than only on the table it was fitted on
+    (_validate_allowlist_on_prop_jerry_1102.py):
+
+        ALL rows                  n=2812  50.7%  ROI -4.2%
+        KEPT by the allowlist     n= 667  56.8%      +7.2%
+        DROPPED by the allowlist  n=2145  48.8%      -7.8%
+
+    A +15.0pp swing, keeping 24% of rows, and crucially the DROPPED set is
+    NEGATIVE -- so the gate is finding an edge rather than just a smaller
+    sample. Four of the five cells hold independently here; the fifth
+    (pass_attempts_under / LIGHT) has n=2 on this surface and is carried on
+    the source measurement alone, which is recorded rather than hidden.
+
+    WHY PASS AND NOT DELETION. A PASS read still gets a row, so the app
+    keeps its card, its L5/L10 chart and its coverage pill -- the 09-11
+    fix that stopped Prop Jerry rendering cards without graphs stays
+    intact. What changes is that it is no longer presented as a play, and
+    public_receipt.prop_jerry_rows does not capture a PASS: "a receipt is
+    the record of a play we published; a PASS is the record of one we
+    declined". The user loses nothing but the bad recommendation.
+
+    PLACED IN upsert_read BECAUSE IT IS THE CHOKEPOINT. Three paths build
+    `parsed` -- the template loop, the template fallback, and the LLM path
+    -- and all three call this function. Gating one of them would be a
+    guard on one source of three, which is how 237 receipts for unplayed
+    games got written through the one backfill that never got the rule
+    (feedback_guard_belongs_at_the_chokepoint).
+
+    MLB IS EXEMPT by design: it keeps prop_ban_policy, and on this same
+    surface MLB PRIME runs +13.0% on n=1206. Nothing about this touches it.
+    """
+    if not PROP_CELL_GATE_ON:
+        return
+    su = str(sport).upper()
+    if su == 'MLB':
+        return
+    verdict = str(parsed.get('call_verdict') or '').upper()
+    if not verdict or verdict == 'PASS':
+        return                                  # already not a play
+    try:
+        from prop_cell_allowlist import publishable
+    except ImportError as _e:                                  # noqa: BLE001
+        # Fail OPEN and say so loudly. Silently gating everything to PASS
+        # on a bad import would empty the surface and look like an empty
+        # slate -- the failure shape this repo keeps hitting.
+        print(f'  ⚠ prop cell gate unavailable ({_e}) — NOT gating. Fix the '
+              f'import rather than ignoring this line.')
+        return
+    ok, why = publishable(su, prop.get('prop_type'), prop.get('direction'),
+                          prop.get('tier'), verdict,
+                          prop.get('book_over_odds'),
+                          prop.get('book_under_odds'))
+    if ok:
+        _GATE_TALLY[(su, 'kept')] = _GATE_TALLY.get((su, 'kept'), 0) + 1
+        return
+    _GATE_TALLY[(su, 'passed')] = _GATE_TALLY.get((su, 'passed'), 0) + 1
+    _GATE_TALLY[(su, why.split(' is not')[0][:46])] = _GATE_TALLY.get(
+        (su, why.split(' is not')[0][:46]), 0) + 1
+    parsed['call_verdict'] = 'PASS'
+    # Recorded in input_snapshot (JSONB, no migration) so the demotion is
+    # auditable and a later reader can tell a gated PASS from a PASS the
+    # generator reached on its own.
+    parsed['_cell_gate'] = {'demoted_from': verdict, 'reason': why,
+                            'gate': 'prop_cell_allowlist'}
+
+
 def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: str) -> bool:
+    # 2026-11-02: gate FIRST, so every field written below -- call_verdict,
+    # generator_verdict, the receipt that is captured from this row -- is
+    # built from the gated decision rather than being patched afterwards.
+    _apply_cell_gate(sport, prop, parsed)
     # 2026-08-22: 'source' field distinguishes 'llm' (Jerry Claude synth) from
     # 'template' (render_prop_template.py deterministic renderer). If parsed
     # already carries source, honor it; else default to 'llm' for LLM-path calls.
@@ -361,6 +458,9 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
     # column. Also pop it out of the parsed spread below so it doesn't
     # try to write to a non-existent column.
     render_sections = parsed.pop('_render_sections', None)
+    # Same treatment as render_sections: there is no _cell_gate column, and
+    # an unknown key makes PostgREST reject the whole write with PGRST204.
+    cell_gate = parsed.pop('_cell_gate', None)
     payload = {
         'sport': sport,
         'game_id': prop.get('game_id'),
@@ -378,6 +478,7 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
             'conviction': prop.get('conviction'),
             'source': source,
             **({'render_sections': render_sections} if render_sections else {}),
+            **({'cell_gate': cell_gate} if cell_gate else {}),
         },
         # 2026-09-25 (migration 20260925a). Immutable record of what the
         # generator itself decided, captured at the only moment it is knowable.
@@ -1198,6 +1299,23 @@ def main(force: bool = False, sport: str | None = None,
         for s in sports:
             total += run_for_sport(s, gd, template, force=force, limit=limit, tier_gate=tier_gate)
     print(f'\n=== wrote {total} prop_jerry_reads across {len(game_dates)} date(s) ===')
+
+    # The gate's normal readings, printed every run. A guard whose ordinary
+    # output is invisible is a guard nobody can tell has gone wrong
+    # (feedback_green_step_that_writes_nothing).
+    if not PROP_CELL_GATE_ON:
+        print('  ! prop cell gate DISABLED via PROP_CELL_GATE_ENABLED=false')
+    elif _GATE_TALLY:
+        for _sp in sorted({k[0] for k in _GATE_TALLY}):
+            _kept = _GATE_TALLY.get((_sp, 'kept'), 0)
+            _pass = _GATE_TALLY.get((_sp, 'passed'), 0)
+            print(f'  prop cell gate [{_sp}]: {_kept} publishable, '
+                  f'{_pass} demoted to PASS')
+            for _k, _v in sorted(_GATE_TALLY.items(), key=lambda z: -z[1]):
+                if _k[0] == _sp and _k[1] not in ('kept', 'passed'):
+                    print(f'      {_v:>5}  {_k[1]}')
+    else:
+        print('  prop cell gate: nothing non-MLB reached it this run')
 
     # ══ 2026-10-29 · CAPTURE THE RECEIPT AT PUBLISH TIME ════════════════
     # Prop Jerry had NO live capture. Measured the same day over receipts
