@@ -70,6 +70,24 @@ def posted_consensus(vals: Iterable) -> Optional[float]:
 
     Ties break toward the median, then toward the smaller magnitude. Both
     tie-breaks can only select a value that appears in `vals`.
+
+    ══ A TIE ACROSS ZERO IS NOT A TIE, IT IS A DISAGREEMENT ══════════════
+    Returns None when the tied values straddle zero, because then the books
+    do not agree on WHICH TEAM IS FAVOURED and any single answer invents a
+    side. Measured on NCAAB 11-01/11-02, this is 1 of 78 games -- Ohio @
+    South Alabama, quoted home -1.5 at some books and home +1.5 at others.
+    ctx had stored the mean, -0.9: a near-pick-em line manufactured from a
+    three-point disagreement, and not a number any book showed.
+
+    My first cut broke that tie on "smaller signed value", which silently
+    returned -1.5 every time and so leaned HOME on every split board. A
+    tie-break that always picks one side is a side bias, which is the
+    family of project_favourite_bias_was_the_market_chooser_1029 and
+    feedback_check_which_side_a_column_indexes. None is the honest answer:
+    the caller stores nothing and the row stays NULL, which announces
+    itself, rather than carrying a confident wrong favourite.
+
+    Totals never straddle zero, so this costs them nothing.
     """
     nums = _nums(vals)
     if not nums:
@@ -79,6 +97,8 @@ def posted_consensus(vals: Iterable) -> Optional[float]:
     tied = sorted(v for v, c in counts.items() if c == top)
     if len(tied) == 1:
         return tied[0]
+    if min(tied) < 0 < max(tied):
+        return None
     med = statistics.median(nums)
     return min(tied, key=lambda v: (abs(v - med), abs(v), v))
 
@@ -131,8 +151,17 @@ def _self_test() -> int:
         ([157.5, 157.5, 158.0, 158.0, 158.0, 158.5], 158.0),
         # a genuine quarter-point board is returned as-is, not rounded
         ([2.25, 2.25, 2.75], 2.25),
-        # tie between equidistant values -> smaller magnitude
-        ([-3.0, -3.0, 3.0, 3.0], -3.0),
+        # a tie ACROSS ZERO is a disagreement about who is favoured, so
+        # there is no consensus to report. The mean here would be 0.0 -- a
+        # pick-em line manufactured from a six-point split.
+        ([-3.0, -3.0, 3.0, 3.0], None),
+        # the real NCAAB board that exposed this: home -1.5 at some books,
+        # home +1.5 at others. ctx had stored the mean, -0.9.
+        ([-1.5, 1.5], None),
+        # same magnitudes, SAME side -> still a real consensus
+        ([-3.0, -3.0, -1.5, -1.5], -1.5),
+        # a clear winner alongside a straddle is NOT a tie, so it stands
+        ([-2.5, -2.5, -2.5, 2.5], -2.5),
     ]
     print('posted_consensus():')
     for vals, want in cases:
