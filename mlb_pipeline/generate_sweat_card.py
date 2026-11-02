@@ -982,7 +982,99 @@ def fetch_top_props():
     rows, dropped = filter_mlb_props(rows)
     if dropped:
         print(f'  [sweat_card] ban filter dropped {dropped} banned prop-family rows')
+    for _r in rows:
+        _r.setdefault('_source_table', 'mlb_pipeline_props')
+        _r.setdefault('_sport', 'MLB')
+
+    rows += _fetch_non_mlb_props(today)
     return rows
+
+
+def _fetch_non_mlb_props(today):
+    """Allowlisted non-MLB props. THE REASON THIS DID NOT EXIST UNTIL NOW.
+
+    == 2026-11-01 . EIGHT WEEKS OF NFL PROPS, NONE ELIGIBLE ==
+    fetch_top_props above reads the literal string "mlb_pipeline_props", and
+    the prop pick construction stamps that same literal as source_table. So
+    on a day with no MLB games the prop section of the card was empty BY
+    CONSTRUCTION and an NFL prop could never appear. ANDY: "If we cant
+    surface nfl proops 8 weeks in we are failing majorly."
+
+    It is NOT a table swap, because that fetch orders by conviction.desc and
+    NFL prop conviction is measured INVERTED -- PRIME -8.4% n=239 against
+    LEAN -0.2% n=1202, on a -4.0% baseline over 4,805 priced rows. Ordering
+    by conviction selects the worst rows on the board.
+
+    Eligibility and ranking come from prop_cell_allowlist, whose cells each
+    clear n>=30, ROI>0 at their own price, and POSITIVE IN BOTH DATE HALVES.
+    NHL is deliberately empty there: 45,361 graded rows, -13.3% baseline,
+    zero qualifying cells.
+
+    Capped hard (MAX_PER_SPORT / MAX_NON_MLB) so a path that has never
+    carried anything cannot flood the card the night it opens.
+    """
+    try:
+        import prop_cell_allowlist as PCA
+    except ImportError:
+        print('  !! prop_cell_allowlist unavailable - non-MLB props skipped')
+        return []
+    try:
+        sports = [s for s in _in_season_sports() if str(s).upper() != 'MLB']
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  !! in-season lookup failed, non-MLB props skipped: {_e}')
+        return []
+    out = []
+    for sport in sports:
+        su = str(sport).upper()
+        tbl = PCA.PROP_TABLE.get(su)
+        if not tbl:
+            continue
+        if not PCA.ALLOWLIST.get(su):
+            print(f'  [sweat_card] {su} props: no allowlisted cell '
+                  f'(measured, not an oversight) - skipped')
+            continue
+        # == 2026-11-01 . THE SELECT MUST ONLY NAME SHARED COLUMNS ==
+        # The first cut of this asked for player_team, opp_team and position
+        # as well. nfl_pipeline_props has all three; nba_ and nhl_ have NONE
+        # of them, so PostgREST answered 42703 and sb_get returned EMPTY --
+        # NBA would have surfaced nothing, forever, with no error on screen.
+        # Exactly feedback_explicit_select_silent_blanks. These are the
+        # columns present in all three tables; anything sport-specific has
+        # to be read per sport, not in a shared select.
+        src = sb_get(tbl, {
+            'game_date': f'eq.{today}',
+            'select': 'id,player_name,prop_type,prop_line,direction,tier,'
+                      'conviction,matchup,game_id,book_over_odds,'
+                      'book_under_odds',
+            'limit': '2000',
+        }) or []
+        if not src:
+            # a 400 and an empty slate are indistinguishable in the return
+            # value, so say which one this is rather than skip in silence
+            _probe = sb_get(tbl, {'game_date': f'eq.{today}',
+                                  'select': 'id', 'limit': '1'}) or []
+            print(f'  !! {su} props: fetch returned 0 rows while a bare '
+                  f'id-probe returned {len(_probe)} -- check the select'
+                  if _probe else
+                  f'  [sweat_card] {su} props: none on the slate today')
+            continue
+        keep = PCA.eligible(su, src)
+        for r in keep:
+            r['_sport'] = su
+            print(f'  [sweat_card] {su} prop eligible: '
+                  f'{r.get("player_name")} {r.get("prop_type")} '
+                  f'{r.get("prop_line")} @ {r.get("_resolved_odds"):+g} '
+                  f'[{r.get("tier")}] cell ROI {r.get("_cell_roi"):+.1f}% '
+                  f'n={r.get("_cell_n")}')
+        if src and not keep:
+            print(f'  [sweat_card] {su} props: {len(src)} scored, 0 in an '
+                  f'allowlisted + priced + in-band cell')
+        out += keep
+    if len(out) > PCA.MAX_NON_MLB:
+        out.sort(key=lambda z: (-(z.get('_cell_roi') or 0), -(z.get('_cell_n') or 0)))
+        print(f'  [sweat_card] non-MLB props capped {len(out)} -> {PCA.MAX_NON_MLB}')
+        out = out[:PCA.MAX_NON_MLB]
+    return out
 
 
 def fetch_game_context():
@@ -1505,6 +1597,47 @@ def fetch_football_picks(today: str) -> list:
                     _same = False
                 if _same:
                     continue
+                # == 2026-11-01 . DO NOT PIN TO A NUMBER THAT HAS LEFT THE
+                # == MARKET
+                # ANDY: "Stale lines being pinned needs a discussion as
+                # well, that need sto be fix this is unsat."
+                # First-publisher-wins is right while the committed number
+                # is still bettable. Today it pinned the card to IND +7.5
+                # with 0 captures at that number and 227 at +10 -- a pick
+                # advertised at a line nobody was offering. So the
+                # commitment holds only while the market still has it.
+                # posted_today returns None when it cannot tell, and None
+                # keeps the old behaviour: a line_history outage must not
+                # start moving published numbers.
+                try:
+                    import posted_line_check as _PLC
+                    _ctx_away = (str(_pk.get('game') or '').split(' @ ')[0]
+                                 or None)
+                    _ctx_home = (str(_pk.get('game') or '').split(' @ ')[-1]
+                                 or None)
+                    _old_ok = _PLC.posted_today(
+                        sport, _pk.get('game_id'), _mkt,
+                        str(_pk.get('side') or '').lower(), _q['line'],
+                        today_et(), _ctx_away, _ctx_home)
+                    _new_ok = _PLC.posted_today(
+                        sport, _pk.get('game_id'), _mkt,
+                        str(_pk.get('side') or '').lower(), _pk.get('line'),
+                        today_et(), _ctx_away, _ctx_home)
+                    if _old_ok is False and _new_ok is True:
+                        print(f'  ! {sport} sweat: NOT pinning '
+                              f'{_pk.get("label")!r} to {_q["line"]} -- that '
+                              f'number has 0 captures today while '
+                              f'{_pk.get("line")} is live. Keeping the '
+                              f'bettable number (stale-commitment override).')
+                        _pk['_commitment_declined'] = {
+                            'committed_line': _q.get('line'),
+                            'reason': 'committed line not posted today'}
+                        continue
+                except ImportError:
+                    pass
+                except Exception as _ple:                      # noqa: BLE001
+                    print(f'  !! posted-line check failed, honouring the '
+                          f'commitment: {_ple}')
                 print(f'  = {sport} sweat: {_pk.get("label")!r} line '
                       f'{_pk.get("line")} -> {_q["line"]} to match the '
                       f'number {_q["surface"]} already published '
@@ -3388,7 +3521,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             # the same scale as side/total resolver tiers — see
             # engine_clarity_refactor.md Phase 2 for the unification plan.
             "tier_source": "prop_pipeline_conviction",
-            "source_table": "mlb_pipeline_props",
+            # 2026-11-01: was the literal "mlb_pipeline_props". The grading
+            # resolver AND the (sport, source_table, band) calibration key
+            # both read this, so a non-MLB prop stamped as MLB would publish
+            # and then grade against a table it is not in. Carried on the row
+            # by prop_cell_allowlist.eligible().
+            "source_table": (prop.get('_source_table')
+                             or "mlb_pipeline_props"),
+            "sport": prop.get('_sport') or "MLB",
             # 2026-09-18: source_id is the STABLE handle. source_key embeds
             # prop_line, which drifts after the card is built (re-scrape moves
             # the number, or a family ban removes the row). The resolver's
