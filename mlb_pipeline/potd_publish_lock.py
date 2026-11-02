@@ -114,7 +114,42 @@ def _headers():
 
 
 def _et_hour() -> int:
-    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)).hour
+    """The current ET hour, DST-correct.
+
+    ══ 2026-11-02 · THIS LOCKED THE POTD AN HOUR EARLY, EVERY DAY ════════
+    It was `utcnow() - 4h`. EST started on 2026-11-01, so ET is UTC-5 and
+    the constant now reads one hour fast. Caught live at 16:15 UTC:
+
+        $ python potd_publish_lock.py --date 2026-11-02
+        POTD 2026-11-02: LOCKED
+          HARD LOCK - 12:00 ET is past 12:00 ...
+          HARD_LOCK_ET_HOUR=12  ET now=12:00
+
+    when the real ET time was 11:15. So the HARD LOCK -- which is immutable
+    even with --force and needs POTD_EMERGENCY_UNLOCK=1 to shift -- was
+    sealing the day's headline play from 11:00 ET through the winter.
+
+    That is not a cosmetic hour. Today's POTD was chosen at 08:08 ET as
+    Denver Nuggets ML, conviction 58, scaled rank 80.7. Re-running
+    jerry_anchor_potd picks Houston Rockets ML, conviction 61, scaled 88,
+    which clears the -200 juice cap at -195 and the LR gate at 0.6082 --
+    and Cleveland at -178 / LR 0.6057 also outranks Denver. The lock is
+    what makes a stale morning pick permanent, so an hour of it is an hour
+    of headline play we cannot correct.
+
+    sweat_dates.et_now uses zoneinfo and already handles this; the only
+    reason this file had its own copy is that there was nothing to import
+    when it was written. Same defect as the one fixed in
+    sweat_dates.et_date_of this morning, in a different file -- which is
+    the whole argument for one helper (feedback_universal_vs_sport_specific).
+    """
+    try:
+        from sweat_dates import et_now
+        return et_now().hour
+    except Exception:                                          # noqa: BLE001
+        # No tzdata: the -4 constant is still closer than UTC.
+        return (dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(hours=4)).hour
 
 
 def _is_real_pick(lean) -> bool:
@@ -275,9 +310,16 @@ def _self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--date', default=(dt.datetime.now(dt.timezone.utc)
-                                       - dt.timedelta(hours=4)).date()
-                    .isoformat())
+    # Same -4 defect as _et_hour above: between 00:00 and 01:00 ET in EST the
+    # constant lands on TOMORROW, so a default-date run would lock the wrong
+    # day (feedback_window_from_runner_clock_is_a_day_ahead).
+    try:
+        from sweat_dates import et_today as _et_today
+        _default_date = _et_today()
+    except Exception:                                          # noqa: BLE001
+        _default_date = (dt.datetime.now(dt.timezone.utc)
+                         - dt.timedelta(hours=4)).date().isoformat()
+    ap.add_argument('--date', default=_default_date)
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--self-test', action='store_true')
     a = ap.parse_args()
