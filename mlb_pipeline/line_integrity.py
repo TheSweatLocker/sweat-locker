@@ -60,8 +60,90 @@ MAX_SNAP = 7.0
 #: against the books (see docstring). A sport absent from a map means that
 #: table is not a usable market source for it.
 _RESULTS_SIGN = {'NFL': -1.0, 'NCAAF': 1.0}
-_CONTEXT_SIGN = {'NCAAF': 1.0}          # NFL deliberately absent: unusable
+# ══ 2026-11-02 · NBA / NHL / NCAAB ADDED — THIS WAS WHY NBA SPREADS WERE
+#                UNPUBLISHABLE ═════════════════════════════════════════════
+# ANDY: "there are lot of live sports eveyr single day and plent ot choose
+# from, eveything looks thin evey single day."
+#
+# A big part of "thin" was here. market_handicap() returns None for any sport
+# missing from this map, so snap_line never reached its own
+# "line absent; set to the market handicap" branch, and every NBA spread read
+# was stored with call_line NULL. Measured on today's board:
+#
+#     15 NBA context rows: close_spread populated 15/15,
+#                          close_spread_home_price populated 15/15
+#      8 NBA rl reads:     7 of 8 carry call_line None AND price None
+#
+# The number was sitting on the very row the read was built from. And the
+# cell it blocks is the ONE NBA cell with a positive measured record --
+# graded NBA receipts, ROI at each row own price:
+#
+#     rl / HOME   n=36  63.9% vs BE 53.0%  ROI +19.95%  halves +16.4/+23.5
+#     rl (all)    n=49  65.3% vs BE 52.7%  ROI +23.41%
+#     ml (all)    n=50  62.0% vs BE 61.8%  ROI  -1.65%
+#     ml / HOME   n=37  54.1% vs BE 58.8%  ROI  -9.36%
+#     total       n=35  48.6% vs BE 52.4%  ROI  -6.97%
+#
+# So the market we could not publish is the only one measuring positive, and
+# the market we DO publish (moneyline, including today POTD) is the negative
+# one. n=36 over a 13-day-old season is thin and not established -- it is
+# quoted here as the reason to make the market publishable, not as a claim
+# that it is proven.
+#
+# THE SIGN IS MEASURED, NOT ASSUMED, for each of the three:
+#   NBA   +1.0  close_spread IS the home-side line. Cross-checked against
+#         the moneyline favourite on all 51 NBA rows carrying a spread since
+#         10-28: 0 incoherent. Matches _HOME_HANDICAP_SIGN NBA 1.0 in
+#         generate_the_fade.py:186.
+#   NCAAB +1.0  agreed with the line_history home-side posted line on 77 of
+#         78 comparable games; the single disagreement is a board split
+#         across zero, which posted_consensus now refuses outright.
+#   NHL   +1.0  filled from the line_history home-side line by
+#         fill_ctx_close_from_line_history; 0 spread/moneyline incoherences
+#         across the 37 rows holding a spread.
+#
+# NFL STAYS DELIBERATELY ABSENT. nfl_game_context.close_spread is a LIVE odds
+# snapshot that freezes stale once a game leaves the feed -- 63 of 272
+# disagree with results and line_history says books posted the RESULTS number
+# 19:1 (project_nfl_stale_line_and_inverted_weights_1030). Adding it here
+# would snap good NFL picks to a stale number.
+_CONTEXT_SIGN = {'NCAAF': 1.0, 'NBA': 1.0, 'NHL': 1.0, 'NCAAB': 1.0}
 _RESULTS_TABLE = {'NFL': 'nfl_game_results', 'NCAAF': 'ncaaf_game_results'}
+
+#: ctx columns holding the price for each side of the spread. Only sports
+#: whose table actually has them; a missing column is left alone rather than
+#: named in a select (feedback_explicit_select_silent_blanks).
+#: A LINE inside a label, as a standalone token. The naked pattern
+#: [+-]?\d+(\.\d+)? matches the digits in a TEAM NAME: "Philadelphia 76ers
+#: ATS" came back as "Philadelphia -11.5ers ATS", and the 49ers would go the
+#: same way. Requiring non-alphanumeric boundaries makes it a token rather
+#: than a substring (feedback_parse_a_pick_by_shape_not_vocabulary).
+_LINE_TOKEN = r'(?<![A-Za-z0-9])[+-]?\d+(?:\.\d+)?(?![A-Za-z0-9])'
+
+_SPREAD_PRICE_COLS = {
+    'NBA': ('close_spread_home_price', 'close_spread_away_price'),
+    'NCAAF': ('close_spread_home_price', 'close_spread_away_price'),
+}
+
+
+def market_spread_price(ctx: dict, sport: str, side: str):
+    """The posted price for this side of the spread, or None.
+
+    A spread read with no price is graded at a guess, and rule (1) of
+    receipt_invariants warns on exactly that. The price lives on the same ctx
+    row as the line, so it is filled from the same place and at the same
+    time.
+    """
+    if not isinstance(ctx, dict):
+        return None
+    cols = _SPREAD_PRICE_COLS.get(str(sport).upper())
+    if not cols:
+        return None
+    s = str(side or '').strip().upper()
+    col = cols[0] if s == 'HOME' else cols[1] if s == 'AWAY' else None
+    if not col:
+        return None
+    return _f(ctx.get(col))
 
 _RESULTS_CACHE: dict = {}
 
@@ -246,6 +328,18 @@ def apply_to_parsed(parsed: dict, ctx: dict, sport: str,
         mkt = str(parsed.get('call_market') or '')
         if mkt.lower() not in ('rl', 'spread', 'ats'):
             return parsed
+        # Fill the price from the same ctx row when the read has none. A
+        # spread pick with no price is graded against a guess
+        # (feedback_flat_110_inflates_every_ml_figure), and it is the other
+        # half of why NBA spread reads could not publish.
+        if parsed.get('price_american') is None:
+            _px = market_spread_price(ctx, sport, parsed.get('call_side'))
+            if _px is not None:
+                parsed['price_american'] = int(round(_px))
+                parsed['_price_filled_from'] = 'ctx close_spread side price'
+                if verbose:
+                    print(f'  [line] price absent; set to the posted '
+                          f'{int(round(_px)):+d} from context')
         new, note = snap_line(parsed.get('call_line'), ctx, sport,
                               parsed.get('call_side'), mkt)
         if note:
@@ -261,8 +355,35 @@ def apply_to_parsed(parsed: dict, ctx: dict, sport: str,
             ct = parsed.get('call_text')
             if ct:
                 import re
-                parsed['call_text'] = re.sub(
-                    r'[+-]?\d+(?:\.\d+)?', f'{new:+.1f}', str(ct), count=1)
+                # == 2026-11-02 - A LABEL WITH NO NUMBER IN IT ========
+                # re.sub can only rewrite a number that is ALREADY in
+                # the text. NBA spread reads are labelled "Dallas
+                # Mavericks ATS" -- no digits at all -- so filling the
+                # line left the label unchanged and a user read a pick
+                # with no number on it while the receipt carried -10.5.
+                #
+                # The test is "does the text contain a digit", NOT
+                # "did the substitution change anything". My first cut
+                # compared before against after, which also fires when
+                # the number was already CORRECT, and produced
+                # "New York Knicks -14.5 -14.5".
+                _txt = str(ct)
+                # the test is for a LINE TOKEN, not for any digit:
+                # "Philadelphia 76ers ATS" contains digits but no
+                # line, and testing r'\d' sent it down the
+                # substitution branch, which correctly refuses to
+                # touch "76" -- so the label came back with no
+                # number on it at all.
+                if re.search(_LINE_TOKEN, _txt):
+                    parsed['call_text'] = re.sub(
+                        _LINE_TOKEN, f'{new:+.1f}', _txt,
+                        count=1)
+                else:
+                    # drop a trailing market word so the label reads as
+                    # a bet: 'Dallas Mavericks ATS' -> '... -10.5'
+                    _base = re.sub(r'\s*\b(ATS|PL|SPREAD|RL)\b\s*$',
+                                   '', _txt, flags=re.I).strip()
+                    parsed['call_text'] = f'{_base} {new:+.1f}'.strip()
             if verbose:
                 print(f'  [line] {note}')
         return parsed
