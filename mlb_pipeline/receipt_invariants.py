@@ -96,6 +96,12 @@ def _banned(sport, market) -> Optional[str]:
     return str(val) if val else None
 
 
+#: markets whose lines books post in half-point increments. Measured
+#: 2026-11-02: 17 of 27,432 receipts since 08-01 violate this, all of them
+#: `total`, and all of them the engine's own projection.
+LINE_HALF_POINT_MARKETS = ('spread', 'rl', 'total', 'puckline', 'pl')
+
+
 def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     """-> (severity, reason). severity is 'REFUSE', 'WARN' or None."""
     market = str(row.get('market') or '').lower()
@@ -112,6 +118,47 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
         if not (PRICE_SANITY[0] <= odds <= PRICE_SANITY[1]) or odds == 0:
             return ('REFUSE' if _is_play else 'WARN',
                     f'pick_odds {odds:g} is not a plausible price')
+
+    # (1b) A LINE NO BOOK EVER POSTED.
+    #
+    # ══ 2026-11-02 · NCAAB WAS PUBLISHING ITS OWN PROJECTION AS A LINE ══
+    # From the 11-01 audit: 57 live NCAAB game_read receipts, every one of
+    # them priceless, and sixteen carrying lines like
+    #
+    #     Under 157.83333333333334
+    #     Under 154.16666666666666
+    #     Under 149.25
+    #
+    # No book posts a total to fourteen decimal places. Those are the
+    # engine's own projected_total written into the field that is supposed
+    # to hold the market's number, which makes the receipt a record of a bet
+    # that could not be placed. Same family as
+    # project_jerry_published_fake_lines_1019, where 48% of game_read
+    # spreads were numbers nobody posted, up to 5 points off.
+    #
+    # MEASURED BEFORE SHIPPING, across all 27,432 receipts since 08-01:
+    # exactly 17 rows (0.06%) carry a pick_line that is not a multiple of
+    # 0.5 -- 16 NCAAB totals and 1 MLB total, 1 of the 17 graded. Nothing
+    # else in the table violates it, so this refuses the defect and
+    # essentially nothing else, and it cannot become a permanently-red
+    # guard (feedback_a_detector_must_know_the_intentional_case).
+    #
+    # Scoped to the GAME markets the measurement covered. Books post these
+    # in half-point increments; a prop can be a 0.5 too but no prop row in
+    # the table violates this, so there is nothing to claim about them.
+    #
+    # REFUSE on every surface, not just play surfaces. Unlike a missing
+    # price -- which leaves a read gradeable as a win or loss and is
+    # therefore only a WARN off a play surface, rule (1) -- a fabricated
+    # line means the row does not describe a real bet at all, so there is
+    # nothing a reader could do with it.
+    if market in LINE_HALF_POINT_MARKETS:
+        _ln = _f(row.get('pick_line'))
+        if _ln is not None and abs(_ln * 2 - round(_ln * 2)) > 1e-6:
+            return ('REFUSE',
+                    f'pick_line {_ln!r} is not a half-point line — no book '
+                    f'posts a {market} at that number, so this is a '
+                    f'projection written into the market field')
 
     # (2) A MARKET MEASURED NEGATIVE, enforced where every source passes.
     # Only on the surface the ban was measured for; a game read is allowed
