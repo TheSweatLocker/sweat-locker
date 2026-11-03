@@ -98,16 +98,34 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%H); DOW=$(date -u +%u)
-            if [ "$DOW" = "7" ] && [ "$HOUR" = "13" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
-            # the temporary 06:00 UTC Sunday slot above. Without a
-            # case here it would fall through to mode=full and run
-            # the whole pipeline at 2am instead of just grading.
-            elif [ "$DOW" = "7" ] && [ "$HOUR" = "06" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
-            elif [ "$DOW" = "6" ] && [ "$HOUR" = "12" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
-            elif [ "$DOW" = "5" ] && [ "$HOUR" = "18" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
-            else echo "mode=full" >> $GITHUB_OUTPUT
-            fi
+            # ══ 2026-11-03 · MODE CAME FROM THE RUN-TIME CLOCK ══
+            # This read `HOUR=$(date -u +%H); DOW=$(date -u +%u)` and matched
+            # those against the hours the crons are SET to. GitHub Actions
+            # runs this repo 7-10h late (measured; see
+            # project_card_builds_before_every_other_sport_1102), so the hour
+            # at run time is NOT the cron that fired and every slot lands in
+            # the wrong bucket non-deterministically.
+            #
+            # Measured cost on ncaab_pipeline: the Monday 15:00 slot lands
+            # ~21:00, `HOUR != 15`, so mode=kenpom_only NEVER happened and
+            # every step gated on it has been dead since August --
+            # ncaab_kenpom_snapshot.py last wrote 2026-08-24 (71 days) and
+            # pull_college_rosters.py never ran. ncaab_rating_snapshots is
+            # consequently haslam-only, and the Panel model needs 2+ systems
+            # per team, so it could not fire at all.
+            #
+            # `github.event.schedule` is the cron expression that fired,
+            # verbatim and immune to lateness. Match on that. An unknown or
+            # empty value falls through to `full`, which is the old default.
+            SCHED="${{ github.event.schedule }}"
+            echo "cron that fired: '${SCHED:-<none>}'"
+            case "$SCHED" in
+              '0 13 * * 0')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '0 6 * * 0')   echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '15 12 * * 6') echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              '0 18 * * 5')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              *)             echo "mode=full"          >> $GITHUB_OUTPUT ;;
+            esac
           fi
 
       - name: Pull Odds API NCAAF lines

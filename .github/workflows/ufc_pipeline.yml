@@ -83,14 +83,35 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%H); DOW=$(date -u +%u)
-            # Sun 14:00 UTC → resolver_only; Fri 14:00 UTC → card refresh only;
-            # Wed 22:00 UTC → full (fresh pull).
-            if [ "$DOW" = "7" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT
-            elif [ "$DOW" = "6" ] && [ "$HOUR" = "14" ]; then echo "mode=resolver_only" >> $GITHUB_OUTPUT  # Sat early grader
-            elif [ "$DOW" = "5" ] && [ "$HOUR" = "14" ]; then echo "mode=card_only" >> $GITHUB_OUTPUT
-            else echo "mode=full" >> $GITHUB_OUTPUT
-            fi
+            # ══ 2026-11-03 · MODE CAME FROM THE RUN-TIME CLOCK ══
+            # This read `HOUR=$(date -u +%H); DOW=$(date -u +%u)` and matched
+            # those against the hours the crons are SET to. GitHub Actions
+            # runs this repo 7-10h late (measured; see
+            # project_card_builds_before_every_other_sport_1102), so the hour
+            # at run time is NOT the cron that fired and every slot lands in
+            # the wrong bucket non-deterministically.
+            #
+            # Measured cost on ncaab_pipeline: the Monday 15:00 slot lands
+            # ~21:00, `HOUR != 15`, so mode=kenpom_only NEVER happened and
+            # every step gated on it has been dead since August --
+            # ncaab_kenpom_snapshot.py last wrote 2026-08-24 (71 days) and
+            # pull_college_rosters.py never ran. ncaab_rating_snapshots is
+            # consequently haslam-only, and the Panel model needs 2+ systems
+            # per team, so it could not fire at all.
+            #
+            # `github.event.schedule` is the cron expression that fired,
+            # verbatim and immune to lateness. Match on that. An unknown or
+            # empty value falls through to `full`, which is the old default.
+            SCHED="${{ github.event.schedule }}"
+            echo "cron that fired: '${SCHED:-<none>}'"
+            # Sun → resolver_only; Sat → early grader; Fri → card refresh;
+            # Thu → full (fresh pull).
+            case "$SCHED" in
+              '0 14 * * 0')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '0 14 * * 6')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '0 14 * * 5')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              *)             echo "mode=full"          >> $GITHUB_OUTPUT ;;
+            esac
           fi
 
       # 2026-08-23: card scrape runs on FULL mode (Wed 6pm ET) AND on all

@@ -165,10 +165,20 @@ def run(season: str, dry_run: bool = False) -> int:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--season', default='2025-26', help="'2025-26' style")
+    # ══ 2026-11-03 · A HARDCODED SEASON KEPT THE PANEL FROM EVER FIRING ══
+    # This defaulted to '2025-26'. ncaab_season.py was written on 2026-10-21
+    # to kill exactly this in five other places and this script was missed,
+    # so on 2026-11-03 -- opening night of 2026-27 -- it wrote 365 snapshots
+    # under LAST season while ncaab_haslam_pull wrote the same date under
+    # '2026-27'. ncaab_rating_snapshots keys on
+    # (snapshot_date, team, season, rating_system) and the Panel model needs
+    # 2+ systems on one key, so no team on any date ever had two.
+    p.add_argument('--season', default=None,
+                   help="'2025-26' style; defaults to the current season")
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    run(args.season, dry_run=args.dry_run)
+    from ncaab_season import season_label
+    run(args.season or season_label(), dry_run=args.dry_run)
 
 
 if __name__ == '__main__':

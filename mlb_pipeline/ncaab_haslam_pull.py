@@ -99,20 +99,20 @@ def fetch_haslam() -> list:
 
 
 def _current_season_str() -> str:
-    """Return '2025-26' style for current season.
-    NCAAB season runs Nov Y → Apr Y+1; use current year vs next."""
-    now = datetime.now(timezone.utc)
-    # If we're July-Oct, no active season — return last completed
-    if 7 <= now.month <= 10:
-        y = now.year
-        return f'{y-1}-{str(y)[-2:]}'
-    # Nov-Dec: season Y - Y+1
-    if now.month >= 11:
-        y = now.year
-        return f'{y}-{str(y+1)[-2:]}'
-    # Jan-June: current season is (Y-1)-Y
-    y = now.year
-    return f'{y-1}-{str(y)[-2:]}'
+    """Return '2025-26' style for the current season.
+
+    2026-11-03: this had its own three-branch derivation with a NOVEMBER
+    rollover, while ncaab_season.py (the shared helper, written 2026-10-21 to
+    be the single source) rolls over in AUGUST so preseason ratings land under
+    the upcoming season. The disagreement is visible in the data: haslam holds
+    2,555 rows under '2025-26' and 1,095 under '2026-27' with the flip on
+    2026-11-01, so every Aug-Oct preseason snapshot is filed under the
+    finished season. Sibling scrapers disagreed with this one AND with each
+    other, which is why the Panel model never had two systems on one
+    (snapshot_date, team, season, rating_system) key. One derivation, shared.
+    """
+    from ncaab_season import season_label
+    return season_label()
 
 
 def upsert_snapshot(teams: list, snapshot_date: date, dry_run: bool = False) -> int:

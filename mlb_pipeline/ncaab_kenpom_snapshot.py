@@ -155,11 +155,19 @@ def main():
         help='calendar year at end of season (e.g., 2026 for 2025-26). Defaults to current NCAAB season.')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    # Default season: if now is Nov-June, we're in season Y-1 → Y (return Y).
-    # July-Oct offseason → last completed season.
+    # ══ 2026-11-03 · THIS CONDITIONAL RETURNED now.year IN ALL 3 BRANCHES ══
+    # It read:
+    #   args.season = now.year if now.month >= 11 else (now.year if now.month <= 6 else now.year)
+    # Every branch is `now.year`, so the month test did nothing and the
+    # season never rolled over: on 2026-11-03, opening night of 2026-27, this
+    # resolved to 2026 -> label '2025-26' while ncaab_haslam_pull wrote
+    # '2026-27' for the same date. ncaab_rating_snapshots keys on
+    # (snapshot_date, team, season, rating_system), so the Panel model -- which
+    # needs 2+ systems on one key -- could not fire for any team.
+    # ncaab_season.py is the single derivation; use it.
     if args.season is None:
-        now = datetime.now(timezone.utc)
-        args.season = now.year if now.month >= 11 else (now.year if now.month <= 6 else now.year)
+        from ncaab_season import season_end_year
+        args.season = season_end_year()
     run(args.season, dry_run=args.dry_run)
 
 
