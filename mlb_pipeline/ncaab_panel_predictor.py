@@ -80,31 +80,108 @@ STDDEV_MED_CONF = 4.0
 
 
 def _load_latest_snapshots() -> dict:
-    """Return {team_name: {system: {adj_em, adj_off, adj_def}}}
-    from most-recent snapshot per (team, system, season)."""
-    r = requests.get(
-        f'{SB}/rest/v1/ncaab_rating_snapshots?select=team,rating_system,'
-        f'adj_off,adj_def,adj_em,snapshot_date,season'
-        f'&order=snapshot_date.desc&limit=5000',
-        headers=H_READ, timeout=30)
-    if r.status_code != 200:
-        print(f'  ✗ ncaab_rating_snapshots fetch {r.status_code}: {r.text[:200]}')
-        return {}
-    rows = r.json() or []
+    """Return {canonical_team: {system: {adj_em, adj_off, adj_def}}} from the
+    most-recent snapshot per (team, system), current season only.
 
-    latest = defaultdict(dict)   # {team: {system: dict}}
-    seen = set()                 # (team, system) already recorded
+    == 2026-11-03 . TWO BUGS, EITHER ONE ENOUGH TO STARVE THE PANEL =======
+    ANDY, on the thin card. The panel skipped 15 of 19 games.
+
+    (1) `limit=5000` RETURNED 1000. PostgREST caps a page at 1000 rows
+        whatever the limit says, and three systems x 365 teams is 1,095 rows
+        for a SINGLE day. Ordered snapshot_date.desc, the cut fell mid-day
+        and arbitrarily across systems: measured on 2026-11-03 the panel
+        received haslam 253, torvik 730, kenpom **17**. kenpom was therefore
+        almost entirely absent from the panel view through truncation alone,
+        and `panel-eligible teams` printed 172 where the data supports 363.
+        feedback_never_measure_from_truncated_output, same family as
+        project_prop_scorer_saw_a_fifth_of_the_slate_1028.
+
+    (2) THE THREE SYSTEMS SPELL TEAMS DIFFERENTLY, and so does the odds feed
+        this is matched against: 492 distinct names for 365 teams on one
+        date. The dict was keyed on the RAW snapshot spelling and looked up
+        with the RAW ctx spelling, so "Cleveland St Vikings" (odds) never
+        found "Cleveland St." (ratings), and kenpom "Cal St. Fullerton" never
+        merged with torvik "Cal State Fullerton" -- each stayed a one-system
+        team below MIN_SYSTEMS_REQUIRED.
+
+        ncaab_team_resolver already solves this. It reads the 365-row
+        ncaab_team_aliases table (kenpom_name, bart_name, odds_api_name,
+        alt_names) and resolves 244 of 244 ctx names. It needed reading, not
+        building. resolve() returns None rather than a close match, and an
+        unresolved name is kept under its raw spelling, so a missing alias
+        degrades to the old behaviour instead of dropping a team.
+
+    Season-scoped too, so a mislabelled vintage cannot be read back as
+    current (feedback_each_scraper_invented_its_own_season).
+    """
+    try:
+        from ncaab_team_resolver import resolve as _resolve
+    except ImportError as e:                                   # noqa: BLE001
+        print(f'  ⚠ ncaab_team_resolver unavailable ({e}) - falling back to '
+              f'raw spellings; cross-system merging will be incomplete')
+
+        def _resolve(_n):
+            return None
+    try:
+        from ncaab_season import season_label
+        season = season_label()
+    except Exception:                                          # noqa: BLE001
+        season = None
+
+    rows, offset = [], 0
+    while True:
+        url = (f'{SB}/rest/v1/ncaab_rating_snapshots?select=team,rating_system,'
+               f'adj_off,adj_def,adj_em,snapshot_date,season'
+               f'&order=snapshot_date.desc&limit=1000&offset={offset}')
+        if season:
+            url += f'&season=eq.{season}'
+        r = requests.get(url, headers=H_READ, timeout=60)
+        if r.status_code != 200:
+            print(f'  ✗ ncaab_rating_snapshots fetch {r.status_code}: {r.text[:200]}')
+            return {}
+        page = r.json() or []
+        rows.extend(page)
+        if len(page) < 1000:
+            break
+        offset += len(page)
+        if offset > 60000:        # guard: never spin on a paging bug
+            print('  ⚠ snapshot paging exceeded 60k rows - stopping')
+            break
+
+    latest = defaultdict(dict)   # {canonical team: {system: dict}}
+    seen = set()                 # (canonical team, system) already recorded
+    n_resolved = n_raw = 0
     for row in rows:
         team = row.get('team'); sys_name = row.get('rating_system')
         if not team or not sys_name: continue
-        key = (team, sys_name)
-        if key in seen: continue
+        canon = _resolve(team)
+        if canon:
+            n_resolved += 1
+        else:
+            canon = team
+            n_raw += 1
+        key = (canon, sys_name)
+        if key in seen: continue      # rows are date-desc, so first wins
         seen.add(key)
         em = row.get('adj_em'); off = row.get('adj_off'); de = row.get('adj_def')
         if em is None or off is None or de is None: continue
-        latest[team][sys_name] = {
+        latest[canon][sys_name] = {
             'adj_em': float(em), 'adj_off': float(off), 'adj_def': float(de)}
+    print(f'  snapshots: {len(rows)} rows (season={season or "ALL"}), '
+          f'{n_resolved} names resolved / {n_raw} kept raw, '
+          f'{len(latest)} teams')
     return dict(latest)
+
+
+def _resolve_slate(name):
+    """Canonical form of an odds-feed team name, or None."""
+    if not name:
+        return None
+    try:
+        from ncaab_team_resolver import resolve as _r
+    except ImportError:
+        return None
+    return _r(name)
 
 
 def _panel_team(systems: dict) -> Optional[dict]:
@@ -246,8 +323,14 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
     n_ok = 0; n_missing = 0; n_default_pace = 0
     for g in games:
         home_name = g.get('home_team'); away_name = g.get('away_team')
-        home_p = team_panels.get(home_name)
-        away_p = team_panels.get(away_name)
+        # 2026-11-03: resolve the SLATE name too. The panel dict is keyed on
+        # canonical names now, and the odds feed carries mascots the rating
+        # feeds do not ("Cleveland St Vikings" vs "Cleveland St."). Falls back
+        # to the raw spelling so an unresolved name behaves as before.
+        home_p = (team_panels.get(_resolve_slate(home_name))
+                  or team_panels.get(home_name))
+        away_p = (team_panels.get(_resolve_slate(away_name))
+                  or team_panels.get(away_name))
         if not (home_p and away_p):
             n_missing += 1
             miss = [n for n, p in [('home', home_p), ('away', away_p)] if not p]
