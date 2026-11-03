@@ -1130,8 +1130,12 @@ def _ml_odds_too_juiced(ctx: dict, side: str, max_juice: int = -300) -> bool:
         return False
 
 
+# 2026-11-03: 'SOLID' is retired from jerry_anchor_potd._conviction_tier but
+# is frozen into already-locked rows by the publish-lock trigger, so the rank
+# table has to know it or cap_tier_for_edge compares it as unknown (rank 9)
+# and never demotes. Ranked with LEAN: it sat below STRONG where it was used.
 _DG_TIER_RANK = {'PASS': 0, 'SKIP': 0, 'LIGHT': 1, 'COVERAGE': 2,
-                 'LEAN': 3, 'STRONG': 4, 'PRIME': 5}
+                 'LEAN': 3, 'SOLID': 3, 'STRONG': 4, 'PRIME': 5}
 
 
 def respect_discipline_cap(new_pp, old_pp):
@@ -2179,6 +2183,43 @@ def apply_unpriced_market_gate(pp: dict | None, ctx: dict,
         return pp                # prop/other — priced on the prop row, not here
 
     if has is None or has:
+        # ══ 2026-11-03 · "RESTORES ITSELF" WAS NEVER TRUE ══
+        # The docstring above promises the tier restores itself as soon as a
+        # price arrives. It does not, and nothing else does it either: the cap
+        # is written INTO `tier`, so on the next rebuild the early-return two
+        # blocks down sees tier=='COVERAGE' and leaves it alone forever. The
+        # flag is never cleared either.
+        #
+        # Measured across every sport's game_context from 2026-10-01:
+        #     flagged _unpriced_market        67
+        #     of those, price NOW present     59   <- permanently capped
+        # NHL alone: 52 of 57. NHL is the bulk because books post its lines
+        # 1-3 days out while the pick horizon runs a week, which is exactly
+        # the case the cap was built to be NON-DESTRUCTIVE for.
+        #
+        # So record the pre-cap tier when capping, and give it back here when
+        # the price shows up. Only a cap THIS gate applied is reversed -- a
+        # pick also demoted for another reason (LR coin-flip, juice trap,
+        # reroute) has no _unpriced_pre_tier and is untouched, which is why
+        # tonight this restores Utah Mammoth PL (sole reason, pre-cap LEAN,
+        # now priced +165) and leaves three 'LR sees coin flip' COVERAGEs
+        # alone. feedback_late_data_must_invalidate_derived_output.
+        if pp.get('_unpriced_market') and pp.get('_unpriced_pre_tier'):
+            out = dict(pp)
+            out['tier'] = str(pp['_unpriced_pre_tier']).upper()
+            out['_unpriced_market'] = False
+            out['_unpriced_pre_tier'] = None
+            out['_unpriced_restored'] = {
+                'to': out['tier'],
+                'reason': f'{ptype.upper()} price arrived; cap lifted',
+            }
+            note = (f"restored to {out['tier']}: {ptype.upper()} price is now "
+                    f'stored, so the cap no longer applies')
+            out['audit_note'] = ((pp.get('audit_note') or '')
+                                 + ' · ' + note).strip(' ·')
+            print(f"  [gate] {str(pp.get('label'))[:26]} {ptype} price arrived "
+                  f"-> tier restored to {out['tier']}")
+            return out
         return pp                # unmeasurable, or genuinely priced
 
     tier = str(pp.get('tier') or '').upper()
@@ -2188,6 +2229,11 @@ def apply_unpriced_market_gate(pp: dict | None, ctx: dict,
     out = dict(pp)
     out['tier'] = 'COVERAGE'
     out['_unpriced_market'] = True
+    # The pre-cap tier, so the restore above is a lookup and not a guess at a
+    # prose note. Without this the only record of what the tier WAS is the
+    # audit_note sentence, which is not something a gate should parse
+    # (feedback_parse_a_pick_by_shape_not_vocabulary).
+    out['_unpriced_pre_tier'] = tier
     note = (f'capped to COVERAGE from {tier}: no {ptype.upper()} price stored '
             f'for this game, so the tier cannot assert an edge')
     out['audit_note'] = ((pp.get('audit_note') or '') + ' · ' + note).strip(' ·')
@@ -2989,8 +3035,20 @@ def apply_stored_edge_cap(pp: dict | None) -> dict | None:
     if not isinstance(e, (int, float)):
         return pp
     t = str(pp.get('tier') or '').upper()
-    if t not in ('PRIME', 'STRONG', 'LEAN'):
-        return pp
+    # ══ 2026-11-03 · A WHITELIST EXEMPTED THE TIER IT HAD NEVER HEARD OF ══
+    # This read `if t not in ('PRIME','STRONG','LEAN'): return pp`, so any
+    # tier word outside that set skipped the gate entirely. jerry_anchor_potd
+    # ._conviction_tier returned 'solid' for conviction 60-69 and
+    # lock_publish's DB trigger reverted primary_play.tier to it, so 'SOLID'
+    # reached this gate and was waved through. Both rows that ever carried it
+    # were POTDs with negative edge (-2.96pp and -6.33pp).
+    #
+    # Inverted to a NON-bettable list so the gate fails CLOSED: an
+    # unrecognised tier is capped rather than exempted. Not knowing what a
+    # tier means is not a reason to let it publish a negative edge.
+    # feedback_guard_belongs_at_the_chokepoint.
+    if t in ('', 'COVERAGE', 'PASS', 'SKIP', 'LIGHT'):
+        return pp                # already unpublished
     try:
         from model_edge import NO_EDGE_PP, NO_EDGE_TIER_CAP
     except Exception:                                      # noqa: BLE001

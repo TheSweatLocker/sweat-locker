@@ -89,10 +89,44 @@ def _context_table(sport: str) -> Optional[str]:
 
 def _conviction_tier(conv: int) -> str:
     """Match downstream label shape (line 140 of generate_tonight_card.py:
-       'Tier: {confidence.upper()} | Jerry {score}/100')."""
+       'Tier: {confidence.upper()} | Jerry {score}/100').
+
+    ══ 2026-11-03 · "solid" WAS A TIER NO GATE HAD EVER HEARD OF ══
+    ANDY: "i want to make sure we like POTD ... it is surfacing to live users
+    right now". We did not like it, and this is why.
+
+    The 60-69 band returned "solid". That word appears in NO other part of
+    the system:
+
+        _DG_TIER_RANK            PASS SKIP LIGHT COVERAGE LEAN STRONG PRIME
+        publishable set          ('PRIME','STRONG','LEAN')
+        apply_stored_edge_cap    acts on ('PRIME','STRONG','LEAN') only
+        lock_publish docstring   "PRIME / STRONG / LEAN / COVERAGE / SKIP / PASS"
+
+    And this value is passed straight into lock_publish, whose locked tier a
+    DB TRIGGER then reverts primary_play.tier to -- so an invented word
+    propagated from a display label into the gating tier of a live pick.
+
+    apply_stored_edge_cap is the chokepoint that caps a bettable tier whose
+    own stored model edge is non-positive. Because 'SOLID' is not in its
+    whitelist it returned early, and the edge was never capped. Measured:
+    exactly TWO rows in the entire database have ever carried tier 'SOLID',
+    and both are POTDs with NEGATIVE model edge --
+
+        2026-11-03  Montreal Canadiens ML  edge -2.96pp   (live when found)
+        2026-11-02  Houston Rockets ML     edge -6.33pp
+
+    It only ever bit non-MLB because only non-MLB conviction lands in 60-69:
+    MLB POTDs ran 70-95 and so got 'strong'/'prime' and met the gate
+    (project_conviction_is_a_baseball_scale_1027). The day POTD went
+    cross-sport it started bypassing the EV gate silently.
+
+    60-69 now returns "lean" -- below the 70 STRONG threshold this function
+    already uses, so no threshold moves; it just stops inventing vocabulary.
+    feedback_parse_a_pick_by_shape_not_vocabulary.
+    """
     if conv >= 80: return "prime"
     if conv >= 70: return "strong"
-    if conv >= 60: return "solid"
     return "lean"
 
 
