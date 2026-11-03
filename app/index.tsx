@@ -17609,7 +17609,25 @@ setJerryHistory(prev => {
               const heroSidesLabel = s.hasData ? `${s.wins}-${s.losses} sides` : '';
               const heroPropsLabel = pd.hasData ? `${pd.wins}-${pd.losses} props` : '';
 
-              const potdRows = filterSport === 'ALL' ? potdHistory : potdHistory.filter((r:any) => r.sport === filterSport);
+              // ══ 2026-11-03 · THE POTD CALENDAR WAS SPORT-FILTERED ══
+              // ANDY: "POTD calendar in receipts tab is incomplete and looks
+              // terrible ... the entirety of October is missing, what about
+              // previous months as well".
+              //
+              // POTD is ONE cross-sport play per day, so filtering it by the
+              // receipts sport chip cannot do anything but delete days.
+              // Counted in daily_best_bet_history (180 rows, 2026-04-10..11-03):
+              //     MLB 157 · NBA 7 · NFL 4 · NHL 1 · NCAAF 1 · NULL 10
+              // So the chip Andy was on decided how much of the calendar
+              // existed: on NHL the whole history is ONE day and October is
+              // blank, on NCAAB it is empty, on NBA October shows 4 of 31.
+              // Ten rows carry sport=NULL and matched no chip at all.
+              //
+              // The record is a single cross-sport record by construction --
+              // there is one POTD a day and it is whichever sport had the
+              // play. Keep the calendar sport-blind; each day's sport is
+              // already named in the tapped-day detail below.
+              const potdRows = potdHistory;
               const potdW = potdRows.filter((r:any) => r.result === 'Win').length;
               const potdL = potdRows.filter((r:any) => r.result === 'Loss').length;
               const potdP = potdRows.filter((r:any) => r.result === 'Push').length;
@@ -18141,9 +18159,9 @@ setJerryHistory(prev => {
                       Derived from potdHistory, which is already fetched for
                       the strip above - no new query. */}
                   {(() => {
-                    const rows = filterSport === 'ALL'
-                      ? potdHistory
-                      : potdHistory.filter((r:any) => r.sport === filterSport);
+                    // 2026-11-03: sport-blind, same reason as potdRows above —
+                    // POTD is one cross-sport play per day.
+                    const rows = potdHistory;
                     if (!rows.length) return null;
                     const norm = (v:any) => String(v ?? '').trim();
                     const low = (v:any) => norm(v).toLowerCase();

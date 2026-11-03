@@ -511,6 +511,27 @@ def fetch_yesterday_recap():
         recap["dawg"] = dawg_rows[0]
 
     # POTD result via best_bet cache row
+    # ══ 2026-11-03 · THE POTD LABEL WAS NULL ON EVERY CARD EVER BUILT ══
+    # ANDY: "yesterday sweat card recap is missing the POTD grade as well".
+    #
+    # This read `d.get("pick") or d.get("recommended")`. Neither key exists.
+    # Counted across all 201 best_bet_* rows in jerry_cache:
+    #     pick            0 rows
+    #     recommended     0 rows
+    #     leanDisplay   148 rows   <- where the label actually lives
+    # So recap.potd.pick has been None since the field was added, and the
+    # home screen could not name yesterday's play even once it was graded.
+    # feedback_dict_get_on_a_guessed_column — a .get() on a guessed key is
+    # indistinguishable from an absent value.
+    #
+    # And the RESULT read here is a point-in-time copy. The card builds in
+    # the afternoon; grade_potd runs in nightly_cross_sport BEFORE the NBA
+    # and NHL resolvers write their finals (measured 2026-11-03: grade_potd
+    # 17:58, nba_game_results resolved_at 19:08), so at build time
+    # yesterday's non-MLB POTD is still 'Pending' and nothing re-reads it
+    # here. daily_best_bet_history is the surface resolve/grade actually
+    # settle and the surface the Receipts calendar renders, so prefer it and
+    # keep the cache blob as the fallback for dates it predates.
     potd_rows = sb_get("jerry_cache", {
         "game_id": f"eq.best_bet_{yesterday}",
         "select": "data,narrative",
@@ -519,9 +540,26 @@ def fetch_yesterday_recap():
         d = potd_rows[0].get("data") or {}
         recap["potd"] = {
             "matchup": d.get("matchup") or d.get("game"),
-            "pick": d.get("pick") or d.get("recommended"),
+            "pick": (d.get("pick") or d.get("recommended")
+                     or d.get("leanDisplay") or d.get("lean")),
             "result": d.get("result_status") or d.get("result"),
         }
+    _potd_hist = sb_get("daily_best_bet_history", {
+        "bet_date": f"eq.{yesterday}",
+        "select": "sport,game,lean,result,odds_american",
+    }) or []
+    if _potd_hist:
+        _h = _potd_hist[0]
+        _r = recap.setdefault("potd", {})
+        # The graded surface wins on result and fills anything the blob left
+        # blank; never blank out a value the blob already had.
+        if _h.get("result"):
+            _r["result"] = _h["result"]
+        _r["pick"] = _r.get("pick") or _h.get("lean")
+        _r["matchup"] = _r.get("matchup") or _h.get("game")
+        _r["sport"] = _r.get("sport") or _h.get("sport")
+        if _h.get("odds_american") is not None:
+            _r.setdefault("odds", _h["odds_american"])
 
     # Full top_8 graded list — populated by resolve_game_results.py nightly.
     # Lets the app show the full receipts unit (W/L per pick) not just

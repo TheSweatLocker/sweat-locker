@@ -77,12 +77,18 @@ export const RecapCard: React.FC<Props> = ({ sport, initialPeriod, onTap }) => {
     try {
       const sportLower = sportDb(sport);
       const [potdRes, dawgRes, propsResult] = await Promise.all([
-        // POTD — daily_best_bet_history has multi-sport via `sport` column.
-        // Pull all rows in range, take the most recent for "yesterday" or aggregate for ranges.
+        // POTD — ONE cross-sport play per day, so it is NOT sport-scoped.
+        // ══ 2026-11-03 · .eq('sport') BLANKED THE RECAP'S POTD ══
+        // ANDY: "yesterday sweat card recap is missing the POTD grade".
+        // 2026-11-02's POTD was NBA (Houston Rockets ML, graded Win), so
+        // every non-NBA recap asked for a POTD that by definition could not
+        // exist and rendered nothing. Across the table there are 157 MLB
+        // rows but only 7 NBA / 4 NFL / 1 NHL / 1 NCAAF and 10 with sport
+        // NULL, so this filter empties the block on most sports most days.
+        // Sport stays on the row for display; it is not a selector.
         supabase
           .from('daily_best_bet_history')
           .select('bet_date, game, lean, result, sport')
-          .eq('sport', sportLower.toUpperCase())   // POTD table uses uppercase
           .gte('bet_date', range.startDate)
           .lte('bet_date', range.endDate)
           .order('bet_date', { ascending: false }),

@@ -215,7 +215,24 @@ def resolve_pick(pick: dict, look: dict, side_look: dict | None = None) -> str |
 
 #: lists a graded pick can live in. top_8 feeds top_8_summary; football_picks
 #: is graded too (see the note at the resolve loop) and is a receipt source.
-_GRADED_LISTS = ('top_8', 'football_picks')
+#
+# == 2026-11-03 . THE LIST THE APP RENDERS WAS NOT IN HERE ==============
+# ANDY: "yesterday sweat card recap is missing the POTD grade as well".
+#
+# Measured on sweat_card_2026-11-02 after this script reported "written":
+#     top_8[0]             Houston Rockets ML   result 'Win'      <- patched
+#     unified_top_picks[0] Houston Rockets ML   result 'Pending'  <- not
+#
+# index.tsx:2017 builds cardPicks by PREFERRING unified_top_picks and only
+# falling back to top_8, so the one list this script never touched is the
+# one on screen. The grade was correct in the payload and Pending in the
+# app, which is indistinguishable from "the grader did not run".
+#
+# unified_top_picks is still excluded from the top_8_summary rollup below --
+# that figure is defined on top_8 and double-counting it would inflate every
+# card record. This adds the list to GRADING, not to COUNTING.
+# feedback_fix_every_writer_to_the_table.
+_GRADED_LISTS = ('top_8', 'football_picks', 'unified_top_picks')
 
 
 def _confirm_written(key: str, want_summary: dict, want_results: dict):
@@ -340,16 +357,21 @@ def main() -> int:
         # still counts `picks` alone.
         fb_picks = [p for p in (blob.get('football_picks') or [])
                     if isinstance(p, dict)]
-        if not picks and not fb_picks:
+        # 2026-11-03: unified_top_picks is what index.tsx actually renders
+        # (see _GRADED_LISTS). Graded here, deliberately NOT counted in
+        # top_8_summary below.
+        uni_picks = [p for p in (blob.get('unified_top_picks') or [])
+                     if isinstance(p, dict)]
+        if not picks and not fb_picks and not uni_picks:
             continue
-        pending = [p for p in picks + fb_picks
+        pending = [p for p in picks + fb_picks + uni_picks
                    if str(p.get('result') or '').strip().lower() in _PENDING]
         if not pending:
             continue
         look = build_lookup(d)
         side_look = build_side_lookup(d)
         fixed = []
-        for p in picks + fb_picks:
+        for p in picks + fb_picks + uni_picks:
             nv = resolve_pick(p, look, side_look)
             if nv:
                 fixed.append((p.get('label'), p.get('result'), nv))
