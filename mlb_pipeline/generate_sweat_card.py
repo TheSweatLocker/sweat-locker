@@ -1042,6 +1042,123 @@ def _relabel_to_line(label, line, mkt) -> str:
     return str(label)[:last.start()] + txt + str(label)[last.end():]
 
 
+# ══ 2026-11-04 · THE ONE NBA PROP CELL THAT MEASURED POSITIVE ═══════════
+# `fetch_top_props` below reads the literal string "mlb_pipeline_props", so
+# the card's whole prop surface is MLB-only and therefore DARK all winter.
+# That is why the floor fill had nothing left to reach for except NBA
+# favourites from a cell measured at 45.76% (see the veto at the floor).
+#
+# Measured on 9,225 graded in-band NBA props, bet-side corrected, ROI at
+# each row's own price:
+#
+#     all in-band props (control)        51.24%   ROI  -6.14%   n=9225
+#     all UNDER props (direction ctrl)   55.05%   ROI  -0.38%   n=4743
+#     UNDER + projection BELOW the line  59.70%   ROI  +2.82%   n=1933
+#     UNDER + projection ABOVE the line  51.85%   ROI  -2.59%   n=2810
+#     OVER  + projection above the line  50.30%   ROI  -8.97%   n=2803
+#
+# +4.65pp over the direction-only control, which is the number that
+# matters because a raw UNDER hit rate borrows from the base rate. It is
+# monotone in edge size (ROI +2.04% at |edge| 0-1 rising to +14.99% at
+# 5-8) and both chronological halves are positive (+11.70% / +4.41%).
+#
+# HONEST LIMITS, enforced below rather than written in prose:
+#   * The sample spans 2026-10-20..11-02 — TWO WEEKS, one regime. This is a
+#     young edge, so it fills a floor; it does not claim a tier it has not
+#     earned, and each row keeps the tier the scorer gave it.
+#   * Void rate climbs 11.7% -> 16.1% with edge size, and
+#     `minutes_played`/`lineup_state` are 0 of 5,539 populated, so there is
+#     NO minutes filter. The per-family line floor is the proxy: a 5-minute
+#     bench player with a low line is lineup risk wearing an edge.
+#   * Juice capped at -150. The measurement was run inside -300..+150 and
+#     house policy is the same band.
+_NBA_PROP_MIN_LINE = {'pts_under': 12.0, 'pra_under': 20.0, 'reb_under': 5.5,
+                      'ast_under': 4.5, 'threes_under': 2.5,
+                      'blocks_under': 1.5, 'steals_under': 1.5}
+_NBA_PROP_MIN_EDGE = 1.5
+
+
+def fetch_nba_prop_floor(game_date, per_game=1):
+    """Tonight's NBA under-props that satisfy the measured rule.
+
+    Returned pre-sorted by edge descending. The floor's own sort is stable
+    and these rows all share sport/source_table/conviction, so that order
+    survives into the card without inventing a conviction to rank them by.
+    """
+    rows = sb_get('nba_pipeline_props', {
+        'select': ('id,game_id,matchup,player_name,prop_type,direction,'
+                   'prop_line,projection,proj_vs_line_edge,book_under_odds,'
+                   'tier,conviction'),
+        'game_date': f'eq.{game_date}',
+        'direction': 'eq.under',
+        'limit': '3000',
+    })
+    if not rows:
+        return []
+    cands = []
+    for r in rows:
+        pt = str(r.get('prop_type') or '')
+        px, edge, line = (r.get('book_under_odds'), r.get('proj_vs_line_edge'),
+                          r.get('prop_line'))
+        if px is None or edge is None or line is None:
+            continue
+        try:
+            px, edge, line = int(px), float(edge), float(line)
+        except (TypeError, ValueError):
+            continue
+        if edge >= 0:                      # projection must sit BELOW the line
+            continue
+        if not (-150 <= px <= 150):
+            continue
+        if line < _NBA_PROP_MIN_LINE.get(pt, 0):
+            continue
+        if abs(edge) < _NBA_PROP_MIN_EDGE:
+            continue
+        fam = pt.replace('_under', '').upper()
+        cands.append({
+            'sport': 'NBA',
+            'type': 'prop',
+            'source_table': 'nba_pipeline_props',
+            'game_id': r.get('game_id'),
+            'matchup': r.get('matchup'),
+            'label': (f"{r.get('player_name')} {fam} UNDER "
+                      f"{line:g}"),
+            'odds': px,
+            'line': line,
+            'tier': r.get('tier'),
+            'conviction': r.get('conviction'),
+            '_prop_id': r.get('id'),
+            '_player': str(r.get('player_name') or ''),
+            '_projection': r.get('projection'),
+            '_proj_edge': round(abs(edge), 2),
+            '_measured_rule': 'nba_under_proj_below_line',
+            '_measured_cell': '59.70% / +2.82% ROI, n=1933, +4.65pp vs '
+                              'direction control, 2-week sample',
+        })
+    # best edge per player, then cap per game, then global edge order
+    best = {}
+    for c in cands:
+        # one entry per PLAYER per game: a player often has pts_under and
+        # pra_under on the same projection, and both would be the same
+        # opinion twice. Keyed on the player, not the label, so the family
+        # name in the label can change without silently splitting the key.
+        pk = (str(c['game_id']), c['_player'])
+        if pk not in best or c['_proj_edge'] > best[pk]['_proj_edge']:
+            best[pk] = c
+    per = {}
+    out = []
+    for c in sorted(best.values(), key=lambda z: -z['_proj_edge']):
+        g = str(c['game_id'])
+        if per.get(g, 0) >= per_game:
+            continue
+        per[g] = per.get(g, 0) + 1
+        out.append(c)
+    if out:
+        print(f'  = nba prop floor: {len(out)} candidate(s) from the measured '
+              f'under-rule (of {len(cands)} qualifying rows)')
+    return out
+
+
 def fetch_top_props():
     today = today_et()
     rows = sb_get(
@@ -4717,7 +4834,50 @@ def build_card():
     # Deliberately NOT a tier downgrade of the gate itself: a pick that
     # earns STRONG should still outrank a filled one, and when the slate
     # does produce 4 qualifiers the pool is never touched.
+    # ══ 2026-11-04 · THE FLOOR MUST NOT FILL FROM A MEASURED-LOSING CELL ══
+    # ANDY, seeing all four NBA favourites on the card drift against us:
+    # "if we dont like the card we need to fucking fix it".
+    #
+    # He was right, and the floor fill added this morning is what put them
+    # there. It pulls "below-tier picks that survived every other gate" in
+    # calibrated order — but no gate it passes through has ever asked
+    # whether that KIND of pick wins. Graded, our own published NBA spread
+    # picks:
+    #
+    #     all NBA spread picks        45.76%  n=59
+    #       picked the favourite      49.02%  n=51
+    #       tier COVERAGE             45.83%  n=48
+    #       tier STRONG               45.45%  n=11
+    #     COVERAGE + favourite        50.00%  n=40   <- tonight's exact shape
+    #
+    # Nothing clears the 52.38% breakeven, and an independent read of the
+    # same question (the model-favoured ATS side) agrees at 48.11% n=106,
+    # degrading to 41.94% n=31 at 5+ points of edge. Two different routes to
+    # the same answer.
+    #
+    # So the floor is a FLOOR, not a licence: a slot filled from a cell we
+    # have measured below breakeven is worse than a short card, exactly as
+    # the -200 ML and unpriced rules already say. Scoped to what is actually
+    # measured — NBA sides. NHL is NOT vetoed here because I have not graded
+    # it the same way, and an unmeasured cell must not inherit a measured
+    # one's verdict.
+    _MEASURED_LOSING_FILL = {
+        # (sport, market): (hit_pct, n, note)
+        ('NBA', 'rl'):     (45.76, 59, 'our graded NBA spread picks'),
+        ('NBA', 'spread'): (45.76, 59, 'our graded NBA spread picks'),
+    }
+
+    def _measured_loser(c):
+        k = (str(c.get('sport') or '').upper(),
+             str(c.get('type') or c.get('market') or '').lower())
+        return _MEASURED_LOSING_FILL.get(k)
+
     _FLOOR = 4
+    if len(unified_top_picks) < _FLOOR:
+        # Replace what the veto removes rather than just shrinking the card.
+        # The NBA prop rule below is the one NBA cell measured POSITIVE, so
+        # the floor can still be met without reaching into a losing one.
+        _floor_pool = list(_floor_pool or []) + fetch_nba_prop_floor(today)
     if len(unified_top_picks) < _FLOOR and _floor_pool:
         _have = {(str(p.get('sport') or '').upper(), str(p.get('game_id')))
                  for p in unified_top_picks}
@@ -4756,6 +4916,12 @@ def build_card():
         for _t in _trapped:
             print(f'  = floor: refused {str(_t.get("label"))[:34]!r} '
                   f'@ {_t.get("odds")} — -200+ ML is a documented trap')
+        _vetoed = [c for c in _cands if _measured_loser(c)]
+        _cands = [c for c in _cands if not _measured_loser(c)]
+        for _v in _vetoed:
+            _hit, _n, _why = _measured_loser(_v)
+            print(f'  = floor: refused {str(_v.get("label"))[:34]!r} — '
+                  f'{_why} run {_hit}% on n={_n}, under the 52.38% breakeven')
         # priced first, then unpriced, each block in calibrated order
         _cands.sort(key=lambda p: (not _priced(p),
                                    -p.get('_calibrated', 0.0),
