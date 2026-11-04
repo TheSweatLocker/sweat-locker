@@ -123,6 +123,84 @@ CONTEXT_TABLE = {
     'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
 }
 
+#: "Movsar Evloev ML  (+1.92)" -> the fighter. UFC sharp-card labels put the
+#: fighter first, then ML, then the price in parentheses.
+_UFC_ML_LABEL = re.compile(r'^(?P<fighter>.+?)\s+ML\b', re.I)
+
+
+def _grade_ufc_moneylines(recs: list, patches: list, lo, hi,
+                          verbose: bool = False) -> None:
+    """Grade UFC fighter moneylines from ufc_fight_results.
+
+    == 2026-11-03 . WHY THIS IS SEPARATE ==================================
+    RESULTS_TABLE has no UFC entry, so these printed "no results table
+    mapping -- skipped" and never graded. It cannot simply be added: the
+    generic SELECT asks for home_team / away_team / home_score / away_score
+    / close_total, and a fight row carries fighter_a, fighter_b, winner,
+    method. A fight has no home side and no score.
+
+    THE SIDE TOKEN IS THE TRAP. `winner` is 'a' or 'b', NOT a name, so the
+    picked fighter has to be matched to the correct SIDE of the correct row.
+    The same fighter appears on many dates -- Jacobe Smith is in 5 rows --
+    so the key is (event_date, fighter) and nothing less. Verified unique:
+    0 duplicate (event_date, fighter) pairs across all 1,296 rows
+    (feedback_a_name_check_needs_the_right_row, which was itself about two
+    UFC feeds disagreeing about a card).
+
+    Worked through on the four live rows:
+        10-24 Iasmin Lucindo vs Nicolle Caliari      winner a -> Lucindo WIN
+        10-24 Alexander Volkanovski vs Movsar Evloev winner a -> Evloev LOSS
+        10-31 Randy Brown vs Jacobe Smith            winner b -> Smith  WIN
+        10-31 Talita Alencar vs Piera Rodriguez      winner b -> Rodriguez WIN
+
+    `winner` vocabulary across the table: a 1170, b 113, draw 7,
+    no_contest 5, null 1. A draw refunds a two-way moneyline, so it grades
+    PUSH. no_contest and null REFUSE rather than guess -- 5 rows in the
+    table's history, none of them live, and inventing a grade on an
+    abandoned fight is worse than leaving it visible as ungraded.
+    """
+    fights = {}
+    for row in paged(f'{SB}/rest/v1/ufc_fight_results?select=event_date,'
+                     f'fighter_a,fighter_b,winner,method'
+                     f'&event_date=gte.{lo}&event_date=lte.{hi}'):
+        for side in ('a', 'b'):
+            nm = row.get(f'fighter_{side}')
+            if nm:
+                fights[(str(row.get('event_date')),
+                        str(nm).strip().lower())] = (side, row)
+    print(f'  UFC: {len(fights)} (event_date, fighter) keys indexed')
+    out = Counter()
+    for rec in recs:
+        m = _UFC_ML_LABEL.match(str(rec.get('pick_label') or '').strip())
+        if not m:
+            out['label_unparseable'] += 1
+            continue
+        key = (str(rec.get('game_date')), m.group('fighter').strip().lower())
+        hit = fights.get(key)
+        if not hit:
+            out['no_fight_row'] += 1
+            continue
+        side, row = hit
+        win = str(row.get('winner') or '').strip().lower()
+        if win == side:
+            grade = 'WIN'
+        elif win in ('a', 'b'):
+            grade = 'LOSS'
+        elif win == 'draw':
+            grade = 'PUSH'
+        else:
+            out[f'unresolved_winner:{win or "null"}'] += 1
+            continue
+        out[grade] += 1
+        patches.append((rec['id'], grade))
+        if verbose:
+            print(f"      {grade:<5} {rec.get('game_date')} "
+                  f"{m.group('fighter')} ({side}) vs "
+                  f"{row.get('fighter_b') if side == 'a' else row.get('fighter_a')} "
+                  f"winner={win} {row.get('method')}")
+    print(f'  UFC graded: {dict(out)}')
+
+
 RESULTS_TABLE = {
     'MLB': 'mlb_game_results',
     'NFL': 'nfl_game_results',
@@ -563,6 +641,22 @@ def run(surface: str | None, days: int, dry_run: bool,
     out = Counter()
     reasons = Counter()
     patches = []
+    # 2026-11-03 · UFC HAS NO home/away, SO IT NEEDS ITS OWN PASS.
+    # RESULTS_TABLE had no UFC entry, so every UFC game-market receipt
+    # printed "no results table mapping — skipped" and stayed ungraded
+    # forever. Adding 'UFC': 'ufc_fight_results' to that dict would NOT
+    # work: the SELECT below asks for home_team/away_team/home_score/
+    # away_score/close_total, and a fight row carries fighter_a, fighter_b,
+    # winner, method — so it would 400 rather than grade.
+    #
+    # Measured: 4 ungraded UFC receipts, all surface='sharp_card' at
+    # STRONG/PRIME, from 10-24 and 10-31, all fighter moneylines.
+    ufc = [r for r in recs if str(r.get('sport') or '').upper() == 'UFC']
+    if ufc:
+        _grade_ufc_moneylines(ufc, patches, lo, hi, verbose)
+        done = {p[0] for p in patches}
+        recs = [r for r in recs if r['id'] not in done]
+
     for rec in recs:
         sport = str(rec.get('sport') or '').upper()
         if sport not in idx:
