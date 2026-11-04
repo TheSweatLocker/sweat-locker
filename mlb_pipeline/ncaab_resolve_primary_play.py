@@ -452,6 +452,67 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
     for g in games:
         result = resolve(g, g.get('mc_probabilities'), g.get('panel_prediction'),
                           jerry.get(g.get('game_id')))
+        # ═══ 2026-11-03 · ENSEMBLE MERGE, NOT REPLACE ═══════════════════
+        # Andy: "we need to have a baseline for ncaab models and overall
+        # engine (decision makers) ... I need a product."
+        #
+        # ensemble_scorer has supported NCAAB all along (MARKETS_BY_SPORT
+        # lists ml/rl/total) -- this file simply never called it, so NCAAB
+        # was the one sport whose picks came from a bespoke lens resolver
+        # with NO conviction key and NO per-signal attribution, which is
+        # why 0 of 128 NCAAB jerry_reads carry a conviction.
+        #
+        # MERGED, deliberately. project_lr_v1_override_erases_attribution_
+        # 1027 measured a second engine rewriting primary_play on 457 picks
+        # and destroying _ensemble_sources, and losing on the side flips it
+        # made. So the ensemble's pick is taken for the fields it is better
+        # at -- tier, conviction, per-signal attribution -- while this
+        # resolver's lens agreement is preserved under `_lens_meta`, and if
+        # the ensemble has no opinion the bespoke result stands untouched.
+        #
+        # NCAAB is capped at STRONG in MAX_TIER_BY_SPORT: of its 65 signals
+        # exactly 2 are PROVISIONAL, and a 2-signal library must not be able
+        # to make a 2-unit PRIME claim.
+        try:
+            from ensemble_scorer import score_game as _ens
+            _dec = _ens('NCAAB', g)
+            if _dec is not None:
+                _top = _dec.top()
+                if _top is not None and _top.pick is not None:
+                    _prev = result.get('primary_play') or {}
+                    result['primary_play'] = {
+                        'type': _top.market,
+                        'tier': _top.tier,
+                        'label': _top.display_label,
+                        'side': _top.side,
+                        'line': _top.line,
+                        'conviction': _top.conviction,
+                        'score': round(_top.score, 2),
+                        'sub': getattr(_top, 'display_prose', None) or _prev.get('sub'),
+                        '_engine': 'ensemble_v2',
+                        '_ensemble_sources': [
+                            {'signal_key': c.signal_key,
+                             'class': c.signal_class,
+                             'side': c.side,
+                             'weight': round(c.weight, 3),
+                             'n': c.n,
+                             'contribution': round(c.contribution, 3)}
+                            for c in (_top.contributions or [])[:8]
+                        ],
+                        # nothing the lens resolver knew is thrown away
+                        '_lens_meta': result.get('lens_meta'),
+                        '_pre_ensemble': {k: _prev.get(k)
+                                          for k in ('type', 'tier', 'label',
+                                                    'side', 'line')},
+                    }
+                    result['sweat_tier'] = _top.tier
+        except ImportError:
+            pass          # ensemble absent — bespoke result stands
+        except Exception as _e:                              # noqa: BLE001
+            # Never let the ensemble take down the resolver that works.
+            print(f'  ⚠ ensemble unavailable for {g.get("game_id")}: '
+                  f'{type(_e).__name__}: {_e}')
+
         tier_counts[result['sweat_tier']] = tier_counts.get(result['sweat_tier'], 0) + 1
 
         if dry_run:

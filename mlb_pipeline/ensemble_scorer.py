@@ -315,7 +315,17 @@ TIER_THRESHOLDS_BY_SPORT = {
 # RE-ENTRY CONDITION, so this is tunable rather than permanent: remove a
 # sport here once >=10 of its enabled game signals carry a measured hit rate
 # on sample_n >= 30 in signal_registry.
-MAX_TIER_BY_SPORT = {'NBA': 'STRONG', 'NHL': 'STRONG'}
+# 2026-11-03 NCAAB added. Andy asked for a shippable baseline ("lets set
+# something and we will evaluate and tune and weight as we go"), and NCAAB
+# now carries real weights in signal_registry for the first time -- but of
+# 65 signals only TWO are PROVISIONAL (both spread), 11 are ANTI_VALIDATED,
+# 12 REJECTED and 40 sit at a 0.020 prior, measured on one week of
+# opening-week buy games with no split-half. A library that thin must not
+# be able to reach PRIME, which is a 2-unit claim.
+#
+# The condition for lifting this is written down: >=10 enabled NCAAB game
+# signals carrying a measured hit rate on sample_n >= 30. Today it is 2.
+MAX_TIER_BY_SPORT = {'NBA': 'STRONG', 'NHL': 'STRONG', 'NCAAB': 'STRONG'}
 
 #: sports whose bars are percentile-derived rather than absolute
 RELATIVE_BAR_SPORTS = frozenset(TIER_THRESHOLDS_BY_SPORT)
