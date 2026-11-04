@@ -55,7 +55,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv numpy scikit-learn
 
+      # ═══ 2026-11-03 · MLB OFFSEASON GATE ═══════════════════════════════
+      # ~74 of the 231.9 scheduled runs a day were MLB-only, on a season
+      # whose last game was 2026-10-28. That congestion is the measured
+      # cause of every other sport's pipeline landing 7-10h late, which is
+      # why the Sweat Card composes on yesterday's non-MLB data
+      # (project_card_builds_before_every_other_sport_1102).
+      #
+      # A STEP, not a separate job: a gate job costs a second runner
+      # acquisition on every in-season run, and runner acquisition is the
+      # scarce thing here. This workflow is 5 runs/day.
+      #
+      # sport_gate.py fails OPEN on any error and workflow_dispatch always
+      # runs, so neither a gate bug nor a manual rerun can leave MLB dark.
+      - name: Offseason gate
+        id: sport_gate
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sport_gate.py --sport MLB --require-games
+
       - name: Refresh missing sweat_scores + jerry_reads
+        if: steps.sport_gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -80,6 +103,9 @@ jobs:
       # run_step.sh records each failure and still returns 0; this gate
       # fails the run at the end with the list.
       - name: Fail the run if any step failed
+        # NOT gated: this only reports whether the steps above
+        # failed. When the offseason gate skips them there is
+        # nothing to report, and always() keeps that unchanged.
         if: always()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
