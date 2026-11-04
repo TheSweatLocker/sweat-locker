@@ -619,6 +619,11 @@ PROP_INHERIT = {
 _RESULT_MAP = {
     'win': 'WIN', 'loss': 'LOSS', 'push': 'PUSH',
     'no_action': 'NO_ACTION', 'void': 'NO_ACTION', 'voided': 'NO_ACTION',
+    # 2026-11-03: 'no-pick'/'no play' are daily_best_bet_history's spelling
+    # for the same thing. 5 live potd receipts carry 'NO PLAY', which this map
+    # could not translate, so they were counted as unmapped skips.
+    'no play': 'NO_ACTION', 'no-play': 'NO_ACTION', 'no-pick': 'NO_ACTION',
+    'no_pick': 'NO_ACTION', 'ungradeable': 'UNGRADEABLE',
 }
 
 # "Shane Baz Under 17.5 OUTS" -> player / direction / line / stat
@@ -895,7 +900,25 @@ def grade_props(days: int, dry_run: bool) -> None:
                 for r in mine:
                     res, _actual, why = _settle(r, fam, vmap)
                     if res:
-                        patches.append((r['id'], res))
+                        # 2026-11-03 . NORMALIZE, like the inherit pass does.
+                        # The inherit pass 60 lines up runs every value
+                        # through _RESULT_MAP; this one wrote settle()'s
+                        # return verbatim, and settle_prop_receipts returns
+                        # TITLE case ('Win'/'Loss'/'Push', lines 483/518)
+                        # while this column's convention is UPPER. Result:
+                        # 375 rows in the minority case, 369 of them
+                        # surface='prop_jerry' NFL+NBA graded on 11-02/11-03.
+                        #
+                        # Measured: nothing user-facing is wrong today --
+                        # compute_surface_records lowercases (line 212),
+                        # aggregate_daily_records and audit_live_surface_roi
+                        # both .upper(). But the column holds ~520 comparison
+                        # sites across this repo and any one of them that
+                        # forgets would silently drop these rows. Two writers
+                        # into one column must agree on the vocabulary
+                        # (feedback_fix_every_writer_to_the_table).
+                        norm = _RESULT_MAP.get(str(res).strip().lower(), res)
+                        patches.append((r['id'], norm))
                         skipped['settled_from_boxscore'] += 1
                     else:
                         skipped[f'boxscore:{why}'] += 1
