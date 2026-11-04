@@ -1024,15 +1024,45 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
   // shows what LIST already promised.
   if (!play || typeof play !== 'object') {
     if (jerrySynthesis && jerrySynthesis.call_text) {
-      const conv = Number(jerrySynthesis.conviction) || 55;
-      const jerryTier = conv >= 80 ? 'PRIME' : conv >= 65 ? 'STRONG' : 'LEAN';
+      // 2026-11-03 · `Number(x) || 55` INVENTED A TIER AND A CONFIDENCE.
+      // 0 is falsy in JS, so a read whose conviction is 0 — or null —
+      // became conv=55, and 55 fell through this ladder to **LEAN**, a
+      // PUBLISHABLE tier, with the subtitle "55% confidence". Neither
+      // number came from the engine.
+      //
+      // It is not hypothetical. jerry_reads holds 362 reads with no
+      // conviction but real prose, and NCAAB is **0 of 128** — the only
+      // sport with none at all, because generate_ncaab_game_reads never
+      // computes one. Cross-referenced against the ctx rows that have no
+      // primary_play (the only way this branch is reached), **58 live game
+      // cards** would render the fabricated LEAN / 55%: NBA 39, NCAAB 19,
+      // including 7 dated tomorrow.
+      //
+      // Same shape as the SOLID tier bug fixed server-side the same day
+      // (feedback_a_display_label_became_a_gating_tier): a value invented
+      // for display became a tier. "We show the receipts" cannot sit next
+      // to a confidence figure nothing measured.
+      //
+      // The original intent is kept — a game with a real Jerry read must
+      // not show an empty verdict — by tiering it COVERAGE, which the block
+      // below already renders with its LOW CONVICTION chip, i.e. visible
+      // but explicitly not card-eligible. Do NOT substitute a number here;
+      // conviction outside MLB is a different scale and is measured flat or
+      // inverted (project_conviction_is_a_baseball_scale_1027).
+      const rawConv = Number(jerrySynthesis.conviction);
+      const hasConv = Number.isFinite(rawConv) && rawConv > 0;
+      const jerryTier = !hasConv
+        ? 'COVERAGE'
+        : rawConv >= 80 ? 'PRIME' : rawConv >= 65 ? 'STRONG' : 'LEAN';
       play = {
         type: jerrySynthesis.call_market || 'ml',
         tier: jerryTier,
         side: jerrySynthesis.call_side || 'HOME',
         label: jerrySynthesis.call_text,
-        sub: `Jerry read · ${conv}% confidence`,
-        conviction: conv,
+        sub: hasConv
+          ? `Jerry read · ${rawConv}% confidence`
+          : 'Jerry read · conviction not scored for this sport',
+        conviction: hasConv ? rawConv : 0,
         _engine: 'jerry_synthesis',
       };
     } else {
