@@ -126,7 +126,15 @@ FOOTBALL_CHALK_ML_JUICE_MAX = -1500        # if picked ML <= this, cap it
 # the quota drops by tier priority (LEAN first, then STRONG).
 # Historical volume was 100+; new cap ~50 balances "sharp discipline"
 # with "cross-sport coverage on Sat when 4 sports are live."
-SHARP_CARD_ITEM_CAP = 36  # 20 cut the football flips off (2026-10-24)
+# ══ 2026-11-04 · ANDY SET THE BAND: "The Sharp should be like 3-5 every
+# day." Measured over the prior 30 days it was in that band on only 13,
+# sat at 0 on two, and emitted **29 on 2026-10-24** — the old cap of 36
+# was never a product constraint, it was a backstop.
+#
+# So the cap is the top of the band and there is now a FLOOR as well.
+# Change these two numbers to re-tune; nothing else needs touching.
+SHARP_CARD_TARGET_MIN = 3
+SHARP_CARD_ITEM_CAP = 5
 
 # (4) 2026-09-06 juice cap on SOLE game picks (all sports). ML picks
 # juicier than this get auto-swapped to the spread side of the same
@@ -216,7 +224,10 @@ COLD_LOOKBACK_DAYS = 7
 COLD_MIN_SAMPLE = 15         # need at least 15 plays to trust the sample
 COLD_HIT_RATE_THRESHOLD = 0.50   # < 50% = cold
 WARM_HIT_RATE_THRESHOLD = 0.55   # ≥ 55% = normal
-COLD_ITEM_CAP = 30            # was 15 — do not throttle the flips
+# Cold mode tightens to the FLOOR, not to a separate larger number:
+# the band is the product, and a cold streak is the last time to be
+# publishing five.
+COLD_ITEM_CAP = SHARP_CARD_TARGET_MIN
 COLD_TIER_FILTER = {'PRIME', 'STRONG'}   # cold-mode: drop LEAN
 
 _SPORT_PRIORITY = {'MLB': 0, 'NCAAF': 1, 'NFL': 2, 'NCAAB': 3, 'NBA': 4, 'NHL': 5, 'UFC': 6}
@@ -1442,7 +1453,8 @@ def _flip_short_spread(pp: dict, g: dict, px: dict):
             'from_label': pp.get('label')}, None
 
 
-def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
+def _compose_other_sport_sides(rows: list, sport: str,
+                               below_tier_out: list | None = None) -> list[dict]:
     is_football = sport in ('NCAAF', 'NFL')
     # Date comes from _today_et(), NOT from the rows. game_date is not in the
     # context SELECT lists (none of the three variants include it), so
@@ -1718,7 +1730,15 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
         _lean_flip_ok = (is_football
                          and str(pp.get('type') or '').lower()
                          in ('rl', 'spread'))
-        if not tier_gate(tier) and not _lean_flip_ok:
+        # ══ 2026-11-04 · FLOOR SINK ════════════════════════════════════
+        # ANDY set the band at 3-5 a day. On a thin slate the tier gate can
+        # take the whole card to 0 (it did twice in the last 30 days), so a
+        # pick that fails ONLY this gate is carried through every remaining
+        # guard — chalk fade, juice swap, price, no-edge, LR conflict — and
+        # only then set aside as a floor candidate. PASS/SKIP never qualify.
+        _below_tier = (not tier_gate(tier)) and (not _lean_flip_ok)
+        if _below_tier and (below_tier_out is None
+                            or tier in ('PASS', 'SKIP', '', 'None')):
             if is_football and tier == 'LEAN': dropped_lean += 1
             continue
         if _lean_flip_ok and not tier_gate(tier):
@@ -1920,7 +1940,7 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
                                  side_price_american=side_ml,
                                  conviction=pp.get('conviction'))
         if units <= 0: continue
-        picks.append({
+        _it = {
             'sport': sport,
             'matchup': f"{g.get('away_team')} @ {g.get('home_team')}",
             'tier': pp.get('tier'),
@@ -1969,12 +1989,33 @@ def _compose_other_sport_sides(rows: list, sport: str) -> list[dict]:
                               'label': flipped['from_label'],
                               'books': flipped['books']}
                              if flipped else None),
-        })
-    if is_football and (dropped_lean or dropped_chalk or dropped_pass or dropped_anchor):
-        print(f'  {sport} discipline drops: LEAN={dropped_lean}  chalky-STRONG={dropped_chalk}  '
-              f'no-play={dropped_pass}  anchor={dropped_anchor}')
-    elif dropped_pass:
-        print(f'  {sport} no-play drops: {dropped_pass}')
+        }
+        if _below_tier:
+            _it['_floor_candidate'] = True
+            below_tier_out.append(_it)
+            continue
+        picks.append(_it)
+    # ══ 2026-11-04 · A SILENT DROP READS AS "NO OPINION" ════════════════
+    # This breakdown was gated on `is_football`, so for NBA, NHL and NCAAB
+    # the composer could take 10 games to 0 items and print nothing but the
+    # total. Tonight NCAAB had 10 games and 9 LEAN picks and contributed 0,
+    # and there was no way to see which gate ate them without editing the
+    # file. Report for every sport — the whole point of the counters is to
+    # tell us which gate is responsible (feedback_green_step_that_writes_
+    # nothing: assert the OUTPUT moved, and when it did not, say why).
+    _drops = {
+        'LEAN': dropped_lean, 'chalky-STRONG': dropped_chalk,
+        'no-play': dropped_pass, 'anchor': dropped_anchor,
+        'no-price': dropped_no_price, 'no-edge': dropped_no_edge,
+        'lr-conflict': dropped_lr_conflict,
+        'swap-unproven': dropped_swap_unproven,
+        'flip-unpriced': dropped_flip_unpriced,
+        'flip-contradiction': dropped_flip_contradiction,
+    }
+    _nz = {k: v for k, v in _drops.items() if v}
+    if _nz:
+        print(f'  {sport} drops: '
+              + '  '.join(f'{k}={v}' for k, v in sorted(_nz.items())))
     if dropped_lr_conflict:
         print(f'  {sport} LR-shadow-conflict drops: {dropped_lr_conflict}')
     if dropped_ncaaf_total:
@@ -2620,11 +2661,14 @@ def run(dry_run: bool = False, force: bool = False):
               f'prop-heavy allocation')
     mlb_sides = sides_taken
     mlb_props = props_taken
-    nfl       = _compose_other_sport_sides(sources['nfl_ctx'], 'NFL')
-    ncaaf     = _compose_other_sport_sides(sources['ncaaf_ctx'], 'NCAAF')
-    ncaab     = _compose_other_sport_sides(sources['ncaab_ctx'], 'NCAAB')
-    nba       = _compose_other_sport_sides(sources['nba_ctx'], 'NBA')
-    nhl       = _compose_other_sport_sides(sources['nhl_ctx'], 'NHL')
+    # 2026-11-04: collect picks that fail ONLY the tier gate, so the band
+    # floor can be reached without loosening the gate for everyone.
+    _floor_pool: list = []
+    nfl       = _compose_other_sport_sides(sources['nfl_ctx'], 'NFL', _floor_pool)
+    ncaaf     = _compose_other_sport_sides(sources['ncaaf_ctx'], 'NCAAF', _floor_pool)
+    ncaab     = _compose_other_sport_sides(sources['ncaab_ctx'], 'NCAAB', _floor_pool)
+    nba       = _compose_other_sport_sides(sources['nba_ctx'], 'NBA', _floor_pool)
+    nhl       = _compose_other_sport_sides(sources['nhl_ctx'], 'NHL', _floor_pool)
     ufc       = _compose_ufc(sources['ufc_reads'])
 
     # R140, 2026-11-02: the prop fetch above reads mlb_pipeline_props only,
@@ -2680,6 +2724,78 @@ def run(dry_run: bool = False, force: bool = False):
             capped = capped[:_effective_cap]
         all_items = capped
         print(f'  cap applied: {pre} → {len(all_items)} (per-sport quotas + hard cap {_effective_cap})')
+
+    # ══ 2026-11-04 · FLOOR FILL TO SHARP_CARD_TARGET_MIN ════════════════
+    # The band is 3-5. The cap above handles the top; this handles the
+    # bottom, which the card hit twice in the last 30 days (0 items) and
+    # was below on 17 of 30. Candidates already survived every guard except
+    # the tier gate.
+    #
+    # Same two disciplines as the Sweat Card floor: no -200+ moneyline (a
+    # named CLAUDE.md trap) and priced candidates first, because an
+    # unpriced pick cannot be graded for ROI at all. Each filled item keeps
+    # its real tier and is stamped `_floor_fill`.
+    if len(all_items) < SHARP_CARD_TARGET_MIN and _floor_pool:
+        _have = {(str(i.get('sport') or '').upper(), str(i.get('game_id')))
+                 for i in all_items}
+
+        def _ml_trap(c):
+            if str(c.get('type') or '').lower() != 'ml':
+                return False
+            try:
+                return float(c.get('odds')) <= -200
+            except (TypeError, ValueError):
+                return False
+
+        def _priced(c):
+            try:
+                return abs(float(c.get('odds'))) >= 100
+            except (TypeError, ValueError):
+                return False
+
+        _cands = []
+        for _c in _floor_pool:
+            _k = (str(_c.get('sport') or '').upper(), str(_c.get('game_id')))
+            if _k in _have:
+                continue
+            if _ml_trap(_c):
+                print(f'  = sharp floor: refused {str(_c.get("pick"))[:34]!r} '
+                      f'@ {_c.get("odds")} — -200+ ML is a documented trap')
+                continue
+            _cands.append(_c)
+        _cands.sort(key=lambda c: (not _priced(c),
+                                   _TIER_PRIORITY.get(c.get('tier'), 9),
+                                   -float(c.get('units') or 0)))
+        _need = SHARP_CARD_TARGET_MIN - len(all_items)
+        _added = []
+        for _c in _cands:
+            if len(_added) >= _need:
+                break
+            _k = (str(_c.get('sport') or '').upper(), str(_c.get('game_id')))
+            if _k in _have:
+                continue
+            _have.add(_k)
+            _c['_floor_fill'] = True
+            if not _priced(_c):
+                _c['_floor_fill_unpriced'] = True
+                print(f'  ⚠ sharp floor: filling with an UNPRICED pick '
+                      f'{str(_c.get("pick"))[:34]!r} — ungradeable until a '
+                      f'price lands')
+            _added.append(_c)
+        if _added:
+            all_items = all_items + _added
+            print(f'  ⬆ sharp floor fill: {len(all_items) - len(_added)} → '
+                  f'{len(all_items)} to reach {SHARP_CARD_TARGET_MIN} '
+                  f'(pool {len(_floor_pool)})')
+            for _c in _added:
+                print(f'      + {_c.get("sport")} {_c.get("tier")} '
+                      f'{str(_c.get("pick"))[:40]}')
+        else:
+            print(f'  ⚠ sharp floor: no eligible candidate; staying at '
+                  f'{len(all_items)} (pool {len(_floor_pool)})')
+    elif len(all_items) < SHARP_CARD_TARGET_MIN:
+        print(f'  ⚠ sharp below the {SHARP_CARD_TARGET_MIN} floor at '
+              f'{len(all_items)} and the below-tier pool is EMPTY')
 
     # Live PRIME/STRONG prop identities, for the void-pick purge in
     # _publish — a published prop with no backing row is unbettable.
