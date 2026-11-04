@@ -213,7 +213,35 @@ def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
     as_ = new.get('away_score')
     if hs is None or as_ is None:
         return None
-    if _i(existing.get('home_score')) == hs and _i(existing.get('away_score')) == as_:
+
+    # == 2026-11-03 . "SCORES UNCHANGED" IS NOT "NOTHING TO DO" ===========
+    # This returned None the moment the score matched, so a game scored
+    # BEFORE its closing line landed never got spread_result or
+    # total_result -- the odds backfill fills close_spread/close_total
+    # afterwards and nothing ever revisits the row.
+    #
+    # Measured this season: 73 games have a final score AND a close_spread
+    # AND a close_total, and **72 of them have spread_result and
+    # total_result NULL**. Every one is computable from columns already in
+    # the row; all 72 share result_logged_at=2026-11-03T18:17:06, i.e. one
+    # scoring pass that ran before the lines arrived.
+    #
+    # That is not cosmetic. It is why NO NCAAB spread or total signal can be
+    # measured: the backtest grades 221 joined games and finds 2 with a
+    # gradeable spread outcome. And NCAAB favourite ML is already measured
+    # dead (negative in every price band, n=4,981; and every ML signal with
+    # n>=30 came out -0.70% to -8.47% ROI), so spreads and totals are the
+    # only markets left to look for an edge in.
+    #
+    # So: still skip when there is genuinely nothing to add, but treat a
+    # MISSING DERIVED OUTCOME as work to do.
+    _same_score = (_i(existing.get('home_score')) == hs
+                   and _i(existing.get('away_score')) == as_)
+    _owed_spread = (_f(existing.get('close_spread')) is not None
+                    and not existing.get('spread_result'))
+    _owed_total = (_f(existing.get('close_total')) is not None
+                   and not existing.get('total_result'))
+    if _same_score and not _owed_spread and not _owed_total:
         return None
 
     payload = {

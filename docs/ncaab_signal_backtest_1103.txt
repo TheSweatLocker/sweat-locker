@@ -1,0 +1,100 @@
+NCAAB snapshots 272 -> 272 distinct games; joined to a graded final: 221, unjoined 51
+NCAAB signals in the registry: 67 (66 enabled)
+
+direction-only controls on this sample:
+   AWAY        15.84%  n=221
+   AWAY_ATS    47.18%  n=142
+   AWAY_ML     15.84%  n=221
+   AWAY_RL     47.18%  n=142
+   AWAY_SPREAD  47.18%  n=142
+   HOME        84.16%  n=221
+   HOME_ATS    52.82%  n=142
+   HOME_ML     84.16%  n=221
+   HOME_RL     52.82%  n=142
+   HOME_SPREAD  52.82%  n=142
+   OVER        42.96%  n=142
+   UNDER       57.04%  n=142
+  !! signal_expr[?] NameError: name '_HANDLER_LINE_FLAG' is not defined  <- this can never be true on ANY row
+     expr: _HANDLER_LINE_FLAG
+  !! signal_expr[?] NameError: name '_HANDLER_SCENARIO' is not defined  <- this can never be true on ANY row
+     expr: _HANDLER_SCENARIO
+  !! signal_expr[?] NameError: name '_HANDLER_EXTERNAL' is not defined  <- this can never be true on ANY row
+     expr: _HANDLER_EXTERNAL
+
+signal                                       scope  fired graded      hit 1side  selection   BE        ROI
+   away_ats_cold_on_road                  rl      221   142  52.82% 1side=Y sel  +0.00pp  BE  52.38% ROI   +0.83%
+   home_ats_cold_at_home                  rl      221   142  47.18% 1side=Y sel  +0.00pp  BE  52.38% ROI   -9.92%
+   ncaab_home_court_strong                ml      126   126  88.89% 1side=Y sel  +4.73pp  BE  93.94% ROI   -8.28%
+   ncaab_projected_spread                 ml      112   112  91.07% 1side=  sel  +6.91pp  BE  96.37% ROI   -7.68%
+   ncaab_confluence_home                  ml      110   110  89.09% 1side=Y sel  +4.93pp  BE  94.68% ROI   -8.47%
+   ncaab_home_efficiency_edge             ml      108   108  92.59% 1side=Y sel  +8.43pp  BE  97.55% ROI   -6.89%
+   ncaab_away_spread_edge                 rl       92    92  46.74% 1side=Y sel  -0.44pp  BE  52.38% ROI  -10.77%
+   ncaab_projected_total                  total    73    73  61.64% 1side=  sel  +4.60pp  BE  52.38% ROI  +17.68%
+   ncaab_projection_contradicts_total_ove *        70    70  61.43% 1side=Y sel  +4.39pp  BE  52.38% ROI  +17.27%
+   home_ml_hot_at_home                    ml       60    60  90.00% 1side=Y sel  +5.84pp  BE  90.90% ROI   -0.70%
+   home_team_ats_hot_season               rl       77    59  55.93% 1side=Y sel  +3.12pp  BE  52.38% ROI   +6.78%
+   home_team_over_trend_season            total    77    59  38.98% 1side=Y sel  -3.97pp  BE  52.38% ROI  -25.58%
+   away_team_ats_cold_season              rl       54    41  65.85% 1side=Y sel +13.04pp  BE  52.38% ROI  +25.72%
+   away_team_under_trend_season           total    46    33  51.52% 1side=Y sel  -5.53pp  BE  52.38% ROI   -1.65%
+   away_ml_hot_on_road                    ml       25    25      -- 1side=Y sel       --  BE     -- ROI      --
+   both_teams_over_trend                  total    26    24      -- 1side=Y sel       --  BE     -- ROI      --
+   away_team_ats_hot_season               rl       30    22      -- 1side=Y sel       --  BE     -- ROI      --
+   away_team_over_trend_season            total    30    22      -- 1side=Y sel       --  BE     -- ROI      --
+   home_team_ats_cold_season              rl       27    17      -- 1side=Y sel       --  BE     -- ROI      --
+   home_team_under_trend_season           total    25    17      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_confluence_away                  ml       14    14      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_pace_both_fast_over              *        12    12      -- 1side=Y sel       --  BE     -- ROI      --
+   both_teams_under_trend                 total    11     9      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_offensive_mismatch_home          total     8     8      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_away_efficiency_edge             ml        4     4      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_projection_contradicts_total_und *         3     3      -- 1side=Y sel       --  BE     -- ROI      --
+   ncaab_home_spread_edge                 rl        1     1      -- 1side=Y sel       --  BE     -- ROI      --
+
+signals that NEVER FIRED on 221 games: 40 of 67
+   away_ats_hot_on_road
+   external_handicapper_pick_ncaab
+   h2h_away_dominant
+   h2h_away_dominant_fade
+   h2h_covers_home
+   h2h_home_dominant
+   h2h_home_dominant_fade
+   h2h_over_after_unders
+   h2h_over_streak
+   h2h_under_after_overs
+   h2h_under_streak
+   home_ats_hot_at_home
+   ncaab_3pt_shooting_gap_home
+   ncaab_away_shooting_edge
+   ncaab_conference_dog_cover
+   ncaab_defensive_matchup_under
+   ncaab_dual_size_under
+   ncaab_efficiency_away_dominant
+   ncaab_efficiency_home_dominant
+   ncaab_experience_edge_away
+   ncaab_experience_edge_home
+   ncaab_experienced_home_fav
+   ncaab_fast_pace_over
+   ncaab_frontcourt_height_adv_away
+   ncaab_frontcourt_height_adv_home
+   ncaab_home_court_advantage
+   ncaab_home_rest_edge
+   ncaab_home_shooting_edge
+   ncaab_pace_both_slow_under
+   ncaab_panel_total
+   ncaab_size_defense_stack_under
+   ncaab_size_slow_pace_under
+   ncaab_slow_pace_under
+   ncaab_undersized_home_or_fade
+   oddscrowd_ml_fade_boost_ncaab
+   oddscrowd_spread_fade_boost_ncaab
+   oddscrowd_total_fade_boost_ncaab
+   sharp_scenario_match_ncaab
+   sharp_split_confirmed_ncaab
+   sharp_split_triple_confirmed_ncaab
+
+!! 3 expression errors — a swallowed error is a FALSE condition, not an absent signal (feedback_swallowed_nameerror_is_a_false_condition):
+   ('?', 'NameError', '_HANDLER_EXTERNAL')
+   ('?', 'NameError', '_HANDLER_LINE_FLAG')
+   ('?', 'NameError', '_HANDLER_SCENARIO')
+
+Sample is 221 graded games. Nothing here is written; this reports only.
