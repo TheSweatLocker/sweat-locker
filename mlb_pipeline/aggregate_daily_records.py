@@ -24,6 +24,31 @@ from collections import defaultdict
 
 import requests
 
+
+def _et_shift_dst():
+    """UTC->ET offset, DST-correct: 4h in EDT, 5h in EST.
+
+    2026-11-03. This file derived its own day as
+    `(now_utc - _et_shift_dst()).date()`. Sweeping every UTC hour of 2026
+    shows that disagrees with the true ET date in exactly one hour --
+    04:00-04:59 UTC, on 127 days a year (the EST half) -- where it is a DAY
+    AHEAD. Outside that hour this change is byte-identical.
+
+    That hour is not idle: mlb_grade_overnight fires at 04:10 UTC and
+    mlb_prop_calibration at 04:30 UTC, and the nightly chain the first runs
+    includes the graders and the void sweep. A day-ahead date on a grader is
+    feedback_window_from_runner_clock_is_a_day_ahead.
+
+    Falls back to the old constant if sweat_dates or tzdata is unavailable,
+    so this can never be the reason a job fails.
+    """
+    try:
+        from sweat_dates import et_shift
+        return et_shift()
+    except Exception:                                        # noqa: BLE001
+        import datetime as _d
+        return _d.timedelta(hours=4)
+
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
@@ -41,7 +66,7 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 
 
 def _et_yesterday() -> str:
-    return ((datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    return ((datetime.now(timezone.utc) - _et_shift_dst()).date()
             - timedelta(days=1)).isoformat()
 
 
@@ -1259,7 +1284,7 @@ def main():
 
     if args.backfill:
         end = datetime.strptime(args.date, '%Y-%m-%d').date() if args.date else \
-              (datetime.now(timezone.utc) - timedelta(hours=4)).date() - timedelta(days=1)
+              (datetime.now(timezone.utc) - _et_shift_dst()).date() - timedelta(days=1)
         total = 0
         for i in range(args.backfill):
             d = (end - timedelta(days=i)).isoformat()

@@ -57,6 +57,47 @@ from typing import Optional
 ET_OFFSET_HOURS = 4
 
 
+def et_shift() -> _dt.timedelta:
+    """How far UTC is AHEAD of ET right now -- 4h in EDT, 5h in EST.
+
+    == 2026-11-03 . 270 FILES SUBTRACT A HARDCODED 4 HOURS ===============
+    et_now() above was made DST-correct on 10-21, but 270 files never
+    imported it and still compute their own day as
+
+        (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+
+    Measured by sweeping every UTC hour of 2026: that expression disagrees
+    with the true ET date in exactly ONE hour -- **04:00-04:59 UTC, on 127
+    days a year** (the EST half). Outside that hour it is byte-identical, so
+    swapping in this function changes nothing except inside the broken hour,
+    where the hardcoded version is a DAY AHEAD.
+
+    That hour is not idle. `mlb_grade_overnight` fires a cron at **04:10
+    UTC** and `mlb_prop_calibration` at **04:30 UTC**, and the nightly chain
+    the first one runs includes grade_potd, grade_public_receipts,
+    aggregate_daily_records, void_orphaned_picks and verify_potd_coverage --
+    graders and void sweeps, on a day-ahead date. That is precisely
+    feedback_window_from_runner_clock_is_a_day_ahead: "a day-ahead today
+    reached into games still being PLAYED and swept them as finished."
+
+    Returned as a timedelta, not a datetime, so a call site changes only
+    `timedelta(hours=4)` -> `et_shift()` and keeps its tz-awareness and
+    whatever it does next (.date(), .strftime(), .date().isoformat()).
+
+    Falls back to the 4-hour constant if tzdata is unavailable, same as
+    et_now().
+    """
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        off = now_utc.astimezone(ZoneInfo('America/New_York')).utcoffset()
+        if off is not None:
+            return -off
+    except Exception:                                        # noqa: BLE001
+        pass
+    return _dt.timedelta(hours=ET_OFFSET_HOURS)
+
+
 def et_now() -> _dt.datetime:
     """Current wall-clock time in ET, naive — DST-correct.
 
