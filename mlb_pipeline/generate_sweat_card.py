@@ -1228,7 +1228,8 @@ _CTX_TABLE = {
 }
 
 
-def fetch_football_picks(today: str) -> list:
+def fetch_football_picks(today: str,
+                         below_tier_out: list | None = None) -> list:
     """Fetch NFL + NCAAF PRIME/STRONG primary_plays for today (2026-09-02).
 
     Blends football picks into the Sweat Card without a full multi-sport
@@ -1387,9 +1388,26 @@ def fetch_football_picks(today: str) -> list:
             _manual_pick = bool(pp.get('_manual_correction')
                                 or pp.get('_manual_override')
                                 or pp.get('_manual_pick'))
-            if (tier not in ('PRIME', 'STRONG')
-                    and not _is_banded_flip and not _manual_pick):
+            # ══ 2026-11-04 · FLOOR FILL ════════════════════════════════
+            # ANDY: "at least 4 plays on sweat card". Measured over the last
+            # 30 days the card hit 4+ on only 16 of them, and TONIGHT it
+            # built with **0 picks across every list** on a 31-game slate
+            # (NBA 14, NCAAB 10, NHL 4, NCAAF 3) — because nothing reaches
+            # PRIME/STRONG: NBA is 86% COVERAGE, NHL 92%, and NCAAB is
+            # capped at STRONG and produces LEAN.
+            #
+            # So a below-tier pick is no longer DROPPED here when the caller
+            # passes a sink — it is carried through EVERY remaining gate
+            # (kickoff window, barred markets, B209 NFL spreads, juice,
+            # dedupe) and only then set aside as a floor candidate. Reusing
+            # the gates is the point: the floor must never admit something
+            # another gate refuses on measured grounds.
+            _below_tier = (tier not in ('PRIME', 'STRONG')
+                           and not _is_banded_flip and not _manual_pick)
+            if _below_tier and below_tier_out is None:
                 continue
+            if _below_tier and tier in ('PASS', 'SKIP', ''):
+                continue          # never fill with a non-pick
             # ══ 2026-10-26 · B209 · NFL SPREADS REFUSED ON THIS CARD ══
             # 5-13 (27.8%, ROI -47.40%) priced at what we published; the
             # cut takes the Sweat Card from +92.56u to +101.09u. Placed
@@ -1609,7 +1627,7 @@ def fetch_football_picks(today: str) -> list:
             if _flip and _mk in ('rl', 'spread', 'puckline', 'pl'):
                 _odds = (row.get('close_spread_home_price') if _sd == 'HOME'
                          else row.get('close_spread_away_price'))
-            picks.append({
+            _entry = {
                 'sport': sport,
                 'game_id': row.get('game_id'),
                 'game': f"{row.get('away_team')} @ {row.get('home_team')}",
@@ -1645,7 +1663,15 @@ def fetch_football_picks(today: str) -> list:
                 # stamps _manual_correction; see its docstring for why a
                 # primary_play write is the single source both cards read.
                 'manual': bool(pp.get('_manual_correction')),
-            })
+            }
+            # Below-tier picks are set aside, not published. The composer
+            # uses them ONLY to reach the floor, and each keeps its real
+            # tier so nothing is misrepresented as STRONG.
+            if _below_tier:
+                _entry['_floor_candidate'] = True
+                below_tier_out.append(_entry)
+            else:
+                picks.append(_entry)
         # == 2026-10-30 . PUBLISH THE NUMBER THIS SLATE ALREADY COMMITTED ==
         # ANDY, on tonight's dog spreads. Lakers @ Golden State went out as
         # Warriors +1.5 (-108) on the Fade at 13:51 and Warriors +3.5 (-115)
@@ -4260,7 +4286,11 @@ def build_card():
     # refactor (see project_sweat_card_multi_sport_902 spec). This MVP
     # attaches football picks as a separate list the app renders as an
     # additional card group when non-empty. Auto-hide on off-days.
-    football_picks = fetch_football_picks(today)
+    # 2026-11-04: collect the picks that pass every gate EXCEPT the
+    # PRIME/STRONG floor, so the composer can reach Andy's 4-pick
+    # minimum without lowering the bar for picks that do earn it.
+    _floor_pool: list = []
+    football_picks = fetch_football_picks(today, below_tier_out=_floor_pool)
 
     # 2026-09-19 FOOTBALL LOCK ENFORCEMENT. publish_lock was write-only for
     # composition — the GRADER reads it (compute_surface_records
@@ -4672,6 +4702,96 @@ def build_card():
     _unified_candidates = dedupe_one_bet_per_slot(_unified_candidates,
                                                   'unified: ')
     unified_top_picks = _unified_candidates[:_unified_cap]
+
+    # ══ 2026-11-04 · FLOOR FILL TO 4 ════════════════════════════════════
+    # ANDY: "at least 4 plays on sweat card". Measured: the card hit 4+ on
+    # 16 of the last 30 days, and tonight it composed ZERO on a 31-game
+    # slate because nothing clears PRIME/STRONG — NBA 86% COVERAGE, NHL
+    # 92%, NCAAB capped at STRONG and producing LEAN.
+    #
+    # Fill from _floor_pool, which already survived every other gate, in
+    # calibrated order. Each filled pick KEEPS its real tier and is stamped
+    # `_floor_fill`, so the card never calls a LEAN a STRONG and the record
+    # can separate earned picks from filled ones when we grade this.
+    #
+    # Deliberately NOT a tier downgrade of the gate itself: a pick that
+    # earns STRONG should still outrank a filled one, and when the slate
+    # does produce 4 qualifiers the pool is never touched.
+    _FLOOR = 4
+    if len(unified_top_picks) < _FLOOR and _floor_pool:
+        _have = {(str(p.get('sport') or '').upper(), str(p.get('game_id')))
+                 for p in unified_top_picks}
+        _cands = [_norm(p) for p in _floor_pool
+                  if (str(p.get('sport') or '').upper(),
+                      str(p.get('game_id'))) not in _have]
+        # ── two documented disciplines the floor must still respect ──
+        # The first fill produced 'Florida Panthers ML @ -250' and
+        # 'New Orleans Pelicans ATS' with odds=None. Neither is acceptable
+        # just because the card is short:
+        #
+        #  * -200+ MONEYLINE is a named trap in CLAUDE.md, and a -250 ML
+        #    needs 71.4% to break even. Filling a slot with one is worse
+        #    than leaving the slot empty.
+        #  * A pick with NO PRICE cannot be graded for ROI at all. Tonight's
+        #    other work was cleaning up 113 priceless POTD receipts; the
+        #    floor must not manufacture more. Priced candidates are
+        #    preferred outright, and an unpriced one is used only if nothing
+        #    priced is left.
+        def _ml_trap(c):
+            if str(c.get('type') or '').lower() != 'ml':
+                return False
+            try:
+                return float(c.get('odds')) <= -200
+            except (TypeError, ValueError):
+                return False      # unknown price on an ML: not the trap test
+
+        def _priced(c):
+            try:
+                return abs(float(c.get('odds'))) >= 100
+            except (TypeError, ValueError):
+                return False
+
+        _trapped = [c for c in _cands if _ml_trap(c)]
+        _cands = [c for c in _cands if not _ml_trap(c)]
+        for _t in _trapped:
+            print(f'  = floor: refused {str(_t.get("label"))[:34]!r} '
+                  f'@ {_t.get("odds")} — -200+ ML is a documented trap')
+        # priced first, then unpriced, each block in calibrated order
+        _cands.sort(key=lambda p: (not _priced(p),
+                                   -p.get('_calibrated', 0.0),
+                                   -p.get('_conviction', 0)))
+        _cands = dedupe_one_bet_per_slot(_cands, 'floor: ')
+        _need = _FLOOR - len(unified_top_picks)
+        _added = []
+        for _c in _cands:
+            if len(_added) >= _need:
+                break
+            _k = (str(_c.get('sport') or '').upper(), str(_c.get('game_id')))
+            if _k in _have:
+                continue
+            _have.add(_k)
+            _c['_floor_fill'] = True
+            if not _priced(_c):
+                _c['_floor_fill_unpriced'] = True
+                print(f'  ⚠ floor: filling with an UNPRICED pick '
+                      f'{str(_c.get("label"))[:34]!r} — it cannot be graded '
+                      f'for ROI until a price lands')
+            _added.append(_c)
+        if _added:
+            unified_top_picks = unified_top_picks + _added
+            print(f'  ⬆ floor fill: card had {len(unified_top_picks) - len(_added)} '
+                  f'qualifying pick(s), added {len(_added)} below-tier to reach '
+                  f'{_FLOOR} (pool had {len(_floor_pool)})')
+            for _c in _added:
+                print(f'      + {_c.get("sport")} {_c.get("tier")} '
+                      f'{str(_c.get("label"))[:40]} conv={_c.get("conviction")}')
+        else:
+            print(f'  ⚠ floor fill found no eligible candidate; card stays at '
+                  f'{len(unified_top_picks)} (pool {len(_floor_pool)})')
+    elif len(unified_top_picks) < _FLOOR:
+        print(f'  ⚠ card below the {_FLOOR} floor at {len(unified_top_picks)} '
+              f'and the below-tier pool is EMPTY — nothing on the slate passed '
+              f'the other gates either')
     # Re-rank 1..N. Both source lists carry their own `rank` (MLB's is its
     # position in top_8; football has none at all), so without this the
     # merged card showed duplicate and missing numbers.
