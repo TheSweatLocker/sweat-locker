@@ -229,7 +229,24 @@ def main() -> int:
         if n:
             body['sample_n'] = n
         if hit is not None:
-            body['hit_rate'] = round(hit / 100.0, 4)
+            # ══ 2026-11-04 · UNIT BUG, AND IT CORRUPTED THE WHOLE OUTPUT ══
+            # signal_registry.hit_rate stores a PERCENT. Measured: 978 of
+            # 978 non-NCAAB rows hold 6.6..100.0, median 52.4. I wrote
+            # fractions (0.9107), and _resolve_weight does
+            # `hr = float(reg['hit_rate']) / 100.0` — so 91.07% arrived as
+            # **0.9%**.
+            #
+            # Every one of my 13 hit rates then satisfied the auto-fade gate
+            # `tier == ANTI_VALIDATED and hr <= 0.47`, so each ANTI signal
+            # was inverted with fade_hr = 1 - 0.009 = 99.1%, producing huge
+            # weights on the OPPOSITE side. That is how 'Fairleigh Dickinson
+            # ML @ +2400' became the Play of the Day with conviction 70 on a
+            # side our own MC gives 5.6%: two fades at w=0.563 and w=0.444,
+            # both far above the 0.153 ceiling the real weights respect.
+            #
+            # `baseline_pct` on the same rows I wrote correctly as a percent,
+            # so the write was internally inconsistent too. Store the percent.
+            body['hit_rate'] = round(float(hit), 2)
         if base is not None:
             body['baseline_pct'] = round(base, 2)
             if hit is not None:

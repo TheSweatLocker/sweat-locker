@@ -295,8 +295,24 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
             'total': winner['conviction'],
             'source': 'cross_sport_ensemble_lr',
         },
-        'leanDisplay': f"{pick_team} {(winner['type'] or 'ML').upper()} "
-                       f"({winner['sport']} {winner['tier']} {winner['conviction']}/100)",
+        # ══ 2026-11-04 · THE READ ALREADY HAS A HUMAN LABEL ══════════
+        # This built its own label from the internal market CODE, so an
+        # NHL puck line rendered as 'Buffalo Sabres RL' - no number, and
+        # 'RL' is the baseball run line, not hockey. Andy has asked about
+        # this exact string before ('when primary play says knights rl
+        # what does rl mean?'), and ensemble_scorer._market_label was
+        # added for it but only reached the prose builders.
+        #
+        # primary_play.label is already correct and already carries the
+        # number ('Buffalo Sabres -1.5'), so prefer it and keep the
+        # code-built string only as a fallback.
+        'leanDisplay': (f"{(winner['pp'].get('label') or '').strip()} "
+                        f"({winner['sport']} {winner['tier']} "
+                        f"{winner['conviction']}/100)"
+                        if (winner['pp'].get('label') or '').strip()
+                        else f"{pick_team} {(winner['type'] or 'ML').upper()} "
+                             f"({winner['sport']} {winner['tier']} "
+                             f"{winner['conviction']}/100)"),
         'label': winner['label'],
         'sub': winner['sub'],
         'context': {
@@ -317,7 +333,7 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
     if mlb_row and mlb_row.get('data', {}).get('sport') == 'MLB':
         try:
             requests.post(
-                f'{SB}/rest/v1/jerry_cache',
+                f'{SB}/rest/v1/jerry_cache?on_conflict=cache_key',
                 headers=H_WRITE, timeout=15,
                 json={
                     'game_id': f'best_bet_{today}_mlb',
@@ -331,9 +347,22 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
         except Exception as e:
             print(f'  ⚠ mlb-backup write failed (non-fatal): {e}')
 
-    # Now overwrite best_bet_{today}
+    # ══ 2026-11-04 · merge-duplicates WITHOUT on_conflict IS INSERT-ONLY ══
+    # Both jerry_cache writes here posted to the bare table. The Prefer
+    # header asks for merge-duplicates, but PostgREST needs an on_conflict
+    # target to use it, so every write that landed on an existing
+    # best_bet_{today} row came back 409 23505 on
+    # jerry_cache_cache_key_key — and the function returns on a publish
+    # failure, so the history write never ran either.
+    #
+    # That means this override could only ever CREATE a POTD, never
+    # replace one. It went unnoticed because the override normally fires
+    # on a night with no row, or on the empty placeholder. It surfaced the
+    # moment a refresh was needed: the corrupted-weights row would not
+    # clear. Every other jerry_cache writer in the pipeline already uses
+    # on_conflict=cache_key.
     r = requests.post(
-        f'{SB}/rest/v1/jerry_cache',
+        f'{SB}/rest/v1/jerry_cache?on_conflict=cache_key',
         headers=H_WRITE, timeout=15,
         json={
             'game_id': f'best_bet_{today}',
@@ -377,6 +406,20 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
     if _mk == 'ml':
         _odds = (_ctx.get('close_home_ml') if _sd.startswith('HOME')
                  else _ctx.get('close_away_ml'))
+    # ══ 2026-11-04 · NHL STORES THE PUCK-LINE PRICE, SO USE IT ══════════
+    # Only ML was looked up, so an NHL rl pick fell to the -110 default
+    # even though its real price sits on the same ctx row. Tonight's POTD
+    # is Buffalo -1.5, and close_puckline_home_price is +180. Recording
+    # that at -110 is not a rounding error - it understates a winning
+    # unit by 2.6x and makes every ROI figure built on it wrong.
+    #
+    # A puck line is nothing like a -110 spread: the favourite laying
+    # -1.5 is a PLUS-money bet (home prices tonight: +180, +103, +170,
+    # +150) because it has to win by two. The -110 default was imported
+    # from football/basketball spreads, where it is a fair median.
+    if _odds is None and _mk == 'rl' and str(winner.get('sport')) == 'NHL':
+        _odds = (_ctx.get('close_puckline_home_price') if _sd.startswith('HOME')
+                 else _ctx.get('close_puckline_away_price'))
     if _odds is None:
         _odds = -110
         _assumed = True
@@ -486,14 +529,44 @@ def run(dry_run: bool = False, min_lead: int = 5):
     # noGames set. Anything else still blocks the override.
     _ph = (str(mlb_sport or '').upper() in ('', 'NONE')
            and int(mlb_conviction or 0) == 0)
+    # 2026-11-04: this override must also be able to REFRESH ITS OWN prior
+    # write. It stamps anchor='cross_sport_potd_v1', so its own row is
+    # identifiable and is not the "non-pipeline write" the guard protects.
+    #
+    # Found the hard way: a corrupted weight run published 'Santa Clara RL',
+    # the weights were fixed, the re-resolve changed that game's pick — and
+    # the override refused to update because the row it had written itself
+    # was now "not MLB". A stale POTD that no longer matches its own context
+    # row is worse than either outcome.
+    _own = str(((mlb_row or {}).get('data') or {}).get('anchor')
+               or '') == 'cross_sport_potd_v1'
     if _ph:
         print('  Current POTD is an empty placeholder (sport=%s conv=%s) — '
               'overriding it is the point, not a stomp'
               % (mlb_sport, mlb_conviction))
-    if mlb_sport != 'MLB' and not _ph:
+    if _own:
+        print('  Current POTD is this override own prior write '
+              '(%s conv=%s) — refreshing it, not competing with it'
+              % (mlb_sport, mlb_conviction))
+    if mlb_sport != 'MLB' and not (_ph or _own):
         print('  Current POTD is not MLB — skipping override to avoid stomping non-pipeline write')
         return 0
-    if lead < min_lead:
+    # ══ 2026-11-04 · min_lead CANNOT APPLY TO A SELF-REFRESH ════════════
+    # lead = winner.conviction - mlb_conviction, and when the incumbent IS
+    # this override's own earlier write both numbers come from the same
+    # scorer. The comparison then asks whether tonight's engine beats its
+    # own earlier run by 5 points, which is not a question min_lead was
+    # written to answer: min_lead exists so a marginally-better non-MLB
+    # pick does not displace a legitimate MLB POTD.
+    #
+    # Measured tonight: the incumbent was NCAAB Santa Clara RL at
+    # conviction 62, published under the corrupted hit_rate weights. The
+    # corrected re-resolve dropped that game to conviction 50 and the best
+    # candidate on the slate to 56, so lead = -6 and the stale row that no
+    # longer matches ANY current context row held the surface.
+    #
+    # A refresh replaces; it does not win an election.
+    if lead < min_lead and not _own:
         print(f'  Lead {lead} < threshold {min_lead} — keeping MLB POTD')
         return 0
 

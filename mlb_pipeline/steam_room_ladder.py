@@ -738,6 +738,8 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
         globals()['LADDER_COHORT_N_MIN'] = 10
         globals()['LADDER_MIN_GATES'] = 2  # 2 of 5 in relaxed mode
         candidates = []
+        _seen: dict = {}      # sport -> picks that reached the gates
+        _rej: dict = {}       # reason -> count, so a park is explainable
         for sport in sports:
             ctx_tbl = CTX_TABLE.get(sport)
             if not ctx_tbl: continue
@@ -758,9 +760,32 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
                 # In relaxed mode, accept any picked play with a tier + label
                 # that has real odds and isn't sharp-fade flagged.
                 if not pp.get('tier') or not pp.get('label'): continue
-                if row.get('consensus_fade_flag') is True: continue
+                _seen[sport] = _seen.get(sport, 0) + 1
+                if row.get('consensus_fade_flag') is True:
+                    _rej['consensus_fade'] = _rej.get('consensus_fade', 0) + 1
+                    continue
                 rung = check_qualifier(row, sport)
                 if not rung:
+                    # ══ 2026-11-04 · A PARKED LADDER MUST SAY WHY ════════
+                    # The scan printed one line, 'no qualifier fired', for
+                    # every possible cause: wrong market, tier below the
+                    # floor, too few gates. Andy's standing ask is a rung
+                    # every other day, so a silent park is unactionable -
+                    # I had to instrument this by hand to learn that 25
+                    # rows reached check_qualifier and 0 passed.
+                    #
+                    # check_qualifier has many bare `return None` exits, so
+                    # tally what we can see from here rather than rewrite
+                    # its signature: tier and market are both on the row.
+                    _t = str(pp.get('tier') or '?').upper()
+                    _m = str(pp.get('type') or '?').lower()
+                    if _t not in LADDER_TIER_MIN:
+                        _rej[f'tier<{"/".join(sorted(LADDER_TIER_MIN))}'] =                             _rej.get(f'tier<{"/".join(sorted(LADDER_TIER_MIN))}', 0) + 1
+                    elif _m not in ('ml', 'spread', 'rl', 'over', 'under',
+                                    'total', 'yrfi', 'nrfi'):
+                        _rej[f'market:{_m}'] = _rej.get(f'market:{_m}', 0) + 1
+                    else:
+                        _rej['gates/confluence'] =                             _rej.get('gates/confluence', 0) + 1
                     continue
                 # ══ HARD WIN-PROBABILITY FLOOR ON A COMPOUNDING PRODUCT ══
                 # Admitting LEAN made the relaxed scan fire — on 'Fairleigh
@@ -788,7 +813,11 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
                     continue
                 rung['qualification_notes'] = '[RELAXED · 2+ dry days] ' + (rung.get('qualification_notes') or '')
                 candidates.append(rung)
-        if not candidates: return None
+        if not candidates:
+            print(f'    - relaxed: scanned {sum(_seen.values())} pick(s) '
+                  f'{dict(sorted(_seen.items()))}, none qualified '
+                  f'— refused by {dict(sorted(_rej.items()))}')
+            return None
         tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
         candidates.sort(key=lambda c: (
             0 if c.get('_lineup_confirmed') else 1,   # see lineup_state note

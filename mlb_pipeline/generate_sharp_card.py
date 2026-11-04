@@ -590,7 +590,23 @@ def _fetch_all(today: str) -> dict:
         elif sport == 'ncaab':
             cols = ('game_id,home_team,away_team,primary_play,'
                     'close_home_ml,close_away_ml,close_spread,close_total')
-        else:  # nba, nhl
+        elif sport == 'nhl':
+            # ══ 2026-11-04 · THE PUCK-LINE PRICE WAS NEVER SELECTED ══════
+            # NHL shared the NBA column list, so close_puckline_*_price
+            # never arrived and every puck-line pick reached the composer
+            # unpriced - receipt_invariants then refused it ("rl receipt
+            # with no pick_odds") and the deck published ungradeable. Same
+            # explicit-SELECT blank this block already documents twice
+            # (close_home_ml in September, close_spread days later).
+            #
+            # NHL gets its own branch rather than joining the shared list:
+            # nba_game_context has no puckline columns at all, and asking
+            # for one is a 42703 that empties the whole sport.
+            cols = ('game_id,home_team,away_team,primary_play,'
+                    'home_ml_close,away_ml_close,close_spread,close_total,'
+                    'close_puckline,close_puckline_home,'
+                    'close_puckline_home_price,close_puckline_away_price')
+        else:  # nba
             cols = ('game_id,home_team,away_team,primary_play,'
                     'home_ml_close,away_ml_close,close_spread,close_total')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
@@ -1778,6 +1794,25 @@ def _compose_other_sport_sides(rows: list, sport: str,
                  _px.get((g.get('game_id'), 'spread'))
             if _q and pick_odds is None:
                 pick_odds = _q.get('price')
+            # ══ 2026-11-04 · NHL's PUCK-LINE PRICE IS ON THE CTX ROW ═════
+            # jerry_reads is the only price source here, and NHL has no
+            # priced read today, so both puck-line picks were refused by
+            # receipt_invariants ("rl receipt with no pick_odds") and the
+            # deck published ungradeable. The price was on the same ctx row
+            # the pick came from the whole time.
+            #
+            # This is not a -110 substitute: a puck line is plus money for
+            # the favourite (tonight -1.5 home prices are +180, +103, +170,
+            # +150), so defaulting it would misstate every ROI figure it
+            # touches. Read the real number or stay unpriced.
+            if pick_odds is None and sport == 'NHL':
+                _pk = ('close_puckline_home_price'
+                       if str(side or '').upper().startswith('HOME')
+                       else 'close_puckline_away_price')
+                _pv = g.get(_pk)
+                if _pv is not None:
+                    try: pick_odds = int(float(_pv))
+                    except (TypeError, ValueError): pass
             try:
                 _mkt = g.get('close_spread')
                 if _mkt is not None and pick_line is not None and \
@@ -2189,7 +2224,8 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
-             cold_state: dict | None = None, live_props: set | None = None):
+             cold_state: dict | None = None, live_props: set | None = None,
+             live_sides: dict | None = None):
     # 2026-09-09 PUBLISH LOCK.
     # Sharp Card was being overwritten on every cron cycle (~9 hours of
     # rewrites/day). Users bet based on 8am board, then 2pm cron shipped
@@ -2382,7 +2418,86 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                             if not any(_nm and _nm in _pk for _nm, _ in _live_props):
                                 _void.append(_it)
 
-                    if _unbettable or _void:
+                    # ══ 2026-11-04 · A STALE SIDE IS VOID TOO ══════════
+                    # The void sweep above covers props only, and sides have
+                    # exactly the same failure: _compose_other_sport_sides
+                    # reads type/line/side straight off primary_play, so once
+                    # a game is re-resolved the published pick can describe a
+                    # market the engine no longer holds.
+                    #
+                    # Live case, tonight. The NCAAB hit_rate unit bug (a
+                    # percent column written as fractions) sent every
+                    # ANTI_VALIDATED NCAAB signal through the hr <= 0.47
+                    # auto-fade. The deck published under those weights held
+                    # Santa Clara -17.5 at conviction 62, Auburn -26.5 at 62
+                    # and Saint Joseph's -9.5 at 60. After the fix those three
+                    # games resolve to ML at conviction 50, so NOT ONE of the
+                    # three picks existed in any read any more.
+                    #
+                    # And the quality tuple read it exactly backwards: the
+                    # corrupted deck's inflated convictions summed to 292
+                    # against the corrected deck's 213, so "not better than
+                    # current" held the wrong picks in place. That is the
+                    # documented lock trap in a new costume — ranking by
+                    # aggregate means a correction always loses.
+                    #
+                    # Flagged ONLY when the game's row exists AND carries a
+                    # primary_play whose pick label differs. A game crowded
+                    # out of the fresh deck, or one whose read is temporarily
+                    # missing, is not stale — same distinction the prop sweep
+                    # draws.
+                    # ══ 2026-11-04 · A PRICE APPEARING IS A CORRECTION ══
+                    # Same pick, same line, but the published copy carries
+                    # odds=null and the fresh one has a real number. The
+                    # quality tuple is blind to it - (0,0,213.0) vs
+                    # (0,0,213.0) read "not better" and held the UNPRICED
+                    # deck, which receipt_invariants had already refused to
+                    # capture, so those picks were published and
+                    # ungradeable at once.
+                    #
+                    # Scoped deliberately to picks the fresh deck prices:
+                    # tonight's NCAAB spreads have no stored price anywhere,
+                    # and purging those would just empty the surface. A
+                    # price arriving is strictly new information.
+                    _newly_priced = []
+                    _fresh_odds = {}
+                    for _it in items:
+                        if isinstance(_it, dict) and _it.get('odds') is not None:
+                            _fresh_odds[str(_it.get('pick') or '')] = _it['odds']
+                    for _it in _existing_items:
+                        if not isinstance(_it, dict): continue
+                        if _it.get('odds') is not None: continue
+                        _px2 = _fresh_odds.get(str(_it.get('pick') or ''))
+                        if _px2 is not None:
+                            _newly_priced.append((_it, _px2))
+
+                    _stale = []
+                    if live_sides:
+                        for _it in _existing_items:
+                            if not isinstance(_it, dict): continue
+                            if str(_it.get('type') or '').lower() == 'prop':
+                                continue
+                            _gid = str(_it.get('game_id') or '')
+                            _now = live_sides.get(_gid)
+                            if not _now: continue
+                            _pk = str(_it.get('pick') or '')
+                            if _pk and _pk not in _now:
+                                _stale.append((_it, _now))
+
+                    if _unbettable or _void or _stale or _newly_priced:
+                        if _newly_priced:
+                            print(f'  ⚠ sharp_card_{today} holds '
+                                  f'{len(_newly_priced)} UNPRICED pick(s) that '
+                                  f'now have a market price: '
+                                  + ', '.join(f'{_it.get("pick")} @ {_px2:+d}'
+                                              for _it, _px2 in _newly_priced[:4]))
+                        if _stale:
+                            print(f'  ⚠ sharp_card_{today} holds {len(_stale)} '
+                                  f'STALE pick(s) (the read now holds a different '
+                                  f'market/line): '
+                                  + ', '.join(
+                                      f'{_it.get("pick")} -> {sorted(_n)[0]}'
+                                      for _it, _n in _stale[:4]))
                         if _unbettable:
                             print(f'  ⚠ sharp_card_{today} holds {len(_unbettable)} '
                                   f'UNBETTABLE pick(s) (ML with no market price): '
@@ -2392,8 +2507,9 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                                   f'VOID pick(s) (no live PRIME/STRONG row — '
                                   f'scratched or pulled): '
                                   + ', '.join(str(_it.get('pick')) for _it in _void[:4]))
-                        print(f'  🔓 republish FORCED — removing unbettable/void picks '
-                              f'overrides the deck-quality hold')
+                        print(f'  🔓 republish FORCED — removing '
+                              f'unbettable/void/stale picks or adding a real '
+                              f'price overrides the deck-quality hold')
                     elif _new_q > _old_q:
                         print(f'  🔓 sharp_card_{today} republish allowed: '
                               f'PRIME {_old_q[0]}→{_new_q[0]}, STRONG {_old_q[1]}→{_new_q[1]}, '
@@ -2803,8 +2919,25 @@ def run(dry_run: bool = False, force: bool = False):
     for _p in (sources.get('mlb_props') or []):
         if str(_p.get('tier') or '').upper() in ('PRIME', 'STRONG'):
             _live_props.add((_p.get('player_name'), _p.get('prop_type')))
+    # game_id -> the pick label(s) the engine currently holds for that game,
+    # so the lock can tell a published side that no longer exists from one
+    # merely crowded out of tonight's deck. Built from the SAME ctx rows the
+    # composers read, not a second fetch.
+    _live_sides: dict = {}
+    for _k in ('mlb_ctx', 'nfl_ctx', 'ncaaf_ctx', 'ncaab_ctx',
+               'nba_ctx', 'nhl_ctx'):
+        for _g in (sources.get(_k) or []):
+            if not isinstance(_g, dict): continue
+            _pp = _g.get('primary_play') or {}
+            if isinstance(_pp, str):
+                try: _pp = json.loads(_pp)
+                except Exception: _pp = {}
+            if not isinstance(_pp, dict) or not _pp: continue
+            _lbl = str(_pp.get('label') or '').strip()
+            if not _lbl: continue
+            _live_sides.setdefault(str(_g.get('game_id') or ''), set()).add(_lbl)
     _publish(today, all_items, dry_run, force=force, cold_state=cold_state,
-             live_props=_live_props)
+             live_props=_live_props, live_sides=_live_sides)
     return 0
 
 
