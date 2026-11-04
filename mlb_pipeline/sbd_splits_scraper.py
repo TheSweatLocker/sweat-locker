@@ -88,10 +88,30 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 SOURCE = 'sd'
 BASE = 'https://www.sportsbettingdime.com'
 
-# league path -> our sport code. Only NHL is wired today; the page exists for
-# the others and the parser is league-agnostic, so adding one is a map entry
-# plus a workflow step.
-LEAGUES = {'nhl': 'NHL'}
+# league path -> our sport code. The parser is league-agnostic, so wiring a
+# sport is a map entry here plus its join columns in CTX_COLS.
+#
+# ══ 2026-11-04 · NBA + NCAAB ADDED ══════════════════════════════════════
+# Andy: "FIX NBA AND NCAAB NOW." They were dark for one reason only: this
+# map had a single entry, so the one signal that IS validated and
+# replicated here — totals with handle-minus-tickets >= 10pp, 57-59% across
+# 3 feeds, 2 sports and both halves — could not be evaluated on the two
+# biggest slates of the night. The page and the parser were always fine.
+# The key is the SITE's url path, which is not our sport code and not
+# guessable: /ncaab/ and /ncaa-basketball/ are both 404, only
+# /college-basketball/ returns 200.
+LEAGUES = {'nhl': 'NHL', 'nba': 'NBA', 'college-basketball': 'NCAAB'}
+
+# Each context table names its abbrev columns differently (nhl_game_context
+# uses *_team_abbrev, nba_game_context uses *_abbrev). Guessing produces a
+# 42703 that empties the sport, so the pair is declared per sport.
+CTX_COLS = {
+    'NHL':   ('nhl_game_context',   'away_team_abbrev', 'home_team_abbrev'),
+    'NBA':   ('nba_game_context',   'away_abbrev',      'home_abbrev'),
+    # NCAAB context carries no abbrev column at all, so it joins on resolved
+    # full team names through ncaab_team_resolver instead.
+    'NCAAB': ('ncaab_game_context', 'away_team',        'home_team'),
+}
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/125.0 Safari/537.36')
@@ -99,9 +119,31 @@ UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 # The site's abbreviations differ from nhl_game_context's for four clubs.
 # Mapped explicitly rather than fuzzily: a wrong team here attaches real
 # money-flow numbers to the wrong side, which is worse than no data.
+#
+# ══ 2026-11-04 · SCOPED PER SPORT ══════════════════════════════════════
+# These were NHL-only values applied globally, which was harmless while NHL
+# was the only wired league and silently wrong the moment NBA was added:
+# 'LA' -> 'LAK' is a Kings mapping, but in the NBA 'LA' is the Lakers or
+# the Clippers, and 'WAS' -> 'WSH' renames a Wizards row to a Capitals
+# code. Either one attaches real money-flow numbers to the wrong team,
+# which this file already calls worse than no data.
 ABBREV_ALIAS = {
-    'LA': 'LAK', 'NJ': 'NJD', 'TB': 'TBL', 'SJ': 'SJS',
-    'WAS': 'WSH', 'CLS': 'CBJ', 'MON': 'MTL', 'VEG': 'VGK',
+    'NHL': {
+        'LA': 'LAK', 'NJ': 'NJD', 'TB': 'TBL', 'SJ': 'SJS',
+        'WAS': 'WSH', 'CLS': 'CBJ', 'MON': 'MTL', 'VEG': 'VGK',
+    },
+    # Verified against the live slate 2026-11-04, not guessed: the site and
+    # nba_game_context disagree on exactly six codes, and the two sets are a
+    # clean bijection (6 site codes absent from ctx, the same 6 ctx codes
+    # absent from the site), so every mapping below is 1:1 and unambiguous.
+    # LAL/LAC — the pair that could be ambiguous — already agree on both
+    # sides and are deliberately left alone.
+    'NBA': {
+        'GSW': 'GS', 'NOP': 'NO', 'NYK': 'NY',
+        'SAS': 'SA', 'UTA': 'UTAH', 'WAS': 'WSH',
+    },
+    # NCAAB joins on resolved full names, not abbreviations.
+    'NCAAB': {},
 }
 
 # Market column order, asserted against the live header before use.
@@ -130,9 +172,18 @@ JS_EXTRACT = r"""
   const games = [];
   for (const body of deepAll(host.shadowRoot, 'TBODY', [], 0)) {
     const logos = [];
+    const names = [];
     for (const im of body.querySelectorAll('img')) {
       const m = (im.src || '').match(/\/[a-z]+\/([A-Z0-9]{2,4})\.png/);
-      if (m) logos.push(m[1]);
+      if (m) {
+        logos.push(m[1]);
+        // The logo's title/alt carries the FULL mascot-bearing team name
+        // ("Saint Joseph's Hawks"). NCAAB has no abbrev column to join on
+        // and 365 teams whose 2-4 letter codes are not safely guessable,
+        // so the name is what gets resolved. Sportsbook logos are .svg and
+        // never match the regex above, so this stays team-only.
+        names.push((im.title || im.alt || '').replace(/ logo$/i, '').trim());
+      }
     }
     if (logos.length !== 2) continue;
     const when = (body.innerText || '').split('\n')[0].trim();
@@ -151,7 +202,7 @@ JS_EXTRACT = r"""
       }
       if (cells.length) rows.push(cells);
     }
-    games.push({logos: logos, when: when, rows: rows});
+    games.push({logos: logos, names: names, when: when, rows: rows});
   }
   return {heads: heads, games: games};
 }
@@ -238,28 +289,53 @@ def parse_game(game: dict) -> list:
     return out
 
 
-def _norm(a: str) -> str:
-    a = (a or '').upper()
-    return ABBREV_ALIAS.get(a, a)
+def _norm(a: str, sport: str | None = None) -> str:
+    a = (a or '').upper().strip()
+    return ABBREV_ALIAS.get(sport or '', {}).get(a, a)
 
 
 def load_ctx(sport: str, days: int = 8) -> dict:
     """(away_abbrev, home_abbrev) -> {game_id, game_date} for upcoming games."""
-    tbl = {'NHL': 'nhl_game_context'}.get(sport)
-    if not tbl:
+    spec = CTX_COLS.get(sport)
+    if not spec:
         return {}
+    tbl, acol, hcol = spec
     r = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_READ, params={
-        'select': 'game_id,game_date,home_team_abbrev,away_team_abbrev',
+        'select': f'game_id,game_date,{hcol},{acol}',
         'game_date': f'gte.{_today_et()}', 'limit': '400'}, timeout=30)
     if r.status_code != 200:
         print(f'  ⚠ {tbl} read {r.status_code}: {r.text[:140]}')
         return {}
     out = {}
     for g in r.json():
-        a, h = _norm(g.get('away_team_abbrev')), _norm(g.get('home_team_abbrev'))
+        a, h = _norm(g.get(acol), sport), _norm(g.get(hcol), sport)
         if a and h:
             out[(a, h)] = g
+        # NCAAB joins on full names, which never equal the site's 2-4 letter
+        # logo code. Index the resolved name too so match_game can try both.
+        if sport == 'NCAAB':
+            ra, rh = _resolve_ncaab(g.get(acol)), _resolve_ncaab(g.get(hcol))
+            if ra and rh:
+                out[(ra, rh)] = g
     return out
+
+
+def _resolve_ncaab(name):
+    """Resolved NCAAB team name, uppercased, or None.
+
+    Imported lazily so the NHL/NBA paths never depend on the resolver.
+    """
+    if not name:
+        return None
+    try:
+        from ncaab_team_resolver import resolve
+    except Exception:
+        return None
+    try:
+        r = resolve(str(name))
+    except Exception:
+        return None
+    return str(r).upper().strip() if r else None
 
 
 def upsert(rows: list, dry: bool = False) -> int:
@@ -304,8 +380,17 @@ def run(league: str, dry: bool = False, min_games: int = 1) -> int:
         parsed = parse_game(g)
         if not parsed:
             continue
-        a, h = _norm(g['logos'][0]), _norm(g['logos'][1])
+        a, h = _norm(g['logos'][0], sport), _norm(g['logos'][1], sport)
         hit = ctx.get((a, h))
+        if not hit and sport == 'NCAAB':
+            # Join on the resolved full name, never on the 2-4 letter code.
+            nm = g.get('names') or []
+            if len(nm) == 2:
+                ra, rh = _resolve_ncaab(nm[0]), _resolve_ncaab(nm[1])
+                if ra and rh:
+                    hit = ctx.get((ra, rh))
+                if not hit:
+                    a, h = (ra or nm[0]), (rh or nm[1])
         if not hit:
             unmatched.append(f'{a}@{h}')
             continue
