@@ -16,40 +16,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ═══ 2026-11-03 · MLB OFFSEASON GATE ═══════════════════════════════════
-  # ~74 of the 231.9 scheduled runs a day were MLB-only, on a season whose
-  # last game was 2026-10-28, and that congestion is the measured cause of
-  # every other sport's pipeline landing 7-10h late
-  # (project_card_builds_before_every_other_sport_1102).
-  #
-  # A separate JOB here, unlike the high-frequency MLB workflows, because
-  # this one has far too many steps to guard individually (mlb_pipeline has
-  # 175). It costs one extra runner acquisition per run, which is fine at
-  # 0.14 runs/day and buys skipping the whole expensive job.
-  #
-  # sport_gate.py fails OPEN on any error and workflow_dispatch always
-  # runs, so neither a gate bug nor a manual rerun can leave MLB dark.
-  gate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    outputs:
-      run: ${{ steps.g.outputs.run }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.11'}
-      - run: pip install requests
-      - id: g
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python sport_gate.py --sport MLB --grace-days 14
-
   refit-retrain:
-    needs: gate
-    if: needs.gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -69,7 +36,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests python-dotenv numpy scikit-learn
 
+      # ═══ 2026-11-03 · MLB OFFSEASON GATE (scoped) ══════════════════════
+      # Guards ONLY the MLB-specific steps. This workflow is MLB-named but
+      # not MLB-only, and my first pass gated the whole job, which would
+      # have taken cross-sport work dark the day the grace window expired.
+      # Scope was decided from what each step RUNS, not what it is called.
+      #
+      # sport_gate.py fails OPEN on any error and workflow_dispatch always
+      # runs, so neither a gate bug nor a manual rerun can leave MLB dark.
+      - name: Offseason gate
+        id: sport_gate
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sport_gate.py --sport MLB --grace-days 14
+
       - name: Refit training run (prop weights)
+        if: steps.sport_gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}

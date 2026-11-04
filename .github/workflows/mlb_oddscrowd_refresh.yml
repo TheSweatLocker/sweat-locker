@@ -120,7 +120,7 @@ jobs:
       # trajectory data across ALL sports (--sport ALL). This is the raw
       # fuel for mine_line_patterns.py. Non-fatal.
       - name: Archive public splits (both sources)
-        if: steps.sport_gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        # NOT gated by MLB: archive_public_splits.py --sport ALL.
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -149,7 +149,7 @@ jobs:
       #            exactly how clv_weekly_rollup's Sunday check silently
       #            never matched (see cross_sport_lines.yml).
       - name: The Fade - tonight's qualifying plays
-        if: steps.sport_gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        # NOT gated by MLB: compute_fade_records.py, all sports.
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -160,7 +160,7 @@ jobs:
           python compute_fade_records.py --today --apply
 
       - name: The Fade - graded record (once daily)
-        if: steps.sport_gate.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        # NOT gated by MLB: compute_fade_records.py, all sports.
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
