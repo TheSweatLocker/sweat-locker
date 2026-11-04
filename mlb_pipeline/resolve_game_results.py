@@ -1194,10 +1194,51 @@ def _refresh_next_day_yesterday_recap(next_day, slate_date, top_8, summary):
     ]
     if summary:
         y['top_8_summary'] = summary
-    # Mirror POTD / Dawg result from the type-tagged top_8 entries
+    # Mirror POTD / Dawg result onto the recap blocks.
+    #
+    # == 2026-11-03 . THE type TAG IS NOT THERE ON THE RECAP COPY =========
+    # This looked for type=='POTD' among the recap's top_8 entries. The LIVE
+    # top_8 does carry it (114 of 185 cards), but the RECAP copy does not:
+    # measured across every sweat_card row, yesterday_recap.top_8[].type is
+    # None on **946 of 1,033** entries and 'POTD' on just 12. So the mirror
+    # almost never found the POTD and y['potd']['result'] stayed Pending.
+    #
+    # Damage, measured: of 164 cards carrying a yesterday_recap.potd, 120 had
+    # a settled result and **17 sat Pending while daily_best_bet_history
+    # already held a decided one** (the other 27 have no decided result in
+    # history either, so they are not this bug).
+    #
+    # daily_best_bet_history is the authoritative POTD row and is cross-sport,
+    # which also matters now that POTD is not MLB-only: it is keyed on
+    # bet_date, not on a tag some other writer has to remember to set. The
+    # tag is still tried first so a same-run mirror keeps working.
     potd_pk = next((p for p in top_8 if p.get('type') == 'POTD'), None)
     if potd_pk and y.get('potd'):
         y['potd']['result'] = potd_pk.get('result')
+    elif y.get('potd'):
+        try:
+            _h = requests.get(
+                f'{SUPABASE_URL}/rest/v1/daily_best_bet_history',
+                params={'bet_date': f'eq.{slate_date}',
+                        'select': 'result,lean,sport'},
+                headers=HEADERS, timeout=15,
+            ).json() or []
+            # Only a real OUTCOME. A null/Pending row must not overwrite
+            # whatever the recap already shows, and nothing here invents a
+            # grade (feedback_parse_failure_must_not_overwrite). 'no-pick' is
+            # excluded deliberately: it is a bookkeeping status meaning there
+            # was no POTD, and this value is rendered straight to the user --
+            # 5 of 17 historical gaps carried it, 4 with sport and lean both
+            # null.
+            _done = [x for x in _h
+                     if str(x.get('result') or '').strip().lower()
+                     in ('win', 'loss', 'push', 'void')]
+            if _done:
+                y['potd']['result'] = _done[0]['result']
+                print(f"  POTD result for {slate_date} taken from "
+                      f"daily_best_bet_history: {_done[0]['result']}")
+        except Exception as _e:              # noqa: BLE001
+            print(f'  POTD history lookup failed for {slate_date}: {_e}')
     dawg_pk = next((p for p in top_8 if p.get('type') == 'DotD'), None)
     if dawg_pk and y.get('dawg'):
         y['dawg']['result_status'] = dawg_pk.get('result')
