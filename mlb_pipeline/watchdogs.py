@@ -1878,7 +1878,98 @@ def check_record_discontinuity() -> Optional[dict]:
     }
 
 
+def check_ncaab_name_resolution() -> Optional[dict]:
+    """Alert when a live NCAAB team name does not resolve to a canonical school.
+
+    == WHY THIS IS THE THING THAT MAKES IT PERMANENT ======================
+    ANDY, 2026-11-03: "Are we going to be able to fix the name issue so it is
+    never a problem again?"
+
+    The alias table and ncaab_team_resolver are durable for every school we
+    know about, and 2026-11-03 pointed the app at them too, so the server and
+    the client now give the same answer on all 467 live names. What was still
+    missing is the part that makes it STAY fixed: nothing told us when a feed
+    started sending a spelling we have never seen.
+
+    Both failure shapes are SILENT by design, which is correct behaviour and
+    exactly why a detector is needed:
+      * the server resolver returns None, and the caller skips the row -- so a
+        line simply never joins its game
+      * the app falls back to stripMascot, so one game card quietly loses its
+        Four Factors panel
+
+    Measured when this was written: 0 unresolved of 288 distinct
+    ncaab_game_context names and 0 of 186 in line_history. Any number above
+    zero is a new spelling, and the fix is one row in ncaab_team_aliases --
+    never a constant in the resolver, which is what its docstring says and
+    what the 2026-11-03 wrong-school bug came from
+    (feedback_prefix_strip_can_name_another_school).
+
+    WARNING, not CRITICAL: a handful of unresolved names costs coverage on
+    those games, not correctness, and a permanently-red step is a muted step
+    (feedback_a_detector_must_know_the_intentional_case).
+    """
+    try:
+        import ncaab_team_resolver as R
+        R.load_aliases()
+    except Exception as e:                                   # noqa: BLE001
+        return {
+            'check_name': 'ncaab_name_resolution',
+            'severity': 'WARNING',
+            'message': f'ncaab_team_resolver could not load: {e}',
+            'detail': {'error': f'{type(e).__name__}: {e}'},
+        }
+
+    names = {}
+    ctx = requests.get(f'{SB}/rest/v1/ncaab_game_context',
+                       params={'select': 'home_team,away_team', 'limit': 1000},
+                       headers=H_READ, timeout=30)
+    for row in (ctx.json() if ctx.status_code == 200 else []):
+        for k in ('home_team', 'away_team'):
+            if row.get(k):
+                names[row[k]] = names.get(row[k], 0) + 1
+    lh = requests.get(f'{SB}/rest/v1/line_history',
+                      params={'select': 'matchup', 'sport': 'eq.NCAAB',
+                              'limit': 1000},
+                      headers=H_READ, timeout=30)
+    for row in (lh.json() if lh.status_code == 200 else []):
+        m = str(row.get('matchup') or '')
+        if ' @ ' in m:
+            a, h = m.split(' @ ', 1)
+            for n in (a.strip(), h.strip()):
+                if n:
+                    names[n] = names.get(n, 0) + 1
+
+    if not names:
+        return None          # nothing to check -- not a finding
+    bad = {}
+    for n, cnt in names.items():
+        try:
+            if R.resolve(n) is None:
+                bad[n] = cnt
+        except Exception:                                    # noqa: BLE001
+            bad[n] = cnt
+    if not bad:
+        return None
+    worst = sorted(bad.items(), key=lambda x: -x[1])[:12]
+    return {
+        'check_name': 'ncaab_name_resolution',
+        'severity': 'WARNING',
+        'message': (f'{len(bad)} of {len(names)} live NCAAB team names do not '
+                    f'resolve to a canonical school. Each one costs that '
+                    f'game its ratings panel and its line join. Fix by '
+                    f'adding alt_names to ncaab_team_aliases, never a '
+                    f'constant in the resolver.'),
+        'detail': {
+            'unresolved_count': len(bad),
+            'names_checked': len(names),
+            'worst': [{'name': n, 'appearances': c} for n, c in worst],
+        },
+    }
+
+
 CHECKS = [
+    check_ncaab_name_resolution,
     check_record_discontinuity,
     check_ladder_empty,
     check_ensemble_engine_share,
