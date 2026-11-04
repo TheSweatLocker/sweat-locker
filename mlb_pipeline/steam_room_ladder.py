@@ -76,6 +76,12 @@ LADDER_COHORT_N_MIN     = 30       # pre-loosen baseline
 LADDER_CONSENSUS_MIN    = 4        # pre-loosen baseline (4-of-5 lens)
 LADDER_EDGE_MIN_PP      = 10.0     # pre-loosen baseline (real edge only)
 LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
+# 2026-11-04 · hard floor for the RELAXED scan only. Not a gate — nothing
+# can buy a leg past it. A ladder leg is a compounding leg, and the relaxed
+# scan's first LEAN candidate was a +2400 longshot our own model gave a 5.6%
+# win probability. 45% is below any sane single-bet threshold on purpose:
+# this is the "is this even a plausible side" bar, not a selection standard.
+LADDER_RELAXED_WIN_PROB_FLOOR = 45.0
 LADDER_MIN_GATES        = 4        # 4-of-5 required (was 3); tighter with reverted thresholds
 LADDER_AUTO_LOOSEN_DISABLED = True  # 2026-09-02: prevent drift back to bleeding gates
 
@@ -702,7 +708,30 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
     original_cohort_hit = globals()['LADDER_COHORT_HIT_MIN']
     original_cohort_n = globals()['LADDER_COHORT_N_MIN']
     original_min_gates = globals()['LADDER_MIN_GATES']
+    # ══ 2026-11-04 · THE TIER WHITELIST WAS THE ONE GATE NOT RELAXED ════
+    # ANDY: "Ladder should be every other day at least." Measured: rungs on
+    # 16 of the last 30 days but only 4 of the last 15.
+    #
+    # This scan already drops five constants (edge 10->2pp, consensus 4->1,
+    # cohort 60%/n30 -> 50%/n10, gates 3of5 -> 2of5) and still returned
+    # None, because LADDER_TIER_MIN = {PRIME, STRONG} is enforced at the TOP
+    # of check_qualifier and was never in the relaxed set. Instrumented
+    # tonight: 25 rows reached check_qualifier across NBA/NHL/NCAAB/NCAAF,
+    # 8 of them LEAN, and 0 passed.
+    #
+    # So LEAN is admitted HERE ONLY — after 2+ dry days, which is exactly
+    # what this function exists for. The normal scan keeps PRIME/STRONG.
+    #
+    # Why the distinction matters and is kept: the ladder COMPOUNDS, so a
+    # weak leg is worse here than on a single-pick surface, which is the
+    # reasoning behind both "LEAN removed — no ladder authority" and
+    # LADDER_ABS_JUICE_CAP = -250 ("compounding math destroys past -250").
+    # Relaxing the floor for a dry streak is a different thing from
+    # relaxing it by default, and the rung is stamped
+    # '[RELAXED · 2+ dry days]' so the record shows which it was.
+    original_tier_min = globals()['LADDER_TIER_MIN']
     try:
+        globals()['LADDER_TIER_MIN'] = {'PRIME', 'STRONG', 'LEAN'}
         globals()['LADDER_EDGE_MIN_PP'] = 2.0
         globals()['LADDER_CONSENSUS_MIN'] = 1
         globals()['LADDER_COHORT_HIT_MIN'] = 50.0
@@ -731,9 +760,34 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
                 if not pp.get('tier') or not pp.get('label'): continue
                 if row.get('consensus_fade_flag') is True: continue
                 rung = check_qualifier(row, sport)
-                if rung:
-                    rung['qualification_notes'] = '[RELAXED · 2+ dry days] ' + (rung.get('qualification_notes') or '')
-                    candidates.append(rung)
+                if not rung:
+                    continue
+                # ══ HARD WIN-PROBABILITY FLOOR ON A COMPOUNDING PRODUCT ══
+                # Admitting LEAN made the relaxed scan fire — on 'Fairleigh
+                # Dickinson ML @ +2400' with model_win_prob 5.6. Our own
+                # model said that leg wins 5.6% of the time, and the ladder
+                # COMPOUNDS, so one such leg destroys the rung.
+                #
+                # It got through because win probability is one of five
+                # gates and relaxed mode needs only two: a pick can clear
+                # consensus and edge while failing win-prob catastrophically.
+                # The docstring promises candidates "clear the minimal safety
+                # bar" — 5.6% is not a safety bar, so make it one. This is a
+                # HARD floor, not a gate: no combination of other signals
+                # can buy a leg past it.
+                _wp = rung.get('model_win_prob')
+                try:
+                    _wpf = float(_wp)
+                except (TypeError, ValueError):
+                    _wpf = None
+                if _wpf is None or _wpf < LADDER_RELAXED_WIN_PROB_FLOOR:
+                    print(f'    - relaxed: refused {rung.get("pick_side")!r} '
+                          f'— model win prob {_wp}% is below the '
+                          f'{LADDER_RELAXED_WIN_PROB_FLOOR:.0f}% hard floor '
+                          f'for a compounding leg')
+                    continue
+                rung['qualification_notes'] = '[RELAXED · 2+ dry days] ' + (rung.get('qualification_notes') or '')
+                candidates.append(rung)
         if not candidates: return None
         tier_rank = {'PRIME': 0, 'STRONG': 1, 'LEAN': 2}
         candidates.sort(key=lambda c: (
@@ -749,6 +803,7 @@ def _relaxed_scan(game_date: str, sports: list) -> Optional[dict]:
         globals()['LADDER_COHORT_HIT_MIN'] = original_cohort_hit
         globals()['LADDER_COHORT_N_MIN'] = original_cohort_n
         globals()['LADDER_MIN_GATES'] = original_min_gates
+        globals()['LADDER_TIER_MIN'] = original_tier_min
 
 
 def upsert_rung_and_state(rung: dict, dry_run: bool = False) -> None:
