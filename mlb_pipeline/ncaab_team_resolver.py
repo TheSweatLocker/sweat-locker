@@ -185,6 +185,26 @@ def _fetch_alias_rows():
     return out
 
 
+def _suffix_claims_another(dropped: list, canon: str):
+    """(key, other_canonical) if the tokens we are about to DROP name a
+    different school, else None.
+
+    A trailing mascot claims nothing -- a bare mascot key is either absent
+    or _AMBIGUOUS (57 of them are). A trailing LOCATION does claim: dropping
+    'little rock' from 'arkansas little rock trojans' leaves 'arkansas',
+    which is a real school that is not the one named. Checking every leading
+    run of the dropped tokens catches it whatever the mascot is.
+    """
+    for take in range(1, len(dropped) + 1):
+        cand = ' '.join(dropped[:take])
+        if cand in _AMBIGUOUS:
+            continue          # claimed by several schools -> claims none
+        other = _LOOKUP.get(cand)
+        if other and other != canon:
+            return cand, other
+    return None
+
+
 def resolve(name, *, with_method: bool = False):
     """Canonical name for `name`, or None.
 
@@ -201,15 +221,34 @@ def resolve(name, *, with_method: bool = False):
     if k in _LOOKUP:
         return (_LOOKUP[k], 'exact') if with_method else _LOOKUP[k]
     # Strip a trailing mascot, one token at a time. Safe ONLY because the
-    # table stores location-only forms, so each attempt is still a lookup.
+    # table stores location-only forms, so each attempt is still a lookup --
+    # AND only while no school's name begins with another school's complete
+    # alias. 2026-11-03: three live spellings did exactly that, and this
+    # loop answered with the wrong school.
+    #
+    #   'CSU Fullerton Titans'         -> 'Colorado St.'  ('CSU' = Colo St.)
+    #   'Arkansas-Little Rock Trojans' -> 'Arkansas'
+    #   'Tenn-Martin Skyhawks'         -> 'Tennessee'
+    #
+    # Each is a real alias claiming the FIRST tokens of a different school.
+    # That is the failure this module exists to prevent ("a wrong team is a
+    # wrong game"), reached through the one path that is not a direct lookup.
     parts = k.split()
     for cut in range(1, min(4, len(parts))):
         cand = ' '.join(parts[:-cut])
         if cand in _AMBIGUOUS:
             break
         if cand in _LOOKUP:
-            return ((_LOOKUP[cand], f'mascot-strip({cut})') if with_method
-                    else _LOOKUP[cand])
+            canon = _LOOKUP[cand]
+            claim = _suffix_claims_another(parts[-cut:], canon)
+            if claim:
+                # Refuse rather than guess. None means the caller skips the
+                # row, which is the documented contract; a wrong school
+                # would be a line on the wrong fixture.
+                return ((None, f'refused: suffix {claim[0]!r} names '
+                         f'{claim[1]!r}, not {canon!r}') if with_method
+                        else None)
+            return ((canon, f'mascot-strip({cut})') if with_method else canon)
     return (None, 'unresolved') if with_method else None
 
 
@@ -249,6 +288,15 @@ _FIXTURE = [
      'odds_api_name': 'Texas A&M-CC Islanders',
      'kenpom_name': 'Texas A&M Corpus Chris', 'bart_name': 'Texas A&M-CC',
      'alt_names': ['Islanders']},
+    # 2026-11-03 prefix-collision pair: 'CSU' is Colorado St.'s alias and
+    # also the first token of Cal St. Fullerton's feed spelling.
+    {'canonical_name': 'Colorado St.', 'odds_api_name': 'Colorado State Rams',
+     'kenpom_name': 'Colorado St.', 'bart_name': 'Colorado St.',
+     'alt_names': ['CSU', 'Colorado State', 'Rams']},
+    {'canonical_name': 'Cal St. Fullerton',
+     'odds_api_name': 'Cal State Fullerton Titans',
+     'kenpom_name': 'Cal St. Fullerton', 'bart_name': 'Cal St. Fullerton',
+     'alt_names': ['CSUF', 'Fullerton', 'Titans']},
 ]
 
 
@@ -266,6 +314,13 @@ def _self_test() -> int:
         ("St. Mary's", "Saint Mary's"),               # Saint/St. unified
         ('Texas A&M-CC Islanders', 'Texas A&M-CC'),   # & and hyphen
         ('Texas A and M-CC', 'Texas A&M-CC'),
+        # prefix collision: must NOT become Colorado St. Before the
+        # _suffix_claims_another guard this returned 'Colorado St.'.
+        ('CSU Fullerton Titans', None),
+        ('CSU Fullerton', None),
+        ('CSU', 'Colorado St.'),                      # control, unmoved
+        ('Colorado State Rams', 'Colorado St.'),      # control, unmoved
+        ('Cal State Fullerton Titans', 'Cal St. Fullerton'),
         # must NOT resolve
         ('Nowhere State Fighting Nobodies', None),
         ('', None),

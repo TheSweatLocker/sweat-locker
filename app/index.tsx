@@ -1622,6 +1622,124 @@ const EXACT_MAP = {
   });
   return bestScore > 0.45 ? best : null;
 };
+// ═══ NCAAB NAME RESOLUTION (2026-11-03) ═══════════════════════════════
+// ANDY, on "college basketball games are not showing enough on game cards".
+// It IS a team-matching problem, and this is where it lives.
+//
+// MEASURED on today's 29-game feed: the NCAAB Four Factors panel rendered on
+// **6 of 29** game cards. It needs BOTH teams to hit ncaab_team_stats
+// (`if(awayNb && homeNb)`), and stripMascot's hand-kept nickname list missed
+// **27 of 58** team slots. Two distinct failure modes:
+//
+//   mascot not in the list   Mastodons · Pirates · Jaspers · Hatters ·
+//                            Seahawks · Bearkats · Dragons · Vikings ·
+//                            Privateers · Jackrabbits · Titans · Lancers ·
+//                            Coyotes · Crimson Tide · HUSKIES (UConn)
+//   stripped but still off   "Kansas St" vs ncaab_team_stats "Kansas St." —
+//                            the trailing period alone kills the lookup
+//   actively corrupted       "Arkansas-Pine Bluff Golden Lions" -> strips
+//                            "Lions" -> "Arkansas-Pine Bluff Golden"
+//
+// A hand-maintained mascot blocklist can never close this: 365 D-I schools,
+// 492 distinct spellings across our feeds, and a new mascot is a silent miss.
+// ncaab_team_aliases (365 rows: canonical_name, kenpom_name, bart_name,
+// odds_api_name, alt_names[]) already carries every spelling, and
+// mlb_pipeline/ncaab_team_resolver.py is the server-side twin of this
+// function. Resolving the feed name through the table scores **29 of 29**.
+//
+// Verified safe to resolve at the chokepoint where gamesData is built: all
+// 365 canonical names are present in ncaab_team_stats, and stripMascot
+// MANGLES ZERO of them — so every downstream stripMascot() call on an
+// already-resolved name is a no-op and none of the ~15 other NCAAB lookup
+// sites needed touching.
+//
+// Fails SOFT by design: an unloaded map or an unknown school falls back to
+// stripMascot, i.e. exactly today's behaviour, never worse.
+// A faithful port of mlb_pipeline/ncaab_team_resolver.py. The two MUST agree
+// — the server resolves ctx/line_history names with it and the app resolves
+// the odds feed, and a name that becomes two different canonicals is a name
+// that joins nothing. Ported rather than reinvented: my first pass here did
+// exact-match plus a period strip and scored 22 of 29 against the server's
+// 29 of 29. The normalizer below is the whole difference.
+let NCAAB_LOOKUP: Record<string, string> = {};      // normalized key -> canonical_name
+let NCAAB_AMBIGUOUS: Record<string, boolean> = {};   // normalized key -> true (claimed by 2+ schools)
+
+// Deterministic key. 'St.' / 'State' / 'Saint' collapse to one token because
+// that is the ONLY spelling the four feeds disagree on: 'Georgia St.' /
+// 'Georgia St Panthers' / 'Georgia State Panthers' are one school.
+const normalizeNcaab = (v: any): string => String(v == null ? '' : v)
+  .trim().toLowerCase()
+  .replace(/&/g, ' and ')
+  .replace(/\bsaint\b/g, 'st')
+  .replace(/\bstate\b/g, 'st')
+  .replace(/[^a-z0-9 ]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const setNcaabAliasRegistry = (rows: any[]): number => {
+  const look: Record<string, string> = {};
+  const amb: Record<string, boolean> = {};
+  const add = (raw: any, canon: string) => {
+    const k = normalizeNcaab(raw);
+    if (!k || !canon) return;
+    if (look[k] !== undefined && look[k] !== canon) { amb[k] = true; return; }
+    look[k] = canon;
+  };
+  (rows || []).forEach((r: any) => {
+    const canon = r?.canonical_name;
+    if (!canon) return;
+    ['canonical_name','odds_api_name','kenpom_name','bart_name']
+      .forEach((f: string) => add(r[f], canon));
+    (Array.isArray(r.alt_names) ? r.alt_names : []).forEach((a: any) => add(a, canon));
+  });
+  NCAAB_LOOKUP = look;
+  NCAAB_AMBIGUOUS = amb;
+  return Object.keys(look).length;
+};
+
+const resolveNcaabTeam = (name: any): any => {
+  if (!name) return name;
+  const k = normalizeNcaab(name);
+  // 57 keys in the table are bare MASCOTS claimed by several schools
+  // ('eagles' -> 10 teams). Those resolve to nothing rather than to whichever
+  // row loaded first — a wrong team is a wrong game.
+  if (!k || NCAAB_AMBIGUOUS[k]) return stripMascot(String(name));
+  if (NCAAB_LOOKUP[k]) return NCAAB_LOOKUP[k];
+  // Strip trailing tokens one at a time. Safe only because the table itself
+  // stores location-only forms, so each attempt is still a table lookup —
+  // AND only while no school's name begins with another school's complete
+  // alias. Three live spellings did exactly that, and the strip returned the
+  // WRONG SCHOOL: 'CSU Fullerton Titans' -> Colorado St. ('CSU' is Colorado
+  // State's alias), 'Arkansas-Little Rock Trojans' -> Arkansas,
+  // 'Tenn-Martin Skyhawks' -> Tennessee. Same guard as the server resolver's
+  // _suffix_claims_another: if the tokens being DROPPED name a different
+  // school, refuse the match instead of guessing.
+  const parts = k.split(' ');
+  const maxCut = Math.min(4, parts.length);
+  for (let cut = 1; cut < maxCut; cut++) {
+    const cand = parts.slice(0, parts.length - cut).join(' ');
+    if (NCAAB_AMBIGUOUS[cand]) break;
+    if (NCAAB_LOOKUP[cand]) {
+      const canon = NCAAB_LOOKUP[cand];
+      const dropped = parts.slice(parts.length - cut);
+      let claimed = false;
+      for (let take = 1; take <= dropped.length; take++) {
+        const sfx = dropped.slice(0, take).join(' ');
+        if (NCAAB_AMBIGUOUS[sfx]) continue;   // shared mascot claims nothing
+        const other = NCAAB_LOOKUP[sfx];
+        if (other && other !== canon) { claimed = true; break; }
+      }
+      if (claimed) break;
+      return canon;
+    }
+  }
+  // Not in the table. Fall back to stripMascot, i.e. exactly today's
+  // behaviour — never worse, and it cannot land on the WRONG school the way
+  // a server-side guess could, because the fixture identity comes from the
+  // feed's own event id, not from the name.
+  return stripMascot(String(name));
+};
+
 const stripMascot = (teamName) => {
     if(!teamName) return teamName;
     const nicknames = [
@@ -2120,6 +2238,10 @@ const [nhlGameContextMap, setNhlGameContextMap] = useState<Record<string, any>>(
 // stays empty and the chips are simply absent — the same silent-hide every
 // other sport's chips already do. No crash, and nothing to ship again later.
 const [ncaabGameContextMap, setNcaabGameContextMap] = useState<Record<string, any>>({});
+// Spelling count from ncaab_team_aliases. The registry itself is a module
+// -level var (helpers outside the component resolve names too), so this
+// state exists purely to re-render once it has loaded.
+const [ncaabAliasCount, setNcaabAliasCount] = useState(0);
 // 2026-10-21 · cohort_tag_records on the GAMES TAB. Until now this was
 // fetched only inside GameDetailV2, once per game on open, so the card had no
 // access to the graded record behind a cohort and could not show one. The
@@ -3228,10 +3350,15 @@ setEvData(evOpps.slice(0,20));
         if (day === 'yesterday') return t >= yesterdayStart && t < todayStart;
         return true;
       });
+      // 2026-11-03: NCAAB names resolve through ncaab_team_aliases, not the
+      // hand-kept mascot list. This is THE chokepoint — every NCAAB panel
+      // downstream reads selectedGame.away_team/home_team, so one resolve
+      // here fixed the Four Factors card from 6 of 29 to 29 of 29 without
+      // touching the other ~15 lookup sites. See resolveNcaabTeam.
       mappedGames = filtered.map((g: any) => ({
         ...g,
-        away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
-        home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
+        away_team: sport==='NCAAB' ? resolveNcaabTeam(g.away_team) : g.away_team,
+        home_team: sport==='NCAAB' ? resolveNcaabTeam(g.home_team) : g.home_team,
       }));
 
       // 2026-09-09 BACKEND FALLBACK. When Odds API returns 0 games for a
@@ -3240,6 +3367,68 @@ setEvData(evOpps.slice(0,20));
       // rate-limited. Prior state: 6-day-stale odds_cache row served 91
       // NCAAF + 1 NFL game; when it expired, Odds API returned empty and
       // user saw "no games" despite 17 NFL + 89 NCAAF games in ctx tables.
+      // 2026-11-03 NCAAB — UNION, not a fallback. The Odds API only returns
+      // games that have not tipped, so the college-basketball games tab
+      // SHRINKS through the evening: measured now, the feed carried 18 games
+      // with an ET-today tip against 29 D-I games on the slate, and
+      // ncaab_game_context held 19. A game you have a play on disappearing
+      // at tip is the worst moment to lose it.
+      //
+      // ctx.game_id IS the Odds API event id for college basketball —
+      // verified 29 of 29 on today's feed — so the dedupe is an exact key
+      // match, not a name join, and a union cannot double-list a game.
+      if (sport === 'NCAAB' && day !== 'tomorrow') {
+        try {
+          const dayISO = (day === 'yesterday' ? yesterdayStart : todayStart)
+            .toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          const have = new Set(mappedGames.map((g: any) => String(g.id)));
+          const cx = await supabase.from('ncaab_game_context')
+            .select('game_id,game_date,home_team,away_team,close_spread,'
+                    + 'close_total,close_home_ml,close_away_ml,game_time_et')
+            .eq('game_date', dayISO)
+            .limit(400);
+          const extra = (cx?.data || []).filter((g: any) =>
+            g.game_id && !have.has(String(g.game_id)));
+          if (extra.length > 0) {
+            mappedGames = mappedGames.concat(extra.map((g: any) => {
+              // NCAAB close_spread is HOME-relative and negative for a home
+              // favourite (Hampton @ Georgia Tech = -13.5), same convention
+              // as NCAAF, so the home line is close_spread as stored.
+              const synthMarkets: any[] = [];
+              if (g.close_spread != null) {
+                synthMarkets.push({key: 'spreads', outcomes: [
+                  {name: g.home_team, point: Number(g.close_spread), price: -110},
+                  {name: g.away_team, point: -Number(g.close_spread), price: -110},
+                ]});
+              }
+              if (g.close_total != null) {
+                synthMarkets.push({key: 'totals', outcomes: [
+                  {name: 'Over',  point: Number(g.close_total), price: -110},
+                  {name: 'Under', point: Number(g.close_total), price: -110},
+                ]});
+              }
+              if (g.close_home_ml != null || g.close_away_ml != null) {
+                synthMarkets.push({key: 'h2h', outcomes: [
+                  {name: g.home_team, price: g.close_home_ml ?? 0},
+                  {name: g.away_team, price: g.close_away_ml ?? 0},
+                ]});
+              }
+              return {
+                id: g.game_id,
+                sport_key: 'basketball_ncaab',
+                commence_time: g.game_time_et || (g.game_date + 'T23:00:00Z'),
+                home_team: resolveNcaabTeam(g.home_team),
+                away_team: resolveNcaabTeam(g.away_team),
+                bookmakers: synthMarkets.length > 0
+                  ? [{key: 'ctx_fallback', title: 'Consensus', markets: synthMarkets}]
+                  : [],
+                _backend_fallback: true,
+              };
+            }));
+            console.log(`[fetchGames] NCAAB ${dayISO}: feed ${have.size} + ctx ${extra.length} = ${mappedGames.length}`);
+          }
+        } catch (ue) { /* non-fatal — feed-only list is still correct */ }
+      }
       if (mappedGames.length === 0 && isWeekly && (sport === 'NFL' || sport === 'NCAAF')) {
         try {
           const ctxTable = sport === 'NFL' ? 'nfl_game_context' : 'ncaaf_game_context';
@@ -5938,6 +6127,20 @@ Write one punchy Jerry reaction to this result. If Win — celebrate sharply. If
         setMlbPitcherStatsMap(psMap);
       }
     } catch(pe) { /* non-fatal */ }
+    // NCAAB team-name aliases. MUST load with (ideally before) the stats
+    // map: resolveNcaabTeam falls back to stripMascot while this is empty,
+    // which is the 6-of-29 behaviour it exists to replace.
+    try {
+      const alResult = await supabase
+        .from('ncaab_team_aliases')
+        .select('canonical_name,kenpom_name,bart_name,odds_api_name,alt_names')
+        .limit(1000);
+      if(alResult?.data && alResult.data.length > 0) {
+        const n = setNcaabAliasRegistry(alResult.data);
+        setNcaabAliasCount(n);
+        console.log(`[ncaab] alias registry: ${alResult.data.length} schools, ${n} spellings`);
+      }
+    } catch(pe) { /* non-fatal — resolver falls back to stripMascot */ }
     // NCAAB team stats (KenPom Four Factors + efficiency + luck + SOS)
     // Added 2026-07-25 Phase 1c — surface the full Four Factors depth
     // that separates real CBB analytics from a scoreboard.
@@ -6860,8 +7063,8 @@ const fetchJerryRecord = async () => {
 });
     const mapped = (r.data||[]).map(g => ({
       ...g,
-      away_team: sport==='NCAAB' ? stripMascot(g.away_team) : g.away_team,
-      home_team: sport==='NCAAB' ? stripMascot(g.home_team) : g.home_team,
+      away_team: sport==='NCAAB' ? resolveNcaabTeam(g.away_team) : g.away_team,
+      home_team: sport==='NCAAB' ? resolveNcaabTeam(g.home_team) : g.home_team,
     }));
     setModelEdgeData(mapped);
   } catch(e) { setModelEdgeData([]); }

@@ -171,7 +171,22 @@ def run(dry_run: bool = False) -> int:
     teams = fetch_haslam()
     print(f'  parsed {len(teams)} teams from Haslam XML')
     if not teams: return 0
-    return upsert_snapshot(teams, datetime.now(timezone.utc).date(), dry_run=dry_run)
+    # 2026-11-03: ET, not UTC. datetime.now(timezone.utc).date() rolls at
+    # 19:00 ET (20:00 in summer), so every run after the evening tip-off
+    # window silently worked TOMORROW's slate and never touched today's.
+    # Measured at 20:46 ET on 11-03: the panel reported '2026-11-04' and
+    # scored the 10 games on the 4th while the 19 games of the 3rd kept
+    # whatever they already had. With GitHub Actions running 7-10h late
+    # (project_card_builds_before_every_other_sport_1102) the 20:00 UTC
+    # cron lands past 00:00 UTC routinely, so this is not a rare edge.
+    # sweat_dates exists for exactly this and its docstring already names
+    # three NFL instances of the same bug.
+    # Same primary key as the kenpom and torvik snapshots, so all three
+    # must agree on what day it is or the Panel sees one system per key
+    # (feedback_each_scraper_invented_its_own_season, same shape).
+    from sweat_dates import et_today
+    return upsert_snapshot(teams, date.fromisoformat(et_today()),
+                           dry_run=dry_run)
 
 
 def main():
