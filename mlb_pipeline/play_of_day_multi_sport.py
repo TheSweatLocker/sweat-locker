@@ -96,7 +96,55 @@ def _fetch_sport_candidates(today: str) -> list[dict]:
                 except Exception: pp = {}
             if not isinstance(pp, dict): continue
             tier = str(pp.get('tier') or '').upper()
-            if tier not in ('PRIME', 'STRONG'): continue
+            # ══ 2026-11-04 · TIERED FALLBACK SO THERE IS ALWAYS A POTD ═══
+            # ANDY: "One a day for POTD." Measured over the last 30 days
+            # there was a real pick on only 20 — the other 10 read
+            # 'No Play (discipline pass)' or, on two of them, 'No Games'
+            # when the slate actually held 11 and 17 games.
+            #
+            # The chain had no fallback anywhere: play_of_day.py considers
+            # MLB + NBA only, and THIS override required PRIME/STRONG. On a
+            # night where nothing clears STRONG — which is most nights now
+            # that NBA is 86% COVERAGE, NHL 92% and NCAAB is capped at
+            # STRONG and emits LEAN — both produced nothing.
+            #
+            # So candidates are gathered with their tier RANK and the
+            # selection below takes the best available band: PRIME/STRONG
+            # first and, only if that band is empty, LEAN, then COVERAGE.
+            # A lower band is never mixed with a higher one, so a COVERAGE
+            # pick can only win on a night when nothing better exists.
+            # PASS/SKIP are never candidates — a no-play is not a play.
+            _BANDS = {'PRIME': 0, 'STRONG': 0, 'LEAN': 1, 'COVERAGE': 2}
+            if tier not in _BANDS: continue
+            # ══ AND A PRICE BAND, BECAUSE THE FALLBACK FOUND A 24-1 DOG ══
+            # The first run of this fallback ranked 'Fairleigh Dickinson ML
+            # @ +2400' top with conviction 70 — a 24-to-1 longshot against a
+            # -10000 favourite — as Play of the Day. Conviction 70 on a side
+            # the market prices at 4% is the model disagreeing with a
+            # near-certainty, not an edge.
+            #
+            # POTD already has a documented ML juice gate of -200 (Andy's
+            # call, 2026-09-29, reverted from -250). A ceiling without a
+            # floor is half a band, so this applies both: an ML POTD must
+            # price between -200 and +200. Spreads and totals are unaffected
+            # -- they carry their own ~-110 and have their own gates.
+            _mk = str(pp.get('type') or '').lower()
+            if _mk == 'ml':
+                _sd = str(pp.get('side') or '').upper()
+                _px = (row.get('close_home_ml') if _sd.startswith('HOME')
+                       else row.get('close_away_ml'))
+                try:
+                    _pxf = float(_px)
+                except (TypeError, ValueError):
+                    _pxf = None
+                if _pxf is None:
+                    print(f'    - skip {sport} {pp.get("label")!r}: ML with no '
+                          f'stored price, cannot be the POTD')
+                    continue
+                if _pxf < -200 or _pxf > 200:
+                    print(f'    - skip {sport} {pp.get("label")!r} @ {_pxf:+.0f}: '
+                          f'outside the -200..+200 POTD moneyline band')
+                    continue
             candidates.append({
                 'sport': sport,
                 'game_id': row.get('game_id'),
@@ -105,6 +153,7 @@ def _fetch_sport_candidates(today: str) -> list[dict]:
                 'ctx_row': row,
                 'pp': pp,
                 'tier': tier,
+                'band': _BANDS[tier],
                 'conviction': int(pp.get('conviction') or 0),
                 'side': pp.get('side'),
                 'type': pp.get('type'),
@@ -299,6 +348,75 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
         print(f'  ✓ published cross-sport POTD: {winner["sport"]} {payload["leanDisplay"]}')
     else:
         print(f'  ✗ publish failed {r.status_code}: {r.text[:200]}')
+        return
+
+    # ══ 2026-11-04 · THE RECORD, NOT JUST THE CACHE ═════════════════════
+    # This wrote jerry_cache only. play_of_day.py writes BOTH jerry_cache
+    # and daily_best_bet_history, so an MLB POTD enters the record and a
+    # cross-sport one did not — reconcile_potd_surfaces then reports
+    # "no history row exists — cache-only publish, skipping", because it
+    # reconciles rows and does not create them.
+    #
+    # A POTD that exists only in the cache is invisible to the Receipts
+    # calendar, to grading and to every record query. On a night like
+    # tonight, when the cross-sport override IS the POTD, that means no
+    # POTD in the record at all — part of why only 20 of the last 30 days
+    # carry a real pick.
+    #
+    # PRICE. A spread or total POTD has no per-side price in these context
+    # tables (NCAAB ctx carries close_spread but no spread price), and an
+    # unpriced row cannot be graded for ROI — tonight's other work was
+    # repairing 113 priceless POTD receipts. So a side market defaults to
+    # -110, which is the median of our own priced POTD spreads/totals, and
+    # the assumption is recorded in the row rather than left implicit.
+    _mk = str(winner['pp'].get('type') or '').lower()
+    _sd = str(winner['pp'].get('side') or '').upper()
+    _ctx = winner.get('ctx_row') or {}
+    _odds = None
+    _assumed = False
+    if _mk == 'ml':
+        _odds = (_ctx.get('close_home_ml') if _sd.startswith('HOME')
+                 else _ctx.get('close_away_ml'))
+    if _odds is None:
+        _odds = -110
+        _assumed = True
+    try:
+        _odds = int(float(_odds))
+    except (TypeError, ValueError):
+        _odds, _assumed = -110, True
+
+    _hist = {
+        'bet_date': today,
+        'sport': winner['sport'],
+        'game': f"{winner['away_team']} @ {winner['home_team']}",
+        'lean': payload['leanDisplay'],
+        'sweat_score': int(winner.get('conviction') or 0),
+        'result': 'Pending',
+        'odds_american': _odds,
+    }
+    hr = requests.post(
+        f'{SB}/rest/v1/daily_best_bet_history?on_conflict=bet_date',
+        headers={**H_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+        timeout=15, json=_hist,
+    )
+    if hr.status_code not in (200, 201, 204):
+        print(f'  ✗ history write failed {hr.status_code}: {hr.text[:200]}')
+        return
+    # A 204 is not a write — read it back.
+    back = requests.get(
+        f'{SB}/rest/v1/daily_best_bet_history',
+        headers=H_READ, timeout=15,
+        params={'select': 'bet_date,sport,lean,odds_american',
+                'bet_date': f'eq.{today}'},
+    ).json() or []
+    if not back:
+        print('  ✗ history row NOT confirmed on readback — the POTD would be '
+              'cache-only and invisible to the record')
+        return
+    print(f'  ✓ history row: {back[0]["sport"]} {back[0]["lean"][:44]} '
+          f'@ {back[0]["odds_american"]}'
+          + ('  (price ASSUMED -110: no per-side price stored for a '
+             f'{_mk} pick)' if _assumed else ''))
 
 
 def run(dry_run: bool = False, min_lead: int = 5):
@@ -311,9 +429,25 @@ def run(dry_run: bool = False, min_lead: int = 5):
     print(f'  Current best_bet_{today}: sport={mlb_sport} conviction={mlb_conviction}')
 
     candidates = _fetch_sport_candidates(today)
-    print(f'  Cross-sport candidates (PRIME/STRONG): {len(candidates)}')
+    # Keep only the best band present, so a COVERAGE pick never competes
+    # with a STRONG one — it only fills a night that has nothing better.
+    if candidates:
+        _best_band = min(c['band'] for c in candidates)
+        _by_band = {}
+        for _c in candidates:
+            _by_band.setdefault(_c['band'], 0)
+            _by_band[_c['band']] += 1
+        candidates = [c for c in candidates if c['band'] == _best_band]
+        _names = {0: 'PRIME/STRONG', 1: 'LEAN', 2: 'COVERAGE'}
+        print(f'  Cross-sport candidates by band: '
+              + ', '.join(f'{_names[b]}={n}' for b, n in sorted(_by_band.items())))
+        if _best_band > 0:
+            print(f'  ⬆ no PRIME/STRONG tonight — falling back to the '
+                  f'{_names[_best_band]} band so there is still a POTD '
+                  f'(ANDY: one a day)')
+    print(f'  Cross-sport candidates (best band): {len(candidates)}')
     if not candidates:
-        print('  no non-MLB PRIME/STRONG picks today — leaving MLB POTD as-is')
+        print('  no non-MLB pick in ANY band today — leaving MLB POTD as-is')
         return 0
 
     # Apply LR gate to each candidate — updates conviction in-place
@@ -336,7 +470,27 @@ def run(dry_run: bool = False, min_lead: int = 5):
           f'(lead={lead:+d}, min_lead={min_lead})')
 
     # If MLB POTD already IS the winner or the cross-sport lead isn't material, keep MLB
-    if mlb_sport != 'MLB':
+    # ══ 2026-11-04 · A PLACEHOLDER IS NOT A PICK ════════════════════════
+    # This guard exists so the override cannot stomp a POTD written by
+    # something other than the MLB pipeline — a hand-set pick, say. But it
+    # also fired on the EMPTY placeholder play_of_day.py writes when it has
+    # no candidates: {"noGames": true}, sport='none', conviction 0.
+    #
+    # That is how 10 of the last 30 days ended with no POTD. Two of them
+    # even told users 'No Games' while the slate held 11 and 17 games —
+    # play_of_day.py only looks at MLB + NBA, so 'no candidates' was
+    # reported as 'no games'. The override had a real pick in hand and
+    # refused to write it because a placeholder was in the way.
+    #
+    # A placeholder has nothing to protect: no sport, no conviction, and
+    # noGames set. Anything else still blocks the override.
+    _ph = (str(mlb_sport or '').upper() in ('', 'NONE')
+           and int(mlb_conviction or 0) == 0)
+    if _ph:
+        print('  Current POTD is an empty placeholder (sport=%s conv=%s) — '
+              'overriding it is the point, not a stomp'
+              % (mlb_sport, mlb_conviction))
+    if mlb_sport != 'MLB' and not _ph:
         print('  Current POTD is not MLB — skipping override to avoid stomping non-pipeline write')
         return 0
     if lead < min_lead:

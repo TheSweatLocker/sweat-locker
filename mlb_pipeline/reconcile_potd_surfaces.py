@@ -95,8 +95,78 @@ def reconcile(date: str, dry_run: bool = False) -> int:
     )
     hist_rows = hr.json() if hr.status_code == 200 else []
     if not hist_rows:
-        print(f'  {date}: no history row exists — cache-only publish, skipping')
-        return 1
+        # ══ 2026-11-04 · A CACHE-ONLY POTD IS NOT IN THE RECORD ═════════
+        # This returned instead of creating, so a POTD published only to
+        # jerry_cache stayed invisible to daily_best_bet_history — and
+        # therefore to the Receipts calendar, to grading and to every record
+        # query.
+        #
+        # It is not an edge case. play_of_day.py writes BOTH surfaces, but
+        # play_of_day_multi_sport.py (the cross-sport override) wrote only
+        # the cache, and on any night where nothing MLB qualifies the
+        # override IS the POTD. Tonight is exactly that: NCAAB Santa Clara
+        # RL sat in the cache with no history row, and this script said
+        # "cache-only publish, skipping" — reconciling rows while declining
+        # to create the one that was missing.
+        #
+        # So create it from what the cache already carries. Nothing is
+        # invented: lean/result are the values derived above, sport and game
+        # come from the payload, sweat_score from score.total, and the price
+        # defaults to -110 for a side market (the median of our own priced
+        # POTD spreads/totals) with the assumption stated in the output.
+        _sport = str(data.get('sport') or 'MLB').upper()
+        _game = data.get('matchup') or data.get('game')
+        if isinstance(_game, dict):
+            _game = (f"{_game.get('away_team','?')} @ "
+                     f"{_game.get('home_team','?')}")
+        _score = data.get('score')
+        _sw = 0
+        if isinstance(_score, dict):
+            _sw = int(_score.get('total') or 0)
+        elif _score is not None:
+            try: _sw = int(float(_score))
+            except (TypeError, ValueError): _sw = 0
+        _odds = data.get('odds_american') or data.get('odds')
+        _assumed = _odds is None
+        try:
+            _odds = int(float(_odds)) if _odds is not None else -110
+        except (TypeError, ValueError):
+            _odds, _assumed = -110, True
+        _row = {
+            'bet_date': date,
+            'sport': _sport,
+            'game': _game,
+            'lean': target_lean,
+            'sweat_score': _sw,
+            'result': target_result or 'Pending',
+            'odds_american': _odds,
+        }
+        if dry_run:
+            print(f'  {date}: [DRY] would CREATE history row {_row}')
+            return 0
+        cr = requests.post(
+            f'{SB}/rest/v1/daily_best_bet_history?on_conflict=bet_date',
+            headers={**H_W, 'Prefer': 'resolution=merge-duplicates,'
+                                      'return=minimal'},
+            json=_row, timeout=15,
+        )
+        if cr.status_code not in (200, 201, 204):
+            print(f'  {date}: history CREATE failed {cr.status_code}: '
+                  f'{cr.text[:160]}')
+            return 1
+        # A 204 is not a write.
+        bk = requests.get(
+            f'{SB}/rest/v1/daily_best_bet_history', headers=H_R, timeout=10,
+            params={'bet_date': f'eq.{date}', 'select': 'sport,lean,odds_american'},
+        ).json() or []
+        if not bk:
+            print(f'  {date}: history CREATE not confirmed on readback')
+            return 1
+        print(f'  {date}: CREATED history row — {bk[0]["sport"]} '
+              f'{str(bk[0]["lean"])[:46]} @ {bk[0]["odds_american"]}'
+              + ('  (price ASSUMED -110: none stored on the cache payload)'
+                 if _assumed else ''))
+        return 0
 
     hist = hist_rows[0]
     hist_lean = hist.get('lean') or ''
