@@ -661,7 +661,26 @@ def _grade_sharp_card_props(recs: list, patches: list, skipped: Counter) -> None
             continue
         player, direction, line, stat = (m.group(1).strip(), m.group(2).lower(),
                                          m.group(3), m.group(4).strip().upper())
+        # 2026-11-03 · TWO SPELLINGS OF THE STAT REACH THIS LABEL.
+        # Most sharp-card labels carry the DISPLAY stat ("Shane Baz Under
+        # 17.5 OUTS"), but 4 ungraded receipts carry the raw prop_type
+        # instead -- 'Yoshinobu Yamamoto Over 18.5 outs_over',
+        # 'Ha-Seong Kim Under 0.5 hits_under' -- so the lookup saw
+        # 'OUTS_OVER' / 'HITS_UNDER' and reported stat_unmapped. Those
+        # receipts have sat ungraded since 09-23.
+        #
+        # The suffix is dropped only when it AGREES with the direction the
+        # label already states. "Over 18.5 outs_under" is a contradiction,
+        # not a spelling variant, and must keep refusing rather than be
+        # graded on a guessed side (feedback_grade_the_side_we_published).
         stem = _SHARP_PROP_STAT.get(stat)
+        if not stem:
+            _m = re.match(r'^(?P<stem>.+)_(?P<dir>OVER|UNDER)$', stat)
+            if _m and _m.group('dir').lower() == direction:
+                stem = _SHARP_PROP_STAT.get(_m.group('stem'))
+            elif _m:
+                skipped[f'stat_dir_conflict:{stat[:14]}'] += 1
+                continue
         if not stem:
             skipped[f'stat_unmapped:{stat[:10]}'] += 1
             continue
