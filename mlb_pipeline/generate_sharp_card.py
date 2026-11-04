@@ -1208,6 +1208,97 @@ def _spread_prices(sport: str, dates: set) -> dict:
     return out
 
 
+def _median(vals: list) -> float:
+    v = sorted(float(x) for x in vals)
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def _lh_spread_quotes(sport: str) -> dict:
+    """(resolved_away, resolved_home, side) -> {'line','price','n'} from
+    line_history, for tonight's games only.
+
+    ══ 2026-11-04 · THE NCAAB SPREAD PRICE EXISTED ALL ALONG ══════════════
+    Last night I reported "NCAAB spreads have no price anywhere in the
+    system" after checking ncaab_game_context (no price column; its only
+    odds-ish field, oddscrowd_snapshot, carries bets/money/fade and no
+    number) and jerry_reads.price_american (0 of 10 priced). Both true, and
+    the conclusion was still wrong: line_history holds live two-sided
+    spread quotes for NCAAB, captured minutes ago from fanduel, draftkings
+    and 9 other books.
+
+    What hid them was MASCOTS. line_history stores
+    'Radford Highlanders @ California Golden Bears'; our picks say
+    'Radford @ California'. Nothing resolved between the two, so a
+    perfectly good price was invisible - the same stripMascot /
+    ncaab_team_aliases split that gated the NCAAB stats panel on 11-03.
+    ncaab_team_resolver bridges 7 of 7 of tonight's matchups.
+
+    Keyed on the resolved PAIR plus side, not on game_id: line_history
+    carries its own game_id and never shares ours.
+    """
+    out: dict = {}
+    rows = _get(f'{SB}/rest/v1/line_history', params={
+        'select': 'matchup,market,book,side,line,price,captured_at,commence_time',
+        'sport': f'eq.{sport}', 'market': 'eq.spread',
+        'order': 'captured_at.desc', 'limit': '1000'}) or []
+    if not rows:
+        return out
+    _today = _today_et()
+    _tomorrow = (datetime.fromisoformat(_today).date() + timedelta(days=1)).isoformat()
+    _rv = None
+    if sport == 'NCAAB':
+        try:
+            import ncaab_team_resolver as _R
+            _R.load_aliases()
+            _rv = _R.resolve
+        except Exception as _e:                                   # noqa: BLE001
+            print(f'  [sharp] NCAAB name resolver unavailable ({_e}) - '
+                  f'line_history prices will match on raw names only')
+
+    def norm(name):
+        n = str(name or '').strip()
+        if _rv:
+            try:
+                r = _rv(n)
+                if r: return str(r).lower()
+            except Exception: pass
+        return n.lower()
+
+    # newest quote per (pair, side, book), then median across books
+    best: dict = {}
+    for x in rows:
+        ct = str(x.get('commence_time') or '')
+        # A game tipping tonight ET lands on today OR tomorrow in UTC.
+        if not ct.startswith((_today, _tomorrow)):
+            continue
+        mu = str(x.get('matchup') or '')
+        if ' @ ' not in mu:
+            continue
+        a, h = [t.strip() for t in mu.split(' @ ', 1)]
+        k = (norm(a), norm(h), str(x.get('side') or '').lower(), str(x.get('book') or ''))
+        if k not in best or str(x.get('captured_at')) > str(best[k].get('captured_at')):
+            best[k] = x
+    agg: dict = {}
+    for (a, h, sd, _bk), x in best.items():
+        d = agg.setdefault((a, h, sd), {'lines': [], 'prices': []})
+        if x.get('line') is not None:
+            try: d['lines'].append(float(x['line']))
+            except (TypeError, ValueError): pass
+        if x.get('price') is not None:
+            try: d['prices'].append(float(x['price']))
+            except (TypeError, ValueError): pass
+    for k, d in agg.items():
+        # A price needs 2+ books, same bar _flip_prices uses: a lone book
+        # is not a market.
+        if len(d['prices']) < 2:
+            continue
+        out[k] = {'line': _median(d['lines']) if d['lines'] else None,
+                  'price': int(round(_median(d['prices']))),
+                  'n': len(d['prices'])}
+    return out
+
+
 # ══ 2026-10-23 · B156 REVISED · A SHORT FOOTBALL SPREAD IS A FLIP, NOT A BAN ══
 # The 10-23 blanket ban was measured right and scoped wrong. Banning every
 # football spread would have taken NFL off this surface entirely on three of
@@ -1481,6 +1572,26 @@ def _compose_other_sport_sides(rows: list, sport: str,
     # close_spread. The fetch is already scoped to eq.{today}, so the date is
     # known without reading it back.
     _px = _spread_prices(sport, {_today_et()})
+    # Two-sided book quotes from line_history, resolver-matched on the team
+    # PAIR. Used only where jerry_reads has no price for the pick's market.
+    _lhq = _lh_spread_quotes(sport)
+    _lh_rv = None
+    if sport == 'NCAAB':
+        try:
+            import ncaab_team_resolver as _R2
+            _R2.load_aliases()
+            _lh_rv = _R2.resolve
+        except Exception:                                         # noqa: BLE001
+            pass
+
+    def _lh_name(nm):
+        n = str(nm or '').strip()
+        if _lh_rv:
+            try:
+                r = _lh_rv(n)
+                if r: return str(r).lower()
+            except Exception: pass
+        return n.lower()
     tier_gate = _is_ps if (is_football and not FOOTBALL_INCLUDE_LEAN) else _is_any_tier
     dropped_lean = dropped_chalk = dropped_pass = 0
     dropped_lr_conflict = 0
@@ -1813,6 +1924,24 @@ def _compose_other_sport_sides(rows: list, sport: str,
                 if _pv is not None:
                     try: pick_odds = int(float(_pv))
                     except (TypeError, ValueError): pass
+            # ══ 2026-11-04 · LAST RESORT: THE BOOKS THEMSELVES ═══════════
+            # See _lh_spread_quotes. This is what makes an NCAAB spread
+            # bettable and gradeable at all - its price lives nowhere else.
+            # The line is NOT rewritten from here: the pick's edge was
+            # computed at pick_line, so the drift is reported instead
+            # (line_moved, below) and the number we published stands.
+            if pick_odds is None and _lhq:
+                _sd2 = ('home' if str(side or '').upper().startswith('HOME')
+                        else 'away' if str(side or '').upper().startswith('AWAY')
+                        else None)
+                if _sd2:
+                    _qq = _lhq.get((_lh_name(g.get('away_team')),
+                                    _lh_name(g.get('home_team')), _sd2))
+                    if _qq and _qq.get('price') is not None:
+                        pick_odds = _qq['price']
+                        print(f'    [price] {sport} {pick_label}: '
+                              f'{pick_odds:+d} from line_history '
+                              f'({_qq["n"]} books)')
             try:
                 _mkt = g.get('close_spread')
                 if _mkt is not None and pick_line is not None and \

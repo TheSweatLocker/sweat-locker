@@ -4797,6 +4797,100 @@ def build_card():
     # merged card showed duplicate and missing numbers.
     for _i, _p in enumerate(unified_top_picks, 1):
         _p['rank'] = _i
+    # ══ 2026-11-04 · SAY SO WHEN THE BOOK NO LONGER OFFERS OUR NUMBER ════
+    # The Sharp has carried a line_moved stamp since 10-03 ("showing a
+    # number the book no longer offers is equally wrong"); the Sweat Card
+    # never got one, so a stale line reached the dashboard silently.
+    #
+    # Measured today: 3 of 8 NBA rl reads hold open_spread rather than
+    # close_spread, and one of them is the POTD - published 'Houston
+    # Rockets ATS -9.5' while 11 books post -7.5. The read was GENERATED
+    # 2026-11-03T23:09 and PRICED 2026-11-04T12:27, so price_picks
+    # refreshed the price against a line it never re-checked: the pair is
+    # two different moments.
+    #
+    # The line is NOT rewritten. The edge was computed at pick_line and
+    # moving it would publish a bet we never evaluated - same rule The
+    # Sharp follows. This reports the drift and stamps it for the render.
+    # Compared against line_history, NOT ctx.close_spread. ctx is a single
+    # snapshot that goes stale between refreshes - today it was written
+    # 2026-11-03T23:08 and reported OKC's drift in the WRONG DIRECTION
+    # (ctx -1.5 vs 11 books at -3.5). line_history carries per-book quotes
+    # captured minutes ago, so the median across books is the number a
+    # bettor can actually get.
+    def _mkt_now_map(_sports):
+        _out = {}
+        for _sp in _sports:
+            _rows = sb_get('line_history', {
+                'select': 'matchup,market,book,side,line,captured_at,'
+                          'commence_time',
+                'sport': f'eq.{_sp}', 'market': 'eq.spread',
+                'order': 'captured_at.desc', 'limit': '1000'}) or []
+            _best = {}
+            for _x in _rows:
+                _ct = str(_x.get('commence_time') or '')
+                if not _ct.startswith((today, _tomorrow_et)):
+                    continue
+                _mu = str(_x.get('matchup') or '')
+                if ' @ ' not in _mu:
+                    continue
+                _a, _h = [t.strip().lower() for t in _mu.split(' @ ', 1)]
+                _k = (_sp, _a, _h, str(_x.get('side') or '').lower(),
+                      str(_x.get('book') or ''))
+                if (_k not in _best
+                        or str(_x.get('captured_at')) > str(_best[_k][0])):
+                    _best[_k] = (_x.get('captured_at'), _x.get('line'))
+            _agg = {}
+            for (_s2, _a, _h, _sd, _bk), (_ts, _ln) in _best.items():
+                if _ln is None:
+                    continue
+                _agg.setdefault((_s2, _a, _h, _sd), []).append(float(_ln))
+            for _k, _v in _agg.items():
+                if len(_v) < 2:        # a lone book is not a market
+                    continue
+                _v = sorted(_v)
+                _n = len(_v)
+                _out[_k] = (_v[_n // 2] if _n % 2
+                            else (_v[_n // 2 - 1] + _v[_n // 2]) / 2.0,
+                            _n)
+        return _out
+
+    _tomorrow_et = (datetime.fromisoformat(today).date()
+                    + timedelta(days=1)).isoformat()
+    _sports_on_card = {str(_p.get('sport')) for _p in unified_top_picks
+                       if _p.get('line') is not None}
+    _mkt = _mkt_now_map([_s for _s in _sports_on_card if _s])         if _sports_on_card else {}
+    _drift = []
+    for _p in unified_top_picks:
+        try:
+            _pl = _p.get('line')
+            _game = str(_p.get('game') or _p.get('matchup') or '')
+            if _pl is None or ' @ ' not in _game:
+                continue
+            _sd = str(_p.get('side') or '').upper()
+            _sd = ('home' if _sd.startswith('HOME')
+                   else 'away' if _sd.startswith('AWAY') else None)
+            if not _sd:
+                continue
+            _a, _h = [t.strip().lower() for t in _game.split(' @ ', 1)]
+            _q = _mkt.get((str(_p.get('sport')), _a, _h, _sd))
+            if not _q:
+                continue
+            _mkt_line, _books = _q
+            if abs(abs(float(_mkt_line)) - abs(float(_pl))) >= 0.5:
+                _p['line_moved'] = {'pick_line': float(_pl),
+                                    'market_now': float(_mkt_line),
+                                    'books': _books}
+                _drift.append((_p.get('label') or _p.get('pick'),
+                               float(_pl), float(_mkt_line), _books))
+        except (TypeError, ValueError):
+            continue
+    if _drift:
+        print(f'  ⚠ line drift on {len(_drift)} card pick(s) — the '
+              f'number we published is not the one the book posts now:')
+        for _lbl, _ours, _now, _bk in _drift:
+            print(f'      {str(_lbl)[:40]:40s} ours {_ours:+g}  market now '
+                  f'{_now:+g}  ({_bk} books)')
     if unified_top_picks:
         _mix = {}
         for _p in unified_top_picks:

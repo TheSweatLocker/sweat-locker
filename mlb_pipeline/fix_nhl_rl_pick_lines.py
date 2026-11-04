@@ -51,16 +51,34 @@ def _pp(row):
     return p if isinstance(p, dict) else {}
 
 
-def run(date: str | None, dry_run: bool) -> int:
+# ══ 2026-11-04 · NHL WAS NOT THE ONLY SPORT ═══════════════════════════
+# Measured after the NHL repair: NBA carries the same defect, 8 spread
+# picks with line=None, 2 of them repairable from ctx on their own row -
+# and both of those are on TODAY's board ('Miami Heat ATS', 'New Orleans
+# Pelicans ATS'). A card pick reading 'ATS' with no number is not a play.
+#
+# Same guarantee as the NHL pass: the SIDE already stored is re-derived,
+# never chosen, so a pick cannot change teams.
+_TABLE = {'NHL': 'nhl_game_context', 'NBA': 'nba_game_context',
+          'NCAAB': 'ncaab_game_context', 'NFL': 'nfl_game_context',
+          'NCAAF': 'ncaaf_game_context'}
+
+
+def run(date: str | None, dry_run: bool, sport: str = 'NHL') -> int:
     from ensemble_scorer import _label_from_candidate
 
+    sport = str(sport).upper()
+    tbl = _TABLE.get(sport)
+    if not tbl:
+        print(f'  unknown sport {sport!r} - known: {sorted(_TABLE)}')
+        return 2
     params = {'select': '*', 'order': 'game_date.asc', 'limit': '1000'}
     if date:
         params['game_date'] = f'eq.{date}'
     rows, off = [], 0
     while True:
         p = dict(params); p['offset'] = str(off)
-        chunk = requests.get(f'{SB}/rest/v1/nhl_game_context',
+        chunk = requests.get(f'{SB}/rest/v1/{tbl}',
                              headers=H_R, params=p, timeout=30).json()
         if not isinstance(chunk, list):
             print(f'  fetch failed: {str(chunk)[:200]}'); return 2
@@ -80,12 +98,12 @@ def run(date: str | None, dry_run: bool) -> int:
                   f'ours to guess')
             continue
         lbl, sd, line = _label_from_candidate(
-            'HOME_RL' if side == 'HOME' else 'AWAY_RL', r, sport='NHL')
+            'HOME_RL' if side == 'HOME' else 'AWAY_RL', r, sport=sport)
         if line is None:
             continue              # no line anywhere on the row - nothing to restore
         cand.append((r, pp, lbl, sd, line))
 
-    print(f'  nhl rows={len(rows)}  rl picks with no line and a '
+    print(f'  {sport} rows={len(rows)}  spread picks with no line and a '
           f'recoverable one={len(cand)}')
     fixed = 0
     for r, pp, lbl, sd, line in cand:
@@ -101,14 +119,14 @@ def run(date: str | None, dry_run: bool) -> int:
         if dry_run:
             continue
         pr = requests.patch(
-            f'{SB}/rest/v1/nhl_game_context', headers=H_W, timeout=20,
+            f'{SB}/rest/v1/{tbl}', headers=H_W, timeout=20,
             params={'game_id': f'eq.{r["game_id"]}'},
             json={'primary_play': new})
         if pr.status_code not in (200, 204):
             print(f'      PATCH failed {pr.status_code}: {pr.text[:140]}')
             continue
         # A 204 is not a write.
-        back = requests.get(f'{SB}/rest/v1/nhl_game_context', headers=H_R,
+        back = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_R,
                             timeout=20,
                             params={'game_id': f'eq.{r["game_id"]}',
                                     'select': 'primary_play'}).json() or []
@@ -127,10 +145,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None, help='one game_date, else all')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--sport', default='NHL',
+                    help='NHL (default), NBA, NCAAB, NFL, NCAAF')
     a = ap.parse_args()
-    print(f'=== fix_nhl_rl_pick_lines · {a.date or "ALL"} · '
+    print(f'=== fix_rl_pick_lines · {a.sport.upper()} · {a.date or "ALL"} · '
           f'{"DRY" if a.dry_run else "APPLY"} ===')
-    sys.exit(run(a.date, a.dry_run))
+    sys.exit(run(a.date, a.dry_run, a.sport))
 
 
 if __name__ == '__main__':

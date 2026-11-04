@@ -261,9 +261,42 @@ def run_date(date: str, apply: bool) -> int:
             continue
         have = {norm(it.get('pick') or it.get('label'))
                 for it in items if isinstance(it, dict)}
+        # ══ 2026-11-04 · THE CURRENT POTD, SO A RETIRED ONE IS NOT ADDED ══
+        # A sweat_card receipt with market='potd' is only the POTD if it is
+        # still the POTD. Receipts are per-publish and never retracted, so
+        # every POTD the day ever had leaves one behind.
+        #
+        # Live case today: the overnight cross-sport POTD (NHL Buffalo) was
+        # captured at 06:38 and again at 07:48, then Jerry replaced it at
+        # 12:58 with NBA Houston. This loop then added BOTH Buffalo receipts
+        # back as type='POTD', so the card carried three POTD rows - the
+        # real one and two retired copies of a different sport.
+        #
+        # Worse, both retired copies are frozen at the pre-fix vintage:
+        # pick_label 'Buffalo Sabres RL (NHL LEAN 56/100)' with no line and
+        # pick_odds -110, when that play is Buffalo -1.5 at +180. Receipt
+        # columns are frozen on purpose, so this would re-inject daily.
+        # The card's potd block carries its name in `leanDisplay`; `label`
+        # and `pick` are absent (the same key that read null on all 201
+        # cards ever built, per the 11-03 POTD tracking work). Check
+        # leanDisplay FIRST or this guard silently never fires.
+        _pb = blob.get('potd') if isinstance(blob.get('potd'), dict) else {}
+        _cur_potd = norm(_pb.get('leanDisplay') or _pb.get('label')
+                         or _pb.get('pick') or '')
         added = []
+        _skipped_potd = []
         for x in receipts:
             if norm(x.get('pick_label')) in have:
+                # ══ 2026-11-04 · `have` WAS NEVER UPDATED AS WE ADDED ════
+                # Computed once from the blob, so two receipts carrying the
+                # SAME pick both passed this check and both were appended.
+                # That is the duplicate 'Buffalo Sabres RL' pair on today's
+                # card - same play, same price, twice, from receipt ids
+                # 4530795 and 4544121.
+                continue
+            if (str(x.get('market') or '').lower() == 'potd'
+                    and _cur_potd and norm(x.get('pick_label')) != _cur_potd):
+                _skipped_potd.append(x.get('pick_label'))
                 continue
             item = {
                 'sport': x.get('sport'),
@@ -279,6 +312,7 @@ def run_date(date: str, apply: bool) -> int:
             }
             item.update(anchor_fields(x))
             added.append(item)
+            have.add(norm(x.get('pick_label')))
         orphans = [norm(it.get('pick') or it.get('label'))
                    for it in items if isinstance(it, dict)
                    and norm(it.get('pick') or it.get('label'))
@@ -317,6 +351,10 @@ def run_date(date: str, apply: bool) -> int:
             changed = True
         print(f'  {date} {name}: {len(items)} -> {len(items) + len(added)} '
               f'({len(added)} added from receipts)')
+        if _skipped_potd:
+            print(f'      skipped {len(_skipped_potd)} RETIRED potd receipt(s) '
+                  f'- superseded by the current POTD: '
+                  + ', '.join(str(_p)[:40] for _p in _skipped_potd[:3]))
         for a in added:
             print(f'      + {a["pick"]!r} line={a["line"]} odds={a["odds"]} '
                   f'{a["result"]} (receipt {a["_from_receipt"]})')
