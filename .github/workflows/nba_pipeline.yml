@@ -1,11 +1,20 @@
 name: NBA Pipeline Daily
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :13. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
     # 2026-08-28 Phase 4 kill #9: dropped from 2x/day to 1x/day pre-season.
     # All steps are silent no-ops until Oct 22 season opener. Restore
     # 22 UTC (post-market) cron once preseason starts ~early Oct.
-    - cron: '0 12 * * *'   # 8:00am EDT — daily preseason placeholder
+    - cron: '13 12 * * *'   # 8:00am EDT — daily preseason placeholder
     # ══ 2026-10-13 · RESTORED, AND IT IS WHY NBA EXTERNALS WERE EMPTY ══
     # The note above prescribed this and it was never put back; preseason
     # started 2026-10-03 and NBA games are being played now.
@@ -34,7 +43,7 @@ on:
     #
     # Keeping the 12 UTC run too: it builds context/reads for the day, and
     # a second pass also re-resolves.
-    - cron: '0 18 * * *'   # ~4:54pm ET actual — post-market, pre-tip
+    - cron: '13 18 * * *'   # ~4:54pm ET actual — post-market, pre-tip
     # ══ 2026-10-21 · A THIRD SLOT, AND IT CORRECTS THE NOTE ABOVE ══
     # ANDY, 9:06am ET: "Also bot seeing moeny flwo data on nba games tighr
     # now." He was right: nba_game_context had splits_summary on 3 of 28 rows
@@ -68,7 +77,7 @@ on:
     #
     # Every step is idempotent and upserts, so a third pass costs an odds
     # pull and nothing else.
-    - cron: '0 13 * * *'   # 9:00am ET on time, ~1:24pm ET at median lateness
+    - cron: '13 13 * * *'   # 9:00am ET on time, ~1:24pm ET at median lateness
   workflow_dispatch:
     inputs:
       date:

@@ -7,9 +7,18 @@ name: Sport State Auto-Flip (daily)
 # Idempotent — writes only when state actually changes. Silent no-op on
 # days without transitions (>99% of runs).
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :47. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
-    - cron: '0 5 * * *'   # daily 5am UTC (1am ET)
+    - cron: '47 5 * * *'   # daily 5am UTC (1am ET)
   workflow_dispatch:
     inputs:
       dry_run:

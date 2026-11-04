@@ -44,6 +44,13 @@ name: Multi-Sport Line Poller
 # mlb_line_poller guards by locking close_total near first pitch
 # (project_pm_cron_live_game_prop_overwrite).
 
+# 2026-11-03 MINUTE SPREAD. 56.7 pct of all cron firings landed on :00
+# (59 of 104), the most contended minute on GitHub's scheduler, while
+# these pipelines ran 7-10h late
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :49. No github.event.schedule comparison here, so
+# nothing needed rewriting in lockstep (checked).
+
 on:
   schedule:
     # 2026-09-21b — CADENCE REVISED DOWN after doing the arithmetic I should
@@ -61,7 +68,7 @@ on:
     # genuinely close.
     - cron: '*/30 16-23 * * *'  # noon ET -> 8pm ET, every 30 min
     - cron: '*/30 0-4 * * *'    # 8pm ET  -> midnight ET, every 30 min
-    - cron: '0 5-15 * * *'      # 1am ET  -> 11am ET, hourly (quiet hours)
+    - cron: '49 5-15 * * *'      # 1am ET  -> 11am ET, hourly (quiet hours)
   workflow_dispatch:
     inputs:
       sport:

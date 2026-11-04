@@ -1,14 +1,23 @@
 name: NCAAB Pipeline Daily
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :23. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
     # CBB is nightly during season (Nov-Mar). Off-season these fire as no-ops
     # (Odds API returns 0 events, game_context builds nothing). Cheap to leave
     # scheduled year-round rather than gating on month.
-    - cron: '0 14 * * *'   # 10am ET  — morning slate build (Odds + context + Jerry)
-    - cron: '0 20 * * *'   # 4pm  ET  — pre-tip refresh (Odds movement, externals)
-    - cron: '0 11 * * *'   # 7am  ET  — overnight resolver (last night's finals + cohorts)
-    - cron: '0 15 * * 1'   # 11am ET Mon — weekly KenPom refresh (uses existing ncaab_pipeline.py)
+    - cron: '23 14 * * *'   # 10am ET  — morning slate build (Odds + context + Jerry)
+    - cron: '23 20 * * *'   # 4pm  ET  — pre-tip refresh (Odds movement, externals)
+    - cron: '23 11 * * *'   # 7am  ET  — overnight resolver (last night's finals + cohorts)
+    - cron: '23 15 * * 1'   # 11am ET Mon — weekly KenPom refresh (uses existing ncaab_pipeline.py)
   workflow_dispatch:
     inputs:
       mode:
@@ -95,9 +104,9 @@ jobs:
             SCHED="${{ github.event.schedule }}"
             echo "cron that fired: '${SCHED:-<none>}'"
             case "$SCHED" in
-              '0 11 * * *')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
-              '0 20 * * *')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
-              '0 15 * * 1')  echo "mode=kenpom_only"   >> $GITHUB_OUTPUT ;;
+              '23 11 * * *')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '23 20 * * *')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              '23 15 * * 1')  echo "mode=kenpom_only"   >> $GITHUB_OUTPUT ;;
               *)             echo "mode=full"          >> $GITHUB_OUTPUT ;;
             esac
           fi
@@ -252,7 +261,7 @@ jobs:
       # mode runs the full weekly-Monday routine (2026-07-25 fix —
       # was gated on schedule only, making manual runs skip enrichment).
       - name: Refresh NCAAB alias enrichment (Mon + manual)
-        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only') && (github.event.schedule == '0 15 * * 1' || github.event_name == 'workflow_dispatch')
+        if: (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'kenpom_only') && (github.event.schedule == '23 15 * * 1' || github.event_name == 'workflow_dispatch')
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -606,7 +615,7 @@ jobs:
         run: |
           cd mlb_pipeline
           # 4pm cron = --refresh (subset for late-day updates)
-          if [ "${{ github.event.schedule }}" = "0 20 * * *" ]; then
+          if [ "${{ github.event.schedule }}" = "23 20 * * *" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaab.py" python pull_externals_ncaab.py --refresh
           else
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "pull_externals_ncaab.py" python pull_externals_ncaab.py

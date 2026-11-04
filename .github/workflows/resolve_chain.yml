@@ -29,11 +29,20 @@
 
 name: resolve_chain
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :43. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
     # Every 3 hours. With a ~5.5h observed delay, the 21:00 and 00:00 UTC
     # slots are the ones expected to land overnight ET; the rest are safety.
-    - cron: '0 0,3,6,9,12,15,18,21 * * *'
+    - cron: '43 0,3,6,9,12,15,18,21 * * *'
   workflow_dispatch:
     inputs:
       days:

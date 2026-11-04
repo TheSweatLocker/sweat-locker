@@ -63,11 +63,20 @@ name: Daily Card (sport-agnostic surfaces)
 # of workflow_heartbeat. Times below are therefore set early on purpose;
 # the comment on each says when it actually lands.
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :07. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
-    - cron: '0 5 * * *'    # lands ~08:30-11:00 UTC = 04:30-07:00 ET
-    - cron: '0 11 * * *'   # lands ~14:30-17:00 UTC = 10:30-13:00 ET
-    - cron: '0 17 * * *'   # lands ~20:30-23:00 UTC = 16:30-19:00 ET
+    - cron: '7 5 * * *'    # lands ~08:30-11:00 UTC = 04:30-07:00 ET
+    - cron: '7 11 * * *'   # lands ~14:30-17:00 UTC = 10:30-13:00 ET
+    - cron: '7 17 * * *'   # lands ~20:30-23:00 UTC = 16:30-19:00 ET
   # ══ 2026-11-03 · THE CARD WAS BUILT BEFORE EVERY OTHER SPORT ══════
   # ANDY: "Sweat card is very thin ... Plenty of options for sports sweat
   # card cant be this thin THIS IS FUCKINGUNSAT".
@@ -147,9 +156,9 @@ jobs:
         run: |
           CRON_SLOT="${{ github.event.schedule }}"
           case "$CRON_SLOT" in
-            '0 5 * * *')   SLOT='05' ;;
-            '0 11 * * *')  SLOT='11' ;;
-            '0 17 * * *')  SLOT='17' ;;
+            '7 5 * * *')   SLOT='05' ;;
+            '7 11 * * *')  SLOT='11' ;;
+            '7 17 * * *')  SLOT='17' ;;
             # 2026-11-03: a workflow_run rebuild carries no cron. Label it
             # with the sport that triggered it so the ordering this fix is
             # for stays auditable in workflow_heartbeat.
@@ -542,10 +551,10 @@ jobs:
           # the model scorecard silently stopped running. Key on the cron
           # that fired instead. feedback_cron_mode_from_runtime_clock.
           SCHED="${{ github.event.schedule }}"
-          if [ "$SCHED" = "0 5 * * *" ]              || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$SCHED" = "7 5 * * *" ]              || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "model_scorecard.py" python model_scorecard.py --apply
           else
-            echo "skip: model scorecard runs on the '0 5 * * *' slot (fired: '${SCHED:-<none>}')"
+            echo "skip: model scorecard runs on the '7 5 * * *' slot (fired: '${SCHED:-<none>}')"
           fi
 
       # ══ 2026-10-20 · THE FADE WAS NEVER SCHEDULED ══

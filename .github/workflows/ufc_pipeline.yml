@@ -11,6 +11,15 @@ name: UFC Pipeline Weekly
 # Times are 30-60 min earlier than user-facing "ready by" to absorb
 # GitHub Actions queue drift (same pattern as MLB + NFL).
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :37. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
     # 2026-09-29: primary moved Wed 6pm ET -> Thu 10am ET. Andy: "UFC once a
@@ -18,10 +27,10 @@ on:
     # HOUR=14 UTC hits no elif in "Detect run mode", so it still resolves to
     # `full` — no mode logic change needed. pick_lock UFC opens Thu 2pm ET, so
     # a slow run still finishes inside the free window.
-    - cron: '0 14 * * 4'   # Thu 10am ET — primary pull (score + odds + EV)
-    - cron: '0 14 * * 5'   # Fri 10am ET — line-move refresh + weekly card
-    - cron: '0 14 * * 6'   # Sat 10am ET — early grader (catches Fri-night prelim card + Contender Series)
-    - cron: '0 14 * * 0'   # Sun 10am ET — resolver (grade main Saturday card)
+    - cron: '37 14 * * 4'   # Thu 10am ET — primary pull (score + odds + EV)
+    - cron: '37 14 * * 5'   # Fri 10am ET — line-move refresh + weekly card
+    - cron: '37 14 * * 6'   # Sat 10am ET — early grader (catches Fri-night prelim card + Contender Series)
+    - cron: '37 14 * * 0'   # Sun 10am ET — resolver (grade main Saturday card)
   workflow_dispatch:
     inputs:
       mode:
@@ -107,9 +116,9 @@ jobs:
             # Sun → resolver_only; Sat → early grader; Fri → card refresh;
             # Thu → full (fresh pull).
             case "$SCHED" in
-              '0 14 * * 0')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
-              '0 14 * * 6')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
-              '0 14 * * 5')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              '37 14 * * 0')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '37 14 * * 6')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '37 14 * * 5')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
               *)             echo "mode=full"          >> $GITHUB_OUTPUT ;;
             esac
           fi

@@ -33,21 +33,28 @@ name: Football Splits Refresh (game-day cadence)
 # outage was caused by per-row fetch loops, nothing like this, and the pull is
 # idempotent on (source, game_id, surface, pick_side, game_date).
 
+# 2026-11-03 MINUTE SPREAD. 56.7 pct of all cron firings landed on :00
+# (59 of 104), the most contended minute on GitHub's scheduler, while
+# these pipelines ran 7-10h late
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :09. No github.event.schedule comparison here, so
+# nothing needed rewriting in lockstep (checked).
+
 on:
   schedule:
     # Saturday NCAAF — games run noon ET to midnight. 10am/1pm/4pm/7pm ET.
-    - cron: '0 14,17,20,23 * * 6'
+    - cron: '9 14,17,20,23 * * 6'
     # Saturday night games bleeding past midnight UTC -> Sunday 02:00 UTC
-    - cron: '0 2 * * 0'
+    - cron: '9 2 * * 0'
     # Sunday NFL — 1pm ET to 11pm ET. 11am/2pm/5pm/8pm ET.
-    - cron: '0 15,18,21 * * 0'
-    - cron: '0 0 * * 1'
+    - cron: '9 15,18,21 * * 0'
+    - cron: '9 0 * * 1'
     # Thursday + Friday night football (TNF, Friday NCAAF): 6pm/8pm ET
-    - cron: '0 22 * * 4,5'
-    - cron: '0 0 * * 5,6'
+    - cron: '9 22 * * 4,5'
+    - cron: '9 0 * * 5,6'
     # Monday night football: 6pm/8pm ET
-    - cron: '0 22 * * 1'
-    - cron: '0 0 * * 2'
+    - cron: '9 22 * * 1'
+    - cron: '9 0 * * 2'
   workflow_dispatch:
 
 concurrency:

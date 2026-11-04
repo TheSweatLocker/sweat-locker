@@ -1,12 +1,21 @@
 name: NFL Pipeline Weekly
 
+# 2026-11-03 MINUTE SPREAD. 57.1% of all cron firings landed on :00
+# (60 of 105 across 20 workflows), the most contended minute on
+# GitHub's scheduler, and these pipelines were running 7-10h late
+# while daily_card was the only one on time
+# (project_card_builds_before_every_other_sport_1102). This file now
+# fires at :33. Any `github.event.schedule` comparison below was
+# rewritten in lockstep -- a stale literal makes the mode fall
+# through to its default silently.
+
 on:
   schedule:
     # 7-cron NFL cadence (see project_nfl_phase1_ready_721.md).
     # Times are 30-60 min earlier than user-facing "ready by" to absorb
     # GitHub Actions queue drift (same pattern as MLB pipeline).
-    - cron: '0 15 * * 2'   # Tue 11am ET  — nflverse schedule + opening lines
-    - cron: '0 22 * * 3'   # Wed 6pm ET   — externals pull + props v1 (Phase 2)
+    - cron: '33 15 * * 2'   # Tue 11am ET  — nflverse schedule + opening lines
+    - cron: '33 22 * * 3'   # Wed 6pm ET   — externals pull + props v1 (Phase 2)
     - cron: '10 12 * * 3'   # Wed 8am ET   — 2026-09-02 Week 1 opener support: Jerry reads for Wed-night season opener (Chiefs/Eagles kickoff etc). nfl_week_start_thu() rolls Wed forward so the key aligns with upcoming Thursday's lock.
     - cron: '10 12 * * 4'   # Thu 8am ET   — 2026-09-02 Thu-lock: Jerry reads generate + lock for the week (idempotent if Wed run already fired)
     # 2026-09-02: injury regen check every 6h Thu-Sun. GHA cron doesn't
@@ -18,12 +27,12 @@ on:
     # inside that gap and the card showed "BAL -6" until Thursday, because
     # the label normalizer can only re-derive from whatever close_spread
     # holds and nothing had refreshed it since Tuesday's opening pull.
-    - cron: '0 */6 * * 3,4,5,6,0'
-    - cron: '0 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
-    - cron: '0 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
+    - cron: '33 */6 * * 3,4,5,6,0'
+    - cron: '33 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
+    - cron: '33 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
     - cron: '10 12 * * 0'   # Sun 8am ET   — final Sunday card
-    - cron: '0 14 * * 1'   # Mon 10am ET  — MNF finalize + Sunday resolver
-    - cron: '0 15 * * 2'   # (duplicated Tue — full-week resolver + cohort grades)
+    - cron: '33 14 * * 1'   # Mon 10am ET  — MNF finalize + Sunday resolver
+    - cron: '33 15 * * 2'   # (duplicated Tue — full-week resolver + cohort grades)
   workflow_dispatch:
     inputs:
       mode:
@@ -153,9 +162,9 @@ jobs:
             # Tue 15:00 → weekly resolver + cohorts; Mon 14:00 → MNF resolver.
             case "$SCHED" in
               '10 12 * * 0') echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
-              '0 14 * * 6')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
-              '0 15 * * 2')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
-              '0 14 * * 1')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '33 14 * * 6')  echo "mode=card_only"     >> $GITHUB_OUTPUT ;;
+              '33 15 * * 2')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
+              '33 14 * * 1')  echo "mode=resolver_only" >> $GITHUB_OUTPUT ;;
               *)             echo "mode=full"          >> $GITHUB_OUTPUT ;;
             esac
           fi
