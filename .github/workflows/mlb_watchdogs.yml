@@ -15,6 +15,24 @@ on:
     - cron: '0 0,2 * * *'
   workflow_dispatch:
 
+env:
+  # ══ 2026-11-04 · B152/B153/B154 — sb_observer, loaded for EVERY step ══
+  # `site` imports `sitecustomize` at interpreter startup, searching sys.path,
+  # which includes PYTHONPATH. mlb_pipeline/sitecustomize.py imports
+  # sb_observer, so one variable here puts the non-2xx observer in front of
+  # all 386 silent-swallow call sites without editing one of them.
+  #
+  # Verified before shipping: of 1,523 .py files in mlb_pipeline, ZERO shadow
+  # a stdlib or third-party module name, so adding the directory to the import
+  # path cannot hijack `json`, `statistics`, `requests` and friends.
+  #
+  # The observer only REPORTS. It never raises, retries or alters a response,
+  # so a step that swallowed a 400 still swallows it — it just can no longer
+  # do so silently. SB_OBSERVER_STRICT=1 is the opt-in that turns schema and
+  # constraint errors into a failed run; deliberately NOT set here, so the
+  # nightly gets louder without getting more fragile.
+  PYTHONPATH: ${{ github.workspace }}/mlb_pipeline
+
 jobs:
   watchdogs:
     runs-on: ubuntu-24.04
