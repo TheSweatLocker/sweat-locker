@@ -4734,3 +4734,76 @@ roughly two games in three.
 * the 5-0 / 7-0 card ledger split — `a07631aa`
 * the fade coherence gate — measured and deliberately NOT shipped,
   shadow instead — `a1011413`
+
+## 2026-11-05 — found by the morning audit
+
+### R137 · `enrich_team_form_universal` is dark on 55 of 58 games tonight · T1
+Last run: NHL 11-04T21:26, NBA 11-04T23:50, NCAAB 11-05T00:58. Today's games
+enriched: NHL **0/11**, NBA **0/2**, NCAAB **0/42**, NCAAF 2/2, NFL 1/1. The
+NCAAB run is the worst case — it RAN and enriched nothing for today, a green
+step that wrote nothing.
+
+This is the origin of the whole bad card: `away_ml_l10_on_road_losses` NULL
+=> the L10 signal prints **0%** for a team that is 6-of-10 on the road =>
+"-54.5pp edge" => conviction 0 => the unscored calibration band => rank 1 of
+the Sweat Card. The two sports with enrichment are the only two producing
+real conviction today.
+
+### R138 · The Sharp displays STRONG on rows the DB holds at LEAN · T1
+`sharp_card_2026-11-05` stakes **2.0 units** each on `Mark Andrews OVER 18.5`
+(id 64323, DB tier **LEAN**, conv **50**) and `Josh Cameron OVER 10.5`
+(id 64326, DB tier **LEAN**, conv 65), both labelled STRONG. Its own `why`
+string says "measured cell reception_yds_over / **LEAN**".
+
+### R139 · One per-cell constant is used as a per-pick score, on two surfaces
+Sharp: both picks carry `cell_roi: 5.2`, `cell_n: 355`. Card: both NHL MLs
+carry `_calibrated: 0.5819`. Every row in a cell ties, so intra-cell order is
+arbitrary and conviction is ignored — which is how the Sharp took Mark Andrews
+(conv **50**, proj +1.84 over the line) over Brenton Strange (conv **84**,
+proj +11.32, L5 4/5). Same shape as `feedback_a_pooled_slope_across_scales`:
+a cell statistic cannot rank members of that cell.
+
+### R140 · The 4-pick floor fires on nights the engine refused every game
+All 11 NHL games and both NBA games tonight are COVERAGE, and replaying the
+new edge-sign guard over all 15 `primary_play` rows on the board refuses 6 and
+finds **0 that state a positive edge**. The floor still manufactured four
+picks. The guards shipped today stop the negative ones reaching the card; they
+do not stop the floor from firing into an empty pool. The floor needs a
+"nothing qualified" exit.
+
+### R141 · Three live POTD receipts on one date · T2
+2026-11-04 carries `Buffalo Sabres -1.5` (NHL, LOSS), `Houston Rockets ATS
+-9.5` (NBA) and `UMass -2.5` (NCAAF) all LIVE on `surface='potd'`. The partial
+unique index is `(sport, surface, game_date, source_id)`, so three sports are
+three keys — **it cannot dedupe a one-per-day CROSS-SPORT play.**
+
+### R142 · nfl_pipeline_props and nfl_game_context disagree on BAL's QB · T1
+`nfl_game_context.home_qb_name = 'Tyler Huntley'`; four conv-84 UNDER passing
+props for tonight name **Joe Fagnano**. `home_qb_madden_ovr` and every
+`home_qb_vs_team_*` column are NULL on that row. The highest-conviction rows
+on the entire board are unplayable until this resolves. Same class as
+`refresh_nfl_context_qb` (NYG carrying a released QB on 11 forward rows).
+
+### R143 · The fade stamps `evidence: "validated"` on an invalidated class
+`BAL +10` tonight carries `evidence: "validated"` and is a fade-public-SPREAD
+play — measured 2026-11-04 at **50.30% on n=3,883**, worse as public share
+rises, split-half 54.26 -> 45.07. The totals half is NFL while the surviving
+totals edge is **NCAAF-only**; it correctly says "tracking". The spread half's
+flag has not caught up with the measurement.
+
+### R144 · Parlay legs can cite a game dated the next day · T2
+`ledger_snapshots` 438 and 439 (game_date 11-04) carry a `Loyola Marymount`
+leg whose `ncaab_game_results` row is dated **11-05**. A date-joined grader
+cannot settle them. Five parlays published on 11-04; none graded.
+
+### R145 · `nhl_game_results.run_line_result` NULL on all of 11-04
+The receipts graded correctly off scores, so nothing is wrong on screen — but
+the column is unpopulated and anything joining it reads no result.
+
+### CLOSED 2026-11-05
+* `nba_resolve_results.py` 1-day window with no retry — `--days 3` default,
+  true ET via ZoneInfo (was a hardcoded -4, wrong since DST ended 11-01)
+* `_calibrated_score` awarded unscored picks (conviction 0/None) a measured
+  band's hit rate — now returns 0.0, so they sort below anything scored
+* the card floor fill published picks whose own subtitle stated a negative
+  edge — now refused, replayed over tonight's board (6 refused of 15)

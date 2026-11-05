@@ -2064,6 +2064,27 @@ def _calibrated_score(sport: str, conviction, cal, source_table=None) -> float:
     """
     if not cal:
         return 0.0
+    # ══ 2026-11-05 · AN UNSCORED PICK MUST NOT INHERIT A MEASURED BAND ══
+    # _cal_band does `float(cv or 0)`, so conviction 0/None lands in the
+    # lowest band and walks away with that band's HISTORICAL hit rate as
+    # its quality score. On 2026-11-05 that band scored 0.5819 while the
+    # conviction-59 band scored 0.5534, so two picks the engine had never
+    # scored at all sorted ABOVE every pick it had — and became ranks 1
+    # and 2 of the Sweat Card, each subtitled with a NEGATIVE edge
+    # ("Utah Mammoth ML · 0% vs 55% implied — -54.5pp edge").
+    #
+    # Conviction 0 means "no opinion was recorded", not "an opinion of
+    # zero": every NCAAB read carries 0 and both NHL picks above did too.
+    # 0.0 is already this function's no-information return one line up,
+    # so an unscored pick now sorts below anything genuinely scored
+    # instead of borrowing a stranger's track record.
+    # feedback_unmeasured_signal_must_not_outweigh_measured,
+    # feedback_falsy_zero_invented_a_tier_and_a_confidence.
+    try:
+        if conviction is None or float(conviction) <= 0:
+            return 0.0
+    except (TypeError, ValueError):
+        return 0.0
     sport = (sport or 'MLB').upper()
     b = _cal_band(conviction)
     st = source_table or '?'
@@ -4910,6 +4931,46 @@ def build_card():
                 return abs(float(c.get('odds'))) >= 100
             except (TypeError, ValueError):
                 return False
+
+        # ══ 2026-11-05 · THE FLOOR PUBLISHED ITS OWN NEGATIVE EDGE ══
+        # Tonight's card led with 'Utah Mammoth ML @ -125' subtitled
+        # "0% vs 55% implied — -54.5pp edge", and ranked 'Boston Bruins
+        # ML' second at -51.9pp. Three of four published picks stated a
+        # NEGATIVE edge in the very string shown under them.
+        #
+        # The floor already refuses a -200 ML, an unpriced pick and a
+        # measured-losing NBA spread — but nothing read the SIGN of the
+        # number it was about to print. A pick whose own rationale says
+        # it is -EV is worse than an empty slot, which is the same
+        # argument the -200 ML comment above makes.
+        #
+        # Parsed from `sub` on purpose: that is the string the user
+        # reads, so refusing on it can never disagree with what is
+        # displayed. The positive-edge test already existed in this file
+        # (_edge_ok, `float(_edge) > 0`) scoped `if 'NFL' in _CSB`;
+        # nothing about an edge sign is NFL-specific
+        # (feedback_universal_vs_sport_specific). An ABSENT edge does
+        # not block — no number is not evidence of a bad one
+        # (feedback_column_presence_is_not_contamination).
+        _EDGE_RE = re.compile(r'([+-]?\d+(?:\.\d+)?)\s*pp\s+edge', re.I)
+
+        def _stated_edge(c):
+            m = _EDGE_RE.search(str(c.get('sub') or ''))
+            if not m:
+                return None
+            try:
+                return float(m.group(1))
+            except ValueError:
+                return None
+
+        _neg = [c for c in _cands
+                if (_stated_edge(c) is not None and _stated_edge(c) < 0)]
+        _cands = [c for c in _cands
+                  if not (_stated_edge(c) is not None and _stated_edge(c) < 0)]
+        for _n in _neg:
+            print(f'  = floor: refused {str(_n.get("label"))[:34]!r} — its own '
+                  f'subtitle states a {_stated_edge(_n):+.1f}pp edge; an empty '
+                  f'slot beats publishing a negative one')
 
         _trapped = [c for c in _cands if _ml_trap(c)]
         _cands = [c for c in _cands if not _ml_trap(c)]

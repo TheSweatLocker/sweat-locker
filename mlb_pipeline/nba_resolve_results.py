@@ -38,8 +38,47 @@ sys.path.insert(0, str(Path(__file__).parent))
 from nba_data_client import get_scoreboard
 
 
-def _yday_et() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4, days=1)).date().isoformat()
+def _today_et() -> date:
+    """TRUE Eastern date, not a fixed offset.
+
+    ══ 2026-11-05 · A HARDCODED -4 IS WRONG FOR 127 DAYS A YEAR ══
+    This was `now_utc - timedelta(hours=4, days=1)`. DST ended
+    2026-11-01, so ET is -5 now and the two disagree in the
+    04:00-04:59 UTC hour — which is exactly when the nightly runs.
+    Same class as feedback_hardcoded_et_offset_breaks_in_est; this
+    file was not among the 16 triaged there. ZoneInfo is the repo's
+    established idiom (backfill_public_receipts, compute_surface_records).
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo('America/New_York')).date()
+    except Exception:                                          # noqa: BLE001
+        return (now - timedelta(hours=5)).date()
+
+
+def _window_et(days: int) -> list[str]:
+    """The last `days` ET dates, oldest first. days=1 is yesterday only.
+
+    ══ 2026-11-05 · A ONE-DAY WINDOW CANNOT RECOVER A MISSED NIGHT ══
+    This resolver took no window at all: main() passed a single date and
+    a night that was skipped stayed dark forever. On 2026-11-05 that was
+    not hypothetical — nba_game_results held 14 rows for 11-04 with
+    every score NULL, which left every 11-04 NBA prop ungraded, all 16
+    NBA game_read receipts ungraded, the Houston POTD ungraded, and
+    every NBA surface record frozen at 11-02 while still being rendered
+    as a d7/d30 window. The resolver itself was fine: a dry run returned
+    14 of 14 finals from ESPN the next morning.
+
+    So the default is a 3-day look-back, matching the window every other
+    grader here already takes (grade_prop_playbook --backfill 3,
+    signal_attribution_grade --days 7). Re-resolving a date we already
+    hold is cheap and idempotent — the upsert writes the same finals —
+    and it is the only thing that makes a skipped night self-healing.
+    """
+    today = _today_et()
+    return [(today - timedelta(days=n)).isoformat()
+            for n in range(days, 0, -1)]
 
 
 def _grade_spread(home_score: int, away_score: int, spread: float | None) -> str | None:
@@ -169,10 +208,26 @@ def resolve(game_date: str, dry_run: bool = False) -> int:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--date')
+    p.add_argument('--date', help='resolve exactly this ET date')
+    p.add_argument('--days', type=int, default=3,
+                   help='ET days back to re-resolve when --date is absent '
+                        '(default 3, so one skipped night self-heals)')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    resolve(args.date or _yday_et(), dry_run=args.dry_run)
+
+    dates = [args.date] if args.date else _window_et(max(1, args.days))
+    wrote = 0
+    for d in dates:
+        # One date failing must not abandon the rest of the window: the
+        # whole point of the window is recovering the night that broke.
+        try:
+            wrote += resolve(d, dry_run=args.dry_run) or 0
+        except Exception as e:                                 # noqa: BLE001
+            print(f'  !! {d}: {type(e).__name__}: {e} — continuing')
+    if len(dates) > 1:
+        print(f'=== window {dates[0]}..{dates[-1]} · {wrote} result row(s) '
+              f'{"would be " if args.dry_run else ""}written ===')
+    return 0
 
 
 if __name__ == '__main__':
