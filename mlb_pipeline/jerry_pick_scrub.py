@@ -244,6 +244,7 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
     jerry_rows = r.json() or []
 
     fixed = 0
+    skipped_no_line = 0          # 2026-11-04 rl/total picks with no number
     nulled_gids: list[str] = []  # 2026-09-16 track rows we null-out for chain-regen
     for j in jerry_rows:
         c = ctx_by_gid.get(j['game_id'])
@@ -259,6 +260,27 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
         # Skip when primary_play is a non-standard market (nrfi/yrfi/fight)
         # that jerry_reads' schema also accepts — those tables agree already.
         if pp_type not in ('ml', 'rl', 'total'): continue
+
+        # ══ 2026-11-04 · A HANDICAP PICK WITH NO NUMBER IS NOT A PICK ═════
+        # This scrub makes primary_play authoritative and copies it onto the
+        # badge. That is right, but it copied faithfully — including picks
+        # with nothing to act on. Tonight's NCAAB run would have propagated
+        # 'High Point ATS' and 'Wichita St Shockers ATS', both with
+        # primary_play.line NULL *and* close_spread NULL, turning "no badge"
+        # into "a badge naming a bet with no number" — manufacturing B142
+        # (a published pick with no line) while fixing badge_detail_drift.
+        #
+        # ml needs no number; rl and total are meaningless without one. So
+        # refuse rather than write, and say so, because a silent skip here
+        # is how the two tables drift again tomorrow.
+        if pp_type in ('rl', 'total') and pp_line is None:
+            print(f'  SKIP  {c["away_team"][:14]:14s} @ '
+                  f'{c["home_team"][:14]:14s} {pp_type}/{pp_side} '
+                  f'{str(pp.get("label") or "")[:26]} — primary_play has NO '
+                  f'LINE; refusing to copy an unactionable pick onto the '
+                  f'badge')
+            skipped_no_line += 1
+            continue
 
         # Detect drift
         drift = (j_market != pp_type or j_side != pp_side or
@@ -732,6 +754,10 @@ def scrub_sport(sport: str, gd: str, game_ids: list[str] | None = None,
             fixed += 1
         else:
             print(f'    patch failed {pr.status_code}: {pr.text[:150]}')
+    if skipped_no_line:
+        print(f'  {sport}: {skipped_no_line} pick(s) REFUSED — a handicap '
+              f'with no number is not a pick, and copying one onto the badge '
+              f'would manufacture B142 while fixing badge drift')
     return (len(jerry_rows), fixed, nulled_gids)
 
 
