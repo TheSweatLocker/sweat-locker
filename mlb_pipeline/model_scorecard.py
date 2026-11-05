@@ -368,7 +368,19 @@ def main() -> int:
                 'window_key': 'ats_vs_close',
                 'wins': w, 'losses': l, 'pushes': p,
                 'picks_count': n,
-                'hit_rate': round(w / n * 100, 2),
+                # ══ 2026-11-04 · FRACTION, NOT PERCENT ══════════════════
+                # surface_records.hit_rate is a FRACTION. The 2026-11-02
+                # sweep converted compute_fade_records.py and
+                # consensus_scorecard.py and MISSED this file, so the
+                # `ats_vs_close` rows went back to percent the next time this
+                # ran: 16 rows on 2026-11-04 holding 48.19 where the column
+                # wants 0.482. Third occurrence of "fix every writer to the
+                # table, not one".
+                #
+                # consistency_watchdog.check_surface_record_units was added on
+                # 11-02 for exactly this — to stop a third writer
+                # reintroducing it — and it is what caught this.
+                'hit_rate': round(w / n, 3),
                 'units_net': round(units, 2),
                 'roi_pct': round(units / (n + p) * 100, 2) if (n + p) else None,
                 'last_computed_at': _dt.datetime.now(_dt.timezone.utc).isoformat(),
