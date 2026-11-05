@@ -302,6 +302,35 @@ def sb_get(path, params=None):
     return r.json() if r.status_code == 200 else []
 
 
+def sb_get_all(path, params=None, page=1000):
+    """sb_get, but follows PostgREST's row cap instead of stopping at it.
+
+    ══ 2026-11-05 · THE CAP TRUNCATED THE RECAP LOOKUP ══
+    PostgREST returns at most 1,000 rows and says nothing about it, so
+    sb_get silently hands back a PREFIX of the answer. On 2026-11-04 there
+    were 1,987 graded NBA props; the recap's prop lookup got the first
+    1,000, which happened to contain Paul George and not Meleek Thomas or
+    Scottie Barnes. So one card leg resolved and two sat Pending, and the
+    recap read 0-2 with 2 pending on a card that went 2-2.
+
+    A truncated lookup is indistinguishable from an ungraded pick, which
+    is what made this read as a grading failure for two days. Same cap
+    that starved the NCAAB panel (project_ncaab_panel_live_1103).
+    """
+    out, offset = [], 0
+    while True:
+        p = dict(params or {})
+        p['limit'] = str(page)
+        p['offset'] = str(offset)
+        batch = sb_get(path, p)
+        if not isinstance(batch, list) or not batch:
+            return out
+        out.extend(batch)
+        if len(batch) < page:
+            return out
+        offset += page
+
+
 def fetch_tier_rates():
     """Pull live audited tier rates from mlb_tier_calibration.
 
@@ -641,16 +670,41 @@ def fetch_yesterday_recap():
             # after NFL prop grader ran) fell through to the stored "Pending"
             # cache value. NCAAF has no props surface. Union the two prop
             # tables into a single lookup keyed by (player_name, prop_type).
-            live_props = sb_get("mlb_pipeline_props", {
+            live_props = sb_get_all("mlb_pipeline_props", {
                 "game_date": f"eq.{yesterday}",
                 "result": "not.is.null",
                 "select": "player_name,prop_type,prop_line,direction,result",
             }) or []
-            live_props_nfl = sb_get("nfl_pipeline_props", {
+            live_props_nfl = sb_get_all("nfl_pipeline_props", {
                 "game_date": f"eq.{yesterday}",
                 "result": "not.is.null",
                 "select": "player_name,prop_type,prop_line,direction,result",
             }) or []
+            # ══ 2026-11-05 · THE SAME BUG, TWO SPORTS LATER ══
+            # The 2026-09-14 note above added NFL because "prior code only
+            # queried mlb_pipeline_props" and a Caleb Williams prop stayed
+            # Pending all week. NBA and NHL were never added, so every
+            # basketball and hockey prop on the recap could ONLY stay
+            # Pending, forever, no matter how well it graded.
+            #
+            # Measured on 2026-11-04: the card went 2-2 (Paul George PRA
+            # UNDER 32.5 Loss on 33, Meleek Thomas PTS UNDER 12.5 Win on 9,
+            # Scottie Barnes PRA UNDER 36.5 Win on 29) and the recap read
+            # "0-1, 3 pending" because all three props were NBA. The
+            # receipt_lookup above could not cover for it either: prop
+            # receipts live on surface='prop_jerry', not 'sweat_card'.
+            #
+            # Union every sport that HAS a props table, by table name, so
+            # the next sport to get one does not reintroduce this.
+            # feedback_fix_every_writer_to_the_table,
+            # feedback_universal_vs_sport_specific.
+            live_props_other = []
+            for _pt in ("nba_pipeline_props", "nhl_pipeline_props"):
+                live_props_other += sb_get_all(_pt, {
+                    "game_date": f"eq.{yesterday}",
+                    "result": "not.is.null",
+                    "select": "player_name,prop_type,prop_line,direction,result",
+                }) or []
             # ══ 2026-10-07 · THE RECEIPT IS THE GRADED RECORD ══
             # Andy: "yesterday recap sweat card still not reflect correct
             # record?" It did not, for two reasons, and both are below.
@@ -702,7 +756,8 @@ def fetch_yesterday_recap():
             # it filters prop_type NOT NULL, and sweat_card receipts carry NULL
             # there because public_receipts refuses writes to claim columns.
             _FLIP = {'win': 'Loss', 'loss': 'Win', 'push': 'Push'}
-            for p in list(live_props) + list(live_props_nfl):
+            for p in (list(live_props) + list(live_props_nfl)
+                      + list(live_props_other)):
                 _pt = (p.get("player_name") or "").lower()
                 _ty = (p.get("prop_type") or "").lower()
                 _res = p.get("result")
@@ -735,7 +790,7 @@ def fetch_yesterday_recap():
             # surfaces — receipts store WIN/LOSS, prop tables Win/Loss — so
             # normalise, or the app renders two spellings of the same outcome
             # (feedback_result_column_is_title_case).
-            receipts = sb_get("public_receipts", {
+            receipts = sb_get_all("public_receipts", {
                 "game_date": f"eq.{yesterday}",
                 "result": "not.is.null",
                 "prop_type": "not.is.null",
@@ -889,6 +944,41 @@ def fetch_yesterday_recap():
                         if live:
                             return live
                         break
+                # ══ 2026-11-05 · THE STAT IS NOT ALWAYS A SUFFIX ══
+                # Every spec above is matched with low.endswith(pt_human),
+                # which assumes the label reads "<player> <Over|Under> <line>
+                # <stat>" -- the MLB and NFL shape. The NBA card writes
+                # "Paul George PRA UNDER 32.5": stat BEFORE the direction,
+                # line LAST. So those labels end in a NUMBER and can never
+                # match any suffix, no matter how many stats are added to the
+                # list -- and the list has no basketball or hockey stats
+                # either. On 2026-11-04 the card went 2-2 and the recap read
+                # "0-1, 3 pending" because all three props were NBA.
+                #
+                # That hand-kept vocabulary is also the shape
+                # feedback_a_blocklist_duplicating_a_lookup_table warns
+                # about: ~60 entries restating what the prop tables already
+                # hold. prop_lookup is already keyed by the REAL prop_type,
+                # so resolve against those keys instead of a literal list.
+                #
+                # Matched by SHAPE: take the direction from the label, then
+                # accept a prop_type for this player only when its stem
+                # appears in the label as a whole token. A unique hit is
+                # required -- "pts" and "pra" are different bets and guessing
+                # between them would put a fabricated grade on the recap
+                # (feedback_grade_the_side_we_published).
+                _dir = ('under' if 'under' in low
+                        else 'over' if 'over' in low else None)
+                if _dir:
+                    _toks = set(_re.findall(r'[a-z0-9]+', low))
+                    _hits = {
+                        _v for (_pl, _ty), _v in prop_lookup.items()
+                        if _v and _ty.endswith('_' + _dir)
+                        and _pl and _pl in low
+                        and _ty[: -(len(_dir) + 1)] in _toks
+                    }
+                    if len(_hits) == 1:
+                        return _hits.pop()
                 return stored
 
             recap["top_8"] = [

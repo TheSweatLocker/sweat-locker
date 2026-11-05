@@ -54,8 +54,28 @@ SPORT_CFG = {
               'home_score', 'away_score', 'close_spread', 'close_total'),
     'NCAAB': ('ncaab_game_context', 'ncaab_game_results',
               'home_score', 'away_score', 'close_spread', 'close_total'),
+    # ══ 2026-11-05 · NHL NAMED A COLUMN THAT DOES NOT EXIST ══
+    # This said 'close_spread'. nhl_game_results has no such column — the
+    # NHL spread is 'close_puckline'. So compute_team_venue_form's SELECT
+    # returned 400 42703, and `games = r.json() if status == 200 else []`
+    # turned that into ZERO GAMES PLAYED, which was then written as a real
+    # 0-0 record on every NHL row. The step printed "enriched 11/11" while
+    # storing nothing but zeros, and has done so for as long as this config
+    # has existed.
+    #
+    # Downstream that 0 became "0% vs 55% implied — -54.5pp edge" on the
+    # 2026-11-05 Sweat Card for a Utah side that is genuinely 6 of 10 on
+    # the road, which is how the card came to lead with a negative edge.
+    #
+    # Audited all six entries against the live tables before changing one:
+    # MLB, NFL, NCAAF, NCAAB and NBA all really do have close_spread and
+    # close_total. NHL was the only wrong row.
+    #
+    # close_puckline is HOME-perspective (it agrees with the ML favourite
+    # on 244 of 249 rows), which is the same convention _grade_ats already
+    # applies to every sport but NFL.
     'NHL':   ('nhl_game_context',   'nhl_game_results',
-              'home_score', 'away_score', 'close_spread', 'close_total'),
+              'home_score', 'away_score', 'close_puckline', 'close_total'),
     'NBA':   ('nba_game_context',   'nba_game_results',
               'home_score', 'away_score', 'close_spread', 'close_total'),
 }
