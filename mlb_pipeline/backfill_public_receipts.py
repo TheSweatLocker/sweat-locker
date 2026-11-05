@@ -143,10 +143,52 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     # implementation. Two copies of a normaliser drift, and a receipt
     # normalised differently depending on who wrote it is worse than no
     # normalisation at all.
+    # ══ 2026-11-04 · B142: recover_line AND unactionable WERE NOT SHARED ══
+    # `sanitize` moved here on 09-20 so the two writers "can never drift",
+    # but the two guards that actually stop B142 stayed behind in
+    # public_receipt.capture(). Measured on public_receipts since 10-28:
+    #
+    #   60 rows claim a line-bearing market with pick_line NULL
+    #   60 of 60 are capture_mode='reconstructed'   <- THIS writer
+    #    0 of 167 live rows have the defect         <- capture()'s guard works
+    #
+    # And reconstructed is not the edge case: it is 10,923 of 11,090 rows.
+    # The guard was on the writer that handles 1.5% of the traffic. Third
+    # instance of feedback_fix_every_writer_to_the_table today.
+    #
+    # recover_line comes FIRST because most of these were never missing a
+    # number — it is sitting in the label ("Under 160.0" with pick_line
+    # NULL), just never parsed into the column the grader and the UI read.
+    # Only what survives recovery is refused, and refusing matters because
+    # pick_line is FULLY FROZEN: unlike pick_odds it is not set-once, so a
+    # NULL written today can never be repaired by PATCH (proven tonight —
+    # 2 of 129 backfill writes were refused on exactly that column). The
+    # only place this is fixable is before the insert.
     from public_receipt import sanitize as _sanitize
+    from public_receipt import recover_line as _recover_line
+    from public_receipt import unactionable as _unactionable
+    _refused_unactionable = []
     for _r in rows:
         _r.setdefault('capture_mode', 'reconstructed')
+        _recover_line(_r)
         _sanitize(_r)
+    _kept = []
+    for _r in rows:
+        if _unactionable(_r):
+            _refused_unactionable.append(_r)
+            continue
+        _kept.append(_r)
+    if _refused_unactionable:
+        print(f'  ⚠ B142: refusing {len(_refused_unactionable)} receipt(s) — '
+              f'a line-bearing market with no line is ungradeable, and '
+              f'pick_line cannot be repaired after the insert')
+        for _r in _refused_unactionable[:8]:
+            print(f'      - {_r.get("sport")} {_r.get("market")} '
+                  f'{str(_r.get("pick_label"))[:40]!r} '
+                  f'({_r.get("game_date")})')
+    rows = _kept
+    if not rows:
+        return 0
     # ══ 2026-10-31 · THE INVARIANTS RAN ON ONE WRITER OF TWO ══
     # public_receipt.capture() screens every row through receipt_invariants
     # at its own chokepoint. THIS writer never did, so every invariant --
