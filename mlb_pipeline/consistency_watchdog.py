@@ -889,21 +889,43 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                     and ps0 is not None and pl0 is not None):
                 try:
                     norm = float(ps0) * (1.0 if hp0 else -1.0)   # +ve = home
-                    # margin the pick needs: a -6.5 home pick needs home +6.5
-                    need = abs(float(pl0))
                     got = norm if side == 'HOME' else -norm
+                    # ══ 2026-11-04 · DOGS NEVER GOT THE RIGHT TEST ══════
+                    # This read `need = abs(line)` and then only ran when
+                    # `line < 0`, so it covered FAVOURITES and skipped every
+                    # dog pick. Check C below was catching those instead, by
+                    # asking a moneyline question of a spread bet — 87 of its
+                    # 109 firings were spread picks and 17 of those were
+                    # outright false positives where our model DOES cover
+                    # our side.
+                    #
+                    # One threshold covers both: a pick needs its side's
+                    # margin above `-line`.
+                    #   favourite  line -6.5  -> needs got >  +6.5
+                    #   dog        line +24.5 -> needs got >  -24.5
+                    # which is exactly `-line` in both cases, so the old
+                    # abs()+sign-gate was two statements of one rule with a
+                    # hole where the dogs were. Favourite behaviour is
+                    # unchanged (need == -line when line < 0).
+                    threshold = -float(pl0)
                     # 2026-10-21: require a MEANINGFUL shortfall. The first
                     # run flagged "laying -7.5, projection has 7.3" — a 0.2
                     # gap on a model with multi-point error. Anything under a
                     # point is agreement, not contradiction.
-                    if float(pl0) < 0 and (need - got) >= 1.0:
+                    if (threshold - got) >= 1.0:
+                        _lay = float(pl0) < 0
                         problems.append({
                             'sport': sport, 'game': match, 'kind': 'COVER',
                             'tier': tier,
-                            'detail': (f'laying {float(pl0):+g} on {side} but '
-                                       f'our projection has that side by only '
-                                       f'{got:.1f} — our own number does not '
-                                       f'cover the line we published'),
+                            'detail': (
+                                (f'laying {float(pl0):+g} on {side} but our '
+                                 f'projection has that side by only {got:+.1f}'
+                                 if _lay else
+                                 f'taking {float(pl0):+g} on {side} but our '
+                                 f'projection has that side losing by '
+                                 f'{abs(got):.1f}')
+                                + f' — short of the published line by '
+                                  f'{threshold - got:.1f}'),
                         })
                 except (TypeError, ValueError):
                     pass
@@ -991,9 +1013,30 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                     pass
 
             # ── C. does our own projection favour the side we took ─────
+            # ══ 2026-11-04 · MONEYLINE ONLY, AND THE FILE ALREADY SAID SO ══
+            # This compared projected_spread against ZERO to decide which
+            # side the model "favours", then flagged any pick on the other
+            # side. For a SPREAD bet that is a moneyline question: a model
+            # can have Toledo winning by 26.4 while the market asks 24.5, and
+            # taking the dog is then an opinion about the HANDICAP, not a
+            # contradiction of the winner.
+            #
+            # It is the same apples-to-oranges error the price test at the
+            # top of this function already documents and already guards
+            # against with `market == 'ml'`; check C simply never got the
+            # guard. Replayed over all stored context it fired 109 times,
+            # ALL NCAAF: 87 spread picks and 22 moneylines. 17 of the 87 were
+            # flat false positives — our projection DOES cover our side — and
+            # the rest reported a useless magnitude (tonight's Toledo read
+            # "favours AWAY by 26.4" when the real shortfall against the
+            # published +24.5 is 1.9, a 13x overstatement).
+            #
+            # Spread picks now get A2 above, which measures the shortfall
+            # against the line they were published at. A permanently-red
+            # check is a muted check.
             hp = _PROJ_HOME_POSITIVE.get(sport)
             ps = g.get('projected_spread')
-            if hp is not None and ps is not None:
+            if market == 'ml' and hp is not None and ps is not None:
                 try:
                     norm = float(ps) * (1.0 if hp else -1.0)   # +ve = home
                     proj_side = 'HOME' if norm > 0 else 'AWAY'
