@@ -54,6 +54,33 @@ PRICE_REQUIRED_MARKETS = {
 #: real quote. +10000 longshots exist, but not on these surfaces.
 PRICE_SANITY = (-100000.0, 100000.0)
 
+#: ══ 2026-11-04 · ANDY: "STOP PUBLISHING -200000!!!!" ═══════════════════
+#: A -20000 moneyline is not a parse error, which is why PRICE_SANITY let it
+#: through. Validated against two independent sources before concluding
+#: that: line_history -20000 vs ncaab_game_context -20000 on the same game,
+#: with the dog sides agreeing exactly at +3300/+3500. Books really do post
+#: these on early-season mismatches.
+#:
+#: Once backfill_ncaab_receipt_prices filled the NULLs, 98 priced ML
+#: receipts turned out to sit past -300, and 60 of them carry the word
+#: "lean" in their own label. 21 are on a PUBLISHABLE tier (STRONG 18,
+#: PRIME 1, LEAN 2) and 3 are on the sweat_card itself, so this was not
+#: only coverage.
+#:
+#: -300 is NOT A NEW RULE. It is the number already used in four places:
+#:   defensive_gates._ml_odds_too_juiced(max_juice=-300)
+#:   generate_sharp_card.SOLE_PICK_ML_JUICE_MAX = -300
+#:   apply_ml_juice_cap_to_card.py (card + Sharp, -300)
+#:   jerry_anchor_potd POTD ML gate, -250 (stricter, and it stays stricter)
+#: Breakeven at -300 is 75%; at -20000 it is 99.5%, which is not a bet.
+#:
+#: Graded REFUSE on a play surface and WARN on coverage, matching the
+#: `_is_play` split this file already uses: game_read is an opinion on every
+#: game and is deliberately not a PLAY_SURFACE, so refusing it would delete
+#: coverage. The label claiming a "lean" at -20000 is a separate defect,
+#: fixed at the source rather than by rewriting a frozen column here.
+ML_JUICE_MAX = -300.0
+
 #: Surfaces that publish a PLAY: the record is a claim we staked, so a row
 #: that cannot be priced cannot be graded honestly and is refused.
 #:
@@ -184,6 +211,13 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
         if not (PRICE_SANITY[0] <= odds <= PRICE_SANITY[1]) or odds == 0:
             return ('REFUSE' if _is_play else 'WARN',
                     f'pick_odds {odds:g} is not a plausible price')
+        # A real price can still be an impossible bet. See ML_JUICE_MAX.
+        if market == 'ml' and odds < ML_JUICE_MAX:
+            _be = 100.0 * abs(odds) / (abs(odds) + 100.0)
+            return ('REFUSE' if _is_play else 'WARN',
+                    f'ml at {odds:g} needs {_be:.1f}% to break even — past '
+                    f'the {ML_JUICE_MAX:g} juice cap this repo already '
+                    f'enforces on the card, the Sharp and the LR override')
 
     # (1b) A LINE NO BOOK EVER POSTED.
     #

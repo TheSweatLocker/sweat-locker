@@ -81,6 +81,13 @@ if _env.exists():
 #: and the note in resolve() below for why this file needed it too.
 from ncaab_game_context import NCAAB_ML_TIER_CAP  # noqa: E402
 
+#: Worst ML price NCAAB will SELECT. Module-level so the gate can be
+#: A/B-replayed (set it to -1e9 to measure the board without it) rather than
+#: buried as a local. Same -300 already enforced by
+#: defensive_gates._ml_odds_too_juiced, SOLE_PICK_ML_JUICE_MAX and
+#: apply_ml_juice_cap_to_card; POTD stays stricter at -250.
+ML_JUICE_MAX = -300.0
+
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
@@ -300,8 +307,60 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
     kenpom_in_majority = 'kenpom' in side_votes[majority_side] if majority_side != 'split' else False
     effective_edge = abs_edge if kenpom_in_majority else 0.0
 
+    # ══ 2026-11-04 · ANDY: "STOP PUBLISHING -200000!!!!" ═════════════════
+    # The tier cap above kept these picks on the card with their side, label
+    # and number intact, on the reasoning that a shadow record should
+    # accumulate. That reasoning is now spent: the measurement in the note
+    # above says NOT ONE price band clears breakeven across 4,981 NCAAB
+    # favourite-ML plays, and its own conclusion was "there is no price at
+    # which to let it through". A shadow record of a bet nobody can place
+    # tells us nothing we do not already know.
+    #
+    # What it DID produce is 65 NCAAB ML receipts priced past -300 once
+    # backfill_ncaab_receipt_prices filled the NULLs, 60 of them labelled
+    # "... ML lean" — the engine recommending a side at -20000, where
+    # breakeven is 99.5%. Ten sat at -100000 on 28.5-to-40.5-point
+    # favourites.
+    #
+    # So an out-of-band ML is no longer capped, it is NOT SELECTED. Because
+    # the selection below is an if/elif chain, blocking the three ML
+    # branches lets the same game fall through to its total branches, which
+    # is strictly better than publishing an unplayable moneyline: the game
+    # keeps coverage, just not a fake recommendation.
+    #
+    # -300 is the number already enforced in four other places
+    # (defensive_gates._ml_odds_too_juiced, SOLE_PICK_ML_JUICE_MAX,
+    # apply_ml_juice_cap_to_card, and POTD at a stricter -250), so this adds
+    # no new threshold. Names are tried in the order the context tables
+    # actually use them; NCAAB carries both spellings.
+    _ml_price = None
+    if ml_side in ('HOME', 'AWAY'):
+        _cands = (('close_home_ml', 'home_ml_close')
+                  if ml_side == 'HOME' else
+                  ('close_away_ml', 'away_ml_close'))
+        for _c in _cands:
+            _v = ctx.get(_c)
+            if _v is not None:
+                try:
+                    _ml_price = float(_v)
+                except (TypeError, ValueError):
+                    _ml_price = None
+                if _ml_price is not None:
+                    break
+    # Unknown price does NOT block. An absent number is not evidence of a
+    # bad one, and refusing on unknown would silently delete coverage on
+    # every game the odds feed has not reached yet
+    # (feedback_column_presence_is_not_contamination).
+    ml_blocked = _ml_price is not None and _ml_price < ML_JUICE_MAX
+    if ml_blocked:
+        print(f'    ml suppressed: {ml_side} at {_ml_price:g} is past the '
+              f'{ML_JUICE_MAX:g} juice cap (breakeven '
+              f'{100.0 * abs(_ml_price) / (abs(_ml_price) + 100.0):.1f}%) '
+              f'— falling through to totals')
+
     # 1. PRIME/STRONG ML with 3+/4 lens agreement + KenPom-supported edge
-    if majority_count >= 3 and effective_edge >= 2.0 and fav_team and tier in ('PRIME', 'STRONG'):
+    if (majority_count >= 3 and effective_edge >= 2.0 and fav_team
+            and tier in ('PRIME', 'STRONG') and not ml_blocked):
         primary_play = {
             'type': 'ml',
             'tier': NCAAB_ML_TIER_CAP,
@@ -316,7 +375,8 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
         }
     # 1b. 3+/4 lens agreement AGAINST kenpom — still shippable via lens count,
     # but no KenPom-edge promotion (lens count alone drives tier)
-    elif majority_count >= 3 and not kenpom_in_majority and fav_team and tier in ('STRONG',):
+    elif (majority_count >= 3 and not kenpom_in_majority and fav_team
+            and tier in ('STRONG',) and not ml_blocked):
         primary_play = {
             'type': 'ml',
             'tier': NCAAB_ML_TIER_CAP,
@@ -341,7 +401,8 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
             'lenses_agreeing': total_votes['over' if total_edge > 0 else 'under'],
         }
     # 3. LIGHT ML with majority agreement (edge respects KenPom alignment)
-    elif majority_count >= 2 and effective_edge >= 1.5 and fav_team and tier != 'PASS':
+    elif (majority_count >= 2 and effective_edge >= 1.5 and fav_team
+            and tier != 'PASS' and not ml_blocked):
         primary_play = {
             'type': 'ml',
             'tier': NCAAB_ML_TIER_CAP,
