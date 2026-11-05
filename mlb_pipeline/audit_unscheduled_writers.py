@@ -37,6 +37,17 @@ import re
 import sys
 from pathlib import Path
 
+# A docstring line carrying an arrow killed this script mid-report on a
+# cp1252 console (UnicodeEncodeError, partway through the alphabet), so a
+# local run never reached anything after ncaaf_alias_sync.py. Harmless on the
+# UTF-8 runner and fatal to anyone triaging the list by hand — which is the
+# only way this list ever gets triaged.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 WF = REPO / '.github' / 'workflows'
@@ -46,7 +57,18 @@ WF = REPO / '.github' / 'workflows'
 WRITE_RE = re.compile(
     r'requests\.(post|patch|put|delete)\s*\(|'
     r'\.(post|patch|put|delete)\s*\(\s*f?["\'][^"\']*rest/v1|'
-    r'\bupsert\s*\(|\b_upsert\b|\bsb_write\b|\bwrite_rows\b',
+    r'\bupsert\s*\(|\b_upsert\b|\bsb_write\b|\bwrite_rows\b|'
+    # ══ 2026-11-04 · A urllib WRITER WAS NOT COUNTED AS A WRITER ══
+    # Everything above assumes `requests`. reconcile_stale_side_receipts.py
+    # writes public_receipts through urllib.request.Request(url, data=...,
+    # method='POST') via its own req() wrapper, so it matched NONE of these
+    # and was absent from the report entirely — not "scheduled", not
+    # "one-shot by name", invisible. It is a writer of record and it had
+    # been unscheduled since the day it was written (B144). A detector that
+    # cannot see a whole transport has a hole the size of that transport.
+    r'urllib\.request\.Request\s*\(|'
+    r'\bmethod\s*=\s*["\'](?:POST|PATCH|PUT|DELETE)["\']|'
+    r'\breq\s*\(\s*["\'](?:POST|PATCH|PUT|DELETE)["\']',
     re.I)
 
 #: A script that only writes to jerry_cache for a dry run, or only ever writes
@@ -58,10 +80,29 @@ def is_scratch(p: Path) -> bool:
 
 
 def workflow_text() -> str:
+    """Everything that can INVOKE a script: the workflow YAML, and the shell
+    scripts those workflows call.
+
+    ══ 2026-11-04 · THE SCHEDULE DOES NOT ALL LIVE IN YAML ══
+    This read only .github/workflows/*.yml. On 2026-09-29 the entire
+    cross-sport nightly was deliberately moved OUT of the YAML into
+    .github/scripts/nightly_cross_sport.sh — one definition, two callers —
+    and this audit never learned to look there, so every step scheduled in
+    that file read as "reachable from nothing".
+
+    Proof it was wrong rather than merely incomplete:
+    reconcile_card_recap_to_receipts.py runs in that script every night and
+    was reported here as an unscheduled writer.
+
+    Any .sh under .github counts, because a workflow that calls one shell
+    script may call another.
+    """
     if not WF.exists():
         return ''
     out = []
-    for f in sorted(WF.glob('*.yml')) + sorted(WF.glob('*.yaml')):
+    files = sorted(WF.glob('*.yml')) + sorted(WF.glob('*.yaml'))
+    files += sorted((REPO / '.github').rglob('*.sh'))
+    for f in files:
         try:
             out.append(f.read_text(encoding='utf-8', errors='replace'))
         except OSError:
@@ -153,10 +194,35 @@ def main() -> int:
             if u['what']:
                 print(f"      {u['what']}")
         print()
-        print(f'-- one-shot by name ({len(oneshot)}) — repair/backfill/'
-              f'regrade/reconcile/void/purge. Unscheduled is CORRECT. --')
-        print('   ' + ', '.join(sorted(u['script'] for u in oneshot)[:12])
-              + (' ...' if len(oneshot) > 12 else ''))
+        # ══ 2026-11-04 · "ONE-SHOT BY NAME" IS A GUESS, AND IT HAS COST US ══
+        # This bucket was headed "Unscheduled is CORRECT" and printed 12 of
+        # its 52 names. Both halves were wrong.
+        #
+        # backfill_nfl_result_weather.py sits in it. It is the ONLY writer of
+        # nfl_game_results.wind, that column has been NULL on every game
+        # since 2026-10-11, and wind is the only validated edge in the
+        # system (B205). The audit DID see the script — it exempted it for
+        # starting with 'backfill_'. B205 asked why the audit missed it and
+        # guessed reachability; this is the answer, and it is the name.
+        #
+        # A prefix describes intent, never cadence: a 'backfill_' that owns a
+        # column no scheduled writer fills is load-bearing, and a
+        # 'reconcile_' can be a nightly loop —
+        # reconcile_card_recap_to_receipts is exactly that. So the bucket
+        # stays separate and still does not set the exit code, but it prints
+        # in FULL and says what it is: a guess to be triaged, not a
+        # clearance.
+        print(f'-- one-shot BY NAME ({len(oneshot)}) — prefix says '
+              f'repair/backfill/regrade/reconcile/void/purge --')
+        print('   The prefix is a GUESS about cadence, not a clearance. It '
+              'was wrong about')
+        print('   backfill_nfl_result_weather.py — sole writer of '
+              'nfl_game_results.wind, dark')
+        print('   three weeks (B205). Triage this list; do not skim it.')
+        for u in sorted(oneshot, key=lambda x: x['script']):
+            print(f"  {u['script']}")
+            if u['what']:
+                print(f"      {u['what']}")
         print()
         print('  A writer that never runs leaves its table frozen while every')
         print('  consumer keeps quoting it as current.')

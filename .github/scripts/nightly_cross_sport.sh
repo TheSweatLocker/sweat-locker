@@ -652,6 +652,33 @@ bash "$RUN_STEP" --label "split_sharp_card_record.py (nightly)" \
 bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
   python backfill_public_receipts.py
 
+# ── B144 · CLOSE THE LOOP ON THE RECEIPT THAT FROZE A STALE READ ─────
+# 2026-11-04. jerry_reads is UPDATED IN PLACE and public_receipts.pick_side /
+# pick_line / pick_label / market are immutable by trigger, so a receipt
+# reconstructed on game day freezes whichever vintage of the read it happens
+# to find and can never catch up. backfill_public_receipts above got a
+# future-date guard on 10-22 which closed the multi-day case completely --
+# ZERO side divergences on games after 10-22 -- but its own comment names the
+# residue it leaves: the reconstruction still runs on game day BEFORE that
+# sport's read generator has produced the day's final read.
+#
+# That residue is why the market class of B144 still reaches 2026-11-04:
+#     receipt names a market its own read does not   163 live, 143 graded
+#     receipt backs the opposite outcome              54 live,  54 graded
+#
+# The remedy is not to stop writing pre-game receipts -- it is to RECONCILE
+# once the reads are final, which is what this tool does and what nothing
+# ever ran. It was written 10-28, run ONCE by hand, and scheduled nowhere: a
+# repair tool that is not on a clock is a repair that happened once.
+#
+# MUST follow backfill_public_receipts -- it reconciles the rows that step
+# reconstructs. It writes only where the read was finalised pre-kickoff AND
+# the game has already started, it voids nothing it cannot replace, and it
+# prints the effect on the published record per class on every run.
+# compute_surface_records ran earlier in this sequence, so a correction lands
+# in the displayed record on the following night.
+bash "$RUN_STEP" --label "reconcile_stale_side_receipts.py (B144 loop)"   python reconcile_stale_side_receipts.py --apply
+
 # 2026-09-29: morning_brief moved here from mlb_grade_overnight as part of the
 # clean MLB split. It is cross-sport (references all seven sports) and its
 # --fix re-runs graders + aggregators, so it must come AFTER the graders and
