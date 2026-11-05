@@ -282,13 +282,49 @@ _LABEL_MARKET = (
 )
 
 
+#: A team followed by a SIGNED number is a spread, whatever words are
+#: absent. Anchored to the signed token so a bare total ("48.5") and a
+#: price ("-112", caught by the 3+ digit guard) do not match.
+_LABEL_SIGNED_SPREAD = re.compile(
+    r'[A-Za-z].*?[-+]\s*\d{1,2}(?:\.\d)?(?!\d)')
+
+
 def _market_from_label(label):
+    """Market implied by the label, by VOCABULARY first and then by SHAPE.
+
+    ══ 2026-11-05 · A LABEL WITH NO MARKET WORD GRADED NOTHING ══
+    The 11-04 POTD was published as `UMass -2.5 (NCAAF LEAN 61/100)` and
+    sat ungraded while the SAME game graded WIN as `UMass ML` on the
+    game_read surface. Its market column is the surface code 'potd' and
+    its audit.bet_market is null, so this function was the only thing
+    standing between it and a grade — and it matched none of the three
+    patterns above, because the label contains no 'ATS', 'RL', 'ML' or
+    'spread'. Just a team and a number.
+
+    That is feedback_parse_a_pick_by_shape_not_vocabulary, which was
+    written about 'Toronto Raptors -8.5' matching no market WORD. The
+    lesson did not reach this parser. Of 361 POTD receipts ever written,
+    359 graded — the two that did not are both this label.
+
+    Why the siblings escaped it: `Houston Rockets ATS -9.5` carries 'ATS'
+    and `Buffalo Sabres -1.5` had audit.bet_market='rl'. So the defect
+    only bites a hand-written label, which is exactly the POTD swap case
+    and exactly when it matters most.
+
+    Shape is checked only AFTER every vocabulary pattern misses, so no
+    label that already resolved can change market. And it is safe here
+    because the rl branch in grade_one re-parses the signed number from
+    the label itself and refuses when it cannot find one ('spread sign
+    unknown'), so this can promote a row to 'rl' but never invent a side.
+    """
     s = str(label or '')
     if not s or _PROP_LABEL_RE.search(s):
         return None
     for rx, mkt in _LABEL_MARKET:
         if rx.search(s):
             return mkt
+    if _LABEL_SIGNED_SPREAD.search(s):
+        return 'rl'
     return None
 
 

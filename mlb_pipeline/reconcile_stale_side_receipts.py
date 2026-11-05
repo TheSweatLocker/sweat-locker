@@ -562,7 +562,7 @@ def main():
     try:
         from public_receipt import recover_line as _recover_line
         from public_receipt import unactionable as _unactionable
-        from receipt_invariants import screen as _screen
+        from receipt_invariants import check_row as _check_row
     except Exception as _e:                                    # noqa: BLE001
         print('  REFUSING TO WRITE: the shared receipt guards are '
               'unavailable (%s). A replacement written unscreened is frozen '
@@ -633,12 +633,24 @@ def main():
                   'pick_line is frozen on insert'
                   % (rid, str(row.get('pick_label'))[:34], row.get('market')))
             continue
-        _keep, _ref = _screen([row], 'game_read', quiet=True)
-        if not _keep:
+        # ══ 2026-11-05 · THIS LINE CRASHED THE STEP ON EVERY RUN ══
+        # It was `_ref[0][1]`, written on the assumption that screen()
+        # hands back (row, why) pairs. It does not: its last line is
+        # `return keep, [r for r, _w in refused]`, so element 0 is the
+        # ROW DICT and [1] is a key lookup -> KeyError: 1. The step has
+        # failed rc=1 on every MLB Grade Overnight run since it was
+        # scheduled on 2026-11-04, which means the B144 repair has never
+        # actually executed once.
+        #
+        # screen() discards the reason before returning, so the reason
+        # cannot be recovered from its result at all. check_row is the
+        # function that carries it -> (severity, reason) -- so ask that
+        # directly rather than reaching into a shape that does not exist.
+        _sev, _why = _check_row(row, 'game_read')
+        if _sev == 'REFUSE':
             refused_guard += 1
             print('  guard: NOT replacing receipt %s — %s'
-                  % (rid, _ref[0][1] if _ref else 'refused by '
-                     'receipt_invariants'))
+                  % (rid, _why or 'refused by receipt_invariants'))
             continue
         # ══ ORDER IS THE WHOLE POINT: GUARD, THEN VOID, THEN INSERT ══
         # The first cut of this voided the original and only then screened

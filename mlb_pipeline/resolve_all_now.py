@@ -234,7 +234,29 @@ def main() -> int:
         # IS NULL so a CFBD score is never overwritten.
         ('NCAAF results (ESPN fallback)', ['ncaaf_results_espn.py',
                                           '--days', '10', '--apply']),
-        ('NBA results', ['nba_resolve_results.py', '--date', today.isoformat()]),
+        # ══ 2026-11-05 · NBA ASKED THIS CHAIN FOR *TODAY'S* FINALS ══
+        # This was `--date today`, and that is why NBA results went dark
+        # for two days while every other sport stayed current. This chain
+        # is the reliable one — cron '43 0,3,6,9,12,15,18,21', eight
+        # firings a day, four of them already today — but at 15:43 UTC
+        # (10:43am ET) TODAY has no finals, so it resolved nothing night
+        # after night. NBA's own pipeline does carry a resolve step, on a
+        # cron measured 4-9h late, so between the two nothing reliably
+        # asked for YESTERDAY.
+        #
+        # NHL is the control that proves it: NHL has both a today and a
+        # yesterday call, two lines up, and NHL has never been dark.
+        #
+        # On 2026-11-04 the cost was three surfaces at once — every NBA
+        # prop ungraded, all 16 NBA game_read receipts ungraded, the POTD
+        # with them, and every NBA surface record frozen at 11-02 while
+        # still rendering as a d7/d30 window.
+        #
+        # --days 2 covers today and yesterday in one call now that the
+        # resolver takes a window; re-resolving a date already held is
+        # idempotent (the upsert writes the same finals).
+        ('NBA results (today + yesterday)',
+         ['nba_resolve_results.py', '--days', '2']),
     ):
         ok, _ = run(label, cmd)
         if not ok:
