@@ -547,6 +547,38 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
                 _top = _dec.top()
                 if _top is not None and _top.pick is not None:
                     _prev = result.get('primary_play') or {}
+                    # ══ 2026-11-06 · PROSE CANNOT CROSS total <-> side ══
+                    # `sub` used to read:
+                    #     getattr(_top,'display_prose',None) or _prev.get('sub')
+                    # so when the ensemble had no prose of its own it
+                    # inherited the PRE-ENSEMBLE pick's prose -- including
+                    # when the ensemble had moved to a different market.
+                    # Measured over 11-05..11-07, 104 rows: 37 market
+                    # changes, of which 23 stay inside the side family
+                    # (ml <-> rl on the SAME team, e.g. 'Merrimack ML' ->
+                    # 'Merrimack -9.5') where the prose is still true, and
+                    # **14 CROSS total <-> side**, where it cannot be:
+                    #
+                    #   Under 155.5 -> Wisconsin ML
+                    #     sub: '2/3 total lens lean, 12.6pt edge'
+                    #   Under 156.5 -> Kansas ML
+                    #     sub: '2/3 total lens lean, 11.9pt edge'
+                    #
+                    # 11 of the 14 are on the 11-06 board. That is total
+                    # reasoning printed under a team badge -- the exact
+                    # badge-vs-prose contradiction that
+                    # defer_call_to_ensemble's own docstring calls 'Kills
+                    # trust'. An OVER/UNDER argument cannot describe a
+                    # moneyline and vice versa, so the inheritance is
+                    # refused across that boundary and the downstream
+                    # falls back to the label alone, which is honest.
+                    # Within the side family it is kept, because there the
+                    # team and the direction have not changed.
+                    def _fam(t):
+                        return 'total' if str(t or '') == 'total' else 'side'
+                    _inherit_sub = (_prev.get('sub')
+                                    if _fam(_prev.get('type')) == _fam(_top.market)
+                                    else None)
                     result['primary_play'] = {
                         'type': _top.market,
                         'tier': _top.tier,
@@ -555,7 +587,7 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
                         'line': _top.line,
                         'conviction': _top.conviction,
                         'score': round(_top.score, 2),
-                        'sub': getattr(_top, 'display_prose', None) or _prev.get('sub'),
+                        'sub': getattr(_top, 'display_prose', None) or _inherit_sub,
                         '_engine': 'ensemble_v2',
                         '_ensemble_sources': [
                             {'signal_key': c.signal_key,

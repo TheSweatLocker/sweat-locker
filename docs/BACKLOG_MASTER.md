@@ -5100,3 +5100,50 @@ market, so 25 games read as an unpublishable ML while a PRIME total sat there.
 `recompute_ensemble_primary_play.py --sport` accepts only NBA and NHL, so a bad
 or stale NCAAB `primary_play` can only be fixed by re-running the whole
 `ncaab_game_context` job. Add NCAAB to `SPORTS`.
+
+### R183 · REVISED + PART DONE 2026-11-06 · prose cannot cross total <-> side
+**Withdrawn half:** I filed this as "ensemble discards a PRIME total for a
+0.0-score ML" as though the total were better. NCAAB totals are
+`TOP_PICK_BARRED` **on purpose** — `projected_total`/`projected_spread` are 0%
+populated across all 11,439 rows of `ncaab_game_results` so the projection has
+never been graded; 5 of 6 forced PRIME/STRONG plays were UNDERs 6.7-9.2pts
+below market (one shape five times is calibration bias); and totals posted
+155-165 take the UNDER at 45.49% n=576 CI[41.5,49.6], an upper bound BELOW
+breakeven, which is where the model's UNDERs concentrated. A PRIME label on an
+NCAAB total is not evidence. The ensemble moving off it is correct.
+
+**DONE:** the real defect was `'sub': getattr(_top,'display_prose',None) or
+_prev.get('sub')` inheriting the PRE-ENSEMBLE prose across a market change.
+Measured 11-05..07 over 104 rows: 37 market changes, 23 inside the side family
+(ml<->rl, same team, prose still true), **14 crossing total<->side where it
+cannot be** — 11 of those on the 11-06 board (`Under 155.5 -> Wisconsin ML`
+captioned "2/3 total lens lean, 12.6pt edge"). Inheritance is now refused
+across that boundary. Verified by executing the shipped lines out of the file,
+8 cases, 0 failures.
+
+**STILL OPEN (needs Andy):** `_top.pick is not None` is the wrong test for "the
+ensemble has an opinion" — the merge comment promises "if the ensemble has no
+opinion the bespoke result stands untouched", but a pick with `score: 0.0` and
+every contribution at `weight: 0.0` has no opinion and still overrides. 10 rows
+across 11-05..07 had score 0.0 AND overrode a different market; 22 had every
+source weight at 0. Reverting to the bespoke pick is NOT the answer — for most
+of these that pick is a barred total — so the honest outcome is NO PICK, which
+removes a read from ~10-22 games. Product decision, not a bug fix.
+
+### R184 · WITHDRAWN 2026-11-06 · invalid, NCAAB has a better repair path
+I filed "NCAAB has no primary_play repair path". The exclusion from
+`recompute_ensemble_primary_play.py` is deliberate and documented at its
+line 47: `ncaab_game_context` has no `_apply_ensemble`, it scores through its
+own `compute_primary_play`. The real path is `ncaab_resolve_primary_play.py
+--game-date YYYY-MM-DD --dry-run`, which is the file that performs the
+ensemble merge and therefore the correct place to replay NCAAB. Nothing to do.
+
+### R182 · MEASURED 2026-11-06 · 2 of 43 tonight, still cross-sport
+Of tonight's 43 publishable-tier NCAAB picks, **2 rest entirely on weight-0
+chips** (`Florida Int'l`, `Mt. St. Mary's`, each one chip at weight 0.000);
+the other 41 carry weights 0.072-0.289. Weight 0 means measured-worthless OR
+UNMEASURED (`apply_signal_weight_discipline` sets it for both) and neither is
+evidence, so the rule should be: a chip counts as credible only if
+(VALIDATED/DISCOVERY or n>=15) **AND weight > 0**. Narrow for NCAAB; measure
+the demotion count for NBA/NHL/NCAAF/NFL before shipping, because the gate is
+shared.
