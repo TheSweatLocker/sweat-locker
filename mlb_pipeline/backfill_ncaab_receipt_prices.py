@@ -238,7 +238,37 @@ def run(since, apply_it, limit=None):
             continue
         body = {}
         if need_odds and q.get('price') is not None:
-            body['pick_odds'] = q['price']
+            # ══ 2026-11-05 · DO NOT PRICE A BET THE INVARIANT REFUSES ═════
+            # pick_odds is SET-ONCE and a priced receipt becomes GRADEABLE, so
+            # stamping a number here is what admits the row to the record.
+            # The dry run wanted to write moneylines at -55000, -10000, -9500,
+            # -5000, -3500 and -3000 -- real quotes from 2-5 books, and all of
+            # them past ML_JUICE_MAX, which receipt_invariants rule (1)
+            # REFUSES outright. Measured tonight across every receipt since
+            # 09-01: 97 already sit past the cap and the 18 that graded went
+            # 15-3 for -0.55 units, because a -10000 winner pays 0.01u and a
+            # loser still costs a full one.
+            #
+            # A guard that refuses a shape at creation must not be bypassed by
+            # a backfill that manufactures the same shape later
+            # ([[feedback_fix_every_writer_to_the_table]]). So an out-of-band
+            # price is SKIPPED with a named reason rather than written; those
+            # rows stay ungradeable, which is the honest state for a bet
+            # nobody should have taken, and they are candidates for a void
+            # decision rather than a price.
+            try:
+                from receipt_invariants import ML_JUICE_MAX as _CAP
+            except ImportError:
+                _CAP = -300.0
+            _pr = float(q['price'])
+            if lh_mk == 'ml' and _pr < _CAP:
+                miss['ml_past_juice_cap_%g' % _CAP] += 1
+                print(f"    = skip id={x.get('id')} {x.get('pick_label')!r} "
+                      f"@ {_pr:g} — past the {_CAP:g} cap "
+                      f"receipt_invariants refuses; not priced")
+                need_odds = False
+            else:
+                body['pick_odds'] = q['price']
         if need_line and q.get('line') is not None:
             body['pick_line'] = q['line']
         if not body:

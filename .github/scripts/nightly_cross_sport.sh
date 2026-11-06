@@ -679,6 +679,27 @@ bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
 # in the displayed record on the following night.
 bash "$RUN_STEP" --label "reconcile_stale_side_receipts.py (B144 loop)"   python reconcile_stale_side_receipts.py --apply
 
+# ══ 2026-11-05 · NCAAB RECEIPTS WITH NO PRICE ═══════════════════
+# Written 2026-11-04 for B142 and scheduled nowhere -- the same shape the note
+# above names: "a repair tool that is not on a clock is a repair that happened
+# once." NCAAB was 180 of the 195 no-odds receipts, and a receipt with no price
+# cannot be graded for ROI at all, which is most of the NCAAB grading debt.
+#
+# Safe to run on a clock only as of tonight. The version written on 11-04 would
+# have stamped moneylines at -55000, -10000, -9500, -5000, -3500 and -3000 --
+# real quotes from 2-5 books, every one past ML_JUICE_MAX, which
+# receipt_invariants rule (1) refuses outright. pick_odds is SET-ONCE and a
+# priced receipt becomes GRADEABLE, so that would have admitted exactly the
+# shape the guard exists to keep out: measured across every receipt since
+# 09-01, 97 already sit past the cap and the 18 that graded went 15-3 for
+# -0.55 units, because a -10000 winner pays 0.01u and a loser still costs one.
+# It now skips an out-of-band price with a named reason instead.
+#
+# Only ever fills a NULL, never overwrites, and confirms every write on
+# readback.
+bash "$RUN_STEP" --label "backfill_ncaab_receipt_prices.py" \
+  python backfill_ncaab_receipt_prices.py --apply
+
 # 2026-09-29: morning_brief moved here from mlb_grade_overnight as part of the
 # clean MLB split. It is cross-sport (references all seven sports) and its
 # --fix re-runs graders + aggregators, so it must come AFTER the graders and

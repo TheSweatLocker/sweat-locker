@@ -4951,3 +4951,10 @@ REFUSED them. Find the writer that bypassed the guard
 (feedback_fix_every_writer_to_the_table). Measured: 97 ML receipts past the cap
 overall, 95 of them game_read, at prices down to -100000; of the 18 that graded,
 15-3 for -0.55 units.
+
+### R170 · 183 permanently-ungradeable orphaned prop receipts (2026-11-05)
+Their prop_jerry_reads source row AND the underlying prop row are both gone, so
+grade_orphaned_receipts correctly reports "no graded prop row (left alone, not
+guessed)". The orphan-creating leak was plugged 10-06 (receipt pins), so the
+population is closed, not growing. Voiding them is a 183-row change to the
+published record and needs a decision rather than a script.
