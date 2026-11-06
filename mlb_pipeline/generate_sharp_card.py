@@ -3088,7 +3088,28 @@ def run(dry_run: bool = False, force: bool = False):
         _cands.sort(key=lambda c: (not _priced(c),
                                    _TIER_PRIORITY.get(c.get('tier'), 9),
                                    -float(c.get('units') or 0)))
-        _need = SHARP_CARD_TARGET_MIN - len(all_items)
+        # ══ 2026-11-06 · A FLOOR EXTENDS A CARD; IT MUST NOT INVENT ONE ══
+        # Same bound as the Sweat Card got today, for the same measured
+        # reason: across both surfaces the fill has produced 7 slots since
+        # it shipped on 11-04 and **0 are graded**, so nothing defends it,
+        # and the Sharp's own count hit 0 twice in nine nights -- on those
+        # nights this block was free to compose the ENTIRE slate out of
+        # picks that failed the tier gate.
+        #
+        # The floor may add at most as many items as actually qualified:
+        # 0 earned -> 0 added. The cold filter above already learned that
+        # tightening the top while loosening the bottom leaves the card
+        # looser than not being cold at all; a floor that can fill from
+        # nothing is the same defect with no ceiling
+        # ([[feedback_fix_every_writer_to_the_table]] -- one surface fixed
+        # is not the fix).
+        _earned = len(all_items)
+        _need = min(SHARP_CARD_TARGET_MIN - _earned, _earned)
+        if _need <= 0:
+            print(f'  = sharp floor: {_earned} qualifying item(s), so the '
+                  f'floor may add at most {max(0, _earned)} — publishing '
+                  f'what was earned rather than filling to '
+                  f'{SHARP_CARD_TARGET_MIN}')
         _added = []
         for _c in _cands:
             if len(_added) >= _need:

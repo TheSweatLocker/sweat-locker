@@ -44,6 +44,8 @@ ODDS_SPORT = 'basketball_ncaab'
 from ncaab_season import season_label  # noqa: E402
 from posted_line import posted_consensus as _posted_consensus  # noqa: E402
 from posted_line import posted_price as _posted_price  # noqa: E402
+from sweat_dates import et_and_utc_stamps  # noqa: E402
+from ncaab_result_ids import reconcile as _reconcile  # noqa: E402
 SEASON = season_label()
 
 
@@ -160,17 +162,36 @@ def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
         return None
 
     commence = event.get('commence_time', '')
-    try:
-        dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        game_date = dt.date().isoformat()
-    except Exception:
-        dt = _et_now(); game_date = dt.date().isoformat()
+    # ══ 2026-11-06 · R166: THE DATE MUST BE ET, NOT UTC ═══════════
+    # A 7pm ET tip is 00:00 UTC the NEXT day, so `dt.date()` filed most
+    # of the NCAAB slate a day late in BOTH game_date and the date
+    # inside game_id. grade_public_receipts bridges a receipt to its
+    # result on (game_date, away_team, home_team) -- the date is IN the
+    # join key -- so every such receipt was ungradeable. Measured:
+    # 2026-11-02 had 119 games in context and 30 rows here; 11-03 had 19
+    # and 144.
+    #
+    # `legacy_game_id` is the old UTC-keyed id, carried so the
+    # existing-row lookup can PATCH the row already stored under it
+    # rather than insert a duplicate for the same game. Derivation is
+    # shared in sweat_dates because three scrapers held three copies of
+    # it ([[feedback_each_scraper_invented_its_own_season]]).
+    game_date, _et, _utc = et_and_utc_stamps(commence)
+    if not game_date:
+        # No parseable commence_time: fall back to the ET clock, never the
+        # runner's UTC date ([[feedback_window_from_runner_clock_is_a_day_ahead]]).
+        game_date = _et_now().date().isoformat()
+        _et = _utc = game_date.replace('-', '')
 
-    game_id = f'ncaab_{dt.strftime("%Y%m%d")}_{away}_{home}'.replace(' ', '_')
+    game_id = f'ncaab_{_et}_{away}_{home}'.replace(' ', '_')
+    legacy_game_id = f'ncaab_{_utc}_{away}_{home}'.replace(' ', '_')
 
     home_spread = _consensus_spread(event, home_raw)  # Odds API home spread
     row = {
         'game_id': game_id,
+        # transport only; ncaab_result_ids.reconcile pops it before the
+        # upsert, because an unknown column 400s the whole batch (R166).
+        'legacy_game_id': legacy_game_id,
         'game_date': game_date,
         'season': SEASON,
         'home_team': home,
@@ -326,6 +347,12 @@ def _normalize_batch_keys(rows: list) -> list:
 
 def upsert_games(rows: list, dry_run: bool = False) -> int:
     if not rows: return 0
+    # R166: point each row at the row already stored for that game, so a
+    # newly ET-keyed game_id patches the legacy UTC-keyed row instead of
+    # inserting a second one. Must run BEFORE _normalize_batch_keys, which
+    # would otherwise union `legacy_game_id` onto every row as a real
+    # column and 400 the batch.
+    _reconcile(rows, SB, H_READ, label='odds_pull: ')
     rows = _normalize_batch_keys(rows)
     if dry_run:
         for r in rows[:15]:

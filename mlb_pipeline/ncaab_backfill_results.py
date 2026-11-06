@@ -50,6 +50,8 @@ from pathlib import Path
 from typing import Optional
 import requests
 from dotenv import load_dotenv
+from sweat_dates import et_and_utc_stamps  # noqa: E402
+from ncaab_result_ids import reconcile as _reconcile  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -216,12 +218,25 @@ def event_to_row(event: dict, by_espn: dict, by_name: dict, season: str) -> Opti
         return None
 
     commence = event.get('date', '')
-    try:
-        dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        game_date = dt.date().isoformat()
-        game_id = f'ncaab_{dt.strftime("%Y%m%d")}_{away_team}_{home_team}'.replace(' ', '_')
-    except Exception:
+    # ══ 2026-11-06 · R166: THE DATE MUST BE ET, NOT UTC ═══════════
+    # A 7pm ET tip is 00:00 UTC the NEXT day, so `dt.date()` filed most
+    # of the NCAAB slate a day late in BOTH game_date and the date
+    # inside game_id. grade_public_receipts bridges a receipt to its
+    # result on (game_date, away_team, home_team) -- the date is IN the
+    # join key -- so every such receipt was ungradeable. Measured:
+    # 2026-11-02 had 119 games in context and 30 rows here; 11-03 had 19
+    # and 144.
+    #
+    # `legacy_game_id` is the old UTC-keyed id, carried so the
+    # existing-row lookup can PATCH the row already stored under it
+    # rather than insert a duplicate for the same game. Derivation is
+    # shared in sweat_dates because three scrapers held three copies of
+    # it ([[feedback_each_scraper_invented_its_own_season]]).
+    game_date, _et, _utc = et_and_utc_stamps(commence)
+    if not game_date:
         return None
+    game_id = f'ncaab_{_et}_{away_team}_{home_team}'.replace(' ', '_')
+    legacy_game_id = f'ncaab_{_utc}_{away_team}_{home_team}'.replace(' ', '_')
 
     status = ((event.get('status') or {}).get('type') or {}).get('state')
     hs = _i(home_c.get('score')) if status == 'post' else None
@@ -229,6 +244,9 @@ def event_to_row(event: dict, by_espn: dict, by_name: dict, season: str) -> Opti
 
     row = {
         'game_id': game_id,
+        # transport only; ncaab_result_ids.reconcile pops it before the
+        # upsert, because an unknown column 400s the whole batch (R166).
+        'legacy_game_id': legacy_game_id,
         'game_date': game_date,
         'season': season,
         'home_team': home_team,
@@ -284,6 +302,9 @@ def _normalize_batch_keys(rows: list) -> list:
 
 def upsert_batch(rows: list, dry_run: bool = False) -> int:
     if not rows: return 0
+    # R166: see ncaab_result_ids. Runs before _normalize_batch_keys so the
+    # transport field never becomes a column in the payload.
+    _reconcile(rows, SB, H_READ, label='backfill: ')
     rows = _normalize_batch_keys(rows)
     if dry_run:
         print(f'  [DRY] would upsert {len(rows)} rows (sample: {rows[0].get("game_id")})')

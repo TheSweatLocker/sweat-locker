@@ -183,3 +183,57 @@ def et_days_ago(n: int) -> str:
 def et_days_ahead(n: int) -> str:
     """ET date n days forward, YYYY-MM-DD."""
     return (et_now() + _dt.timedelta(days=n)).strftime('%Y-%m-%d')
+
+
+def et_and_utc_stamps(ts: Optional[str]) -> tuple:
+    """(et_iso, et_compact, utc_compact) for a UTC game timestamp.
+
+    Returns ('', '', '') for anything unparseable, so a caller can refuse
+    rather than guess — a wrong date is worse than a missing one.
+
+    ══ 2026-11-06 · R166: THREE NCAAB WRITERS, ONE UTC DATE ══════════════
+    `resolve_ncaab_results`, `ncaab_backfill_results` and `ncaab_odds_pull`
+    each derived a game's date with the identical two lines:
+
+        dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
+        game_date = dt.date().isoformat()
+        game_id = f'ncaab_{dt.strftime("%Y%m%d")}_{away}_{home}'
+
+    No ET conversion anywhere. A 7pm ET tip is 00:00 UTC the NEXT day, and
+    for NCAAB that is most of the slate, so the game was filed a day late
+    in BOTH fields. Measured on live rows:
+
+        date        context games   results rows
+        2026-11-02      119              30
+        2026-11-03       19             144
+
+    11-02's ~89 evening games are sitting under 11-03. `grade_public_receipts`
+    bridges a receipt to its result on `_match_key(sport, game_date,
+    away_team, home_team)` — the date is IN the join key — so a receipt on a
+    11-02 game can never find its result. That is the whole of the NCAAB
+    grading debt.
+
+    Returns the UTC stamp too, because the legacy rows are keyed by it:
+    changing the derivation without also LOOKING UP the old id makes the
+    upsert INSERT a second row for the same game instead of patching the
+    first ([[feedback_a_migration_can_be_live_then_reverted]] — judge on the
+    newest artefact, and leave no duplicate behind to judge).
+
+    Three scrapers with three copies of one derivation is the same shape as
+    [[feedback_each_scraper_invented_its_own_season]]; it lives here now so
+    there is one of it.
+    """
+    if not ts:
+        return '', '', ''
+    s = str(ts).strip()
+    try:
+        dt = _dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except ValueError:
+        return '', '', ''
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    et_iso = et_date_of(s)
+    if not et_iso:
+        return '', '', ''
+    return (et_iso, et_iso.replace('-', ''),
+            dt.astimezone(_dt.timezone.utc).strftime('%Y%m%d'))

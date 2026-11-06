@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 import requests
 from dotenv import load_dotenv
+from sweat_dates import et_and_utc_stamps  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -170,15 +171,29 @@ def event_to_outcome(event: dict, by_espn: dict, by_name: dict) -> Optional[dict
     completed = status == 'post'   # ESPN: pre | in | post
 
     commence = event.get('date', '')
-    try:
-        dt = datetime.fromisoformat(commence.replace('Z', '+00:00'))
-        game_date = dt.date().isoformat()
-        game_id = f'ncaab_{dt.strftime("%Y%m%d")}_{away_team}_{home_team}'.replace(' ', '_')
-    except Exception:
+    # ══ 2026-11-06 · R166: THE DATE MUST BE ET, NOT UTC ═══════════
+    # A 7pm ET tip is 00:00 UTC the NEXT day, so `dt.date()` filed most
+    # of the NCAAB slate a day late in BOTH game_date and the date
+    # inside game_id. grade_public_receipts bridges a receipt to its
+    # result on (game_date, away_team, home_team) -- the date is IN the
+    # join key -- so every such receipt was ungradeable. Measured:
+    # 2026-11-02 had 119 games in context and 30 rows here; 11-03 had 19
+    # and 144.
+    #
+    # `legacy_game_id` is the old UTC-keyed id, carried so the
+    # existing-row lookup can PATCH the row already stored under it
+    # rather than insert a duplicate for the same game. Derivation is
+    # shared in sweat_dates because three scrapers held three copies of
+    # it ([[feedback_each_scraper_invented_its_own_season]]).
+    game_date, _et, _utc = et_and_utc_stamps(commence)
+    if not game_date:
         return None
+    game_id = f'ncaab_{_et}_{away_team}_{home_team}'.replace(' ', '_')
+    legacy_game_id = f'ncaab_{_utc}_{away_team}_{home_team}'.replace(' ', '_')
 
     return {
         'game_id': game_id,
+        'legacy_game_id': legacy_game_id,
         'game_date': game_date,
         'home_team': home_team,
         'away_team': away_team,
@@ -190,20 +205,62 @@ def event_to_outcome(event: dict, by_espn: dict, by_name: dict) -> Optional[dict
 
 # ─── DB layer ─────────────────────────────────────────────────────
 
+#: PostgREST `in.(...)` is sent in the URL, and this stack silently
+#: TRUNCATES a long one. Measured 2026-11-06 on real ids: 25 ids / 1,028
+#: chars returned 200, 50 ids / 2,022 chars returned PGRST100 "unexpected
+#: end of input expecting \",\" or \")\"". So a 100-id chunk NEVER parsed.
+_ID_CHUNK = 20
+
+
 def fetch_existing(game_ids: list) -> dict:
+    """Stored rows for these game_ids, keyed by game_id.
+
+    ══ 2026-11-06 · THIS COULD NEVER MATCH ANYTHING ═══════════════
+    Two defects, and the second hid the first:
+
+      1. it chunked at 100 ids, which builds a ~4KB URL that arrives
+         TRUNCATED and 400s with PGRST100; and
+      2. `if r.status_code != 200: continue` swallowed that 400, so the
+         function returned {} and every game looked NEW.
+
+    The resolver therefore never PATCHED a row in its life -- it only ever
+    inserted, which is why 2026-11-03 holds 144 rows and a dry run on
+    11-02 reported "existing rows matched: 0/165" while a direct probe for
+    the very first id returned the row. A silent `continue` on a non-200
+    turns a wiring error into a finding
+    ([[feedback_zero_rows_is_a_wiring_error]]), and 0 rows read is never
+    the answer.
+
+    Now chunked small and LOUD on failure: a lookup that fails must not
+    read as "nothing is stored", because that sends every game down the
+    INSERT path.
+    """
     if not game_ids: return {}
-    out = {}
-    for i in range(0, len(game_ids), 100):
-        chunk = game_ids[i:i+100]
+    ids_u = sorted({str(g) for g in game_ids if g})
+    out, failed = {}, 0
+    for i in range(0, len(ids_u), _ID_CHUNK):
+        chunk = ids_u[i:i + _ID_CHUNK]
         ids = ','.join(f'"{gid}"' for gid in chunk)
         r = requests.get(
-            f'{SB}/rest/v1/ncaab_game_results?game_id=in.({ids})'
-            f'&select=game_id,home_score,away_score,close_spread,close_total',
+            f'{SB}/rest/v1/ncaab_game_results',
+            params={'game_id': f'in.({ids})',
+                    'select': 'game_id,game_date,home_score,away_score,'
+                              'close_spread,close_total'},
             headers=H_READ, timeout=30,
         )
-        if r.status_code != 200: continue
+        if r.status_code != 200:
+            failed += len(chunk)
+            print(f'  ! fetch_existing HTTP {r.status_code} on {len(chunk)} '
+                  f'id(s): {r.text[:160]}')
+            continue
         for row in r.json():
             out[row['game_id']] = row
+    if failed:
+        raise RuntimeError(
+            f'fetch_existing could not read {failed} of {len(ids_u)} ids. '
+            f'Refusing to continue: an unreadable lookup looks identical to '
+            f'"not stored yet" and would INSERT a duplicate row for every '
+            f'one of them.')
     return out
 
 
@@ -241,7 +298,17 @@ def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
                     and not existing.get('spread_result'))
     _owed_total = (_f(existing.get('close_total')) is not None
                    and not existing.get('total_result'))
-    if _same_score and not _owed_spread and not _owed_total:
+    # ══ 2026-11-06 · R166: A WRONG game_date IS WORK TO DO ══════════
+    # Every row written before today carries the UTC date, which for a
+    # post-7pm-ET tip is a day late, and grade_public_receipts joins ON
+    # that date. Without this the short-circuit above would return None on
+    # a fully-scored row and the bad date would never be repaired -- the
+    # resolver would look healthy while the receipts stayed ungradeable
+    # ([[feedback_green_step_that_writes_nothing]]).
+    _owed_date = (str(existing.get('game_date') or '')
+                  != str(new.get('game_date') or '')
+                  and bool(new.get('game_date')))
+    if _same_score and not _owed_spread and not _owed_total and not _owed_date:
         return None
 
     payload = {
@@ -251,6 +318,8 @@ def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
         'home_win': hs > as_,
         'result_logged_at': datetime.now(timezone.utc).isoformat(),
     }
+    if _owed_date:
+        payload['game_date'] = new['game_date']
 
     # NCAAB convention: close_spread negative = home favored.
     # spread_result semantics: home_covered if home_margin > -close_spread.
@@ -370,8 +439,28 @@ def run(dates: list, dry_run: bool = False, skip_external: bool = False) -> None
     if not finals:
         print('  (no completed games)'); return
 
-    existing = fetch_existing([o['game_id'] for o in finals])
-    print(f'  existing rows matched: {len(existing)}/{len(finals)}')
+    # ══ 2026-11-06 · R166: LOOK THE LEGACY ID UP TOO ══════════════
+    # game_id now carries the ET date, but every row already stored is
+    # keyed by the UTC one. Looking up only the new id would find nothing
+    # and send the game down the INSERT path, putting a second row in the
+    # table that grades the record -- 165 duplicates on one date when this
+    # was first dry-run. So both spaces are fetched and a game that is
+    # already stored under its legacy id is REMAPPED onto that row, which
+    # then gets its game_date corrected by the patch
+    # ([[feedback_merge_duplicates_needs_on_conflict]]: a write that can
+    # only insert is not an upsert).
+    existing = fetch_existing([o['game_id'] for o in finals]
+                              + [o['legacy_game_id'] for o in finals])
+    _remapped = 0
+    for o in finals:
+        if o['game_id'] not in existing and o['legacy_game_id'] in existing:
+            o['game_id'] = o['legacy_game_id']
+            _remapped += 1
+    if _remapped:
+        print(f'  {_remapped} game(s) remapped onto their legacy UTC-keyed '
+              f'row so the date is PATCHED, not duplicated')
+    print(f'  existing rows matched: '
+          f'{sum(1 for o in finals if o["game_id"] in existing)}/{len(finals)}')
 
     patches = []
     new_games = []

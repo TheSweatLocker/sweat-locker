@@ -5102,7 +5102,38 @@ def build_card():
                                    -p.get('_calibrated', 0.0),
                                    -p.get('_conviction', 0)))
         _cands = dedupe_one_bet_per_slot(_cands, 'floor: ')
-        _need = _FLOOR - len(unified_top_picks)
+        # ══ 2026-11-06 · A FLOOR EXTENDS A CARD; IT MUST NOT INVENT ONE ══
+        # Graded tonight, every floor-filled slot since the fill shipped on
+        # 11-04: **7 slots, 0 graded**. There is no record defending it, and
+        # on 11-05 it published FOUR picks on a night when ZERO qualified --
+        # three of them NCAAB, the one sport whose results do not resolve at
+        # all (R166), so those three can never be graded either. A card that
+        # is 100% fill is not a short card dressed up; it is a card with no
+        # opinion in it, and the subtitle still says "top plays".
+        #
+        # The qualifying slots are not carrying it either: matched back to
+        # receipts over 10-01..11-05 they run 75-61 for -6.36% ROI on
+        # n=136. So the fill is not topping up a winner.
+        #
+        # The rule: the floor may add AT MOST as many picks as actually
+        # qualified. 2 earned -> up to 4 total, which still meets Andy's
+        # 4-pick target on a normal night; 1 earned -> 2; **0 earned -> 0**.
+        # That keeps the floor doing the job it was asked to do (reach 4
+        # when the slate nearly gets there) and stops it doing the job
+        # nobody asked for (manufacture a slate out of nothing).
+        #
+        # Deliberately NOT a tier change and NOT a new gate on the
+        # candidates -- every existing veto above still runs first. This
+        # only bounds HOW MANY may come through
+        # ([[feedback_tier_demotion_needs_stake_boundary]]: a discipline
+        # needs a boundary, not just a preference).
+        _earned = len(unified_top_picks)
+        _need = min(_FLOOR - _earned, _earned)
+        if _need <= 0:
+            print(f'  = floor: {_earned} qualifying pick(s), so the floor '
+                  f'may add at most {max(0, _earned)} — publishing the '
+                  f'{_earned} we earned rather than filling to {_FLOOR}. '
+                  f'A card of pure fill has no opinion in it.')
         _added = []
         for _c in _cands:
             if len(_added) >= _need:
