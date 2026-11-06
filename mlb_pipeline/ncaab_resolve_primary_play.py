@@ -449,8 +449,14 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
 
 
 def _load_games(game_date: date) -> list:
+    # close_home_ml/close_away_ml added 2026-11-05: without them an ML pick
+    # reaches posted_market_gate with the keys missing entirely, and a gate
+    # cannot judge a market it was never shown. The gate now passes on an
+    # absent column rather than refusing, so this is what makes the ML check
+    # actually DO something instead of silently abstaining.
     fields = ('game_id,home_team,away_team,projected_spread,projected_total,'
               'close_spread,close_total,open_spread,open_total,'
+              'close_home_ml,close_away_ml,'
               'signal_confluence_net,mc_probabilities,panel_prediction')
     r = requests.get(
         f'{SB}/rest/v1/ncaab_game_context?select={fields}'
@@ -573,6 +579,48 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
             # Never let the ensemble take down the resolver that works.
             print(f'  ⚠ ensemble unavailable for {g.get("game_id")}: '
                   f'{type(_e).__name__}: {_e}')
+
+        # ══ 2026-11-05 · A PICK ON A GAME THE BOOKS DO NOT CARRY ═══════
+        # Extending audit_published_lines.py to totals showed 20 of 60 NCAAB
+        # picks published with NO line, labelled "Michigan St. ATS",
+        # "Navy ATS", "Texas ATS". They are not repairable: measured across
+        # every capture on 2026-11-05, those ten games had ZERO spread
+        # quotes, ZERO total quotes and ZERO moneyline quotes. The Odds API
+        # simply does not carry Toledo @ Michigan St. or Gardner Webb @
+        # Texas, so the engine formed an opinion on a game with no market and
+        # published it as the call.
+        #
+        # An eleventh was worse: `Georgia St Panthers ML` DID cut a receipt
+        # (id 5174984), priceless, on a game with no moneyline -- because
+        # receipt_invariants only WARNs on a priceless game_read
+        # (`game_read` is deliberately not in PLAY_SURFACES), so the record
+        # layer let it through.
+        #
+        # The gate is per MARKET, not per game: a game can be quoted for a
+        # total and not a spread, and refusing the whole game would throw
+        # away an actionable total. See posted_market_gate for the reasoning
+        # and for why it fails open on an unmapped sport.
+        try:
+            from posted_market_gate import pick_is_actionable as _actionable
+            _ok, _why = _actionable(result.get('primary_play') or {}, g)
+            if not _ok:
+                _pp = dict(result.get('primary_play') or {})
+                _pp['_unactionable'] = _why
+                _pp['_unactionable_at'] = '2026-11-05'
+                # Demoted to COVERAGE, an EXISTING non-publishable tier, not
+                # to a new word. The last time this file's neighbours
+                # invented one ("solid", conviction 60-69) the publish-lock
+                # trigger wrote it into primary_play.tier and the EV gate's
+                # PRIME/STRONG/LEAN whitelist exempted it, and both rows that
+                # ever held it were negative-edge POTDs
+                # ([[feedback_a_display_label_became_a_gating_tier]]).
+                _pp['tier'] = 'COVERAGE'
+                result['primary_play'] = _pp
+                result['sweat_tier'] = 'COVERAGE'
+                print(f'  ⛔ {g.get("away_team")} @ {g.get("home_team")}: '
+                      f'{str(_pp.get("label"))[:34]!r} — {_why}')
+        except ImportError:
+            pass          # gate absent — publish as before rather than block
 
         tier_counts[result['sweat_tier']] = tier_counts.get(result['sweat_tier'], 0) + 1
 

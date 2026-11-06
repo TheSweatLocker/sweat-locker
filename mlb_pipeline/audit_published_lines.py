@@ -53,6 +53,18 @@ CONTEXT = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
 #: context table store the home handicap. Negate NFL to compare.
 FLIP = {'NFL': True}
 SPREADY = {'rl', 'spread', 'ats', 'runline', 'puckline'}
+# ══ 2026-11-05 · TOTALS WERE NEVER CHECKED AGAINST THE MARKET ══════
+# This gated on SPREADY alone, so a published OVER/UNDER was never
+# compared to a posted number on ANY sport. That is most of the NHL and
+# NCAAB boards, and it is the exact shape of what got through tonight:
+# `Over 48.5` on JAX@BAL, rank 1 of the Sweat Card, off a close_total
+# frozen at 48.5 while 11 of 11 books sat at 39.5. A spread-only audit
+# could not have caught it.
+#
+# market_line already had index_totals(), and ever_traded() handles
+# over/under correctly (it negates only for home/away), so this needed
+# wiring, not new machinery.
+TOTALISH = {'total', 'ou', 'over_under', 'totals'}
 
 
 def page(t, p, cap=200000):
@@ -140,7 +152,14 @@ def audit(sport: str, since: str, live_only: bool, on: str = None):
         _until = (date.fromisoformat(on) + timedelta(days=2)).isoformat()
     rows = ML.fetch_spreads(sport, on or since, _until)
     by_mt = ML.index_by_matchup(rows)
-    match = ML.build_matcher(by_mt, sport)
+    trows = ML.fetch_market(sport, 'total', on or since, _until)
+    by_tot = ML.index_totals(trows)
+    # Build the matcher from whichever index has more matchups: a game can be
+    # quoted for a total and not a spread (common on NCAAB), and keying off
+    # spreads alone would make those games unmatchable and report them as
+    # unverifiable when the total IS checkable.
+    match = ML.build_matcher(by_mt if len(by_mt) >= len(by_tot) else by_tot,
+                             sport)
     print(f'=== {sport} ===')
     print(f'  {len(ctx)} games · {len(rows)} book quotes · '
           f'{len(by_mt)} matchups priced'
@@ -168,7 +187,7 @@ def audit(sport: str, since: str, live_only: bool, on: str = None):
               f'no spread — nothing to check against (e.g. {_nomkt[0]})')
 
     verdicts = collections.Counter()
-    defects, moved = [], []
+    defects, moved, nolines = [], [], []
     for z in ctx:
         gid = str(z['game_id'])
         pp = jl(z.get('primary_play'))
@@ -179,17 +198,46 @@ def audit(sport: str, since: str, live_only: bool, on: str = None):
         # the engine's own pick object and the published read. They disagree
         # with each other often enough that collapsing them hides defects.
         cands = []
-        if str(pp.get('type') or '').lower() in SPREADY and pp.get('line') is not None:
-            cands.append(('primary_play', pp.get('side'), pp.get('line'),
-                          pp.get('label'), pp.get('tier')))
-        if str(a.get('call_market') or '').lower() in SPREADY and a.get('call_line') is not None:
-            cands.append(('jerry_read', a.get('call_side'), a.get('call_line'),
-                          a.get('call_text'), a.get('conviction')))
+        _ppt = str(pp.get('type') or '').lower()
+        _rdm = str(a.get('call_market') or '').lower()
+        if _ppt in SPREADY and pp.get('line') is not None:
+            cands.append(('primary_play', 'spread', pp.get('side'),
+                          pp.get('line'), pp.get('label'), pp.get('tier')))
+        elif _ppt in TOTALISH and pp.get('line') is not None:
+            cands.append(('primary_play', 'total', pp.get('side'),
+                          pp.get('line'), pp.get('label'), pp.get('tier')))
+        if _rdm in SPREADY and a.get('call_line') is not None:
+            cands.append(('jerry_read', 'spread', a.get('call_side'),
+                          a.get('call_line'), a.get('call_text'),
+                          a.get('conviction')))
+        elif _rdm in TOTALISH and a.get('call_line') is not None:
+            cands.append(('jerry_read', 'total', a.get('call_side'),
+                          a.get('call_line'), a.get('call_text'),
+                          a.get('conviction')))
+        # A pick whose market IS checkable but whose line is NULL is its own
+        # finding, not a silent skip. 'New York Rangers PL' with call_line
+        # null can be neither verified nor graded, and folding it into
+        # 'no data' beside a game the books never posted hides it (R156).
+        for _s2, _m2, _ln2, _lb2 in (
+                ('primary_play', _ppt, pp.get('line'), pp.get('label')),
+                ('jerry_read', _rdm, a.get('call_line'), a.get('call_text'))):
+            if _m2 in (SPREADY | TOTALISH) and _ln2 is None:
+                verdicts['NO LINE ON PICK'] += 1
+                nolines.append(dict(date=str(z['game_date'])[:10], src=_s2,
+                                    game='%s@%s' % (z['away_team'],
+                                                    z['home_team']),
+                                    label=_lb2, market=_m2))
         if not cands:
             continue
 
-        for src, side, pub, label, tier in cands:
-            mkt, nbooks = ML.line_for_side(by_mt, mt, side)
+        for src, kind, side, pub, label, tier in cands:
+            if kind == 'total':
+                mkt, nbooks = by_tot.get(mt, (None, 0))
+                _sl = str(side or '').lower()
+                side = ('over' if 'over' in _sl
+                        else 'under' if 'under' in _sl else side)
+            else:
+                mkt, nbooks = ML.line_for_side(by_mt, mt, side)
             v = ML.classify(pub, mkt)
             if v == 'unknown' or mkt is None:
                 verdicts['no data'] += 1
@@ -197,8 +245,9 @@ def audit(sport: str, since: str, live_only: bool, on: str = None):
             if v == 'ok':
                 verdicts['ok'] += 1
                 continue
-            traded, nhit, lo, hi = ML.ever_traded(rows, mt, side, pub)
-            rec = dict(date=str(z['game_date'])[:10], src=src,
+            traded, nhit, lo, hi = ML.ever_traded(
+                trows if kind == 'total' else rows, mt, side, pub)
+            rec = dict(date=str(z['game_date'])[:10], src='%s/%s' % (src, kind),
                        game=f"{z['away_team']}@{z['home_team']}",
                        label=label, pub=pub, mkt=mkt, tier=tier,
                        nbooks=nbooks, nhit=nhit, lo=lo, hi=hi, kind=v)
@@ -210,9 +259,16 @@ def audit(sport: str, since: str, live_only: bool, on: str = None):
                 defects.append(rec)
 
     n = sum(verdicts.values())
-    for k in ('ok', 'MOVED', 'NEVER TRADED', 'no data'):
+    for k in ('ok', 'MOVED', 'NEVER TRADED', 'NO LINE ON PICK', 'no data'):
         if verdicts[k]:
-            print(f'    {k:<14}{verdicts[k]:>5}  {verdicts[k]/max(n,1)*100:>5.1f}%')
+            print(f'    {k:<17}{verdicts[k]:>5}  '
+                  f'{verdicts[k]/max(n,1)*100:>5.1f}%')
+    if nolines:
+        print(f'  -- {len(nolines)} PICK(S) WITH NO LINE '
+              f'(ungradeable AND unverifiable) --')
+        for r in nolines[:12]:
+            print(f"    {r['date']}  {r['game'][:30]:<30}"
+                  f"{r['src']:<13}{r['market']:<8}{str(r['label'])[:30]}")
 
     if defects:
         print(f'  -- {len(defects)} DEFECTS (a number the books never posted) --')
@@ -256,7 +312,8 @@ def main():
     if len(sports) > 1:
         print('=== ALL SPORTS ===')
         n = sum(grand.values())
-        for k in ('ok', 'MOVED', 'NEVER TRADED', 'no data'):
+        for k in ('ok', 'MOVED', 'NEVER TRADED', 'NO LINE ON PICK',
+                  'no data'):
             if grand[k]:
                 print(f'  {k:<14}{grand[k]:>5}  {grand[k]/max(n,1)*100:>5.1f}%')
 

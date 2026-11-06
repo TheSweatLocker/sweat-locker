@@ -4900,3 +4900,22 @@ Far past any documented juice gate. Check what admitted it.
 NFL hit it exactly on a 30-day window. Much less wrong than the 1000-row bug
 fixed today, but the same shape: a partial quote set makes "median across
 books" into "median across the books that fit".
+
+### R163 · receipt_invariants only WARNs on a priceless game_read (2026-11-05)
+`game_read` is deliberately not in PLAY_SURFACES, so rule (1) warns instead of
+refusing. Result: 185 of 1,490 game_read receipts since 10-01 are priceless
+(NCAAB 111, NHL 32, NCAAF 29), 54 of them still ungraded. That is the root of
+the NCAAB grading debt. Promoting game_read to a PLAY_SURFACE would refuse a
+large number at once, so this needs a measured decision rather than a flip.
+
+### R164 · posted_market_gate is wired into NCAAB only (2026-11-05)
+The unquoted-game shape can occur on any sport. The gate belongs at the
+chokepoint every composer passes, not in one resolver
+(feedback_guard_belongs_at_the_chokepoint).
+
+### R165 · two rows still hold tier SOLID (2026-11-05)
+NBA `Houston Rockets ML` (11-02) and NHL `Montréal Canadiens ML` (11-03), both
+conviction 61, both negative-edge by their own subtitle (-6pp, -3.0pp). Both
+predate the 11-03 fix and nothing after 11-03 has the word, so this is residue
+rather than a regression. Decide whether to rewrite or keep as history, and
+assert no gate whitelist can exempt an unknown tier word again.

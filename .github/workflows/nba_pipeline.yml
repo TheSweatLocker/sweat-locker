@@ -1076,7 +1076,46 @@ jobs:
       # defensive_gates now write primary_play in nba_game_context; without
       # this sync, app never sees NBA picks (jerry_reads is the source of
       # truth the client reads from). Mirrors NCAAF/NFL/MLB wiring.
+      # ══ 2026-11-05 · A PICK WITH NO LINE IS NOT A BET ═════════════
+      # repair_spread_labels.py was written 2026-10-30 and scheduled NOWHERE,
+      # so the defect it fixes came back every night. On 2026-11-05 three NHL
+      # puck-line picks were published as "Anaheim Ducks PL" with line=None
+      # while close_puckline held -1.5 on the same row -- composed before the
+      # odds pull landed, then frozen by the pick lock while ctx filled in
+      # behind them. receipt_invariants refuses a line-bearing market with no
+      # pick_line, so each one was published AND ungradeable, and the POTD
+      # price path falls back to -110 on a dog puck line that closes near
+      # -195. It fills the NUMBER only, from the same ctx column the label
+      # builder would have used; the side is read off the stored pick and
+      # never re-derived.
+      - name: Repair spread picks published without a line (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "repair_spread_labels.py (NBA)" \
+            python repair_spread_labels.py --sport NBA --days 2 --apply
+
       - name: Sync NBA jerry_reads from context
+
+      # The repair above writes primary_play; the reads are a COPY of it and
+      # do not update themselves. --line-only patches call_line/call_text
+      # ONLY when side and market already agree, so it can never change a
+      # pick -- which is also why it is safe past the NFL week lock.
+      - name: Propagate repaired lines onto the published reads (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "jerry line alignment (NBA)" \
+            python backfill_jerry_pick_alignment.py --sport NBA \
+              --days 2 --line-only
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
