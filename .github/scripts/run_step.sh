@@ -81,8 +81,7 @@ try:
     for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
         if not line.strip():
             continue
-        part = line.rstrip('
-').split('	', 1)
+        part = line.rstrip('\n').split('\t', 1)
         if len(part) == 2:
             try:
                 rows.append({'label': part[1], 'duration_s': int(part[0])})
@@ -157,8 +156,7 @@ PYDUR
       python3 - "$TALLY" <<'PYJSON' > /tmp/_sl_stepfail.json 2>/dev/null || true
 import json, os, sys
 try:
-    lines = [l.rstrip('
-') for l in open(sys.argv[1], encoding='utf-8', errors='replace') if l.strip()]
+    lines = [l.rstrip('\n') for l in open(sys.argv[1], encoding='utf-8', errors='replace') if l.strip()]
 except Exception:
     lines = []
 print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
@@ -379,8 +377,7 @@ fi
 # Recorded on BOTH paths, which is the point: a step that succeeds slowly is
 # what starves the steps behind it.
 mkdir -p "$(dirname "$DURATIONS")" 2>/dev/null || true
-printf '%s	%s
-' "$dur" "$LABEL" >> "$DURATIONS" 2>/dev/null || true
+printf '%s\t%s\n' "$dur" "$LABEL" >> "$DURATIONS" 2>/dev/null || true
 # The stderr capture is a temp file on the runner; do not leak one per step.
 rm -f "${_err:-}" 2>/dev/null || true
 

@@ -4836,3 +4836,27 @@ a paginating getter.
 ### R150 · generate_sharp_card._today_et() is a hardcoded -4 (2026-11-05)
 Disagrees with true ET for 04:00-04:59 UTC on 127 days a year. Not exposed at
 the 12:00 build time. Same class as feedback_hardcoded_et_offset_breaks_in_est.
+
+### R151 · run_step.sh --gate uses python3, every step uses python (2026-11-05)
+Latent on ubuntu runners where both exist, but it is an inconsistency inside the
+one script whose job is to be trustworthy.
+
+### R152 · nba_pipeline.yml and nhl_pipeline.yml have no --gate step (2026-11-05)
+The only two sport pipelines without one. An NBA step failure is recorded in
+workflow_heartbeat and still leaves the run green. Adding it turns NBA red every
+run until nba_injuries_pull.py stops failing, so it needs Andy's call.
+
+### R153 · unwrapped NFL steps leave no record when they fail (2026-11-05)
+`nfl_play_of_day.py` runs unwrapped and WITHOUT continue-on-error, deliberately
+fatal — so a failure aborts the job before the gate and writes no heartbeat and
+no tally entry. The NFL weather / injuries / starters / teamrankings pullers are
+unwrapped WITH continue-on-error, so they fail silently instead. Wrapping the
+fatal one in run_step.sh while keeping it fatal would make the next occurrence
+self-explaining.
+
+### R154 · NBA and daily_card jobs are pinned at their timeouts (2026-11-05)
+From start->end heartbeat deltas: nba_pipeline 25/39/44/45/45/45 against a
+45-minute timeout; daily_card 51..88 then 90/90/90/90 against 90. A killed job
+writes no end event, no gate entry and no step_failures row, so it is invisible
+in the DB. The step-duration table that would name the expensive step had never
+recorded a row (fixed 2026-11-05) — check it before raising either timeout.

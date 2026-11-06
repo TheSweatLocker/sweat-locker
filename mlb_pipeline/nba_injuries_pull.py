@@ -152,14 +152,40 @@ def _clean_reason(comment: str) -> Optional[str]:
     return None
 
 
+# ══ 2026-11-05 · A FAILURE REASON ON STDOUT IS INVISIBLE TO THE PIPELINE ══
+# This script failed rc=1 on all three NBA Pipeline Daily runs on 2026-11-05
+# (19:54, 20:40, 23:37) and every workflow_heartbeat row recorded
+# `stderr_tail: ""`, so the database knew it had failed and nothing about why.
+#
+# run_step.sh captures STDERR only, deliberately: the note in that file
+# explains that piping stdout flips Python to block buffering and merges the
+# streams across ~100 steps. That reasoning is sound for a traceback, which
+# goes to stderr by itself. It is wrong for a script like this one, which
+# catches its own errors and reports them in prose with print() -- so the one
+# line that says WHICH of the four failure modes happened was the one line
+# never collected.
+#
+# Four modes, indistinguishable in the DB until now: fetch raised, ESPN
+# returned non-200, 0 rows parsed (layout change), rows parsed but none
+# persisted. The 0-second duration points at one of the first two, but
+# pointing is not knowing. [[feedback_green_step_that_writes_nothing]] is the
+# sibling: a step that fails silently and one that succeeds silently are the
+# same bug seen from opposite sides.
+def _fail(msg: str) -> None:
+    """Report a failure on BOTH streams: stdout for the human reading the
+    workflow log, stderr so run_step.sh puts it in workflow_heartbeat."""
+    print(f'  *** FAILED: {msg} ***')
+    print(f'nba_injuries_pull: {msg}', file=sys.stderr)
+
+
 def fetch_html() -> Optional[str]:
     try:
         r = requests.get(ESPN_URL, headers=HEADERS, timeout=20)
     except Exception as e:
-        print(f'  ⚠ fetch failed: {e}')
+        _fail(f'fetch failed: {e}')
         return None
     if r.status_code != 200:
-        print(f'  ⚠ ESPN {r.status_code}')
+        _fail(f'ESPN returned HTTP {r.status_code}')
         return None
     return r.text
 
@@ -309,18 +335,17 @@ def run(dry_run: bool = False) -> int:
     print('== NBA injuries pull (ESPN) ==')
     html = fetch_html()
     if not html:
-        print('  *** FAILED: no HTML from ESPN — nothing written ***')
+        _fail('no HTML from ESPN — nothing written')
         return 1
     rows = parse_injuries(html)
     print(f'  {len(rows)} injury rows parsed')
     if not rows:
-        print('  *** FAILED: 0 rows parsed — ESPN layout may have changed, '
-              'inspect the parse selectors. Nothing written. ***')
+        _fail('0 rows parsed — ESPN layout may have changed, inspect the parse selectors. Nothing written.')
         return 1
     written = upsert_batch(rows, dry_run=dry_run)
     print(f'\nSummary: {written}/{len(rows)} rows persisted')
     if not written:
-        print('  *** FAILED: parsed rows but persisted none ***')
+        _fail('parsed rows but persisted none')
         return 1
     return 0
 
