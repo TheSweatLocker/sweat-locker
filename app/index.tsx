@@ -13909,10 +13909,20 @@ setJerryHistory(prev => {
       </View>
     </View>
     <Text style={{color:THEME.textDim,fontSize:11,marginBottom:12}}>
-      {cardPicks.length || 8} curated plays locked · same discipline gate as POTD
+      {/* 2026-11-06: `|| 8` printed "8 curated plays locked" on a night with ZERO.
+          0 is falsy, and the floor fill no longer pads the card to 4, so an
+          empty card is now a real state rather than a theoretical one. Same
+          trap as feedback_falsy_zero_invented_a_tier_and_a_confidence: test
+          presence, never `x || default` on a count. */}
+      {cardPicks.length > 0
+        ? `${cardPicks.length} curated ${cardPicks.length === 1 ? 'play' : 'plays'} locked · same discipline gate as POTD`
+        : 'No play cleared the gate today · same discipline gate as POTD'}
     </Text>
     <View style={{gap:6,marginBottom:12}}>
-      {Array.from({length: Math.min(4, cardPicks.length || 4)}).map((_, i) => (
+      {/* 2026-11-06: `|| 4` drew four lock rows under copy that now says
+          "No play cleared the gate today". Show a teaser only when there
+          is something to tease. */}
+      {Array.from({length: Math.min(4, cardPicks.length)}).map((_, i) => (
         <View key={i} style={{flexDirection:'row',alignItems:'center',gap:8,backgroundColor:THEME.surface,borderRadius:8,padding:10,borderWidth:1,borderColor:THEME.border}}>
           <Text style={{fontSize:14}}>🔒</Text>
           <View style={{flex:1,height:8,backgroundColor:THEME.surfaceAlt,borderRadius:4}}/>
@@ -13937,7 +13947,7 @@ setJerryHistory(prev => {
           experience — POTD is the featured card of today's slate, not a
           separate product. */}
       <Text style={{color:THEME.accent,fontWeight:'800',fontSize:13,letterSpacing:1}}>📋 REST OF TODAY'S CARD</Text>
-      <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {cardPicks.length || 8} picks</Text>
+      <Text style={{color:THEME.textDim,fontSize:10}}>{sweatCard.slate_date} • {cardPicks.length} {cardPicks.length === 1 ? 'pick' : 'picks'}</Text>
     </View>
     <Text style={{color:THEME.textMuted,fontSize:10,marginBottom:6,fontStyle:'italic'}}>The rest of the curated card — same discipline gate as POTD, ranked below</Text>
     {/* 2026-08-09 data-freshness stamp: shows relative time since last card
@@ -13960,12 +13970,22 @@ setJerryHistory(prev => {
         the pipeline itself has already trimmed to qualified picks — the
         card size IS the honest signal. */}
     {(() => {
+      // 2026-11-06: this note was gated on `n > 0`, so at ZERO it
+      // rendered nothing AND the card below it rendered nothing -- a blank
+      // space with no explanation. That was theoretical while the floor
+      // fill padded every card to 4; it is a real state now that the floor
+      // may only add as many picks as actually qualified. An empty card
+      // must SAY it is empty on purpose.
       const n = cardPicks.length;
-      const isLight = n > 0 && (n < 3 || sweatCard.slate_density === 'light');
+      const isLight = n < 3 || sweatCard.slate_density === 'light';
       if (!isLight) return null;
       return (
         <View style={{backgroundColor:'rgba(122,146,168,0.08)',borderRadius:10,padding:10,marginBottom:12,borderLeftWidth:3,borderLeftColor:THEME.textDim}}>
-          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700',marginBottom:3}}>Slow slate — {n} qualified {n === 1 ? 'play' : 'plays'}.</Text>
+          <Text style={{color:THEME.text,fontSize:12,fontWeight:'700',marginBottom:3}}>
+            {n === 0
+              ? 'No play cleared the gate today.'
+              : `Slow slate — ${n} qualified ${n === 1 ? 'play' : 'plays'}.`}
+          </Text>
           <Text style={{color:THEME.textDim,fontSize:11,lineHeight:15}}>
             Sitting on hands is a valid play. We won't pad the card with LEAN-tier when the models don't stack.
           </Text>

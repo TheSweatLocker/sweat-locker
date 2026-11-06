@@ -4958,3 +4958,61 @@ grade_orphaned_receipts correctly reports "no graded prop row (left alone, not
 guessed)". The orphan-creating leak was plugged 10-06 (receipt pins), so the
 population is closed, not growing. Voiding them is a 183-row change to the
 published record and needs a decision rather than a script.
+
+### R171 · DONE 2026-11-06 · prop cells were judged on the data that chose them
+`CELL_SINCE` records each cell's first-allowlisted date and `audit_prop_cells.py`
+reports in-sample and forward separately, scheduled weekly in
+`mlb_refit_weekly`. Current forward verdicts: 2 of 3 NFL cells UNMEASURED
+(n=13, n=6), `reception_yds_over LEAN` HOLDING but THIN (+5.95pp vs SE 7.81).
+
+### R172 · duplicate NCAAB receipts for one game (2026-11-06)
+One game is cut as a receipt on several dates — `Under 157.5 Western
+Michigan/Old Dominion` on both 11-01 and 11-02, `Under 160.5 Ohio St./BYU` on
+10-30 and 11-02. Both copies now grade identically, so the denominator is
+inflated and a single game counts two or three times in any surface record.
+Find the writer that re-cuts a read on a later date without checking for an
+existing receipt on the same game.
+
+### R173 · 108 collinear orphan signal_registry rows (2026-11-06)
+14 groups hold 8-9 names with identical (market, n, hit_rate): `opp_src`,
+`opp_metric`, `opp_adj_live`, `opp_adj_shadow`, `opp_ratio`, `proj_shadow`,
+`prop_family`, `tier_shadow_family` at rush_yds_under n=55 61.8%, and
+`cal_version`, `devig`, `p_market`, `p_model_cal`, `p_model_raw`, `edge_pp`,
+`tier_edge_shadow`, `tier_held`, `yes_no_market` at prop n=237 28.7%. They are
+keys of the prop row's `signals` JSON — model inputs and config strings — and
+they co-fire perfectly.
+
+INERT, verified: `_resolve_weight()` only looks up registry rows with a
+matching `signal_sources` row and none of these have one, so nothing can price
+a pick off them. The damage is to AUDITS: the registry looks like it holds 192
+measured NFL signals when it holds ~84, and 78 are tiered ANTI_VALIDATED,
+which is how a report produces "proven money losers" that never bet.
+
+`purge_fake_signal_registry_rows.py` already handles this class on a
+UNIVERSALITY test and correctly spares these, because they appear on a subset
+of rows rather than all of them. Extend its test to PERFECT COLLINEARITY: a
+group of orphan names sharing identical (sport, scope, n, hit_rate) is one
+piece of evidence wearing several names
+([[feedback_lens_independence_needs_different_inputs]]).
+
+### R174 · NHL spread fade is a measured ANTI-signal (2026-11-06)
+Fading the public on NHL puck lines: 42.02% on n=514, **−8.15pp (−3.70 SE)**
+against a side-matched blanket control. The public is RIGHT on puck lines.
+Nothing currently fades NHL spreads — this is filed so nothing starts, and so
+the number is on record before someone rediscovers "fade the public" as a
+general rule.
+
+### R175 · the TOTALS 60-80% public-share fade is measured and UNWIRED (2026-11-06)
+n=1,253, 54.43% vs a 49.77% side-matched control, selection **+4.66pp
+(+3.30 SE)**. Split on its own median game date both halves are positive
+(+6.11pp n=626, +3.22pp n=627); all five sports are positive (NCAAF +4.20pp
+n=832 is individually significant); it INVERTS above 80% public (−3.08pp).
+Independently corroborates the one replicated positive from 11-02, which was
+also totals.
+
+Caveats on the record: the band was chosen after 4 bands × 3 markets, and
+widening 60-70% → 60-80% was a second look. The CI lower bound is 51.66%,
+BELOW the 52.38% −110 breakeven — so the SELECTION is established and the
+PROFITABILITY at −110 is not.
+
+Needs Andy's decision: this would create a new class of published play.
