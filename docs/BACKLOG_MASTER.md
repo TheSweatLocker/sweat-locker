@@ -5147,3 +5147,39 @@ evidence, so the rule should be: a chip counts as credible only if
 (VALIDATED/DISCOVERY or n>=15) **AND weight > 0**. Narrow for NCAAB; measure
 the demotion count for NBA/NHL/NCAAF/NFL before shipping, because the gate is
 shared.
+
+### R182 · PART DONE 2026-11-06 · a zero weight is not credibility
+**SHIPPED:** a publishable pick must carry at least one supporting chip with
+weight > 0. Picks resting entirely on weight-0 chips, live board: NBA 0 of 2,
+NHL 0 of 2, NCAAF 0 of 51, NFL 0 of 14, **NCAAB 2 of 43** — total 2 of 112
+(1.8%). Verified by A/B across every sport: NCAAB 43 -> 41, all others 0, 0
+mismatches. The two are `Florida Int'l` and `Mt. St. Mary's`, single-chip at
+weight 0.000 (`Baylor ML` was a third all-zero row already COVERAGE from the
+11-06 ML ceiling).
+
+**STILL OPEN, needs Andy — the stricter version and its measured cost.** The
+loop still accepts a chip on `n >= 15` regardless of weight, so a pick can
+draw its credibility from one big-n weight-0 chip while its real-weight chips
+are all n<15. Excluding zero-weight chips from the credibility test outright
+demotes **16 of 43 NCAAB picks** (A/B measured; every other sport 0). That is
+a 37% cut to the sport's publishable slate — a product decision. Note the
+asymmetry that caused my own error here: "rests entirely on weight-0 chips"
+(2) and "loses credibility when weight-0 chips are excluded" (16) are
+different questions, and the second is the one that matters for this rule.
+
+### R181 · REVISED 2026-11-06 · the schema already expects NULL, still not shipped
+Schema confirms the complaint: `jerry_reads.conviction` is `integer CHECK
+(conviction BETWEEN 0 AND 100)` with **no NOT NULL**, and `idx_jerry_reads_potd`
+is built `conviction DESC NULLS LAST` — the schema expects nulls, so
+`parsed.get('conviction') or 0` fabricates a score the schema never asked for.
+The states are distinguishable at the write site too: the deliberate-Pass
+branch of `defer_call_to_ensemble` sets `conviction = 0` explicitly, so only
+genuinely-unscored reads would become NULL.
+
+Not shipped because the risk is diffuse and the payoff is zero today: the
+write is on the shared cross-sport dual-write path, both 0 and NULL already
+fail every tier gate, and PostgREST `order=` and range filters treat NULL
+differently from 0 so consumers would change behaviour silently. App side is
+already guarded — 5 remaining `|| 0` sites on conviction, all display/sort
+defaults rather than tier gates. Do it with a call-site audit, not as a
+one-liner ([[feedback_validate_data_reaches_new_code]]).

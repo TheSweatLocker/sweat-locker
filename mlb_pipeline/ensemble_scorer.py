@@ -2919,6 +2919,41 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # n=20..51, so nothing real is lost to it.
     if tier == 'LEAN' or (tier in ('PRIME', 'STRONG')
                           and _sport_u in RELATIVE_BAR_SPORTS):
+        # == 2026-11-06 . A PICK RESTING WHOLLY ON WEIGHT-0 CHIPS ======
+        # The loop below accepts a chip on tier or on sample size alone and
+        # never looks at the weight the refit assigned it. A weight of 0.0
+        # means one of two things and NEITHER is evidence: the refit
+        # MEASURED the signal and found nothing
+        # (feedback_unmeasured_signal_must_not_outweigh_measured -- NCAAF
+        # LR_SHADOW went 0.394 -> 0 that way), or
+        # apply_signal_weight_discipline zeroed it as UNMEASURED. So a big
+        # n at weight 0 is the strongest available evidence of NO edge, and
+        # it was certifying picks as credible: the 11-06 NCAAB
+        # `Wisconsin ML` passed on chips at n=112 and n=110, weight 0.000.
+        #
+        # SCOPE IS DELIBERATELY NARROW, and the narrowing is measured.
+        # First attempt `continue`d past every zero-weight chip inside the
+        # loop. A/B over the whole live board showed that is a far bigger
+        # rule than the problem: it demotes **16 of 43** NCAAB picks, not
+        # the 2 I had measured, because many picks carry one big-n chip at
+        # weight 0 alongside real-weight chips whose n is under 15 -- so
+        # excluding the former drops them too. A 37% cut to a sport's
+        # publishable slate is a product decision, not a bug fix, so it is
+        # filed (R182) rather than shipped.
+        #
+        # What ships is the rule the measurement actually supports: a
+        # publishable pick must have AT LEAST ONE supporting chip with a
+        # positive weight. Picks resting ENTIRELY on weight-0 chips, live
+        # board:
+        #     NBA    0 of 2      NHL   0 of 2     NCAAF 0 of 51
+        #     NFL    0 of 14     NCAAB 2 of 43    TOTAL 2 of 112 (1.8%)
+        # Both NCAAB cases are single-chip picks at weight 0.000
+        # (Florida Int'l, Mt. St. Mary's), so this demotes those two and
+        # touches nothing else in any sport.
+        if win_chips and not any((getattr(c, 'weight', 0) or 0) > 0
+                                 for c in win_chips):
+            tier = 'COVERAGE'
+
         credible = False
         for chip in win_chips:
             t = (chip.tier or '').upper()
