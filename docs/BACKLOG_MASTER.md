@@ -5235,3 +5235,47 @@ conviction 0 is the exact shape of
 [[feedback_falsy_zero_invented_a_tier_and_a_confidence]] and any `|| default`
 downstream will invent a confidence number for it. Either carry a real
 conviction on a fade or carry NULL, not 0.
+
+### R175 · CLOSED 2026-11-06 as a NON-FINDING · there is no totals fade
+Andy said publish it. It does not survive the source that would publish it, and
+my morning +4.66pp was wrong. Three measurements of the same rule:
+
+    public_splits_v2, side derived, ALL sources   60-80  +4.66pp  n=1,253
+    public_splits_archive oc, side = pick_side    60-80  -2.11pp  n=598
+    public_splits_v2 oc ONLY, side derived        60-80  +1.00pp  n=380  SE 2.56
+
+The third is the only internally consistent one, and it says nothing: +1.00pp
+inside half an SE, no band structure (+1.71 / +1.07 / +1.40 / -1.10 across the
+four bands). So there is no public fade on totals, just as there is none on
+spreads (+0.01pp, n=2,751).
+
+CAUSE OF MY ERROR, and it is a new lesson rather than a repeat: oc's `pick_side`
+disagrees with oc's OWN ticket numbers on **152 of 970 games (84.3%
+agreement)**, and the sources disagree with each other about which side the
+public is on — cz agrees with oc **56.5%**, fr 61.7%, so 67.4%, sd 76.7%. I
+pooled them. Deriving a side from numbers defends against a mislabelled side
+WITHIN one consistent source and does nothing about pooling sources that mean
+different things by "side" ([[feedback_one_column_two_side_conventions]]).
+
+Nothing was wired. No new play class exists. The published record is untouched.
+
+### R188 · 🚨 The Fade publishes off a side label that is wrong 1 game in 6 (2026-11-06)
+`compute_fade_records.py` is LIVE and publishes ATS Fade picks using
+`public_splits_archive.pick_side`. Measured on totals rows where both readings
+exist: `pick_side` agrees with oc's own two `bets_pct` values on only **818 of
+970 games, 84.3%** — so ~1 published Fade pick in 6 may name the wrong side, on
+a user-facing surface carrying a graded record.
+
+Fix: take the public side from `public_splits_v2`'s two oc `bets_pct` values via
+`public_side.public_from_pair()` (numbers, not a label) instead of the archive
+column, then recompute the published record. NOT done tonight because it
+rewrites a published record — Andy's call. Note the spread-fade measurement that
+closed R175 used the derived side, so the live ATS record has never been
+recomputed on it.
+
+### Also noted 2026-11-06 · cz_bets_pct died on 11-04
+`public_splits_archive.cz_bets_pct` non-null counts by day: 1,554 (10-26), 824
+(10-31), 822 (11-03), 86 (11-04), **0 (11-05), 0 (11-06)**. cz is already
+excluded from The Fade on quality grounds (it reads `sharp_bets_pct` and lands
+on exactly 100.0 in 15.2% of rows), so nothing published depends on it — but
+anything that averages the four sources is now averaging three.
