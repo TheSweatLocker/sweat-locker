@@ -112,6 +112,43 @@ def nfl_key(game_date, away, home) -> str | None:
     return f"{str(game_date)[:10].replace('-', '')}_{a}_{h}"
 
 
+def ncaab_key(game_date, away, home) -> str | None:
+    """Rebuild line_history's NCAAB key: ncaab_20261106_Connecticut_Michigan.
+
+    == 2026-11-06 · WHY NCAAB WAS NEVER PRICED, ON ANY DATE ================
+    `jerry_reads.game_id` for NCAAB is the Odds-API 32-char hex
+    (013d1268942b6898eb89ee0a7d5c8d49, 56 of 56 rows on 11-06), while
+    `line_history.game_id` is this slug. Two namespaces that cannot join,
+    and only NFL had a key translation — so price_one reported "no quotes
+    for this game" for every NCAAB read and `price_american` was null on
+    0 of 126 reads across 11-05, 11-06 and 11-07. An unpriced read cannot
+    produce a priced receipt, cannot be graded for ROI or CLV, and cannot
+    qualify for the Dawg, which selects on price.
+
+    NO ALIAS LOOKUP, deliberately, unlike nfl_key. Measured over the live
+    board: of 56 distinct NCAAB game_ids in line_history, **56** are
+    reproduced exactly by (game_date, away_team, home_team) from
+    ncaab_game_context with nothing but space -> underscore. The 34
+    context rows that did NOT match have no line_history row under ANY
+    name (probed Troy, Northern_Colorado, Cal_Baptist, Arkansas_St,
+    Colorado_San_Diego, New_Mexico_St -> 0 rows each) — they are games
+    with no posted lines, not name failures. So a mascot strip or alias
+    pass would add exactly zero matches while risking naming a different
+    school, which is the documented NCAAB resolver trap
+    (feedback_prefix_strip_can_name_another_school). If a future miss IS
+    a name problem, route it through ncaab_team_resolver rather than
+    hand-rolling a strip here (feedback_a_blocklist_duplicating_a_lookup_table).
+
+    The date needs no offset: all 56 matched on ncaab_game_context's own
+    game_date, 0 at +/-1 day, so the ET/UTC split that caused R166 does
+    not reach this key.
+    """
+    if not away or not home or not game_date:
+        return None
+    return ('ncaab_%s_%s_%s' % (str(game_date)[:10].replace('-', ''),
+                                away, home)).replace(' ', '_')
+
+
 #: Pages of 1,000 captures to walk per sport, newest first. An NCAAF Saturday
 #: is ~44 games x 3 markets x 2 sides x ~10 books = 2,640 rows per capture
 #: cycle, so 40 pages covers roughly 15 cycles — enough to see every game on
@@ -321,6 +358,9 @@ def main():
             key = r['game_id']
             if sport == 'NFL' and c:
                 key = nfl_key(c['game_date'], c.get('away_team'), c.get('home_team')) or key
+            elif sport == 'NCAAB' and c:
+                key = ncaab_key(c['game_date'], c.get('away_team'),
+                                c.get('home_team')) or key
             q = price_one(grouped, key, r.get('call_market'), r.get('call_side'),
                           r.get('call_line'), r.get('call_text'))
             if q.get('price') is None:

@@ -623,6 +623,31 @@ jobs:
           cd mlb_pipeline
           python ncaab_resolve_primary_play.py
 
+      # ══ 2026-11-06 · NCAAB WAS NEVER PRICED, ON ANY DATE ══════════════
+      # price_picks runs per sport in the NBA, NCAAF, NFL and NHL pipelines
+      # and was missing here, so `jerry_reads.price_american` was null on
+      # 0 of 126 NCAAB reads across 11-05/06/07. Two causes, both fixed
+      # today: this step did not exist, and price_one could not have
+      # matched anyway because jerry_reads.game_id is the Odds-API hex
+      # while line_history.game_id is the ncaab_YYYYMMDD_Away_Home slug
+      # (see price_picks.ncaab_key). An unpriced read cannot produce a
+      # priced receipt, cannot be graded for ROI or CLV, and cannot
+      # qualify for the Dawg, which selects on price.
+      #
+      # Runs AFTER the 4-lens resolver so it prices the FINAL call_*,
+      # not a pick the resolver is about to move.
+      #
+      # Non-fatal: a pricing miss must not fail the slate.
+      - name: Price NCAAB jerry_reads
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "price_picks.py --sport NCAAB" python price_picks.py --sport NCAAB --write || true
+
       # ────── EXTERNAL PICKS AGGREGATION ──────
       - name: External source aggregation pull
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'

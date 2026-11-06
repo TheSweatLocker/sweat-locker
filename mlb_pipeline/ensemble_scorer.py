@@ -327,6 +327,34 @@ TIER_THRESHOLDS_BY_SPORT = {
 # signals carrying a measured hit rate on sample_n >= 30. Today it is 2.
 MAX_TIER_BY_SPORT = {'NBA': 'STRONG', 'NHL': 'STRONG', 'NCAAB': 'STRONG'}
 
+# == 2026-11-06 . A PER-MARKET CEILING, BECAUSE NCAAB ML WAS MEASURED ======
+# ncaab_game_context sets NCAAB_ML_TIER_CAP = 'COVERAGE' on every moneyline
+# it mints, on measured grounds (11-02, 4,981 NCAAB favourite-ML plays with a
+# close price and a final score, ROI at each row's own price):
+#
+#     price band          n     win%   breakeven   edge pp     ROI
+#     -100000..-1000    930   95.70%     95.78%     -0.08    -0.10%
+#       -1000..-500     573   86.04%     87.13%     -1.10    -1.22%
+#        -500..-300     769   77.89%     79.00%     -1.11    -1.41%
+#        -300..-250     390   70.26%     73.40%     -3.14    -4.29%
+#        -250..-200     501   69.26%     69.23%     +0.03    +0.01%
+#        -200..-150     853   60.38%     63.26%     -2.88    -4.44%
+#        -150..-100     959   53.49%     56.37%     -2.88    -5.08%
+#
+# NOT ONE BAND CLEARS BREAKEVEN, and the heavy end holds split-half by date.
+#
+# But ensemble_v2 overwrites primary_play AFTER that writer and never knew
+# about the cap, so on the 11-06 board 12 of 25 NCAAB moneylines carried
+# tier LEAN -- a publishable tier -- with `_ml_cap` null on all 25, i.e. the
+# cap had never run on any of them. Every one was a heavy favourite:
+# Kansas -20000, Marquette and Iowa St. -18182, Texas A&M -13333,
+# Wisconsin / Iowa / Virginia / Baylor -10000, North Carolina -5833,
+# Purdue -4500, Mississippi -2800, Oregon -2100. They became newly visible
+# the same day because price_picks could finally join NCAAB to line_history
+# (see ncaab_key), which is exactly when an unenforced cap starts costing
+# money rather than sitting latent.
+MAX_TIER_BY_SPORT_MARKET = {('NCAAB', 'ml'): 'COVERAGE'}
+
 #: sports whose bars are percentile-derived rather than absolute
 RELATIVE_BAR_SPORTS = frozenset(TIER_THRESHOLDS_BY_SPORT)
 
@@ -2849,6 +2877,11 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     _sport_u = str(sport or '').upper()
     _bars = bars_for(_sport_u)
     _ceiling = MAX_TIER_BY_SPORT.get(_sport_u)
+    # A per-market ceiling overrides the sport's when it is stricter.
+    _mkt_ceiling = MAX_TIER_BY_SPORT_MARKET.get((_sport_u, str(market or '').lower()))
+    if _mkt_ceiling and (not _ceiling
+                         or _TIER_RANK[_mkt_ceiling] < _TIER_RANK[_ceiling]):
+        _ceiling = _mkt_ceiling
     tier = 'LEAN'
     for candidate_tier in ('PRIME', 'STRONG'):
         if _ceiling and _TIER_RANK[candidate_tier] > _TIER_RANK[_ceiling]:
@@ -2895,6 +2928,19 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                 credible = True; break
         if not credible:
             tier = 'COVERAGE'
+
+    # == 2026-11-06 . CLAMP THE FLOOR TOO, NOT JUST THE CANDIDATES =====
+    # The ceiling test above sits INSIDE the PRIME/STRONG loop, so it can
+    # only veto a promotion. `tier = 'LEAN'` is the default and was never
+    # compared against the ceiling -- so a ceiling below LEAN could not be
+    # expressed, and MAX_TIER_BY_SPORT_MARKET's 'COVERAGE' would have been
+    # silently ignored. A gate has to fail CLOSED
+    # (feedback_a_display_label_became_a_gating_tier).
+    if _ceiling and _TIER_RANK.get(tier, 0) > _TIER_RANK[_ceiling]:
+        _was = tier
+        tier = _ceiling
+        print(f'    [TIER CEILING] {market}: {_was} -> {tier} '
+              f'({_sport_u}/{str(market or "").lower()} ceiling)')
 
     # == 2026-10-28 . PRICE-PROXY GATE (see _is_price_proxy) ==========
     # Capping the tier is not enough here: NBA's picks are ALREADY

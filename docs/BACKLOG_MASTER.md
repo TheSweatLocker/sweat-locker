@@ -5065,3 +5065,38 @@ three that graded did so via incidental `surface=game_read` receipts and the
 fourth (`East Texas A&M ML +136`) stayed Pending through a win. Settled by hand
 today. Either cut a `sweat_card` receipt per card item, or let the walker fall
 back to that sport's results table.
+
+### R181 · NCAAB forward-slate reads are written with a fabricated conviction 0 (2026-11-06)
+Reads generate on a 5-day horizon; the ensemble only has `primary_play` for the
+near dates, so `jerry_reads_dual_write.py:853` (`parsed.get('conviction') or 0`)
+stamps **0**. 11-07 holds 27 reads all at 0; the 19 from 11-03 are still 0 three
+days later, so it does not reliably self-heal. The remaining 16 on 11-06 are
+mostly honest (15 carry `call_market = None`). A read that has not been scored
+should be NULL, not 0 — 0 is a score, and a display zero becoming a gating value
+is the documented falsy-zero trap. `or 0` is on the shared cross-sport
+dual-write path, so this is a schema + call-site question, not a one-liner.
+
+### R182 · the ensemble credibility gate ignores measured weight (2026-11-06)
+The LEAN credibility check in `_score_market` accepts a chip on `tier in
+(VALIDATED, DISCOVERY)` **or `n >= 15`**. The 11-06 `Wisconsin ML` passed on
+chips at **n=112 and n=110 with `weight: 0.0` and `contribution: 0.0`**. A
+signal measured at n=112 and weighted zero is the strongest available evidence
+of NO edge, and it is currently certifying picks as credible. Require weight > 0,
+or exclude zero-weight chips from the credibility test. Cross-sport — measure
+the demotion count per sport before shipping
+([[feedback_unmeasured_signal_must_not_outweigh_measured]]).
+
+### R183 · ensemble_v2 discards a PRIME total for a 0.0-score ML and keeps the total prose (2026-11-06)
+On 11-06, `_pre_ensemble` was `{tier: PRIME, type: total, label: "Under 155.5"}`
+and the ensemble replaced it with `Wisconsin ML`, `score: 0.0`, every source at
+`weight: 0.0`. Worse, `sub` still read *"2/3 total lens lean, 12.6pt edge"* —
+total reasoning under an ML badge, the exact badge-vs-prose contradiction that
+`defer_call_to_ensemble` own docstring calls "kills trust". Same structural
+shape as [[project_favourite_bias_was_the_market_chooser_1029]]. Capping the ML
+tier (done 11-06) stops it publishing but does NOT stop it being the chosen
+market, so 25 games read as an unpublishable ML while a PRIME total sat there.
+
+### R184 · NCAAB has no primary_play repair path (2026-11-06)
+`recompute_ensemble_primary_play.py --sport` accepts only NBA and NHL, so a bad
+or stale NCAAB `primary_play` can only be fixed by re-running the whole
+`ncaab_game_context` job. Add NCAAB to `SPORTS`.
