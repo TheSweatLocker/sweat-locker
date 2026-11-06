@@ -5016,3 +5016,52 @@ BELOW the 52.38% −110 breakeven — so the SELECTION is established and the
 PROFITABILITY at −110 is not.
 
 Needs Andy's decision: this would create a new class of published play.
+
+### R176 · the Dawg is dark and its replacement was never scheduled (2026-11-06)
+`daily_dawg` max `game_date` = **2026-10-28**. The app renders the surface
+(`get_todays_dawg`, `v_dawg_track_record_by_tier`, `daily_dawg`), so it has read
+noPick for 9 days. `mlb_pipeline.yml:1189` runs `generate_dawg_of_day.py`, which
+is MLB-only (MLB ML odds, MLB run line, `_LR_MODEL_MLB_ML`, `mlb_game_context`);
+MLB ended, so it writes nothing. `generate_dawg_multisport.py`, written 10-28 as
+the cross-sport replacement, is in **no workflow** — the single NHL row it ever
+wrote came from a manual run.
+
+Do NOT just schedule it. Dry-run for 11-06 returns exactly one candidate,
+`NCAAF South Florida ML +112 conv 79`, which is already that day's POTD **and**
+the Sweat Card top pick — one correlated bet published three times, inflating
+every denominator. Needs a de-dup rule against POTD/card first. Andy's call.
+
+### R177 · the fade is double-counted and filed under surface=sweat_card (2026-11-06)
+11-05 `public_receipts` holds `Over 48.5` (JAX @ BAL) twice: id 4920318
+`surface=fade src=line_snapshot` and id 4920319 `surface=sweat_card
+src=jerry_cache.fade`. Same game_id, label, price and result. So the Sweat Card
+record contains a play that was never on the card, while the 4 picks that WERE
+on it got no `sweat_card` receipt. Card-vs-receipt counts disagree both ways
+(10-30: 5 card / 14 receipts; 11-05: 4 card / 1 receipt). Neither figure is the
+card's record. Fix the capture to file the fade under `fade` only, and to cut a
+receipt per card item — which is also what blocks R-item grading below.
+
+### R178 · NCAAB forward-slate reads get conviction 0 and are never priced (2026-11-06)
+All **42 of 42** NCAAB reads for 11-06 carry `conviction = 0`; `price_american`
+is null on **0 of 85** across 11-05 and 11-06. Both days were written by the
+SAME run (21:16:24 vs 21:16:27 on 11-05): the current slate got real conviction
+(51-54), the forward slate got 0. 11-03's 19 reads are still 0 days later, so
+the forward slate is not reliably rescored. NCAAB is 42 of 59 games on an
+average night now and can reach no tier gate — `conviction = 0` is also the
+falsy-zero shape from `feedback_falsy_zero_invented_a_tier_and_a_confidence`.
+Unpriced reads additionally cannot produce a priced receipt.
+
+### R179 · The Sharp is degraded far below its 15-pick target (2026-11-06)
+No `sharp_card_2026-11-06` row at 08:27 ET. Beyond today: against a
+`SHARP_CARD_TARGET_MIN` of 15, the slate has run 0-7 items for twelve straight
+days — **0 items** on 11-01 and 11-03, 2 on 11-05 — and has never reached 15 in
+the window. Either the target is wrong or the composition gate is starving it;
+decide which, because a 2-item "15-pick slate" is not the product.
+
+### R180 · unified card picks get no receipt, so they can only be graded by luck (2026-11-06)
+`_resolve_sweat_card_top8`'s unified walker inherits grades only from
+`surface=sweat_card` receipts. Card picks do not get one (R177), so on 11-05 the
+three that graded did so via incidental `surface=game_read` receipts and the
+fourth (`East Texas A&M ML +136`) stayed Pending through a win. Settled by hand
+today. Either cut a `sweat_card` receipt per card item, or let the walker fall
+back to that sport's results table.

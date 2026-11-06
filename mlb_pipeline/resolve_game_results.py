@@ -1031,7 +1031,19 @@ def _resolve_sweat_card_top8(start_date, end_date):
                 print(f"  ⚠️  sweat_card {cache_key} has malformed JSON ({type(e).__name__}: {e}) — skipped")
                 continue
         top_8 = data.get('top_8') or []
-        if not top_8:
+        # 2026-11-06: this used to be `if not top_8: continue`, which bails
+        # out BEFORE the unified_top_picks walker at the bottom of the loop.
+        # The `needs_walk` gate below was already fixed on 09-21 to consider
+        # both lists, but this earlier gate still short-circuited the whole
+        # card whenever top_8 happened to be empty -- so that fix never ran
+        # on the one shape it was written for. On 11-05 top_8 was [] while
+        # unified_top_picks held 4 picks, and `East Texas A&M ML` (+136) sat
+        # Pending forever even though ncaab_game_results had it at 72-71, a
+        # WIN: yesterday's card read 2-1 with one pending instead of 3-1.
+        # This matters more now that the floor cap can legitimately produce
+        # top_8 == [] on a thin night, which is exactly when a stranded
+        # grade is least likely to be noticed.
+        if not top_8 and not (data.get('unified_top_picks') or []):
             continue
 
         # Re-process when ANY pick is Pending OR Push. The Push re-check is
