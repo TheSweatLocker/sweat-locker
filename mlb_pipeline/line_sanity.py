@@ -62,14 +62,54 @@ def _f(v) -> Optional[float]:
         return None
 
 
-def validate_total(sport: str, new_total, prior_total=None
+#: a consensus must be this many books, and this share of the books quoting,
+#: before it is allowed to overrule the move limit. Three books cannot all
+#: publish the same alt line by accident; one book can.
+_CONSENSUS_MIN_BOOKS = 3
+_CONSENSUS_MIN_SHARE = 0.5
+
+
+def validate_total(sport: str, new_total, prior_total=None,
+                   consensus=None
                    ) -> Tuple[Optional[float], Optional[str]]:
     """-> (total_to_store, rejection_reason_or_None).
 
     Returns the new total when it is credible. When it is not, returns the
     PRIOR total (which may be None if there isn't one) plus a reason.
-    Unknown sports pass through unchanged — a missing rule must never be
+    Unknown sports pass through unchanged - a missing rule must never be
     able to silently drop a market.
+
+    `consensus` is the market's own answer, as (line, books_at_line,
+    books_quoting). When the incoming total IS that consensus, it is
+    accepted whatever the move, and the reason says so.
+
+    ══ 2026-11-05 · WHY THE CONSENSUS ESCAPE HATCH EXISTS ═════════════
+    The move rule had no way out, and it is keyed on the value it already
+    stored, so ONE rejection froze the column forever: every later pull is
+    still >max_move from the kept prior, so it is rejected again for the
+    same reason, every run, until the game is played.
+
+    2026-11-05 JAX @ BAL is the proof. BAL lost Tyler Huntley and the total
+    went 49.5 -> 39.5, a 9-point move that is real: 101 of 132 quotes
+    captured after 20:00 UTC sat at 39.5, and it had been 39.5 at every
+    sample from 12:00 on. The guard called it a bad feed and kept 48.5. The
+    Sweat Card then published `Over 48.5` at -110 as its RANK 1 pick - a
+    line no book posted all day, 8.5 points off the market. Every model
+    lens inherited it too (projected_total 49.17, v3 49.17, v4 46.24,
+    mc_p_over_line 0.714), while the one lens NOT fed by the column, the
+    Panel, sat at 39.4 and was right.
+
+    Blast radius, measured the same night: of 15 forward NFL games, 14 held
+    a stored total within 0.5 of the market. The guard fires rarely - and
+    when it fires on a real move it never lets go. The spread on that same
+    row was correct (-9.5, matching 82 of 132 quotes), because nothing
+    guards the spread.
+
+    A bad feed is one book, or one capture. A real move is most of the
+    books, and it persists. That is the distinction the rule was missing:
+    it compared the new value against YESTERDAY instead of against the
+    OTHER BOOKS. ([[feedback_consensus_line_must_be_posted]],
+    [[project_nfl_stale_line_and_inverted_weights_1030]])
     """
     n = _f(new_total)
     p = _f(prior_total)
@@ -85,10 +125,70 @@ def validate_total(sport: str, new_total, prior_total=None
     if p is not None:
         move = abs(n - p)
         if move > max_move:
+            c_line, c_books, c_total = _consensus(consensus)
+            _strong = (c_line is not None
+                       and lo <= c_line <= hi
+                       and c_books >= _CONSENSUS_MIN_BOOKS
+                       and c_books >= _CONSENSUS_MIN_SHARE * max(1, c_total))
+            if _strong and abs(c_line - n) < 0.01:
+                return n, (f'total moved {n - p:+.1f} ({p} -> {n}), past the '
+                           f'{max_move} point {sport} limit, but {c_books} of '
+                           f'{c_total} books post {n} - ACCEPTED as a real '
+                           f'move, not a bad feed')
+            if _strong:
+                # The incoming quote is ONE book and it disagrees with its
+                # own market, so it is not trusted - but neither is the
+                # prior, which the market has left behind. Store what the
+                # books actually post. Keeping `p` here is what froze
+                # JAX@BAL: the caller's single book said 39.5, the market
+                # said 40.0, and requiring an exact match sent us back to a
+                # stale 48.5 that NO book posted. The guard exists to stop
+                # us storing a number nobody quotes; the consensus is the
+                # one number we know is quoted
+                # ([[feedback_consensus_line_must_be_posted]]).
+                return c_line, (
+                    f'total moved {n - p:+.1f} ({p} -> {n}), past the '
+                    f'{max_move} point {sport} limit, and the incoming quote '
+                    f'is not the market either - stored the CONSENSUS {c_line} '
+                    f'({c_books} of {c_total} books) instead of the stale {p}')
             return p, (f'total moved {n - p:+.1f} ({p} -> {n}), beyond the '
-                       f'{max_move} point {sport} limit - almost certainly a '
-                       f'bad feed (alt line or wrong game); kept {p}')
+                       f'{max_move} point {sport} limit and not corroborated '
+                       f'by the book consensus ({c_books} of {c_total} at '
+                       f'{c_line}) - almost certainly a bad feed (alt line '
+                       f'or wrong game); kept {p}')
     return n, None
+
+
+def _consensus(consensus) -> Tuple[Optional[float], int, int]:
+    """(line, books_at_line, books_quoting) from a caller-supplied tuple."""
+    if not consensus:
+        return None, 0, 0
+    try:
+        line, books, quoting = consensus
+        return _f(line), int(books or 0), int(quoting or 0)
+    except (TypeError, ValueError):
+        return None, 0, 0
+
+
+def consensus_from_outcomes(books_points) -> Tuple[Optional[float], int, int]:
+    """Modal line across per-book points -> (line, books_at_line, quoting).
+
+    `books_points` is any iterable of each book's posted number for ONE
+    side of ONE market. Ties go to the line nearer the middle of the
+    quotes, so an even split cannot invent a number no book posts
+    ([[feedback_consensus_line_must_be_posted]]).
+    """
+    vals = [x for x in (_f(v) for v in (books_points or [])) if x is not None]
+    if not vals:
+        return None, 0, 0
+    counts: dict = {}
+    for v in vals:
+        counts[v] = counts.get(v, 0) + 1
+    best = max(counts.values())
+    tied = sorted(v for v, c in counts.items() if c == best)
+    mid = sorted(vals)[len(vals) // 2]
+    line = min(tied, key=lambda v: (abs(v - mid), v))
+    return line, counts[line], len(vals)
 
 
 def total_disagrees_with_models(total, model_totals, tolerance: float = 5.0

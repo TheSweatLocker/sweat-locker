@@ -936,12 +936,33 @@ def _compose_non_mlb_props(today: str) -> list[dict]:
         rows = _get(f'{SB}/rest/v1/{tbl}',
                     params={'select': 'id,player_name,matchup,prop_type,'
                                       'prop_line,direction,tier,conviction,'
-                                      'book_over_odds,book_under_odds,game_id',
-                            'game_date': f'eq.{today}'})
+                                      'book_over_odds,book_under_odds,game_id,'
+                                      'signals',
+                            'game_date': f'eq.{today}',
+                            'order': 'id.asc'})
         if not rows:
             print(f'  [sharp] {sport} props: 0 rows from {tbl} for {today}')
             continue
-        picked = eligible(sport, rows)
+        # ══ 2026-11-05 · THIS PATH SKIPPED THE PUBLISHABILITY CHOKEPOINT ══
+        # prop_publishability's own docstring says every composer for every
+        # surface must route props through it, and this one never did: it
+        # went straight from `eligible()` to a published pick, so a live
+        # _coverage_kill_gate or an LR tier drift could not stop it. The
+        # family ban was reachable only because `eligible` happens to sit
+        # downstream of nothing. A guard that one of eight sources skips is
+        # not a guard ([[feedback_guard_belongs_at_the_chokepoint]]).
+        _kept = []
+        for _r in rows:
+            _ok, _why_drop = _is_prop_publishable(dict(_r, sport=sport))
+            if not _ok:
+                _kept.append(None)
+                continue
+            _kept.append(_r)
+        _dropped = sum(1 for k in _kept if k is None)
+        if _dropped:
+            print(f'  [sharp] {sport} props: {_dropped} of {len(rows)} '
+                  f'refused by prop_publishability')
+        picked = eligible(sport, [k for k in _kept if k is not None])
         if not picked:
             print(f'  [sharp] {sport} props: {len(rows)} rows, no '
                   f'allowlisted cell (measured, not an oversight)')
@@ -950,6 +971,8 @@ def _compose_non_mlb_props(today: str) -> list[dict]:
             side = str(r.get('direction') or '').upper()
             line = r.get('prop_line')
             odds = r.get('_resolved_odds')
+            _row_tier = (_effective_prop_tier(r) or r.get('tier')
+                         or 'LEAN').upper()
             out.append({
                 'sport': sport,
                 'market': 'prop',
@@ -957,17 +980,30 @@ def _compose_non_mlb_props(today: str) -> list[dict]:
                          f"{r.get('prop_type')}"),
                 'game': r.get('matchup'),
                 'game_id': r.get('game_id'),
-                # The cell's record IS the tier here. It is capped at STRONG
-                # because no non-MLB prop cell has been measured at PRIME,
-                # and a PRIME badge on an unmeasured cell is a claim.
-                'tier': 'STRONG',
+                # ══ 2026-11-05 · THE CELL'S RECORD IS NOT A TIER ═════════
+                # This was `'tier': 'STRONG'`, hardcoded, with the row's real
+                # tier pushed down into the `why` string. So on 2026-11-05
+                # The Sharp displayed STRONG and staked 2.0u on two rows the
+                # DB holds at LEAN / conviction 50, whose cell record is
+                # +5.2% - a LEAN-grade number. A badge the data does not
+                # support is the 9/5 bug this module exists to stop: "Sharp
+                # card marketed 8 LEAN props as PRIME; all 8 lost."
+                #
+                # The tier shown is now the row's real tier and the stake
+                # comes from its band. What the cell measurement buys is not
+                # a bigger badge, it is ELIGIBILITY - `cell_measured` is an
+                # explicit, named exemption carried through the tier gates,
+                # never a label that sneaks past a whitelist
+                # ([[feedback_a_display_label_became_a_gating_tier]]).
+                'tier': _row_tier,
+                'cell_measured': True,
                 'why': (f"measured cell {r.get('prop_type')} / "
-                        f"{str(r.get('tier')).upper()}: ROI "
+                        f"{_row_tier}: ROI "
                         f"{r.get('_cell_roi'):+.1f}% on n={r.get('_cell_n')}"),
                 'odds': odds,
                 'line': line,
                 'player_name': r.get('player_name'),
-                'units': _TIER_UNITS.get('STRONG', 2.0),
+                'units': _units_for_tier_conv(_row_tier, r.get('conviction')),
                 'id': r.get('id'),
                 'source_table': r.get('_source_table'),
                 'cell_roi': r.get('_cell_roi'),
@@ -2934,8 +2970,31 @@ def run(dry_run: bool = False, force: bool = False):
     # already-filtered pool.
     if cold_state['state'] == 'cold':
         pre_cold = len(all_items)
-        all_items = [it for it in all_items if str(it.get('tier','')).upper() in COLD_TIER_FILTER]
-        print(f'  🥶 COLD-MODE filter: {pre_cold} → {len(all_items)} (dropped LEAN tier)')
+        # ══ 2026-11-05 · COLD MODE DROPS A TIER WORD, NOT A MEASUREMENT ══
+        # `cell_measured` rows are allowlisted on their own graded record at
+        # their own price - n>=30, ROI>0, positive in BOTH date halves - and
+        # the tier word on those rows is the ROW's tier, which is measured
+        # INVERTED on football props (see FOOTBALL_INCLUDE_LEAN above: NFL rl
+        # STRONG -60.4% vs LEAN +14.6%). Dropping the only measured-positive
+        # object on the board because its row label reads LEAN is tier
+        # superstition, and it would have left tonight's card holding nothing
+        # but a floor fill. The exemption is named and carried on the item so
+        # it is auditable, not inferred from a label.
+        _kept_cold, _dropped_cold = [], 0
+        for it in all_items:
+            if str(it.get('tier', '')).upper() in COLD_TIER_FILTER:
+                _kept_cold.append(it)
+            elif it.get('cell_measured'):
+                _kept_cold.append(it)
+                print(f'  🥶 cold-mode exempt (cell-measured): '
+                      f'{str(it.get("pick"))[:40]} '
+                      f'[{it.get("tier")}, cell ROI {it.get("cell_roi")}% '
+                      f'n={it.get("cell_n")}]')
+            else:
+                _dropped_cold += 1
+        all_items = _kept_cold
+        print(f'  🥶 COLD-MODE filter: {pre_cold} → {len(all_items)} '
+              f'(dropped {_dropped_cold} below {sorted(COLD_TIER_FILTER)})')
 
     # Effective cap based on cold state
     _effective_cap = COLD_ITEM_CAP if cold_state['state'] == 'cold' else SHARP_CARD_ITEM_CAP
@@ -3002,6 +3061,24 @@ def run(dry_run: bool = False, force: bool = False):
         for _c in _floor_pool:
             _k = (str(_c.get('sport') or '').upper(), str(_c.get('game_id')))
             if _k in _have:
+                continue
+            # ══ 2026-11-05 · THE FLOOR FILL UNDID THE COLD FILTER ═══════
+            # The cold filter runs ABOVE this block, so on a cold night the
+            # card dropped every LEAN and then this loop refilled it from a
+            # pool that "already survived every guard except the tier gate" -
+            # i.e. from BELOW the tier it had just raised. 2026-11-05 is the
+            # proof: cold mode (10-12 L7) dropped LEAN, then the floor
+            # injected `Illinois -30.5`, COVERAGE, conviction None, 1.0u.
+            # Tightening the top and loosening the bottom in the same run
+            # leaves the card looser than not being cold at all. A gate has
+            # to fail CLOSED ([[feedback_a_display_label_became_a_gating_tier]],
+            # [[feedback_gate_belongs_at_the_chokepoint]]).
+            if cold_state['state'] == 'cold' and not (
+                    str(_c.get('tier') or '').upper() in COLD_TIER_FILTER
+                    or _c.get('cell_measured')):
+                print(f'  = sharp floor: refused {str(_c.get("pick"))[:34]!r} '
+                      f'— {_c.get("tier") or "no tier"} is below '
+                      f'{sorted(COLD_TIER_FILTER)} and the card is COLD')
                 continue
             if _ml_trap(_c):
                 print(f'  = sharp floor: refused {str(_c.get("pick"))[:34]!r} '

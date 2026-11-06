@@ -1514,6 +1514,28 @@ def _pick_book(event: dict, market_key: str) -> dict:
     return {}
 
 
+def _total_consensus(event: dict):
+    """(line, books_at_line, books_quoting) for the Over across ALL books.
+
+    Every book's posted total, not just the first one `_pick_book` finds.
+    Fed to line_sanity.validate_total so a big move can be corroborated by
+    the market instead of being judged against our own stored number.
+    """
+    pts = []
+    for book in event.get('bookmakers', []) or []:
+        for m in book.get('markets', []) or []:
+            if m.get('key') != 'totals':
+                continue
+            for o in m.get('outcomes') or []:
+                if o.get('name') == 'Over' and o.get('point') is not None:
+                    pts.append(o.get('point'))
+    try:
+        from line_sanity import consensus_from_outcomes
+        return consensus_from_outcomes(pts)
+    except ImportError:
+        return (None, 0, 0)
+
+
 def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 'current',
                team_def_stats: Optional[dict] = None,
                blend_meta: Optional[dict] = None) -> Optional[dict]:
@@ -1619,6 +1641,15 @@ def build_row(event: dict, aliases: dict, team_stats: dict, stats_source: str = 
     for o in tot.get('outcomes') or []:
         if o['name'] == 'Over':
             row['close_total'] = _f(o.get('point'))
+
+    # ══ 2026-11-05 · CARRY THE BOOK CONSENSUS TO THE SANITY GUARD ═════
+    # `_pick_book` returns the FIRST book quoting the market, so close_total
+    # is one book's number. That is fine as the stored line, but it leaves
+    # the sanity guard below with nothing to check a big move against except
+    # the value it stored last time - which is how it froze JAX@BAL at 48.5
+    # through a real move to 39.5 (see line_sanity.validate_total). The
+    # other books are already in hand here, so the consensus costs no query.
+    row['_total_consensus'] = _total_consensus(event)
 
     ml = _pick_book(event, 'h2h')
     for o in ml.get('outcomes') or []:
@@ -2110,13 +2141,23 @@ def upsert_context(rows: list, dry_run: bool = False) -> int:
         from line_sanity import validate_total
         for _r2 in rows:
             _prior = (existing_opens.get(_r2.get('game_id')) or {}).get('close_total')
-            _kept, _why = validate_total('NFL', _r2.get('close_total'), _prior)
+            _cons = _r2.pop('_total_consensus', None)
+            _kept, _why = validate_total('NFL', _r2.get('close_total'), _prior,
+                                         consensus=_cons)
             if _why:
-                print(f"  ⚠ close_total REJECTED {_r2.get('away_team')}@"
+                # The reason is printed whether the move was kept or
+                # overruled - an ACCEPTED 9-point move is exactly as worth
+                # seeing in the log as a refused one.
+                print(f"  ⚠ close_total {_r2.get('away_team')}@"
                       f"{_r2.get('home_team')}: {_why}")
                 _r2['close_total'] = _kept
     except ImportError:
         pass        # validator absent — ingest unchanged rather than blocked
+    finally:
+        # Never let the private key reach the upsert: an unknown column is
+        # a PostgREST 400 for the whole batch.
+        for _r3 in rows:
+            _r3.pop('_total_consensus', None)
 
     # ── 2026-09-19 THURSDAY PICK LOCK ───────────────────────────────────
     # Andy: "we lock it Thursday and no changes unless something

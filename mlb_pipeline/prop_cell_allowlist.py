@@ -68,19 +68,74 @@ move the numbers with it. A cell listed here without its record alongside is
 from __future__ import annotations
 
 #: (prop_type, tier) -> (hit_pct, roi_pct, n, early_roi, late_roi)
-#: Measured 2026-11-01. ROI at each row's own price. All clear n>=30,
-#: ROI>0, and positive in both date halves.
+#: Re-measured 2026-11-05. ROI at each row's own price, in-band only.
+#:
+#: RULE 4, added 2026-11-05: the cell's EDGE must clear ONE standard error
+#: of its own hit rate. Rules 1-3 (n>=30, ROI>0, both halves positive) have
+#: no magnitude floor, so "ROI>0" admitted a cell at +0.67% on n=931 whose
+#: edge over break-even was +0.24pp against an SE of 1.63pp - noise, about to
+#: be published as a Sharp play at 1u. Rule 4 is a test, not a taste:
+#:
+#:   edge_pp = hit% - mean(break-even% at each row's own price)
+#:   SE_pp   = 100 * sqrt(p(1-p)/n)
+#:   admit only if edge_pp >= SE_pp
+#:
+#:   cell                             n    edge_pp   SE_pp   edge/SE
+#:   NFL pass_attempts_under LIGHT    52    +8.88     6.75    +1.32  keep
+#:   NFL rush_attempts_under STRONG   58    +7.86     6.42    +1.22  keep
+#:   NFL reception_yds_over  LEAN    366    +3.33     2.59    +1.28  keep
+#:   NFL rush_yds_under      STRONG   63    +4.09     6.23    +0.66  DROP
+#:   NBA pra_under           LEAN    931    +0.24     1.63    +0.15  DROP
+#:
+#: Stated plainly because the bar is deliberately ONE SE and not 1.96:
+#: NOTHING in this table clears 95%. At n=366 a cell needs ~5pp of edge to,
+#: and the best cell here has 3.3pp. These are point estimates that lean
+#: positive, sized at 1u, and they are not to be described as proven edges
+#: ([[feedback_sample_size_with_pct]], [[feedback_signal_needs_a_direction_control]]).
+# ══ 2026-11-05 · RE-MEASURED. TWO CELLS NO LONGER CLEAR THEIR OWN RULE ══
+# The table below said "Measured 2026-11-01" and the docstring says re-measure
+# before editing. Four days on, two cells fail the three rules they were
+# admitted under - and one of them was on tonight's card before this check:
+#
+#   cell                          11-01                NOW (date-median split)
+#   NBA  ast_under   LEAN   n=538 +7.2% (+10.8/+2.5)   n=691 +3.00% (+8.12/-2.10)
+#   NFL  receptions_under STRONG n=196 +7.9% (+3.1/+15.8) n=201 +7.09% (-0.09/+14.20)
+#
+# Both are REMOVED. ast_under's late half has gone negative on n=346 - the
+# whole +3.00% now comes from the early half, which is the signature of a
+# cell that has stopped working, not of one with a thin edge. receptions_under
+# never had a positive early half once the split was recomputed on its own
+# dates; +7.9% was one good half carrying a flat one.
+#
+# NBA pra_under is KEPT but is on notice: it passes the letter of the rule at
+# n=931 +0.67% with a late half of +0.05%, which is zero. It stays only
+# because the rule is the rule and deleting on top of a failed-rule removal
+# would be a judgment call dressed as a measurement. It should not be sized
+# as an edge ([[feedback_sample_size_with_pct]]).
+#
+# The three NFL cells kept all hold on fresh numbers, and the one live on
+# 2026-11-05 is the steadiest of them:
+#   pass_attempts_under LIGHT   n=52  +16.57%  (+8.41/+24.74)
+#   rush_attempts_under STRONG  n=58  +15.30%  (+5.17/+25.43)
+#   rush_yds_under      STRONG  n=63   +7.55%  (+3.62/+11.36)
+#   reception_yds_over  LEAN    n=366  +6.20%  (+1.99/+10.41)
 ALLOWLIST: dict[str, dict[tuple[str, str], tuple[float, float, int, float, float]]] = {
     'NFL': {
-        ('pass_attempts_under', 'LIGHT'):  (62.5, +18.4,  48, +29.5, +14.3),
-        ('rush_attempts_under', 'STRONG'): (61.4, +17.3,  57,  +4.7, +32.4),
-        ('receptions_under',    'STRONG'): (57.1,  +7.9, 196,  +3.1, +15.8),
-        ('rush_yds_under',      'STRONG'): (57.1,  +7.6,  63,  +1.1, +12.7),
-        ('reception_yds_over',  'LEAN'):   (55.8,  +5.2, 355,  +5.1,  +5.3),
+        ('pass_attempts_under', 'LIGHT'):  (61.5, +16.6,  52,  +8.4, +24.7),
+        ('rush_attempts_under', 'STRONG'): (60.3, +15.3,  58,  +5.2, +25.4),
+        ('reception_yds_over',  'LEAN'):   (56.3,  +6.2, 366,  +2.0, +10.4),
+        # REMOVED 2026-11-05: ('receptions_under', 'STRONG') - early half
+        # -0.09% on its own date-median split. Was (57.1, +7.9, 196, +3.1, +15.8).
+        # REMOVED 2026-11-05: ('rush_yds_under', 'STRONG') - rule 4, edge
+        # +4.09pp against SE 6.23pp (edge/SE +0.66). Was (57.1, +7.6, 63, +1.1, +12.7).
     },
     'NBA': {
-        ('ast_under', 'LEAN'): (60.0, +7.2, 538, +10.8, +2.5),
-        ('pra_under', 'LEAN'): (55.0, +3.0, 733,  +4.8, +0.2),
+        # REMOVED 2026-11-05: ('ast_under', 'LEAN') - late half -2.10% on
+        # n=346. Was (60.0, +7.2, 538, +10.8, +2.5).
+        # REMOVED 2026-11-05: ('pra_under', 'LEAN') - rule 4, edge +0.24pp
+        # against SE 1.63pp (edge/SE +0.15). Was (55.0, +3.0, 733, +4.8, +0.2).
+        # NBA now has NO allowlisted cell. That is a measurement, not an
+        # oversight: both cells it ever had are gone on their own numbers.
     },
     #: deliberately empty — see the docstring. Do not add an NHL cell
     #: without a fresh measurement that clears all three rules.
@@ -149,7 +204,32 @@ def eligible(sport, rows, max_per_sport=MAX_PER_SPORT):
             continue
         hit, roi, n, _e, _l = cell
         out.append((roi, n, o, r))
-    out.sort(key=lambda z: (-z[0], -z[1]))
+    # ══ 2026-11-05 · A TIE ON THE CELL FELL THROUGH TO ROW ORDER ════
+    # Every row inside one cell shares that cell's (roi, n), so this sort was
+    # a TOTAL tie and Python's stability handed the decision to whatever order
+    # PostgREST happened to return - which the caller never orders. On
+    # 2026-11-05 the NFL board held five eligible ('reception_yds_over',
+    # 'LEAN') rows and The Sharp took Mark Andrews and Josh Cameron, not
+    # because they ranked but because they came back first
+    # ([[feedback_unordered_data_zero_picks_a_vintage]]).
+    #
+    # There is no MEASURED way to rank rows WITHIN a cell. Both candidate
+    # keys were tested on graded rows at stored prices and neither is usable:
+    #
+    #   price     reception_yds_over LEAN n=366 - cheaper half +3.4pp edge vs
+    #             juicier half +3.2pp. FLAT. The other four cells disagree on
+    #             direction (3 favour juicier, 1 cheaper) on n=25..102.
+    #   conviction same five cells: 3 favour LOW conviction, 2 favour HIGH.
+    #             No rule ([[feedback_signal_needs_a_direction_control]]).
+    #   lookback  player_l*_hit_count cannot be backtested AT ALL -
+    #             player_lookback_updated_at is stamped AFTER the game date
+    #             (10-25 game -> 10-28 stamp), so historical values contain
+    #             the result. A leak, not a feature.
+    #
+    # So `id` breaks the tie: still arbitrary, but REPRODUCIBLE, which row
+    # order was not. It is deliberately not dressed up as an edge. If a
+    # within-cell ranking is ever measured, it belongs here with its numbers.
+    out.sort(key=lambda z: (-z[0], -z[1], int(z[3].get('id') or 0)))
     picked, seen = [], set()
     for roi, n, o, r in out:
         nm = str(r.get('player_name') or '').strip().lower()

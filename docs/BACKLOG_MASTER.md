@@ -4807,3 +4807,32 @@ the column is unpopulated and anything joining it reads no result.
   band's hit rate — now returns 0.0, so they sort below anything scored
 * the card floor fill published picks whose own subtitle stated a negative
   edge — now refused, replayed over tonight's board (6 refused of 15)
+
+### R146 · NBA prop conviction is 0 on every row while 54 carry tier LEAN (2026-11-05)
+348 rows for 2026-11-05, `conviction` 0 on all 348, `tier` LEAN on 54. A tier
+with no conviction behind it. Two of the LEANs are negative-edge: Andrew Wiggins
+`pra_under` 18.5 with projection 21.43, and `pts_under` 12.5 with projection
+14.68 — the UNDER tiered LEAN while our own number sits above the line.
+`team_abbrev` is also NULL on all 348.
+
+### R147 · the fade's `started` flag means "no longer produced", not "kicked off" (2026-11-05)
+`merge_plays` sets `z['started'] = k not in fresh_keys`, so a play the current
+run no longer qualifies gets flagged as started. Tonight it was set on JAX@BAL
+with 2h19m to kickoff. The Sweat Card now refuses such plays (both readings give
+the same answer for a forward-looking surface) but the Fade tab still shows the
+wrong word.
+
+### R148 · the two NFL game_id namespaces cannot be joined (2026-11-05)
+`nfl_game_context.game_id` is the Odds-API hex event id;
+`line_history.game_id` is `YYYYMMDD_AWAY_HOME`. Any cross-check written against
+one silently returns zero rows against the other.
+
+### R149 · the Sharp's non-MLB prop fetch has no pagination (2026-11-05)
+`_compose_non_mlb_props` returned exactly 1000 of 2074 NHL rows. Harmless while
+NHL has no allowlisted cell, but it truncates silently on a full NBA slate.
+`order=id.asc` added so the truncation is at least deterministic; it still needs
+a paginating getter.
+
+### R150 · generate_sharp_card._today_et() is a hardcoded -4 (2026-11-05)
+Disagrees with true ET for 04:00-04:59 UTC on 127 days a year. Not exposed at
+the 12:00 build time. Same class as feedback_hardcoded_et_offset_breaks_in_est.

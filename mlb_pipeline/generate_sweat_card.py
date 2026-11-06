@@ -2793,6 +2793,30 @@ def fetch_fade_plays(game_date: str) -> list:
             continue
         if not pl.get('label') or not pl.get('sport'):
             continue
+        # ══ 2026-11-05 · A FADE THE FADE RUN NO LONGER MAKES IS NOT A PICK ══
+        # generate_the_fade MERGES rather than replaces, on purpose: the tab
+        # is the receipt and "a record that quietly drops its losers is worth
+        # nothing". So a play published at noon stays in the row all day with
+        # `started` set once a later run stops producing it. That is right
+        # for the RECEIPT and wrong for the CARD, which is forward-looking.
+        #
+        # 2026-11-05 is what it costs. The noon run built `Over 48.5` for
+        # JAX @ BAL off a close_total that line_sanity had frozen at 48.5
+        # through a real 9-point move; by evening the market was 40.0 (8 of
+        # 11 books, and 39.5 at every sample from 12:00) and the public side
+        # had fallen under the 65% gate, so the fade run dropped it and
+        # stamped `started`. The card read the merged row anyway and made it
+        # RANK 1 at -110 - on a line no book posted all day, 8.5 points off
+        # the market, at conviction 0.
+        #
+        # `started` is the flag to test even though it is really "no longer
+        # produced": in BOTH readings - kicked off, or no longer qualifying -
+        # the answer for tonight's card is the same.
+        if pl.get('started'):
+            print(f'    [card] fade {pl.get("label")!r} SKIPPED — the fade '
+                  f'run no longer produces it (started/retired); it stays on '
+                  f'the Fade tab as a receipt, not on the card')
+            continue
         out.append(pl)
     # ══ 2026-10-30 · A CARD PLAY MAY NOT CONTRADICT ITS OWN GAME READ ══
     # ANDY: "We have magic on sweat card but Raptors RL in primary play? WTF"

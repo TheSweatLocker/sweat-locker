@@ -63,10 +63,22 @@
       "position": "QB",
       "player_name": "Tyler Huntley",
       "from_week": 7,
-      "through_week": null,
-      "reason": "nfl_current_depth_chart.json and the hardcoded fallback both name Lamar Jackson, but nfl_injuries has Jackson 'Out' (Ankle/Sprain) with report_date 2026-10-25 and Huntley 'Full' -- and Huntley actually started weeks 5 and 6. Both QBs are ACT on nfl_rosters_current so roster status cannot resolve it. ROOT CAUSE: the scrape overlay onto _NFL_QB1_MAP has NO injury gate, unlike the carryover path in nfl_weekly_starters. A depth chart lists the nominal starter, not the one who is available. Remove this entry once the overlay is injury-gated.",
+      "through_week": 8,
+      "reason": "nfl_current_depth_chart.json and the hardcoded fallback both name Lamar Jackson, but nfl_injuries has Jackson 'Out' (Ankle/Sprain) with report_date 2026-10-25 and Huntley 'Full' -- and Huntley actually started weeks 5 and 6. Both QBs are ACT on nfl_rosters_current so roster status cannot resolve it. ROOT CAUSE: the scrape overlay onto _NFL_QB1_MAP has NO injury gate, unlike the carryover path in nfl_weekly_starters. A depth chart lists the nominal starter, not the one who is available. Remove this entry once the overlay is injury-gated. CLOSED at week 8 on 2026-11-05: nfl_injuries has Huntley 'Out' (Toe/Sprain) on weeks 9 and 10, and nfl_starters week 8 is Joe Fagnano from box_score_actual_w8 -- so the entry was itself naming an unavailable QB from week 9 on, the same failure it was written to fix.",
       "set_on": "2026-10-25",
       "set_by": "claude-verified-injury-report"
+    },
+    {
+      "season": 2026,
+      "season_type": "REG",
+      "team": "BAL",
+      "position": "QB",
+      "player_name": "Joe Fagnano",
+      "from_week": 9,
+      "through_week": null,
+      "reason": "Andy verified 2026-11-05. The BAL QB1 override still named Tyler Huntley, set 2026-10-25, and nfl_game_context printed it on every run for JAX@BAL -- so home_qb_name, home_qb_career_home_starts (8), home_qb_career_h_r_delta_pp (-50.0), home_qb_recent_home_win_pct (1.0) and home_qb_madden_ovr were all Huntley's on a game he is Out for. Four sources agree on Fagnano: nfl_injuries wk9+wk10 has Huntley 'Out' (Toe/Sprain) and Lamar Jackson 'Out' (Thumb/Surgery) while Fagnano is 'Full'; nfl_starters week 8 = Joe Fagnano, source box_score_actual_w8; nfl_pipeline_props built 7 Fagnano QB rows for 2026-11-05; and the game read itself carried the warning 'BAL QB Tyler Huntley listed Out -- model inputs predate the change'. An override with through_week=null does not expire, so it outlived its own injury -- the hazard the file's own _how section names ('Delete an entry once the feeds agree with it').",
+      "set_on": "2026-11-05",
+      "set_by": "andy"
     }
   ]
 }
