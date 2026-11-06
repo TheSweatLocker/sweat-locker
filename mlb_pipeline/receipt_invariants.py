@@ -98,6 +98,12 @@ PLAY_SURFACES = {
 }
 
 
+#: the number in an over/under label, for the rule-1b label check. Anchored
+#: on the direction word so a team name containing digits cannot match.
+_LABEL_NUM_RE = _re_compile = __import__('re').compile(
+    r'\b(?:over|under|o|u)\s*(\d+(?:\.\d+)?)\b', __import__('re').I)
+
+
 def _f(v) -> Optional[float]:
     try:
         x = float(v)
@@ -200,24 +206,47 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
     market = str(row.get('market') or '').lower()
     sport = str(row.get('sport') or '').upper()
 
+    # ══ 2026-11-05 · AN EARLY *WARN* WAS HIDING A LATER *REFUSE* ═══════
+    # Every rule here used to `return` on the spot, including the ones that
+    # only WARN. So a row that was BOTH priceless and carrying a fabricated
+    # line returned ('WARN', 'no pick_odds') from rule (1) and never reached
+    # rule (1b) at all -- and priceless is exactly the population that has
+    # fabricated lines. Replaying the new label check over 42,405 receipts
+    # found 2 rows, against the 14 the same condition matches when measured
+    # directly: the other 12 were short-circuited by a WARN.
+    #
+    # A gate must fail CLOSED. So a WARN is now REMEMBERED and the rules
+    # keep running; the most severe finding wins, and the WARN is returned
+    # only if nothing refuses
+    # ([[feedback_a_display_label_became_a_gating_tier]] on gates failing
+    # closed, [[feedback_fix_every_writer_to_the_table]] on one guard not
+    # being a guard).
+    _warn = None
+
     # (1) A PLAY WITH NO PRICE. Mirrors `unactionable`, for the price.
     if market in PRICE_REQUIRED_MARKETS:
         odds = _f(row.get('pick_odds'))
         _is_play = surface in PLAY_SURFACES
         if odds is None:
-            return ('REFUSE' if _is_play else 'WARN',
-                    f'{market} receipt with no pick_odds — a graded play '
-                    f'with no price is priced at a guess')
-        if not (PRICE_SANITY[0] <= odds <= PRICE_SANITY[1]) or odds == 0:
-            return ('REFUSE' if _is_play else 'WARN',
-                    f'pick_odds {odds:g} is not a plausible price')
+            _m1 = (f'{market} receipt with no pick_odds — a graded play '
+                   f'with no price is priced at a guess')
+            if _is_play:
+                return 'REFUSE', _m1
+            _warn = _warn or _m1
+        elif not (PRICE_SANITY[0] <= odds <= PRICE_SANITY[1]) or odds == 0:
+            _m1 = f'pick_odds {odds:g} is not a plausible price'
+            if _is_play:
+                return 'REFUSE', _m1
+            _warn = _warn or _m1
         # A real price can still be an impossible bet. See ML_JUICE_MAX.
-        if market == 'ml' and odds < ML_JUICE_MAX:
+        elif market == 'ml' and odds < ML_JUICE_MAX:
             _be = 100.0 * abs(odds) / (abs(odds) + 100.0)
-            return ('REFUSE' if _is_play else 'WARN',
-                    f'ml at {odds:g} needs {_be:.1f}% to break even — past '
-                    f'the {ML_JUICE_MAX:g} juice cap this repo already '
-                    f'enforces on the card, the Sharp and the LR override')
+            _m1 = (f'ml at {odds:g} needs {_be:.1f}% to break even — past '
+                   f'the {ML_JUICE_MAX:g} juice cap this repo already '
+                   f'enforces on the card, the Sharp and the LR override')
+            if _is_play:
+                return 'REFUSE', _m1
+            _warn = _warn or _m1
 
     # (1b) A LINE NO BOOK EVER POSTED.
     #
@@ -259,6 +288,33 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
                     f'pick_line {_ln!r} is not a half-point line — no book '
                     f'posts a {market} at that number, so this is a '
                     f'projection written into the market field')
+        # ══ 2026-11-05 · THE FAKE NUMBER CAN HIDE IN THE LABEL ═════════
+        # The check above keys on pick_line, so a projection written into
+        # pick_label while pick_line stays NULL walks straight past it --
+        # and _void_fabricated_line_receipts_1102.py, which used the same
+        # key, could not see them either.
+        #
+        # MEASURED across all 42,405 receipts since 09-01: 14 rows carry a
+        # non-half-point number in the label with pick_line NULL, 4 of them
+        # still ungraded. 'Under 155.7', 'Under 154.75', 'Under 155.3' --
+        # the same NCAAB projected totals as the pick_line cases, just
+        # stored one field over.
+        #
+        # 14 rows out of 42,405 is 0.03%, so like its sibling this refuses
+        # the defect and essentially nothing else, and cannot become a
+        # permanently-red guard
+        # ([[feedback_a_detector_must_know_the_intentional_case]]).
+        if _ln is None:
+            _m = _LABEL_NUM_RE.search(str(row.get('pick_label') or ''))
+            if _m:
+                _lv = _f(_m.group(1))
+                if (_lv is not None
+                        and abs(_lv * 2 - round(_lv * 2)) > 1e-6):
+                    return ('REFUSE',
+                            f'pick_label names {_lv!r} and pick_line is '
+                            f'NULL — no book posts a {market} at that '
+                            f'number, so the label carries a projection '
+                            f'the line field never recorded')
 
     # (2) A MARKET MEASURED NEGATIVE, enforced where every source passes.
     # Only on the surface the ban was measured for; a game read is allowed
@@ -289,7 +345,7 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
 
     # (4) A SIDE-BEARING MARKET WITH NO SIDE is gradeable only by guessing.
     if market in ('ml', 'rl', 'spread', 'puckline', 'pl') and not row.get('pick_side'):
-        return 'WARN', f'{market} receipt carries no pick_side'
+        _warn = _warn or f'{market} receipt carries no pick_side'
 
     # ══ (5) 2026-10-31 · A DECLARED NO-PLAY IS NOT A PLAY (R121/R122) ══
     # tier=PASS is the engine saying it has no opinion worth acting on, and
@@ -322,6 +378,9 @@ def check_row(row: dict, surface: str) -> tuple[Optional[str], Optional[str]]:
             return 'REFUSE', (f'tier={tier} is a declared no-play — it must '
                               f'not publish as a priced, graded receipt')
 
+    # Nothing refused. Surface the remembered WARN, if any.
+    if _warn:
+        return 'WARN', _warn
     return None, None
 
 

@@ -4919,3 +4919,35 @@ conviction 61, both negative-edge by their own subtitle (-6pp, -3.0pp). Both
 predate the 11-03 fix and nothing after 11-03 has the word, so this is residue
 rather than a regression. Decide whether to rewrite or keep as history, and
 assert no gate whitelist can exempt an unknown tier word again.
+
+### R166 · NCAAB results are filed a day late — root cause of the grading debt (2026-11-05)
+resolve_ncaab_results.event_to_outcome takes BOTH game_date and the composed
+game_id from ESPN's raw UTC timestamp with no ET conversion. A 7pm ET tip is
+00:00 UTC the next day, which for NCAAB is most of the slate. Context holds 119
+games on 11-02 against 30 result rows, and 19 on 11-03 against 144 — ~89
+evening games sitting one date forward. Every ungraded NCAAB receipt (40) is
+blocked on this: the game_id is in ncaab_game_context but no result row matches.
+Same class as the NFL TNF/SNF drift nfl_game_context already fixed; sweat_dates
+.et_today() exists for it.
+NOT a one-line fix: the date is embedded in game_id, so changing the derivation
+makes the resolver INSERT beside the misdated rows instead of patching them
+(`--date 20261102` matches 0 of 165 existing). Needs ET for both fields PLUS a
+legacy UTC-dated id in the existing-row lookup, with the dedupe tested.
+
+### R167 · ncaab_game_context team names are inconsistent (2026-11-05)
+Some rows hold canonical short names (Memphis, Iowa St.) and others the Odds-API
+long form (Wichita St Shockers, CSU Northridge Matadors). The long-form rows
+cannot join ncaab_game_results, which is canonical-only. Resolve on write via
+ncaab_team_resolver.
+
+### R168 · receipt 9296 is GRADED WIN on a fabricated line (2026-11-05)
+`Over 8.7`, 2026-09-18, game_read. The fabricated-line rule now refuses the
+shape but this row already settled. Needs a regrade path, not a quiet void
+(feedback_grade_each_row_not_the_date).
+
+### R169 · 2 sweat_card ML receipts are past the -300 juice cap (2026-11-05)
+sweat_card IS in PLAY_SURFACES, so receipt_invariants rule (1) should have
+REFUSED them. Find the writer that bypassed the guard
+(feedback_fix_every_writer_to_the_table). Measured: 97 ML receipts past the cap
+overall, 95 of them game_read, at prices down to -100000; of the 18 that graded,
+15-3 for -0.55 units.
