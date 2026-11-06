@@ -137,6 +137,31 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "build_cohort_tag_records.py" python build_cohort_tag_records.py
 
+      # 2026-11-06 - R171: JUDGE THE PROP CELLS ON THEIR FORWARD RECORD
+      # prop_cell_allowlist gates non-MLB prop publishing to cells with a
+      # measured positive record, and pooled it is doing real work: +4.49pp
+      # on the 476 rows it publishes against -2.59pp on the 4,517 it blocks.
+      #
+      # But that number is IN-SAMPLE. The cells were selected on that data,
+      # and picking the best three of ~40 guarantees a positive. Split at
+      # the ship date the three live NFL cells read +3.84pp in-sample
+      # (n=416) and +8.95pp forward (n=60) - same sign, nothing
+      # significant. Two of the three have a forward n under 30.
+      #
+      # This is the weekly attribution Andy asked for on 10/27: every
+      # signal recorded per pick and attributed WEEKLY so weighting can be
+      # tuned per sport. It reports in-sample and forward separately and
+      # names any cell whose forward sign has flipped. Non-fatal by design
+      # - a thin or unmeasured cell is the normal state early, and a
+      # permanently-red step is a muted step.
+      - name: Prop cell forward audit (all sports)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "audit_prop_cells.py" python audit_prop_cells.py --json ../docs/prop_cell_forward_audit.json
+
       - name: Commit fresh weights if changed
         run: |
           cd mlb_pipeline

@@ -161,6 +161,37 @@ ODDS_MIN, ODDS_MAX = -300.0, 150.0
 MAX_PER_SPORT = 2
 MAX_NON_MLB = 3
 
+#: The date each cell was FIRST allowlisted. Everything graded on or before
+#: it helped CHOOSE the cell and therefore cannot also test it.
+#:
+#: == 2026-11-06 - WHY THIS HAS TO EXIST =============================
+#: The pooled record of what this gate publishes is +4.49pp on n=476
+#: (ROI +8.44%) against -2.59pp on the 4,517 rows it blocks. That looks
+#: like a strong edge and it is NOT quotable as one: these cells were
+#: SELECTED on that same data, and picking the best three of ~40 cells
+#: guarantees a positive in-sample number.
+#:
+#: Split at the ship date, the three live NFL cells read:
+#:     in-sample      n=416  +3.84pp  (+1.57 SE)
+#:     out-of-sample  n= 60  +8.95pp  (+1.39 SE)
+#: Same sign, nothing significant, n=60. Encouraging, not proof.
+#:
+#: audit_prop_cells.py reads this to report the two halves separately, so
+#: the number we act on is always the forward one
+#: ([[feedback_walk_forward_misses_feature_leak]],
+#: [[feedback_sample_size_with_pct]]).
+CELL_SINCE = {
+    ('NFL', 'pass_attempts_under', 'LIGHT'):  '2026-11-01',
+    ('NFL', 'rush_attempts_under', 'STRONG'): '2026-11-01',
+    ('NFL', 'reception_yds_over',  'LEAN'):   '2026-11-01',
+}
+
+
+def cell_since(sport, prop_type, tier):
+    """The date this cell was first allowlisted, or None if unrecorded."""
+    return CELL_SINCE.get((str(sport).upper(), str(prop_type or ''),
+                           str(tier or '').upper()))
+
 
 def _f(v):
     try:
