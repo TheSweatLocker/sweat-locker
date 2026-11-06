@@ -1043,8 +1043,39 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
     """
     if not isinstance(card, dict):
         return []
+    # ══ 2026-11-06 · RECEIPTS NOW COME FROM THE LIST THE APP RENDERS ══
+    # The app renders `unified_top_picks`. Receipts were cut from top_8 +
+    # football_picks, which are a DIFFERENT SET, so what we showed and what
+    # we graded diverged in both directions:
+    #
+    #     date     card items (unified)   sweat_card receipts
+    #     10-30            5                     14
+    #     10-31            6                     12
+    #     11-05            4                      1
+    #     11-06            4                      3
+    #
+    # On 11-05 top_8 was [] while unified held 4 picks, so NOTHING on the
+    # card was captured and `East Texas A&M ML +136` sat Pending through a
+    # WIN (settled by hand; see the 11-06 daily log). On 11-06 the one
+    # uncaptured item is the floor fill, `Missouri ML`, which is exactly the
+    # class that has gone 7 slots / 0 graded since the fill shipped --
+    # displayed to users and absent from every record.
+    #
+    # Andy's call, 11-06: keep the fills and GRADE them, rather than hiding
+    # them or dropping them. So the receipt source becomes the rendered
+    # list. unified comes LAST so that where a pick sits in both lists the
+    # top_8 row still establishes the identity, preserving the
+    # first-write-wins ordering _live_keys depends on.
+    #
+    # Double-counting is handled twice over: _card_anchor already makes
+    # every writer agree on one source_id per bet (the 10-31 fix), and the
+    # in-batch `_seen` set below stops one payload carrying the same
+    # (sport, market, anchor) twice -- a plain INSERT raises 23505 on a
+    # duplicate and the batch is all-or-nothing.
     out = []
-    sections = (('top_8', 'MLB'), ('football_picks', None))
+    _seen = set()
+    sections = (('top_8', 'MLB'), ('football_picks', None),
+                ('unified_top_picks', None))
     for section, default_sport in sections:
         for it in (card.get(section) or []):
             if not isinstance(it, dict):
@@ -1060,6 +1091,10 @@ def sweat_card_rows(card: dict, game_date: str) -> list[dict]:
             # DATE for POTD/DotD — which is why market has to be part of
             # the key, or the day's POTD and DotD collapse into one row.
             anchor = _card_anchor(it, market, label)
+            _k = (sp, market, str(anchor))
+            if _k in _seen:
+                continue
+            _seen.add(_k)
             # ══ 2026-10-04 · A PROP RECEIPT MUST CARRY ITS OWN IDENTITY ══
             # These rows were written with player_name, prop_type, pick_line
             # and pick_side ALL NULL, with everything packed into source_id as

@@ -5183,3 +5183,55 @@ differently from 0 so consumers would change behaviour silently. App side is
 already guarded — 5 remaining `|| 0` sites on conviction, all display/sort
 defaults rather than tier gates. Do it with a call-site audit, not as a
 one-liner ([[feedback_validate_data_reaches_new_code]]).
+
+### R177 · CORRECTED + DONE 2026-11-06 · receipts now come from the rendered list
+**Withdrawn claim:** I said the Sweat Card record "contains a play that was never
+on the Sweat Card" because an 11-05 `surface=sweat_card` receipt carried
+`source_table = jerry_cache.fade`. Wrong — **fades are composed onto the card by
+design.** Tonight's live card carries `Nebraska -4.5` and `SMU -6`, both
+`jerry_cache.fade`, in `top_8` AND `unified_top_picks` at STRONG. That receipt
+was cut while the fade was on the card; the card was rebuilt later and `top_8`
+emptied, which made it look orphaned. The same bet appearing under both
+`surface=fade` and `surface=sweat_card` is therefore legitimate, and is only
+double-counting if some record sums across surfaces — which I never showed.
+
+**DONE (Andy's call: keep the fills and grade them):** the real defect was that
+`sweat_card_rows` cut receipts from `top_8` + `football_picks` while the app
+renders `unified_top_picks`. Rendered vs captured: 10-30 5/14, 11-05 4/1,
+11-06 4/3. Receipt source is now the rendered list, `unified_top_picks` placed
+last so a pick in both lists keeps its `top_8` identity (first-write-wins, which
+`_live_keys` depends on). In-batch `_seen` set added because a plain INSERT
+23505s on a duplicate and the batch is all-or-nothing. Verified on three live
+cards: rendered == captured, 0 duplicate identities. Also closes R180 — card
+picks now have a receipt for the unified walker to inherit from.
+
+### R185 · 6 NCAAB signals cite columns that exist in no table (2026-11-06)
+`audit_signal_conditions_all_sports --sport NCAAB` after today's roster fix:
+`ncaab_panel_total` (`panel_pred_total`), `ncaab_efficiency_home_dominant` and
+`_away_dominant` (`away/home_efficiency_overall`), `ncaab_3pt_shooting_gap_home`
+(`away_3pt_def`, `home_3pt_pct`), `ncaab_home_court_advantage`
+(`home_win_pct_at_home`), `ncaab_conference_dog_cover` (`conference_game`).
+Enabled flags on dead code. They are 6 of the 40 UNVALIDATED-at-n=0 registry
+rows that make NCAAB's signal library look larger than it is. Either populate
+the columns or disable the signals; do not leave them enabled and unmeasurable
+([[feedback_a_detector_must_know_the_intentional_case]] — a permanently dead
+signal is indistinguishable from one waiting on a rare spot).
+
+### R186 · the floor fill published an NCAAB favourite ML at -145 (2026-11-06)
+Now that fills get receipts they get graded, and tonight's fill is
+`Missouri ML -145`. NCAAB favourite moneylines in the -150..-100 band measured
+**53.49% against a 56.37% breakeven, -5.08% ROI on n=959** (11-02 study, where
+not one price band cleared breakeven). `_MEASURED_LOSING_FILL` already exists in
+`generate_sweat_card` for NBA spreads and extending it to NCAAB fav ML is a
+one-line change. Deliberately NOT done: grading the fills is what was asked
+for, and silently vetoing this one would undo that decision. Andy's call
+whether the fill pool should exclude measured-losing markets.
+
+### R187 · both fades publish at STRONG with conviction 0 (2026-11-06)
+Tonight's `Nebraska -4.5` and `SMU -6` carry `tier: STRONG` and
+`conviction: 0`. The tier comes from the fade path rather than from conviction,
+so this is not the gating defect, but a published STRONG play holding
+conviction 0 is the exact shape of
+[[feedback_falsy_zero_invented_a_tier_and_a_confidence]] and any `|| default`
+downstream will invent a confidence number for it. Either carry a real
+conviction on a fade or carry NULL, not 0.
