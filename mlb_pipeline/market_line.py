@@ -122,7 +122,30 @@ def _page(params, cap=120000):
     """
     out, cursor, pages = [], None, 0
     max_pages = max(1, cap // 1000)
-    want_id = 'id' not in str(params.get('select', ''))
+    # ══ 2026-11-05 · `side` CONTAINS "id", SO THE CURSOR WAS NEVER SELECTED ═
+    # This was `want_id = 'id' not in str(params.get('select', ''))`, a
+    # SUBSTRING test for a column NAME. Every caller of fetch_market selects
+    # `matchup,side,book,...` -- and `side` contains "id". So the test said id
+    # was already selected, the block below never added it, `chunk[-1]['id']`
+    # raised KeyError, and the `except (KeyError, TypeError)` directly below
+    # returned after exactly ONE page.
+    #
+    # Measured today: fetch_spreads returned exactly 1000 rows for NFL, NCAAB
+    # and NHL alike -- three sports, one number, which is the signature. NFL
+    # alone had 76,588 spread quotes captured on 2026-11-05.
+    #
+    # 111 files import this module. It is the repo's answer to "what did the
+    # books actually post", and every consumer has been reading the first 1000
+    # rows of it. audit_published_lines.py is the clearest casualty: it printed
+    # `no data 100.0%` on every pick, which reads like a clean run rather than
+    # a detector that could not see ("unacceptable", Andy, on NCAAB going
+    # unverified -- and it was never NCAAB-specific).
+    #
+    # Compare TOKENS, not substrings. `*` also returns id, so neither needs it
+    # appended ([[feedback_select_star_before_concluding_absent]]).
+    _sel = str(params.get('select') or '')
+    _tokens = {t.strip() for t in _sel.split(',')}
+    want_id = not ({'id', '*'} & _tokens)
     while pages < max_pages:
         q = dict(params)
         q['limit'] = '1000'
@@ -175,8 +198,22 @@ def fetch_market(sport: str, market: str, since: str,
     p = {'select': 'matchup,side,book,line,price,captured_at,commence_time',
          'sport': f'eq.{sport}', 'market': f'eq.{market}',
          'commence_time': f'gte.{since}'}
+    # ══ 2026-11-05 · BOUND `until` AT THE SERVER, NOT AFTER THE FETCH ════
+    # `commence_time >= since` with no upper bound means every FUTURE game
+    # too, which for NCAAF and NFL is the rest of the season. Filtering after
+    # the fetch still pays for all of it, and line_history 500s on the deep
+    # pages: observed today as 'PARTIAL result' after 3,000 rows for NCAAF and
+    # 13,000 for NFL. A partial quote set turns "median across books" into
+    # "median across the books that fit", which is the silent-wrong case the
+    # paginator's own error branch was written to shout about.
+    #
+    # PostgREST takes repeated filters on one column as AND, so passing a list
+    # gives `commence_time >= since AND < until` in the query itself.
+    if until:
+        p['commence_time'] = [f'gte.{since}', f'lt.{until}']
     rows = _page(p)
     if until:
+        # kept as a belt-and-braces check on what came back, not as the filter
         rows = [r for r in rows if str(r.get('commence_time') or '') < until]
     return rows
 
@@ -273,6 +310,30 @@ def build_matcher(by_matchup, sport: str):
     in the FIU pick that did not exist (an `ilike '*Panthers*'` query returned
     Pittsburgh's rows alongside Florida International's).
     """
+    # ══ 2026-11-05 · NCAAB GOES THROUGH ITS ALIAS TABLE, NOT A PREFIX ══
+    # The prefix pass below cannot join NCAAB. `ncaab_game_context` stores
+    # canonical short names ('Penn', 'Penn St.', 'Quinnipiac') and
+    # line_history stores the Odds API spelling ('Pennsylvania Quakers',
+    # 'Penn State Nittany Lions'), so `h.startswith(nh)` is false for exactly
+    # the names that matter -- and 'Penn' IS a prefix of 'Penn State', which
+    # is the wrong-fixture hazard this function exists to refuse
+    # ([[feedback_prefix_strip_can_name_another_school]]).
+    #
+    # ncaab_team_resolver already solves this against ncaab_team_aliases (365
+    # rows, alt_names arrays) and reports 75 of 78 games joined. Andy, today:
+    # "Not verifying NCAAB against market is unacceptable" -- correct, and the
+    # tool for it was already in the repo and simply not wired in here.
+    _ncaab = None
+    if str(sport).upper() == 'NCAAB':
+        try:
+            import ncaab_team_resolver as _R
+            _R.load_aliases()
+            _ncaab = _R
+        except Exception as _e:                                # noqa: BLE001
+            print(f'  [market_line] ncaab_team_resolver unavailable ({_e}) '
+                  f'-- NCAAB falls back to prefix matching, which does not '
+                  f'join. Fix the import rather than trusting the result.')
+
     halves = {}
     for mt in by_matchup:
         if ' @ ' not in mt:
@@ -283,6 +344,10 @@ def build_matcher(by_matchup, sport: str):
             kh = NFL_NICK.get(h.split()[-1].lower())
             if ka and kh:
                 halves[mt] = (ka, kh)
+        elif _ncaab is not None:
+            ra, rh = _ncaab.resolve(a), _ncaab.resolve(h)
+            if ra and rh:
+                halves[mt] = (str(ra).lower(), str(rh).lower())
         else:
             halves[mt] = (a.lower().replace('.', '').strip(),
                           h.lower().replace('.', '').strip())
@@ -290,6 +355,15 @@ def build_matcher(by_matchup, sport: str):
     def match(away, home):
         if sport == 'NFL':
             want = (str(away).upper(), str(home).upper())
+            hits = [mt for mt, k in halves.items() if k == want]
+            return hits[0] if len(hits) == 1 else None
+        if _ncaab is not None:
+            # Both halves resolved through the SAME table, then compared
+            # whole -- never by prefix, so 'Penn' cannot match 'Penn St.'
+            ra, rh = _ncaab.resolve(away), _ncaab.resolve(home)
+            if not ra or not rh:
+                return None
+            want = (str(ra).lower(), str(rh).lower())
             hits = [mt for mt, k in halves.items() if k == want]
             return hits[0] if len(hits) == 1 else None
         na = str(away or '').lower().replace('.', '').strip()

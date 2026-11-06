@@ -4860,3 +4860,43 @@ From start->end heartbeat deltas: nba_pipeline 25/39/44/45/45/45 against a
 writes no end event, no gate entry and no step_failures row, so it is invisible
 in the DB. The step-duration table that would name the expensive step had never
 recorded a row (fixed 2026-11-05) — check it before raising either timeout.
+
+### R155 · no recompute_*_primary_play for NBA, NHL or NCAAB (2026-11-05)
+recompute_nfl_primary_play.py and recompute_ncaaf_primary_play.py exist; the
+other three sports have nothing, so a published label drifts from its own
+context row with nothing to catch it. Tonight: `Golden State Warriors -6.5`
+against a close_spread of -3.5, repaired by hand 37 min pre-tip.
+
+### R156 · NHL puck-line picks carry no line and no price (2026-11-05)
+All 3 rl reads tonight have call_line null AND price_best null, and
+primary_play.line is null on every row sampled, while close_puckline on the
+same row holds +/-1.5. "New York Rangers PL" is published with no number:
+unverifiable against the market, ungradeable for ROI, and the label does not
+say 1.5. This is why NHL returns zero verdicts from audit_published_lines.
+
+### R157 · audit_published_lines checks SPREADS only (2026-11-05)
+`SPREADY` gates it to rl/spread/ats/runline/puckline. Moneylines and totals are
+never verified against the market on any sport — 6 of 11 NHL picks tonight.
+
+### R158 · NCAAB grading debt, 53 receipts (2026-11-05)
+53 ungraded before today, oldest 2026-10-30, all game_read, 17 unpriced.
+ncaab_game_results holds 0 rows for 10-30 and 2 for 11-01, so they cannot
+grade. The results resolver is not backfilling NCAAB.
+
+### R159 · a fabricated line hidden in pick_label is invisible to the guard (2026-11-05)
+4 NCAAB receipts from 10-30 carry `Under 155.7` / `Under 155.3` / `Under 160.0`
+in pick_label with pick_line NULL. _void_fabricated_line_receipts_1102.py keys
+on pick_line not being a half-point, so it cannot see a fake number that lives
+only in the label. The detector needs to parse the label too.
+
+### R160 · NFL and NCAAF grading debt (2026-11-05)
+NFL 8 ungraded receipts before today, oldest 2026-09-27. NCAAF 1, oldest
+2026-10-10.
+
+### R161 · an Iowa St. ML receipt exists at -1600 (2026-11-05)
+Far past any documented juice gate. Check what admitted it.
+
+### R162 · market_line._page cap=120000 is still a silent truncation (2026-11-05)
+NFL hit it exactly on a 30-day window. Much less wrong than the 1000-row bug
+fixed today, but the same shape: a partial quote set makes "median across
+books" into "median across the books that fit".

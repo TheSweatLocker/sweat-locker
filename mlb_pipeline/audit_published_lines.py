@@ -48,7 +48,7 @@ SB, H = ML.SB, ML.H
 
 CONTEXT = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
            'MLB': 'mlb_game_context', 'NHL': 'nhl_game_context',
-           'NBA': 'nba_game_context'}
+           'NBA': 'nba_game_context', 'NCAAB': 'ncaab_game_context'}
 #: nflverse stores POSITIVE = home favoured; the books and every other
 #: context table store the home handicap. Negate NFL to compare.
 FLIP = {'NFL': True}
@@ -84,14 +84,43 @@ def jl(v):
     return v if isinstance(v, dict) else {}
 
 
-def audit(sport: str, since: str, live_only: bool):
+def _names_resolve(sport: str, away, home) -> bool:
+    """True when BOTH team names map to a canonical name.
+
+    Lets the caller separate "we cannot read the name" from "the books have
+    no market". Only NCAAB has a resolver to ask; elsewhere the matcher works
+    off the names directly, so a miss there is a market gap by definition.
+    """
+    if str(sport).upper() != 'NCAAB':
+        return True
+    try:
+        import ncaab_team_resolver as R
+        R.load_aliases()
+        return bool(R.resolve(away)) and bool(R.resolve(home))
+    except Exception:                                    # noqa: BLE001
+        return True
+
+
+def audit(sport: str, since: str, live_only: bool, on: str = None):
     ctbl = CONTEXT.get(sport)
     if not ctbl:
         return None
     ctx = page(ctbl, {'select': 'game_id,game_date,home_team,away_team,'
                                 'close_spread,primary_play',
                       'game_date': f'gte.{since}'})
-    if live_only:
+    # ══ 2026-11-05 · --live ON NFL MEANS THE REST OF THE SEASON ═══════
+    # `--live` keeps every game that has not started, which for NFL is 151
+    # rows running to January. Books have not posted most of them, so they
+    # land in `no data` -- and the report then reads `no data 100.0%`, which
+    # looks like a broken detector rather than "these games have no market
+    # yet". That is how the NCAAB gap stayed invisible: the honest no-data of
+    # far-future games was indistinguishable from a real inability to check.
+    #
+    # `--on DATE` answers the question that actually gets asked: are the
+    # numbers on TONIGHT's surfaces the numbers the books have right now.
+    if on:
+        ctx = [z for z in ctx if str(z['game_date'])[:10] == on]
+    elif live_only:
         today = date.today().isoformat()
         ctx = [z for z in ctx if str(z['game_date'])[:10] >= today]
     if not ctx:
@@ -102,12 +131,41 @@ def audit(sport: str, since: str, live_only: bool):
                                             'call_line,call_market,conviction',
                                   'sport': f'eq.{sport}',
                                   'game_date': f'gte.{since}'})}
-    rows = ML.fetch_spreads(sport, since)
+    # When one date is named, the quote window is that date -- not `since`.
+    # A 30-day commence_time filter on line_history 500s on deep pages for
+    # NFL and NCAAF (observed: PARTIAL after 13,000 and 9,000 rows), and a
+    # partial quote set makes a median across "the books that fit".
+    _until = None
+    if on:
+        _until = (date.fromisoformat(on) + timedelta(days=2)).isoformat()
+    rows = ML.fetch_spreads(sport, on or since, _until)
     by_mt = ML.index_by_matchup(rows)
     match = ML.build_matcher(by_mt, sport)
     print(f'=== {sport} ===')
     print(f'  {len(ctx)} games · {len(rows)} book quotes · '
-          f'{len(by_mt)} matchups priced')
+          f'{len(by_mt)} matchups priced'
+          + (f' · on {on}' if on else ''))
+    # ══ "UNMATCHED" IS TWO DIFFERENT THINGS AND ONLY ONE IS OUR BUG ════
+    # A game with no priced matchup is either (a) a name our resolver cannot
+    # map, which is a defect here, or (b) a game the books never posted, which
+    # is a gap at the source and nothing to fix. Reporting them together is
+    # how 11 NCAAB games read as a resolver failure tonight when the resolver
+    # had in fact mapped all 22 team names correctly and the Odds API simply
+    # does not carry Gardner Webb @ Texas.
+    _unres, _nomkt = [], []
+    for z in ctx:
+        if match(z['away_team'], z['home_team']) is not None:
+            continue
+        (_nomkt if _names_resolve(sport, z['away_team'], z['home_team'])
+         else _unres).append(f"{z['away_team']}@{z['home_team']}")
+    if _unres:
+        print(f'  ✗ {len(_unres)} game(s) whose TEAM NAMES did not resolve — '
+              f'this is a defect in the resolver, not a market gap:')
+        for g in _unres[:10]:
+            print(f'      {g}')
+    if _nomkt:
+        print(f'  · {len(_nomkt)} game(s) resolved fine but the books posted '
+              f'no spread — nothing to check against (e.g. {_nomkt[0]})')
 
     verdicts = collections.Counter()
     defects, moved = [], []
@@ -180,12 +238,19 @@ def main():
     ap.add_argument('--days', type=int, default=30)
     ap.add_argument('--live', action='store_true',
                     help='only games that have not started')
+    ap.add_argument('--on', default=None,
+                    help='one play date (YYYY-MM-DD); also narrows the quote '
+                         'window to it, which is what makes NFL/NCAAF finish')
     args = ap.parse_args()
     since = (date.today() - timedelta(days=args.days)).isoformat()
-    sports = [args.sport] if args.sport else ['NFL', 'NCAAF', 'MLB', 'NHL']
+    # 2026-11-05: NBA and NCAAB were missing, so the two sports carrying
+    # most of the slate were never checked. NCAAB is the whole reason -- it
+    # joins through ncaab_team_resolver now (see market_line.build_matcher).
+    sports = ([args.sport] if args.sport
+              else ['NFL', 'NCAAF', 'MLB', 'NHL', 'NBA', 'NCAAB'])
     grand = collections.Counter()
     for s in sports:
-        v = audit(s, since, args.live)
+        v = audit(s, since, args.live, on=args.on)
         if v:
             grand.update(v)
     if len(sports) > 1:
