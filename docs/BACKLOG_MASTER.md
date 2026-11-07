@@ -5302,7 +5302,7 @@ only writes reads for games that have none. Needs either a forced regeneration
 step or a sync that updates the pick layer and rewrites `short_read` from the
 label when the market changed.
 
-### R190 · the reads sync runs BEFORE the resolver that writes what it syncs (2026-11-06)
+### R190 · DONE 2026-11-06 · the reads sync ran BEFORE the resolver that writes what it syncs
 `ncaab_pipeline.yml` line 599 "Sync NCAAB jerry_reads from ctx" runs before line
 616 "NCAAB — 4-lens primary_play resolver". The resolver is what writes
 `primary_play`, so the sync always carries the PREVIOUS run's pick. This is a
@@ -5321,3 +5321,11 @@ both, compared against utcnow because `game_time_et` is named ET and holds a UTC
 timestamp (verified: 21:00:00..03:30:00 for a 4pm-10:30pm ET card). Unknown tip
 counts as NOT started, matching `price_picks`. Both print the skip count instead
 of skipping silently.
+
+**DONE 2026-11-06.** Not by swapping the two steps as first written — the resolver
+consumes the Jerry read as lens #4 (`_load_jerry` reads
+`ncaab_jerry_reads.recommended_pick`), so generator -> resolver is
+deliberate and the dependency is circular. The SYNC is what closes the loop, so
+the sync moved to after the resolver. Order is now generate reads -> resolver ->
+sync -> price (steps 32-35, YAML revalidated). This alone does NOT make the sync
+write; its prose guard still blocks the pick update (R189).

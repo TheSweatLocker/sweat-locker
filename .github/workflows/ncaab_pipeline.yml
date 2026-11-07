@@ -594,18 +594,6 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_ncaab_game_reads.py" python generate_ncaab_game_reads.py
 
-      # 2026-08-28 Phase 3: sync jerry_reads from primary_play + narrative.
-      # NCAAB prompt is prose-only. See docs/JERRY_UNIFICATION.md.
-      - name: Sync NCAAB jerry_reads from ctx
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5
-
       # ────── 4-LENS RESOLVER (2026-08-14 Session 4) ──────
       # Runs LAST in card-build sequence (after MC + Panel + Jerry).
       # Reads all 4 lens signals, recomputes sweat_score/tier/primary_play
@@ -622,6 +610,36 @@ jobs:
         run: |
           cd mlb_pipeline
           python ncaab_resolve_primary_play.py
+
+      # ══ 2026-11-06 · THE SYNC USED TO RUN BEFORE THE RESOLVER ════════
+      # This step was at line 599, ABOVE the 4-lens resolver that writes the
+      # primary_play it syncs, so it always carried the PREVIOUS run's pick.
+      # That is why jerry_reads lagged the card: on 11-06 the reads held the
+      # pre-fix call on 26 of 32 unstarted games, 11 still naming `ml` on a
+      # market capped to COVERAGE that afternoon.
+      #
+      # It cannot simply be fixed by moving the RESOLVER earlier instead: the
+      # resolver consumes the Jerry read as lens #4 (_load_jerry reads
+      # ncaab_jerry_reads.recommended_pick), so generator -> resolver is
+      # deliberate and the dependency is circular. The sync is what closes
+      # the loop, so the sync is what has to run last.
+      #
+      # Order is now: generate reads -> 4-lens resolver -> sync reads back.
+      #
+      # NOTE this alone does not make the sync WRITE: its guard still skips
+      # any read whose long_read is >= 300 real characters, which is all of
+      # them, so it protects the prose by refusing to update the pick (R189).
+      # Ordering had to be right first; without it, fixing the guard would
+      # just have propagated a stale pick faster.
+      - name: Sync NCAAB jerry_reads from ctx
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5
 
       # ══ 2026-11-06 · NCAAB WAS NEVER PRICED, ON ANY DATE ══════════════
       # price_picks runs per sport in the NBA, NCAAF, NFL and NHL pipelines
