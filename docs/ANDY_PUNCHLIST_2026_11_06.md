@@ -190,3 +190,53 @@ in a slot a user reads as a SPREAD (Purdue +21, the underdog). Needs the
 render path traced. Situational records absent on the same card — NCAAB
 `away_l10` and `home_l10` are **0% populated** (null audit), which is the
 likely cause and is checkable.
+
+---
+
+## A2 / A3 / A4 / A5 RESULTS
+
+### A4 - CONFIRMED, AND LIVE. Juiced NCAAB chalk is still on the reads.
+Andy named Ohio State and it is there.
+
+    2026-11-06  57 NCAAB reads, 18 still call ml, 5 priced worse than -300
+       Wisconsin ML      -10000   conv 51
+       Iowa ML           -10000   conv 50
+       Texas A&M ML      -13333   conv 50
+       North Carolina ML  -5833   conv 51
+       Oregon ML          -2100   conv 51
+       Ohio St. ML        price NULL, conv 52     <- Andy called this exactly
+    2026-11-07  34 reads, 8 call ml, 6 worse than -300
+       Utah St. ML       -20000   Dayton ML -10000   Ohio ML -800
+       UNLV ML            -865    Davidson ML lean -709   Longwood ML lean -874
+
+Tonight ml ceiling capped the primary_play TIER, and the resolver already
+suppresses ML past -300 in that path. Neither touches the READ, which is the
+surface a user opens. This is R189 with a price attached: the reads keep
+their own call_market from the generator, the sync that would reconcile them
+writes 0 rows (prose guard), and regeneration needs the LLM key.
+NOT a price-impossible case - -10000 IS a real moneyline price. The defect is
+that we surface an ML at all at that price, against the 11-02 measurement
+where NOT ONE NCAAB favourite-ML band clears breakeven.
+
+### A3 - PARTLY CONFIRMED, and the gate is holding.
+close_spread is posted on 36 of 59 games today (61%) and 25 of 39 tomorrow
+(64%). So Andy is right that spreads are missing - on 39% of the board. But
+of the 23 games with no close_spread, publishable picks: 0. The
+posted-market gate is doing its job; the display just has nothing to show.
+
+### A2 - CONFIRMED and worse than described.
+Splits rows per sport per day: NCAAF 827-2,216, NFL 232-911, NHL 26-256,
+NCAAB 0-900 (zero on 10-29, 10-31, 11-07; six on 10-30), **NBA has no
+column at all - zero rows ever**. So NBA money flow cannot render because it
+does not exist, NCAAB is erratic to the point of unusable, and NHL is an
+order of magnitude below NCAAF.
+NEW FINDING:  returns **HTTP 500, statement timeout** when
+queried by sport, so the aggregated view cannot be read at all.
+
+### A5 - PARTLY CONFIRMED. Not dark everywhere, but NBA and NHL fell off.
+external_picks by sport per day: NBA went 131 (11-04) -> 20 -> 2 (11-06) ->
+0 (11-07). NHL 31 -> 87 -> 3 -> 0. NCAAB and NCAAF stayed healthy
+(238 and 48 on 11-06). MLB is 0 every day, which is correct in the
+offseason. UFC has ONE source (bfo, 9 picks).
+Source counts over the last 7 days: NCAAF 8, NFL 8, NCAAB 7, NBA 6, NHL 6,
+UFC 1.
