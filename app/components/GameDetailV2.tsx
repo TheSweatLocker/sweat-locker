@@ -7596,13 +7596,23 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled(sport || 'NFL', 'game_detail', 'trends_tendencies', true);
   const [homeRow, setHomeRow] = React.useState<any>(null);
   const [awayRow, setAwayRow] = React.useState<any>(null);
-  const [seasonUsed, setSeasonUsed] = React.useState<number | null>(null);
+  // split-year sports (NBA/NHL/NCAAB) store a STRING season like '2026-27'
+  const [seasonUsed, setSeasonUsed] = React.useState<string | number | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   const season = ctx?.season;
+  // 2026-11-07: NCAAB and NHL added. 20260826b built three of the five live
+  // sports and these two fell to `null`, so `if (!viewName) return null`
+  // meant the Trends & Tendencies panel could never render on a college
+  // basketball or hockey card -- which is what Andy saw on the Purdue game
+  // as "no sitaional records". The two matviews ship in
+  // 20261107a_ncaab_nhl_home_road_tendencies.sql with the same column list,
+  // so this component is unchanged below. MLB has no view and stays null.
   const viewName = sport === 'NFL'   ? 'nfl_team_home_road_tendencies'
                   : sport === 'NCAAF' ? 'ncaaf_team_home_road_tendencies'
                   : sport === 'NBA'   ? 'nba_team_home_road_tendencies'
+                  : sport === 'NCAAB' ? 'ncaab_team_home_road_tendencies'
+                  : sport === 'NHL'   ? 'nhl_team_home_road_tendencies'
                   : null;
 
   React.useEffect(() => {
@@ -7613,9 +7623,30 @@ function TeamTendenciesCard({sport, ctx, homeTeam, awayTeam}: any) {
       // for football, pre-Nov 3 for basketball). If current returns nothing
       // for either team, fall back to prior season so the card renders last
       // year's baseline. Mirrors the mock's "2025 season · blends after Wk 4".
-      const currentSeason = Number(season) || new Date().getFullYear();
-      const trySeasons = [currentSeason, currentSeason - 1];
-      let picked: number | null = null;
+      // ══ 2026-11-07 · THE SEASON KEY COULD NEVER MATCH ON NBA ══════════
+      // Andy, on a college card: "no sitaional records". Not missing data --
+      // nba_team_home_road_tendencies is populated, 30 teams x 3 seasons --
+      // the KEY could not match. That view's season is a TEXT split-year
+      // label ('2026-27'), and this built numbers via
+      // `Number(season) || getFullYear()`: Number('2026-27') is NaN, the ||
+      // swallows it, and the query went out as season=2026 then 2025.
+      //
+      // Measured against the live view with [Los Angeles Lakers, Detroit
+      // Pistons]: season=2026 -> 0 rows, season=2025 -> 0 rows,
+      // season='2026-27' -> 2 rows, season='2025-26' -> 2 rows. And
+      // `if (!homeRow && !awayRow) return null` renders NOTHING, so this
+      // panel has silently never appeared on an NBA card.
+      //
+      // _seasonKey / _priorSeasonKey above were written on 2026-10-xx for
+      // this exact bug on the situational cards -- "it compounded ... the
+      // prior-season fallback computed seasonForQuery - 1, which for a
+      // label is NaN". This card is the call site that never got them.
+      // Reusing them rather than writing a third season convention
+      // (feedback_guard_belongs_at_the_chokepoint).
+      const _k = _seasonKey(season);
+      const _pk = _priorSeasonKey(_k);
+      const trySeasons: (string | number)[] = _pk == null ? [_k] : [_k, _pk];
+      let picked: string | number | null = null;
       let matched: any[] = [];
       for (const s of trySeasons) {
         const {data} = await client.from(viewName).select('*')
@@ -8901,14 +8932,57 @@ function NCAABEfficiencyCard({ctx, homeTeam, awayTeam}: any) {
           {h.oe != null && h.de != null && <Text style={styles.pitcherStats}>Off/Def: <Text style={styles.pitcherStatBold}>{fmt(h.oe, 0)}/{fmt(h.de, 0)}</Text></Text>}
         </View>
       </View>
-      {projSpread != null && closeSpread != null && (
-        <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40', marginTop: 8}}>
-          <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>PANEL READ</Text>
-          <Text style={{color: C.text, fontSize: 12}}>
-            Panel projects spread at {Number(projSpread).toFixed(1)} vs market {Number(closeSpread).toFixed(1)}.
-          </Text>
-        </View>
-      )}
+      {/* ══ 2026-11-07 · THIS COMPARED A MARGIN TO A BETTING SPREAD ══════
+          Andy: "Purdue game of collge has mismatch purdue +21 but purdue
+          -19.5 in pre game jerry read". Both numbers were right; the
+          sentence put them in OPPOSITE conventions and invited the reader
+          to subtract them.
+
+          ncaab_game_context writes projected_spread as a MARGIN, positive =
+          home favoured. close_spread is a BETTING spread, negative = home
+          favoured. Measured over the 94 NCAAB rows since 11-05 that carry
+          both: the signs are OPPOSITE on 85 of 94, median |proj - close|
+          18.89 against median |proj + close| 8.46 -- and ncaab_game_context's
+          own compute_sweat_score agrees, deriving spread_edge as
+          abs(projected_spread + close_spread).
+
+          So on Valparaiso @ Purdue this read "Panel projects spread at 6.9
+          vs market -19.5", which looks like a 26-point disagreement between
+          two models that in fact agree on the favourite. (6.9 rather than
+          ~20 is the separate /3.0 divisor bug fixed in e32d7e4b; that fix
+          landed 2 hours after these rows were written, so it had not applied
+          yet.)
+
+          Fix: NAME THE TEAM and put both numbers in the same frame, so the
+          sentence cannot be misread as a sign error whatever the stored
+          convention is. A display pair needs the same measure AND the same
+          scale (feedback_a_pair_needs_same_measure_and_scale). */}
+      {projSpread != null && closeSpread != null && (() => {
+        const pm = Number(projSpread);          // margin, + = home
+        const cs = Number(closeSpread);         // betting spread, - = home
+        if (!isFinite(pm) || !isFinite(cs)) return null;
+        const panelFav  = pm >= 0 ? homeTeam : awayTeam;
+        const panelBy   = Math.abs(pm);
+        const mktFav    = cs <= 0 ? homeTeam : awayTeam;
+        const mktBy     = Math.abs(cs);
+        // Edge is only meaningful when both name the same favourite; when
+        // they disagree on the side, say that instead of printing a number
+        // that reads like a magnitude.
+        const sameSide  = panelFav === mktFav;
+        const edge      = Math.abs(panelBy - mktBy);
+        return (
+          <View style={{padding: 10, backgroundColor: C.accent + '10', borderRadius: 8, borderWidth: 1, borderColor: C.accent + '40', marginTop: 8}}>
+            <Text style={{color: C.accent, fontWeight: '800', fontSize: 11, letterSpacing: 0.5, marginBottom: 4}}>PANEL READ</Text>
+            <Text style={{color: C.text, fontSize: 12}}>
+              Panel projects {panelFav} by {panelBy.toFixed(1)}; market has{' '}
+              {mktFav} by {mktBy.toFixed(1)}.
+              {sameSide
+                ? ` Same side, ${edge.toFixed(1)} pt${edge === 1 ? '' : 's'} of edge.`
+                : ' Panel and market disagree on the favourite.'}
+            </Text>
+          </View>
+        );
+      })()}
     </Section>
   );
 }

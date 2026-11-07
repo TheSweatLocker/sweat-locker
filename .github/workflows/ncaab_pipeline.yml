@@ -656,6 +656,21 @@ jobs:
       # not a pick the resolver is about to move.
       #
       # Non-fatal: a pricing miss must not fail the slate.
+      # 2026-11-07: refresh the home/road tendencies matview after the
+      # results resolver, same as NFL/NCAAF/NBA have since 20260826b. The
+      # NCAAB view itself ships in
+      # 20261107a_ncaab_nhl_home_road_tendencies.sql -- until 11-07 neither
+      # the view nor this call existed, so the Trends & Tendencies panel
+      # could not render on a NCAAB card at all (Andy, on Purdue: "no
+      # sitaional records"). Offseason no-op.
+      - name: Refresh NCAAB home/road tendencies view
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/refresh_home_road_tendencies"             -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY"             -H "Content-Type: application/json"             -d '{"p_sport": "NCAAB"}'
+
       - name: Price NCAAB jerry_reads
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true
