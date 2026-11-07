@@ -16,7 +16,7 @@ render path traced. Andy's instruction on item 6 applies to all of them —
 | A4 | NCAAB still surfacing super-juiced chalk (e.g. Ohio State ML) | OPEN |
 | A5 | Externals likely gone dark across some sports | OPEN |
 | A6 | Purdue: app shows Purdue +21, pre-game Jerry read says Purdue −19.5; no situational records | OPEN |
-| A7 | Multiple CBB teams have no stats / missing data, suspected name matching | OPEN |
+| A7 | CBB teams with no stats | **ROOT CAUSE FOUND** - 31 of 34 already in the alias table |
 
 ---
 
@@ -240,3 +240,63 @@ external_picks by sport per day: NBA went 131 (11-04) -> 20 -> 2 (11-06) ->
 offseason. UFC has ONE source (bfo, 9 picks).
 Source counts over the last 7 days: NCAAF 8, NFL 8, NCAAB 7, NBA 6, NHL 6,
 UFC 1.
+
+---
+
+## A7 RESULT — it IS name matching, and the mapping already exists
+
+Andy: "likely due to name matching issue (not certain so don't just fucking
+believe that find the fuck out)." Found out. All three candidate causes
+separated.
+
+**34 of 203 teams on the 11-06/07 board have no `ncaab_team_stats` row and
+no `ncaab_team_efficiency` row. Every single one carries a MASCOT:**
+
+    Arizona St Sun Devils · Florida St Seminoles · Oklahoma St Cowboys
+    San Diego St Aztecs · Oregon St Beavers · Washington St Cougars
+    Mt. St. Mary's Mountaineers · Texas A&M-CC Islanders · ... 34 total
+
+The stats tables key on clean names (`Arizona St.`, 367 distinct teams).
+`ncaab_game_context.home_team/away_team` carries the mascot-suffixed
+Odds-API name for these 34.
+
+### Cause, by team
+
+| cause | n | meaning |
+|---|---|---|
+| **(c) RESOLVER NOT USED** | **31** | the alias table already maps it |
+| (a) ALIAS GAP | 1 | `Florida Int'l` — needs one alias added |
+| (b) ABSENT at source | 2 | `IUPUI Jaguars`, `West Florida Argonauts` |
+
+`ncaab_team_aliases` holds **365 rows and 1,405 lookup keys** across
+`canonical_name`, `kenpom_name`, `bart_name`, `odds_api_name` and
+`alt_names`. 20 of the 34 resolve on a DIRECT key hit; another 11 resolve
+through an abbreviation already in the table (`CSU Northridge`→`CSUN`,
+`GW`→`George Washington`, `Miss Valley St`→`Mississippi Valley St.`,
+`Mt.`→`Mount St. Mary's`, `Texas A&M-CC`→`Texas A&M Corpus Christi`).
+
+**So this is the `feedback_a_blocklist_duplicating_a_lookup_table` pattern
+again** — the server has all 1,405 keys and whatever populates the stats
+panel is not going through them. Fix is to resolve at the one chokepoint,
+not to add aliases.
+
+### The one real trap, and I nearly shipped it myself
+
+`Florida Int'l Golden Panthers` has no alias entry, and a naive mascot strip
+resolves it to **`Florida`** — a different school with its own stats. That
+is `feedback_prefix_strip_can_name_another_school` exactly. It needs an
+explicit `Florida Int'l` → `FIU` alias, never a strip.
+
+And a note on my own method: I added a refusal rule that rejects a strip
+whose answer does not share the input's FIRST TOKEN. It fired on four
+CORRECT resolutions — `CSU`→`CSUN`, `GW`→`George Washington`,
+`Miss`→`Mississippi`, `Mt.`→`Mount`. First-token equality breaks on
+abbreviation EXPANSION, so the memory rule ("refuse a strip whose dropped
+tokens name a different school") is the subtler and correct test, not the
+one I coded. Recorded so the next version of that guard is not built on the
+wrong rule.
+
+### Remaining two are genuinely absent, and that is fine
+`IUPUI Jaguars` (the school rebranded to IU Indianapolis) and
+`West Florida Argonauts` (Division II). Both should be alias'd or excluded
+deliberately rather than silently rendering a blank panel.
