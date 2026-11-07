@@ -10581,9 +10581,20 @@ setJerryHistory(prev => {
           supabase.from('fadereport_signals')
             .select('game_id,market,sharp_side_norm,strength_tier,strength_pts,bets_side_pct,money_side_pct')
             .eq('snapshot_date', gd),
+          // 2026-11-07: `.eq('sport','MLB')` was pinned here inside a
+          // CROSS-SPORT function. fetchSteamFlags merges its flag list
+          // across every sport (see the per-sport ctx fetch above), and the
+          // two sibling queries in this very Promise.all -- cleatz_signals
+          // and fadereport_signals -- carry no sport filter at all. So the
+          // third source was the only MLB-only one, and MLB is out of
+          // season: measured 2026-11-07, source='so' holds 228 rows today
+          // (all NCAAB) and 1,096 on 11-06 (NCAAB 680, NCAAF 392, NBA 24),
+          // of which this query asked for the 0 that are MLB. The 4th
+          // sharp-money source has been contributing nothing to any sport
+          // since baseball ended. Dropping the filter matches its siblings;
+          // game_id is unique per sport so the pivot below is unaffected.
           supabase.from('public_splits_v2')
             .select('game_id,market,side,source,metric,value')
-            .eq('sport', 'MLB')
             .eq('source', 'so')
             .gte('snapshot_ts', `${gd}T00:00:00Z`),
         ]);

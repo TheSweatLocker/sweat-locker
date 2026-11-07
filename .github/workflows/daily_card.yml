@@ -644,6 +644,45 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "snapshot_ledger.py" python snapshot_ledger.py
 
+      # ══ 2026-11-07 · A WORKFLOW THAT NEVER RUNS EMITS NO FAILURE ══════
+      # Andy: "Money flow not listed in app for any nba or nhl game."
+      # Root cause was not the money-flow code. nba_pipeline last started
+      # 2026-11-06T00:01 UTC and nhl_pipeline 2026-11-05T21:53, and neither
+      # was dispatched again: every nba/nhl_game_context row carries
+      # updated_at of 11-05 and both props tables stop dead there. Props,
+      # contexts, reads, lines and money flow were ALL dark for ~36h and
+      # nothing anywhere went red, because a cron GitHub never fires
+      # produces no run, no failed step and no alert. Every guard this repo
+      # has assumes a run happened.
+      #
+      # watchdog_workflow_heartbeat.py was written 2026-09-28 precisely to
+      # answer "did today's run start at all?" -- its own docstring says the
+      # telemetry "was collected and never checked" -- and it was then
+      # scheduled in ZERO workflows, so it never checked it either. Fourth
+      # already-written fix found sitting in no workflow in two days
+      # (feedback_green_step_that_writes_nothing).
+      #
+      # IT LIVES HERE AND NOT IN THE SPORT PIPELINES ON PURPOSE. A watchdog
+      # for dropped crons cannot sit inside a workflow that can itself be
+      # dropped -- nba_pipeline cannot report nba_pipeline being dark.
+      # daily_card is the most reliable host measured: 14 of 14 days in
+      # 2026-10-24..11-06 and 64 firings since 11-01, and
+      # project_card_builds_before_every_other_sport_1102 records it as the
+      # only pipeline that was running on time.
+      #
+      # continue-on-error so a dropped cron reports without taking the card
+      # down with it; run_step.sh records the failure and --gate turns the
+      # run red at the end.
+      - name: Dropped-cron watchdog (every sport)
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "dropped-cron watchdog"             python watchdog_workflow_heartbeat.py
+
       - name: Consistency watchdog
         working-directory: mlb_pipeline
         env:

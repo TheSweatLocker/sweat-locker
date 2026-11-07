@@ -35,7 +35,25 @@ H_READ  = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
            'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
-SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NHL', 'UFC']
+# ══ 2026-11-07 · NBA WAS MISSING FROM THIS LIST AND ONLY FROM THIS LIST ══
+# Andy: "Money flow not listed in app for any nba or nhl game." For NHL the
+# cause was a dropped cron. For NBA it was this line: public_splits_archive
+# held 0 NBA rows for its ENTIRE LIFE, across every other sport filling
+# normally (NCAAF 115,421 · NFL 38,621 · MLB 31,474 · NHL 8,840 · NCAAB
+# 2,855 · NBA 0).
+#
+# The data was never missing. This file is an aggregator, and both of its
+# upstreams carry NBA and have for weeks -- measured 2026-11-07 over rows
+# since 10-20: line_snapshot 609 NBA oddscrowd rows (newest 11-06) and
+# fadereport_signals 396 NBA rows (newest 11-06). It was collected every
+# run and then dropped on the floor, because `--sport ALL` iterates this
+# list and NBA is not in it. Nothing errored: a sport that is never asked
+# for cannot report that it was skipped.
+#
+# Same shape as the NCAAB pricing gap found 2026-11-06 -- a hand-kept list
+# of sports that silently stops being the set of live sports
+# (feedback_a_blocklist_duplicating_a_lookup_table).
+SUPPORTED_SPORTS = ['MLB', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'NHL', 'UFC']
 
 
 def latest_oc(sport: str, since_hrs: int = 6) -> dict:

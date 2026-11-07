@@ -83,6 +83,47 @@ EXPECTED = {
 LOOKBACK_DAYS = 14
 MIN_BASELINE = 4          # starts needed before "late" means anything
 
+# ══ 2026-11-07 · EXPECTED COVERED 4 WORKFLOWS OF 13, AND NBA WAS NOT ONE
+#
+# Andy: "Money flow not listed in app for any nba or nhl game." The cause
+# was not the money-flow code: nba_pipeline last started 2026-11-06T00:01
+# and nhl_pipeline 2026-11-05T21:53, so BOTH pipelines were simply never
+# dispatched on 11-06 or 11-07. Every ctx row for both sports carries
+# updated_at of 11-05, and nba/nhl_pipeline_props stop dead on 11-05.
+# Money flow was the symptom a user could see; props, contexts, reads and
+# lines were all dark with it.
+#
+# This file is the one thing in the repo that detects a dropped cron, and
+# it caught nhl_pipeline the moment it was pointed at 11-06. It said
+# NOTHING about nba_pipeline, because EXPECTED is a hand-kept list of 5
+# slots across 4 workflows and NBA, NCAAB, NFL, NCAAF, daily_card,
+# resolve_chain and the rest were never added. A hand-kept list that
+# duplicates something derivable goes stale silently
+# (feedback_a_blocklist_duplicating_a_lookup_table).
+#
+# So the daily expectation is DERIVED from the table's own history, and
+# EXPECTED is kept only as a floor for slot-level watches.
+#
+# ── WHY THE DERIVATION WINDOW IS 35 DAYS AND NOT 14 ──
+# A plain "started on >= 11 of the last 14 days" baseline ERASES ITSELF
+# during the outage it exists to report:
+#     dark 1 day  -> 13/14  expected -> alerts
+#     dark 3 days -> 11/14  expected -> alerts
+#     dark 4 days -> 10/14  NOT expected -> SILENT
+# The alert would die on day 4 of a real outage. Qualifying on the BEST
+# 14-day window inside the last 35 days instead survives 24 consecutive
+# dark days (replayed: still expected at 24, silent at 25), so an outage
+# cannot become its own excuse.
+#
+# Measured on 2026-11-07 over 2026-10-24..11-06 before coding: 8
+# workflows at 14/14, nba_pipeline and nhl_pipeline at 13/14 with the one
+# miss being 11-06 exactly, ncaaf 10/14 and ufc 8/14 (correctly below the
+# bar, both genuinely intermittent), pregame_lines and the_fade 5/14 (too
+# new to judge). So the rule flags the two real outages and nothing else.
+DERIVE_DAYS = 35          # history pulled for the daily-ness decision
+DERIVE_WINDOW = 14        # width of the window that must be dense
+DERIVE_MIN = 11           # start-days required inside the best window
+
 
 def _page(path, params):
     out, off = [], 0
@@ -117,7 +158,11 @@ def main() -> int:
 
     now = datetime.now(timezone.utc)
     day = a.date or now.date().isoformat()
-    since = (datetime.fromisoformat(day) - timedelta(days=LOOKBACK_DAYS)).date().isoformat()
+    # The lateness p90 still uses LOOKBACK_DAYS; only the daily-ness
+    # decision reads the wider window.
+    base = datetime.fromisoformat(day)
+    since = (base - timedelta(days=DERIVE_DAYS)).date().isoformat()
+    late_since = (base - timedelta(days=LOOKBACK_DAYS)).date().isoformat()
 
     rows = _page('workflow_heartbeat',
                  {'select': 'workflow,event,cron_slot,fired_at',
@@ -125,6 +170,7 @@ def main() -> int:
 
     # history[(workflow, slot)] = [minutes-past-midnight of each past start]
     history = defaultdict(list)
+    start_days = defaultdict(set)     # workflow -> {UTC day with a start}
     today_start, today_end = {}, {}
     for r in rows:
         wf, slot = r.get('workflow'), str(r.get('cron_slot') or '')
@@ -133,9 +179,11 @@ def main() -> int:
         if m is None or not wf:
             continue
         if r.get('event') == 'start':
+            if slot != 'manual':
+                start_days[wf].add(d)
             if d == day:
                 today_start.setdefault((wf, slot), m)
-            elif slot != 'manual':
+            elif slot != 'manual' and d >= late_since:
                 history[(wf, slot)].append(m)
         elif r.get('event') == 'end' and d == day:
             today_end.setdefault((wf, slot), m)
@@ -143,7 +191,30 @@ def main() -> int:
     now_m = now.hour * 60 + now.minute if day == now.date().isoformat() else 24 * 60
     problems, lines = [], []
 
-    for (wf, want_slot) in EXPECTED:
+    # Qualify a workflow as daily on the BEST DERIVE_WINDOW-wide window
+    # inside the pulled history -- see the DERIVE_DAYS note above for why
+    # the plain last-14-days form self-erases during an outage.
+    _d0 = (base - timedelta(days=DERIVE_DAYS)).date()
+    _span = [( _d0 + timedelta(days=i)).isoformat()
+             for i in range(DERIVE_DAYS)]     # excludes `day` itself
+    derived = set()
+    for wf, got in start_days.items():
+        best = 0
+        for i in range(0, max(1, len(_span) - DERIVE_WINDOW + 1)):
+            best = max(best, sum(1 for d in _span[i:i + DERIVE_WINDOW]
+                                 if d in got))
+        if best >= DERIVE_MIN:
+            derived.add((wf, None))
+
+    # EXPECTED is the floor: a slot-level watch stays even with thin
+    # history, and a workflow named there is never dropped by derivation.
+    watch = sorted(set(EXPECTED) | derived,
+                   key=lambda k: (k[0], k[1] or ''))
+    # Do not watch (wf, None) when (wf, <slot>) entries already cover it.
+    _slotted = {k[0] for k in EXPECTED if k[1] is not None}
+    watch = [k for k in watch if not (k[1] is None and k[0] in _slotted)]
+
+    for (wf, want_slot) in watch:
         # Match any slot when the expectation does not name one.
         keys = [k for k in set(list(today_start) + list(history))
                 if k[0] == wf and (want_slot is None or k[1] == want_slot)]
@@ -175,9 +246,19 @@ def main() -> int:
                          f'{window//60:02d}:{window%60:02d} UTC '
                          f'(p90 {p90//60:02d}:{p90%60:02d})')
         else:
+            # How long it has been dark matters more than today alone: one
+            # dropped cron is GitHub, three is a broken pipeline, and the
+            # NBA/NHL case that prompted this was 2 days deep before
+            # anyone looked.
+            _seen = sorted(d for d in start_days.get(wf, ()) if d < day)
+            _dark = ('last start %s (%d day(s) ago)'
+                     % (_seen[-1],
+                        (base.date() - datetime.fromisoformat(_seen[-1]).date()).days)
+                     ) if _seen else 'never started in the pulled window'
             msg = (f'{label} MISSING — no start today, and the normal window '
                    f'closed at {window//60:02d}:{window%60:02d} UTC '
-                   f'(p90 of last {len(past)} runs {p90//60:02d}:{p90%60:02d})')
+                   f'(p90 of last {len(past)} runs {p90//60:02d}:{p90%60:02d}); '
+                   f'{_dark}')
             problems.append(msg)
             lines.append(f'  MISSING  {label:34s} window closed '
                          f'{window//60:02d}:{window%60:02d} UTC')
