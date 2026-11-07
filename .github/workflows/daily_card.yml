@@ -377,8 +377,22 @@ jobs:
       # It runs AFTER the card, POTD and ledger so it prices the receipts
       # this run just wrote, and it only ever fills columns that are NULL —
       # it never overwrites a published price, and it reads each write back
-      # (a 204 is not a write). A 7-day window keeps it cheap; the historical
-      # sweep is a manual --since run.
+      # (a 204 is not a write).
+      #
+      # == 2026-11-07 - THE WINDOW THIS COMMENT CLAIMED DID NOT EXIST ==
+      # This said "A 7-day window keeps it cheap; the historical sweep is a
+      # manual --since run." There was no --since flag and no window: every
+      # run reconstructed every game ever recorded, for all 7 sports, 3x a
+      # day. Combined with a dedupe that had been dead since 10-31 (see
+      # upsert_batch), each run re-POSTed its whole history one row at a
+      # time and took a 23505 on every row that already existed -- MLB
+      # alone measured 1,028 rejected INSERTs per run. That is what
+      # depleted the Supabase disk IO budget.
+      #
+      # --days 14 now makes the claim true. The backlog is already drained
+      # (the broken loop did write every genuinely-new row, expensively),
+      # so nothing is lost today; an older gap needs a manual
+      # `--days 0` sweep, which is still the default when run by hand.
       # ══ 2026-10-07 · CAPTURE THE RECEIPTS BEFORE PRICING THEM ══
       # backfill_public_receipts.py was in NO workflow — the same failure as
       # the price backfill below. Run by hand once, never again.
@@ -414,7 +428,7 @@ jobs:
           # at NHL: a per-sport list that someone has to remember to
           # extend. NCAAB added now rather than on 11-03.
           for S in MLB NFL NCAAF NHL NBA NCAAB UFC; do
-            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "backfill_public_receipts.py ($S)"               python backfill_public_receipts.py --sport "$S" || true
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"               --label "backfill_public_receipts.py ($S)"               python backfill_public_receipts.py --sport "$S" --days 14 || true
           done
 
       # ══ 2026-10-13 · ignore-duplicates CANNOT DELIVER A LATE GRADE ══

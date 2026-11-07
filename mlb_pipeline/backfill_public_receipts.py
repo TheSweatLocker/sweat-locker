@@ -89,6 +89,12 @@ def _norm_result_or_none(v):
         return str(v).strip().upper() or None
 
 
+#: Oldest game_date this run will reconstruct, 'YYYY-MM-DD', or None for all
+#: history. Set by main() from --since/--days; see upsert_batch for why the
+#: scheduled run must be bounded.
+_SINCE: str | None = None
+
+
 def _et_today_str() -> str:
     """Today's date in ET, as YYYY-MM-DD.
 
@@ -240,6 +246,33 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     # passes through, so a source added later cannot forget it. ET, not the
     # runner's clock: on a UTC runner `date.today()` is tomorrow for four to
     # five hours a night, which is exactly when the nightly jobs run.
+    # ══ 2026-11-07 · AN UNBOUNDED DAILY RUN RE-READ EVERY SEASON ═════════
+    # daily_card.yml says of this step: "A 7-day window keeps it cheap; the
+    # historical sweep is a manual --since run." There was no --since, and
+    # no window: every run reconstructed EVERY game ever, for all 7 sports,
+    # 3x a day.
+    #
+    # Even with the dedupe above repaired, that is not free. _live_keys
+    # pages public_receipts once per (sport, surface, game_date) group in
+    # the payload, so a full-season MLB sharp_card payload alone issues
+    # ~180 GETs -- per source, per sport, per run -- purely to re-confirm
+    # rows written months ago and frozen since.
+    #
+    # Bounded here rather than in each of the 8 sources: same reason the
+    # future guard sits here (feedback_guard_belongs_at_the_chokepoint).
+    # The script's own default stays None = all history, so a manual
+    # `--source X` sweep behaves exactly as before; only the scheduled run
+    # passes --days.
+    if _SINCE:
+        _old = [r for r in rows
+                if str(r.get('game_date') or '')[:10] < _SINCE]
+        if _old:
+            rows = [r for r in rows
+                    if str(r.get('game_date') or '')[:10] >= _SINCE]
+            print(f'  window: {len(_old)} receipt(s) for games before '
+                  f'{_SINCE} skipped (use --days 0 to sweep all history)')
+        if not rows:
+            return 0
     _today = _et_today_str()
     _future = [r for r in rows if str(r.get('game_date') or '')[:10] > _today]
     if _future:
@@ -272,16 +305,62 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     # Same remedy as capture(): first-write-wins in code. The partial index
     # stays as it is -- it is the correct data rule and the void+replacement
     # pairs depend on it.
-    from public_receipt import _live_keys as _lk
-    live = _lk(rows)
-    if live is None:
+    # ══ 2026-11-07 · THE DEDUPE WAS TESTING AGAINST A TUPLE ══════════════
+    # a07631aa changed _live_keys to return TWO sets -- (source_id keys,
+    # bet keys) -- so one wager recorded under two source_ids could be
+    # caught. capture() was updated to unpack it. THIS caller was not:
+    #
+    #     live = _lk(rows)                      # a 2-TUPLE of sets
+    #     ... (sport, surf, date, source_id) not in live
+    #
+    # `x not in (set_a, set_b)` asks whether the 4-tuple EQUALS one of the
+    # two sets. It never does, so the test was True for every row and the
+    # dedupe has been dead since 10-31. Every run POSTed every
+    # reconstructed receipt, the batch INSERT hit 23505 on the first row
+    # that already existed, and the per-row fallback below then wrote one
+    # rejected INSERT per historical receipt:
+    #
+    #   2026-11-06 19:59 UTC - 23505 on public_receipts_live_source_uniq
+    #   roughly every 80ms, continuously, for the length of the run
+    #
+    # Each rejected INSERT still writes a heap tuple and a WAL record and
+    # leaves a dead tuple behind, so this was burning the project's disk
+    # IO budget and autovacuum capacity on writes that could never land.
+    # Andy got the depletion warning from Supabase on 11-07.
+    #
+    # Third instance of one root cause, two writers, only one patched --
+    # the 42P10 note below and the future-date guard above are the other
+    # two (feedback_fix_every_writer_to_the_table). The shared helper
+    # changed shape and the unpack is the contract; a tuple used as a
+    # membership target fails SILENTLY, which is why it ran six days.
+    from public_receipt import _bet_key as _bk, _live_keys as _lk
+    _keys = _lk(rows)
+    if _keys is None:
         # The dedupe read failed. An empty set would read as "nothing exists"
         # and duplicate every receipt, so refuse instead.
         print('  ⚠ batch write skipped: could not read existing receipts')
         return 0
-    fresh = [r for r in rows
-             if (str(r.get('sport')), str(r.get('surface')),
-                 str(r.get('game_date')), str(r.get('source_id'))) not in live]
+    existing, live_bets = _keys
+    fresh, dup_bets = [], 0
+    for r in rows:
+        ident = (str(r.get('sport')), str(r.get('surface')),
+                 str(r.get('game_date')), str(r.get('source_id')))
+        if ident in existing:
+            continue
+        # Same wager under a different source_id is already recorded --
+        # the check capture() makes, which this writer never did.
+        _k = _bk(str(r.get('sport')), str(r.get('surface')),
+                 str(r.get('game_date')), r)
+        if _k and _k in live_bets:
+            dup_bets += 1
+            continue
+        fresh.append(r)
+    # Print the denominator, always. A silent `return 0` reads identically
+    # whether the dedupe worked or died again
+    # (feedback_green_step_that_writes_nothing).
+    print(f'  dedupe: {len(rows)} reconstructed, {len(rows) - len(fresh)} '
+          f'already live ({dup_bets} under another source_id), '
+          f'{len(fresh)} to write')
     if not fresh:
         return 0
     r = requests.post(f'{SB}/rest/v1/public_receipts',
@@ -892,7 +971,23 @@ def main():
     p.add_argument('--sport', default='MLB', choices=['MLB', 'NFL', 'NCAAF', 'NBA', 'NHL', 'NCAAB', 'UFC'])
     p.add_argument('--source', choices=list(SOURCES.keys()) + ['all'], default='all')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--days', type=int, default=0,
+                   help='only reconstruct games in the last N days '
+                        '(0 = all history, the default; the scheduled run '
+                        'passes a small N to keep the daily pass cheap)')
+    p.add_argument('--since', default=None,
+                   help="only reconstruct games on/after this YYYY-MM-DD; "
+                        "overrides --days")
     args = p.parse_args()
+
+    global _SINCE
+    if args.since:
+        _SINCE = args.since[:10]
+    elif args.days and args.days > 0:
+        import datetime as _dt
+        _SINCE = (_dt.date.fromisoformat(_et_today_str())
+                  - _dt.timedelta(days=args.days)).isoformat()
+    print(f'  window: {_SINCE or "ALL HISTORY"}')
 
     print(f'=== backfill_public_receipts · sport={args.sport} · source={args.source} '
           f'{"(DRY)" if args.dry_run else "(APPLY)"} · {datetime.now().isoformat()} ===')
