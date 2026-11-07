@@ -305,7 +305,133 @@ def run_for_sport(sport: str, game_date: str, dry_run: bool = False) -> int:
     # DOES share game_id with jerry_reads), then match results by
     # (away, home, week_bucket) tuple with ET/UTC date-window tolerance.
     # 249d71cb applied the sibling fix in resolve_nfl_results.py.
-    if sport in ('NFL', 'NCAAF') and gid_list:
+    # == 2026-11-07 - NCAAB READS COULD NOT REACH THEIR RESULT ROW =======
+    # Same class as the 2026-09-11 NFL/NCAAF fix below, third location
+    # (price_picks was the second). `jerry_reads.game_id` and
+    # `ncaab_game_context.game_id` are both the Odds-API 32-char hex;
+    # `ncaab_game_results.game_id` is the composed slug
+    # `ncaab_20261106_UT_Arlington_Portland`. Measured 2026-11-07: 0 of 60
+    # recent read ids appear in the results table, and grading sits at 0 of
+    # 129 on the settled dates 11-03..11-06 while those same dates are
+    # 26/28, 21/21, 58/58 and 67/68 SCORED in the results table. The scores
+    # were there the whole time; only the join was missing.
+    #
+    # DO NOT rebuild the slug. Measured over those 129 games:
+    #     raw ctx names        -> slug    20 of 129
+    #     resolved names       -> slug    45 of 129
+    #     (date, resolved away, resolved home) vs the results table's OWN
+    #     team columns                   128 of 129
+    # ctx carries mascots ('UT-Arlington Mavericks', 'Oklahoma St Cowboys')
+    # and the slug does not, so composing a key means re-deriving a naming
+    # convention -- exactly what price_picks.ncaab_key warns against and
+    # what [[feedback_prefix_strip_can_name_another_school]] cost. Join on
+    # resolved names and let the slug stay opaque.
+    #
+    # The 129th game is why this does NOT fall back to an
+    # orientation-insensitive match: ctx has `Portland @ UT-Arlington`,
+    # results has `UT Arlington @ Portland`. One of them has the sides
+    # backwards, and every spread/total result on the row is read from the
+    # HOME perspective, so guessing would grade the wrong team -- a WRONG
+    # grade, which is worse than an ungraded row
+    # ([[feedback_grade_each_row_not_the_date]]). An inverted hit is
+    # reported and skipped.
+    if sport == 'NCAAB' and gid_list:
+        try:
+            import ncaab_team_resolver as _ncaab_res
+            _ncaab_res.load_aliases()
+            _rv = _ncaab_res.resolve
+        except Exception as _e:
+            print(f'  [NCAAB] resolver unavailable ({_e}) - cannot join reads '
+                  f'to results; this is a WIRING ERROR, not an empty slate')
+            _rv = None
+        results_by_gid = {}
+        if _rv is not None:
+            # in.(...) rides in the URL and truncates past ~2KB
+            # ([[feedback_in_filter_url_truncates_silently]]) - chunk at 20.
+            ctx_by_gid = {}
+            for _i in range(0, len(gid_list), 20):
+                _q = ','.join(f'"{g}"' for g in gid_list[_i:_i + 20])
+                _cr = requests.get(f'{SB}/rest/v1/ncaab_game_context',
+                                   headers=H_READ,
+                                   params={'game_id': f'in.({_q})',
+                                           'select': 'game_id,away_team,'
+                                                     'home_team,game_date'},
+                                   timeout=20)
+                if _cr.status_code != 200:
+                    print(f'  [NCAAB] ctx chunk failed {_cr.status_code}: '
+                          f'{_cr.text[:120]} - ABORT rather than grade a '
+                          f'partial slate')
+                    ctx_by_gid = {}
+                    break
+                for _row in (_cr.json() or []):
+                    if isinstance(_row, dict) and _row.get('game_id'):
+                        ctx_by_gid[_row['game_id']] = _row
+            from datetime import date as _d, timedelta as _td
+            _dates = [r.get('game_date') for r in ctx_by_gid.values()
+                      if r.get('game_date')]
+            if _dates:
+                _lo = (_d.fromisoformat(min(_dates)) - _td(days=2)).isoformat()
+                _hi = (_d.fromisoformat(max(_dates)) + _td(days=2)).isoformat()
+                _rr = requests.get(f'{SB}/rest/v1/{results_table}',
+                                   headers=H_READ,
+                                   params={'game_date': f'gte.{_lo}',
+                                           'and': f'(game_date.lte.{_hi})',
+                                           'select': f'game_id,game_date,'
+                                                     f'away_team,home_team,'
+                                                     f'home_score,away_score,'
+                                                     f'{spread_col},{line_col},'
+                                                     f'total_result',
+                                           'limit': '2000'},
+                                   timeout=30)
+                _rows = _rr.json() if _rr.status_code == 200 else []
+                if _rr.status_code != 200:
+                    print(f'  [NCAAB] results query failed '
+                          f'({_rr.status_code}): {str(_rr.text)[:150]}')
+                _fwd, _inv = {}, {}
+                for _row in _rows:
+                    if not isinstance(_row, dict):
+                        continue
+                    _row['run_line_result'] = _row.get(spread_col)
+                    _row['spread_line'] = _home_persp_line(sport,
+                                                           _row.get(line_col))
+                    _ra = _rv(_row.get('away_team'))
+                    _rh = _rv(_row.get('home_team'))
+                    if not (_ra and _rh):
+                        continue
+                    _dk = str(_row.get('game_date'))[:10]
+                    _k = (_dk, _ra, _rh)
+                    _prev = _fwd.get(_k)
+                    if _prev is None or (_prev.get('home_score') is None
+                                         and _row.get('home_score') is not None):
+                        _fwd[_k] = _row
+                    _inv.setdefault((_dk, _rh, _ra), _row)
+                _flipped = 0
+                _unmatched = 0
+                for _gid, _c in ctx_by_gid.items():
+                    _dk = str(_c.get('game_date'))[:10]
+                    _ca = _rv(_c.get('away_team'))
+                    _ch = _rv(_c.get('home_team'))
+                    _hit = _fwd.get((_dk, _ca, _ch))
+                    if _hit is not None:
+                        results_by_gid[_gid] = _hit
+                        continue
+                    if _inv.get((_dk, _ca, _ch)) is not None:
+                        _flipped += 1
+                        print(f'  [NCAAB] ORIENTATION CONFLICT {_dk} '
+                              f'ctx says away={_c.get("away_team")!r} '
+                              f'home={_c.get("home_team")!r}, results has '
+                              f'them reversed - NOT graded (a '
+                              f'home-perspective result on a reversed row '
+                              f'grades the wrong team)')
+                        continue
+                    _unmatched += 1
+                print(f'  [NCAAB] joined {len(results_by_gid)} of '
+                      f'{len(ctx_by_gid)} ctx games to results'
+                      + (f' - {_flipped} orientation conflict(s)'
+                         if _flipped else '')
+                      + (f' - {_unmatched} unmatched' if _unmatched else ''))
+        raw_rows = list(results_by_gid.values())
+    elif sport in ('NFL', 'NCAAF') and gid_list:
         ctx_table = 'nfl_game_context' if sport == 'NFL' else 'ncaaf_game_context'
         ctx_r = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
                              params={'game_id': f'in.({gid_in})',
