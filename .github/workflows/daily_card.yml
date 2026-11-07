@@ -292,6 +292,47 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "refresh_calibration_notes.py" python refresh_calibration_notes.py
 
+      # 2026-11-07 - RESTORE A SPREAD PICK'S MISSING LINE BEFORE ANYTHING
+      # PRICES OR PUBLISHES IT.
+      #
+      # fix_nhl_rl_pick_lines.py was written 2026-11-04, already takes
+      # --sport for NHL/NBA/NCAAB/NFL/NCAAF, and was in NO workflow - the
+      # same shape as the Dawg that stayed dark after being fixed. Measured
+      # 2026-11-07 before wiring it: 32 picks across four sports held
+      # primary_play.line = null with the number sitting in close_spread /
+      # close_puckline on their OWN row (NCAAF 18, NBA 7, NFL 6, NHL 1).
+      #
+      # Root cause per that script: the pick is resolved BEFORE the odds
+      # land, and pick_lock then preserves the published unlined
+      # primary_play on every later pass, so the gap never heals by itself
+      # (feedback_late_data_must_invalidate_derived_output). It therefore has
+      # to run on the daily cadence, not once.
+      #
+      # Why it sits HERE, ahead of POTD rather than ahead of the card:
+      # receipt_invariants REFUSES a line-bearing market with no pick_line,
+      # so those picks publish UNGRADEABLE, and the POTD price path falls
+      # back to -110 for a side market - Buffalo -1.5 closed at +180.
+      # Grading a +180 play at -110 is not a rounding error. Both the anchor
+      # below and the card after it need the line already restored.
+      #
+      # The SIDE is never chosen, only re-derived for the side already
+      # stored, so a pick cannot change teams. The script confirms every
+      # PATCH by readback and stamps _line_restored_from_ctx so a later
+      # audit can tell a restored line from a resolver-written one.
+      # || true: a line repair failing must never stop the card.
+      - name: Restore missing spread lines (all sports)
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          for S in NHL NBA NCAAB NFL NCAAF; do
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+              --label "fix_nhl_rl_pick_lines.py $S" \
+              python fix_nhl_rl_pick_lines.py --sport "$S" || true
+          done
+
       # POTD first: generate_sweat_card reads best_bet_<date> out of
       # jerry_cache, so composing the card before the anchor runs gives a
       # card with an empty POTD slot.
