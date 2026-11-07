@@ -5329,3 +5329,57 @@ deliberate and the dependency is circular. The SYNC is what closes the loop, so
 the sync moved to after the resolver. Order is now generate reads -> resolver ->
 sync -> price (steps 32-35, YAML revalidated). This alone does NOT make the sync
 write; its prose guard still blocks the pick update (R189).
+
+### R192 · POTD receipts ledger is ~2x inflated vs the POTD history (2026-11-06)
+`daily_best_bet_history` is clean: 183 rows, one per `bet_date`, 2026-04..11,
+lifetime **86-69 = 55.48%**, every month present. `public_receipts
+surface=potd` holds **362 rows over 177 dates**, with **99 in July and 121 in
+October** against ~30 possible days each. W/L per month match history exactly,
+so the excess is VOID rows — but any calendar that counts ROWS instead of
+filtering on result reads ~2x. Also **6 dates in history have no potd receipt**.
+Fix: the calendar must filter result IN (W,L,P), and the 6 missing dates need a
+backfill. Verify against the history table, which is the clean source.
+
+### R193 · external track record has null ROI on 424 of 450 rows, and duplicates (2026-11-06)
+`external_source_track_record` has 450 rows and **339 are usable** (hit_rate and
+n_graded>=30), so the "weight handicappers by their own record" input exists.
+But `roi` is null on **424 of 450**, so a weight can only be built from hit rate
+and not from price — and at these rates that matters: oddscrowd MLB ALL 51.34%
+on n=3,020, scoresandodds NCAAF **48.05%** on n=1,258, scoresandodds MLB 52.25%
+on n=1,177, oddscrowd MLB total 50.00% on n=1,036. Rows are also duplicated
+(every row in the top-8 by n appears exactly twice), which would double-count a
+source in any average. At coin-flip hit rates these sources are a better FADE
+input than a follow input — but compute ROI before deciding either way.
+
+### R194 · NBA has NO money-flow data at all (2026-11-06)
+`public_splits_archive` rows by sport since 2026-09-01: NCAAF 115,421 · NFL
+38,621 · MLB 31,474 · NHL 8,840 · NCAAB 2,855 · **NBA 0**. Every splits-derived
+signal is therefore dead for NBA, and NBA is an everyday sport from now to
+April. Separately: **cz died on 11-04** (822 rows 11-03, 86 on 11-04, 0 on 11-05
+and 11-06) and **oc is thin and erratic** at 74-987 rows a day out of 2-3.4k —
+oc being the only source whose `pick_side` indexes the public side, The Fade
+depends on the thinnest feed in the system (see R188).
+
+### R195 · NHL props generate 84k rows and cannot ever publish one (2026-11-06)
+`nhl_pipeline_props` holds **83,986 rows since 08-01, every single one tier
+COVERAGE**, with conviction > 0 on only 665. **49,410 are graded at 43.28%
+against a 46.64% breakeven — -3.36pp, -13.14% ROI.** Nothing is publishable
+because COVERAGE is not a published tier, so this is 84k rows of storage and
+49k graded outcomes producing exactly zero product. Either tier NHL props
+properly (they would then have to clear that -3.36pp) or stop generating them.
+`public_receipts surface=prop_jerry` for NHL is 6,899 rows with **0 graded**.
+
+### R196 · NFL prop tier ordering is INVERTED (2026-11-06)
+Graded NFL props by tier, edge vs each row's own breakeven: **PRIME -5.15pp
+(-9.80% ROI, n=249)**, STRONG -2.20pp (n=1,290), LEAN -0.41pp (n=1,250), LIGHT
+-0.48pp (n=1,127). The scorer's confidence is ANTI-correlated with outcome — its
+best tier is its worst result. Published total (PRIME+STRONG+LEAN) is -1.66pp,
+-2.97% on n=2,789. Note this is the TIER view; `prop_cell_allowlist` publishes
+only 3 (prop_type, tier) cells and those are positive on a much smaller sample
+(R171), so both facts hold. The tier model itself needs refitting or demoting.
+
+### R197 · UFC produces 75 passes and zero picks (2026-11-06)
+`jerry_reads` for UFC since 09-01: **75 `pass`, 0 actual picks**, and 119 reads
+since 08-01 of which 25 graded (17-8, 68.0%, -5.7% ROI). A tab with no product
+in it. Either the gates are mis-set for the sport or it should be dark rather
+than showing passes.
