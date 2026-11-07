@@ -5438,3 +5438,25 @@ gradient, because every row is COVERAGE so a per-game cap is meaningless while
 all ~140 rows in a game score identically; then publish only cells whose lower
 bound clears their own breakeven on FORWARD data. The gradient is real. No cell
 is profitable yet.
+
+### R200 · a WITHDRAWN pick does not clear its read (2026-11-06)
+`sync_jerry_reads_from_ctx` only writes rows where `primary_play` EXISTS, so when
+the engine withdraws a pick — on 11-07 the new ensemble juice cap refused six
+moneylines and the bespoke path had no alternative, leaving `primary_play` null —
+the read kept advertising the withdrawn play. Seven reads on 11-07 still showed
+`Utah St. ML -20000`, `New Mexico ML -10000`, `Dayton ML -8000`,
+`Saint Joseph's ML -4000`, `Davidson ML -780`, `St. Bonaventure ML -350` and one
+orphaned total, after the resolver had correctly refused all of them. Cleared by
+hand to `call_market='pass'` with the price nulled, readback confirms 0 remaining
+past -300.
+
+The systemic fix is one of two, and it needs a decision on which:
+* the resolver emits an EXPLICIT pass `primary_play` instead of null when it
+  withdraws, so the sync has something to propagate; or
+* the sync treats "read has a live call AND ctx has no primary_play" as a
+  withdrawal and passes the read.
+
+The second is riskier on its own — a null `primary_play` also means "the resolver
+has not run yet", and clearing on that would wipe good picks before the daily
+run. The first is unambiguous and is the one I would take
+([[feedback_late_data_must_invalidate_derived_output]]).
