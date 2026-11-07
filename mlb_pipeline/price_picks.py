@@ -279,6 +279,46 @@ def price_one(grouped: dict, key: str, market: str, side: str, line, text: str) 
     }
 
 
+#: A spread, run line, puck line or total is a JUICE market - every book
+#: prices it inside roughly +/-300. A moneyline is not. So a price past that
+#: band on a side/total pick cannot have been computed against that market.
+_JUICE_MARKETS = {'rl', 'spread', 'ats', 'puckline', 'total'}
+_JUICE_LIMIT = 300.0
+
+
+def price_impossible(market, price) -> bool:
+    """True when the stored price cannot belong to the stored market.
+
+    == 2026-11-06 . THE 10-27 INVALIDATION ONLY RAN IN ONE WRITER =========
+    sync_jerry_reads_from_ctx.py nulls the price when IT changes a read's
+    market, and that fixed the sports it touches -- measured today, MLB 0,
+    NCAAF 0, NFL 0 impossible prices out of 403 side/total reads.
+
+    But a pick's market also moves OUTSIDE that writer. On 11-06 the new
+    NCAAB ml -> COVERAGE ceiling pushed picks off the moneyline onto the
+    spread, and NCAAB's sync skips every read whose long_read is real prose
+    (all of them), so nothing invalidated the price:
+
+        15 of 42 NCAAB side reads (35.7%) carried a moneyline price
+        Kansas -28.5 at -20000 · Iowa St. -30.5 at -18182
+        Purdue -19.5 at -4500, while line_history holds spread/home/-19.5
+        at -110 from betmgm, fanduel, espnbet and draftkings
+
+    Telling a subscriber a 28-point spread is available at -20000 is worse
+    than showing nothing, and every ROI and breakeven on those rows is
+    wrong. So the test moves to the CHOKEPOINT every writer passes
+    (feedback_guard_belongs_at_the_chokepoint): price_picks decides what a
+    price is, so price_picks decides when one is impossible.
+    """
+    if str(market or '').lower() not in _JUICE_MARKETS:
+        return False
+    try:
+        v = float(price)
+    except (TypeError, ValueError):
+        return False
+    return v < -_JUICE_LIMIT or v > _JUICE_LIMIT
+
+
 def _has_started(read: dict, ctx: dict) -> bool:
     """True when this game's scheduled start is already behind us.
 
@@ -348,7 +388,18 @@ def main():
             # market moves, so the number has to. Only a game that has
             # already started keeps its price, because that one is a
             # historical record of what we published.
-            if r.get('price_american') is not None and _has_started(r, ctx):
+            # An IMPOSSIBLE price is never frozen. _has_started protects a
+            # started game's price because that is a record of what we
+            # published - but only when it could have been that market's
+            # price in the first place. See price_impossible().
+            _impossible = price_impossible(r.get('call_market'),
+                                           r.get('price_american'))
+            if _impossible:
+                print(f'    [IMPOSSIBLE PRICE] {r.get("call_text")!r} '
+                      f'({r.get("call_market")}) holds {r.get("price_american")} '
+                      f'- not a {r.get("call_market")} price; clearing')
+            if (r.get('price_american') is not None and _has_started(r, ctx)
+                    and not _impossible):
                 skip += 1
                 continue
             if not r.get('call_text') or not r.get('call_market'):
