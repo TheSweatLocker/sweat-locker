@@ -230,7 +230,7 @@ NCAAB 0-900 (zero on 10-29, 10-31, 11-07; six on 10-30), **NBA has no
 column at all - zero rows ever**. So NBA money flow cannot render because it
 does not exist, NCAAB is erratic to the point of unusable, and NHL is an
 order of magnitude below NCAAF.
-NEW FINDING:  returns **HTTP 500, statement timeout** when
+NEW FINDING: `public_splits_v2` returns **HTTP 500, statement timeout** when
 queried by sport, so the aggregated view cannot be read at all.
 
 ### A5 - PARTLY CONFIRMED. Not dark everywhere, but NBA and NHL fell off.
