@@ -215,18 +215,58 @@ def _avg_ml(bookmakers, team_name):
     return _posted_price(vals)
 
 
+#: adjEM differential -> expected game margin. Fitted 2026-11-06 against two
+#: independent targets: 0.973 vs actual final margins (n=134) and 0.935 vs the
+#: posted close_spread (n=189). Replaces a /3.0 divisor ported from the client
+#: that was wrong by ~3x and fabricated an 11.77-point spread_edge on every
+#: game. See compute_projections.__doc__.
+ADJ_EM_TO_MARGIN = 0.97
+
+
 def compute_projections(home, away):
     """Compute projected_spread (positive = home favored), projected_total,
     pace, and per-team predicted points using KenPom efficiency formulas.
 
     Ported from client-side calcGameSweatScore NCAAB branch (line 2678):
-      predictedSpread = (home.adjEM - away.adjEM) / 3
+      predictedSpread = (home.adjEM - away.adjEM) * ADJ_EM_TO_MARGIN
       projectedTotal  = ((avg_oe + avg_de) / 2 / 100) * pace * 2
 
-    The /3 divisor is a calibration constant that translates adjEM
-    differential (which is per-100-possession) to expected spread at
-    typical tempo. Sourced from historical NCAAB backtest in the client
-    branch — kept for parity until we collect server-side data."""
+    == 2026-11-06 · THE /3 DIVISOR FABRICATED AN 11-POINT EDGE ON EVERY GAME
+    The note this replaces said the /3 was "kept for parity until we collect
+    server-side data". We have that data now, and /3 is wrong by about 3x.
+
+    Fitted two INDEPENDENT targets, least squares with no intercept:
+
+        adjEM gap -> ACTUAL final margin   slope 0.973  (n=134, median 0.980)
+        adjEM gap -> posted close_spread   slope 0.935  (n=189, median 0.938)
+
+    They land in the same place, which is the reassurance. Mean absolute
+    error against the final margin: /3.0 gives 15.51 points, 0.973 gives
+    8.96.
+
+    WHY IT MATTERED MORE THAN THE PROJECTION ITSELF. compute_sweat_score and
+    compute_primary_play both read `spread_edge = projected_spread +
+    close_spread` (opposite conventions, so they cancel when model and
+    market agree). Compressing the projection 3x meant they never cancelled:
+
+        mean |spread_edge| with /3.0   11.77 points on EVERY game
+        mean |spread_edge| with 0.973   2.74 points
+
+    The sweat_score ladder is 4.0 / 3.0 / 2.0 / 1.0 and PRIME ML needs
+    |spread_edge| >= 2.0, so an 11-point phantom edge maxed the top band on
+    the entire board, every day. That is the engine believing it had a huge
+    edge on every NCAAB game, which is how super-juiced chalk earned
+    conviction. Andy, 11-06: "ncaab game ... probably still giving out super
+    juiced chalk plays like ohio state ml."
+
+    NOTE the theoretical check does NOT agree and the data wins: adjEM is a
+    per-100-possession margin and a ~68-possession game would imply ~0.68,
+    not ~0.95. Both empirical fits say ~0.95-0.98, so these adj_em values
+    are evidently already closer to game scale than the name suggests. Left
+    as a named constant so it is tunable when more of the season is graded.
+
+    Convention is unchanged: POSITIVE = home favoured, which is the opposite
+    of close_spread, and the two callers above depend on that."""
     h_em = home.get("adj_em")
     a_em = away.get("adj_em")
     h_oe = home.get("adj_oe")
@@ -247,7 +287,7 @@ def compute_projections(home, away):
     if None in (h_em, a_em):
         return out
     out["adj_em_gap"] = round(float(h_em) - float(a_em), 2)
-    out["projected_spread"] = round(out["adj_em_gap"] / 3.0, 2)
+    out["projected_spread"] = round(out["adj_em_gap"] * ADJ_EM_TO_MARGIN, 2)
 
     if None not in (h_oe, a_oe, h_de, a_de, h_tempo, a_tempo):
         pace = (float(h_tempo) + float(a_tempo)) / 2.0 - 2.5
