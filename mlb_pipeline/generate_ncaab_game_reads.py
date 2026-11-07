@@ -301,6 +301,35 @@ def write_cache(game_id: str, sport: str, narrative: str, struct: dict) -> bool:
     return r.status_code in (200, 201, 204)
 
 
+def _has_started(ctx: dict) -> bool:
+    """True when this game's scheduled tip is already behind us.
+
+    == 2026-11-06 . A REGENERATED READ ON A PLAYED GAME RESTATES HISTORY ==
+    `--force` rewrote every read in the 5-day horizon, including games
+    already in progress or finished. A published read is a record of what
+    we said before the game, so regenerating it after tip-off restates it
+    -- the same defect found the same day in ncaab_resolve_primary_play,
+    which also had no started-game guard. At 19:16 ET on 11-06, 27 of 59
+    games had already tipped.
+
+    `game_time_et` is named ET and HOLDS A UTC TIMESTAMP (verified on the
+    11-06 slate: 21:00:00..03:30:00 for a 4pm-10:30pm ET card), so it is
+    compared against utcnow and never localised. An unknown tip counts as
+    NOT started: regenerating a forward read is harmless, restating a
+    played one is not.
+    """
+    raw = ctx.get('game_time_et')
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts <= datetime.now(timezone.utc)
+
+
 def run(force: bool = False, limit: Optional[int] = None) -> None:
     print(f'=== NCAAB game reads · {today_et()} ===')
     templates = load_templates()
@@ -313,8 +342,12 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
         print('  (offseason or no ncaab_game_context rows yet)'); return
     if limit: games = games[:limit]
 
-    written = 0; skipped = 0
+    written = 0; skipped = 0; started = 0
     for ctx in games:
+        # A read published before tip is a historical record. See _has_started.
+        if _has_started(ctx):
+            started += 1
+            continue
         struct = build_struct(ctx)
         prompt = render_prompt(templates, struct)
         narrative = call_claude(prompt)
@@ -345,6 +378,8 @@ def run(force: bool = False, limit: Optional[int] = None) -> None:
                 prompt_version='ncaab_game_read_v2_2026-08-25',
             )
 
+    if started:
+        print(f'  · {started} game(s) already tipped — read left as published')
     print(f'\n✓ wrote {written} · skipped {skipped}')
 
 

@@ -448,15 +448,53 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
     }
 
 
+def _has_started(g: dict) -> bool:
+    """True when this game's scheduled tip is already behind us.
+
+    == 2026-11-06 . THIS RESOLVER HAD NO STARTED-GAME GUARD AT ALL ====
+    It recomputed primary_play for every game on the date, including
+    games already in progress or finished. A published call is a
+    historical fact -- jerry_reads_dual_write protects the read for
+    exactly this reason and price_picks freezes a started game's price
+    -- but the pick this resolver writes had no such protection, so a
+    later pass could retroactively restate what we had claimed on a
+    live game.
+
+    It mattered the day it was found: at 19:16 ET on 11-06, 27 of 59
+    games had tipped, and the fixes shipped that day (the NCAAB ml
+    COVERAGE ceiling and the zero-weight credibility guard) would have
+    DEMOTED 12 stored `ml LEAN` picks on games already under way --
+    quietly hiding a LEAN we had published.
+
+    Unknown tip time counts as NOT started, matching price_picks'
+    _has_started: re-resolving a forward game is harmless, freezing or
+    restating a played one is not.
+    """
+    raw = g.get('game_time_et')
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts <= datetime.now(timezone.utc)
+
+
 def _load_games(game_date: date) -> list:
     # close_home_ml/close_away_ml added 2026-11-05: without them an ML pick
     # reaches posted_market_gate with the keys missing entirely, and a gate
     # cannot judge a market it was never shown. The gate now passes on an
     # absent column rather than refusing, so this is what makes the ML check
     # actually DO something instead of silently abstaining.
+    # game_time_et added 2026-11-06 for the started-game guard below. The
+    # column NAME says ET and the VALUE is a UTC timestamp, verified
+    # against the 11-06 slate (21:00:00 .. 03:30:00 for a 4pm-10:30pm ET
+    # card), so it is compared against utcnow and never localised.
     fields = ('game_id,home_team,away_team,projected_spread,projected_total,'
               'close_spread,close_total,open_spread,open_total,'
-              'close_home_ml,close_away_ml,'
+              'close_home_ml,close_away_ml,game_time_et,'
               'signal_confluence_net,mc_probabilities,panel_prediction')
     r = requests.get(
         f'{SB}/rest/v1/ncaab_game_context?select={fields}'
@@ -516,7 +554,13 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
     print(f'  jerry picks: {len(jerry)}')
 
     n_ok = 0; tier_counts = {}
+    n_started = 0
     for g in games:
+        # A started game's pick is a record of what we published, not a
+        # candidate for re-scoring. See _has_started.
+        if _has_started(g):
+            n_started += 1
+            continue
         result = resolve(g, g.get('mc_probabilities'), g.get('panel_prediction'),
                           jerry.get(g.get('game_id')))
         # ═══ 2026-11-03 · ENSEMBLE MERGE, NOT REPLACE ═══════════════════
@@ -668,6 +712,8 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
             if _write(g['game_id'], result):
                 n_ok += 1
 
+    if n_started:
+        print(f'  · {n_started} game(s) already tipped — pick left as published')
     print(f'  ✓ {n_ok} rows resolved; tier breakdown: {tier_counts}')
     return n_ok
 

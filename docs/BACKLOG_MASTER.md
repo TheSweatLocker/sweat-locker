@@ -5279,3 +5279,45 @@ recomputed on it.
 excluded from The Fade on quality grounds (it reads `sharp_bets_pct` and lands
 on exactly 100.0 in 15.2% of rows), so nothing published depends on it — but
 anything that averages the four sources is now averaging three.
+
+### R189 · NCAAB reads hold a stale call on 26 of 32 upcoming games (2026-11-06)
+After applying today's fixes to `primary_play`, `jerry_reads` still holds the
+pre-fix call on **26 of the 32** unstarted 11-06 games, **11 still calling `ml`**
+on a market now capped to COVERAGE. The per-game read therefore contradicts the
+card. Two blockers:
+
+* `sync_jerry_reads_from_ctx.py` wrote **0 of 60** — its guard skips any read
+  whose `long_read` is >= 300 real characters (all of them), so it protects the
+  PROSE by refusing to update the PICK. Backwards from `defer_call_to_ensemble`,
+  where `primary_play` owns the pick and prose is the analysis layer. But
+  updating only the call fields leaves prose arguing a different bet, which is
+  the contradiction fixed in the resolver on 11-06 — so the fix is to regenerate
+  prose and pick together, not to patch the call alone.
+* `generate_ncaab_game_reads.py --force` cannot run locally:
+  `anthropic 401 invalid x-api-key` from the local `.env`. Works only inside the
+  workflow where `ANTHROPIC_API_KEY` is a secret.
+
+It will NOT self-heal: the workflow calls the generator with no `--force`, so it
+only writes reads for games that have none. Needs either a forced regeneration
+step or a sync that updates the pick layer and rewrites `short_read` from the
+label when the market changed.
+
+### R190 · the reads sync runs BEFORE the resolver that writes what it syncs (2026-11-06)
+`ncaab_pipeline.yml` line 599 "Sync NCAAB jerry_reads from ctx" runs before line
+616 "NCAAB — 4-lens primary_play resolver". The resolver is what writes
+`primary_play`, so the sync always carries the PREVIOUS run's pick. This is a
+clean explanation for reads lagging the card, and very likely why conviction read
+0 across the forward slate: the 11-06/11-07 reads were written 20:32-20:36 from a
+`primary_play` the resolver had not yet produced. Swap the two steps.
+
+### R191 · DONE 2026-11-06 · neither NCAAB writer guarded a started game
+`ncaab_resolve_primary_play.py` and `generate_ncaab_game_reads.py` both rewrote
+every game in their window with no check on whether it had tipped, while
+`jerry_reads_dual_write` protects the read and `price_picks._has_started` freezes
+a started game's price. At 19:16 ET on 11-06, **27 of 59 games had tipped**, and
+the day's ml COVERAGE ceiling would have demoted **12 stored `ml LEAN` picks on
+games already under way** — restating a published LEAN. Added `_has_started()` to
+both, compared against utcnow because `game_time_et` is named ET and holds a UTC
+timestamp (verified: 21:00:00..03:30:00 for a 4pm-10:30pm ET card). Unknown tip
+counts as NOT started, matching `price_picks`. Both print the skip count instead
+of skipping silently.
