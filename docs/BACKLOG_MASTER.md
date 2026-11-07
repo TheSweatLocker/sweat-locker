@@ -5383,3 +5383,58 @@ only 3 (prop_type, tier) cells and those are positive on a much smaller sample
 since 08-01 of which 25 graded (17-8, 68.0%, -5.7% ROI). A tab with no product
 in it. Either the gates are mis-set for the sport or it should be dark rather
 than showing passes.
+
+### R198 · DONE 2026-11-06 · NHL props could not reach their own game
+`nhl_pipeline_props.ctx_game_id` was NULL on all 83,986 rows: props key on the
+Odds-API hash, `nhl_game_context` on the NHL numeric id, ZERO overlap. So the
+prop scorer could never read the opponent fields `nhl_game_context` carries 100%
+populated (`goalie_sv_pct`, `goalie_last5_sv_pct`, `goalie_gsaa`,
+`high_danger_against`, `xga_per60`, `xgf_per60`, `pk_pct`, `pp_pct`, l10 goals
+for/against) — the exact "opponent stats against the market in question" the
+design needs.
+
+`bridge_nhl_prop_game_ids.py` was written 10-03 for
+[[project_nhl_props_cannot_join_their_game_1003]] and was in **NO workflow**, so
+it had never run — the third unscheduled fix found on 11-06, after
+`generate_dawg_multisport` and the NCAAB pricing step. Backfilled: **260 of 260
+prop games resolved (100%), 0 ambiguous**; readback confirms **83,986 of 83,986
+rows** now carry `ctx_game_id`. Scheduled in `nhl_pipeline.yml` between prop
+identity enrichment and the playbook scorer (51 steps, YAML revalidated). Also
+unblocks NHL props on game detail, which is handed the numeric id.
+
+### R199 · NHL prop selection: the gradient is in the OPPONENT, not player form
+Joined 43,364 graded NHL prop rows to their opponent's fields. Every market
+loses as a blanket — sog_over −4.95pp, goals_over −2.84pp, sog_under −1.75pp,
+points_over −4.18pp, goals_under −3.33pp, assists_over −4.34pp; only
+saves_under is positive at +4.49pp on n=302 — so surfacing 84k rows cannot be
+defended. A ~240-cell scan found 3 cells clearing a Wilson 95% lower bound,
+which is AT OR BELOW the ~6 that chance produces at that multiplicity. Not
+quotable; recorded so they are not rediscovered as findings.
+
+What DOES separate, on a monotonic quartile test (one hypothesis per
+market × variable rather than one per cell):
+
+* `sog_under` × opponent `l10_goals_against_per_game` — monotonic, spread
+  3.2pp; the lowest-GA quartile sits at **−0.1pp on n=1,787** against a
+  −1.75pp market baseline. One variable, no stacking, 1.6pp of improvement on a
+  four-figure sample.
+* `points_under` × opponent `goalie_sv_pct` — monotonic, spread 2.2pp
+  (n≈950/band).
+* `saves_under` × opponent `goalie_gsaa` — monotonic, spread 25.4pp
+  (n≈67/band, so the shape is suggestive and the level is not).
+
+And player form runs BACKWARDS wherever it is monotonic at all:
+`assists_over` × season hit% goes −3.3 → −5.1 across quartiles, `saves_over` ×
+L10 goes −8.4 → −11.9. The three form fields the prop rows carry
+(`player_season_hit_pct`, `player_l5_hit_count`, `player_l10_hit_count`) are
+the only inputs they have, and they are the ones with no forward gradient —
+the market already prices recent form, and over-prices it.
+
+NEXT, in order: write the opponent fields into `props.signals` at scoring time
+so `signal_attribution` accrues per prop and the weekly refit measures them
+properly instead of via a one-off study (`signals` holds
+`{'two_sided_price': True}` and nothing else today); then tier on the measured
+gradient, because every row is COVERAGE so a per-game cap is meaningless while
+all ~140 rows in a game score identically; then publish only cells whose lower
+bound clears their own breakeven on FORWARD data. The gradient is real. No cell
+is profitable yet.

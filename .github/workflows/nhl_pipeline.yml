@@ -517,6 +517,37 @@ jobs:
           cd mlb_pipeline
           python enrich_nhl_prop_identity.py
 
+      # ══ 2026-11-06 · NHL PROPS COULD NOT REACH THEIR OWN GAME ═════════
+      # nhl_pipeline_props.ctx_game_id was NULL on all 83,986 rows because
+      # props are keyed on the Odds-API hash and nhl_game_context on the NHL
+      # numeric id, with ZERO overlap. So the prop scorer could never read
+      # what nhl_game_context carries 100% populated -- goalie_sv_pct,
+      # goalie_last5_sv_pct, goalie_gsaa, high_danger_against, xga_per60,
+      # xgf_per60, pk_pct, pp_pct, l10_goals_for/against -- i.e. the
+      # opponent's record against the exact market being priced.
+      #
+      # bridge_nhl_prop_game_ids.py was written on 10-03 for
+      # project_nhl_props_cannot_join_their_game_1003 and was in NO
+      # workflow, so it had never run. Backfilled 2026-11-06: 260 of 260
+      # distinct prop games resolved (100%), 0 ambiguous, and readback
+      # confirms 83,986 of 83,986 rows now carry ctx_game_id.
+      #
+      # It refuses to guess -- a prop game that does not resolve to exactly
+      # one context game is reported and SKIPPED, because attributing a prop
+      # to the wrong game would attach a player to opponents he never faced.
+      #
+      # Runs after identity enrichment (which sets team/opponent) and before
+      # the playbook scorer, so the scorer sees the join. Also unblocks NHL
+      # props on game detail, which is handed the numeric id.
+      - name: Bridge NHL prop game ids to context
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "bridge_nhl_prop_game_ids.py" python bridge_nhl_prop_game_ids.py --since 2026-09-01 --apply || true
+
       # 2026-08-22 (silent-bug audit finding #8): NHL prop L10 backfill.
       # Fetches ESPN game logs per player, computes L5/L10/season hit rates.
       # Unblocks 4 NHL prop signals (l10_extreme, l5_hot, l5_cold,
