@@ -16,6 +16,7 @@ render path traced. Andy's instruction on item 6 applies to all of them —
 | A4 | NCAAB still surfacing super-juiced chalk (e.g. Ohio State ML) | OPEN |
 | A5 | Externals likely gone dark across some sports | OPEN |
 | A6 | Purdue: app shows Purdue +21, pre-game Jerry read says Purdue −19.5; no situational records | OPEN |
+| A8 | Why was USF ML the POTD today | **ROOT CAUSE FOUND** |
 | A7 | CBB teams with no stats | **ROOT CAUSE FOUND** - 31 of 34 already in the alias table |
 
 ---
@@ -300,3 +301,120 @@ wrong rule.
 `IUPUI Jaguars` (the school rebranded to IU Indianapolis) and
 `West Florida Argonauts` (Division II). Both should be alias'd or excluded
 deliberately rather than silently rendering a blank panel.
+
+---
+
+## A8 — WHY WAS SOUTH FLORIDA ML THE POTD ON 11-06?
+
+`South Florida @ East Carolina`, published 12:56 UTC as
+`South Florida ML (Jerry 79/100)` at **+112**, `daily_best_bet_history` id
+1130, receipt 5218724.
+
+### What the engine actually had
+
+    close_spread            -1.5      (ECU favoured by 1.5)
+    open_spread             +1.5      <- the line moved A FULL 3 POINTS to ECU
+    close_home_ml           -130      open_home_ml -108   <- money came in on ECU
+    close_away_ml           +107
+    projected_spread        -3.03
+    model_pred              ECU 24.5, USF 25.9   (USF by 1.4 — a coin flip)
+    signal_confluence_net   0
+    sweat_score (ctx)       65        <- note the POTD published 79
+    away_covers_as_dog_pct  66.7      (2 of 3)
+    away_sor / home_sor     5.767 / 0.643
+    away_sos / home_sos     -0.499 / +0.625   <- USF's edge is on a WEAKER schedule
+    cohort_tags             ncaaf_home_fav, ncaaf_grinder
+    confluence breakdown    hfa→home, explosiveness→home,
+                            sp_plus→away, success_rate→away      = 2-2 SPLIT
+
+`primary_play`: `ml / AWAY / STRONG / conviction 79 / **score 0.15**`, with
+**only two supporting signals**:
+
+    ncaaf_projected_spread         model        AWAY_ML  w=0.42  n=101  contrib 0.10
+    ncaaf_home_dog_letdown_fade    situational  AWAY_ML  w=0.22  n=21   contrib 0.07
+
+and the sub: **"South Florida — 81% vs 53% implied — +28.2pp edge"**.
+
+### THE ROOT CAUSE: conviction is a display score consumed as a WIN PROBABILITY
+
+`conviction_scale.py:152`, in the repo already:
+
+> `conviction` is consumed as a WIN PROBABILITY, not as a display score:
+> `model_edge.edge_pp()` is literally `conviction - implied_prob*100` …
+> Rescaling NBA conviction from 51 to 75 would print a ~20pp edge on every
+> NBA pick, switch off the cap that is currently telling the truth, and
+> **manufacture plays out of nothing.**
+
+That is precisely what happened here. Conviction 79 is read as "USF wins
+79% of the time". The market at +107/+112 implies ~48%. So the engine
+printed a **+28.2pp edge on a pick-em dog**, and that edge is what made it
+Play of the Day.
+
+And the same file's conviction formula carries its own warning:
+
+    base = 50 + min(win_score * 10, 30)
+    margin_boost = min(max(margin, 0) * 20, 15)
+    classes_boost = 0      # zeroed 09-29, measured inversely calibrated
+
+> win_score … is ALSO non-monotonic on the same sample: 0.0-0.3 → 64.2%
+> (n=95), 1.0-1.5 → 46.0% (n=50). So **conviction still does not rank pick
+> quality and must not be trusted for stake sizing** until `base` has its
+> own study.
+
+So the POTD is selected on a number the codebase documents as not ranking
+pick quality, and then that number is spent a second time as a probability.
+
+### Four more things wrong with this specific pick
+
+1. **Score 0.15 is BELOW NCAAF's own median.** `SIGNAL_SPANS` measured
+   NCAAF at score p50 **0.43**, p90 1.43, max 3.51 (10-30). A 0.15 pick is
+   in the bottom half of the sport's own distribution and was published as
+   the single best play of the day.
+2. **The engine's own confluence is neutral** — `signal_confluence_net = 0`,
+   a literal 2-2 split of its four lenses.
+3. **Two signals, one under-sampled.** `ncaaf_home_dog_letdown_fade` carries
+   **n=21**, below the n≥30 bar this product uses for any quoted rate.
+4. **The market moved against us all day.** Open +1.5 → close −1.5 and the
+   home ML −108 → −130. We published the side money was leaving.
+5. **The SOR case is a schedule artifact.** USF 5.767 vs ECU 0.643 looks
+   decisive until you read the next row: USF's SOS is **−0.499** against
+   ECU's **+0.625**.
+
+### And the advertised price is wrong
+
+The POTD published **+112**. The Jerry read for the same pick priced it at
+**−104 across 11 books, best −103**. `open_away_ml` was −112 and
+`close_away_ml` +107. So we advertised a plus price on a pick the books had
+at roughly even-money-minus, and +112 happens to be |−112| — the opening
+away ML with its sign lost, which is the
+`feedback_magnitude_cannot_express_a_side` shape. At +112 the implied
+breakeven is 47.2%; at −104 it is 51.0%. Every ROI this pick ever reports
+will be computed off a price nobody could get.
+
+### Overall thought
+
+**This should not have been Play of the Day, and the reason is structural,
+not a bad read.** The analytical case is not stupid — USF's offensive EPA
+edge and a +6.2 SP+ gap are real inputs, and `away_covers_as_dog_pct` of
+66.7% is at least directionally interesting. But the engine's *own* evidence
+was a 2-2 confluence, a below-median score, two signals, and a line moving
+away from us. Nothing in that set says "best play of the day".
+
+What made it POTD was conviction 79 being treated as a 79% win probability
+against a 48% market — a 28-point edge the model has no basis for. This is
+the same failure as the NCAAB `/3.0` divisor fixed earlier tonight: a number
+that is wrong by construction gets fed into an edge calculation, the edge
+comes out enormous, and the gate that should have stopped it instead
+promotes it. One produced phantom 11-point spread edges across the whole
+NCAAB board; this produces phantom 28-point probability edges on football.
+
+**Fix, in order:**
+1. POTD must rank on `conviction_rank`, not `conviction` — that is exactly
+   what `conviction_scale.py` built it for, and the POTD still ranks on the
+   raw number.
+2. A plausibility guard on `edge_pp`: a model edge past ~10pp against a
+   liquid market with 11 books is a bug, not an edge
+   (`feedback_model_output_needs_a_plausibility_guard`).
+3. POTD requires more than two supporting signals, and none under n=30.
+4. Fix the published price to the real one (−104, 11 books) and find why
+   `odds_american` took the opening away ML with the sign dropped.
