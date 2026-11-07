@@ -142,33 +142,117 @@ def fetch_upcoming_games():
     return [r for r in rows if r.get("game_date") and r["game_date"] <= horizon.isoformat()]
 
 
+#: `mlb_tier_calibration.hit_rate` is a FRACTION (0.6364, 0.5, 1.0) --
+#: verified against live rows 2026-11-07. Every gate in this file compares
+#: against a PERCENT (`>= 60`, `< 55`, `100 - div_rate`) and
+#: `conviction = int(dog_rate + 15)` only makes sense on a percent. The same
+#: column name is a percent in `signal_registry`
+#: ([[feedback_hit_rate_column_is_a_percent]]), so the unit is per table and
+#: has to be converted explicitly, here, once.
+#: Andy's standing rule: every % shows its n, and n>=30 gates a
+#: publishable claim ([[feedback_sample_size_with_pct]]).
+COHORT_MIN_N = 30
+
+_TIER_CAL_RATE_IS_FRACTION = True
+
+#: Window labels that actually exist on the table, widest sample first.
+#: There is NO 'lifetime' label for any sport.
+_TIER_CAL_WINDOWS = ("std", "30d", "7d")
+
+
 def fetch_audit_cohorts():
     """Pull live NFL audit cohort rates from mlb_tier_calibration.
 
-    nfl_cohort_backfill.py writes window_label='lifetime' with columns
-    (tier, wins, losses, pushes, hit_pct, sample_n). Latest computed_date wins.
+    == 2026-11-07 - THIS FUNCTION RETURNED NOTHING, ALWAYS =================
+    Three independent faults, each sufficient on its own:
+
+      1. It selected `wins,losses,pushes,hit_pct,sample_n`. The table has
+         `hits,total,hit_rate` and NONE of those five columns. PostgREST
+         answers 400/42703 and a missing column fails the WHOLE fetch
+         ([[feedback_select_star_before_concluding_absent]]), so `rows` came
+         back empty.
+      2. It filtered `window_label=eq.lifetime`. The live labels are
+         `std`, `30d` and `7d` -- 'lifetime' exists for no sport, so even
+         with the right columns this returns zero rows.
+      3. `_cohort_rate` upper-cased and stripped the `nfl_` prefix while the
+         stored tiers are lowercase `nfl_outdoor_over`, so the lookup missed
+         on both case and prefix.
+
+    Consequence, measured on the live surface: every cohort rate resolved to
+    `0` on `n=0` via `or 0`, so `lock_of_week`, `outdoor_under_angles`,
+    `weekly_parlay` and `audit_cohort_summary` were all EMPTY in
+    jerry_cache (their gates compare to 55/60/40/100/200), while
+    `find_underdog_of_week` -- which did not gate on n -- published
+    `TEN +10.0` tier STRONG for w9 and `BAL +8.5` tier STRONG for w8, each
+    with the rationale "cohort hits 0% on 0 historical games". A publishable
+    tier backed by a stated sample of zero.
+
+    Returns {tier_key_lower: {rate_pct, n, window_label, computed_date}}.
     """
     rows = sb_get("mlb_tier_calibration", {
-        "window_label": "eq.lifetime",
         "sport": "eq.nfl",
-        "select": "tier,wins,losses,pushes,hit_pct,sample_n,computed_date",
+        "select": "tier,hits,total,hit_rate,window_label,computed_date",
         "order": "computed_date.desc",
-        "limit": "50",
+        "limit": "500",
     })
-    latest = {}
+    if not rows:
+        print("  [cohorts] mlb_tier_calibration returned 0 nfl rows -- "
+              "WIRING ERROR, not an empty history")
+        return {}
+    # newest computed_date first (the order above), then widest window
+    rank = {w: i for i, w in enumerate(_TIER_CAL_WINDOWS)}
+    best = {}
     for r in rows:
-        key = r["tier"]
-        if key not in latest:
-            latest[key] = r
-    return latest
+        key = str(r.get("tier") or "").strip().lower()
+        if not key:
+            continue
+        n = r.get("total") or 0
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            n = 0
+        rate = r.get("hit_rate")
+        if rate is None and n:
+            try:
+                rate = float(r.get("hits") or 0) / n
+            except (TypeError, ValueError, ZeroDivisionError):
+                rate = None
+        if rate is None:
+            continue
+        rate = float(rate)
+        if _TIER_CAL_RATE_IS_FRACTION and rate <= 1.0:
+            rate *= 100.0
+        cand = {"rate_pct": round(rate, 2), "n": n,
+                "window_label": str(r.get("window_label") or ""),
+                "computed_date": r.get("computed_date")}
+        prev = best.get(key)
+        if prev is None or rank.get(cand["window_label"], 9) < rank.get(
+                prev["window_label"], 9):
+            best[key] = cand
+    print(f"  [cohorts] {len(best)} nfl cohort(s): "
+          + ", ".join(f"{k}={v['rate_pct']}% n={v['n']}({v['window_label']})"
+                      for k, v in sorted(best.items())[:8]))
+    return best
 
 
 def _cohort_rate(cohort_key: str, cohorts: dict) -> tuple:
-    """Return (hit_pct, sample_n) for a cohort tag; handles both new and old shapes."""
-    key = cohort_key.upper().replace("NFL_", "")
-    r = cohorts.get(key) or cohorts.get(cohort_key) or {}
-    return (r.get("hit_pct") or r.get("hit_rate") or 0,
-            r.get("sample_n") or r.get("total") or 0)
+    """Return (hit_pct, sample_n) for a cohort tag, or (None, 0) if unmeasured.
+
+    2026-11-07: this upper-cased and stripped the `nfl_` prefix, but the
+    stored tiers are lowercase AND carry the prefix (`nfl_outdoor_over`), so
+    it missed on both counts. Match on the lowercase key, with and without
+    the prefix, and return `None` rather than `0` for "no measurement" --
+    `or 0` made an absent cohort indistinguishable from a cohort that hits
+    0% ([[feedback_falsy_zero_invented_a_tier_and_a_confidence]]).
+    """
+    k = str(cohort_key or "").strip().lower()
+    r = (cohorts.get(k)
+         or cohorts.get(k.replace("nfl_", ""))
+         or cohorts.get("nfl_" + k)
+         or {})
+    if not r:
+        return (None, 0)
+    return (r.get("rate_pct"), r.get("n") or 0)
 
 
 def fetch_team_stats(season):
@@ -201,6 +285,26 @@ def find_underdog_of_week(games, cohorts):
     candidates.sort(key=lambda g: float(g["close_spread"]))
     g = candidates[0]
     rate, n = _cohort_rate("nfl_heavy_home_dog", cohorts)
+    # == 2026-11-07 - THIS PUBLISHED A STRONG PICK ON A SAMPLE OF ZERO =====
+    # Alone among the finders here this one had no n gate, so when the
+    # cohort query was broken it still emitted a pick -- w9 `TEN +10.0` and
+    # w8 `BAL +8.5`, both tier STRONG, both carrying the rationale "cohort
+    # hits 0% on 0 historical games". The docstring's 65.4% on n=81 was a
+    # Phase 1 audit figure that the live table does not contain.
+    #
+    # A tier is a stake instruction, so it needs a measured rate behind it
+    # ([[feedback_sample_size_with_pct]], [[feedback_tier_demotion_needs_stake_boundary]]).
+    # No measurement, no pick -- and say so rather than going quiet
+    # ([[feedback_zero_rows_is_a_wiring_error]]).
+    if rate is None:
+        print("  [underdog] nfl_heavy_home_dog is UNMEASURED on "
+              "mlb_tier_calibration -- no Underdog of the Week (will not "
+              "publish a STRONG tier on a sample of zero)")
+        return None
+    if n < COHORT_MIN_N:
+        print(f"  [underdog] nfl_heavy_home_dog n={n} < {COHORT_MIN_N} "
+              f"({rate}%) -- no Underdog of the Week")
+        return None
     return {
         "game_id": g["game_id"],
         "matchup": f"{g['away_team']} @ {g['home_team']}",
@@ -208,7 +312,7 @@ def find_underdog_of_week(games, cohorts):
         "tier": "STRONG",  # audit-validated PRIME until Phase 2 layered with player data
         "audited_rate": rate,
         "audited_n": n,
-        "rationale": f"Home dog +{abs(float(g['close_spread']))} cohort hits {rate}% on {n} historical games (2022-2025). Classic letdown spot for road favorite.",
+        "rationale": f"Home dog +{abs(float(g['close_spread']))} cohort hits {rate}% on {n} historical games. Classic letdown spot for road favorite.",
     }
 
 
@@ -217,6 +321,17 @@ def find_outdoor_under_angles(games, cohorts):
     outdoors AND total ≥ 47 AND weather is moderate-to-bad (cold or windy),
     surface as a UNDER lean."""
     rate_under, n = _cohort_rate("nfl_outdoor_under", cohorts)
+    # 2026-11-07: no gate here at all, so with the cohort query broken these
+    # LEAN plays would have published "Outdoor totals UNDER cohort 0% on 0
+    # games". The only reason jerry_cache showed none is that no game met the
+    # weather flags -- absence of output was luck, not a guard.
+    if rate_under is None:
+        print("  [outdoor] nfl_outdoor_under is UNMEASURED -- no UNDER leans")
+        return []
+    if n < COHORT_MIN_N:
+        print(f"  [outdoor] nfl_outdoor_under n={n} < {COHORT_MIN_N} "
+              f"({rate_under}%) -- no UNDER leans")
+        return []
     plays = []
     for g in games:
         if (g.get("roof") or "").lower() != "outdoors":
@@ -250,7 +365,7 @@ def find_lock_of_week(games, cohorts, underdog):
     audited-cohort play the model finds.
     """
     dog_rate, dog_n = _cohort_rate("nfl_heavy_home_dog", cohorts)
-    if underdog and dog_rate >= 60 and dog_n >= 40:
+    if underdog and dog_rate is not None and dog_rate >= 60 and dog_n >= 40:
         return {
             "game_id": underdog["game_id"],
             "matchup": underdog["matchup"],
@@ -272,7 +387,7 @@ def find_lock_of_week(games, cohorts, underdog):
         if not ((temp is not None and int(temp) <= 35) or
                 (wind is not None and int(wind) >= 18)):
             continue
-        if under_rate < 55 or under_n < 100: continue
+        if under_rate is None or under_rate < 55 or under_n < 100: continue
         return {
             "game_id": g["game_id"],
             "matchup": f"{g['away_team']} @ {g['home_team']}",
@@ -324,9 +439,39 @@ def find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders):
         break
 
     # Leg 3: division road dog (nfl_div_home_cover fades home) — pick away spread
+    #
+    # == 2026-11-07 - `away_edge >= 2` MEASURES AGAINST 50%, NOT BREAK-EVEN ==
+    # This gate never ran while the cohort query was broken (div_rate was 0,
+    # so `div_rate < 50` held but n was 0). With the query fixed the cohort
+    # is real -- nfl_div_home_cover 47.52% on n=2,704 -- and the old gate
+    # would pass instantly: away_edge = 52.48, against a threshold of 2.
+    #
+    # But 52.48% is the cover rate of the side we would BACK, and a spread
+    # at -110 needs 52.38% just to break even. The real edge is +0.10pp,
+    # not +2.48pp. Grading a fade against 50% instead of against the price
+    # is the same error as quoting a moneyline record at flat -110
+    # ([[feedback_flat_110_inflates_every_ml_figure]],
+    # [[feedback_slope_is_not_a_betting_rule]]).
+    #
+    # So the gate is now stated in break-even terms, which is Andy's
+    # documented standard rather than a new policy. Cost, said out loud:
+    # at 52.48% this leg stays SUPPRESSED, so the parlay section remains
+    # empty on the division angle until the cohort clears break-even by the
+    # stated margin. That is a smaller card and a defensible one.
+    BE_PCT_AT_MINUS_110 = 52.38
+    EDGE_OVER_BE_PP = 1.0
     div_rate, div_n = _cohort_rate("nfl_div_home_cover", cohorts)
-    away_edge = 100 - div_rate if div_rate < 50 else 0
-    if away_edge >= 2 and div_n >= 200:
+    away_cover = (100 - div_rate) if div_rate is not None else None
+    if away_cover is not None and div_n >= 200:
+        _margin = away_cover - BE_PCT_AT_MINUS_110
+        if _margin < EDGE_OVER_BE_PP:
+            print(f"  [parlay] div fade {away_cover:.2f}% on n={div_n} is "
+                  f"{_margin:+.2f}pp vs -110 break-even "
+                  f"({BE_PCT_AT_MINUS_110}%) -- under the "
+                  f"{EDGE_OVER_BE_PP}pp requirement, leg SUPPRESSED")
+    if (away_cover is not None
+            and div_n >= 200
+            and away_cover - BE_PCT_AT_MINUS_110 >= EDGE_OVER_BE_PP):
         for g in games:
             if g["game_id"] in used_games: continue
             if g.get("div_game") is not True: continue
@@ -336,7 +481,7 @@ def find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders):
                 "matchup": f"{g['away_team']} @ {g['home_team']}",
                 "pick": f"{g['away_team']} +{g['close_spread']}",
                 "cohort": "div_home_cover_fade",
-                "audited_rate": 100 - div_rate,
+                "audited_rate": away_cover,
             })
             used_games.add(g["game_id"])
             break
@@ -360,17 +505,28 @@ def find_skip_alerts(games, cohorts):
     alerts = []
     # Trap 1: mid-range home favorite (-3.5 to -6.5) in division game — 48.6% audit
     div_rate, div_n = _cohort_rate("nfl_div_home_cover", cohorts)
+    # 2026-11-07: this asserted "cover {div_rate}% ({div_n} games)" with no
+    # gate, so a broken cohort query put "cover 0% (0 games)" into live copy
+    # ([[feedback_comment_asserting_a_measurement]]). A skip alert is useful
+    # advice without the number, so the number is dropped rather than the
+    # alert -- but it is never invented.
+    _div_measured = div_rate is not None and div_n >= COHORT_MIN_N
+    if not _div_measured:
+        print(f"  [skip] nfl_div_home_cover unmeasured or thin "
+              f"(rate={div_rate} n={div_n}) -- alerts omit the cohort stat")
     for g in games:
         sp = g.get("close_spread")
         if sp is None: continue
         sp = float(sp)
         if 3.5 <= sp <= 6.5 and g.get("div_game") is True:
+            _stat = (f"Division home favs cover {div_rate}% ({div_n} games). "
+                     if _div_measured else "")
             alerts.append({
                 "game_id": g["game_id"],
                 "matchup": f"{g['away_team']} @ {g['home_team']}",
                 "reason": "chalk_div_home_fav",
-                "message": (f"Skip {g['home_team']} -{sp} chalk. Division home favs "
-                            f"cover {div_rate}% ({div_n} games). Coinflip trap."),
+                "message": (f"Skip {g['home_team']} -{sp} chalk. {_stat}"
+                            f"Coinflip trap."),
             })
     # Trap 2: dome + total >= 50 (marketplace already priced up)
     for g in games:
@@ -402,11 +558,36 @@ def build_card():
     print(f"  Season: {season} | Week: {week}")
     print(f"  Audit cohorts loaded: {len(cohorts)} | Team stats loaded: {len(team_stats)}")
 
-    underdog = find_underdog_of_week(games, cohorts)
-    outdoor_unders = find_outdoor_under_angles(games, cohorts)
-    lock = find_lock_of_week(games, cohorts, underdog)
-    parlay = find_weekly_parlay(games, cohorts, lock, underdog, outdoor_unders)
-    skip_alerts = find_skip_alerts(games, cohorts)
+    # == 2026-11-07 - A WEEK CARD WAS PICKING FROM TWO WEEKS ==============
+    # The fetch above is a 10-day horizon, which on a Saturday holds the
+    # current week AND the next one: 28 games today for a 16-game week. Every
+    # finder received that unfiltered list, so `find_underdog_of_week` chose
+    # the biggest home dog in TEN DAYS rather than in the week the card is
+    # keyed to. Measured on the card written at 22:40Z: cache_key
+    # `nfl_weekly_card_2026_w9` carried `TEN +10.0`, and JAX @ TEN is
+    # 2026-11-15, **week 10** -- eight days out, on a line that will move
+    # several times before kickoff. `slate` had the same defect by a
+    # different route: `games[:16]` is an arbitrary slice of the horizon, not
+    # a week.
+    #
+    # The functions are all named _of_week and the cache key is per week, so
+    # the week is the scope. Filter once, here.
+    week_games = [g for g in games
+                  if g.get("week") == week and g.get("season") == season]
+    if not week_games:
+        print(f"  [week] no games carry season={season} week={week} -- "
+              f"falling back to the full horizon, and the card's week label "
+              f"cannot be trusted (WIRING ERROR, check nfl_game_context.week)")
+        week_games = games
+    else:
+        print(f"  [week] scoped to season {season} week {week}: "
+              f"{len(week_games)} of {len(games)} games in horizon")
+
+    underdog = find_underdog_of_week(week_games, cohorts)
+    outdoor_unders = find_outdoor_under_angles(week_games, cohorts)
+    lock = find_lock_of_week(week_games, cohorts, underdog)
+    parlay = find_weekly_parlay(week_games, cohorts, lock, underdog, outdoor_unders)
+    skip_alerts = find_skip_alerts(week_games, cohorts)
 
     # 2026-08-06 refactor prep: pull Jerry-driven picks (jerry_reads sport=NFL
     # BACK conv>=70 + prop_jerry_reads sport=NFL) to sit alongside cohort
@@ -451,12 +632,22 @@ def build_card():
                 "div_game": g.get("div_game"),
                 "roof": g.get("roof"),
             }
-            for g in games[:16]
+            for g in week_games
         ],
+        # 2026-11-07: these read wins/losses/pushes/hit_pct/sample_n, which
+        # are the column names the broken query asked for and which
+        # mlb_tier_calibration does not have. With cohorts now keyed
+        # {rate_pct, n, window_label, computed_date} the old shape would
+        # publish five nulls per cohort, so it is restated. `n` travels with
+        # every percentage ([[feedback_sample_size_with_pct]]) and so does
+        # the window it was measured over, because `std`, `30d` and `7d` are
+        # not the same claim.
         "audit_cohort_summary": {
-            tier: {"wins": v.get("wins"), "losses": v.get("losses"),
-                   "pushes": v.get("pushes"), "hit_pct": v.get("hit_pct"),
-                   "sample_n": v.get("sample_n")}
+            tier: {"hit_pct": v.get("rate_pct"),
+                   "sample_n": v.get("n"),
+                   "window_label": v.get("window_label"),
+                   "computed_date": v.get("computed_date"),
+                   "meets_min_n": bool((v.get("n") or 0) >= COHORT_MIN_N)}
             for tier, v in cohorts.items()
         },
         # 2026-08-06: Jerry-driven picks surfaced alongside cohort picks.
