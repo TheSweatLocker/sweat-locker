@@ -236,8 +236,9 @@ def apply_flip(read: dict, ctx: dict, rule_id: str, new_side: str,
     return True
 
 
-def sync_primary_play(read: dict, ctx: dict, new_side: str, dry_run: bool = False) -> None:
-    """Update mlb_game_context.primary_play when Jerry gets flipped by the
+def sync_primary_play(read: dict, ctx: dict, new_side: str, ctx_table: str,
+                      dry_run: bool = False) -> None:
+    """Update <sport>_game_context.primary_play when Jerry gets flipped by the
     sharp-fade / model-consensus discipline, so the app-side sweat card
     badge stays coherent with the flipped Jerry call.
 
@@ -305,10 +306,41 @@ def sync_primary_play(read: dict, ctx: dict, new_side: str, dry_run: bool = Fals
     if dry_run:
         print(f'    [DRY] primary_play label {pp.get("label")} -> {new_label}')
         return
-    pr = requests.patch(f'{SB}/rest/v1/mlb_game_context?game_id=eq.{ctx["game_id"]}',
-                        headers=H_WRITE, json={'primary_play': pp_new}, timeout=10)
+    # ══ 2026-11-07 · THE CONTEXT TABLE WAS HARDCODED TO MLB ══════════
+    # run() is sport-parameterised and SPORT_CONFIG carries a ctx_table per
+    # sport, but this PATCH named mlb_game_context literally. For every
+    # non-MLB sport the filter `game_id=eq.<nfl/nba/ncaab id>` matched ZERO
+    # rows in the MLB table, so PostgREST answered 200 with an empty body —
+    # indistinguishable from success by the status check below, which is why
+    # it never printed. Consequence: apply_flip() flipped the jerry_reads
+    # row while primary_play on the sport's own context table kept the
+    # ORIGINAL side, i.e. the exact two-opposing-labels-on-one-card state
+    # the 2026-08-23 expansion above was written to end — just on five
+    # sports instead of one. A 200 is not a write
+    # ([[feedback_204_is_not_a_write]]): confirm by READBACK.
+    pr = requests.patch(f'{SB}/rest/v1/{ctx_table}?game_id=eq.{ctx["game_id"]}',
+                        headers={**H_WRITE, 'Prefer': 'return=representation'},
+                        json={'primary_play': pp_new}, timeout=10)
     if pr.status_code not in (200, 204):
-        print(f'    primary_play patch failed: {pr.status_code}')
+        print(f'    primary_play patch failed on {ctx_table}: '
+              f'{pr.status_code} {pr.text[:120]}')
+        return
+    try:
+        back = pr.json() if pr.text else []
+    except ValueError:
+        back = []
+    if not back:
+        print(f'    primary_play patch MATCHED NO ROW in {ctx_table} '
+              f'(game_id={ctx["game_id"]}) — jerry_reads was flipped but the '
+              f'card still shows {pp.get("label")!r}; surfaces now DISAGREE')
+        return
+    wrote = (back[0] or {}).get('primary_play') or {}
+    if isinstance(wrote, str):
+        try: wrote = json.loads(wrote)
+        except ValueError: wrote = {}
+    if (wrote or {}).get('label') != new_label:
+        print(f'    primary_play readback mismatch in {ctx_table}: '
+              f'wanted {new_label!r} got {(wrote or {}).get("label")!r}')
 
 
 def run(game_date: str, sport: str = 'MLB', dry_run: bool = False) -> int:
@@ -325,24 +357,58 @@ def run(game_date: str, sport: str = 'MLB', dry_run: bool = False) -> int:
         timeout=15).json()
     if not isinstance(reads, list):
         print(f'  fetch failed: {reads}'); return 0
-    # 2026-08-10: fallback-safe select — sport ctx tables may not yet
-    # have all columns (e.g. no oddscrowd_snapshot on NHL). Try full
-    # select first, drop unknown columns on 400 error.
-    select_cols = (f'game_id,away_team,home_team,{cfg["total_col"]},'
-                   f'{cfg["jerry_total_col"]},{cfg["proj_total_col"]},'
-                   f'mc_probabilities,oddscrowd_snapshot,primary_play')
+    # ══ 2026-11-07 · THE "FALLBACK-SAFE" SELECT KILLED THE GATE ON FIVE
+    #                SPORTS ═══════════════════════════════════════════════
+    # The 2026-08-10 note below described dropping "unknown columns" on a
+    # 400. It did not do that: the retry dropped EVERY optional column and
+    # kept only game_id/away_team/home_team. One missing column therefore
+    # cost the whole model block AND `close_total`, and evaluate() bails on
+    # its very first check (`line is None`) — so the gate could not fire at
+    # all, for any reason, outside MLB. Measured 2026-11-07: 69 flips
+    # carrying this script's note on MLB, 0 on NFL / NCAAF / NBA / NHL /
+    # NCAAB, and structurally 0 rather than coincidentally 0.
+    #
+    # The column that triggered the 400 is `jerry_pred_total`, which exists
+    # on mlb_game_context ONLY (probed: NO on all five others, while
+    # close_total / projected_total / mc_probabilities are YES everywhere).
+    # So the one absent column was taking three present ones down with it,
+    # and the step still exited 0 ([[feedback_green_step_that_writes_nothing]]).
+    #
+    # Now the degradation is PER COLUMN: probe each optional column once per
+    # table, keep the ones that answer, and say out loud which are gone so a
+    # dead lens is visible instead of silent. Note Rule B still demands all
+    # three total models be non-None, so it stays unreachable wherever
+    # jerry_pred_total is absent — that is a GATE LOOSENING, not a wiring
+    # repair, and is deliberately NOT bundled here: it needs a backtest
+    # first ([[feedback_unmeasured_signal_must_not_outweigh_measured]]).
+    _required = ['game_id', 'away_team', 'home_team']
+    _optional = [cfg['total_col'], cfg['jerry_total_col'],
+                 cfg['proj_total_col'], 'mc_probabilities',
+                 'oddscrowd_snapshot', 'primary_play']
+    _keep, _gone = [], []
+    for _c in _optional:
+        if not _c or _c in _keep:
+            continue
+        _pr = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+                           params={'select': _c, 'limit': '1'}, timeout=15)
+        (_keep if _pr.status_code in (200, 206) else _gone).append(_c)
+    if _gone:
+        print(f'  [{sport}] {ctx_table} lacks {", ".join(_gone)} — '
+              f'those lenses cannot vote here')
+    if cfg['total_col'] in _gone:
+        print(f'  [{sport}] no {cfg["total_col"]} on {ctx_table}: the total '
+              f'line is the first thing the gate requires, so NOTHING can '
+              f'fire. '
+              f'This is a wiring error, not an empty slate.')
+        return 0
     resp = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
-        params={'game_date': f'eq.{game_date}', 'select': select_cols},
+        params={'game_date': f'eq.{game_date}',
+                'select': ','.join(_required + _keep)},
         timeout=15)
     if resp.status_code != 200:
-        # Retry with minimal columns — sport ctx table may be sparse
-        resp = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
-            params={'game_date': f'eq.{game_date}',
-                    'select': 'game_id,away_team,home_team'},
-            timeout=15)
-        if resp.status_code != 200:
-            print(f'  [{sport}] ctx fetch failed {resp.status_code} — skip')
-            return 0
+        print(f'  [{sport}] ctx fetch failed {resp.status_code} '
+              f'{resp.text[:160]} — skip')
+        return 0
     ctxs = resp.json()
     if not isinstance(ctxs, list):
         print(f'  [{sport}] unexpected ctx shape — skip')
@@ -363,7 +429,7 @@ def run(game_date: str, sport: str = 'MLB', dry_run: bool = False) -> int:
         print(f'  [{sport}] {matchup:20} {rule_id}: flip {read["call_side"]} -> {new_side}  '
               f'(conv {read.get("conviction")} -> {FLIP_CAP_CONV})')
         if apply_flip(read, ctx, rule_id, new_side, audit, dry_run=dry_run):
-            sync_primary_play(read, ctx, new_side, dry_run=dry_run)
+            sync_primary_play(read, ctx, new_side, ctx_table, dry_run=dry_run)
             flips += 1
 
     print(f'\n=== sharp-fade discipline · {sport}: {flips} flip(s)'
