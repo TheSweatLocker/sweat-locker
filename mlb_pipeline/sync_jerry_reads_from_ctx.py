@@ -329,12 +329,43 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             )
             # A real generated read has a substantive long_read too; the
             # bridge's own output often does not.
+            # ══ 2026-11-06 · PROTECTING PROSE MUST NOT PROTECT A STALE PICK
+            # This used to `continue`, skipping the WHOLE row — so a prose
+            # read kept whatever call_market it was generated with, forever.
+            # That is backwards from this codebase's own rule
+            # (defer_call_to_ensemble: primary_play owns the PICK, the LLM
+            # owns the ANALYSIS), and it is why NCAAB wrote 0 of 60 rows:
+            # every NCAAB read has real prose.
+            #
+            # What it cost, 11-06: after the ml -> COVERAGE ceiling moved
+            # NCAAB picks off the moneyline, 26 of 32 unstarted games had a
+            # read whose call disagreed with the card, and 18 reads still
+            # named `ml` — five of them priced -2100 to -13333, plus
+            # `Ohio St. ML`. Andy saw exactly that in the app. The reads are
+            # the surface a user opens, so a stale pick there is not a
+            # cosmetic problem.
+            #
+            # So: keep the PROSE, update the PICK. short_read/long_read are
+            # dropped from the payload and the stored ones stand, EXCEPT
+            # when the market family changed between total and side — an
+            # OVER/UNDER argument cannot describe a moneyline, which is the
+            # contradiction fixed in ncaab_resolve_primary_play the same
+            # day. Across that boundary the prose is replaced by the label.
+            _prose_only = False
             if not _placeholder and len(_curlong) >= 300:
-                print(f'  🔒 {matchup}: existing read is prose '
-                      f'({len(_cur)}c short / {len(_curlong)}c long, '
-                      f'{rows[0].get("prompt_version")}) — leaving it alone')
-                skipped += 1
-                continue
+                def _fam(t):
+                    return 'total' if str(t or '') == 'total' else 'side'
+                _same_family = _fam(rows[0].get('call_market')) == _fam(ptype)
+                _prose_only = True
+                print(f'  ✎ {matchup}: prose kept, pick refreshed '
+                      f'({rows[0].get("call_market")} -> {ptype}'
+                      f'{"" if _same_family else ", family changed so prose replaced"})')
+                # Drop the prose from the payload so the stored prose
+                # survives the upsert. Across a total<->side family change
+                # we DO replace it, because then it argues a different bet.
+                if _same_family:
+                    payload.pop('short_read', None)
+                    payload.pop('long_read', None)
 
         # ══ 2026-10-27 · A MARKET CHANGE MUST INVALIDATE THE PRICE ═══════
         # This upsert rewrites call_market/call_side/call_line and left the
