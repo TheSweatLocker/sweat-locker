@@ -367,7 +367,7 @@ def main():
         ctx = {c['game_id']: c for c in page(CONTEXT[sport], select='game_id,game_date,away_team,home_team',
                                              game_date=f'gte.{lo}')}
         grouped = quote_index(sport, lo)
-        ok = fail = skip = 0
+        ok = fail = skip = refused_ml = 0
         reasons = defaultdict(int)
         patches = []
         for r in reads:
@@ -398,6 +398,45 @@ def main():
                 print(f'    [IMPOSSIBLE PRICE] {r.get("call_text")!r} '
                       f'({r.get("call_market")}) holds {r.get("price_american")} '
                       f'- not a {r.get("call_market")} price; clearing')
+            # ══ 2026-11-07 · A STORED JUICED ML MUST GO EVEN WITH NO QUOTE
+            # The first version of this gate sat further down, after
+            # price_one(). That missed `Wake Forest ML` at -50000 on today's
+            # NCAAF board: Merrimack is FCS and the feed has no quotes for
+            # the game ("no quotes for this game" x7), so price_one returns
+            # None and the loop `continue`s BEFORE any gate -- leaving the
+            # -50000 that was written on 11-04 standing untouched. The thing
+            # we must act on is the price already ON the read, which is known
+            # right here, next to the _impossible check and for the same
+            # reason.
+            _stored = r.get('price_american')
+            if str(r.get('call_market') or '').lower() == 'ml' and _stored is not None:
+                try:
+                    _sv = float(_stored)
+                except (TypeError, ValueError):
+                    _sv = None
+                # ONLY a game that has not started. A published read on a
+                # game that already played is a receipt of what we told
+                # subscribers, and demoting it rewrites history -- the dry
+                # run of the first version of this block offered to pass on
+                # `Michigan ML -800` and `UNLV ML -2000` from games that had
+                # already been played and graded, because the _has_started
+                # test sits BELOW this point in the loop
+                # (feedback_grade_the_side_we_published).
+                if (_sv is not None and _sv < -_JUICE_LIMIT
+                        and not _has_started(r, ctx)):
+                    print(f'    [ML JUICE] {r.get("call_text")!r} holds '
+                          f'{_sv:g}, past -{_JUICE_LIMIT:g} - demoting the '
+                          f'read to a pass')
+                    patches.append((r['id'], {
+                        'call_market': 'pass', 'call_side': None,
+                        'call_line': None,
+                        'call_text': 'No play - moneyline past our juice ceiling',
+                        'price_american': None, 'price_implied': None,
+                        'price_best': None, 'price_best_book': None,
+                        'price_books_n': None, 'priced_at': None,
+                    }))
+                    refused_ml += 1
+                    continue
             if (r.get('price_american') is not None and _has_started(r, ctx)
                     and not _impossible):
                 skip += 1
@@ -418,6 +457,41 @@ def main():
                 fail += 1
                 reasons[q.get('why', '?')] += 1
                 continue
+            # ══ 2026-11-07 · THE PRICER IS THE FIRST THING THAT KNOWS ══
+            # The ML juice gate added to sync_jerry_reads_from_ctx the same
+            # day reads the CLOSING ML off the ctx row, and took NCAAF reads
+            # advertising an ML worse than -300 from 14 of 51 to 1. The two
+            # survivors on that board -- `Wake Forest ML` at -50000 and
+            # `Edmonton Oilers ML` at -322 -- both sit on ctx rows whose
+            # close_home_ml and close_away_ml are BOTH NULL. The resolver
+            # chose the moneyline with no price in front of it, so no
+            # ctx-side gate could ever have refused them; the price came from
+            # here, out of the live book (fanatics, -50000).
+            #
+            # So this is the chokepoint for the market-priced half of the
+            # same rule (feedback_guard_belongs_at_the_chokepoint). Refusing
+            # to PRICE it is not enough on its own -- that leaves the read
+            # still saying `Wake Forest ML` with no number, which is worse --
+            # so the read is demoted to a pass, exactly as the ctx-side gate
+            # does.
+            #
+            # Reversible by design: ctx.primary_play still says `ml`, so if
+            # the price moves back inside the ceiling the next sync run
+            # restores the call and this stops refusing it.
+            _mkt = str(r.get('call_market') or '').lower()
+            if _mkt == 'ml' and q['price'] is not None and float(q['price']) < -_JUICE_LIMIT:
+                print(f'    [ML JUICE] {r.get("call_text")!r} prices at '
+                      f'{q["price"]} , past -{_JUICE_LIMIT:g} - demoting the '
+                      f'read to a pass instead of advertising it')
+                patches.append((r['id'], {
+                    'call_market': 'pass', 'call_side': None, 'call_line': None,
+                    'call_text': 'No play - moneyline past our juice ceiling',
+                    'price_american': None, 'price_implied': None,
+                    'price_best': None, 'price_best_book': None,
+                    'price_books_n': None, 'priced_at': None,
+                }))
+                refused_ml += 1
+                continue
             ok += 1
             patches.append((r['id'], {
                 'price_american': q['price'], 'price_best': q['best'],
@@ -426,7 +500,8 @@ def main():
                 'priced_at': datetime.now(timezone.utc).isoformat(),
             }))
         print(f'{sport:6s} reads={len(reads):4d}  priceable={ok:4d}  '
-              f'unmatched={fail:4d}  already/skip={skip:4d}')
+              f'unmatched={fail:4d}  already/skip={skip:4d}  '
+              f'ml-juice-refused={refused_ml:3d}')
         for why, n in sorted(reasons.items(), key=lambda kv: -kv[1])[:4]:
             print(f'          {n:4d}  {why}')
         grand['ok'] += ok; grand['fail'] += fail; grand['skip'] += skip

@@ -44,14 +44,75 @@ H   = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 HW  = {**H, 'Content-Type': 'application/json',
        'Prefer': 'resolution=merge-duplicates,return=minimal'}
 
+# `ml` names the closing-moneyline columns for that sport's ctx table, home
+# first then away. There are THREE naming conventions in use across the six
+# tables -- close_home_ml, home_ml_close and home_ml_odds -- and not every
+# table has every one (nfl_game_context has away_ml_odds but no
+# away_ml_close), so these lists were read off a live row of each table on
+# 2026-11-07 rather than assumed. Asking for a column a table lacks is a 400
+# that takes the whole fetch down (feedback_select_star_before_concluding_absent).
 SPORT_CONFIG = {
-    'MLB':   {'ctx': 'mlb_game_context'},
-    'NCAAF': {'ctx': 'ncaaf_game_context'},
-    'NFL':   {'ctx': 'nfl_game_context'},
-    'NCAAB': {'ctx': 'ncaab_game_context'},
-    'NBA':   {'ctx': 'nba_game_context'},
-    'NHL':   {'ctx': 'nhl_game_context'},
+    'MLB':   {'ctx': 'mlb_game_context',
+              'ml': (('home_ml_close', 'home_ml_odds'),
+                     ('away_ml_close', 'away_ml_odds'))},
+    'NCAAF': {'ctx': 'ncaaf_game_context',
+              'ml': (('close_home_ml',), ('close_away_ml',))},
+    'NFL':   {'ctx': 'nfl_game_context',
+              'ml': (('close_home_ml', 'home_ml_close', 'home_ml_odds'),
+                     ('close_away_ml', 'away_ml_odds'))},
+    'NCAAB': {'ctx': 'ncaab_game_context',
+              'ml': (('close_home_ml', 'home_ml_close'),
+                     ('close_away_ml', 'away_ml_close'))},
+    'NBA':   {'ctx': 'nba_game_context',
+              'ml': (('home_ml_close',), ('away_ml_close',))},
+    'NHL':   {'ctx': 'nhl_game_context',
+              'ml': (('close_home_ml', 'home_ml_close'),
+                     ('close_away_ml', 'away_ml_close'))},
 }
+
+# ══ 2026-11-07 · THE CARD REFUSES JUICED CHALK; THE READ ADVERTISED IT ══
+#
+# Andy, on the NCAAB board: "probably still fgiving out super juiced chalk
+# plays like ohio state ml". Fixed there 11-06 inside
+# ncaab_resolve_primary_play, which is ONE sport's resolver. Measured across
+# every sport on 2026-11-07, reads still naming an ML worse than -300:
+#
+#     NCAAF   14 of 51 reads TODAY   worst `Arkansas State ML` at -675
+#                                    (-410 Houston, -400 Auburn, -360 Baylor)
+#     NHL      1 of 12 reads         -322
+#     NCAAB    5 of 57 on 11-06      games already started, left alone
+#
+# The CARD was never exposed: generate_sweat_card.CARD_ML_JUICE_MAX,
+# generate_sharp_card.SOLE_PICK_ML_JUICE_MAX and receipt_invariants all cap
+# at -300 already. jerry_reads had no gate at all, and the read is the
+# surface a user actually opens -- so the card said "no play" while the read
+# said "Arkansas State ML". Fixing one sport's resolver three times is the
+# mistake; this is the one writer every sport's read goes through
+# (feedback_guard_belongs_at_the_chokepoint).
+#
+# A refused ML becomes call_market='pass' with no price rather than a
+# different pick. This bridge does not get to invent a play, and silently
+# dropping the row would leave the PREVIOUS run's juiced call standing --
+# which is exactly how the 11-06 NCAAB reads survived their own resolver's
+# refusal. The prose is kept either way, so the analysis stays readable.
+try:
+    from receipt_invariants import ML_JUICE_MAX
+except ImportError:          # keep the bridge runnable standalone
+    ML_JUICE_MAX = -300.0
+
+
+def _ctx_ml_price(cfg: dict, row: dict, side: str) -> float | None:
+    """Closing ML for `side` ('HOME'/'AWAY') off a ctx row, or None."""
+    names = (cfg.get('ml') or ((), ()))[0 if side == 'HOME' else 1]
+    for col in names:
+        v = row.get(col)
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _derive_call_text(pp: dict, home: str, away: str) -> str | None:
@@ -131,7 +192,9 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
     r = requests.get(
         f'{SB}/rest/v1/{cfg["ctx"]}',
         params={'game_date': f'eq.{gd}', 'primary_play': 'not.is.null',
-                'select': 'game_id,home_team,away_team,primary_play'},
+                'select': ','.join(
+                    ['game_id', 'home_team', 'away_team', 'primary_play']
+                    + [c for grp in (cfg.get('ml') or ((), ())) for c in grp])},
         headers=H, timeout=30,
     )
     if r.status_code != 200:
@@ -153,6 +216,17 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
         if ptype not in ('ml', 'spread', 'rl', 'total'):
             skipped += 1
             continue
+
+        # The juice gate. See the ML_JUICE_MAX note at the top of this file.
+        _refused_ml = None
+        if ptype == 'ml' and side in ('HOME', 'AWAY'):
+            _mlp = _ctx_ml_price(cfg, c, side)
+            # An unknown price does NOT refuse -- same rule as the resolver's
+            # own cap. Refusing on a missing column would blank good reads.
+            if _mlp is not None and _mlp < ML_JUICE_MAX:
+                _refused_ml = _mlp
+                ptype = 'pass'
+                side = ''
 
         # 2026-08-29 CRITICAL FIX: skip if a REAL synthesis row already
         # exists for this (sport, game_id, game_date). Sync bridge was
@@ -216,6 +290,16 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             narrative = cr.json()[0].get('narrative')
 
         call_text = _derive_call_text(pp, home, away)
+        if _refused_ml is not None:
+            # _derive_call_text reads pp['type'], which is still 'ml' -- so
+            # without this the row would say call_market='pass' and
+            # call_text='Arkansas State ML' in the same breath, and the app
+            # renders call_text. Name the refusal instead; the price-clearing
+            # block below nulls the stale price because the market changed.
+            call_text = 'No play — moneyline past our juice ceiling'
+            print(f'  ⛔ {away[:14]} @ {home[:14]}: refusing '
+                  f'{_derive_call_text(pp, home, away)!r} at {_refused_ml:g} '
+                  f'(ML_JUICE_MAX {ML_JUICE_MAX:g}) — read set to pass')
         long_read = narrative
         if narrative:
             short_read, long_read = _parse_narrative(narrative)
@@ -272,7 +356,7 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             'prompt_version': f'{sport.lower()}_ctx_bridge_v1',
             'call_market': ptype,
             'call_side':   side or None,
-            'call_line':   pp.get('line'),
+            'call_line':   None if _refused_ml is not None else pp.get('line'),
             'call_text':   call_text,
             'short_read':  short_read,
             'long_read':   long_read,
