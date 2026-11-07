@@ -589,6 +589,64 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
             _dec = _ens('NCAAB', g)
             if _dec is not None:
                 _top = _dec.top()
+                # ══ 2026-11-06 · THE ENSEMBLE HAD NO JUICE CAP ═══════
+                # The bespoke selection above refuses an ML past
+                # ML_JUICE_MAX and falls through to totals, which is why
+                # only ONE 'ml suppressed' line printed on the 11-07
+                # board. But the merge below then overwrote primary_play
+                # with the ensemble's pick and never re-checked the
+                # price, so six games published an ML the bespoke path
+                # had already rejected:
+                #
+                #   Utah St. ML -20000 · New Mexico ML -10000
+                #   Dayton ML -8000 · Saint Joseph's ML -4000
+                #   Davidson ML -780 · St. Bonaventure ML -350
+                #
+                # all carrying _engine='ensemble_v2'. Andy saw these in
+                # the app. Tonight's ml COVERAGE ceiling keeps them off
+                # the CARD, but the game READ is the surface a user
+                # opens and it showed them anyway.
+                #
+                # This is the second gate the same merge was missing,
+                # after NCAAB_ML_TIER_CAP earlier today. A gate written
+                # for one writer is not enforced
+                # (feedback_fix_every_writer_to_the_table).
+                #
+                # Refusing the OVERRIDE, not inventing a new pick: the
+                # bespoke result already fell through to a total, so
+                # declining the ensemble's ML leaves that standing,
+                # which is what the bespoke juice cap intended.
+                # Recompute the price HERE from the ctx row. ml_blocked
+                # and _ml_price are locals of resolve(), not of this
+                # loop -- referencing them raised NameError, which the
+                # `except Exception` below SWALLOWED, silently turning
+                # the ensemble off for every game
+                # (feedback_swallowed_nameerror_is_a_false_condition).
+                if (_top is not None and _top.pick is not None
+                        and str(_top.market or '').lower() == 'ml'):
+                    _eside = str(_top.side or '').upper()
+                    _ep = None
+                    if _eside in ('HOME', 'AWAY'):
+                        for _c in (('close_home_ml', 'home_ml_close')
+                                   if _eside == 'HOME' else
+                                   ('close_away_ml', 'away_ml_close')):
+                            _v = g.get(_c)
+                            if _v is None:
+                                continue
+                            try:
+                                _ep = float(_v)
+                            except (TypeError, ValueError):
+                                _ep = None
+                            if _ep is not None:
+                                break
+                    # Unknown price does NOT block, same rule as the
+                    # bespoke cap above.
+                    if _ep is not None and _ep < ML_JUICE_MAX:
+                        print(f'    ensemble ML refused: '
+                              f'{_top.display_label!r} at {_ep:g} is past '
+                              f'the {ML_JUICE_MAX:g} juice cap — keeping '
+                              f'the bespoke pick')
+                        _top = None
                 if _top is not None and _top.pick is not None:
                     _prev = result.get('primary_play') or {}
                     # ══ 2026-11-06 · PROSE CANNOT CROSS total <-> side ══
