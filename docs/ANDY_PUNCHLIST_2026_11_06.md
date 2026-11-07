@@ -10,14 +10,16 @@ render path traced. Andy's instruction on item 6 applies to all of them —
 
 | # | item | status |
 |---|---|---|
-| A1 | In-app fires/alerts surfacing to users that I never looked at | OPEN |
-| A2 | Money flow not listed in app for any NBA or NHL game, probably NCAAB too | OPEN |
+| A1 | In-app fires/alerts surfacing to users that I never looked at | **CLOSED** 11-07 |
+| A2 | Money flow not listed in app for any NBA or NHL game, probably NCAAB too | **FIXED** 3cb62ed1 |
 | A3 | NCAAB games missing spreads | OPEN |
-| A4 | NCAAB still surfacing super-juiced chalk (e.g. Ohio State ML) | OPEN |
-| A5 | Externals likely gone dark across some sports | OPEN |
-| A6 | Purdue: app shows Purdue +21, pre-game Jerry read says Purdue −19.5; no situational records | OPEN |
-| A8 | Why was USF ML the POTD today | **ROOT CAUSE FOUND** |
-| A7 | CBB teams with no stats | **ROOT CAUSE FOUND** - 31 of 34 already in the alias table |
+| A4 | NCAAB still surfacing super-juiced chalk (e.g. Ohio State ML) | **FIXED** 07ccebde - it was NCAAF |
+| A5 | Externals likely gone dark across some sports | **ROOT CAUSE = A2** |
+| A6 | Purdue margin-vs-spread mismatch; no situational records | **FIXED** 25d8df46 |
+| A8 | Why was USF ML the POTD today | ROOT CAUSE FOUND - fixes OPEN |
+| A9 | More externals on NBA; avg handicappers per game, every sport | **ANSWERED** 11-07 |
+| A10 | NCAAB ctx team names do not match NCAAB results names | OPEN - folded into A7 |
+| A7 | CBB teams with no stats | OPEN - now also blocks 41 of 276 NCAAB tendency lookups |
 
 ---
 
@@ -418,3 +420,70 @@ NCAAB board; this produces phantom 28-point probability edges on football.
 3. POTD requires more than two supporting signals, and none under n=30.
 4. Fix the published price to the real one (−104, 11 books) and find why
    `odds_american` took the opening away ML with the sign dropped.
+
+---
+
+## A1 — resolved as the heading, not a separate defect  (2026-11-07)
+
+"In APp fires right now surfacing to users" described A2-A7 themselves, not a
+distinct alerts surface. Checked for one anyway: the Sweat Card's literal
+`🔥 STACK ALERT` plus `skip_alerts` and `total_edges` sections are all **empty**
+on 11-05 and 11-06 (0 entries each), so nothing wrong is firing there. Ran the
+Tier 0 in-app sweep instead — which is what found the NCAAF juiced chalk that
+closed A4.
+
+---
+
+## A9 — externals per game, every sport  (asked 2026-11-07)
+
+Andy: "we need more externals on nba, saw one listed for LAL game that is
+unsat ... what is the average external handicapper for each game for each
+sport".
+
+**NBA is not thin — it went dark.** Per-game external density by day, matched
+on ctx game_id:
+
+| sport | 11-01 | 11-02 | 11-03 | 11-04 | 11-05 | 11-06 | 11-07 |
+|---|---|---|---|---|---|---|---|
+| NFL   | 13.1 | 13.0 | – | – | 14.0 | – | – |
+| NCAAF | – | – | 12.5 | 9.0 | 10.5 | 9.6 | 4.5 |
+| NBA   | 9.8 | 9.0 | – | 9.4 | 10.0 | **0.2** | **0.0** |
+| NHL   | 8.4 | 9.0 | 9.0 | 7.8 | 7.9 | **1.0** | **0.0** |
+| NCAAB | 2.0 | 3.3 | 6.4 | 4.5 | 4.7 | 4.0 | 0.1 |
+
+NBA ran 9-10 handicappers per game off 5-6 distinct sources every day through
+11-05, then collapsed to 0.2 and then 0. **That is the A2 dropped cron, not a
+source-coverage problem** — `nba_pipeline` has not been dispatched since
+11-06T00:01 UTC. Both Lakers games (11-06 vs POR, 11-08 at DET) carry zero
+externals keyed on their ctx game_id.
+
+14-day averages (2026-10-25 → 11-07): NBA **7.21/game** (2nd densest live
+sport), NCAAF 6.00, NHL 5.84, NCAAB 3.25, NFL 3.07. NFL's low figure is
+forward weeks with no picks posted yet — on a day it runs it is the densest
+sport at 13-14.
+
+So NBA needs the pipeline dispatching again, not more sources. **Andy's source
+ideas are still worth taking** on two counts the data supports: NCAAB at
+2-6/game is genuinely the thinnest live sport, and even on healthy days ~20%
+of NBA games carry zero externals (22 of 110 in the window).
+
+---
+
+## A10 — NCAAB context names do not match NCAAB results names  (2026-11-07)
+
+Found while wiring A6's tendency views. The app joins a view built from
+`ncaab_game_results` using team names taken from `ncaab_game_context`, and
+**41 of 276 ctx names do not exist in results** — context carries mascots,
+results carries bare schools. NHL and NBA match 100%.
+
+Measured: expanding a standalone `St` → `State` and re-looking-up through
+`ncaab_team_aliases` bridges **24 of 41** and breaks **0** of the names that
+already matched. The other **17** are genuinely absent from the alias table:
+Albany, CSU Northridge, Cal Baptist, Florida Int'l, GW, Grand Canyon, IUPUI,
+LIU, Loyola (MD), Miss Valley St, Mt. St. Mary's, Nicholls St, Seattle,
+St. Thomas (MN), Texas A&M-CC, UT-Arlington, West Florida.
+
+`ncaab_team_resolver.py` already collapses St./State/Saint to one token, so
+this belongs in that resolver at the one chokepoint where it fixes every NCAAB
+surface at once — the same work as A7. **Folded into A7.** Until it lands the
+NCAAB tendency panel renders for 235 of 276 teams instead of 0.
