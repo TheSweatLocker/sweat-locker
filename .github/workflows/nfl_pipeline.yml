@@ -411,6 +411,34 @@ jobs:
             bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nfl_espn_projections_pull.py" python nfl_espn_projections_pull.py --season $SEASON --week $WEEK
           fi
 
+      # ══ 2026-11-08 · AN UNMEASURED PRIOR WAS OUTWEIGHING EVIDENCE ════
+      # cap_unmeasured_signal_weight.py has existed since 10-30, documents
+      # this inversion in its own docstring, and was in NO workflow -- the
+      # 61-unwired-writers pattern again (feedback_run_the_unscheduled_
+      # writer_audit: existence is not a schedule).
+      #
+      # Measured today, NFL: 6 signals carry the blanket 0.300 prior on
+      # n=0 of their OWN graded outcomes, while every NFL signal that has
+      # ever been graded carries 0.004-0.131. The ceiling the script
+      # computes is 0.278, so it lowers 6 priors and touches nothing that
+      # has evidence. It never zeroes, never raises, and refuses to invent
+      # a ceiling when no evidenced signal carries weight (which is why it
+      # declines NCAAB outright rather than guessing).
+      #
+      # Placed BEFORE nfl_game_context.py because that is the scorer: a
+      # weight written after it would not reach a pick until the next run.
+      # Capping an UNEARNED weight needs no new claim; asserting a signal
+      # is worthless would, and this does not do that.
+      - name: Cap unmeasured NFL signal weights (runs before the scorer)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "cap_unmeasured_signal_weight.py" python cap_unmeasured_signal_weight.py --sport NFL --apply
+
       - name: Build NFL game context (projections + confluence + sweat + Panel)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         env:

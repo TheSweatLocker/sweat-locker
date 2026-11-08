@@ -103,7 +103,17 @@ SELECT
     'and float(ctx.home_qb_recent_home_win_pct) >= 0.65',
     '"HOME_ML"',
     'min((float(ctx.home_qb_recent_home_win_pct) - 0.5) * 2.0, 1.0)',
-    'Home QB {home_qb_name} {home_qb_recent_home_wins}-{home_qb_recent_home_starts} last home starts',
+    -- 2026-11-08: {home_qb_recent_home_wins} IS NOT A COLUMN. It never
+    -- was: nfl_game_context carries home_qb_recent_home_win_pct and
+    -- home_qb_recent_home_starts, and signal_expr.render_prose turns an
+    -- unresolved {key} into a literal '?'. So this signal's chip read
+    -- "Home QB Drake Maye ?-15 last home starts" to users -- 9 live
+    -- chips since 11-01, and 4 of 13 games on today's NFL Sunday board.
+    -- The CONDITION above was always right (it reads win_pct); only the
+    -- display was broken, so the signal fired correctly and looked
+    -- broken doing it. render_prose has no format-spec support, so the
+    -- rate renders as 0.73 rather than 73%.
+    'Home QB {home_qb_name} {home_qb_recent_home_win_pct} win rate in his last {home_qb_recent_home_starts} home starts',
     true, 'SEEDED_QB_SPLITS_911', NULL, NULL, NULL
 WHERE NOT EXISTS (
     SELECT 1 FROM public.signal_sources

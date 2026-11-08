@@ -516,6 +516,31 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "nba_injuries_pull.py" python nba_injuries_pull.py
 
+      # ══ 2026-11-08 · NBA'S UNMEASURED PRIORS WERE 3.3x ITS EVIDENCE ══
+      # Same unwired writer as the NFL step added today. NBA is the worst
+      # case measured: four signals carry a weight of 1.000 / 1.000 / 1.000
+      # / 0.500 on n=0 of their own graded outcomes, while the best NBA
+      # signal that HAS evidence carries 0.300 (nba_elo_home_ml_strong,
+      # 55.3% on n=38). So a prior with no samples outweighed the
+      # best-evidenced signal in the sport by up to 3.3x
+      # (feedback_unmeasured_signal_must_not_outweigh_measured).
+      #
+      # Three of the four are nba_projection_edge_* -- the family that
+      # decides how much our projection disagreeing with the market is
+      # worth, which is exactly the axis that put `Boston Celtics -12.5`
+      # (projection 8.4, market 12.5) at the top of the NBA board today.
+      #
+      # The script caps to 0.300, the most any evidenced NBA signal earned.
+      # It never zeroes and never raises.
+      - name: Cap unmeasured NBA signal weights (runs before the scorer)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "cap_unmeasured_signal_weight.py" python cap_unmeasured_signal_weight.py --sport NBA --apply
+
       # ─── Today's context (schedule + odds + rest) ──────────────
       - name: Build NBA game context (today + next 3 days)
         continue-on-error: true

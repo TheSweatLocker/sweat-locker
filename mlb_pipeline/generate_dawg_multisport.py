@@ -168,6 +168,60 @@ def candidates(gd: str) -> list:
         # unpriced row cannot be shown to be one, so it is not a candidate.
         if p is None or p < MIN_PRICE or p > MAX_PRICE:
             continue
+        # ══ 2026-11-08 · CONVICTION 0 IS A DEMOTION, NOT A LOW SCORE ══════
+        # Today's only candidate in band was `Winnipeg Jets ML +123` at
+        # conviction 0, and three more NHL MLs sat beside it at 0. That is
+        # not a weak opinion: defensive_gates.apply_nhl_ml_confidence_gate
+        # sets conviction to exactly 0 to mean "this pick has NOT earned a
+        # stake", stamping its own audit_note ("NHL ML confidence gate ...
+        # Demoted to conviction 0"), and compute_surface_records then skips
+        # conviction==0 rows so they never enter a published record.
+        #
+        # So selecting one would make Dawg of the Day the one surface that
+        # publishes a pick the engine deliberately demoted -- and because
+        # the demotion is expressed as a FALSY ZERO, a client doing
+        # `Number(conviction) || 55` renders it as "55% confidence" on a
+        # LEAN badge, which is exactly the defect that reached 58 live cards
+        # on 11-03 (feedback_falsy_zero_invented_a_tier_and_a_confidence).
+        #
+        # This surface picks on PRICE, not conviction -- that is the whole
+        # argument of the docstring above and it stands. The test here is
+        # not "is the conviction high enough", it is "was this pick
+        # withdrawn". Absent (None) is treated the same way: a row with no
+        # conviction at all cannot be shown to have earned a stake either,
+        # and the NCAAB totals reads on today's board are in that state
+        # (tier COVERAGE, score None, conviction None).
+        #
+        # Measured on today's board: 1 candidate in band, 1 excluded, so the
+        # honest answer is that there is no Dawg today rather than a demoted
+        # NHL moneyline dressed as one.
+        #
+        # WHAT THIS COSTS, STATED STRAIGHT. The docstring's backtest was run
+        # WITHOUT this filter, so its n=38 population included demoted rows.
+        # Re-measured over every graded priced plus-odds read in the band:
+        #
+        #   population                     W-L     n    hit%    units
+        #   all graded                    59-66   125   47.2%   +8.75
+        #   conviction 0/None              5- 2     7   71.4%   +3.81
+        #   conviction >0 (ships now)     54-64   118   45.8%   +4.94
+        #
+        # So the excluded subset has the BETTER record, and removing it
+        # lowers the surface's measured units. That is not a reason to keep
+        # it: n=7 is far under the n>=30 gate this repo holds every
+        # percentage to, so 71.4% is not a measurement, and 6 of those 7 are
+        # NHL - the one sport whose demotion gate produced the zeros, which
+        # makes the subset a sample of a single gate's refusals rather than
+        # of underdogs. The filter rests on the SEMANTICS (a withdrawn pick
+        # must not headline a surface) and on the falsy-zero display hazard,
+        # not on performance. If the forward record on conviction-0 rows
+        # keeps beating the rest past n=30, this gate is one line to move.
+        _dc = _i(r.get('conviction'))
+        if _dc is None or _dc <= 0:
+            print('  - %s %s: conviction %s - the engine withdrew this pick '
+                  '(conviction 0 means no stake earned), not a candidate'
+                  % (r.get('sport'), str(r.get('call_text'))[:34],
+                     r.get('conviction')))
+            continue
         out.append(r)
     return out
 

@@ -227,6 +227,53 @@ def _curation_checklist(date: str) -> list:
         for x in _heavy:
             out.append(f"       {str(x.get('pick_label'))[:34]:34s} "
                        f"{int(float(x['pick_odds'])):+d}")
+
+    # ══ 2026-11-08 · AN UNRESOLVED PLACEHOLDER IS USER-VISIBLE ═════════
+    # signal_expr.render_prose fills {key} from the context row and turns
+    # anything it cannot resolve into a literal '?', silently. So a prose
+    # template naming a column that does not exist ships a broken chip to
+    # users and nothing anywhere complains.
+    #
+    # Found today on `nfl_home_qb_recent_home_hot`, whose template asked
+    # for {home_qb_recent_home_wins} -- not a column, and never was;
+    # nfl_game_context carries home_qb_recent_home_win_pct and
+    # home_qb_recent_home_starts. Users read
+    # "Home QB Drake Maye ?-15 last home starts" on 4 of 13 games on an
+    # NFL Sunday, 9 chips since 11-01. The signal's CONDITION was correct
+    # throughout, so it fired right and looked broken doing it.
+    #
+    # Checked the LIVE rendered chips rather than the templates: a static
+    # scan of signal_sources.display_prose_template against context
+    # columns flagged 60 uses, but most of those placeholders are injected
+    # at render time from the pick/prop dict and resolve fine. The rendered
+    # text is the only thing that proves a break
+    # (feedback_coverage_pct_hides_dead_code).
+    _broken_prose = {}
+    for _sp, _tbl in (('NFL', 'nfl_game_context'),
+                      ('NCAAF', 'ncaaf_game_context'),
+                      ('NBA', 'nba_game_context'),
+                      ('NHL', 'nhl_game_context'),
+                      ('NCAAB', 'ncaab_game_context')):
+        try:
+            _rows = _get_json(_tbl, {'select': 'primary_play',
+                                     'game_date': f'eq.{date}',
+                                     'limit': '400'}) or []
+        except Exception:                                      # noqa: BLE001
+            continue
+        for _r in _rows:
+            _pp = _r.get('primary_play') or {}
+            for _e in (_pp.get('_ensemble_sources') or []):
+                if not isinstance(_e, dict):
+                    continue
+                if '?' in str(_e.get('prose') or ''):
+                    _k = (_sp, str(_e.get('signal_key')))
+                    _broken_prose[_k] = _broken_prose.get(_k, 0) + 1
+    if _broken_prose:
+        out.append(f'   ⚠ {sum(_broken_prose.values())} signal chip(s) render '
+                   f'an unresolved placeholder as "?" — users see it:')
+        for (_sp, _sk), _n in sorted(_broken_prose.items(),
+                                     key=lambda kv: -kv[1])[:6]:
+            out.append(f'       {_sp:6s} {_sk:40s} {_n} chip(s)')
     return out
 
 
