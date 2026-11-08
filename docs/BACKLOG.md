@@ -168,7 +168,16 @@ openers, not after — MLB's externals took weeks to reach 12 sources.
 VERIFY: count `external_picks` and `external_source_track_record` by
 sport over a 7-day window.
 
-### B20 · Recent-schedule table is unreadable on two axes
+### B20 · Recent-schedule table is unreadable on two axes — **CLOSED in code 2026-09-25/26/27, still BUILD-GATED on B5**
+
+Verified 2026-11-07 in `app/components/GameDetailV2.tsx`: the OPP column
+becomes **WON** on H2H with a team-prefixed ATS chip (09-25), the **year**
+renders on H2H where rows span seasons (09-26), and a third bug found in
+the same pass — a date-only string parsed as UTC midnight shifting every
+date by a day in the device zone — was fixed 09-27. Both original axes are
+addressed. It has NOT reached users: `expo-updates` is not in
+`package.json`, so there is no OTA and this waits on an App Store build
+(B5), same as B21 and B22.
 From Andy's 09-22 screenshots, `team_recent_games` rendering in
 GameDetailV2:
 
