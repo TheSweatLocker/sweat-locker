@@ -184,7 +184,21 @@ SIGNAL_SPANS = {
     'NFL':   (0.98, 0.86),
     'NCAAF': (1.43, 1.23),
     'MLB':   (2.48, 1.50),
-    'NCAAB': (0.73, 0.48),   # provisional, mirrors NHL until NCAAB has rows
+    # ══ 2026-11-08 · ALSO PROVISIONAL, ALSO 5.6x TOO WIDE ══════════════
+    # "mirrors NHL until NCAAB has rows" was a placeholder and it suppressed
+    # NCAAB the same way the ANCHORS guess did. Measured today over all 157
+    # NCAAB primary_play rows carrying a score: p90 = 0.130, max = 0.400,
+    # against the borrowed 0.73 - so every NCAAB pick was divided by a span
+    # five and a half times wider than its own distribution, and NCAAB's
+    # best pick tonight ranked 45.9 when NBA's ranked 97.0.
+    #
+    # The MARGIN half is DERIVED, not measured, and flagged as such: NCAAB
+    # stores no margin at all (0 of 157 rows carry _conv_inputs.margin,
+    # because stamp_conviction_rank.py was never in ncaab_pipeline.yml -
+    # scheduled in that same commit). 0.09 is NCAAB's measured score p90
+    # scaled by NHL's own margin/score ratio (0.48/0.73). Re-measure once
+    # the stamper has written a few nights of real margins.
+    'NCAAB': (0.13, 0.09),   # score MEASURED n=157; margin derived, see note
 }
 
 #: p90 lands here, leaving headroom above it so an exceptional night can

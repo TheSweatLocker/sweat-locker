@@ -70,6 +70,50 @@ H_WRITE = {**H_READ, 'Content-Type': 'application/json',
 # (0/week possible) — no bet is a bet. Auto-loosener self-tune below
 # is also disabled to prevent drift back into loosened state.
 LADDER_TIER_MIN         = {'PRIME', 'STRONG'}  # LEAN removed — no ladder authority
+
+# ══ 2026-11-08 · THE TIER FLOOR EXCLUDED THREE WHOLE SPORTS ═════════════
+# ANDY: "we just need to ensure all sports are availbale for selection ...
+# i want the volume revived".
+#
+# LADDER_TIER_MIN alone could never admit NHL, NBA or NCAAB. Measured on
+# tonight's board:
+#
+#     NHL     34 picks   ALL COVERAGE        0 PRIME/STRONG
+#     NBA     10 picks   ALL COVERAGE        0
+#     NCAAB   46 picks   40 COVERAGE, 6 LEAN 0
+#     NFL    140 picks   2 PRIME + 8 STRONG
+#     NCAAF   87 picks   14 STRONG
+#
+# and that is not a tier problem, it is the conviction pile-up: the
+# ensemble formula is sport-blind (50 + min(score*10,30) + ...) while the
+# score it reads is not - median score NCAAF 0.630 vs NBA 0.080, NCAAB
+# 0.070 - so those three sports cap at conviction 55, the tier thresholds
+# put STRONG at 65, and every pick lands on COVERAGE. The ladder's tier
+# floor then removed the sport entirely. Same single root cause as the
+# all-NCAAF Sweat Card.
+#
+# So the ladder admits a pick EITHER on the raw tier (unchanged for
+# NFL/NCAAF/MLB) OR on that sport's own RANK - conviction_scale's per-sport
+# separation number, which is what POTD already ranks on. conviction itself
+# is NOT rescaled: it is consumed as a win probability by
+# model_edge.edge_pp, and inflating it would print a fake edge on every
+# pick and switch off the cap that is currently telling the truth. That is
+# the whole reason conviction_rank exists as a second number.
+#
+# THE BAR IS MEASURED, not chosen. Candidates clearing each rank bar over
+# 11-05..11-08, and whether every sport and every day is represented:
+#
+#     bar    NHL  NBA  NCAAB  NFL  NCAAF   sports  days
+#     >=60     2   16     27    5     21      5/5   4/4
+#     >=65     2   15     21    4     18      5/5   4/4
+#     >=70     0   12      1    2     14      4/5   4/4   <- loses NHL
+#     >=75     0    6      0    2      9      3/5   4/4
+#
+# 65 is the highest bar that still represents all five sports every day;
+# 70 drops NHL entirely because its best pick ranks 69.6. Raise it as the
+# signal coverage improves - a rank is only as good as the signals under
+# it, and NCAAB currently fires one signal type.
+LADDER_RANK_MIN         = 65.0
 LADDER_WIN_PROB_MIN     = 60.0     # pre-loosen baseline
 LADDER_COHORT_HIT_MIN   = 60.0     # pre-loosen baseline
 LADDER_COHORT_N_MIN     = 30       # pre-loosen baseline
@@ -82,7 +126,19 @@ LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys pas
 # win probability. 45% is below any sane single-bet threshold on purpose:
 # this is the "is this even a plausible side" bar, not a selection standard.
 LADDER_RELAXED_WIN_PROB_FLOOR = 45.0
-LADDER_MIN_GATES        = 4        # 4-of-5 required (was 3); tighter with reverted thresholds
+# ══ 2026-11-08 · THE CODE DEMANDED 4, THE UI PROMISES 3, ONLY 3 EXIST ══
+# check_qualifier's own docstring says "Must clear at least 3 of 5 gates
+# (matches UI copy)" and the gate comment repeats it, while this constant
+# said 4. That is not a stricter policy, it is a contradiction - and the
+# arithmetic made it fatal: of the five gates, the consensus one read a
+# column that exists on NO context table (fixed in this commit) and the
+# cohort one is documented in this very file as never matching an
+# ensemble_v2 audit_note. Three gates were reachable and four were
+# required, so the strict scan could not qualify anything on any sport.
+# Measured: 6 of the 7 nights 11-01..11-08 produced no qualifier at all.
+# 3 is what the docstring says, what the UI tells users, and what the
+# gates can actually deliver.
+LADDER_MIN_GATES        = 3        # 3-of-5, matching the UI copy + docstring
 LADDER_AUTO_LOOSEN_DISABLED = True  # 2026-09-02: prevent drift back to bleeding gates
 
 # 2026-08-20: cross-sport edge normalization. Different sports have different
@@ -150,7 +206,27 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     """
     pp = row.get('primary_play') or {}
     tier = pp.get('tier')
-    if tier not in LADDER_TIER_MIN: return None
+    # Admit on the raw tier OR on this sport's own rank. See LADDER_RANK_MIN.
+    _rank = pp.get('_conviction_rank')
+    if _rank is None:
+        try:
+            import conviction_scale as _cs_l
+            _rank = _cs_l.rank_from_signals(
+                sport, pp.get('score'),
+                (pp.get('_conv_inputs') or {}).get('margin'))
+        except Exception:                                      # noqa: BLE001
+            _rank = None
+    try:
+        _rank = float(_rank) if _rank is not None else None
+    except (TypeError, ValueError):
+        _rank = None
+    _by_tier = tier in LADDER_TIER_MIN
+    _by_rank = _rank is not None and _rank >= LADDER_RANK_MIN
+    if not (_by_tier or _by_rank):
+        return None
+    # A declared no-play is never a rung, whatever it ranks.
+    if str(tier or '').upper() in ('PASS', 'SKIP'):
+        return None
 
     # Gate 1: sides only (or totals/yrfi with signal confluence)
     # 2026-08-20: added 'rl' to is_side alongside 'spread' — ensemble emits
@@ -217,8 +293,9 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     # Gate scoring — count how many of the 5 gates this pick clears.
     # Tier is gate #1 (already passed above — we're here because tier is
     # PRIME/STRONG/LEAN). Others are win_prob, consensus, edge, cohort.
-    gates_passed = 1  # tier
-    gate_notes = [f'tier={tier}']
+    gates_passed = 1  # tier (or rank — see LADDER_RANK_MIN)
+    gate_notes = [f'tier={tier}' + ('' if _by_tier
+                                    else f' via rank {_rank:.0f}')]
 
     if win_prob is not None and win_prob >= LADDER_WIN_PROB_MIN:
         gates_passed += 1
@@ -226,13 +303,59 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     else:
         gate_notes.append(f'MC={win_prob:.0f}%' if win_prob else 'MC=?')
 
-    # Consensus check — count lens agreement from signal_confluence_support
-    consensus = row.get('signal_confluence_support') or 0
-    if consensus >= LADDER_CONSENSUS_MIN:
-        gates_passed += 1
-        gate_notes.append(f'consensus={consensus}/5✓')
+    # ══ 2026-11-08 · THIS GATE COULD NEVER PASS, ON ANY SPORT ══════════
+    # It read `signal_confluence_support`, which does not exist on ANY of
+    # the six context tables. `row.get(...) or 0` turned that into 0, and
+    # `0 >= 4` is False forever, so one of the five gates was dead on every
+    # pick in every sport.
+    #
+    # Why that emptied the ladder rather than just costing a point: the
+    # cohort gate below is also effectively unreachable (its regex is
+    # documented in this very file as never matching an ensemble_v2
+    # audit_note), so only tier + win_prob + edge could ever pass -- a
+    # maximum of 3 of 5 -- while LADDER_MIN_GATES is 4. The strict scan was
+    # arithmetically incapable of qualifying a pick. Measured: 6 of the 7
+    # nights 11-01..11-08 produced no qualifier at all, and the only rungs
+    # since MLB ended came from the RELAXED 2-dry-day path.
+    #
+    # The real column is `signal_confluence_net`, filled 100% on every
+    # sport (NHL 72/72, NBA 58/58, NCAAB 335/335, NFL 164/164, NCAAF
+    # 99/99). It is SIGNED -- positive leans HOME, negative leans AWAY,
+    # roughly -5..+5 over the five lenses named in
+    # signal_confluence_breakdown (elo, xg_diff, goalie_sv, high_danger,
+    # l10_goal_diff for NHL).
+    #
+    # So the magnitude alone is not the test: a +5 home confluence is
+    # evidence AGAINST an away pick, not for it
+    # (feedback_check_which_side_a_column_indexes). The gate now requires
+    # the lenses to agree with the side WE are taking.
+    consensus = 0          # recorded on the rung as consensus_lens
+    _conf_net = row.get('signal_confluence_net')
+    try:
+        _conf_net = float(_conf_net) if _conf_net is not None else None
+    except (TypeError, ValueError):
+        _conf_net = None
+    _our_side = None
+    if is_side:
+        _home_nm = (row.get('home_team') or '').lower()
+        _lbl = (pp.get('label') or '').lower()
+        if _home_nm and _home_nm in _lbl:
+            _our_side = 'HOME'
+        else:
+            _our_side = str(pp.get('side') or '').upper() or 'AWAY'
+    if _conf_net is None:
+        gate_notes.append('consensus=?')
     else:
-        gate_notes.append(f'consensus={consensus}/5')
+        # signed toward our side: positive = lenses agree with us
+        _toward_us = _conf_net if _our_side == 'HOME' else -_conf_net
+        if _our_side is None:          # totals: magnitude cannot pick a side
+            _toward_us = abs(_conf_net)
+        consensus = _toward_us
+        if _toward_us >= LADDER_CONSENSUS_MIN:
+            gates_passed += 1
+            gate_notes.append(f'consensus={_toward_us:+.0f}/5 agrees✓')
+        else:
+            gate_notes.append(f'consensus={_toward_us:+.0f}/5')
 
     # Odds + edge
     # Column-name coalesce: MLB uses `home_ml_close`/`away_ml_close`,
@@ -246,6 +369,41 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         home_team = (row.get('home_team') or '').lower()
         if home_team and home_team in label: odds = home_ml_odds
         else: odds = away_ml_odds
+    # ══ 2026-11-08 · ONLY A MONEYLINE COULD EVER BE PRICED HERE ═════════
+    # `odds` was assigned under `is_side and market == 'ml'` and nowhere
+    # else, so every spread, puck line and total fell straight into the
+    # `return None` below for having no price. The ladder's game path could
+    # select ONE market in one direction, which is a large part of why its
+    # history is 58 of 60 MLB (and 39 of those props, which come in on the
+    # separate prop path).
+    #
+    # The prices were on the context row the whole time, measured today
+    # since 11-01:
+    #
+    #     NHL  close_puckline_home_price / _away_price   38/72
+    #     NHL  close_total_over_price   / _under_price   50/72
+    #     NBA  close_spread_home_price  / _away_price    51/58
+    #     NBA  close_total_over_price   / _under_price   51/58
+    #
+    # NCAAB, NFL and NCAAF carry no side/total price column, so they keep
+    # the moneyline-only behaviour here rather than being handed a guess.
+    # Same lesson as the jerry_reads side prices on 11-07: look for the
+    # column before concluding the data is not there.
+    if odds is None and is_side:
+        _sd = str(pp.get('side') or '').upper()
+        if not _sd:
+            _home_nm = (row.get('home_team') or '').lower()
+            _sd = 'HOME' if (_home_nm and _home_nm in label) else 'AWAY'
+        for _k in ((f'close_puckline_{_sd.lower()}_price',
+                    f'close_spread_{_sd.lower()}_price')):
+            if row.get(_k) is not None:
+                odds = row.get(_k)
+                break
+    if odds is None and is_total:
+        _dir = 'over' if 'over' in label else 'under'
+        _v = row.get(f'close_total_{_dir}_price')
+        if _v is not None:
+            odds = _v
     if odds is None: return None  # hard: can't size without odds
     try: odds_int = int(odds)
     except (TypeError, ValueError): return None

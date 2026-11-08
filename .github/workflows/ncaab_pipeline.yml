@@ -791,6 +791,25 @@ jobs:
       # signal_registry with 0 VALIDATED and 95.2% of its weighted signals
       # under n=30, because there was never an attribution row to measure
       # them FROM. This is the step that makes NCAAB tunable at all.
+      # ══ 2026-11-08 · THE RANK STAMPER WAS IN FOUR PIPELINES, NOT FIVE
+      # stamp_conviction_rank.py runs in nba_, nhl_, nfl_ and ncaaf_pipeline
+      # and was never added to NCAAB. Consequence measured today: 0 of 157
+      # NCAAB primary_play rows carry _conviction_rank OR
+      # _conv_inputs.margin, so NCAAB could not be ranked on its own
+      # distribution and its margin span had to be derived from NHL's ratio
+      # rather than measured. Runs before the attribution snapshot so the
+      # rank is on the row when the signals are recorded.
+      - name: Stamp NCAAB conviction_rank
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python stamp_conviction_rank.py --sport NCAAB --days 4
+
       - name: Snapshot NCAAB signal attribution
         if: always()
         continue-on-error: true
