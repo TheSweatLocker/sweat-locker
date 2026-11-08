@@ -144,6 +144,92 @@ def collect_today_headlines(date: str) -> dict:
     return out
 
 
+#: POTD price bands and their measured performance, for the morning
+#: checklist. n is small on two of the three, so these are flags for a
+#: human, never an automatic veto.
+_POTD_BAND_NOTES = (
+    (0, 99999, 'plus money', '+16.6% ROI on n=11 — the best band we have'),
+    (-150, 0, '-100..-150', 'flat: -0.5% ROI on n=119, the only n>=30 band'),
+    (-250, -150, '-150..-250',
+     'LOSING: 55.6% against a 64.6% break-even, -14.1% ROI on n=27'),
+    (-99999, -250, 'worse than -250', 'past the documented POTD juice gate'),
+)
+
+
+def _curation_checklist(date: str) -> list:
+    """What a human should look at on the POTD and the card before noon ET.
+
+    Reads the two published surfaces and flags the specific shapes this
+    repo has measured as bad: the -150..-250 POTD band, a tier with no
+    conviction behind it, a card concentrated in one sport, and a price we
+    published worse than the consensus we had.
+    """
+    out = []
+    recs = _get_json('public_receipts', {
+        'select': 'surface,market,sport,pick_label,pick_odds,tier,conviction,result',
+        'game_date': f'eq.{date}',
+        'surface': 'in.(potd,sweat_card)', 'limit': '60'}) or []
+    if not isinstance(recs, list):
+        return [f'   receipt fetch failed: {str(recs)[:120]}']
+    if not recs:
+        return ['   no POTD or Sweat Card receipts yet for this date']
+    potd = [x for x in recs if x.get('surface') == 'potd']
+    card = [x for x in recs if x.get('surface') == 'sweat_card']
+
+    def _band(o):
+        try:
+            v = float(o)
+        except (TypeError, ValueError):
+            return None, 'NO PRICE — cannot be graded for ROI'
+        for lo, hi, lbl, note in _POTD_BAND_NOTES:
+            if lo <= v < hi:
+                return lbl, note
+        return None, ''
+
+    for x in potd:
+        lbl, note = _band(x.get('pick_odds'))
+        flag = '  <-- REVIEW' if (lbl or '').startswith('-150') or lbl is None else ''
+        out.append(f"   POTD  {str(x.get('pick_label'))[:38]:38s} "
+                   f"{str(x.get('pick_odds')):>6s}  [{lbl or '?'}] {note}{flag}")
+    if not potd:
+        out.append('   POTD  none published yet')
+
+    # a tier with no conviction behind it
+    _noconv = [x for x in card
+               if str(x.get('tier') or '').upper() in ('PRIME', 'STRONG')
+               and x.get('conviction') is None]
+    if _noconv:
+        out.append(f'   ⚠ {len(_noconv)} card pick(s) carry a PRIME/STRONG tier with '
+                   f'conviction NULL — a tier with no number behind it:')
+        for x in _noconv:
+            out.append(f'       {str(x.get("pick_label"))[:40]}')
+
+    # one-sport concentration
+    if card:
+        _by = {}
+        for x in card:
+            _by[str(x.get('sport'))] = _by.get(str(x.get('sport')), 0) + 1
+        _top = max(_by, key=_by.get)
+        if _by[_top] == len(card) and len(card) >= 4:
+            out.append(f'   ⚠ all {len(card)} card slots are {_top}. Concentrating is '
+                       f'correct when one sport holds the best plays — confirm that '
+                       f'is the case rather than a composition artefact.')
+        out.append(f'   card sports: {_by}')
+
+    # heavy-favourite moneylines, the documented trap
+    _heavy = [x for x in card
+              if str(x.get('market') or '').lower() == 'ml'
+              and x.get('pick_odds') is not None
+              and float(x['pick_odds']) <= -200]
+    if _heavy:
+        out.append(f'   ⚠ {len(_heavy)} card moneyline(s) at -200 or worse '
+                   f'(CLAUDE.md names -200+ ML a trap):')
+        for x in _heavy:
+            out.append(f"       {str(x.get('pick_label'))[:34]:34s} "
+                       f"{int(float(x['pick_odds'])):+d}")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None)
@@ -215,6 +301,44 @@ def main():
     if rc2 >= 2: print('  🚨 CRITICAL — see above')
 
     # Final status
+    # ══ 2026-11-08 · HAND-CURATE THE POTD AND THE CARD, EVERY MORNING ══
+    # ANDY: "i think we need to add to cadence every morning, on use hand
+    # curating the POTD and sweat card beacause POTDs are not grat right
+    # now".
+    #
+    # He is right, and the number says so. POTD all time is 86W-72L =
+    # 54.4% against a 55.3% average break-even, so -2.19 units and -1.4%
+    # ROI, and the last 30 days is 9W-11L = 45.0% against 54.0% (-17.3%).
+    #
+    # The band that does the damage is specific:
+    #
+    #     price band        n    W-L     hit%    BE%   hit-BE     ROI
+    #     plus money       11    6-5    54.5%  45.7%    +8.8   +16.6%
+    #     -100..-150      119   64-55   53.8%  54.0%    -0.2    -0.5%
+    #     -150..-250       27   15-12   55.6%  64.6%    -9.0   -14.1%
+    #
+    # The -150..-250 band needs 64.6% and delivers 55.6%. That is where
+    # 11-07's POTD lived: Oregon State ML at -225, conviction 79 against an
+    # 11-book implied 68.2%. The reasoning was coherent (SP+ 6.6 vs 1.5,
+    # offense 94th pct vs defense 12th pct, projected +7.59); the PRICE
+    # BAND is the problem, and n=27 there is just under the n>=30 gate, so
+    # it is a standing review item rather than an automatic veto.
+    #
+    # By sport, priced: MLB n=142 at +2.0% is the only positive with
+    # volume; NFL 0-5, NHL 0-2, NCAAF 1-2. The POTD was an MLB product and
+    # MLB ended 10-28.
+    #
+    # This block does not decide anything. It puts the two surfaces and the
+    # specific traps in front of a human before the noon hard lock, which
+    # is the last moment either can be changed.
+    print('\n🖐  HAND-CURATION — POTD + SWEAT CARD (before the noon ET lock)')
+    try:
+        _cur = _curation_checklist(date)
+        for _line in _cur:
+            print(_line)
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'   (checklist unavailable: {_e})')
+
     worst = max(rc, rc2, rc3)
     banner = ('🚨 ACTION REQUIRED' if worst >= 2
               else '⚠️ warnings present' if worst == 1
