@@ -333,6 +333,68 @@ jobs:
               python fix_nhl_rl_pick_lines.py --sport "$S" || true
           done
 
+      # ══ 2026-11-07 · THREE WRITERS THAT EXISTED AND NEVER RAN ═══════
+      # audit_unscheduled_writers.py counts 61 writers reachable from no
+      # workflow. These three were each written for a real, named defect,
+      # measured it, fixed it by hand once, and were then never scheduled.
+      #
+      # They are wired at DIFFERENT strengths, because they do not all
+      # have the same protection against touching a game in progress.
+      #
+      #   apply_ml_juice_cap_to_card  --apply   has an explicit PRE-GAME
+      #     ONLY gate (started = ko <= now, a started game is reported and
+      #     left exactly as published). Enforces ML_JUICE_MAX = -300, the
+      #     ceiling three other places in this repo already use.
+      #
+      #   refresh_unposted_pick_lines --apply   had NO kickoff or result
+      #     gate at all until today; it was written for manual use on a
+      #     forward slate. One was added before wiring it, because a cron
+      #     without one would rewrite the line of a game already played.
+      #     On tonight's NCAAF board it found two picks published at
+      #     numbers NO book posts, both BETTER than the market -
+      #     'New Mexico State +16.5' against a modal +14.5 over 6 books,
+      #     and 'UTEP +9.5' against a modal +7 over 6 books. Grading those
+      #     as published hands our record a gift it never earned. Both are
+      #     now correctly gated as started (kickoff 01:00Z and 02:30Z), so
+      #     the window closed tonight purely because nothing ran before
+      #     kickoff. That is the whole argument for this step existing.
+      #
+      #   align_picks_to_board        REPORT ONLY (no --apply). Its gate is
+      #     pick_locked_at, the publish-commitment marker, NOT kickoff - so
+      #     an unlocked pick on a started game could still be moved. It
+      #     found 0 to move on both NCAAF and NFL tonight. Promoting it to
+      #     --apply needs a kickoff gate measured first, the same way the
+      #     one above got it, rather than a gate assumed.
+      #
+      # || true throughout: none of these may ever stop the card.
+      - name: Correct pick lines no book is posting (pre-game only)
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          D="$(TZ=America/New_York date +%F)"
+          for S in NCAAF NFL NBA NHL NCAAB; do
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+              --label "refresh_unposted_pick_lines.py $S" \
+              python refresh_unposted_pick_lines.py --date "$D" \
+                --sport "$S" --apply || true
+          done
+
+      - name: Report picks off the posted board (no writes)
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          for S in NCAAF NFL; do
+            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+              --label "align_picks_to_board.py $S (report)" \
+              python align_picks_to_board.py --sport "$S" || true
+          done
+
       # POTD first: generate_sweat_card reads best_bet_<date> out of
       # jerry_cache, so composing the card before the anchor runs gives a
       # card with an empty POTD slot.
@@ -374,6 +436,23 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "generate_sweat_card.py" python generate_sweat_card.py
+
+      # Runs AFTER the card is built, not before. This reads
+      # jerry_cache.sweat_card_<date> and withdraws a pick from it, so
+      # ahead of generate_sweat_card it would only ever cap YESTERDAY's
+      # card and then have its work overwritten by the fresh build.
+      # Placed before the integrity check so that check sees the
+      # capped card rather than the uncapped one.
+      - name: Enforce the ML juice cap on the card and the Sharp
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "apply_ml_juice_cap_to_card.py" \
+            python apply_ml_juice_cap_to_card.py --apply || true
 
       # 2026-10-03 · CHECK THE CARD BEFORE ANYONE ACTS ON IT.
       # The 10-02 Sharp shipped three defects at once, all of which this

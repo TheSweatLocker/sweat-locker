@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime as dt
 import json
 import os
 import statistics as st
@@ -100,6 +101,60 @@ def fnum(v):
         return None
 
 
+#: Columns that could hold a scheduled start, best first. Probed one at a
+#: time, never named in a shared select: one absent column 400s the WHOLE
+#: fetch and the caller reads zero rows
+#: (feedback_fallback_select_must_degrade_per_column).
+_KICKOFF_KEYS = ('kickoff_utc', 'commence_time', 'game_time_utc',
+                 'start_time_utc')
+
+
+def _probe_kickoff_columns(table: str) -> list:
+    keep = []
+    for c in _KICKOFF_KEYS:
+        try:
+            r = requests.get(f'{SB}/rest/v1/{table}', headers=H_R, timeout=15,
+                             params={'select': c, 'limit': '1'})
+        except Exception:                                      # noqa: BLE001
+            continue
+        if r.status_code in (200, 206):
+            keep.append(c)
+    return keep
+
+
+def _has_started(ctx_row: dict) -> bool:
+    """True when this game's scheduled start is already behind us.
+
+    == 2026-11-07 . THIS SCRIPT HAD NO SUCH GATE AT ALL =================
+    It was written for manual use on a forward slate and has no kickoff or
+    result test anywhere, so run on a cron it would happily rewrite the
+    published line of a game already in progress or finished. This repo has
+    a standing rule that a settled row is history and is not rewritten as a
+    side effect of a rule shipping (void_no_play_read_receipts), and the
+    whole point of this script is the OPPOSITE case: correcting a number
+    BEFORE it grades, while the correction still costs us nothing but
+    honesty.
+
+    Fails toward NOT started when the clock is unknown, matching
+    price_picks._has_started: re-examining a forward game is harmless,
+    while touching a played one is not. The date itself is the backstop -
+    a game_date in the past is always treated as started.
+    """
+    for key in _KICKOFF_KEYS:
+        raw = ctx_row.get(key)
+        if raw:
+            try:
+                ts = str(raw).replace('Z', '+00:00')
+                return (dt.datetime.fromisoformat(ts)
+                        <= dt.datetime.now(dt.timezone.utc))
+            except (TypeError, ValueError):
+                pass
+    gd = str(ctx_row.get('game_date') or '')[:10]
+    if gd:
+        return gd < str(dt.datetime.now(dt.timezone.utc).date())
+    return False
+
+
 def fmt(n: float) -> str:
     return f'{n:+g}'
 
@@ -115,9 +170,11 @@ def main() -> int:
         print(f'! unknown sport {a.sport}')
         return 2
 
+    _kick = _probe_kickoff_columns(tbl)
+    _sel = ('game_id,game_date,home_team,away_team,close_spread,primary_play'
+            + (',' + ','.join(_kick) if _kick else ''))
     ctx = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_R, timeout=90,
-                       params={'select': 'game_id,home_team,away_team,'
-                                         'close_spread,primary_play',
+                       params={'select': _sel,
                                'game_date': f'eq.{a.date}', 'limit': 300})
     if ctx.status_code != 200:
         print(f'! {tbl} HTTP {ctx.status_code} {ctx.text[:160]} '
@@ -203,10 +260,18 @@ def main() -> int:
 
     mode = 'APPLY' if a.apply else 'DRY RUN'
     print(f'=== {a.sport} {a.date} unposted pick lines [{mode}] ===')
+    if not _kick:
+        print(f'  ! {tbl} exposes none of {_KICKOFF_KEYS} - the started-game '
+              f'gate falls back to the DATE only')
     changed = left = failed = 0
+    started = 0
     for x in rows:
         pp = jd(x.get('primary_play')) or {}
         if str(pp.get('type') or '').lower() not in ('rl', 'spread', 'ats'):
+            continue
+        # A line is corrected BEFORE it grades, never after. See _has_started.
+        if _has_started(x):
+            started += 1
             continue
         side = str(pp.get('side') or '').upper()
         ours = fnum(pp.get('line'))
@@ -328,7 +393,7 @@ def main() -> int:
               f'{fmt(ours)} and will still grade there (R96)')
         changed += 1 if ok else 0
         failed += 0 if ok else 1
-    print(f'\n=== corrected={changed} left_alone={left} failed={failed} ===')
+    print(f'\n=== corrected={changed} left_alone={left} failed={failed} already_started={started} ===')
     if changed and not a.apply:
         print('Re-run with --apply to write.')
     return 0 if failed == 0 else 1
