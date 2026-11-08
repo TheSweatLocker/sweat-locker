@@ -1,4 +1,10 @@
-"""fix_nhl_rl_pick_lines - restore the LINE on NHL puck-line picks.
+"""fix_nhl_rl_pick_lines - restore the LINE on any side or total pick
+that was resolved before its posted line landed.
+
+(The filename says NHL and rl because that is where it was found. It
+now covers five sports and both line-bearing markets - see the market
+dispatch note below. Renaming it would mean editing its five call
+sites in daily_card.yml for no behavioural gain.)
 
 An NHL rl pick stored primary_play.label 'Buffalo Sabres PL' with
 line=None while the SAME ROW carried close_puckline -1.5. The label
@@ -63,6 +69,33 @@ _TABLE = {'NHL': 'nhl_game_context', 'NBA': 'nba_game_context',
           'NCAAB': 'ncaab_game_context', 'NFL': 'nfl_game_context',
           'NCAAF': 'ncaaf_game_context'}
 
+# ══ 2026-11-07 · THE MARKET IS NOT ONE WORD, AND 'ml' MUST NOT BE TOUCHED ══
+# This pass filtered on the single string type == 'rl'. Counted over all
+# six ctx tables today, the stored primary_play.type values are:
+#
+#   ml 710 | rl 864 | total 163 | spread 12 (NFL only)
+#
+# So it saw neither NFL's own 'spread' rows nor ANY total, and 10 total
+# picks sat with line=None - NINE of them on TODAY's board, every one
+# published as a bare "Over" / "Under" with no number. That is the exact
+# complaint Andy raised about "Knights RL", in a different market.
+#
+# Dispatch on the MARKET, matched by shape rather than by one spelling.
+# 'ml' is deliberately in NEITHER set: a moneyline has no line, so a null
+# there is correct and writing a spread number onto one would turn 710
+# healthy picks into fabricated plays. My first measuring pass labelled
+# those 710 rows "fixable" and they are not - the exclusion is the point.
+_SPREAD_TYPES = {'rl', 'spread', 'ats', 'pl', 'puckline', 'runline',
+                 'run_line', 'puck_line'}
+_TOTAL_TYPES = {'total', 'totals', 'ou', 'over_under', 'over/under'}
+
+
+def _fmt_line(line: float, side: str) -> str:
+    """A total is a LEVEL (6.5); a side is SIGNED (-1.5). Printing a total
+    as "+6.5" reads as a spread and would make the log lie about the
+    market."""
+    return f'{line:g}' if str(side).upper() in ('OVER', 'UNDER') else f'{line:+g}'
+
 
 def run(date: str | None, dry_run: bool, sport: str = 'NHL') -> int:
     from ensemble_scorer import _label_from_candidate
@@ -89,22 +122,39 @@ def run(date: str | None, dry_run: bool, sport: str = 'NHL') -> int:
     cand = []
     for r in rows:
         pp = _pp(r)
-        if str(pp.get('type') or '').lower() != 'rl': continue
+        ty = str(pp.get('type') or '').lower()
         if pp.get('line') is not None: continue
         side = str(pp.get('side') or '').upper()
-        if side not in ('HOME', 'AWAY'):
-            print(f'  skip {r.get("game_date")} {r.get("home_team")}: '
-                  f'rl pick with no stored side ({side!r}) - the side is not '
-                  f'ours to guess')
-            continue
-        lbl, sd, line = _label_from_candidate(
-            'HOME_RL' if side == 'HOME' else 'AWAY_RL', r, sport=sport)
+        if ty in _SPREAD_TYPES:
+            if side not in ('HOME', 'AWAY'):
+                print(f'  skip {r.get("game_date")} {r.get("home_team")}: '
+                      f'{ty} pick with no stored side ({side!r}) - the side '
+                      f'is not ours to guess')
+                continue
+            cand_name = 'HOME_RL' if side == 'HOME' else 'AWAY_RL'
+        elif ty in _TOTAL_TYPES:
+            if side not in ('OVER', 'UNDER'):
+                print(f'  skip {r.get("game_date")} {r.get("home_team")}: '
+                      f'{ty} pick with no stored side ({side!r}) - the side '
+                      f'is not ours to guess')
+                continue
+            cand_name = side
+        else:
+            continue              # 'ml' and anything unmapped: no line to hold
+        # _label_from_candidate reads the POSTED line only - close_spread /
+        # close_puckline for a side, close_total for a total. It never reads
+        # projected_total, and that is the load-bearing safety property here:
+        # 6 NHL and 1 NCAAB total picks have NO close_total and only a model
+        # projection, so they come back line=None and are left alone. A
+        # projection is not a posted line, and filling one in would invent a
+        # price to grade against.
+        lbl, sd, line = _label_from_candidate(cand_name, r, sport=sport)
         if line is None:
-            continue              # no line anywhere on the row - nothing to restore
+            continue              # no POSTED line on the row - nothing to restore
         cand.append((r, pp, lbl, sd, line))
 
-    print(f'  {sport} rows={len(rows)}  spread picks with no line and a '
-          f'recoverable one={len(cand)}')
+    print(f'  {sport} rows={len(rows)}  side/total picks with no line and a '
+          f'posted one on their own row={len(cand)}')
     fixed = 0
     for r, pp, lbl, sd, line in cand:
         new = dict(pp)
@@ -115,7 +165,8 @@ def run(date: str | None, dry_run: bool, sport: str = 'NHL') -> int:
         new['_line_restored_from_ctx'] = True
         print(f'    {r["game_date"]} {str(r.get("away_team"))[:16]:16s} @ '
               f'{str(r.get("home_team"))[:16]:16s}  '
-              f'{pp.get("label")!r} -> {lbl!r}  (line {line:+g}, side {sd})')
+              f'{pp.get("label")!r} -> {lbl!r}  '
+              f'(line {_fmt_line(line, sd)}, side {sd})')
         if dry_run:
             continue
         pr = requests.patch(
