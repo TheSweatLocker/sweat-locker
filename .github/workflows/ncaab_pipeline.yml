@@ -768,6 +768,51 @@ jobs:
           python ncaab_backfill_results.py --season "${{ github.event.inputs.backfill_season }}" --batch-size 300
 
       # 2026-09-08 heartbeat END.
+      # ══ 2026-11-07 · NCAAB RECORDED ZERO SIGNAL ATTRIBUTION, EVER ══
+      # The 10-28 pass that fixed "NOTHING WAS WRITING NBA'S / NHL'S
+      # ATTRIBUTION ROWS" added these two steps to nba_pipeline and
+      # nhl_pipeline and missed NCAAB and UFC entirely - neither file
+      # contained the word "attribution" at all. Same omission shape as the
+      # NCAAB pricing step (project_ncaab_never_priced_1106), in the same
+      # file.
+      #
+      # Two faults had to be fixed for this to be worth scheduling, because
+      # a schedule on a broken reader is a no-op:
+      #   1. _fetch_games named home_off_rating / away_off_rating, which do
+      #      NOT exist on ncaab_game_context, so the select 400'd and
+      #      returned [] - "NCAAB: 0 games in ctx" on an 83-game night.
+      #      NCAAB now aliases KenPom adj_oe, measured 296/335 filled.
+      #   2. that fetch turned any HTTP failure into an empty list, so the
+      #      400 was indistinguishable from a quiet slate. It now names the
+      #      column and says WIRING ERROR.
+      # After both: 0 games -> 48 games, 0 signal rows -> 35.
+      #
+      # Why it matters beyond tidiness: NCAAB carries 65 signals in
+      # signal_registry with 0 VALIDATED and 95.2% of its weighted signals
+      # under n=30, because there was never an attribution row to measure
+      # them FROM. This is the step that makes NCAAB tunable at all.
+      - name: Snapshot NCAAB signal attribution
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_snapshot.py --sport NCAAB
+
+      - name: Grade NCAAB signal attribution
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python signal_attribution_grade.py --sport NCAAB --days 7
+
       - name: Heartbeat — end
         if: always()
         continue-on-error: true

@@ -123,6 +123,41 @@ _TBL_BY_SPORT = {
 }
 
 
+def _season_int(v):
+    """signal_attribution.season is an INTEGER; college basketball's is not.
+
+    == 2026-11-07 . THE THIRD FAULT IN ONE PATH ==========================
+    ncaab_game_context.season holds the SPAN "2026-27", because a college
+    basketball season crosses the new year. Posting that into an integer
+    column returns
+
+        400 22P02 invalid input syntax for type integer: "2026-27"
+
+    on all 222 rows, and the handler printing that warning used a unicode
+    glyph, which then raised UnicodeEncodeError on a cp1252 console - so
+    locally the real error was replaced by a traceback and the step still
+    reported "wrote/merged 0 rows". Three faults stacked: the absent
+    off_rating column, the 400-reads-as-empty return, and this.
+
+    The span's FIRST year is the season, which is how every other sport
+    stores it, so "2026-27" -> 2026. Anything unparseable returns None
+    rather than a guess: a null season is visibly absent, a wrong one
+    silently groups two seasons together.
+    """
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    t = str(v).strip()
+    if not t:
+        return None
+    head = t.split('-')[0].split('/')[0].strip()
+    try:
+        return int(head)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
     tbl = _TBL_BY_SPORT.get(sport)
     if not tbl: return []
@@ -144,7 +179,7 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
                 'primary_play,spread_anchor_weight,'
                 'home_off_rating:home_off_epa_pp,'
                 'away_off_rating:away_off_epa_pp')
-    elif sport in ('NBA', 'NCAAB'):
+    elif sport == 'NBA':
         # Measured 2026-10-28: nba_game_context has season, align_status and
         # home/away_off_rating but NOT week, season_week, cohort_tags or
         # spread_anchor_weight. Asking for a column that is not there 400s the
@@ -154,6 +189,34 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
         cols = ('game_id,season,game_date,home_team,away_team,'
                 'align_status,primary_play,close_spread,close_total,'
                 'home_off_rating,away_off_rating,splits_summary')
+    elif sport == 'NCAAB':
+        # ══ 2026-11-07 · NCAAB HAD RECORDED ZERO ATTRIBUTION, EVER ══════
+        # NCAAB shared NBA's column set above, and the warning in that very
+        # comment is what happened to it: ncaab_game_context has NO
+        # home_off_rating / away_off_rating column at all. Naming them 400s
+        # the whole select, _fetch_games returns [], and the step prints
+        #
+        #     NCAAB: 0 games in ctx
+        #     NCAAB: 0 signal rows to snapshot
+        #
+        # on a night with 83 NCAAB games on the board. So NCAAB has 65
+        # signals in signal_registry, 0 VALIDATED, and not one attribution
+        # row to validate them FROM - the measurement was never possible,
+        # which is why 95.2% of its weighted signals sit under n=30.
+        #
+        # NCAAB's offense rating is KenPom adjusted offensive efficiency,
+        # measured today: home_adj_oe 296/335 filled since 11-01,
+        # away_adj_oe 275/335. Aliased to the canonical name so
+        # build_signal_rows reads one field regardless of sport, exactly as
+        # NCAAF aliases home_off_epa_pp.
+        #
+        # The lesson is the one the NBA comment already stated and this
+        # branch then broke: a column set is measured PER TABLE. Adding a
+        # second sport to a branch is not free.
+        cols = ('game_id,season,game_date,home_team,away_team,'
+                'align_status,primary_play,close_spread,close_total,'
+                'home_off_rating:home_adj_oe,away_off_rating:away_adj_oe,'
+                'splits_summary')
     elif sport == 'NHL':
         # NHL has no off_rating pair at all, and its spread column is
         # close_puckline. Aliased to close_spread so the downstream anchor
@@ -175,7 +238,16 @@ def _fetch_games(sport: str, game_date: str, days: int = 1) -> list[dict]:
     r = requests.get(url,
                      headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-499'},
                      timeout=20)
-    return r.json() if r.status_code == 200 and isinstance(r.json(), list) else []
+    if r.status_code != 200:
+        # 2026-11-07: this returned [] on any failure, so a 400 from one
+        # absent column was indistinguishable from an empty slate - that is
+        # how NCAAB stayed silent for its whole life. Say which column.
+        print(f'  ! {sport}: ctx fetch HTTP {r.status_code} {r.text[:200]}')
+        print(f'  ! {sport}: this is a WIRING ERROR, not an empty slate - '
+              f'0 games here means 0 signals recorded')
+        return []
+    body = r.json()
+    return body if isinstance(body, list) else []
 
 
 #: Which side the closing number favours, per sport. DERIVED, not assumed:
@@ -241,7 +313,7 @@ def _build_rows(sport: str, ctx: dict) -> list[dict]:
         'sport': sport,
         'game_id': game_id,
         'game_date': game_date,
-        'season': ctx.get('season'),
+        'season': _season_int(ctx.get('season')),
         'season_week': resolve_week(ctx, game_date),
         'pick_market': pick_market,
         'pick_side': pick_side,
@@ -388,7 +460,7 @@ def upsert_batch(rows: list[dict]) -> int:
     )
     if r.status_code in (200, 201, 204):
         return len(rows)
-    print(f'  ⚠ upsert failed {r.status_code}: {r.text[:200]}')
+    print(f'  ! upsert failed {r.status_code}: {r.text[:200]}')
     return 0
 
 
