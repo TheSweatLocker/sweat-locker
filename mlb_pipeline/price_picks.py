@@ -402,6 +402,93 @@ def price_is_the_moneyline(market, price, side, ctx_row):
             f'({m:+g}) - a side bet cannot be priced at the moneyline')
 
 
+#: THE SIDE PRICE WAS ALWAYS ON THE ROW, IN ITS OWN COLUMN (2026-11-07).
+#:
+#: Two context tables carry a dedicated price for the side market, and
+#: price_picks never read either of them:
+#:
+#:     NHL  close_puckline_home_price / _away_price   239 of 290 since 10-01
+#:     NBA  close_spread_home_price   / _away_price   136 of 213 since 10-01
+#:
+#: NCAAB, NFL, NCAAF and MLB have no such column and are priced from
+#: line_history, which works for them. NHL is the opposite case: it has
+#: ZERO line_history rows under its own game_id namespace (checked on all
+#: 11 affected games), so price_one could never price an NHL side bet -
+#: that is the 61 unmatched NHL reads in this step's own output.
+#:
+#: This is what made the moneyline-on-a-side-bet rows possible. On
+#: 10-15 Tampa Bay Lightning -1.5 the row held close_puckline_home_price
+#: -108 while the read published -275, the HOME MONEYLINE. The Sharp was
+#: reading this column and the read was not, which is why one play went out
+#: at two prices; on 10-11 Washington Capitals -1.5 the Sharp's +120 and
+#: this column's +120 agree exactly.
+#:
+#: Correcting all 12 measured rows from these columns moves them 17.6 to
+#: 23.6pp of implied probability, e.g. Dallas Stars -1.5 from -200 to +132.
+_CTX_SIDE_PRICE = {
+    'NHL': {'HOME': 'close_puckline_home_price',
+            'AWAY': 'close_puckline_away_price',
+            'home_line': 'close_puckline_home'},
+    'NBA': {'HOME': 'close_spread_home_price',
+            'AWAY': 'close_spread_away_price',
+            'home_line': 'close_spread'},
+}
+
+
+def _ctx_side_columns(sport: str) -> list[str]:
+    cfg = _CTX_SIDE_PRICE.get(str(sport or '').upper())
+    return [cfg['HOME'], cfg['AWAY'], cfg['home_line']] if cfg else []
+
+
+def _ctx_side_quote(sport, market, side, call_line, ctx_row) -> dict:
+    """Price a side bet from the context row's own side-price column.
+
+    The stored LINE must match the line we are pricing. A price belongs to
+    a specific (market, side, line) - that is the whole reason this step
+    re-prices a moved pick at all - so a -1.5 price must not be attached to
+    a -2.5 call. Both tables store the line home-perspective, so the away
+    line is its negation.
+    """
+    cfg = _CTX_SIDE_PRICE.get(str(sport or '').upper())
+    if not cfg or str(market or '').lower() not in _SIDE_MARKETS:
+        return {'price': None, 'why': 'no ctx side-price column for this sport'}
+    if not isinstance(ctx_row, dict):
+        return {'price': None, 'why': 'no ctx row'}
+    sd = str(side or '').upper()
+    if sd not in ('HOME', 'AWAY'):
+        return {'price': None, 'why': 'ctx side price needs a HOME/AWAY side'}
+    try:
+        home_line = float(ctx_row.get(cfg['home_line']))
+    except (TypeError, ValueError):
+        return {'price': None, 'why': 'ctx holds no line for this game'}
+    want = home_line if sd == 'HOME' else -home_line
+    if call_line is not None:
+        try:
+            if abs(float(call_line) - want) > 0.01:
+                return {'price': None,
+                        'why': f'ctx line {want:+g} is not the called '
+                               f'{float(call_line):+g}'}
+        except (TypeError, ValueError):
+            return {'price': None, 'why': 'call_line is not a number'}
+    v = ctx_row.get(cfg[sd])
+    if v is None:
+        return {'price': None, 'why': f'{cfg[sd]} is null on this game'}
+    try:
+        px = int(float(v))
+    except (TypeError, ValueError):
+        return {'price': None, 'why': f'{cfg[sd]} is not a number'}
+    if not px:
+        return {'price': None, 'why': f'{cfg[sd]} is zero'}
+    # Same key contract as price_one(), because the patch assembly reads
+    # q['n_books'] / q['implied'] straight out of it. One source, so
+    # n_books is 1 and it IS the best book - and price_best_book names the
+    # column so a later audit can tell a ctx-priced row from a book-priced
+    # one without a separate stamp.
+    return {'price': px, 'implied': round(1 / american_to_decimal(px), 4),
+            'best': px, 'best_book': f'ctx:{cfg[sd]}', 'n_books': 1,
+            'why': f'ctx {cfg[sd]}'}
+
+
 def _probe_ml_columns(table: str) -> list[str]:
     """Which moneyline columns this table actually has.
 
@@ -411,7 +498,9 @@ def _probe_ml_columns(table: str) -> list[str]:
     (feedback_fallback_select_must_degrade_per_column).
     """
     keep = []
-    for cands in _CTX_ML_KEYS.values():
+    _extra = [c for cfg in _CTX_SIDE_PRICE.values()
+              for c in (cfg['HOME'], cfg['AWAY'], cfg['home_line'])]
+    for cands in list(_CTX_ML_KEYS.values()) + [tuple(_extra)]:
         for c in cands:
             if c in keep:
                 continue
@@ -581,9 +670,19 @@ def main():
             q = price_one(grouped, key, r.get('call_market'), r.get('call_side'),
                           r.get('call_line'), r.get('call_text'))
             if q.get('price') is None:
-                fail += 1
-                reasons[q.get('why', '?')] += 1
-                continue
+                # The row's own side-price column, for the two sports that
+                # have one. See _ctx_side_quote(). This is the source that
+                # was missing when a side bet ended up wearing the
+                # moneyline.
+                _cq = _ctx_side_quote(sport, r.get('call_market'),
+                                      r.get('call_side'), r.get('call_line'), c)
+                if _cq.get('price') is not None:
+                    reasons['priced from ctx side column'] += 1
+                    q = _cq
+                else:
+                    fail += 1
+                    reasons[q.get('why', '?')] += 1
+                    continue
             # ══ 2026-11-07 · THE PRICER IS THE FIRST THING THAT KNOWS ══
             # The ML juice gate added to sync_jerry_reads_from_ctx the same
             # day reads the CLOSING ML off the ctx row, and took NCAAF reads
