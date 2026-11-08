@@ -218,6 +218,11 @@ def apply_to_pick(pp: Optional[dict], ctx: Optional[dict]) -> Optional[dict]:
             return pp
         pp['_model_edge_pp'] = e
         pp['_ml_price_at_pick'] = price
+        # Records an implausibly LARGE edge. Changes nothing - see
+        # EDGE_CEILING_SHADOW_PP.
+        _shadow = edge_ceiling_shadow(conv, price, 'ml')
+        if _shadow is not None:
+            pp['_edge_ceiling_shadow'] = _shadow
         tier_after, reason = cap_tier_for_edge(pp.get('tier'), conv, price, 'ml')
         if reason:
             pp['_edge_cap'] = {'from': pp.get('tier'), 'to': tier_after,
@@ -234,6 +239,79 @@ def apply_to_pick(pp: Optional[dict], ctx: Optional[dict]) -> Optional[dict]:
     except Exception:
         pass
     return pp
+
+
+#: ══ 2026-11-07 · THE EDGE GATE HAS A FLOOR AND NO CEILING ═══════════
+#: cap_tier_for_edge only ever demotes for a SMALL or NEGATIVE edge. An
+#: implausibly LARGE one passes untouched and, because POTD ranks on
+#: conviction, actively drives the pick to the top of the board.
+#:
+#: That is how 11-06 happened. `South Florida ML` went out as POTD rank 1,
+#: STRONG, conviction 79, on a stored _model_edge_pp of +28.2pp - our model
+#: at 81% against a market that priced the same side at -104 across 11
+#: books, about 51%. A 30-point disagreement with eleven books is not an
+#: edge, it is the model being wrong. It lost.
+#:
+#: WHY THIS IS A SHADOW AND NOT A CAP. I bucketed every graded ML pick
+#: carrying a stored edge (n=285) by that edge:
+#:
+#:     edge_pp      n    hit%     BE%   hit-BE     ROI
+#:        <0      178   65.2%   62.0%    +3.1    +5.3%
+#:      0..5       47   59.6%   59.0%    +0.5    -1.2%
+#:     5..10        9   77.8%   60.4%   +17.4   +25.3%
+#:    10..15       15   46.7%   58.1%   -11.5   -18.2%
+#:    15..20       20   70.0%   56.2%   +13.8   +21.1%
+#:      >=20       16   43.8%   54.3%   -10.5   -25.0%
+#:
+#: The >=20 bucket is exactly the shape the USF pick predicts - 43.8%
+#: against a 54.3% break-even, ROI -25.0%. But n=16, and CLAUDE.md gates a
+#: percentage at n>=30. EVERY bucket above 5pp is under that gate, and the
+#: two that clear it disagree with each other in sign. Capping a tier on
+#: n=16 is precisely feedback_unmeasured_signal_must_not_outweigh_measured.
+#:
+#: So this records and does not act, the pattern in
+#: feedback_suppression_gate_needs_shadow: stamp what a ceiling WOULD have
+#: refused, change no tier, and revisit when the bucket reaches n>=30. At
+#: the current rate of roughly 16 such picks a month that is about two
+#: months.
+#:
+#: Worth flagging in the same measurement, because it points the other way:
+#: the <0 bucket is the only one that clears n>=30 AND beats its price
+#: (n=178, +3.1pp over break-even, ROI +5.3%) - and it is the bucket
+#: cap_tier_for_edge DEMOTES. That is a bigger question than this shadow
+#: and is filed, not acted on, for the same reason.
+#:
+#: TO PROMOTE: compare _edge_ceiling_shadow rows against their results once
+#: n>=30, and only then turn it into a cap here.
+EDGE_CEILING_SHADOW_PP = 20.0
+
+
+def edge_ceiling_shadow(conviction, american_price,
+                        pick_type: str = 'ml') -> Optional[dict]:
+    """What an edge CEILING would have said, recorded without acting.
+
+    Returns None unless the computed edge is at or past
+    EDGE_CEILING_SHADOW_PP. Never raises and never demotes - see the note
+    above for why this is a shadow.
+    """
+    try:
+        e = edge_pp(conviction, american_price, pick_type)
+        if e is None or e < EDGE_CEILING_SHADOW_PP:
+            return None
+        ip = implied_prob(american_price)
+        return {
+            'edge_pp': round(float(e), 2),
+            'threshold_pp': EDGE_CEILING_SHADOW_PP,
+            'conviction': conviction,
+            'price': american_price,
+            'implied_pct': None if ip is None else round(ip * 100, 1),
+            'would_cap_to': NEG_EDGE_TIER_CAP,
+            'acted': False,
+            'why': 'recorded only - the >=20pp bucket is n=16, under the '
+                   'n>=30 gate',
+        }
+    except Exception:                                          # noqa: BLE001
+        return None
 
 
 def cap_tier_for_edge(tier: str, conviction, american_price,
