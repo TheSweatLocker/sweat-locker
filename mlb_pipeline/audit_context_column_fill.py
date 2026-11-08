@@ -127,8 +127,30 @@ _LIVE_AT = 0.20
 CROSS_SPORT_CONTRACT = {
     'spread line':   ('close_spread', 'close_puckline', 'close_puckline_home'),
     'total line':    ('close_total',),
-    'home moneyline': ('close_home_ml',),
-    'away moneyline': ('close_away_ml',),
+    # ══ 2026-11-07 · THE MONEYLINE HAS NO CANONICAL COLUMN NAME ═════════
+    # First run of this scan reported "COLUMN ABSENT on NBA" and "ZERO on
+    # NHL" for the moneyline. Both were MY false positives, from this list
+    # being too short — the same trap this file's header warns about, and
+    # the one I avoided for NHL's close_puckline by listing it as an alias.
+    # NBA reads are priced across 11 books; nothing was broken.
+    #
+    # Measured fill since 11-01, which is the finding worth keeping:
+    #
+    #   sport   close_home_ml   home_ml_close   home_ml_odds
+    #   NFL       163/164          0/164           0/164
+    #   NCAAF      98/99           ABSENT          ABSENT
+    #   NBA        ABSENT         51/58            ABSENT
+    #   NHL        38/72          50/72            ABSENT
+    #   NCAAB     205/335        205/335           ABSENT
+    #
+    # Three names for one datum. NFL carries TWO dead duplicates that a
+    # shared caller can select and get nothing from, and NHL's two copies
+    # DISAGREE — 38 vs 50 of the same 72 rows — so a consumer that picks the
+    # wrong one silently loses 12 games' prices. Which name is canonical is
+    # a schema decision, not mine to make, so all three are accepted here
+    # and the divergence is written up instead of papered over.
+    'home moneyline': ('close_home_ml', 'home_ml_close', 'home_ml_odds'),
+    'away moneyline': ('close_away_ml', 'away_ml_close', 'away_ml_odds'),
     'the pick':      ('primary_play',),
     'projected spread': ('projected_spread',),
     'projected total':  ('projected_total',),
@@ -164,6 +186,35 @@ def _fetch(table: str, since: str, limit: int) -> tuple[list, str | None]:
     return body, None
 
 
+#: Per-table "when did a writer last touch this" column, best first. A 0%
+#: fill on a table nobody has written for two days is a STALE PIPELINE, not
+#: a dark enrichment writer, and the two have completely different owners —
+#: on 2026-11-07 NBA and NHL were last written 11-05 because their pipelines
+#: were undispatched, which explains most of their zeros. Without this line
+#: in the output a reader has to go find that out by hand, and I did.
+_STAMP_PREFERENCE = ('updated_at', 'primary_play_computed_at', 'computed_at',
+                     'fetched_at', 'created_at')
+
+
+def _last_written(table: str, columns) -> str | None:
+    """Newest write stamp on the table, or None if it has no usable one."""
+    col = next((c for c in _STAMP_PREFERENCE if c in columns), None)
+    if col is None:
+        return None
+    try:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H, timeout=30,
+                         params={'select': col, f'{col}': 'not.is.null',
+                                 'order': f'{col}.desc', 'limit': '1'})
+    except Exception:
+        return None
+    if r.status_code not in (200, 206):
+        return None
+    rows = r.json()
+    if not isinstance(rows, list) or not rows:
+        return None
+    return f'{col}={str(rows[0].get(col))[:16]}'
+
+
 def _interesting(col: str) -> bool:
     if col in _IGNORE_EXACT:
         return False
@@ -192,6 +243,7 @@ def scan(days_back: int = 0, limit: int = 400) -> dict:
         out['sports'][sport] = {
             'table': table,
             'rows': len(rows),
+            'last_written': _last_written(table, set(cols)),
             'fill': {k: {'n': v[0], 'of': v[1],
                          'pct': round(100.0 * v[0] / v[1], 1) if v[1] else 0.0}
                      for k, v in cols.items()},
@@ -287,7 +339,7 @@ def report(days_back: int = 0, limit: int = 400, verbose: bool = False,
             continue
         cols = len(d['fill'])
         print(f'  {sport:<6} {d["table"]:<20} rows={d["rows"]:<5} '
-              f'columns={cols}')
+              f'columns={cols:<5} {d.get("last_written") or "no write stamp"}')
         if d['rows'] == 0:
             print(f'         no forward rows — if this sport is in season '
                   f'that is a WIRING ERROR, not an empty slate')
@@ -349,6 +401,19 @@ def report(days_back: int = 0, limit: int = 400, verbose: bool = False,
         for col, fl in sorted(sports[only_sport]['fill'].items(),
                               key=lambda kv: kv[1]['pct']):
             print(f'     {fl["pct"]:>5.1f}%  {fl["n"]:>4}/{fl["of"]:<4} {col}')
+
+    def _stamp_date(v) -> str:
+        # last_written is 'updated_at=2026-11-05T23:37'; the DATE is the ten
+        # characters after the '='. Slicing from the end lands mid-timestamp.
+        return str(v or '').split('=', 1)[-1][:10]
+
+    _stale = sorted(sp for sp, d in sports.items()
+                    if d['rows'] and d.get('last_written')
+                    and _stamp_date(d['last_written']) < str(scanned['since']))
+    if _stale:
+        print(f'\n  ⚠ last written BEFORE today: {", ".join(_stale)} — a 0% '
+              f'fill on these is a stale pipeline, not a dark writer. Check '
+              f'the dispatch before chasing the column.')
 
     _hard = [d for d in f['divergence'] if d['absent_on'] or d['zero_on']]
     if not (f['divergence'] or f['contrast']):
