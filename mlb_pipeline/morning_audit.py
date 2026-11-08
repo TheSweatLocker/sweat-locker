@@ -1,7 +1,7 @@
 """morning_audit — single command for your morning routine.
 
-Runs consistency_watchdog + pipeline_smoke_test + prints the state of
-every user-visible surface. Meant to run at ~8am ET before you open
+Runs consistency_watchdog + audit_context_column_fill +
+pipeline_smoke_test + prints the state of every user-visible surface. Meant to run at ~8am ET before you open
 the app for the day. If everything's green, you know the pipeline
 worked overnight. If not, the output tells you WHAT to fix + HOW.
 
@@ -180,6 +180,31 @@ def main():
             print(f'  {s}')
     if rc >= 2: print('  🚨 CRITICAL — see above')
 
+    # ── 2026-11-07 · THE SCAN THE CADENCE WAS MISSING ──────────────────
+    # Andy, on the UNC/UConn gaps: "Why didnt cadence catch this?" It did
+    # not, because this audit counted nulls on the SURFACES — unpriced
+    # reads, null convictions — and never asked, per column, what fraction
+    # of each sport's forward slate actually carries a value. The standing
+    # rule already required it; it was being applied to reads and props and
+    # not to the context tables those reads are built from.
+    #
+    # It reports two things, because they have different fixes: a column
+    # shared code asks every sport for that is ABSENT on one of them (a
+    # missing column 400s the WHOLE fetch — that is how the sharp-fade gate
+    # sat dead on five sports while exiting 0), and a column that exists but
+    # is empty on every forward row of one sport while populated on another.
+    print('\n🧮 CONTEXT COLUMN FILL:')
+    rc3, out3 = _run_script(here / 'audit_context_column_fill.py',
+                            ['--contrast-limit', '6'])
+    for line in (out3 or '').splitlines():
+        t = line.strip()
+        if t.startswith('🚨') or t.startswith('✅') or t.startswith('·') \
+                or 'COLUMN ABSENT' in t or 'ZERO on' in t or 'THIN on' in t \
+                or 'no forward rows' in t:
+            print(f'  {t}')
+    if rc3 >= 2:
+        print('  🚨 CRITICAL — a shared column is absent or dark on a live sport')
+
     # Smoke test
     print('\n🩺 SMOKE TEST:')
     rc2, out2 = _run_script(here / 'pipeline_smoke_test.py')
@@ -190,7 +215,7 @@ def main():
     if rc2 >= 2: print('  🚨 CRITICAL — see above')
 
     # Final status
-    worst = max(rc, rc2)
+    worst = max(rc, rc2, rc3)
     banner = ('🚨 ACTION REQUIRED' if worst >= 2
               else '⚠️ warnings present' if worst == 1
               else '✅ ALL GREEN')
