@@ -319,6 +319,113 @@ def price_impossible(market, price) -> bool:
     return v < -_JUICE_LIMIT or v > _JUICE_LIMIT
 
 
+#: A side market has a side, so it has a moneyline to be confused with.
+#: A total does not, which is why it is absent here.
+_SIDE_MARKETS = {'rl', 'spread', 'ats', 'pl', 'puckline'}
+
+#: Per-side moneyline column, in preference order. The context tables do
+#: not agree on the spelling - see the _ML_KEYS note in model_edge.py and
+#: the 2026-11-07 fill scan, which measured NFL on close_home_ml 163/164
+#: while NBA carries only home_ml_close.
+_CTX_ML_KEYS = {
+    'HOME': ('close_home_ml', 'home_ml_close', 'home_ml_odds', 'home_ml'),
+    'AWAY': ('close_away_ml', 'away_ml_close', 'away_ml_odds', 'away_ml'),
+}
+
+#: Below this the test is not safe. A spread genuinely lives near -110, so
+#: a -110 side price sitting on a -110 moneyline is a coincidence, and one
+#: such row exists (NCAAF 10-14 Sam Houston +1.5). No book prices a side
+#: identically to a moneyline of -150 or worse by chance.
+_ML_IDENTITY_MIN_JUICE = 150.0
+
+
+def _ctx_ml(ctx_row, side):
+    """That side's moneyline off a context row, whatever it is called."""
+    if not isinstance(ctx_row, dict):
+        return None
+    for k in _CTX_ML_KEYS.get(str(side or '').upper(), ()):
+        v = ctx_row.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def price_is_the_moneyline(market, price, side, ctx_row):
+    """Reason string when a SIDE price is actually that side's MONEYLINE.
+
+    == 2026-11-07 . THE +/-300 BAND IS A MAGNITUDE TEST, NOT A MARKET ONE ==
+    price_impossible() catches a side price outside +/-300, which found the
+    NCAAB -20000 spreads. It cannot catch a moneyline that happens to sit
+    INSIDE the band, and that is the common case in hockey. Measured over
+    316 favourite side reads since 09-01, 12 carry a price byte-identical
+    to that side's own moneyline:
+
+        NHL 10-03 Minnesota Wild -1.5        -205 == ml -205   11 books
+        NHL 10-11 New York Rangers -1.5      -275 == ml -275   11 books
+        NHL 10-15 Tampa Bay Lightning -1.5   -275 == ml -275   11 books
+        NHL 10-15 Florida Panthers -1.5      -295 == ml -295   11 books
+        NHL 10-20 Carolina Hurricanes -1.5   -300 == ml -300   11 books
+        NBA 10-29 New Orleans Pelicans -5.5  -238 == ml -238   11 books
+        ... 11 NHL on/before 10-22, plus the NBA row on 10-29
+
+    A -1.5 lay is strictly harder than winning the game, so its price must
+    be LONGER than the moneyline - every one of these is ~20pp of implied
+    probability wrong, and it reached public_receipts on both the game_read
+    and the Sharp. The 10-22 NHL line-column fix stopped most of it; the
+    NBA row is 10-29, so this is neither closed history nor one sport.
+
+    WHY ONLY EXACT EQUALITY. The structural rule I measured first - a
+    favourite's side price must be LONGER than its own moneyline - flags 21
+    rows, and I verified it has false positives: NHL 10-31 Detroit Red
+    Wings +1.5 at -274 against a -110 moneyline is a legitimate price for
+    TAKING 1.5 goals, and call_line cannot be used to tell laying from
+    taking because its sign is unreliable (NCAAF 11-07 'Boise State -17.5'
+    is stored as call_line +17.5). Byte equality at >= 150 juice has no
+    false positives in the measured set, so that is what ships. The wider
+    rule is written up rather than enforced.
+    """
+    if str(market or '').lower() not in _SIDE_MARKETS:
+        return None
+    m = _ctx_ml(ctx_row, side)
+    if m is None or m >= 0 or abs(m) < _ML_IDENTITY_MIN_JUICE:
+        return None
+    try:
+        v = float(price)
+    except (TypeError, ValueError):
+        return None
+    if abs(v - m) >= 0.5:
+        return None
+    return (f'{v:+g} is exactly the {str(side).lower()} MONEYLINE '
+            f'({m:+g}) - a side bet cannot be priced at the moneyline')
+
+
+def _probe_ml_columns(table: str) -> list[str]:
+    """Which moneyline columns this table actually has.
+
+    Probed one at a time on purpose. A single select naming an absent
+    column 400s the WHOLE fetch and the caller reads zero rows, which is
+    the failure this repo has now shipped twice
+    (feedback_fallback_select_must_degrade_per_column).
+    """
+    keep = []
+    for cands in _CTX_ML_KEYS.values():
+        for c in cands:
+            if c in keep:
+                continue
+            try:
+                r = requests.get(f'{SB}/rest/v1/{table}',
+                                 headers=H, timeout=15,
+                                 params={'select': c, 'limit': '1'})
+            except Exception:
+                continue
+            if r.status_code in (200, 206):
+                keep.append(c)
+    return keep
+
+
 def _has_started(read: dict, ctx: dict) -> bool:
     """True when this game's scheduled start is already behind us.
 
@@ -364,7 +471,15 @@ def main():
                      game_date=f'gte.{lo}')
         if not reads:
             continue
-        ctx = {c['game_id']: c for c in page(CONTEXT[sport], select='game_id,game_date,away_team,home_team',
+        # The moneyline columns are appended to the SAME narrow select
+        # rather than switching to '*'. A '*' here would also hand
+        # _has_started the kickoff columns it currently never receives,
+        # which would start freezing prices this run re-prices today -
+        # arguably a fix, but an unmeasured one, and not this change.
+        _mlcols = _probe_ml_columns(CONTEXT[sport])
+        _sel = ','.join(['game_id', 'game_date', 'away_team', 'home_team']
+                        + _mlcols)
+        ctx = {c['game_id']: c for c in page(CONTEXT[sport], select=_sel,
                                              game_date=f'gte.{lo}')}
         grouped = quote_index(sport, lo)
         ok = fail = skip = refused_ml = 0
@@ -398,6 +513,18 @@ def main():
                 print(f'    [IMPOSSIBLE PRICE] {r.get("call_text")!r} '
                       f'({r.get("call_market")}) holds {r.get("price_american")} '
                       f'- not a {r.get("call_market")} price; clearing')
+            # A moneyline INSIDE the +/-300 band is invisible to the test
+            # above. See price_is_the_moneyline().
+            if not _impossible:
+                _wrongmkt = price_is_the_moneyline(
+                    r.get('call_market'), r.get('price_american'),
+                    r.get('call_side'), ctx.get(r.get('game_id')))
+                if _wrongmkt:
+                    print(f'    [MONEYLINE ON A SIDE BET] '
+                          f'{r.get("call_text")!r} ({r.get("call_market")}): '
+                          f'{_wrongmkt}; clearing')
+                    reasons['moneyline_on_a_side_bet'] += 1
+                    _impossible = True
             # ══ 2026-11-07 · A STORED JUICED ML MUST GO EVEN WITH NO QUOTE
             # The first version of this gate sat further down, after
             # price_one(). That missed `Wake Forest ML` at -50000 on today's
