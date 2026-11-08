@@ -73,9 +73,38 @@ SPORT_CONFIG = {
         'total_under_ok': ('under',),
         'push_vals':      ('push',),
     },
+    # ══ 2026-11-08 · THE PLACEHOLDER TABLE HAS NO SCORES, AND NEVER DID ══
+    # This entry pointed at `ncaab_game_context` with a comment saying to
+    # "swap when ncaab_game_results exists". That table exists -- it has
+    # since at least 10-31 -- and nothing swapped. So every NCAAB run
+    # selected `home_score,away_score,total_points,home_win,spread_result,
+    # total_result` from the CONTEXT table, which carries none of them:
+    #
+    #   column ncaab_game_context.home_score does not exist   (42703)
+    #
+    # A 400 on an explicit select returns no rows, so the resolver reported
+    # `result rows fetched: 0 (of 289 referenced game_ids)` and exited 0 --
+    # the green step that writes nothing (feedback_green_step_that_writes_
+    # nothing). Measured on today's run before the fix: **1,173 ungraded
+    # NCAAB external picks**, none of which could ever be graded.
+    #
+    # This is the FOURTH sport to hit this same config defect -- NCAAF
+    # (09-01), NHL (10-08), NBA (10-22) are all documented above, each
+    # comment noting the previous one. Those three were MISSING entries;
+    # this one is a PRESENT entry naming the wrong table, which is why
+    # _audit_callers() did not catch it: the caller audit asks whether a
+    # sport can be served, not whether the table it names holds the columns.
+    #
+    # Measured on ncaab_game_results, the real table:
+    #   11-07  rows=57  score=56  home_win=56  spread_result=31  total_result=31
+    #   11-06  rows=68  score=67  home_win=67  spread_result=35  total_result=35
+    #   11-05  rows=58  score=58  home_win=58  spread_result=32  total_result=32
+    # score/home_win are near-complete; spread_result and total_result are
+    # filled only where a line was posted, which is correct -- the resolver
+    # inserts unlined finals too. Vocabulary matches the other sports
+    # ('home_covered'/'away_covered'/'push', 'over'/'under'/'push').
     'NCAAB': {
-        'results_table': 'ncaab_game_context',   # placeholder — swap when
-                                                  # ncaab_game_results exists
+        'results_table': 'ncaab_game_results',
         'select_cols': ('game_id,home_score,away_score,total_points,home_win,'
                         'spread_result,total_result,close_spread,close_total'),
         'spread_home_ok': ('home_covered',),

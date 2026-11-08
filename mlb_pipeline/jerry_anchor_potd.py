@@ -922,6 +922,7 @@ def run(game_date: str | None = None, threshold: int = 70,
     # Gate was silently no-op across entire slate before this fix.
     lr_gated = []
     lr_skipped = []
+    coherence_skipped = []   # refused for contradicting our own projection
     for r in eligible:
         sport = (r.get("sport") or "MLB").upper()
         ctx_table = _context_table(sport)
@@ -932,7 +933,10 @@ def run(game_date: str | None = None, threshold: int = 70,
             headers=H_READ,
             params={"game_id": f"eq.{r.get('game_id')}",
                     "game_date": f"eq.{gd}",
-                    "select": "primary_play"},
+                    # projected_spread joins the select because the coherence
+                    # gate below needs it, and this is the one fetch per
+                    # candidate -- see the gate's comment.
+                    "select": "primary_play,projected_spread"},
             timeout=10,
         )
         pp_data = pp_resp.json() if pp_resp.status_code == 200 else []
@@ -941,8 +945,61 @@ def run(game_date: str | None = None, threshold: int = 70,
             try: pp = json.loads(pp)
             except (json.JSONDecodeError, TypeError): pp = {}
         pp = pp or {}
+        _ctx_row = pp_data[0] if pp_data else {}
         call_mkt = (r.get("call_market") or "").lower()
         call_side = (r.get("call_side") or "").upper()
+
+        # ══ 2026-11-08 · THE POTD HAD NO COHERENCE GATE ════════════════
+        # Today's POTD was `Boston Celtics -12.5` at conviction 53. Our own
+        # projected_spread had Boston by 8.4, so we were laying 12.5 on a
+        # number our model does not cover -- and the published narrative
+        # called a -752 favourite "a 12.5-point underdog", then argued that
+        # a projection TIGHTER than the market was "real value in the away
+        # side", which is the dog's argument, not the favourite's.
+        #
+        # The Sweat Card REFUSED that identical pick, by name, in the same
+        # run:
+        #   NBA card: REFUSED 'Boston Celtics -12.5' (COVERAGE) -
+        #     projection has AWAY by 8.4 but the pick lays -12.5
+        # along with Philadelphia -9.5 and Miami -8.5. So the engine's most
+        # prominent surface published what its curated surface had already
+        # thrown out. generate_daily_degen and generate_sweat_card both call
+        # these gates; jerry_anchor_potd never did
+        # (feedback_guard_belongs_at_the_chokepoint).
+        #
+        # Measured on today's 42 reads: 3 refusals, all NBA spreads laying
+        # 4.1 / 5.0 / 5.2 points more than our own projection. Nothing else
+        # on the slate is touched.
+        #
+        # Both gates are IMPORTED, never restated -- their sign table comes
+        # from consistency_watchdog, and a sport whose convention is not
+        # proven there is SKIPPED rather than guessed. Today that table
+        # holds NCAAF and NBA only, so NFL, NHL and NCAAB pass through
+        # untested; proving those conventions is the follow-up, and it is
+        # why this gate is additive rather than a claim of full coverage.
+        #
+        # The gate judges THE PICK WE WOULD PUBLISH -- the candidate's own
+        # call_market/call_side/call_line -- not the context row's
+        # primary_play, which can differ from the read we are about to put
+        # out (feedback_grade_the_side_we_published).
+        try:
+            from retier_from_sport_bars import (
+                coherence_ok as _coh_potd, side_ok as _side_potd)
+            _pp_published = {"type": call_mkt, "side": call_side,
+                             "line": r.get("call_line")}
+            _refused_why = None
+            for _gate in (_side_potd, _coh_potd):
+                _g_ok, _g_why = _gate(sport, _ctx_row, _pp_published)
+                if not _g_ok:
+                    _refused_why = _g_why
+                    break
+            if _refused_why:
+                coherence_skipped.append(
+                    f"{(r.get('call_text') or '?')[:34]} — {_refused_why}")
+                continue
+        except ImportError:
+            print("  !! POTD coherence gate unavailable (import failed) — "
+                  "selecting UNCHECKED")
         ml_shadow = pp.get("_lr_ml_shadow") or {}
         tot_shadow = pp.get("_lr_total_shadow") or {}
         p_support = None
@@ -973,6 +1030,11 @@ def run(game_date: str | None = None, threshold: int = 70,
             lr_skipped.append(f"{ct} p={p_support:.2f}")
             continue
         lr_gated.append(r)
+    if coherence_skipped:
+        print(f"  🚫 POTD coherence gate: refused {len(coherence_skipped)} "
+              f"pick(s) that contradict our own projection")
+        for _c in coherence_skipped[:5]:
+            print(f"      · {_c}")
     if lr_skipped:
         print(f"  🚫 POTD LR-confidence gate: skipped {len(lr_skipped)} picks with LR support < 0.60")
         for s in lr_skipped[:5]:
