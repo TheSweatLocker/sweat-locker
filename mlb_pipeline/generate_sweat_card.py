@@ -4708,7 +4708,100 @@ def build_card():
                 if not (p.get('manual') or p.get('_published'))]
     _fb_cap = max(5, len(_fb_keep))
     football_picks = (_fb_keep + _fb_auto)[:_fb_cap]
-    football_picks.sort(key=lambda p: -(p.get('conviction') or 0))
+    # ══ 2026-11-07 · RANK ACROSS SPORTS ON THE SCALED AXIS ═════════════
+    # ANDY: "having a shit ton of 55 just smells like something is broken
+    # somewhere" — and "wire conviction scale".
+    #
+    # This pool is cross-sport (every in-season sport with a ctx table since
+    # 2026-09-21), and it was ranked on RAW conviction. Raw conviction is not
+    # comparable between sports: the ensemble formula is sport-blind
+    # (50 + min(score*10,30) + min(margin*20,15)) while the score it reads
+    # is not. Measured over the last 14 days, median score by sport:
+    #
+    #     NCAAF 0.630   NFL 0.150   NHL 0.130   NBA 0.080   NCAAB 0.070
+    #
+    # so NCAAF clears 60 routinely and NBA/NHL/NCAAB pile up at 51-55. A raw
+    # sort therefore hands every slot to whichever sport happens to use the
+    # biggest numbers, which is exactly what conviction_scale was written for
+    # and what jerry_anchor_potd already uses (_cs.rank_key).
+    #
+    # HONEST A/B, run before shipping this. Tonight's 101 candidates, top 8
+    # by raw vs top 8 by scaled: IDENTICAL, 8 NCAAF either way, because
+    # NCAAF's best scales to 82.9 and the next sport's best is NBA at 74.3.
+    # So this is a NO-OP on tonight's card and it does not, by itself,
+    # diversify anything. It is shipped because it is the correct comparison
+    # and it matters on a night NCAAF is thin — not because it fixed the
+    # mix.
+    #
+    # What the scale DOES reveal, per sport best raw -> scaled tonight:
+    #     NCAAF 79.0 -> 82.9     NBA 55.0 -> 74.3
+    #     NCAAB 55.0 -> 50.0     NHL 55.0 -> 46.6
+    # NBA's 55 is genuinely exceptional FOR NBA; NHL's 55 is mediocre for
+    # NHL. The raw sort could not tell those apart.
+    #
+    # The real lever on an all-one-sport card is a per-sport slot cap, which
+    # is a product decision (is concentrating correct when one sport holds
+    # the 8 best plays?) and is deliberately NOT taken here.
+    #
+    # Falls back to raw conviction when a sport has no calibrated span, so a
+    # sport we have not measured is no worse off than before.
+    # ══ AND AN UNMEASURED SPORT MUST NOT WIN ON THE SCALED AXIS ════════
+    # Correcting NCAAB's span (it was invented on n=0 and every anchor sat
+    # above its real maximum) makes its best pick scale from 50.0 to ~87,
+    # which would put NCAAB at the TOP of this card. On an engine with:
+    #
+    #     0  VALIDATED signals
+    #     40 of 42 weighted signals under n=30  (95.2%)
+    #     51 of 66 enabled signals have never fired  (77%)
+    #     102 graded receipts
+    #     137 of 278 reads sitting at conviction 0
+    #
+    # that is laundering a thin pick into a top slot, which is exactly
+    # feedback_unmeasured_signal_must_not_outweigh_measured. A correct
+    # RANKING of a sport that has measured nothing is still a ranking of
+    # nothing.
+    #
+    # So the scaled axis is used only where the sport has at least one
+    # VALIDATED signal behind it; everything else ranks on raw conviction,
+    # which is where it was yesterday. Counted today from signal_registry:
+    #     MLB 27 · NFL 19 · NCAAF 12 · NHL 9 · NBA 6 · NCAAB 0 · UFC 0
+    # so NCAAB and UFC fall back, and this promotes nothing that cannot be
+    # measured. Re-check it as those counts move - it is a floor, not a
+    # verdict on either sport.
+    _SCALED_RANK_MIN_VALIDATED = 1
+    _VALIDATED_BY_SPORT = {'MLB': 27, 'NFL': 19, 'NCAAF': 12,
+                           'NHL': 9, 'NBA': 6, 'NCAAB': 0, 'UFC': 0}
+
+    try:
+        import conviction_scale as _cs_rank
+
+        def _rank_conv(p):
+            _c = p.get('conviction')
+            if _c is None:
+                return 0.0
+            _sp = str(p.get('sport') or '').upper()
+            if (_VALIDATED_BY_SPORT.get(_sp, 0)
+                    < _SCALED_RANK_MIN_VALIDATED):
+                return float(_c)          # unmeasured: rank where it was
+            _sc = _cs_rank.scaled(_sp, _c)
+            return float(_sc) if _sc is not None else float(_c)
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  conviction_scale unavailable ({_e}) - ranking on raw')
+
+        def _rank_conv(p):
+            return float(p.get('conviction') or 0)
+
+    football_picks.sort(key=lambda p: -_rank_conv(p))
+    # Stamped so the card payload records WHICH axis ordered it, and a later
+    # audit can tell a scaled ranking from a raw one without guessing.
+    for _p in football_picks:
+        if isinstance(_p, dict):
+            _sp = str(_p.get('sport') or '').upper()
+            _p['_rank_axis'] = (
+                'conviction_scale.scaled'
+                if _VALIDATED_BY_SPORT.get(_sp, 0) >= _SCALED_RANK_MIN_VALIDATED
+                else 'raw (sport has no validated signal)')
+            _p['_rank_value'] = round(_rank_conv(_p), 1)
 
     # ══ 2026-10-30 · THE TWO SECTIONS COULD CONTRADICT EACH OTHER ══════
     # curate_top_8 runs BEFORE football_picks exists, so the fade guard

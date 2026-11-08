@@ -49,7 +49,23 @@ ANCHORS = {
     'NFL':   (55.0, 63.0, 70.0, 86.0),
     'NHL':   (59.0, 60.0, 63.0, 78.0),
     'NBA':   (51.0, 53.0, 60.0, 65.0),
-    'NCAAB': (55.0, 62.0, 70.0, 90.0),   # provisional until NCAAB has reads
+    # ══ 2026-11-07 · THIS SPAN WAS INVENTED, AND IT SUPPRESSED NCAAB ══
+    # The "provisional until NCAAB has reads" note was literal: at
+    # measurement time on 10-30, NCAAB had **0** reads carrying a
+    # conviction, so (55, 62, 70, 90) was a guess mirroring NHL. Every one
+    # of those anchors sits ABOVE NCAAB's actual maximum.
+    #
+    # Measured today on all 278 NCAAB reads that carry a conviction:
+    #     p50 = 50.0   p75 = 51.0   p90 = 53.0   max = 62.0
+    # and excluding the 137 of 278 reads sitting at conviction 0 (49%, its
+    # own defect) p50 = 51.0, p75 = 52.0, p90 = 54.0, max = 62.0.
+    #
+    # The consequence of the guess: NCAAB's best pick tonight, conviction
+    # 55, scaled to 50.0 — i.e. the engine's own 95th percentile was being
+    # read as a median. The non-zero anchors are used because a conviction
+    # of 0 is a missing measurement, not a weak opinion, and letting 137
+    # zeros drag p50 down would hand the next real 51 an inflated rank.
+    'NCAAB': (51.0, 52.0, 54.0, 62.0),   # measured 11-07, n=141 non-zero
     'UFC':   (25.0, 32.0, 72.0, 87.0),
 }
 
