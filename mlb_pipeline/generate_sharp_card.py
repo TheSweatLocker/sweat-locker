@@ -586,10 +586,26 @@ def _fetch_all(today: str) -> dict:
             cols = ('game_id,home_team,away_team,primary_play,'
                     'close_home_ml,close_away_ml,close_spread,close_total,'
                     'spread_anchor_weight,'
+                    # ══ 2026-11-08 · A GATE ON AN UNSELECTED COLUMN IS A
+                    # GATE THAT ALWAYS PASSES. The coherence/side guards
+                    # added to this composer today read projected_spread,
+                    # and it was requested by NO branch of this select --
+                    # so coherence_ok saw None, returned True by its own
+                    # "convention unprovable, skip" rule, and the gate was
+                    # dead on arrival. It let `Boston Celtics -12.5`
+                    # through on the first run after being written.
+                    #
+                    # Probed one table at a time before adding (a single
+                    # missing column 400s the WHOLE select and empties the
+                    # sport): filled 13/13 NFL, 7/7 NBA, 6/6 NHL, 12/16
+                    # NCAAB. NCAAF has no games today so it is unmeasured
+                    # here, but the column answers 200.
+                    'projected_spread,'
                     'kickoff_utc')
         elif sport == 'ncaab':
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'close_home_ml,close_away_ml,close_spread,close_total')
+                    'close_home_ml,close_away_ml,close_spread,close_total,'
+                    'projected_spread')
         elif sport == 'nhl':
             # ══ 2026-11-04 · THE PUCK-LINE PRICE WAS NEVER SELECTED ══════
             # NHL shared the NBA column list, so close_puckline_*_price
@@ -604,11 +620,13 @@ def _fetch_all(today: str) -> dict:
             # for one is a 42703 that empties the whole sport.
             cols = ('game_id,home_team,away_team,primary_play,'
                     'home_ml_close,away_ml_close,close_spread,close_total,'
+                    'projected_spread,'
                     'close_puckline,close_puckline_home,'
                     'close_puckline_home_price,close_puckline_away_price')
         else:  # nba
             cols = ('game_id,home_team,away_team,primary_play,'
-                    'home_ml_close,away_ml_close,close_spread,close_total')
+                    'home_ml_close,away_ml_close,close_spread,close_total,'
+                    'projected_spread')
         out[f'{sport}_ctx'] = _get(f'{SB}/rest/v1/{tbl}',
                                     params={'select': cols, 'game_date': f'eq.{today}'})
         # 2026-09-22 PRESEASON GATE (Andy directive: never bet preseason
@@ -1634,6 +1652,7 @@ def _compose_other_sport_sides(rows: list, sport: str,
     dropped_anchor = 0
     dropped_no_price = 0
     dropped_no_edge = 0
+    dropped_incoherent = 0   # our own projection does not cover the line
     dropped_ncaaf_total = 0
     dropped_football_spread = 0
     dropped_b209_nfl_spread = 0
@@ -1798,14 +1817,66 @@ def _compose_other_sport_sides(rows: list, sport: str,
                 print('  !! B209 gate unavailable (import failed) -- '
                       'refusing NFL spreads by fallback')
                 _CSB = {'NFL'}
+            # ══ 2026-11-08 · ANDY'S 10-29 DECISION REACHED ONE SURFACE ══
+            # ANDY, 10-29: "Banning nfl spread is a no go, that's why we
+            # just changed engine right? ... we agreed to add them manually
+            # that's why we discussed it."
+            #
+            # generate_sweat_card acted on that the same day and made the
+            # refusal conditional. THIS composer never did, so the two
+            # curated surfaces have disagreed about NFL spreads for ten
+            # days, and on tonight's NFL Sunday board that cost The Sharp
+            # every game pick it had: 9 NFL spreads refused outright, and
+            # with NCAAB/NBA dropped for price and NHL for edge, the card
+            # composed 0 game picks from 42 games and floor-filled instead
+            # (feedback_fix_every_writer_to_the_table -- one surface fixed
+            # is not the fix).
+            #
+            # The reasoning carries over unchanged, because so does the
+            # measurement window: the 5-13 / -47.31% that justified the ban
+            # here was logged 10-26, on picks produced BEFORE
+            # apply_stored_edge_cap existed, when 17 of 19 NFL picks
+            # carrying a model edge carried a NEGATIVE one. A population of
+            # picks whose own model says the price is better than the model
+            # SHOULD lose at that rate. n=18 is also far under the n>=30
+            # gate, so it was never a rule in the first place.
+            #
+            # So the refusal now tests the thing that was actually wrong:
+            #   * a HAND-SET pick is always admitted -- Andy asked twice.
+            #   * an auto pick needs a POSITIVE stored model edge.
+            #   * anything else is still refused, and says which test it
+            #     failed rather than just naming the sport.
+            # Identical rule to generate_sweat_card.py, so the two surfaces
+            # can no longer disagree about the same game.
+            #
+            # On tonight's board this admits exactly one: HOU -6 at
+            # +0.99pp. If positive-edge NFL spreads go on to lose, that is
+            # a measurable claim on a clean population and the blanket
+            # comes back on evidence.
             if sport in _CSB:
-                # Its OWN counter: reusing dropped_football_spread made the
-                # run log say "LONG spreads refused (|line| > 7)" about a
-                # 4.5-point spread refused for being NFL at all. A counter
-                # that mislabels its own reason is the same defect as a
-                # silent default (walk_forward.period_key, fixed today).
-                dropped_b209_nfl_spread += 1
-                continue
+                _b209_manual = bool(pp.get('_manual_correction')
+                                    or pp.get('_manual_override')
+                                    or pp.get('_manual_pick'))
+                _b209_edge = pp.get('_model_edge_pp')
+                _b209_edge_ok = (isinstance(_b209_edge, (int, float))
+                                 and float(_b209_edge) > 0)
+                if not _b209_manual and not _b209_edge_ok:
+                    # Its OWN counter: reusing dropped_football_spread made
+                    # the run log say "LONG spreads refused (|line| > 7)"
+                    # about a 4.5-point spread refused for being NFL at all.
+                    # A counter that mislabels its own reason is the same
+                    # defect as a silent default.
+                    _b209_why = ('no stored model edge'
+                                 if not isinstance(_b209_edge, (int, float))
+                                 else f'edge {float(_b209_edge):+.2f}pp')
+                    print(f'  B209: refused NFL spread {pp.get("label")} '
+                          f'({_b209_why})')
+                    dropped_b209_nfl_spread += 1
+                    continue
+                print(f'  B209 EXEMPT: NFL spread {pp.get("label")} '
+                      + ('hand-set by Andy' if _b209_manual
+                         else f'carries a positive edge '
+                              f'{float(_b209_edge):+.2f}pp'))
             try:
                 _mag = abs(float(pp.get('line')))
             except (TypeError, ValueError):
@@ -1906,6 +1977,54 @@ def _compose_other_sport_sides(rows: list, sport: str,
             continue
         if _lean_flip_ok and not tier_gate(tier):
             lean_flip_admitted += 1
+        # ══ 2026-11-08 · THE SHARP PUBLISHED WHAT TWO GATES REFUSED ══════
+        # The floor fill put `Boston Celtics -12.5` on this card tonight --
+        # the identical pick generate_sweat_card had just refused BY NAME in
+        # the same run ("projection has AWAY by 8.4 but the pick lays
+        # -12.5") and the identical pick jerry_anchor_potd was publishing as
+        # Play of the Day. Three surfaces, one bad pick, and only one of
+        # them was checking.
+        #
+        # The floor fill's own guards are real but orthogonal: cold-state
+        # tier, the -200 ML trap, and whether the pick is priced. An `rl`
+        # pick at -110 carrying tier COVERAGE clears all three, so nothing
+        # there could ever have caught a self-contradicting line.
+        #
+        # The gate goes HERE, not in the floor block, because this is the
+        # chokepoint both paths cross -- the earned path falls through to
+        # picks.append() and the floor path to below_tier_out.append(), and
+        # a guard on one of them is not a guard
+        # (feedback_guard_belongs_at_the_chokepoint). Putting it above the
+        # pricing work also means we never spend a line_history lookup on a
+        # pick we are about to refuse.
+        #
+        # Imported, never restated, exactly as the Sweat Card does it: the
+        # sign table lives in consistency_watchdog and a sport whose
+        # convention is unproven there is SKIPPED rather than guessed
+        # (today: NCAAF and NBA proven; NFL, NHL, NCAAB pass untested).
+        # side_ok is included too -- coherence_ok returns True for every
+        # moneyline, so on its own it cannot catch an ML on the wrong side
+        # of our own projection.
+        #
+        # Measured on tonight's board: 3 refusals, all NBA spreads laying
+        # 4.1 / 5.0 / 5.2 points more than our own projection.
+        try:
+            from retier_from_sport_bars import (
+                coherence_ok as _coh_sharp, side_ok as _side_sharp)
+            _inc_why = None
+            for _g_fn in (_side_sharp, _coh_sharp):
+                _g_ok, _g_why = _g_fn(sport, g, pp)
+                if not _g_ok:
+                    _inc_why = _g_why
+                    break
+            if _inc_why:
+                dropped_incoherent += 1
+                print(f'  ⛔ {sport} sharp: REFUSED {pp.get("label")!r} '
+                      f'({tier}) — {_inc_why}')
+                continue
+        except ImportError:
+            print('  !! sharp coherence gate unavailable — composing '
+                  'UNCHECKED')
         # Sport-aware column aliases: MLB uses home_ml_close, NCAAF/NFL use close_home_ml
         home_ml = g.get('home_ml_close') or g.get('home_ml_odds') or g.get('close_home_ml')
         away_ml = g.get('away_ml_close') or g.get('away_ml_odds') or g.get('close_away_ml')
@@ -2207,6 +2326,7 @@ def _compose_other_sport_sides(rows: list, sport: str,
         'LEAN': dropped_lean, 'chalky-STRONG': dropped_chalk,
         'no-play': dropped_pass, 'anchor': dropped_anchor,
         'no-price': dropped_no_price, 'no-edge': dropped_no_edge,
+        'incoherent': dropped_incoherent,
         'lr-conflict': dropped_lr_conflict,
         'swap-unproven': dropped_swap_unproven,
         'flip-unpriced': dropped_flip_unpriced,
