@@ -420,6 +420,17 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
     if _odds is None and _mk == 'rl' and str(winner.get('sport')) == 'NHL':
         _odds = (_ctx.get('close_puckline_home_price') if _sd.startswith('HOME')
                  else _ctx.get('close_puckline_away_price'))
+    # ══ 2026-11-09 · THE SPREAD PRICE IS ON THE ROW TOO ════════════════
+    # The comment above says "a spread or total POTD has no per-side price
+    # in these context tables". That is true of NCAAB and not of NBA:
+    # nba_game_context carries close_spread_home_price /
+    # close_spread_away_price, and today's candidate sat at home -105,
+    # away -115. Defaulting it to -110 is a silent price error on the
+    # receipt, which is the same class of bug as the NHL puck line above
+    # (feedback_list_the_columns_before_declaring_data_lost).
+    if _odds is None and _mk in ('rl', 'spread'):
+        _odds = (_ctx.get('close_spread_home_price') if _sd.startswith('HOME')
+                 else _ctx.get('close_spread_away_price'))
     if _odds is None:
         _odds = -110
         _assumed = True
@@ -462,6 +473,69 @@ def _publish_potd_override(today: str, winner: dict, mlb_row: dict | None, dry_r
              f'{_mk} pick)' if _assumed else ''))
 
 
+# ══ 2026-11-09 · THIS IS THE FOURTH POTD SURFACE, AND IT HAD NO GATE ══
+# On 11-08 the Sweat Card refused a pick BY NAME while the POTD published
+# it, so coherence_ok/side_ok were wired into jerry_anchor_potd.py and
+# generate_sharp_card.py. This file was missed -- and this file is the one
+# that actually publishes the cross-sport POTD.
+#
+# It published `Houston Rockets -8.5` this morning. close_spread -8.5,
+# our own projected_spread -3.3, i.e. our model has Houston by 3.3 and the
+# pick lays 8.5. The gate refuses it in as many words: "projection has
+# HOME by 3.3 but the pick lays -8.5 - our own number does not cover it".
+# A guard on 3 of 4 surfaces is not a guard
+# (feedback_guard_belongs_at_the_chokepoint).
+try:
+    import retier_from_sport_bars as _GATE
+except Exception as _e:                                       # noqa: BLE001
+    _GATE = None
+    print(f'  !! coherence gate unavailable ({_e}) — candidates will NOT be '
+          f'checked. Fix this rather than publishing past it.')
+
+
+def _coherence_filter(candidates: list[dict]) -> tuple[list[dict], list]:
+    """Drop candidates our own numbers contradict, and unjudgeable ones.
+
+    Two refusals, and the second matters as much as the first:
+
+      1. coherence_ok / side_ok -- the pick disagrees with our projection.
+      2. a rl/spread/total pick with NO line. It cannot be graded, and
+         worse, it silently PASSES every margin test because the test has
+         no number to compare against. Today's `Cleveland Cavaliers ATS`
+         passed the gate on line=None while close_spread was 8.5 against a
+         projected_spread of 0.1 -- a pick our model puts at a pick'em,
+         laying 8.5. A gate handed a NULL always passes
+         (feedback_a_gate_reading_an_unselected_column_always_passes).
+    """
+    kept, refused = [], []
+    for c in candidates:
+        pp = c.get('pp') or {}
+        ctx = c.get('ctx_row') or {}
+        sport = c.get('sport')
+        mkt = str(pp.get('type') or '').lower()
+        if mkt in ('rl', 'spread', 'total') and pp.get('line') is None:
+            refused.append((c, f'no line on a {mkt} pick — ungradeable, and '
+                               f'it would pass every margin test unchecked'))
+            continue
+        if _GATE is not None:
+            try:
+                ok, why = _GATE.coherence_ok(sport, ctx, pp)
+                if not ok:
+                    refused.append((c, why))
+                    continue
+                ok, why = _GATE.side_ok(sport, ctx, pp)
+                if not ok:
+                    refused.append((c, why))
+                    continue
+            except Exception as e:                            # noqa: BLE001
+                # an erroring gate is not a passing gate
+                refused.append((c, f'gate raised {e!r} — refusing rather '
+                                   f'than publishing unchecked'))
+                continue
+        kept.append(c)
+    return kept, refused
+
+
 def run(dry_run: bool = False, min_lead: int = 5):
     today = _today_et()
     print(f'== Cross-sport POTD scan · {today} ==')
@@ -472,6 +546,17 @@ def run(dry_run: bool = False, min_lead: int = 5):
     print(f'  Current best_bet_{today}: sport={mlb_sport} conviction={mlb_conviction}')
 
     candidates = _fetch_sport_candidates(today)
+    # Refuse incoherent and unjudgeable picks BEFORE the band filter, so a
+    # refused STRONG cannot collapse the whole band and take the night's
+    # POTD down with it.
+    if candidates:
+        candidates, _refused = _coherence_filter(candidates)
+        for _c, _why in _refused:
+            print(f'    ⛔ REFUSED {_c.get("sport")} '
+                  f'{_c.get("pp", {}).get("label")!r}: {_why}')
+        if _refused:
+            print(f'  coherence gate refused {len(_refused)} of '
+                  f'{len(_refused) + len(candidates)} candidates')
     # Keep only the best band present, so a COVERAGE pick never competes
     # with a STRONG one — it only fills a night that has nothing better.
     if candidates:

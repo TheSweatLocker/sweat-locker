@@ -4989,8 +4989,43 @@ def build_card():
     # into receipts, and RecapStrip builds the yesterday headline from its
     # summary. A gate on one of the two lists is not a gate
     # (feedback_fix_every_writer_to_the_table).
+    # ── 2026-11-09 · conviction 0 / absent is a WITHDRAWAL, not a score ──
+    # ensemble_scorer clamps max(45, min(97, ..)) so it CANNOT emit 0;
+    # defensive_gates stamps 0 to mean "has not earned a stake". The client
+    # renders it through `Number(conviction) || 55`, so a withdrawn pick is
+    # subtitled "55% confidence"
+    # (feedback_falsy_zero_invented_a_tier_and_a_confidence).
+    def _withdrawn(_p):
+        for _k in ('conviction', '_conviction'):
+            _v = _p.get(_k)
+            if _v is None:
+                continue
+            try:
+                return float(_v) <= 0
+            except (TypeError, ValueError):
+                return True
+        return True          # no conviction at all is not a stake either
+
+    def _drop_withdrawn(_picks, _tag):
+        _out = []
+        for _p in _picks or []:
+            if _withdrawn(_p):
+                print(f'  ⛔ {_tag}REFUSED '
+                      f'{_p.get("label") or _p.get("pick")!r} '
+                      f'({_p.get("sport")} {_p.get("tier")}) — conviction '
+                      f'{_p.get("conviction")!r}: the engine withdrew this '
+                      f'pick (0 means no stake earned)')
+                continue
+            _out.append(_p)
+        return _out
+
     top_8_curated = drop_overjuiced_ml(top_8_curated or [], 'top_8: ')
     top_8_curated = dedupe_one_bet_per_slot(top_8_curated, 'top_8: ')
+    # top_8 is the DASHBOARD surface and the one public_receipt.
+    # sweat_card_rows turns into receipts, so gating only the unified list
+    # left `Over 43.5` (tier LEAN, conviction None) on the card after the
+    # unified gate had already removed it.
+    top_8_curated = _drop_withdrawn(top_8_curated, 'top_8: ')
     football_picks = drop_overjuiced_ml(football_picks, 'football: ')
 
     # Sport tag on each pick lets app render sport emoji + drive tap-to-detail.
@@ -5143,6 +5178,13 @@ def build_card():
         _cands = [_norm(p) for p in _floor_pool
                   if (str(p.get('sport') or '').upper(),
                       str(p.get('game_id'))) not in _have]
+        # 2026-11-09: filter the POOL, not just the result. The withdrawal
+        # gate runs after this fill, so an unfiltered pool spends a slot on
+        # a conviction-0 pick that is then removed -- the card came back at
+        # 2 of a floor of 4 having "filled" with `Over 43.5`, which the gate
+        # immediately refused. A fill that can be undone downstream is not
+        # a fill (feedback_gate_the_stored_row_not_the_inflight_row).
+        _cands = _drop_withdrawn(_cands, 'floor pool: ')
         # ── two documented disciplines the floor must still respect ──
         # The first fill produced 'Florida Panthers ML @ -250' and
         # 'New Orleans Pelicans ATS' with odds=None. Neither is acceptable
@@ -5288,6 +5330,26 @@ def build_card():
         print(f'  ⚠ card below the {_FLOOR} floor at {len(unified_top_picks)} '
               f'and the below-tier pool is EMPTY — nothing on the slate passed '
               f'the other gates either')
+    # ══ 2026-11-09 · THE WITHDRAWAL GATE BELONGED AT THIS CHOKEPOINT ════
+    # The conviction-0 refusal added 11-08 sits in the per-sport
+    # primary_play loop. It refused 7 NCAAB picks this morning and still
+    # let `Over 43.5` onto the card at tier=LEAN, conviction 0 -- because
+    # that one arrived through the FADE path, which never passes that loop.
+    # publish_lock caught it ("tier=LEAN but conviction=None") and left it
+    # published anyway.
+    #
+    # conviction 0 is a WITHDRAWAL, not a low score: ensemble_scorer clamps
+    # max(45, min(97, ..)) so it CANNOT emit 0, and defensive_gates stamps 0
+    # to mean "has not earned a stake". The client then renders it through
+    # `Number(conviction) || 55` and a withdrawn pick is subtitled
+    # "55% confidence" (feedback_falsy_zero_invented_a_tier_and_a_confidence).
+    #
+    # Filtering HERE, after floor fill, is the one point every entry path
+    # passes -- per-sport composition, football, fade and the below-tier
+    # floor pool alike (feedback_guard_belongs_at_the_chokepoint).
+    unified_top_picks = _drop_withdrawn(unified_top_picks,
+                                        'card (final chokepoint): ')
+
     # Re-rank 1..N. Both source lists carry their own `rank` (MLB's is its
     # position in top_8; football has none at all), so without this the
     # merged card showed duplicate and missing numbers.

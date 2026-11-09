@@ -573,6 +573,68 @@ def _potd_odds(winner: dict, gd: str) -> int | None:
                 return iv
     except Exception as e:                                    # noqa: BLE001
         print(f"  ⚠ POTD price lookup failed: {e}")
+
+    # ══ 2026-11-09 · THE PRICE IS ON THE CONTEXT ROW, UNDER ANOTHER NAME ══
+    # Today's winner, `Atlanta Hawks ML`, came back unpriced from every
+    # path above, so the POTD published with odds_american NULL and
+    # receipt_invariants refused its own receipt. The price was sitting on
+    # the context row the whole time: nba_game_context.home_ml_close = 110.
+    #
+    # The other writers look for `close_home_ml` -- which is what NFL and
+    # NCAAB call it. NBA and NHL store the SAME field as `home_ml_close`.
+    # One market, two column names, and the lookup only knew one, so a
+    # +110 dog read as "unbettable"
+    # (feedback_list_the_columns_before_declaring_data_lost).
+    #
+    # Tries both spellings, and the spread price for a rl pick, because an
+    # rl POTD has the same problem.
+    try:
+        _sport = str(winner.get('sport') or '').upper()
+        _tbl = _context_table(_sport)
+        # the winner dict keys the side as `call_side` (see run()); reading
+        # `side` here returned '' and silently skipped this whole fallback
+        # (feedback_dict_get_on_a_guessed_column)
+        _side = str(winner.get('call_side')
+                    or winner.get('side') or '').upper()
+        _mkt = str(winner.get('call_market') or '').strip().lower()
+        if _tbl and gid and _side in ('HOME', 'AWAY'):
+            _h = _side == 'HOME'
+            if _mkt == 'ml':
+                _cands = (['close_home_ml', 'home_ml_close'] if _h
+                          else ['close_away_ml', 'away_ml_close'])
+            elif _mkt in ('rl', 'spread'):
+                _cands = (['close_spread_home_price',
+                           'close_puckline_home_price'] if _h
+                          else ['close_spread_away_price',
+                                'close_puckline_away_price'])
+            else:
+                _cands = []
+            if _cands:
+                # SELECT *, not the candidate list. Naming the columns is
+                # what broke the first version of this fallback: NBA has
+                # `home_ml_close` and NOT `close_home_ml`, and asking for
+                # both 400s the WHOLE query on 42703 -- so a row that held
+                # the price returned nothing at all and the POTD read as
+                # unpriced (feedback_select_star_before_concluding_absent).
+                cr = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/{_tbl}",
+                    headers=H_READ,
+                    params={"game_id": f"eq.{gid}",
+                            "game_date": f"eq.{gd}",
+                            "select": "*", "limit": "1"},
+                    timeout=8,
+                )
+                if cr.status_code != 200:
+                    print(f"  ⚠ POTD ctx price lookup {cr.status_code}: "
+                          f"{cr.text[:120]}")
+                for row in (cr.json() if cr.status_code == 200 else []):
+                    for _c in _cands:
+                        iv = _as_int(row.get(_c))
+                        if iv is not None:
+                            print(f"  POTD price {iv:+d} from {_tbl}.{_c}")
+                            return iv
+    except Exception as e:                                    # noqa: BLE001
+        print(f"  ⚠ POTD ctx price lookup failed: {e}")
     return None
 
 
@@ -1190,6 +1252,32 @@ def run(game_date: str | None = None, threshold: int = 70,
     if _potd_price is None:
         print('  ⚠ POTD has NO price from any source — odds_american '
               'stays NULL rather than assuming -110')
+        # ══ 2026-11-09 · AN UNPRICEABLE POTD MUST NOT BE PUBLISHED ══════
+        # Leaving odds_american NULL was the honest half of the fix, but
+        # the pick still went out. Today it published `Atlanta Hawks ML`
+        # with no price from any source, and receipt_invariants then
+        # REFUSED its own receipt -- "a graded play with no price is
+        # priced at a guess". So the app showed a POTD that by our own
+        # rule could never be recorded or graded.
+        #
+        # play_of_day_multi_sport already applies this rule at selection
+        # ("skip NBA 'Atlanta Hawks ML': ML with no stored price, cannot
+        # be the POTD") and had published a PRICED alternative, NFL BUF
+        # ML at -175 from close_away_ml. This writer runs later in
+        # mlb_pipeline.yml, so it overwrote a priced POTD with an
+        # unpriceable one -- two writers, two rules, last one wins
+        # (feedback_three_writers_three_manual_markers).
+        #
+        # Aborting leaves the priced pick standing, which is strictly
+        # better than replacing it with one we cannot grade. A day with no
+        # anchor POTD is recoverable; a published play with no price
+        # corrupts every ROI figure built on it.
+        if not dry_run:
+            print('  ⛔ ABORTING the anchor publish: a POTD we cannot price '
+                  'cannot be graded. Leaving the existing priced POTD in '
+                  'place rather than overwriting it with this one.')
+            return
+        print('  [DRY] would ABORT rather than publish an unpriced POTD')
     else:
         print(f'  POTD price {_potd_price:+d}')
 

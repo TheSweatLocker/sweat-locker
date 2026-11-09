@@ -100,6 +100,13 @@ try:
 except ImportError:          # keep the bridge runnable standalone
     ML_JUICE_MAX = -300.0
 
+try:
+    import retier_from_sport_bars as _GATE
+except Exception as _e:                                       # noqa: BLE001
+    _GATE = None
+    print(f'  !! coherence gate unavailable ({_e}) — reads will NOT be '
+          f'checked against our own projection')
+
 
 def _ctx_ml_price(cfg: dict, row: dict, side: str) -> float | None:
     """Closing ML for `side` ('HOME'/'AWAY') off a ctx row, or None."""
@@ -193,7 +200,14 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
         f'{SB}/rest/v1/{cfg["ctx"]}',
         params={'game_date': f'eq.{gd}', 'primary_play': 'not.is.null',
                 'select': ','.join(
-                    ['game_id', 'home_team', 'away_team', 'primary_play']
+                    ['game_id', 'home_team', 'away_team', 'primary_play',
+                     # 2026-11-09: projected_spread is REQUIRED by the
+                     # coherence gate below. Without it in the SELECT the
+                     # gate reads None, hits its "unprovable, skip" rule
+                     # and passes everything -- which is how a gate ends up
+                     # certifying the pick it was written to stop
+                     # (feedback_a_gate_reading_an_unselected_column_always_passes).
+                     'projected_spread']
                     + [c for grp in (cfg.get('ml') or ((), ())) for c in grp])},
         headers=H, timeout=30,
     )
@@ -217,10 +231,42 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             skipped += 1
             continue
 
+        # ══ 2026-11-09 · GATE THE READ, NOT JUST THE CARD ═══════════════
+        # `Houston Rockets -8.5` was refused by the Sweat Card, the Sharp
+        # and the POTD anchor this morning -- all three printed "projection
+        # has HOME by 3.3 but the pick lays -8.5" -- and then the Daily
+        # Degen published it as a parlay leg anyway, because the Degen
+        # reads jerry_reads and jerry_reads had never been gated.
+        #
+        # Gating here instead of in the Degen covers every downstream
+        # reader at once: Degen, Dawg, and anything else built on reads
+        # (feedback_source_gate_pattern, feedback_guard_belongs_at_the_chokepoint).
+        #
+        # Refusing demotes to 'pass', the same shape the ML juice gate
+        # uses, so the PROSE survives and only the playable call is
+        # withdrawn. The gate self-limits to sports whose projected_spread
+        # orientation is proven (_PROJ_HOME_POS), so an unproven sport is
+        # untouched rather than guessed at.
+        _refused_coh = None
+        if _GATE is not None and ptype in ('rl', 'spread'):
+            try:
+                _ok, _why = _GATE.coherence_ok(sport, c, pp)
+                if not _ok:
+                    _refused_coh = _why
+                    ptype = 'pass'
+                    side = ''
+                    print(f'  ⛔ {sport} read REFUSED '
+                          f'{pp.get("label")!r}: {_why}')
+            except Exception as _e:                           # noqa: BLE001
+                print(f'  ⚠ coherence gate raised on {pp.get("label")!r}: '
+                      f'{_e!r} — leaving the read alone')
+
         # The juice gate. See the ML_JUICE_MAX note at the top of this file.
         _refused_ml = None
+        _ml_price = None
         if ptype == 'ml' and side in ('HOME', 'AWAY'):
             _mlp = _ctx_ml_price(cfg, c, side)
+            _ml_price = _mlp
             # An unknown price does NOT refuse -- same rule as the resolver's
             # own cap. Refusing on a missing column would blank good reads.
             if _mlp is not None and _mlp < ML_JUICE_MAX:
@@ -361,6 +407,29 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             'short_read':  short_read,
             'long_read':   long_read,
             'conviction':  int(pp.get('conviction') or 0) if pp.get('conviction') else None,
+            # ══ 2026-11-09 · THE BRIDGE NEVER WROTE A PRICE ═════════════
+            # _ctx_ml_price was already resolving the closing ML here --
+            # but only to REFUSE juice over -300. The price itself was
+            # thrown away, so every read this bridge creates carried
+            # price_american = NULL.
+            #
+            # That is why the Dawg tile was blank today. generate_dawg_
+            # multisport scans priced reads for plus odds in +100..+250 and
+            # found "priced plus-odds reads in band: 0", while
+            # nba_game_context held home_ml_close = 110 on Atlanta, who
+            # were the POTD at exactly +110. Six of six NBA reads were
+            # priceless. It also means no CLV and no honest ROI on any
+            # read this bridge builds.
+            #
+            # Only the ML price is written here. A rl/total price lives in
+            # per-sport columns I have not verified across all six tables,
+            # and guessing a column name 400s the whole fetch
+            # (feedback_select_star_before_concluding_absent). Left for a
+            # measured follow-up rather than shipped on a guess.
+            'price_american': (int(_ml_price)
+                               if (_ml_price is not None
+                                   and _refused_ml is None
+                                   and ptype == 'ml') else None),
         }
         matchup = f'{away[:14]} @ {home[:14]}'
 
