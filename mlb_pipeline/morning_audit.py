@@ -277,6 +277,108 @@ def _curation_checklist(date: str) -> list:
     return out
 
 
+def _pipeline_freshness() -> tuple:
+    """Did each sport's OWN pipeline actually fire, and will GitHub run it?
+
+    == 2026-11-08 . WHY THIS EXISTS ==================================
+    nba_pipeline.yml and nhl_pipeline.yml fired ZERO runs from 11-06 to
+    11-08 and three morning audits missed it, because this audit checked
+    SURFACES and never PIPELINES. NBA still had 7 context rows and NHL 6 --
+    written by `pregame_lines (NBA + NHL)` and `daily_card`, which do run --
+    so every surface check passed on scores three days stale, and the
+    incoherent `Boston Celtics -12.5` POTD came out of a scorer whose last
+    run was 11-05.
+
+    The cause was a duplicate `continue-on-error` key: a step was inserted
+    INSIDE another, so GitHub refused the file and de-registered the
+    workflow, and no cron fired at all. `yaml.safe_load` ACCEPTS duplicate
+    keys and printed "PARSE OK" on both files that same morning -- so this
+    checks the files with a STRICT loader, not a permissive one.
+
+    Two questions, in the order that matters:
+      1. Will GitHub even register the file? (strict parse; a duplicate key
+         de-registers it silently)
+      2. Did the workflow actually fire inside its own window?
+         (`workflow_heartbeat`, which is written by the run itself)
+
+    Returns (lines, rc): rc 2 if a pipeline is dark or a file is invalid,
+    1 for a soft warning, 0 when healthy.
+    """
+    out, rc = [], 0
+
+    # ---- 1. would GitHub register every workflow file? ----
+    wf_dir = Path(__file__).resolve().parent.parent / '.github' / 'workflows'
+    validator = wf_dir.parent / 'scripts' / 'validate_workflows.py'
+    if validator.exists():
+        _code, txt = _run_script(validator, [])
+        bad = [ln for ln in txt.splitlines() if ln.startswith('FAIL')]
+        if bad:
+            rc = 2
+            out.append('   GITHUB WOULD REFUSE %d WORKFLOW FILE(S) -- '
+                       'no cron fires for these:' % len(bad))
+            for ln in txt.splitlines():
+                if ln.startswith('FAIL') or ln.startswith('        '):
+                    out.append('     %s' % ln.strip())
+            out.append('     (a refused file is listed in the Actions '
+                       'sidebar by PATH, not by its name:)')
+        else:
+            n_all = len(list(wf_dir.glob('*.y*ml')))
+            out.append('   workflow files: %d/%d valid for GitHub'
+                       % (n_all, n_all))
+    else:
+        rc = max(rc, 1)
+        out.append('   !! validate_workflows.py missing -- cannot prove '
+                   'GitHub will register the workflows')
+
+    # ---- 2. did each pipeline actually fire? ----
+    # (workflow, label, max age in hours). Weekly sports get a week-wide
+    # window; the daily ones allow one missed slot plus the measured +4.5h
+    # median cron lateness.
+    WATCH = [
+        ('mlb_pipeline',   'MLB/shd', 30),
+        ('nba_pipeline',   'NBA',     30),
+        ('nhl_pipeline',   'NHL',     30),
+        ('ncaab_pipeline', 'NCAAB',   30),
+        ('nfl_pipeline',   'NFL',    180),
+        ('ncaaf_pipeline', 'NCAAF',  192),
+        ('ufc_pipeline',   'UFC',    192),
+    ]
+    now = dt.datetime.now(dt.timezone.utc)
+    out.append('   last run per pipeline (from workflow_heartbeat):')
+    for wf, label, max_age_h in WATCH:
+        rows = _get_json('workflow_heartbeat', {
+            'select': 'fired_at,event', 'workflow': 'eq.%s' % wf,
+            'order': 'fired_at.desc', 'limit': '1'})
+        if not rows:
+            rc = 2
+            out.append('     %-7s %-15s NEVER -- no heartbeat row at all'
+                       % (label, wf))
+            continue
+        stamp = str(rows[0].get('fired_at') or '')
+        try:
+            fired = dt.datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+            age_h = (now - fired).total_seconds() / 3600.0
+        except Exception:                                      # noqa: BLE001
+            rc = max(rc, 1)
+            out.append('     %-7s %-15s unparseable fired_at %r'
+                       % (label, wf, stamp))
+            continue
+        if age_h > max_age_h:
+            rc = 2
+            flag = 'DARK -- %.0fh ago, window is %dh' % (age_h, max_age_h)
+        elif age_h > max_age_h * 0.75:
+            rc = max(rc, 1)
+            flag = 'late -- %.0fh ago (window %dh)' % (age_h, max_age_h)
+        else:
+            flag = 'ok -- %.0fh ago' % age_h
+        out.append('     %-7s %-15s %s  [%s]'
+                   % (label, wf, stamp[:19], flag))
+    if rc >= 2:
+        out.append('   A DARK PIPELINE STILL LEAVES ROWS ON THE BOARD: '
+                   'pregame_lines and daily_card keep writing, so the '
+                   'surfaces look populated while the SCORES go stale.')
+    return out, rc
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=None)
@@ -378,6 +480,16 @@ def main():
     # This block does not decide anything. It puts the two surfaces and the
     # specific traps in front of a human before the noon hard lock, which
     # is the last moment either can be changed.
+    print()
+    print("PIPELINE FRESHNESS - did each sport's own pipeline fire?")
+    try:
+        _pf_lines, _pf_rc = _pipeline_freshness()
+        for _line in _pf_lines:
+            print(_line)
+        rc3 = max(rc3, _pf_rc)
+    except Exception as _e:                                    # noqa: BLE001
+        print('   (freshness check unavailable: %s)' % _e)
+
     print('\n🖐  HAND-CURATION — POTD + SWEAT CARD (before the noon ET lock)')
     try:
         _cur = _curation_checklist(date)
