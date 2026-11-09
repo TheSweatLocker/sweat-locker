@@ -1125,7 +1125,30 @@ jobs:
             python repair_spread_labels.py --sport NBA --days 2 --apply
 
       - name: Sync NBA jerry_reads from context
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python sync_jerry_reads_from_ctx.py --sport NBA --window 4
 
+      # == 2026-11-08 . THIS STEP AND THE SYNC STEP ABOVE WERE ONE STEP ==
+      # The 11-05 edit (bb7250f5) that added this step put its `- name:`
+      # header BETWEEN the Sync step's header and the Sync step's body. The
+      # Sync step lost its header, so a single step carried TWO
+      # `continue-on-error`, `env` and `run` keys. GitHub rejects duplicate
+      # mapping keys and DE-REGISTERS the whole workflow: nba_ and
+      # nhl_pipeline.yml vanished from the Actions sidebar (listed by raw
+      # path instead of `name:`), every push produced an instant
+      # "Invalid workflow file" run, and NO scheduled run fired from 11-06
+      # through 11-08 -- 8 of 12 NHL reads for 11-07 went ungraded as a
+      # direct result.
+      #
+      # yaml.safe_load ACCEPTS duplicate keys silently (last wins), so a
+      # permissive parse check reports "PARSE OK" on a file GitHub refuses.
+      # Validate with a strict loader: .github/scripts/validate_workflows.py
+      #
       # The repair above writes primary_play; the reads are a COPY of it and
       # do not update themselves. --line-only patches call_line/call_text
       # ONLY when side and market already agree, so it can never change a
@@ -1141,13 +1164,6 @@ jobs:
             --label "jerry line alignment (NBA)" \
             python backfill_jerry_pick_alignment.py --sport NBA \
               --days 2 --line-only
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python sync_jerry_reads_from_ctx.py --sport NBA --window 4
 
       # 2026-09-08 heartbeat END.
       - name: Heartbeat — end
