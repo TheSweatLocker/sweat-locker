@@ -1,90 +1,89 @@
 {
-  "trained_at": "2026-11-02T21:16:05.322699",
+  "trained_at": "2026-11-09T21:50:17.837935",
   "training_window": "120d",
   "n_total_rows": 31000,
   "method": "sklearn.LogisticRegression(C=0.3, penalty=l1, solver=liblinear, class_weight=None) + corr>0.9 feature drop + sign-flip warnings",
   "usage": "apply_prop_refit reads this JSON and computes refit_conviction per prop as normalized sum of fired-signal coefficients rescaled to 0-100.",
   "prop_types": {
     "hits_over/over": {
-      "n_training": 1716,
-      "baseline_hit": 0.5308857808857809,
-      "intercept": -0.10271365691299744,
+      "n_training": 1667,
+      "baseline_hit": 0.5272945410917816,
+      "intercept": -0.07852336184117764,
       "coefficients": {
-        "lineup_spot": 0.538040537028397,
-        "opp_starter": 0.04460809011977116,
+        "lineup_spot": 0.5629164694929651,
+        "opp_starter": 0.10247239764809271,
+        "opp_form": 0.0,
         "team_heat": 0.0,
-        "opp_form": 0.038685984732548896,
-        "team_offense": 0.10293078227792885,
-        "l7_hot": 0.26910404732383625,
+        "team_offense": 0.11296579452878354,
+        "l7_hot": 0.20496290635846914,
         "l14_heat": 0.0,
         "opp_bullpen": 0.0,
-        "l7_avg_hot": -0.10731519146332845,
-        "park": -0.0017609952919403404,
+        "park": 0.0,
+        "l7_avg_hot": -0.07836292224865325,
         "l7_warm": 0.0,
         "l14_cooling": 0.0,
         "team_cold": 0.0,
-        "l14_warming": 0.0,
-        "opp_vs_team_baa_anti": 0.0,
-        "bvp_mastery": 0.04234202388133863,
-        "wind": 0.0,
+        "bvp_mastery": 0.0,
+        "opp_vs_team_baa_anti": -0.049483813988306806,
+        "l14_warming": 0.127457971300522,
         "opp_vs_team_baa": 0.0,
-        "l14_reversing": 0.3310251405219575,
-        "bvp_neutral": 0.121765253668022,
+        "wind": 0.0,
+        "bvp_neutral": 0.061059075182923986,
         "l14_cold": 0.0,
+        "l14_reversing": 0.37538853320113763,
         "juice_trap_demoted": 0.0,
         "bvp_trouble": 0.0
       },
-      "score_min": -0.06862920673077955,
-      "score_max": 1.285708597271891,
+      "score_min": -0.07836292224865325,
+      "score_max": 1.3587061012294481,
       "features_dropped_correlated": []
     },
     "outs_under/under": {
-      "n_training": 704,
-      "baseline_hit": 0.5866477272727273,
-      "intercept": 0.1970217760986246,
+      "n_training": 718,
+      "baseline_hit": 0.5793871866295265,
+      "intercept": 0.1570622488755345,
       "coefficients": {
         "opp_wrc": 0.0,
         "park": 0.0,
-        "l3_era": 0.0,
         "book_recalibration": 0.0,
-        "slow_start": 0.19808082046857514,
-        "l5_confirm": 0.15617790976973298,
-        "l3_bad": 0.27522296388172773,
-        "xera_high": -0.12874694810424914,
-        "short_last": 0.04860645899770174
+        "slow_start": 0.20482230693565673,
+        "l5_confirm": 0.018319248137863987,
+        "l3_bad": 0.2994056781337663,
+        "xera_high": -0.0022661631496833606,
+        "short_last": 0.1642469899185321
       },
       "score_min": 0.0,
-      "score_max": 0.6780881531177376,
+      "score_max": 0.6867942231258191,
       "features_dropped_correlated": [
         "opp_k_rate",
         "xera",
         "projection",
-        "l3_k"
+        "l3_k",
+        "l3_era"
       ]
     },
     "ks_over/over": {
-      "n_training": 482,
-      "baseline_hit": 0.4460580912863071,
-      "intercept": -0.3211547032645847,
+      "n_training": 430,
+      "baseline_hit": 0.4627906976744186,
+      "intercept": -0.26387066929054903,
       "coefficients": {
         "xera": 0.0,
-        "opp_k_rate": 0.03243720667469682,
+        "opp_k_rate": 0.08658989395993873,
         "park": 0.0,
         "book_recalibration": 0.0,
-        "bucket_k": 0.20394507998912542,
+        "bucket_k": 0.17166734533631606,
         "l5_confirm": 0.0,
-        "bucket_sustain": 0.08407744487847077,
+        "bucket_sustain": 0.09542501656068655,
         "k_artist": 0.0,
         "k_gap": 0.0,
-        "form_hot": 0.0,
         "whiff_elite": 0.0,
-        "vs_team_k": -0.05265797357605035,
-        "framing": 0.21118783089581286,
-        "slow_start": 0.0,
-        "umpire": 0.0
+        "form_hot": 0.0,
+        "vs_team_k": -0.16096390428476753,
+        "framing": 0.26748835080677613,
+        "slow_start": 0.0
       },
-      "score_min": -0.05265797357605035,
-      "score_max": 0.5316475624381058,
+      "score_min": -0.16096390428476753,
+      "score_max": 0.6211706066637175,
       "features_dropped_correlated": [
         "opp_wrc",
         "projection",
@@ -94,20 +93,20 @@
     },
     "outs_over/over": {
       "n_training": 556,
-      "baseline_hit": 0.4172661870503597,
-      "intercept": -0.40987751208486806,
+      "baseline_hit": 0.4262589928057554,
+      "intercept": -0.420497711106227,
       "coefficients": {
         "xera": 0.0,
-        "opp_wrc": 0.118768076604316,
+        "opp_wrc": 0.17586293884556653,
         "l5_confirm": 0.0,
         "l3": 0.0,
-        "durable": 0.05779248941379873,
+        "durable": 0.06453627487051596,
         "pen_gassed": 0.0,
         "l7_durable": 0.0,
         "fatigue": 0.0
       },
       "score_min": 0.0,
-      "score_max": 0.17656056601811473,
+      "score_max": 0.24039921371608247,
       "features_dropped_correlated": [
         "park",
         "opp_k_rate",
@@ -119,42 +118,43 @@
     },
     "er_under/under": {
       "n_training": 750,
-      "baseline_hit": 0.5106666666666667,
-      "intercept": 0.23695013146408303,
+      "baseline_hit": 0.5133333333333333,
+      "intercept": 0.3010902488364366,
       "coefficients": {
-        "xera": -0.22735185348982456,
+        "xera": -0.18666978489399313,
         "projection": 0.0,
-        "l3_era": 0.0,
+        "l3_k": -0.11227684039919607,
         "book_recalibration": 0.0,
-        "l5_confirm": -0.031899118502738785,
+        "l5_confirm": 0.0,
         "l3_hot": 0.0,
         "nrfi_assist": 0.0,
         "framing": 0.0,
         "vs_team": 0.0
       },
-      "score_min": -0.25925097199256336,
+      "score_min": -0.2989466252931892,
       "score_max": 0.0,
       "features_dropped_correlated": [
         "park",
         "opp_wrc",
         "opp_k_rate",
-        "l3_k"
+        "l3_era"
       ]
     },
     "ha_under/under": {
-      "n_training": 666,
-      "baseline_hit": 0.4894894894894895,
+      "n_training": 636,
+      "baseline_hit": 0.4968553459119497,
       "intercept": 0.0,
       "coefficients": {
-        "park": -0.05748709091407298,
+        "park": -0.036001008052963406,
         "l7_limit": 0.0,
         "hits_rate": 0.0,
         "l3_locked": 0.0,
-        "vs_team_baa": 0.0,
-        "strong_pen": 0.06062462181121601
+        "vs_team_baa": 0.006625440954330024,
+        "strong_pen": 0.05640858448335175,
+        "weather": 0.0
       },
-      "score_min": -0.05748709091407298,
-      "score_max": 0.06062462181121601,
+      "score_min": -0.036001008052963406,
+      "score_max": 0.06303402543768177,
       "features_dropped_correlated": [
         "opp_wrc",
         "opp_k_rate",
@@ -167,24 +167,24 @@
       ]
     },
     "er_over/over": {
-      "n_training": 423,
-      "baseline_hit": 0.5011820330969267,
-      "intercept": -0.03947466568272242,
+      "n_training": 412,
+      "baseline_hit": 0.5024271844660194,
+      "intercept": -0.05862910437262077,
       "coefficients": {
-        "park": 0.0925609279038902,
+        "park": 0.12412247387832556,
         "book_recalibration": 0.0,
-        "l5_confirm": 0.03132317485629053,
+        "l5_confirm": 0.02130284654848554,
+        "l3": 0.0,
         "proj_supports": 0.0,
         "1st_inn": 0.0,
-        "l3": 0.0,
         "xera_high": 0.0,
-        "l7_er": 0.0,
-        "xera_avg": 0.02277722524160151,
+        "l7_er": -0.08857627649604563,
+        "xera_avg": 0.16770000972800897,
         "framing_bad": 0.0,
         "opp_offense": 0.0
       },
-      "score_min": 0.0,
-      "score_max": 0.14666132800178222,
+      "score_min": -0.08857627649604563,
+      "score_max": 0.3131253301548201,
       "features_dropped_correlated": [
         "xera",
         "opp_wrc",
@@ -195,21 +195,21 @@
       ]
     },
     "bb_over/over": {
-      "n_training": 658,
-      "baseline_hit": 0.5334346504559271,
+      "n_training": 656,
+      "baseline_hit": 0.5320121951219512,
       "intercept": 0.0,
       "coefficients": {
-        "park": 0.018018505502681206,
+        "park": 0.00656816811211906,
         "book_recalibration": 0.0,
-        "l5_confirm": 0.31583443196165056,
-        "bb_rate": 0.0,
+        "l5_confirm": 0.30968825853615134,
+        "bb_rate": 0.0429634873590233,
+        "last7_walks": 0.004920048541357344,
         "l7_walks": 0.0,
-        "last7_walks": 0.0,
-        "wild_start": 0.020985074664291684,
+        "wild_start": 0.06278446055093578,
         "rest_rust": 0.0
       },
       "score_min": 0.0,
-      "score_max": 0.33681950662594223,
+      "score_max": 0.42035625498746776,
       "features_dropped_correlated": [
         "opp_wrc",
         "opp_k_rate",
@@ -220,21 +220,21 @@
       ]
     },
     "bb_under/under": {
-      "n_training": 653,
-      "baseline_hit": 0.49157733537519144,
+      "n_training": 630,
+      "baseline_hit": 0.4984126984126984,
       "intercept": 0.0,
       "coefficients": {
-        "park": -0.17763457131383803,
+        "park": -0.1285849686891729,
         "book_recalibration": 0.0,
         "bb_rate": 0.0,
         "l5_confirm": 0.0,
-        "l7_control": 0.0,
-        "aggressive_opp": 0.036432290114058755,
-        "clean_start": 0.27978500288914093,
-        "last7_control": 0.0
+        "aggressive_opp": 0.012284819309390887,
+        "last7_control": 0.0,
+        "clean_start": 0.3573605241283062,
+        "l7_control": 0.0
       },
-      "score_min": -0.17763457131383803,
-      "score_max": 0.3162172930031997,
+      "score_min": -0.1285849686891729,
+      "score_max": 0.3696453434376971,
       "features_dropped_correlated": [
         "opp_wrc",
         "opp_k_rate",
@@ -245,26 +245,26 @@
       ]
     },
     "ks_under/under": {
-      "n_training": 1027,
-      "baseline_hit": 0.5413826679649465,
-      "intercept": 0.38434504465602126,
+      "n_training": 976,
+      "baseline_hit": 0.5440573770491803,
+      "intercept": 0.4799314346985424,
       "coefficients": {
-        "park": -0.12993085048619177,
-        "k_gap_neg": -0.23558329949247903,
-        "l5_confirm": -0.012311987411200072,
+        "park": -0.2132396381425926,
+        "book_recalibration": -0.36752065159405223,
+        "l5_confirm": -0.11927727905893282,
         "opp_offense": 0.0,
-        "low_k_pitcher": -0.19177210895291613,
+        "low_k_pitcher": -0.04003687586414255,
         "short_outing": 0.0,
         "bucket_k": 0.0,
-        "form_cold": -0.04319500864602282,
-        "form_struggling": -0.04786138305376083,
+        "form_cold": 0.0,
+        "form_struggling": 0.0,
         "prime_gate": 0.0,
         "framing": 0.0,
         "vs_team_k": 0.0,
         "vs_team_k_anti": 0.0,
         "opp_contact_hot": 0.0
       },
-      "score_min": -0.530723787556379,
+      "score_min": -0.5268348065171276,
       "score_max": 0.0,
       "features_dropped_correlated": [
         "opp_wrc",
@@ -273,26 +273,26 @@
         "l3_k",
         "l3_era",
         "projection",
-        "book_recalibration"
+        "k_gap_neg"
       ]
     },
     "ha_over/over": {
-      "n_training": 589,
-      "baseline_hit": 0.5093378607809848,
-      "intercept": -0.2139371363420619,
+      "n_training": 563,
+      "baseline_hit": 0.5186500888099467,
+      "intercept": -0.1549374873721495,
       "coefficients": {
-        "park": 0.3650536207898214,
+        "park": 0.32582397318719164,
         "l7_hits": 0.0,
         "hits_rate": 0.0,
         "l5_confirm": 0.0,
         "l3_hard": 0.0,
         "opp_offense": 0.0,
         "vs_team_baa_anti": 0.0,
-        "vs_team_baa": 0.0,
-        "l5_fade": 0.0
+        "l5_fade": 0.0,
+        "vs_team_baa": 0.0
       },
       "score_min": 0.0,
-      "score_max": 0.3650536207898214,
+      "score_max": 0.32582397318719164,
       "features_dropped_correlated": [
         "opp_wrc",
         "opp_k_rate",
@@ -304,5 +304,18 @@
       ]
     }
   },
-  "sign_flip_warnings": []
+  "sign_flip_warnings": [
+    {
+      "prop": "ks_under/under",
+      "signal": "book_recalibration",
+      "coef": -0.36752065159405223,
+      "note": "Expected positive per domain \u2014 flip risk"
+    },
+    {
+      "prop": "ks_under/under",
+      "signal": "l5_confirm",
+      "coef": -0.11927727905893282,
+      "note": "Expected positive per domain \u2014 flip risk"
+    }
+  ]
 }
