@@ -139,13 +139,34 @@ def coherence_ok(sport: str, ctx_row: dict, pp: dict) -> tuple[bool, str]:
         ln = float(line)
     except (TypeError, ValueError):
         return True, ''
-    if ln >= 0:
-        return True, ''          # taking points, not laying them
-    need = abs(ln)
     got = norm if side == 'HOME' else -norm
-    if (need - got) >= COHERENCE_SHORTFALL:
-        return False, (f'projection has {side} by {got:.1f} but the pick lays '
-                       f'{ln:+g} - our own number does not cover it')
+    # == 2026-11-08 . ONE TEST FOR A SPREAD: MARGIN vs THE NUMBER =========
+    # This used to `return True` for every ln >= 0 -- "taking points, not
+    # laying them" -- which left a DOG pick with no coherence test at all,
+    # while side_ok (moneyline logic) refused it instead. Measured on live
+    # rows, side_ok refused 78.7% of NBA and 80.2% of NCAAF dog spreads;
+    # this gate refused 0%. Exactly backwards: the margin test is the one
+    # that belongs on a spread, and side_ok now skips rl/spread entirely.
+    #
+    # A spread pick wins iff (our projected margin for the side we took)
+    # plus the line we took is positive. That single expression is correct
+    # for both directions:
+    #   lay -12.5 and project +9.0  -> 9.0 - 12.5 = -3.5  REFUSE
+    #   take +14.5 and project -9.0 -> -9.0 + 14.5 = +5.5  ALLOW
+    #   take +3.5  and project -9.0 -> -9.0 + 3.5  = -5.5  REFUSE
+    # The last line is a real check this gate never performed before: a dog
+    # whose cushion does not cover our own projected loss.
+    #
+    # The ln < 0 branch is algebraically IDENTICAL to the code it replaces
+    # ((need - got) >= S  <->  got + ln <= -S), so favourite picks are
+    # unchanged. Verified by replay before shipping.
+    if (got + ln) <= -COHERENCE_SHORTFALL:
+        if ln < 0:
+            return False, (f'projection has {side} by {got:.1f} but the pick '
+                           f'lays {ln:+g} - our own number does not cover it')
+        return False, (f'projection has {side} losing by {-got:.1f} but the '
+                       f'pick only gets {ln:+g} - the cushion does not cover '
+                       f'our own projection')
     return True, ''
 
 
@@ -179,6 +200,29 @@ def side_ok(sport: str, ctx_row: dict, pp: dict) -> tuple[bool, str]:
     watchdog alone) came from a second copy of that table. If check C's
     threshold or orientation changes, this must change with it.
     """
+    # == 2026-11-08 . A SPREAD IS NOT A SIDE BET ==========================
+    # ANDY: "it sounds like side and spreads are being mixed up or
+    # intertwined which is incorrect". Correct, and this was the mix-up.
+    #
+    # This test asks WHICH TEAM WINS. That is the right question for a
+    # moneyline and the WRONG question for a spread, where the bet is about
+    # the margin against a posted number. Taking Bucks +14.5 asserts they
+    # lose by less than 14.5, so a projection of "Bucks lose by 9" AGREES
+    # with the pick -- and this function read it as "pick is HOME but our
+    # projection favours AWAY by 9.0 - the wrong side by our own model" and
+    # refused it.
+    #
+    # Measured on live rows: it refused 122 of 155 NBA dog spreads (78.7%)
+    # and 482 of 601 NCAAF (80.2%). Published dog share was 13.3% NBA and
+    # 35.2% NCAAF against a blanket dog cover rate of 43.4% and 47.5%.
+    #
+    # Nothing is lost on the favourite side: for a FAV spread whose
+    # projection favours the other team, coherence_ok already refuses it
+    # (got < 0 and ln < 0 makes got + ln <= -S), so that case stays covered
+    # by the gate that owns it.
+    market = str(pp.get('type') or '').lower()
+    if market in ('rl', 'spread'):
+        return True, ''
     hp = _PROJ_HOME_POS.get(str(sport or '').upper())
     if hp is None:
         return True, ''          # convention unproven for this sport -- skip
