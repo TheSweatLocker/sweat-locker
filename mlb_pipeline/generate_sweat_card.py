@@ -1789,6 +1789,37 @@ def fetch_football_picks(today: str,
             # takes its sign table from consistency_watchdog, so all three
             # read one proven convention. A sport whose convention is
             # unproven is skipped rather than guessed.
+            # == 2026-11-08 . conviction 0 IS A WITHDRAWAL, NOT A LOW SCORE ==
+            # `defensive_gates.apply_nhl_ml_confidence_gate` stamps
+            # conviction = 0 to mean "this pick has NOT earned a stake", and
+            # `ensemble_scorer` clamps to max(45, min(97, ..)) so it can
+            # never emit 0 itself. This composer only ever RANKED a 0 last
+            # (`_rank_conv` returns 0.0) and never REFUSED it, so on a thin
+            # board it was selected anyway.
+            #
+            # Measured tonight, 11-08: `Winnipeg Jets ML` reached the Sweat
+            # Card at conviction 0, and four conviction-0 NHL moneylines
+            # (Winnipeg, Boston, Calgary, New Jersey) were written as LIVE
+            # game_read receipts with real odds. Because the marker is a
+            # FALSY ZERO, the client's `Number(conviction) || 55` renders a
+            # withdrawn pick as "55% confidence" on a publishable LEAN badge
+            # (feedback_falsy_zero_invented_a_tier_and_a_confidence).
+            #
+            # The Dawg got this exact guard this morning and the card did
+            # not -- feedback_fix_every_writer_to_the_table. Treat 0 and
+            # None alike: neither can be shown to have earned a stake.
+            _cv_withdrawn = pp.get('conviction')
+            try:
+                _cv_bad = (_cv_withdrawn is None
+                           or float(_cv_withdrawn) <= 0)
+            except (TypeError, ValueError):
+                _cv_bad = True
+            if _cv_bad:
+                print(f'  \u26d4 {sport} card: REFUSED {pp.get("label")!r} '
+                      f'\u2014 conviction {_cv_withdrawn!r}: the engine '
+                      f'withdrew this pick (0 means no stake earned)')
+                continue
+
             try:
                 from retier_from_sport_bars import coherence_ok as _coh
                 _ok, _why = _coh(sport, row, pp)
