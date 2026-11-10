@@ -579,6 +579,116 @@ jobs:
           cd mlb_pipeline
           python enrich_nba_injuries_to_context.py --apply
 
+      # ══ 2026-11-09 · MONEY FLOW MOVED TO THE FRONT OF THE JOB ══
+      #
+      # ANDY: "Not seeing money flow on nba games. THIS IS THE WHOLE
+      # PURPOSE OF MORNING CADENCE."  Measured: oddscrowd_snapshot and
+      # splits_summary were NULL on EVERY NBA game from 11-06 to 11-12,
+      # and on 11-02 and 11-04 before that. 11-06..11-08 was the duplicate
+      # YAML key that de-registered this workflow. 11-09 is this bug:
+      #
+      #   run 42710379503  start 22:17:05  end 23:01:46   44m41s
+      #   run 42716527914  start 22:58:54  end 23:43:37   44m43s
+      #   run 42736044477  start 01:29:15  end 02:13:56   44m41s
+      #
+      # Three for three against `timeout-minutes: 45`. The `end` heartbeat
+      # is `if: always()`, so it fires on CANCELLATION too and the workflow
+      # looked like it finished. These four steps sat at line ~960, step 38
+      # of 52, and the job never got there: NBA raw splits rows were 0 from
+      # 11-07 on while NCAAB wrote 116 the same night, so the scrapers were
+      # never the problem. Run by hand tonight they produced 76 raw rows ->
+      # 408 aggregated -> splits_summary on 8/8 games -> align on 8/8 -> 24
+      # line_snapshot rows, first try.
+      #
+      # A SECOND REASON TO MOVE THEM, independent of the timeout: at line
+      # 960 they also ran AFTER the simulator (603) and the game reads
+      # (648). generate_nba_game_reads:471 lists `money_flow` in
+      # absent_blocks when oddscrowd_snapshot is falsy, and
+      # ensemble_scorer:2007 counts OddsCrowd money% as a VOTE. So even in a
+      # run that finished, the reads were written and scored before that
+      # night`s money flow existed. Here they land in the first ~5 minutes,
+      # ahead of both.
+      #
+      # Ordering INSIDE the block is preserved and still matters: scrape ->
+      # aggregate -> align (reads the splits) -> line_snapshot (reads the
+      # alignment). `Derive cover probability` and `Stamp conviction_rank`
+      # deliberately did NOT come along -- they read simulator and scorer
+      # output and have to stay downstream of it.
+
+      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator (mirrors
+      # NCAAF/NCAAB pattern). Silent no-op during offseason.
+      - name: ScoresAndOdds — scrape NBA splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NBA
+
+      - name: Splits v2 aggregator (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NBA
+
+      # == 2026-10-19 - THESE TWO RAN BY HAND AND WERE IN NO WORKFLOW ==
+      # compute_align_status_{nba,nhl}.py were written yesterday (22363500,
+      # which took The Fade from 0 plays to 2) and write_line_snapshot gained
+      # NBA/NHL in the same pass - but neither was ever scheduled, so both
+      # only ever ran because I invoked them manually. NFL and NCAAF have had
+      # these steps since 08-22; MLB gets line_snapshot from
+      # mlb_oddscrowd_refresh.yml.
+      #
+      # WHAT BREAKS WITHOUT THEM, and it is not subtle:
+      #   * line_snapshot is where the OddsCrowd bets_pct/money_pct split
+      #     lands, and that split IS the filter The Fade selects on. No
+      #     snapshot, no public percentage, no NBA or NHL fade plays at all.
+      #   * it is also what the cross-sport classify_line_moves.py --sport ALL
+      #     step in mlb_pipeline.yml flattens into line_movement_flags.
+      #   * align_status drives the alignment chips on every game card.
+      # NBA opens 2026-10-21, so unscheduled meant blank on opening night.
+      #
+      # Placed AFTER the splits aggregator deliberately: align_status reads
+      # the splits, so running it first would compute alignment against
+      # yesterday's numbers. Same ordering as nfl_pipeline.yml, where the
+      # comment records the same reasoning for the externals pull.
+      - name: Compute alignment (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Today AND the next THREE days. The context builder above
+          # covers "today + next 3 days" and the app surfaces those
+          # forward games, but every compute_align_status_* defaults
+          # to today only - so tomorrow's card had no alignment chips
+          # until the day it was played. Verified 2026-10-19: NBA
+          # 10-21 held 11 contexts with align_status set on ZERO of
+          # them. The write is an idempotent upsert, so re-running a
+          # date is free. -4h matches the script's own ET rollover.
+          for off in 0 1 2 3; do
+            d=$(date -u -d "-4 hours +${off} days" +%F)
+            python compute_align_status_nba.py --date "$d"
+          done
+
+      - name: Write line_snapshot from oddscrowd data (NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          for off in 0 1 2 3; do
+            d=$(date -u -d "-4 hours +${off} days" +%F)
+            python write_line_snapshot.py --sport NBA --date "$d"
+          done
+
+
       # ══ 2026-10-13 · NBA HAD NO MONTE CARLO ══
       # mc_probabilities was populated on NFL 106/316, NCAAF 382/536, NHL
       # 136/187 and MLB 26/36 — and 0 of 81 on NBA. Not a nice-to-have: in
@@ -838,6 +948,24 @@ jobs:
       # nothing populated. Non-fatal (season starts Oct — no impact yet).
       - name: Backfill NBA prop L10 lookback (ESPN game logs)
         continue-on-error: true
+        # ══ 2026-11-09 · A STEP WITH NO BUDGET SPENDS THE JOB'S ══
+        # This is the only step I measured directly while chasing the
+        # money-flow outage: run by hand on tonight's 1,794-prop NBA board it
+        # was still going after 7 minutes with nothing written to stdout. It
+        # does an ESPN athlete search + a gamelog fetch per (player, stat)
+        # pair -- 121 distinct players tonight -- with timeout=10 and
+        # timeout=15 and no cap on the total, so a slow or throttled ESPN
+        # turns into unbounded wall clock inside a job capped at 45 minutes.
+        #
+        # 15 is deliberately generous: it completes (1,774 of 1,794 rows carry
+        # player_l10_hit_count today), so this should never fire on a healthy
+        # night. What it buys is that a bad night can no longer eat the
+        # budget -- and because continue-on-error lets the job go on, the run
+        # now REACHES the --gate step, which is what posts `step_durations`
+        # to workflow_heartbeat. So the next run measures every step for me
+        # instead of me guessing which one hangs. I have NOT established that
+        # this step is the whole 45 minutes; the durations will say.
+        timeout-minutes: 15
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
@@ -955,67 +1083,6 @@ jobs:
           python generate_prop_jerry_synthesis.py --sport NBA --days 0 --force --tier-gate NONE
 
 
-      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator (mirrors
-      # NCAAF/NCAAB pattern). Silent no-op during offseason.
-      - name: ScoresAndOdds — scrape NBA splits
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python pull_scoresandodds.py --sport NBA
-
-      - name: Splits v2 aggregator (NBA)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NBA
-
-      # == 2026-10-19 - THESE TWO RAN BY HAND AND WERE IN NO WORKFLOW ==
-      # compute_align_status_{nba,nhl}.py were written yesterday (22363500,
-      # which took The Fade from 0 plays to 2) and write_line_snapshot gained
-      # NBA/NHL in the same pass - but neither was ever scheduled, so both
-      # only ever ran because I invoked them manually. NFL and NCAAF have had
-      # these steps since 08-22; MLB gets line_snapshot from
-      # mlb_oddscrowd_refresh.yml.
-      #
-      # WHAT BREAKS WITHOUT THEM, and it is not subtle:
-      #   * line_snapshot is where the OddsCrowd bets_pct/money_pct split
-      #     lands, and that split IS the filter The Fade selects on. No
-      #     snapshot, no public percentage, no NBA or NHL fade plays at all.
-      #   * it is also what the cross-sport classify_line_moves.py --sport ALL
-      #     step in mlb_pipeline.yml flattens into line_movement_flags.
-      #   * align_status drives the alignment chips on every game card.
-      # NBA opens 2026-10-21, so unscheduled meant blank on opening night.
-      #
-      # Placed AFTER the splits aggregator deliberately: align_status reads
-      # the splits, so running it first would compute alignment against
-      # yesterday's numbers. Same ordering as nfl_pipeline.yml, where the
-      # comment records the same reasoning for the externals pull.
-      - name: Compute alignment (NBA)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          # Today AND the next THREE days. The context builder above
-          # covers "today + next 3 days" and the app surfaces those
-          # forward games, but every compute_align_status_* defaults
-          # to today only - so tomorrow's card had no alignment chips
-          # until the day it was played. Verified 2026-10-19: NBA
-          # 10-21 held 11 contexts with align_status set on ZERO of
-          # them. The write is an idempotent upsert, so re-running a
-          # date is free. -4h matches the script's own ET rollover.
-          for off in 0 1 2 3; do
-            d=$(date -u -d "-4 hours +${off} days" +%F)
-            python compute_align_status_nba.py --date "$d"
-          done
-
       # ══ 2026-10-30 · conviction_rank ══
       # The ensemble's `conviction` saturates at win_score 3.0 and is
       # sport-blind, so NBA's picks all land in a few points of each other and
@@ -1050,18 +1117,6 @@ jobs:
         run: |
           cd mlb_pipeline
           python stamp_conviction_rank.py --sport NBA --days 5
-
-      - name: Write line_snapshot from oddscrowd data (NBA)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          for off in 0 1 2 3; do
-            d=$(date -u -d "-4 hours +${off} days" +%F)
-            python write_line_snapshot.py --sport NBA --date "$d"
-          done
 
       # 2026-09-08: removed duplicate refresh_prop_signal_calibration call
       # — same script + args was already run at line ~156 ("graded props"

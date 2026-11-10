@@ -372,6 +372,160 @@ jobs:
           cd mlb_pipeline
           python backfill_nhl_team_tendencies.py
 
+      # ══ 2026-11-09 · MONEY FLOW MOVED AHEAD OF THE READS ══
+      #
+      # Found while fixing the same defect in nba_pipeline.yml, where it was
+      # causing an outage Andy saw. NHL is not in outage -- this job finishes
+      # in ~12m against a 45m cap and 11-09 landed splits on 3 of 3 games --
+      # but the ORDERING bug is identical and worth fixing once rather than
+      # twice: this block used to sit at steps 31-38 of 52, i.e. AFTER
+      # `Generate NHL game reads` at step 21.
+      #
+      # ensemble_scorer:2007 counts OddsCrowd money% as a VOTE, and a read
+      # generated before the splits land cannot have that vote. ncaab is the
+      # control: its splits already run at steps 21-22 and its reads at 33,
+      # which is the order NBA and NHL both deviated from.
+      #
+      # Internal order preserved -- scrape -> cz/fr/sbd sources -> aggregate
+      # -> align -> line_snapshot -- because align reads the splits and
+      # line_snapshot reads the alignment. `Derive cover probability` and
+      # `Stamp conviction_rank` stay downstream: they read simulator and
+      # scorer output.
+
+      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator + signal
+      # calibration. Silent no-op during offseason (NHL 2026-27 season opens
+      # Oct 8). NHL not on Cleatz (Cleatz doesn't cover hockey per Phase 3
+      # audit) but SO + FR + OC do. Once season opens, 3 sources fire.
+      - name: ScoresAndOdds — scrape NHL splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NHL
+
+      # ══ 2026-09-28 · NHL MONEY FLOW OWNED BY THE NHL WORKFLOW ══
+      # Andy: "no menye flow ... we need to work on a source for money flwo
+      # right now."
+      #
+      # The aggregator below has supported NHL since it shipped, and it is
+      # wired here. What was missing is the INPUT: every money-flow scraper
+      # ran only in mlb_pipeline.yml. They do cover NHL — fadereport_scraper
+      # with no --sport iterates all six sports in SPORT_URL — so NHL money
+      # flow has been silently dependent on the BASEBALL workflow running.
+      #
+      # MLB is in the Wild Card round now and is done inside a month. When
+      # that workflow goes quiet, NHL, NBA and NCAAB all lose money flow at
+      # once, with no error — just empty cards on the sports that are in
+      # season. Each sport's workflow should own its own inputs.
+      #
+      # Scoped --sport NHL so this does not duplicate the all-sports pass that
+      # still runs from MLB while MLB is alive.
+      #
+      # 2026-10-08 SUPERSEDED, and the way it was wrong is worth keeping.
+      # This block used to read "FADEREPORT IS THE ONLY ONE OF THE FADE-FAMILY
+      # SCRAPERS THAT DOES NHL. Checked all three" — but the check was against
+      # our own SPORT_URL dict, where a 2026-08-23 comment recorded a 404 for
+      # hockey. cleatz now serves https://cleatz.com/public-betting/nhl/ with
+      # 14 games, moneyline + puck line + total, bets% AND handle%. A 404 is a
+      # snapshot of one day, not a property of a site; re-probe before
+      # declaring a source absent. Same lesson as calling oddscrowd dead.
+      #
+      # Measured before this step existed: NHL money flow was 1-of-3 sources
+      # (fadereport only), so there was no second opinion to diverge against
+      # and the panel had nothing to render.
+      #
+      # fadethepublic_scraper does still declare NO_COVERAGE = ('NHL',).
+      - name: Money flow source (NHL · cleatz)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python cleatz_scraper.py --sport NHL || echo "::warning::cleatz NHL failed"
+      - name: Money flow source (NHL · fadereport)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python fadereport_scraper.py --sport NHL || echo "::warning::fadereport NHL failed"
+          # 2026-09-28 · second real money-flow source. Needs the chromium
+          # installed above: the data is in web-component SHADOW DOM, which
+          # neither requests nor page.content() can see, so this is the one
+          # scraper here that genuinely requires a browser. It exits non-zero
+          # when it matches no games, because a shadow-DOM parse breaks
+          # silently on any component rewrite and a quiet zero-row run is the
+          # failure mode this repo keeps getting bitten by.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "sbd_splits_scraper.py (NHL)"             python sbd_splits_scraper.py --league nhl
+
+      - name: Splits v2 aggregator (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NHL
+
+      # == 2026-10-19 - THESE TWO RAN BY HAND AND WERE IN NO WORKFLOW ==
+      # compute_align_status_{nba,nhl}.py were written yesterday (22363500,
+      # which took The Fade from 0 plays to 2) and write_line_snapshot gained
+      # NBA/NHL in the same pass - but neither was ever scheduled, so both
+      # only ever ran because I invoked them manually. NFL and NCAAF have had
+      # these steps since 08-22; MLB gets line_snapshot from
+      # mlb_oddscrowd_refresh.yml.
+      #
+      # WHAT BREAKS WITHOUT THEM, and it is not subtle:
+      #   * line_snapshot is where the OddsCrowd bets_pct/money_pct split
+      #     lands, and that split IS the filter The Fade selects on. No
+      #     snapshot, no public percentage, no NBA or NHL fade plays at all.
+      #   * it is also what the cross-sport classify_line_moves.py --sport ALL
+      #     step in mlb_pipeline.yml flattens into line_movement_flags.
+      #   * align_status drives the alignment chips on every game card.
+      # NBA opens 2026-10-21, so unscheduled meant blank on opening night.
+      #
+      # Placed AFTER the splits aggregator deliberately: align_status reads
+      # the splits, so running it first would compute alignment against
+      # yesterday's numbers. Same ordering as nfl_pipeline.yml, where the
+      # comment records the same reasoning for the externals pull.
+      - name: Compute alignment (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Today AND the next THREE days. The context builder above
+          # covers "today + next 3 days" and the app surfaces those
+          # forward games, but every compute_align_status_* defaults
+          # to today only - so tomorrow's card had no alignment chips
+          # until the day it was played. Verified 2026-10-19: NBA
+          # 10-21 held 11 contexts with align_status set on ZERO of
+          # them. The write is an idempotent upsert, so re-running a
+          # date is free. -4h matches the script's own ET rollover.
+          for off in 0 1 2 3; do
+            d=$(date -u -d "-4 hours +${off} days" +%F)
+            python compute_align_status_nhl.py --date "$d"
+          done
+
+      - name: Write line_snapshot from oddscrowd data (NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          for off in 0 1 2 3; do
+            d=$(date -u -d "-4 hours +${off} days" +%F)
+            python write_line_snapshot.py --sport NHL --date "$d"
+          done
+
+
       # ─── NHL game reads (2026-09-24) ───────────────────────────────
       # Until now this workflow had NO read generator. Odds, results,
       # context, externals, tendencies and props all ran; nothing wrote
@@ -659,127 +813,6 @@ jobs:
           cd mlb_pipeline
           python generate_prop_jerry_synthesis.py --sport NHL --days 0 --force --tier-gate NONE
 
-      # 2026-08-23 season-ready: SO scraper + splits_v2 aggregator + signal
-      # calibration. Silent no-op during offseason (NHL 2026-27 season opens
-      # Oct 8). NHL not on Cleatz (Cleatz doesn't cover hockey per Phase 3
-      # audit) but SO + FR + OC do. Once season opens, 3 sources fire.
-      - name: ScoresAndOdds — scrape NHL splits
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python pull_scoresandodds.py --sport NHL
-
-      # ══ 2026-09-28 · NHL MONEY FLOW OWNED BY THE NHL WORKFLOW ══
-      # Andy: "no menye flow ... we need to work on a source for money flwo
-      # right now."
-      #
-      # The aggregator below has supported NHL since it shipped, and it is
-      # wired here. What was missing is the INPUT: every money-flow scraper
-      # ran only in mlb_pipeline.yml. They do cover NHL — fadereport_scraper
-      # with no --sport iterates all six sports in SPORT_URL — so NHL money
-      # flow has been silently dependent on the BASEBALL workflow running.
-      #
-      # MLB is in the Wild Card round now and is done inside a month. When
-      # that workflow goes quiet, NHL, NBA and NCAAB all lose money flow at
-      # once, with no error — just empty cards on the sports that are in
-      # season. Each sport's workflow should own its own inputs.
-      #
-      # Scoped --sport NHL so this does not duplicate the all-sports pass that
-      # still runs from MLB while MLB is alive.
-      #
-      # 2026-10-08 SUPERSEDED, and the way it was wrong is worth keeping.
-      # This block used to read "FADEREPORT IS THE ONLY ONE OF THE FADE-FAMILY
-      # SCRAPERS THAT DOES NHL. Checked all three" — but the check was against
-      # our own SPORT_URL dict, where a 2026-08-23 comment recorded a 404 for
-      # hockey. cleatz now serves https://cleatz.com/public-betting/nhl/ with
-      # 14 games, moneyline + puck line + total, bets% AND handle%. A 404 is a
-      # snapshot of one day, not a property of a site; re-probe before
-      # declaring a source absent. Same lesson as calling oddscrowd dead.
-      #
-      # Measured before this step existed: NHL money flow was 1-of-3 sources
-      # (fadereport only), so there was no second opinion to diverge against
-      # and the panel had nothing to render.
-      #
-      # fadethepublic_scraper does still declare NO_COVERAGE = ('NHL',).
-      - name: Money flow source (NHL · cleatz)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          PYTHONIOENCODING: utf-8
-        run: |
-          cd mlb_pipeline
-          python cleatz_scraper.py --sport NHL || echo "::warning::cleatz NHL failed"
-      - name: Money flow source (NHL · fadereport)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python fadereport_scraper.py --sport NHL || echo "::warning::fadereport NHL failed"
-          # 2026-09-28 · second real money-flow source. Needs the chromium
-          # installed above: the data is in web-component SHADOW DOM, which
-          # neither requests nor page.content() can see, so this is the one
-          # scraper here that genuinely requires a browser. It exits non-zero
-          # when it matches no games, because a shadow-DOM parse breaks
-          # silently on any component rewrite and a quiet zero-row run is the
-          # failure mode this repo keeps getting bitten by.
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "sbd_splits_scraper.py (NHL)"             python sbd_splits_scraper.py --league nhl
-
-      - name: Splits v2 aggregator (NHL)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python splits_v2_pipeline.py --sport NHL
-
-      # == 2026-10-19 - THESE TWO RAN BY HAND AND WERE IN NO WORKFLOW ==
-      # compute_align_status_{nba,nhl}.py were written yesterday (22363500,
-      # which took The Fade from 0 plays to 2) and write_line_snapshot gained
-      # NBA/NHL in the same pass - but neither was ever scheduled, so both
-      # only ever ran because I invoked them manually. NFL and NCAAF have had
-      # these steps since 08-22; MLB gets line_snapshot from
-      # mlb_oddscrowd_refresh.yml.
-      #
-      # WHAT BREAKS WITHOUT THEM, and it is not subtle:
-      #   * line_snapshot is where the OddsCrowd bets_pct/money_pct split
-      #     lands, and that split IS the filter The Fade selects on. No
-      #     snapshot, no public percentage, no NBA or NHL fade plays at all.
-      #   * it is also what the cross-sport classify_line_moves.py --sport ALL
-      #     step in mlb_pipeline.yml flattens into line_movement_flags.
-      #   * align_status drives the alignment chips on every game card.
-      # NBA opens 2026-10-21, so unscheduled meant blank on opening night.
-      #
-      # Placed AFTER the splits aggregator deliberately: align_status reads
-      # the splits, so running it first would compute alignment against
-      # yesterday's numbers. Same ordering as nfl_pipeline.yml, where the
-      # comment records the same reasoning for the externals pull.
-      - name: Compute alignment (NHL)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          # Today AND the next THREE days. The context builder above
-          # covers "today + next 3 days" and the app surfaces those
-          # forward games, but every compute_align_status_* defaults
-          # to today only - so tomorrow's card had no alignment chips
-          # until the day it was played. Verified 2026-10-19: NBA
-          # 10-21 held 11 contexts with align_status set on ZERO of
-          # them. The write is an idempotent upsert, so re-running a
-          # date is free. -4h matches the script's own ET rollover.
-          for off in 0 1 2 3; do
-            d=$(date -u -d "-4 hours +${off} days" +%F)
-            python compute_align_status_nhl.py --date "$d"
-          done
-
       # ══ 2026-10-30 · conviction_rank ══
       # The ensemble's `conviction` saturates at win_score 3.0 and is
       # sport-blind, so NHL's picks all land in a few points of each other and
@@ -814,18 +847,6 @@ jobs:
         run: |
           cd mlb_pipeline
           python stamp_conviction_rank.py --sport NHL --days 5
-
-      - name: Write line_snapshot from oddscrowd data (NHL)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          for off in 0 1 2 3; do
-            d=$(date -u -d "-4 hours +${off} days" +%F)
-            python write_line_snapshot.py --sport NHL --date "$d"
-          done
 
       - name: Refresh NHL signal_registry from graded games
         continue-on-error: true
