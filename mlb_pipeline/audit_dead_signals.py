@@ -52,6 +52,7 @@ except Exception:                                          # noqa: BLE001
     pass
 
 import market_line as ML
+import signal_expr
 
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
        'NHL': 'nhl_game_context', 'NBA': 'nba_game_context',
@@ -142,22 +143,46 @@ def _evaluate(sigs: list, rows: list) -> dict:
         fires = 0
         err = None
         for c in ctxs:
-            try:
-                # The namespace must cover every builtin a condition
-                # actually uses. A first pass omitted isinstance and sum and
-                # reported 8 signals as EVAL ERROR / dead when the only
-                # thing broken was this harness.
-                if eval(cond, {'__builtins__': {}},
-                        {'ctx': c, 'float': float, 'abs': abs, 'min': min,
-                         'max': max, 'len': len, 'str': str, 'int': int,
-                         'sum': sum, 'isinstance': isinstance, 'dict': dict,
-                         'list': list, 'round': round, 'any': any,
-                         'all': all, 'bool': bool, 'set': set,
-                         'sorted': sorted, 'tuple': tuple, 'None': None,
-                         'True': True, 'False': False}):
-                    fires += 1
-            except Exception as e:                         # noqa: BLE001
-                err = type(e).__name__
+            # == 2026-11-10 . THE HARNESS DID IT AGAIN, SO IT NO LONGER HAS
+            # ITS OWN NAMESPACE ==
+            #
+            # The block this replaces hand-listed the builtins a condition
+            # may use, and its own comment records the failure mode: "A first
+            # pass omitted isinstance and sum and reported 8 signals as EVAL
+            # ERROR / dead when the only thing broken was this harness."
+            #
+            # It happened again, identically. `signal_expr._SAFE_BUILTINS`
+            # gained `is_dict` and `is_list` on 2026-10-28 -- added precisely
+            # to repair the 17 oddscrowd fade signals, because `isinstance`
+            # was whitelisted and `dict` was not -- and the 20 conditions
+            # rewritten to use them then raised NameError in THIS list. The
+            # watchdog has reported "8 signal(s) CANNOT fire" every day
+            # since, naming `oddscrowd_ml_fade_boost_nba` and
+            # `oddscrowd_total_fade_boost_nba` among them.
+            #
+            # They are not dead. Replayed through the REAL evaluator against
+            # tonight's six live NBA rows: Philadelphia 76ers -> True
+            # (ml.fade=boost, ml.pick=HOME), the other five False on their
+            # data. The signals work; the auditor was auditing a different
+            # program (feedback_zero_rows_is_a_wiring_error).
+            #
+            # A hand-kept copy of a lookup table the real code already owns
+            # drifts the moment the real one changes
+            # (feedback_a_blocklist_duplicating_a_lookup_table). So this now
+            # calls signal_expr itself -- the same function ensemble_scorer
+            # uses -- and the two cannot disagree again by construction.
+            #
+            # signal_expr.evaluate SWALLOWS errors and returns the default,
+            # which would turn a genuine broken condition into a silent
+            # "never fires". eval_error_report() is the published way to get
+            # them back, so a real failure still lands in EVAL ERROR
+            # (feedback_swallowed_nameerror_is_a_false_condition).
+            _before = len(signal_expr.eval_error_report())
+            if signal_expr.evaluate_bool(cond, c, label=key):
+                fires += 1
+            _after = signal_expr.eval_error_report()
+            if len(_after) > _before:
+                err = _after[-1].split(':')[-1].strip()[:40] or 'eval error'
                 break
         if err:
             buckets['EVAL ERROR'].append((key, f'{err} · {cond[:60]}', 0))

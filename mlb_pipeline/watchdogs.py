@@ -1096,49 +1096,105 @@ def check_line_poller_landing_rate() -> Optional[dict]:
     # Still EXACT for the decision. When the poller is healthy it stops at 12
     # and returns; when it is not, the walk exhausts and `landed` is the true
     # count, which the alert text below needs.
-    landed = 0
-    cursor = f'{day}T00:00:00Z'
+    # ══ 2026-11-10 · IT ASKED ONLY ABOUT MLB, AND MLB IS IN THE OFFSEASON ══
+    # `'sport': 'eq.MLB'` was hardcoded, so from the end of the World Series
+    # this check measured a sport with NO GAMES, found 0 distinct capture
+    # minutes against a floor of 12, and returned CRITICAL every single day:
+    # 11-06, 11-07, 11-08, 11-09 and 11-10 all carry it unresolved. The
+    # collector was healthy the whole time -- it wrote over 12,000 NCAAB rows
+    # on 11-10 alone and captured NCAAF at 13:26.
+    #
+    # This file already knows why that matters, two notes up: "A false
+    # CRITICAL is not harmless: the context_features_preseason alert went
+    # unread for six days partly because this suite was already crying wolf."
+    # A permanently-red check is a muted check, and this one had been red for
+    # five days running.
+    #
+    # The collector is cross-sport, so the question is too. A sport with no
+    # slate is the INTENTIONAL case and is skipped by name
+    # (feedback_a_detector_must_know_the_intentional_case); a sport WITH a
+    # slate and no captures is the defect, and the alert now says which.
+    SPORT_CTX = (('MLB', 'mlb_game_context'), ('NFL', 'nfl_game_context'),
+                 ('NCAAF', 'ncaaf_game_context'), ('NBA', 'nba_game_context'),
+                 ('NHL', 'nhl_game_context'), ('NCAAB', 'ncaab_game_context'))
     end = f'{day}T23:59:59.999Z'
-    try:
-        while landed < FLOOR:
-            r = requests.get(f'{SB}/rest/v1/line_history',
-                params={'select': 'captured_at', 'sport': 'eq.MLB',
-                        'captured_at': [f'gte.{cursor}', f'lte.{end}'],
-                        'order': 'captured_at.asc', 'limit': '1'},
-                headers=H_READ, timeout=30)
-            if r.status_code not in (200, 206):
-                return None
-            batch = r.json()
-            if not isinstance(batch, list):
-                return None
-            if not batch:
-                break
-            ts = str(batch[0].get('captured_at') or '')
-            if len(ts) < 16:
-                break
-            landed += 1
-            # Jump to the start of the NEXT minute. Parsing rather than string
-            # arithmetic because 23:59 must roll the hour and the day.
-            try:
-                t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-            except ValueError:
-                break
-            nxt = (t.replace(second=0, microsecond=0) + timedelta(minutes=1))
-            cursor = nxt.astimezone(timezone.utc).isoformat().replace(
-                '+00:00', 'Z')
-    except Exception:
+    in_season, no_slate = [], []
+    for _sport, _tbl in SPORT_CTX:
+        try:
+            _gr = requests.get(f'{SB}/rest/v1/{_tbl}',
+                params={'select': 'game_date', 'game_date': f'eq.{day}',
+                        'limit': '1'},
+                headers=H_READ, timeout=20)
+            if _gr.status_code not in (200, 206):
+                # A non-200 is not an empty slate. Unknown means this sport
+                # is not judged, rather than silently declared idle.
+                continue
+            (in_season if (_gr.json() or []) else no_slate).append(_sport)
+        except Exception:
+            continue
+    if not in_season:
+        # Nothing played anywhere on that date. Genuinely nothing to measure.
         return None
-    if landed >= FLOOR:
+
+    def _landed(sport: str) -> int:
+        """Distinct capture minutes for one sport, stopping AT the floor."""
+        landed = 0
+        cursor = f'{day}T00:00:00Z'
+        try:
+            while landed < FLOOR:
+                r = requests.get(f'{SB}/rest/v1/line_history',
+                    params={'select': 'captured_at', 'sport': f'eq.{sport}',
+                            'captured_at': [f'gte.{cursor}', f'lte.{end}'],
+                            'order': 'captured_at.asc', 'limit': '1'},
+                    headers=H_READ, timeout=30)
+                if r.status_code not in (200, 206):
+                    return -1
+                batch = r.json()
+                if not isinstance(batch, list):
+                    return -1
+                if not batch:
+                    break
+                ts = str(batch[0].get('captured_at') or '')
+                if len(ts) < 16:
+                    break
+                landed += 1
+                # Jump to the start of the NEXT minute. Parsing rather than
+                # string arithmetic because 23:59 must roll hour and day.
+                try:
+                    t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                except ValueError:
+                    break
+                nxt = (t.replace(second=0, microsecond=0)
+                       + timedelta(minutes=1))
+                cursor = nxt.astimezone(timezone.utc).isoformat().replace(
+                    '+00:00', 'Z')
+        except Exception:
+            return -1
+        return landed
+
+    counts = {s: n for s, n in ((s, _landed(s)) for s in in_season) if n >= 0}
+    short = {s: n for s, n in counts.items() if n < FLOOR}
+    healthy = {s: n for s, n in counts.items() if n >= FLOOR}
+    if not short:
         return None
+    worst = min(short.values())
     return {
         'check_name': 'line_poller_landing_rate',
-        'severity': 'CRITICAL' if landed < 6 else 'WARNING',
-        'message': (f'MLB line poller landed only {landed} distinct capture '
-                    f'minutes on {day} (floor {FLOOR}). line_history is the '
-                    f'only source that prices picks for ROI/CLV — at this '
-                    f'rate most games get no pre-game line capture. Check '
-                    f'the local task \\SweatLocker\\line_poller first.'),
-        'detail': {'landed_minutes': landed, 'floor': FLOOR, 'date': day},
+        'severity': 'CRITICAL' if worst < 6 else 'WARNING',
+        'message': (
+            'line poller landed under the floor on '
+            + ', '.join(f'{s} {n}/{FLOOR}' for s, n
+                        in sorted(short.items(), key=lambda kv: kv[1]))
+            + f' distinct capture minutes on {day}. line_history is the only '
+            f'source that prices picks for ROI/CLV — at this rate those '
+            f'games get no pre-game line capture. Check the local task '
+            f'\\SweatLocker\\line_poller first. [healthy: '
+            + (', '.join(f'{s} {n}' for s, n in sorted(healthy.items()))
+               or 'none')
+            + '; no slate, not judged: '
+            + (', '.join(no_slate) or 'none') + ']'),
+        'detail': {'landed_minutes': counts, 'floor': FLOOR, 'date': day,
+                   'no_slate_skipped': no_slate, 'in_season': in_season},
     }
 
 

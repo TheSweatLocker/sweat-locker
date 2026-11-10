@@ -8,15 +8,21 @@ name: NBA Props (own cadence)
 #
 # MEASURED LOCALLY against tonight's live slate, not estimated:
 #
-#     nba_generate_props.py            287s    (upserted 808 props)
-#     enrich_nba_prop_projections.py   277s    (matched 788/808, patched 788)
+#     nba_prop_gate.py --apply        >900s    (STILL RUNNING when I cut it
+#                                               off at 15 minutes -- rc 124,
+#                                               not a completed measurement)
 #     backfill_prop_lookback.py       >420s    (an ESPN athlete search + game
 #                                               log per player, 121 players)
+#     nba_generate_props.py            287s    (upserted 808 props)
+#     enrich_nba_prop_projections.py   277s    (matched 788/808, patched 788)
 #     nba_sleeper_projections_pull.py    9s
 #     prop_slot_reconcile.py             1s
 #
-# ~16 minutes across FIVE of the nine, with four still unmeasured. On a
-# bigger slate it is worse: 11-09 generated 1,794 props to tonight's 808.
+# >31 MINUTES across SIX of the nine, and two of those six are lower bounds
+# because I stopped them rather than let them finish. Three are still
+# unmeasured: prop_ensemble_scorer, promote_playbook_conviction and
+# generate_prop_jerry_synthesis. On a bigger slate it is worse -- 11-09
+# generated 1,794 props to tonight's 808.
 #
 # WHAT IT COST. Everything after step 28 in that job stopped running: `Sync
 # NBA jerry_reads from context` (50), `Assert NBA slate freshness` (54),
@@ -74,11 +80,20 @@ concurrency:
 jobs:
   props:
     runs-on: ubuntu-latest
-    # 40, measured: ~16m for the five timed steps plus four unmeasured, with
-    # headroom for a full-slate night (1,794 props on 11-09 against 808
-    # tonight). This cap is the budget the work actually needs; the point of
-    # the move is that it is no longer taken out of the sides pipeline.
-    timeout-minutes: 40
+    # 75. The measurement above is >31m for six of nine steps with two of
+    # those a lower bound and three steps never timed, so anything near 45
+    # would reproduce exactly the cancellation this move exists to end. A
+    # generous cap is SAFE here in a way it was not in nba_pipeline: this job
+    # feeds a shadow record behind a fail-closed feature flag, so a long run
+    # cannot starve a user-facing surface. It is the sides pipeline whose cap
+    # must stay tight, because there a run that reaches the limit is a real
+    # signal.
+    #
+    # Honest open item: `nba_prop_gate.py --apply` was still going at 15
+    # minutes on an 808-prop board and has no internal budget. If this job
+    # starts hitting 75 that step is where to look first -- cap the step, not
+    # the job (feedback_green_step_that_writes_nothing).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
