@@ -1,0 +1,270 @@
+name: NBA + NHL Splits Refresh (nightly cadence)
+
+# ══ 2026-11-09 · MONEY FLOW NEEDS A HOME THAT CANNOT BE STARVED ══
+# ANDY: "Not seeing money flow on nba games. THIS IS THE WHOLE PURPOSE OF
+# MORNING CADENCE." Then: "this should be a permanent fix so it wont continue
+# to happen and not get caught."
+#
+# WHAT HAPPENED. oddscrowd_snapshot and splits_summary were NULL on every NBA
+# game 11-06..11-12. The four steps that write them lived at step 42 of 57 in
+# nba_pipeline.yml, and that job is CANCELLED at its own `timeout-minutes: 45`
+# on every run — 44m41s / 44m43s / 44m41s on 11-09 alone. It read as healthy
+# because `Heartbeat — end` is `if: always()` and fires on cancellation too.
+#
+# Moving those steps to position 25 (done, same commit) protects them today.
+# It is NOT a permanent fix, for two reasons:
+#
+#   1. Position inside a job is not a guarantee. Anything inserted above them
+#      pushes them back down, and the job still dies at minute 45, so the
+#      29 steps after them are STILL never reached. That is not theoretical:
+#      `promote_playbook_conviction` sits at step 44 and NBA props carry
+#      conviction 0 on 1,794 of 1,794 rows tonight.
+#   2. The detector was behind the same wall. `assert_slate_freshness.py`
+#      runs WITHOUT continue-on-error and fails on a DARK COLUMN — exactly
+#      this bug — and it is step 56 of 57. It has not run in days.
+#
+# So money flow gets its own workflow. Four short runs a night, nothing in
+# front of it, nothing that can starve it. If nba_pipeline dies at minute 45
+# again, the cards still have money flow.
+#
+# PRECEDENT, deliberately copied: football_splits_refresh.yml, built 10-23 for
+# the identical reason — "a cadence gap on our side, not a missing feed."
+# NBA/NHL never got one. MLB has had mlb_oddscrowd_refresh.yml since August.
+#
+# WHY THE FULL CHAIN AND NOT JUST write_line_snapshot. The football file only
+# re-derives, because its raw splits are scraped cross-sport by
+# mlb_pipeline.yml. NBA's ScoresAndOdds pull (`so`) has NO other home — it is
+# invoked in nba_pipeline.yml and nowhere else — so the scrape has to be here
+# too. Measured 11-09: NBA raw rows in public_splits_v2 were 0 from 11-07 on
+# while NCAAB wrote 116 off the same scraper the same night.
+#
+# Each step is cheap and idempotent (upsert on
+# game_id,market,side,source,metric,snapshot_ts), so a re-run costs nothing
+# and overlapping cadence is safe. Measured by hand on tonight's slate: 76 raw
+# rows -> 408 aggregated -> splits_summary 8/8 games -> align 8/8 -> 24
+# line_snapshot rows, in well under a minute per sport.
+
+on:
+  schedule:
+    # NBA tips 7:00-10:30pm ET, NHL 6:00-10:30pm ET. Splits land a median
+    # ~3h before start (measured on football; the source behaves the same
+    # way — it only publishes for the imminent slate), so one morning look
+    # catches almost nothing. 4:24pm / 6:24pm / 8:24pm / 10:24pm ET.
+    #
+    # :24, not :00. 56.7% of all cron firings in this repo landed on :00
+    # (59 of 104) — the most contended minute on GitHub's scheduler — while
+    # pipelines ran 7-10h late. football_splits_refresh took :09 for the same
+    # reason; this takes :24 so the two do not stack.
+    #
+    # No `github.event.schedule` comparison anywhere in this file, so adding
+    # or moving a cron needs nothing rewritten in lockstep.
+    - cron: '24 21 * * *'
+    - cron: '24 23 * * *'
+    - cron: '24 1 * * *'
+    - cron: '24 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: court-ice-splits-refresh
+  cancel-in-progress: false
+
+jobs:
+  splits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -q requests beautifulsoup4 python-dotenv lxml
+
+      # ─── RAW SCRAPE ────────────────────────────────────────────────────
+      # continue-on-error per sport: one sport's scrape failing must not stop
+      # the other, and an off-night is not a failure. The assertion at the
+      # bottom is what decides whether a quiet run was legitimate.
+      - name: ScoresAndOdds — scrape NBA splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NBA
+
+      - name: ScoresAndOdds — scrape NHL splits
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python pull_scoresandodds.py --sport NHL
+
+      # ─── AGGREGATE ─────────────────────────────────────────────────────
+      # Writes splits_summary onto *_game_context from every source that has
+      # landed (so + fr + cz + oc where present). Note cz covers neither
+      # sport and oc has written ZERO NBA rows in the last week, so NBA money
+      # flow is so + fr today — which is why the scrape above is not optional.
+      - name: Splits v2 aggregator (NBA + NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python splits_v2_pipeline.py --sport NBA
+          python splits_v2_pipeline.py --sport NHL
+
+      # ─── ALIGN ─────────────────────────────────────────────────────────
+      # Writes oddscrowd_snapshot (the column MoneyFlow in the app prefers,
+      # per market) AND align_status. Must run AFTER the aggregator: it reads
+      # the splits, so running it first computes alignment on yesterday's
+      # numbers.
+      #
+      # TODAY ONLY, unlike the pipeline's `for off in 0 1 2 3`. The source
+      # only publishes for the imminent slate, so a forward date returns
+      # no_data; the pipeline already covers today+3 once a day and this
+      # exists to refresh TODAY as the evening moves. Keeping it to one date
+      # is what makes the run short enough to be reliable.
+      - name: Compute alignment (NBA + NHL · today)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_align_status_nba.py
+          python compute_align_status_nhl.py
+
+      # ─── SNAPSHOT ──────────────────────────────────────────────────────
+      # line_snapshot is the ONLY input to The Fade, the one spread edge that
+      # has survived every control. Deliberately after align, which it reads.
+      - name: Write line_snapshot (NBA + NHL)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          D=$(python -c "import datetime as dt,zoneinfo;print(dt.datetime.now(zoneinfo.ZoneInfo('America/New_York')).date())")
+          echo "ET date: $D"
+          python write_line_snapshot.py --sport NBA --date "$D"
+          python write_line_snapshot.py --sport NHL --date "$D"
+
+      # ══ THE CATCH ══════════════════════════════════════════════════════
+      # DELIBERATELY NO continue-on-error. Andy's second question was "so it
+      # wont continue to happen AND NOT GET CAUGHT". Every step above is
+      # advisory, which is correct — a scrape that finds nothing is not an
+      # error — so a step's exit code cannot be the signal. This asserts the
+      # OUTPUT moved (feedback_green_step_that_writes_nothing).
+      #
+      # SELF-SCOPING so it cannot cry wolf. It only judges a sport once that
+      # sport's FIRST game of the night is within 90 minutes or has already
+      # started: before then, zero money flow is the normal state of the feed
+      # and failing on it would make this a permanently-red step, which is a
+      # muted step (feedback_a_detector_must_know_the_intentional_case).
+      #
+      # It fails on ZERO only, never on partial — splits fill in game by game
+      # across the evening, and 3 of 8 at 7pm is healthy, not broken.
+      #
+      # Column names differ per sport and this was checked, not assumed:
+      # nba_game_context has `commence_time_utc`, nhl_game_context has
+      # `commence_time`. Naming one PostgREST does not know turns the whole
+      # read into a 400 that reads back as an empty table.
+      - name: Assert money flow landed on tonight's slate
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python - <<'PY'
+          import os, sys, requests
+          import datetime as dt
+          from zoneinfo import ZoneInfo
+
+          SB = os.environ['SUPABASE_URL']
+          K = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+               or os.environ.get('SUPABASE_KEY'))
+          H = {'apikey': K, 'Authorization': f'Bearer {K}'}
+
+          # Real zone, never a hardcoded offset: a -4 is wrong the 127 days a
+          # year ET is EST (feedback_hardcoded_et_offset_breaks_in_est).
+          now = dt.datetime.now(dt.timezone.utc)
+          today = now.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+          GRACE = dt.timedelta(minutes=90)
+
+          SPORTS = (('NBA', 'nba_game_context', 'commence_time_utc'),
+                    ('NHL', 'nhl_game_context', 'commence_time'))
+          failures = []
+          print(f'== money flow assertion · ET {today} · now {now:%H:%M} UTC ==')
+
+          for sport, tbl, tcol in SPORTS:
+              cols = f'game_id,away_team,home_team,{tcol},oddscrowd_snapshot,splits_summary'
+              r = requests.get(f'{SB}/rest/v1/{tbl}', headers=H, timeout=30,
+                               params={'select': cols,
+                                       'game_date': f'eq.{today}',
+                                       'limit': '200'})
+              if r.status_code != 200:
+                  # A 400 names a COLUMN, not just a table. Do not swallow it:
+                  # an unreadable table is indistinguishable from an empty one
+                  # and that is how this class of bug hides.
+                  failures.append(f'{sport}: ctx read HTTP {r.status_code} '
+                                  f'{r.text[:200]}')
+                  continue
+              games = r.json() or []
+              if not games:
+                  print(f'  {sport}: no games tonight')
+                  continue
+
+              have = [g for g in games
+                      if g.get('oddscrowd_snapshot') or g.get('splits_summary')]
+              starts = []
+              for g in games:
+                  v = g.get(tcol)
+                  if not v:
+                      continue
+                  try:
+                      starts.append(dt.datetime.fromisoformat(
+                          str(v).replace('Z', '+00:00')))
+                  except ValueError:
+                      pass
+              first = min(starts) if starts else None
+              due = (first is not None) and (now + GRACE >= first)
+
+              when = f'first start {first:%H:%M} UTC' if first else 'no start times on file'
+              print(f'  {sport}: money flow on {len(have)}/{len(games)} games '
+                    f'({when}, {"DUE" if due else "early, not judged yet"})')
+
+              if due and not have:
+                  failures.append(
+                      f'{sport}: ZERO of {len(games)} games carry money flow '
+                      f'and the first start is {first:%H:%M} UTC. '
+                      f'oddscrowd_snapshot and splits_summary are both empty, '
+                      f'so the app renders no MoneyFlow bars and '
+                      f'ensemble_scorer loses its OddsCrowd vote on the whole '
+                      f'slate.')
+              elif first is None and games:
+                  # Not a money-flow failure, but it blinds this assertion, so
+                  # it must not pass silently.
+                  print(f'  WARNING {sport}: {len(games)} games with no '
+                        f'{tcol} — this check cannot judge the slate')
+
+          if failures:
+              print('')
+              print('*** MONEY FLOW DARK ***')
+              for f in failures:
+                  print(f'  - {f}')
+              print('')
+              print('First thing to check: did the sport pipeline reach its '
+                    'splits steps, or was it cancelled at timeout-minutes? '
+                    'Compare `end` minus `start` in workflow_heartbeat against '
+                    'the job timeout — the end heartbeat is if:always() and '
+                    'fires on cancellation, so a start/end pair does NOT mean '
+                    'it finished.')
+              sys.exit(1)
+          print('')
+          print('money flow OK (or too early to judge)')
+          PY
