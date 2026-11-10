@@ -77,8 +77,16 @@ H_R = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_W = {**H_R, 'Content-Type': 'application/json',
        'Prefer': 'return=representation'}
 
+# 2026-11-09 NCAAB ADDED. daily_card.yml has looped NCAAB through this
+# script since the step was written, and every one of those calls printed
+# '! unknown sport NCAAB' and exited 2 -- a hard failure in all 12 Daily Card
+# runs of 2026-11-09, and the reason the gate step reported the whole workflow
+# red. The data was never the blocker: line_history holds 367,396 NCAAB rows.
+# NCAAB is also the slate that needs it most (25 picks today, the largest),
+# and 'Notre Dame -28.5' is exactly the shape this script exists to correct.
 TABLES = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context',
-          'NBA': 'nba_game_context', 'NHL': 'nhl_game_context'}
+          'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
+          'NCAAB': 'ncaab_game_context'}
 #: A replacement must be posted by at least this many books.
 MIN_BOOKS = 3
 #: Ignore gaps under this; book-to-book half-point variation is normal.
@@ -151,7 +159,25 @@ def _has_started(ctx_row: dict) -> bool:
                 pass
     gd = str(ctx_row.get('game_date') or '')[:10]
     if gd:
-        return gd < str(dt.datetime.now(dt.timezone.utc).date())
+        # ══ 2026-11-09 · THIS COMPARED AN ET DATE TO A UTC DATE ══════════
+        # game_date is the ET slate date. `now(utc).date()` is TOMORROW in ET
+        # for the 4-5 hours after 00:00 UTC (7-8pm ET), so from 7pm ET every
+        # game on TODAY's slate satisfied `gd < utc_date` and was classified
+        # ALREADY STARTED. Measured live at 01:00 UTC: already_started=6 of 6
+        # NBA games, corrected=0 -- the corrector was fully dark exactly when
+        # the Daily Card's workflow_run cascade fires (runs at 23:40-00:42
+        # UTC tonight) and when closing lines are freshest.
+        #
+        # Same class as feedback_hardcoded_et_offset_breaks_in_est and
+        # feedback_window_from_runner_clock_is_a_day_ahead, so it uses a real
+        # zone rather than a fixed offset: a hardcoded -4 is wrong for the
+        # 127 days a year ET is EST.
+        try:
+            from zoneinfo import ZoneInfo
+            _today_et = dt.datetime.now(ZoneInfo('America/New_York')).date()
+        except Exception:
+            _today_et = dt.datetime.now(dt.timezone.utc).date()
+        return gd < str(_today_et)
     return False
 
 

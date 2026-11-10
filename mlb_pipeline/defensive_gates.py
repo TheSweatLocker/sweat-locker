@@ -2424,6 +2424,37 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     out['type'] = 'rl'
     out['line'] = -line_mag
     out['label'] = f'{team} -{line_mag:g}'
+
+    # ══ 2026-11-09 · THE REROUTE MANUFACTURED THE INCOHERENT PICK ════════
+    # This reroute CREATED `Houston Rockets -8.5` (STRONG): it took a -291 ML
+    # past the heavy-favourite trap and re-expressed it on the spread. But a
+    # win probability is not a cover probability -- the note below says so
+    # itself -- and our own projection had Houston by 3.3 against a line of
+    # 8.5. The result was one pick refused BY NAME on five surfaces (Sweat
+    # Card, the Sharp, the POTD anchor, the reads bridge, and the Ladder once
+    # it could price `rl` at all) and held CRITICAL by card_self_contradiction
+    # all day, while still sitting STRONG in nba_game_context.primary_play.
+    # Gating five readers is not the same as not creating it.
+    #
+    # Refusing to reroute is the right refusal, not a forced COVERAGE: the
+    # pick keeps its ML and the juice gate below demotes it, which is exactly
+    # what this function already does when there is no line to move onto. An
+    # incoherent line is no more usable than a missing one.
+    #
+    # Lazy import: retier -> ensemble_scorer -> defensive_gates is a cycle at
+    # module scope.
+    try:
+        from retier_from_sport_bars import coherence_ok as _coh
+        _cok, _cwhy = _coh(sport, ctx, out)
+    except Exception:
+        _cok, _cwhy = True, ''      # gate unavailable → leave behaviour as-is
+    if not _cok:
+        note = (f'reroute REFUSED: {_cwhy}. A heavy ML is not a reason to lay '
+                f'a number our own projection does not reach, so the pick '
+                f'keeps its moneyline and the juice gate decides it')
+        out2 = dict(pp)
+        out2['audit_note'] = ((pp.get('audit_note') or '') + ' · ' + note).strip(' ·')
+        return out2
     # 2026-10-02 · THE SUBTITLE HAS TO FOLLOW THE MARKET.
     # The ensemble builds `sub` as "{label}: reason · reason", so a reroute
     # left the old market in the user-visible text: Auburn @ Tennessee read

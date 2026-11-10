@@ -481,6 +481,23 @@ def _check_badge_drift_for_sport(date: str, sport: str, ctx_table: str) -> list:
         pp = pp or {}
         jr_row = jr_by_game.get(gid)
         if not jr_row: continue
+        # ══ 2026-11-09 · A WITHDRAWN PICK IS NOT A CONTRADICTION ════════
+        # This check held CRITICAL all day on 3 NCAAB games where
+        # primary_play read 'total/' and jerry_reads read 'pass/'. Those three
+        # picks carry `_unactionable` and `_unactionable_at` and have had both
+        # `side` and `line` STRIPPED -- a gate deliberately withdrew them. A
+        # read of 'pass' is therefore the CORRECT companion to them: the two
+        # surfaces AGREE, and the detector was calling that agreement a
+        # contradiction.
+        #
+        # Same shape as the Sharp-fade false CRITICAL: a detector that does
+        # not know its intentional case becomes a permanently-red step, and a
+        # permanently-red step is a muted step. jerry_pick_scrub already
+        # refuses to "fix" these ("a handicap with no number is not a pick"),
+        # so the alert was unactionable by construction -- it named a defect
+        # whose only documented remedy correctly declines to act.
+        if pp.get('_unactionable'):
+            continue
         pp_type = (pp.get('type') or '').lower()
         pp_side = (pp.get('side') or '').upper()
         jr_type = (jr_row.get('call_market') or '').lower()

@@ -52,6 +52,24 @@ if _env.exists():
 
 # 2026-09-06 tier consolidation: shared publishability gate for every
 # composer (sharp card, ladder, prop card, future surfaces).
+# ══ 2026-11-09 · THE LADDER HAD NO COHERENCE GATE ═══════════════════════
+# The ladder reads *_game_context DIRECTLY, so it bypasses the gate placed on
+# the ctx->jerry_reads bridge and is a SIXTH writer of a published play. The
+# moment the win_prob fix below made 'rl' picks priceable, the first thing the
+# relaxed scan qualified was `Houston Rockets -8.5` -- the pick the Sweat Card,
+# the Sharp and the POTD anchor all refused BY NAME the same morning, because
+# our own projection has Houston by 3.3 and the pick lays 8.5. It arrived with
+# "edge +18.7pp", which is what an incoherent pick looks like from the inside.
+#
+# On a COMPOUNDING surface this is the worst place to miss it, so the gate goes
+# here too. Not a new rule -- the same `coherence_ok` the other surfaces use.
+try:
+    from retier_from_sport_bars import coherence_ok as _COHERE
+except Exception as _e:   # pragma: no cover
+    _COHERE = None
+    print(f'  ! ladder coherence gate UNAVAILABLE ({_e!r}) '
+          f'— rl/spread rungs would ride unchecked')
+
 from prop_publishability import (
     is_publishable as _is_prop_publishable,
     effective_tier as _effective_prop_tier,
@@ -238,6 +256,20 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     is_nrfi = market in ('yrfi', 'nrfi')   # 2026-08-14: added YRFI/NRFI as ladder-eligible
     if not (is_side or is_total or is_nrfi): return None
 
+    # Gate 1b: our own projection must cover the number we are laying.
+    # Proven by its REFUSAL, not by a clean run (2026-11-08: a gate reading a
+    # column no SELECT requested returned PASS forever). `pp` carries type,
+    # line and side, and `row` is the ctx row holding projected_spread.
+    if _COHERE is not None and market in ('rl', 'spread'):
+        try:
+            _cok, _cwhy = _COHERE(sport, row, pp)
+        except Exception as _ce:
+            _cok, _cwhy = False, (f'coherence gate raised {_ce!r} — refusing '
+                                  f'rather than compounding an unchecked leg')
+        if not _cok:
+            print(f'    ⛔ ladder refused {pp.get("label")!r} ({sport}): {_cwhy}')
+            return None
+
     # For totals, require 5+ sharp-signal confluence from sharp_scenario_matches
     if is_total:
         gid = row.get('game_id')
@@ -254,42 +286,81 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     # silently. Also totals were skipping win_prob entirely — added mc_p_over
     # / mc_p_under extraction so totals can qualify. YRFI/NRFI added too.
     mc_probs = row.get('mc_probabilities') or {}
+
+    def _mcp(*names, complement_of=None):
+        """First probability PRESENT among `names`, else 1 - its complement.
+
+        ══ 2026-11-09 · THE LADDER WAS THE ONE READER THAT NEVER GOT THIS ══
+        Three simulators name the same quantity differently, and two never
+        write the away side at all:
+            NHL    mc_p_home        (no mc_p_away  -> away ML unpriceable)
+            NBA    mc_p_home_covers (no mc_p_away_covers)
+            NCAAB  mc_p_over_line   (no mc_p_over/_under, no covers at all)
+        `defensive_gates._mcp` and `ensemble_scorer` both already read every
+        spelling with a complement. This function did not, so win_prob came
+        back None on 14 of 37 live picks and `round(None, 1)` at the return
+        crashed the relaxed scan on EVERY Daily Card run of 2026-11-09
+        (12 of 12 failed, taking The Sharp and the Ladder to zero).
+
+        Complementing is sound and is this repo's own convention: measured
+        over 400 rows, mc_p_home + mc_p_away = 1.0000 median (tie prob
+        0.0002, already excluded), and derive_cover_probability.py:226
+        writes away_covers as 1 - home_covers.
+
+        Tests PRESENCE, never truth. A genuine 0.0 is a probability, and the
+        `x or None` this replaces turned it into a missing value -- the same
+        falsy-zero class of bug as `Number(conviction) || 55`.
+        """
+        for nm in names:
+            v = mc_probs.get(nm)
+            if v is not None:
+                try: return float(v) * 100
+                except (TypeError, ValueError): pass
+        for nm in (complement_of or ()):
+            v = mc_probs.get(nm)
+            if v is not None:
+                try: return (1.0 - float(v)) * 100
+                except (TypeError, ValueError): pass
+        return None
+
     win_prob = None
     if isinstance(mc_probs, dict):
+        label = (pp.get('label') or '').lower()
+        home_team = (row.get('home_team') or '').lower()
+        away_team = (row.get('away_team') or '').lower()
+        _is_home = bool(home_team) and home_team in label
+        _is_away = bool(away_team) and away_team in label
         if is_side and market == 'ml':
-            home_ml = mc_probs.get('mc_p_home_win') or mc_probs.get('mc_p_home')
-            away_ml = mc_probs.get('mc_p_away_win') or mc_probs.get('mc_p_away')
-            label = (pp.get('label') or '').lower()
-            home_team = (row.get('home_team') or '').lower()
-            away_team = (row.get('away_team') or '').lower()
-            if home_team and home_team in label:
-                win_prob = home_ml * 100 if home_ml else None
-            elif away_team and away_team in label:
-                win_prob = away_ml * 100 if away_ml else None
-        elif is_side and market == 'spread':
-            # Use cover probability (with juice sign flipped based on label)
-            home_cov = mc_probs.get('mc_p_home_covers')
-            away_cov = mc_probs.get('mc_p_away_covers')
-            label = (pp.get('label') or '').lower()
-            home_team = (row.get('home_team') or '').lower()
-            away_team = (row.get('away_team') or '').lower()
-            if home_team and home_team in label:
-                win_prob = home_cov * 100 if home_cov else None
-            elif away_team and away_team in label:
-                win_prob = away_cov * 100 if away_cov else None
+            if _is_home:
+                win_prob = _mcp('mc_p_home_win', 'mc_p_home',
+                                complement_of=('mc_p_away_win', 'mc_p_away'))
+            elif _is_away:
+                win_prob = _mcp('mc_p_away_win', 'mc_p_away',
+                                complement_of=('mc_p_home_win', 'mc_p_home'))
+        # 2026-11-09 'rl' ADDED. line 236 admits ('ml', 'spread', 'rl') as a
+        # side, and this branch tested only 'spread' -- so every pick typed
+        # 'rl' fell through all four branches and left win_prob None. 'rl' is
+        # exactly what NBA, NHL and NCAAB emit for a spread/puck line, so the
+        # ladder could never price one, on either side, for its whole life.
+        elif is_side and market in ('spread', 'rl'):
+            if _is_home:
+                win_prob = _mcp('mc_p_home_covers',
+                                complement_of=('mc_p_away_covers',))
+            elif _is_away:
+                win_prob = _mcp('mc_p_away_covers',
+                                complement_of=('mc_p_home_covers',))
         elif is_total:
-            # Total picks: use mc_p_over or mc_p_under matching label
-            label = (pp.get('label') or '').lower()
             if 'over' in label:
-                win_prob = (mc_probs.get('mc_p_over') or 0) * 100 or None
+                win_prob = _mcp('mc_p_over', 'mc_p_over_line',
+                                complement_of=('mc_p_under',))
             elif 'under' in label:
-                win_prob = (mc_probs.get('mc_p_under') or 0) * 100 or None
+                win_prob = _mcp('mc_p_under',
+                                complement_of=('mc_p_over', 'mc_p_over_line'))
         elif is_nrfi:
-            # YRFI/NRFI: use mc_p_yrfi / mc_p_nrfi
             if market == 'yrfi':
-                win_prob = (mc_probs.get('mc_p_yrfi') or 0) * 100 or None
+                win_prob = _mcp('mc_p_yrfi', complement_of=('mc_p_nrfi',))
             elif market == 'nrfi':
-                win_prob = (mc_probs.get('mc_p_nrfi') or 0) * 100 or None
+                win_prob = _mcp('mc_p_nrfi', complement_of=('mc_p_yrfi',))
     # Gate scoring — count how many of the 5 gates this pick clears.
     # Tier is gate #1 (already passed above — we're here because tier is
     # PRIME/STRONG/LEAN). Others are win_prob, consensus, edge, cohort.
@@ -461,7 +532,13 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
         'odds_american': odds_int,
         'tier': tier,
         'conviction': pp.get('signal_floor'),
-        'model_win_prob': round(win_prob, 1),
+        # 2026-11-09 None-guard. `edge_pp` three lines down and the
+        # edge calc above BOTH handle `win_prob is None`; this one did
+        # not, and `round(None, 1)` raised TypeError out of the relaxed
+        # scan on all 12 Daily Card runs. Returning None is correct and
+        # needs no new policy: the caller's HARD WIN-PROBABILITY FLOOR
+        # already refuses `_wpf is None` and already prints the reason.
+        'model_win_prob': round(win_prob, 1) if win_prob is not None else None,
         'cohort_hit_rate': cohort_hit,
         'cohort_n': cohort_n,
         'consensus_lens': consensus,
