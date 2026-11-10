@@ -151,7 +151,44 @@ def fetch_cbs_generic(sport: str, slate: list, game_date: str,
             surface = None
             m = _SPREAD_RE.match(txt)
             if m:
-                side, line, surface = m.group(1).upper(), float(m.group(2)), 'spread'
+                # == 2026-11-10 . TWO BUGS MADE cbs WRITE NOTHING, EVER ==
+                #
+                # `cbs` had 0 rows in external_picks across every sport for
+                # its whole life, while reporting "8 picks" and then
+                # "0 picks" with a tick. Both halves are here.
+                #
+                # (1) THE SURFACE NAME. This emitted 'spread', and
+                # external_picks has a CHECK constraint, ext_picks_surface_ck,
+                # that admits ml / total / rl / prop. Every one of the other
+                # 14 sources writes a handicap as 'rl' -- oddscrowd 738,
+                # scoresandodds 175, pickswise 105 -- and cbs was the only
+                # one using a word the table rejects. One bad row 400s the
+                # WHOLE batch, so the valid picks beside it died too: the NBA
+                # row named in the error was `NY -15.5`, a perfectly good
+                # spread.
+                #
+                # (2) A MONEYLINE PRICE WAS BECOMING A HANDICAP. CBS renders
+                # a moneyline button as "MIN -124" -- the team and the PRICE,
+                # with no "ML" anywhere -- and _ML_RE requires a literal
+                # 'ML' suffix, so the spread pattern matched first and
+                # produced `surface=rl, line=-124.0`. A puck line is only
+                # ever +/-1.5. Fixing (1) alone would have turned a rejected
+                # row into a PUBLISHED fake number, which is worse than the
+                # rejection (feedback_consensus_line_must_be_posted: a fake
+                # line makes a fake price).
+                #
+                # The two are separable by shape, not vocabulary
+                # (feedback_parse_a_pick_by_shape_not_vocabulary). American
+                # odds never fall between -100 and +100, and no sport we
+                # cover has a handicap at 100 points, so |n| >= 100 is
+                # exactly the moneyline domain and the boundary is exact.
+                # A fractional number is always a handicap: there is no
+                # American price of -15.5.
+                _n = float(m.group(2))
+                if abs(_n) >= 100 and '.' not in m.group(2):
+                    side, line, surface = m.group(1).upper(), None, 'ml'
+                else:
+                    side, line, surface = m.group(1).upper(), _n, 'rl'
             if side is None:
                 m = _TOTAL_RE.match(txt)
                 if m:

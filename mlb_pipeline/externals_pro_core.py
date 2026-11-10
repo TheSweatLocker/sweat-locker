@@ -185,7 +185,12 @@ def write_picks(picks: list, pull_id) -> int:
                      'Prefer': 'resolution=merge-duplicates,return=minimal'},
             json=payload, timeout=25)
         if r.status_code not in (200, 201, 204):
-            print(f'  ⚠ picks write {r.status_code}: {r.text[:160]}')
+            # 2026-11-10: was [:160], which cut the message off exactly
+            # before the CONSTRAINT NAME -- the only part that says what the
+            # row violated. `cbs` has written 0 rows ever on every sport and
+            # this print is the entire diagnostic
+            # (feedback_read_step_failures_from_the_db: print it in full).
+            print(f'  ⚠ picks write {r.status_code}: {r.text[:1200]}')
             return 0
         return len(payload)
     except Exception as e:
