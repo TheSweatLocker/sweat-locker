@@ -490,6 +490,36 @@ def _fresh_primary_play(sport: str, game_id: str, game_date: str):
         return None
 
 
+try:
+    from receipt_invariants import ML_JUICE_MAX as _ML_JUICE_MAX
+except Exception:
+    _ML_JUICE_MAX = -300.0
+
+# The closing-moneyline column names, home first then away. THREE naming
+# conventions are in use across the six ctx tables and not every table has
+# every one, so every spelling is tried and the first non-null wins -- the
+# same list sync_jerry_reads_from_ctx.py read off a live row of each table on
+# 2026-11-07. Asking a dict for a key it lacks is free, so unlike the
+# PostgREST SELECT there is no need to branch per sport here.
+_ML_COLS = (('close_home_ml', 'home_ml_close', 'home_ml_odds'),
+            ('close_away_ml', 'away_ml_close', 'away_ml_odds'))
+
+
+def _ctx_ml_price(struct: dict, side: str):
+    """Closing ML for `side` off a ctx-row-shaped dict, or None if unknown."""
+    if not isinstance(struct, dict):
+        return None
+    for col in _ML_COLS[0 if side == 'HOME' else 1]:
+        v = struct.get(col)
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> dict:
     """Force parsed jerry_read call_* fields to match ensemble primary_play.
 
@@ -564,6 +594,43 @@ def enforce_primary_play_alignment(sport: str, parsed: dict, struct: dict) -> di
     # vigilance — there is no branch left that turns a real pick into
     # "engine passed".
     have_pick = bool(side) and bool(label) and market in valid_markets
+    # ══ 2026-11-10 · THE THIRD WRITER HAD NO JUICE GATE, SO THE READ FLAPPED ══
+    # `badge_detail_drift` held CRITICAL on 6 NCAAB games this morning and
+    # went clean an hour later without anyone touching it. The read was
+    # oscillating: `sync_jerry_reads_from_ctx` and `price_picks` BOTH demote
+    # an ML past -ML_JUICE_MAX to a pass, and `backfill_jerry_pick_alignment`
+    # -- which runs in daily_card every cycle and delegates here -- put the
+    # `ml` straight back, because its ctx SELECT was
+    # `game_id,home_team,away_team,primary_play` and it could not see a price
+    # at all. NJIT @ Rutgers: `close_home_ml = -10000`, demoted and restored
+    # repeatedly through the day, and whichever phase the watchdog sampled is
+    # what it reported.
+    #
+    # primary_play is deliberately NOT withdrawn on a juice refusal
+    # ("Reversible by design", price_picks.py:706), so a function whose whole
+    # job is "align the read to primary_play" MUST carry the price rule too,
+    # or it is structurally guaranteed to undo it. This is the chokepoint:
+    # dual_write, generate_jerry_synthesis and backfill_jerry_pick_alignment
+    # all call this one function (feedback_fix_every_writer_to_the_table,
+    # feedback_guard_belongs_at_the_chokepoint).
+    #
+    # An UNKNOWN price does not refuse -- same rule the other two writers
+    # state: refusing on a missing column would blank good reads
+    # (feedback_a_gate_reading_an_unselected_column_always_passes). The
+    # caller is responsible for putting the ml columns in its SELECT; when
+    # they are absent this is a no-op and behaviour is exactly as before.
+    if have_pick and market == 'ml':
+        _mlp = _ctx_ml_price(struct, str(side).upper())
+        if _mlp is not None and _mlp < _ML_JUICE_MAX:
+            parsed['call_market'] = 'pass'
+            parsed['call_side'] = None
+            parsed['call_line'] = None
+            parsed['call_text'] = 'No play - moneyline past our juice ceiling'
+            parsed['conviction'] = 0
+            parsed['short_read'] = (
+                f'Engine passed - {label} prices at {_mlp:g}, past our '
+                f'{_ML_JUICE_MAX:g} moneyline ceiling. No play.')
+            return parsed
     if have_pick and tier in ('COVERAGE', 'PASS', 'SKIP'):
         # Demoted, not absent. Show the take at its real confidence.
         parsed['call_market'] = market

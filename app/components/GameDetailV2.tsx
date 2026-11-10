@@ -1014,6 +1014,35 @@ function StickyHeader({away, home, time, venue, onClose}: any) {
 // ─── HERO VERDICT ───────────────────────────────────────────────────────
 function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
   let play = ctx?.primary_play;
+  // ══ 2026-11-10 · A PASS READ WINS OVER primary_play ══
+  // `badge_detail_drift` held CRITICAL on 6 NCAAB games this morning and the
+  // check was right: ctx.primary_play said `ml/HOME` "Rutgers ML lean" while
+  // the jerry_read directly below it said "No play - moneyline past our juice
+  // ceiling". Measured across every sport since 11-01: **35 games** render a
+  // named team and a market under a refusal — NCAAF 17, NCAAB 17, NHL 1.
+  //
+  // The server is NOT wrong to leave primary_play alone. price_picks.py:706
+  // says so explicitly: "Reversible by design: ctx.primary_play still says
+  // `ml`, so if the price moves back inside the ceiling the next sync run
+  // restores the call". Withdrawing it there would make the refusal one-way.
+  // So the CLIENT has to defer: the read is the newer, price-aware decision
+  // and the only one of the two that has seen a quote.
+  //
+  // Every one of the 35 is COVERAGE or PASS tier, so the label was already
+  // dimmed with a LOW CONVICTION chip — but dim is not the same as absent,
+  // and it still names a side we will not price. Same shape as the no-play
+  // tile that named a team and quoted -110 (6c466275).
+  const _passRead = String(jerrySynthesis?.call_market || '').toLowerCase();
+  if (play && typeof play === 'object' && (_passRead === 'pass' || _passRead === 'no_play')) {
+    const why = String(jerrySynthesis?.call_text || '').trim();
+    return (
+      <View style={styles.verdict}>
+        <Text style={styles.verdictNoPlay}>
+          {why && why.toLowerCase() !== 'pass' ? why : 'No play on this game.'}
+        </Text>
+      </View>
+    );
+  }
   // 2026-09-03 JERRY FALLBACK (badge audit fix #4).
   // Prior behavior: if primary_play was null → showed "No primary play
   // surfaced for this game." But the LIST card synthesizes a tier chip

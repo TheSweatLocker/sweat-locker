@@ -498,6 +498,30 @@ def _check_badge_drift_for_sport(date: str, sport: str, ctx_table: str) -> list:
         # whose only documented remedy correctly declines to act.
         if pp.get('_unactionable'):
             continue
+        # ══ 2026-11-10 · A PRICE REFUSAL IS NOT A CONTRADICTION EITHER ═══
+        # Same shape as the block above, different gate. This held CRITICAL
+        # on 6 NCAAB games this morning where primary_play read `ml/HOME`
+        # ("Rutgers ML lean") and the read read `pass/` -- because
+        # price_picks.py demoted the READ when the moneyline came in past the
+        # -JUICE_LIMIT ceiling, and deliberately LEFT primary_play alone so
+        # the refusal un-does itself if the price moves back inside
+        # ("Reversible by design", price_picks.py:706).
+        #
+        # Measured across every sport since 11-01: 35 such games (NCAAF 17,
+        # NCAAB 17, NHL 1), and **every one** of them carries a
+        # non-publishable pp tier -- COVERAGE or PASS. The client now renders
+        # the pass instead of the pp label (GameDetailV2 VerdictCard,
+        # 2026-11-10), so the two surfaces agree on screen.
+        #
+        # It stays CRITICAL when the pp tier IS publishable, and that is the
+        # whole point of not skipping on `jr_type == 'pass'` alone: the card
+        # surfaces compose from primary_play and never read jerry_reads, so a
+        # PRIME/STRONG/LEAN pp under a refused read can still reach the Sweat
+        # Card or the Sharp. That one we want to hear about.
+        _PUBLISHABLE_PP = ('PRIME', 'STRONG', 'LEAN', 'LIGHT')
+        if (str(jr_row.get('call_market') or '').lower() in ('pass', 'no_play')
+                and str(pp.get('tier') or '').upper() not in _PUBLISHABLE_PP):
+            continue
         pp_type = (pp.get('type') or '').lower()
         pp_side = (pp.get('side') or '').upper()
         jr_type = (jr_row.get('call_market') or '').lower()

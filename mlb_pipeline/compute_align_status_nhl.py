@@ -36,6 +36,7 @@ import argparse
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -67,7 +68,11 @@ NHL_EXTRA_SELECT = 'projected_spread,projected_total,signal_confluence_net'
 
 
 def _et_today() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
+    # 2026-11-10: a hardcoded -4 is wrong the 127 days a year ET is EST, and
+    # it is EST now. The two disagree only in 04:00-04:59 UTC, which is
+    # exactly when a workflow_run cascade can land this script
+    # (feedback_hardcoded_et_offset_breaks_in_est). Real zone, no offset.
+    return datetime.now(ZoneInfo('America/New_York')).date().isoformat()
 
 
 def run(game_date: str | None = None, dry_run: bool = False):

@@ -14,6 +14,7 @@ CLI:
 from __future__ import annotations
 import argparse, os, sys, json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import requests
@@ -51,13 +52,43 @@ _VALID_MARKETS_BY_SPORT = {
 }
 
 
+# Read off a live row of each ctx table on 2026-11-10 with select=*, not
+# assumed. nba_game_context has home_ml_close/away_ml_close and no
+# close_*_ml; ncaaf_game_context has close_*_ml and no *_ml_close.
+_ML_SELECT = {
+    'MLB':   ['home_ml_close', 'home_ml_odds', 'away_ml_close', 'away_ml_odds'],
+    'NFL':   ['close_home_ml', 'home_ml_close', 'home_ml_odds',
+              'close_away_ml', 'away_ml_odds'],
+    'NCAAF': ['close_home_ml', 'close_away_ml'],
+    'NBA':   ['home_ml_close', 'away_ml_close'],
+    'NCAAB': ['close_home_ml', 'home_ml_close', 'close_away_ml', 'away_ml_close'],
+    'NHL':   ['close_home_ml', 'home_ml_close', 'close_away_ml', 'away_ml_close'],
+}
+
+
 def load_ctx(sport: str, date_from: str, date_to: str) -> dict:
     tbl = _CTX_TABLE.get(sport)
     if not tbl: return {}
     r = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_READ,
         params={'game_date': f'gte.{date_from}',
                 'and': f'(game_date.lte.{date_to})',
-                'select': 'game_id,home_team,away_team,primary_play',
+                'select': ','.join(
+                    ['game_id', 'home_team', 'away_team', 'primary_play']
+                    # ══ 2026-11-10 · THE PRICE HAS TO BE IN THE SELECT ══
+                    # enforce_primary_play_alignment now refuses an `ml`
+                    # priced past the juice ceiling, the same as
+                    # sync_jerry_reads_from_ctx and price_picks. It reads the
+                    # price off the ctx row handed to it, so leaving these
+                    # out would make the new gate a permanent no-op and this
+                    # script would go on restoring the juiced ML that the
+                    # other two writers had just demoted
+                    # (feedback_a_gate_reading_an_unselected_column_always_passes).
+                    #
+                    # Every spelling is listed per table rather than assumed:
+                    # asking PostgREST for a column a table lacks is a 400
+                    # that takes the whole fetch down
+                    # (feedback_select_star_before_concluding_absent).
+                    + _ML_SELECT.get(sport.upper(), [])),
                 'limit': '600'}, timeout=25)
     out = {}
     for row in (r.json() if isinstance(r.json(), list) else []):
@@ -128,7 +159,7 @@ def started_matchups(sport: str, date_str: str) -> set:
 
 
 def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str,
-              line_only: bool = False) -> dict | None:
+              line_only: bool = False, ctx_row: dict | None = None) -> dict | None:
     """Return the PATCH payload or None if no change needed.
 
     line_only mode (2026-09-18 per Andy B choice on item #5):
@@ -207,8 +238,13 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     _FIELDS = ('call_market', 'call_side', 'call_line', 'call_text',
                'conviction', 'short_read', 'long_read')
     parsed_in = {k: read_row.get(k) for k in _FIELDS}
-    aligned = enforce_primary_play_alignment(
-        sport, dict(parsed_in), {'primary_play': pp})
+    # The ctx ROW, not just its primary_play: the juice gate added to the
+    # shared function on 2026-11-10 reads the closing moneyline off this
+    # dict. `ctx_row` is the full row load_ctx fetched; pp is still carried
+    # under its own key, which is the only key the older rules touch.
+    _struct = dict(ctx_row) if isinstance(ctx_row, dict) else {}
+    _struct['primary_play'] = pp
+    aligned = enforce_primary_play_alignment(sport, dict(parsed_in), _struct)
 
     # 2026-09-22: this path PATCHes jerry_reads directly, so it never hit
     # the short_read guard that upsert_jerry_read applies on the LLM
@@ -237,7 +273,11 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
 
 def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: bool = False) -> None:
     from datetime import date as _date
-    today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    # 2026-11-10: a hardcoded -4 is wrong the 127 days a year ET is EST, and
+    # it is EST now. The two disagree only in 04:00-04:59 UTC, which is
+    # exactly when a workflow_run cascade can land this script
+    # (feedback_hardcoded_et_offset_breaks_in_est). Real zone, no offset.
+    today = datetime.now(ZoneInfo('America/New_York')).date()
     date_from = today.isoformat()
     date_to = (today + timedelta(days=days_ahead)).isoformat()
     print(f'=== jerry_reads alignment backfill · {date_from} → {date_to}{" · DRY" if dry_run else ""} ===')
@@ -279,7 +319,8 @@ def run(sport_filter: str | None, days_ahead: int, dry_run: bool, line_only: boo
                 except (TypeError, ValueError): pp = None
             if not isinstance(pp, dict):
                 skipped += 1; continue
-            patch = align_row(sport, r, pp, ctx.get('home_team',''), ctx.get('away_team',''), line_only=line_only)
+            patch = align_row(sport, r, pp, ctx.get('home_team',''), ctx.get('away_team',''),
+                              line_only=line_only, ctx_row=ctx)
             if not patch:
                 unchanged += 1; continue
             # B12: never re-settle a game that has already been played.
