@@ -877,210 +877,34 @@ jobs:
           cd mlb_pipeline
           python enrich_team_form_universal.py --sport NBA
 
-      # ─── NBA prop pipeline (2026-08-17) ────────────────────────────
-      - name: Generate NBA player props
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_generate_props.py
-
-      # ══ 2026-10-21 · COLLAPSE SUPERSEDED PROP ROWS ══
+      # ══ 2026-11-10 · THE PROP CHAIN WAS SPENDING THE WHOLE JOB BUDGET ══
+      # The nine NBA prop steps that used to sit here now run in
+      # `nba_props_refresh.yml`. Measured locally against tonight's slate:
       #
-      # MUST run after the generator and BEFORE backfill_prop_lookback.
+      #     nba_generate_props.py            287s   (808 props)
+      #     enrich_nba_prop_projections.py   277s   (matched 788/808)
+      #     backfill_prop_lookback.py       >420s   (ESPN game log per player)
+      #     nba_sleeper_projections_pull.py    9s
+      #     prop_slot_reconcile.py             1s
       #
-      # nba_generate_props upserts with prop_line inside the conflict key, so
-      # a book moving the number between runs INSERTS a new row rather than
-      # updating one. It also writes slates several days out, so a slate is
-      # written once early and again on game day at a different line and both
-      # rows persist. Measured 2026-10-21: 4,585 live rows across 2,333 slots
-      # for one week of games, one slot holding 16 rows at 16 distinct lines.
+      # That is ~16 minutes across FIVE of the nine, with four unmeasured,
+      # inside a job capped at `timeout-minutes: 45` whose own comment says
+      # normal is ~21m. It is why this job was CANCELLED three times for
+      # three on 11-09 (44m41s / 44m43s / 44m41s) and why steps 29-57 --
+      # `Sync NBA jerry_reads from context`, `Assert NBA slate freshness`,
+      # `Assert publish invariant` -- have not run in days. The detector was
+      # behind the same wall as the defect.
       #
-      # That is not just row bloat. The order here is generate -> backfill ->
-      # score, so the backfill writes L5/L10 onto the rows that exist when it
-      # runs, and the next generator pass leaves those enriched rows as
-      # orphans. L5/L10 was fed on 0 of 3,222 NBA props while running the
-      # backfill by hand fed 1,756 of 2,188 immediately. The enrichment was
-      # never broken; it was being discarded.
+      # And none of it can reach a user: `feature_flags(NBA,'pipeline_props')`
+      # is false and read fail-closed, the publishable view needs PRIME or
+      # STRONG, and NBA's board is 0 PRIME / 0 STRONG. So ~16+ minutes of a
+      # 45-minute budget was being spent generating rows nothing can display,
+      # at the cost of the steps that build the SIDES the app does show.
       #
-      # Collapsing here, before the backfill, means the backfill enriches the
-      # row that will still be current when the scorer reads it.
-      #
-      # Deletes ONLY rows with result IS NULL and tier COVERAGE. Graded rows
-      # are history feeding the records surfaces and are never touched.
-      - name: Collapse superseded NBA prop rows
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python prop_slot_reconcile.py --sport NBA --apply
-
-      # ─── Sleeper NBA projections (2026-08-17) ─────────────────────
-      # Weekly refresh good enough — projections update slowly. Runs
-      # here for cheap on daily cron. Requires no API key.
-      - name: Pull Sleeper NBA projections
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_sleeper_projections_pull.py
-
-      - name: Enrich NBA props with Sleeper projections
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python enrich_nba_prop_projections.py
-
-      # 2026-08-22 (silent-bug audit finding #7): NBA prop L10 backfill.
-      # Fetches ESPN game logs per player, computes L5/L10/season hit rates
-      # vs line. Unblocks 5 NBA prop signals (l10_extreme, l5_hot, l5_cold,
-      # season_hit_pct_high, minutes_low_fade) that were reading fields
-      # nothing populated. Non-fatal (season starts Oct — no impact yet).
-      - name: Backfill NBA prop L10 lookback (ESPN game logs)
-        continue-on-error: true
-        # ══ 2026-11-09 · A STEP WITH NO BUDGET SPENDS THE JOB'S ══
-        # This is the only step I measured directly while chasing the
-        # money-flow outage: run by hand on tonight's 1,794-prop NBA board it
-        # was still going after 7 minutes with nothing written to stdout. It
-        # does an ESPN athlete search + a gamelog fetch per (player, stat)
-        # pair -- 121 distinct players tonight -- with timeout=10 and
-        # timeout=15 and no cap on the total, so a slow or throttled ESPN
-        # turns into unbounded wall clock inside a job capped at 45 minutes.
-        #
-        # 15 is deliberately generous: it completes (1,774 of 1,794 rows carry
-        # player_l10_hit_count today), so this should never fire on a healthy
-        # night. What it buys is that a bad night can no longer eat the
-        # budget -- and because continue-on-error lets the job go on, the run
-        # now REACHES the --gate step, which is what posts `step_durations`
-        # to workflow_heartbeat. So the next run measures every step for me
-        # instead of me guessing which one hangs. I have NOT established that
-        # this step is the whole 45 minutes; the durations will say.
-        timeout-minutes: 15
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python backfill_prop_lookback.py --sport NBA
-
-      # == 2026-10-28 . THE MEASURED NBA PROP GATE WAS NEVER SCHEDULED ==
-      # nba_prop_gate.py was written on 10-26 to give this board its first
-      # discriminator (prop_line / bounded L5, quintiles within direction,
-      # monotone with a 37-point spread on overs). It was run by hand once
-      # and never wired, so the board went straight back to one flat tier:
-      #
-      #     10-25  signals on 1,006 of 1,110 rows   tier LEAN/SKIP/COVERAGE
-      #     10-26  signals on   317 of 1,650 rows
-      #     10-27  signals on     0 of   642 rows   tier COVERAGE on ALL
-      #     10-28  signals on     0 of 1,945 rows   tier COVERAGE on ALL
-      #
-      # The decay is nba_generate_props.py:209 upserting tier COVERAGE /
-      # conviction 0 / signals {} on every run, which overwrites anything
-      # applied out of band. In-run ordering is therefore the fix: this
-      # must sit AFTER the generator, which it now does.
-      #
-      # PUBLISHES NOTHING. It assigns SKIP and LEAN only -- no PRIME, no
-      # STRONG, because no cell measured profitably -- and publishing
-      # needs PRIME plus a feature flag that is still FALSE (B121).
-      - name: NBA prop measured gate (SKIP/LEAN, publishes nothing)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python nba_prop_gate.py --apply
-
-      - name: NBA prop playbook scorer (shadow mode)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          python prop_ensemble_scorer.py --sport NBA --refresh-existing
-      # 2026-10-21 PROMOTE THE SHADOW SCORE ONTO THE LIVE NBA ROWS.
-      #
-      # The scorer above is literally named "shadow mode" - it writes only to
-      # prop_playbook_decisions. Nothing then copied those convictions onto
-      # the live rows, because promote_playbook_conviction.PROPS_TABLE listed
-      # MLB and NFL only and exited 2 for anything else. Measured tonight,
-      # EVERY prop on this board is COVERAGE: nba_pipeline_props 5,151 of 5,151 rows for
-      # 10-20/10-21. A board that is entirely COVERAGE cannot be evaluated,
-      # and a board that cannot be evaluated can never earn a graded sample.
-      #
-      # THIS PUBLISHES NOTHING, and that is measured rather than assumed.
-      # Dry run on 10-21: 950 playbook decisions against 2,073 live props,
-      # 136 rows to promote, and ZERO of them move tier - every one reads
-      # "COVERAGE -> COVERAGE (tier held)". Tier only moves for a playbook
-      # PRIME (the script's default) and this board has none. What the rows
-      # gain is a real conviction (54-73) in place of 0, which is what makes
-      # the board orderable and evaluable at all.
-      #
-      # Two further gates sit in front of publishing regardless:
-      # v_nba_props_publishable requires PRIME or STRONG, and
-      # feature_flags(NBA, 'pipeline_props') is FALSE. Flipping that flag
-      # stays a product call - see B121.
-      #
-      # MUST RUN BEFORE any publish-lock step. Conviction is scoring, and
-      # scoring has to finish before the pick is frozen; running it after the
-      # lock is how MLB's first attempt patched rows and landed none.
-      - name: Promote playbook conviction to live NBA props
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-        run: |
-          cd mlb_pipeline
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
-            --label "promote_playbook_conviction.py (NBA)" \
-            python promote_playbook_conviction.py --sport NBA
-
-      # == 2026-11-02 - NBA SCORED 18,318 PROPS AND PUBLISHED NONE ========
-      # ANDY: "What are we doing to fix nba and nhl prop we have been doing
-      # this song and dance for over a week and still 0 today everyday."
-      #
-      # Everything above this line worked. nba_generate_props writes the
-      # board, the gate runs, the playbook scorer runs, conviction gets
-      # promoted -- and then nothing consumed it, because
-      # generate_prop_jerry_synthesis was only ever invoked by mlb_pipeline
-      # and nfl_pipeline, and NBA was commented out of its PROPS_TABLE:
-      #
-      #     sport   source props   prop_jerry_reads
-      #     MLB           38,695             11,487
-      #     NFL            5,150              4,844
-      #     NBA           18,318                  0   <-- here
-      #     NHL           77,919                  0
-      #
-      # Placed AFTER promote_playbook_conviction on purpose: the synthesizer
-      # reads tier and conviction off the prop row, so running it earlier
-      # would score every prop against a pre-promotion tier.
-      #
-      # This does NOT put NBA props on a card by itself. prop_cell_allowlist
-      # still gates publishing to measured cells and NBA has two
-      # (ast_under/LEAN, pra_under/LEAN); everything else becomes a PASS
-      # read. That is the point -- the reads start a graded record so the
-      # gate can open later on evidence
-      # (feedback_unmeasured_signal_must_not_outweigh_measured).
-      - name: Prop Jerry reads (NBA)
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd mlb_pipeline
-          python generate_prop_jerry_synthesis.py --sport NBA --days 0 --force --tier-gate NONE
+      # They are not deleted -- the shadow record is the documented path to
+      # opening that surface on evidence. They just do not get to spend this
+      # job's budget. Same remedy as the splits chain (ece14543): give the
+      # work its own cadence rather than raise a cap that is a real signal.
 
 
       # ══ 2026-10-30 · conviction_rank ══

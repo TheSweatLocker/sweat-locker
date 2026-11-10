@@ -58,6 +58,17 @@ import collections
 import datetime as dt
 import json
 import os
+
+import sys
+
+# 2026-11-10: the runner pipes stdout, so Python picks cp1252 on Windows and
+# an emoji in a print() raises UnicodeEncodeError. generate_dawg_of_day.py
+# died on exactly that, on its own empty-state warning line, every
+# mlb_pipeline run through the MLB offseason. Same header, same reason.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+
 import sys
 import urllib.error
 import urllib.parse

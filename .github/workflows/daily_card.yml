@@ -437,6 +437,38 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "generate_sweat_card.py" python generate_sweat_card.py
 
+      # ══ 2026-11-10 · THE DAWG TILE WAS BLANK BECAUSE ITS WRITER WAS IN NO WORKFLOW ══
+      # `generate_dawg_multisport.py` was written 2026-10-28 for exactly this
+      # ("generate_dawg_of_day.py is hardcoded to baseball_mlb, moneyline
+      # only ... the surface has been dark since 2026-10-18") and was never
+      # wired into any workflow, so it only ever ran by hand. The MLB-only
+      # writer still runs in mlb_pipeline and, through the MLB offseason,
+      # evaluates 0 games every night -- it also CRASHED on its own
+      # "no ML odds available" warning until today, because the runner pipes
+      # stdout and cp1252 cannot encode the emoji in that line.
+      #
+      # It belongs here, not in mlb_pipeline: this is the sport-agnostic
+      # workflow, and mlb_pipeline owning the cross-sport surfaces is the
+      # documented mis-scoping that takes them dark whenever MLB does
+      # (project_mlb_pipeline_yml_owns_shared_surfaces_1103).
+      #
+      # --one-per-day is the measured variant: 57.7% +8.57u on n=26 against
+      # 52.6% +7.27u on n=38 for one-per-sport. It writes at most one row and
+      # refuses on its own evidence -- tonight it declined `Kansas ML`
+      # (conviction None) and `Winnipeg Jets ML` (conviction 0) as picks the
+      # engine withdrew, and took NCAAF Miami (OH) ML +100 (6 of 11 books at
+      # +100 or better). continue-on-error: a blank tile is a worse outcome
+      # than a red step, but neither should fail the card.
+      - name: Dawg of the Day (every sport)
+        working-directory: mlb_pipeline
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "generate_dawg_multisport.py"             python generate_dawg_multisport.py --one-per-day --apply || true
+
       # Runs AFTER the card is built, not before. This reads
       # jerry_cache.sweat_card_<date> and withdraws a pick from it, so
       # ahead of generate_sweat_card it would only ever cap YESTERDAY's

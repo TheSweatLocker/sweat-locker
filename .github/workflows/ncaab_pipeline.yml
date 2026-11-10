@@ -732,6 +732,43 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_ncaab_results.py" python resolve_ncaab_results.py --days-back 2
 
+      # ══ 2026-11-10 · OUR OWN NUMBER WAS ON NONE OF 11,949 RESULT ROWS ══
+      # ncaab_game_results carried home_score on 99.3%, close_spread on
+      # 44.5% and spread_result on 43.9% -- and projected_spread,
+      # projected_total, adj_em_gap, the four adj_oe/adj_de columns and
+      # pace_avg on **0.0%**. The market and the outcome were both stored
+      # and the engine's own projection never was, so NCAAB's selection was
+      # unmeasurable by construction.
+      #
+      # That is not cosmetic: it is the named prerequisite for the
+      # COVERAGE cap on every NCAAB favourite ML ever lifting.
+      # ncaab_game_context.py, above NCAAB_ML_TIER_CAP: "Raise it only when
+      # NCAAB ML has a graded record of OUR picks that clears breakeven --
+      # which first requires persisting projected_spread into
+      # ncaab_game_results so the question can be asked at all."
+      #
+      # Nothing ever did it because the two tables use DISJOINT game_id
+      # namespaces (ctx = hex hash, results = ncaab_YYYYMMDD_Away_Home), so
+      # a plain join matched 0 of 320 rows and read as "no data". The script
+      # bridges on (game_date, away_team, home_team) -- the key
+      # grade_public_receipts already uses for this table, per
+      # ncaab_result_ids.py -- and skips rather than guesses on a miss.
+      #
+      # Runs AFTER the resolver so the row it stamps exists. --days 3 covers
+      # the resolver's own --days-back 2 plus today. Never overwrites a
+      # non-null column and reads back every field it sets, so it is safe to
+      # run on every cron.
+      - name: Stamp NCAAB model projection onto results
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "stamp_ncaab_model_columns.py"             python stamp_ncaab_model_columns.py --days 3 --apply
+
       # 2026-09-08 wired: grade NCAAB jerry_reads after resolver so
       # NCAAB doesn't wait on the MLB nightly for grading. Parallels
       # NBA/NHL wiring. NCAAB in RESULTS_TABLE already. Season starts

@@ -28,6 +28,16 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# 2026-11-10: the GitHub runner pipes stdout, so Python picks cp1252 on
+# Windows and any emoji in a print() raises UnicodeEncodeError. This script
+# died on its own "no ML odds available" warning line every mlb_pipeline run
+# through the MLB offseason -- the message it crashed on was the honest empty
+# state it was trying to report.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+
+
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
