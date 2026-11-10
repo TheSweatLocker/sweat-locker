@@ -590,6 +590,45 @@ def fetch_yesterday_recap():
         if _h.get("odds_american") is not None:
             _r.setdefault("odds", _h["odds_american"])
 
+    # ══ 2026-11-09 · A NO PLAY MUST NOT CARRY A TEAM OR A PRICE ═════════
+    # ANDY: "on yesterday sweat card recap i see celtics as potd pick but
+    # then says no pick so which is it". Both were on the tile, and both came
+    # from here. 2026-11-08 was a discipline pass -- the Celtics POTD was
+    # VOIDed by the coherence gate and replaced -- but
+    # daily_best_bet_history still holds game='Boston Celtics @ Milwaukee
+    # Bucks' and odds_american=-110 on that no-play row, and the two blocks
+    # above copy both into the recap beside pick='No Play'. So the home
+    # screen named a team and quoted a price for a bet that never existed.
+    #
+    # Measured over the last 60 POTD history rows: 15 are no-plays, 5 carry a
+    # matchup and 6 carry a price (-110 x5, -143 x1). Not a one-off. Worse,
+    # 2026-10-10 has lean='Chicago White Sox @ Cleveland Guardians' -- the
+    # PICK field holding a matchup -- so the tile printed a matchup AS the
+    # pick at -143.
+    #
+    # The -110 is the same fabrication as feedback_flat_110_inflates_every_ml
+    # _figure and feedback_consensus_line_must_be_posted: a default price is
+    # not a price. It cannot reach the record (surface_records counts only
+    # W/L/P, verified 86-71-4 = picks_count 161), but it is read by a human.
+    _r = recap.get("potd")
+    if isinstance(_r, dict) and _r:
+        _res = str(_r.get("result") or '').strip().upper().replace('-', '_').replace(' ', '_')
+        _pick_txt = str(_r.get("pick") or '')
+        _is_noplay = (_res in ('NO_PICK', 'NO_ACTION', 'NO_PLAY')
+                      or 'no play' in _pick_txt.lower()
+                      or 'no games' in _pick_txt.lower())
+        if _is_noplay:
+            # A pick field holding a MATCHUP is not a pick.
+            if (not _pick_txt) or ' @ ' in _pick_txt:
+                _r["pick"] = 'No Play (discipline pass)'
+            # Keep what we passed on for the audit trail, out of the slot the
+            # tile renders as the play.
+            if _r.get("matchup"):
+                _r["passed_on"] = _r["matchup"]
+            _r["matchup"] = None
+            _r.pop("odds", None)
+            _r["no_play"] = True
+
     # Full top_8 graded list — populated by resolve_game_results.py nightly.
     # Lets the app show the full receipts unit (W/L per pick) not just
     # the two anchor picks (POTD + DotD).

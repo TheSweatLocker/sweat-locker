@@ -103,7 +103,24 @@ def main() -> int:
     print(f'\n  picks whose result changes: {len(changed)}')
     for lbl, was, now in changed:
         print(f'     {str(lbl)[:48]:48s} {was} -> {now}')
-    if not changed and _summary(old) == _summary(new):
+    # 2026-11-09 THE POTD BLOCK WAS NOT IN THE CHANGE TEST.
+    # This compared top_8 labels/results and the W/L summary only, so any
+    # change confined to `potd` was invisible and never written -- which is
+    # exactly the case this script exists for: generate_sweat_card's own note
+    # says grade_potd settles yesterday's non-MLB POTD AFTER the card builds,
+    # so the POTD result is the field most likely to move on its own. Caught
+    # live: a fix stripping a fabricated team and price off a no-play tile
+    # reported 'already current'.
+    _pk = ('result', 'pick', 'matchup', 'odds', 'sport', 'no_play')
+    _op, _np = (old.get('potd') or {}), (new.get('potd') or {})
+    potd_diff = [(k, _op.get(k), _np.get(k)) for k in _pk
+                 if _op.get(k) != _np.get(k)]
+    if potd_diff:
+        print('')
+        print('  POTD fields that change:')
+        for _k, _was, _now in potd_diff:
+            print(f'     {_k:9s} {_was!r} -> {_now!r}')
+    if not changed and not potd_diff and _summary(old) == _summary(new):
         print('\n  already current — nothing to write')
         return 0
     if not args.apply:
@@ -120,8 +137,13 @@ def main() -> int:
         got = back[0].get('data')
         if isinstance(got, str):
             got = json.loads(got)
-        ok = ((got or {}).get('yesterday_recap', {}).get('top_8_summary')
-              == new.get('top_8_summary'))
+        # Read back EVERY field written, not just the summary: a POTD-only
+        # change would otherwise 'verify' while being silently dropped
+        # (feedback_receipt_audit_column_is_frozen_too).
+        _gr = (got or {}).get('yesterday_recap') or {}
+        ok = (_gr.get('top_8_summary') == new.get('top_8_summary')
+              and {k: (_gr.get('potd') or {}).get(k) for k in _pk}
+                  == {k: _np.get(k) for k in _pk})
     print(f'\n  {"written and verified by read-back" if ok else f"FAILED {r.status_code}: {r.text[:200]}"}')
     return 0 if ok else 1
 
