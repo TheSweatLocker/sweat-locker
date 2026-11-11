@@ -139,14 +139,29 @@ def fetch_team_names(sport: str, game_ids: list) -> dict:
     if not game_ids: return {}
     table = {'MLB': 'mlb_game_context', 'NBA': 'nba_game_context',
              'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
-             'NCAAB': 'ncaab_game_context'}.get(sport)
-    if not table: return {}
+             'NCAAB': 'ncaab_game_context',
+             # 2026-11-10: NHL was absent, so an NHL game leg returned {}
+             # and rendered "? @ ?" the same way every other non-MLB sport
+             # did. Six sports are ladder/degen eligible; five were listed.
+             'NHL': 'nhl_game_context'}.get(sport)
+    if not table:
+        print(f'  WARN fetch_team_names: no context table for {sport} '
+              f'- {len(game_ids)} leg(s) will have no team names')
+        return {}
     ids = ','.join(f'"{g}"' for g in game_ids)
     r = requests.get(f'{SUPABASE_URL}/rest/v1/{table}',
                      headers=H_READ,
                      params={'game_id': f'in.({ids})', 'select': 'game_id,home_team,away_team'},
                      timeout=15)
-    return {row['game_id']: (row['away_team'], row['home_team']) for row in (r.json() if r.status_code == 200 else [])}
+    if r.status_code != 200:
+        # An empty result here is indistinguishable from "game not found",
+        # and the caller turns "not found" into a literal "?" on a user
+        # surface. Say so rather than degrade silently.
+        print(f'  WARN fetch_team_names {sport}: {r.status_code} '
+              f'{r.text[:200]}')
+        return {}
+    return {row['game_id']: (row['away_team'], row['home_team'])
+            for row in r.json()}
 
 
 def build_jerry_parlay(gd: str) -> dict | None:
@@ -213,10 +228,43 @@ def build_jerry_parlay(gd: str) -> dict | None:
     if len(picks) < MIN_LEGS:
         return None   # not enough to build a parlay; let legacy stand
 
-    # Team-name lookup for game legs
-    mlb_game_ids = [pk['data']['game_id'] for pk in picks
-                    if pk['kind'] == 'game' and pk['data'].get('sport') == 'MLB']
-    teams = fetch_team_names('MLB', mlb_game_ids)
+    # == 2026-11-10 . EVERY NON-MLB GAME LEG RENDERED "? @ ?" ==
+    #
+    # This collected `game_id` only where sport == 'MLB' and then called
+    # fetch_team_names('MLB', ...) -- one sport, hardcoded twice -- while
+    # the lookup below falls back to ('?', '?') for any id the dict does
+    # not hold. So a non-MLB game leg could never resolve a team name:
+    #
+    #   11-10  NCAAF '? @ ?' + NBA '? @ ?'      2 of 2
+    #   11-09  NBA   '? @ ?'                    1 of 2
+    #   11-07  NCAAF '? @ ?' x4                 4 of 4
+    #   11-06  NCAAF '? @ ?' x2                 2 of 2
+    #
+    # 11 of 13 game legs over five days, and with MLB in the offseason
+    # that is every game leg there is. Prop legs were unaffected: they key
+    # `matchup` off player_name, which is why 11-08 (three NFL props) read
+    # correctly and hid it.
+    #
+    # fetch_team_names was already sport-aware -- it takes `sport` and maps
+    # it to that sport's context table. Only the caller was MLB-shaped, the
+    # same single-sport hardcode as the ledger's sport_scope filter and the
+    # line-poller's eq.MLB. Group the legs by their OWN sport and ask once
+    # per sport.
+    #
+    # The merged dict is keyed by (sport, game_id), not game_id: the six
+    # sports mint ids in different namespaces (NCAAF 'ncaaf_20261110_A_B',
+    # NBA '401909964', NCAAB 32-char hex) and a bare game_id key would let
+    # one sport's row answer for another's.
+    _by_sport: dict[str, list] = {}
+    for pk in picks:
+        if pk['kind'] != 'game':
+            continue
+        _sp = pk['data'].get('sport') or 'MLB'
+        _by_sport.setdefault(_sp, []).append(pk['data']['game_id'])
+    teams = {}
+    for _sp, _ids in _by_sport.items():
+        for _gid, _names in fetch_team_names(_sp, _ids).items():
+            teams[(_sp, _gid)] = _names
 
     # 2026-09-15 fix (bug #6): reason was writing empty string when
     # short_read was empty on the source jerry_reads row (observed
@@ -244,8 +292,18 @@ def build_jerry_parlay(gd: str) -> dict | None:
     for pk in picks:
         d = pk['data']
         if pk['kind'] == 'game':
-            away, home = teams.get(d['game_id'], ('?', '?'))
-            matchup = f'{away} @ {home}'
+            _key = (d.get('sport') or 'MLB', d['game_id'])
+            away, home = teams.get(_key, (None, None))
+            if not away or not home:
+                # Still unresolved: name the leg by its sport rather than
+                # printing "?" at a user. A '?' in rendered prose is the
+                # defect users actually read (feedback_verify_rendered_
+                # prose_not_templates), so it never ships as the value.
+                print(f'  WARN no team names for {_key} - '
+                      f'matchup will show the sport only')
+                matchup = f"{d.get('sport') or 'MLB'} game"
+            else:
+                matchup = f'{away} @ {home}'
             legs.append({
                 'kind': 'game', 'sport': d.get('sport') or 'MLB',
                 'matchup': matchup, 'game_id': d['game_id'],
