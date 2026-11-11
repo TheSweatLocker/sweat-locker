@@ -11083,13 +11083,39 @@ setJerryHistory(prev => {
       for (const r of (srRows || [])) byWin[r.window_key] = r;
       const mtd = byWin.mtd || {wins:0,losses:0,pushes:0,units_net:0};
       const d30 = byWin.d30 || {wins:0,losses:0,pushes:0,units_net:0};
-      // Prev-month proxy: d30 minus mtd (imperfect early in month but
-      // matches the ET-aligned server bounds — still consistent across
-      // users. Real prev-month rollup queued for compute_surface_records).
-      const wPrev = Math.max(0, (d30.wins || 0) - (mtd.wins || 0));
-      const lPrev = Math.max(0, (d30.losses || 0) - (mtd.losses || 0));
-      const pPrev = Math.max(0, (d30.pushes || 0) - (mtd.pushes || 0));
-      const unitsNetPrev = Math.round((Number(d30.units_net || 0) - Number(mtd.units_net || 0))*100)/100;
+      // ══ 2026-11-10 · "LAST MONTH" WAS d30 MINUS mtd, WHICH IS NOT A MONTH ══
+      // The subtraction that used to live here called itself a "temporary
+      // proxy until server exposes 'prev_month' explicitly". It was not a
+      // proxy, it was a different window. On 2026-11-10 mtd covered Nov 1-10
+      // and d30 covered Oct 12 - Nov 10, so the difference was Oct 12-31 —
+      // twenty days. Measured on the ledger surface that day:
+      //
+      //     shown as "October"   10-25  (-11.98u)   = Oct 12-31 exactly
+      //     true October         22-34   (-4.57u)
+      //
+      // It dropped Oct 1-11, which was 12-9, so it showed the worst stretch
+      // of the month as the whole month: 28.6% instead of 39.3%. The error
+      // also grew through the month and collapsed to 0-0 at month end, when
+      // d30 and mtd converge — and Math.max(0, …) meant any disagreement
+      // between the two windows clamped to zero instead of showing up.
+      //
+      // compute_surface_records now writes a real `prev_month` row from an
+      // absolute calendar range (ET-aligned, so every user still reads the
+      // same number). The subtraction is kept ONLY as a fallback for a
+      // client that loads before the aggregator has written the new row,
+      // and it is no longer silent about being an estimate.
+      const prevRow = byWin.prev_month;
+      const prev = prevRow || {
+        wins:   Math.max(0, (d30.wins   || 0) - (mtd.wins   || 0)),
+        losses: Math.max(0, (d30.losses || 0) - (mtd.losses || 0)),
+        pushes: Math.max(0, (d30.pushes || 0) - (mtd.pushes || 0)),
+        units_net: Number(d30.units_net || 0) - Number(mtd.units_net || 0),
+      };
+      if (!prevRow) console.warn('[ledger] no prev_month row — falling back to d30-mtd, which is NOT a calendar month');
+      const wPrev = prev.wins || 0;
+      const lPrev = prev.losses || 0;
+      const pPrev = prev.pushes || 0;
+      const unitsNetPrev = Math.round(Number(prev.units_net || 0)*100)/100;
       // Yesterday aggregation from raw snapshots
       let yestW=0, yestL=0, yestP=0, yestUnitsNet=0;
       for (const r of (yRows || [])) {

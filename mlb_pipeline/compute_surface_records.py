@@ -7,7 +7,7 @@ surface_records table this script writes.
 
 Surfaces:  sharp, prop, ladder, ledger, potd
 Sports:    MLB, NFL, NCAAF, UFC, NBA, NHL, NCAAB, ALL
-Windows:   mtd, d7, d30, lifetime
+Windows:   mtd, prev_month, d7, d30, epoch, lifetime
 
 Rules the app used to duplicate — now all in one place:
   * SHARP_RECORD_EPOCH = 2026-08-20 applies to `sharp` surface (jerry_reads
@@ -99,7 +99,7 @@ CROSS_SPORT_SURFACES: set[str] = set()
 #: honest home for a parlay whose legs span sports. Written so the rows
 #: EXIST and can be audited, not because a client reads them.
 LEDGER_EXTRA_SCOPES = {'ledger': ('MULTI',)}
-WINDOWS = ['mtd', 'd7', 'd30', 'lifetime']
+WINDOWS = ['mtd', 'prev_month', 'd7', 'd30', 'epoch', 'lifetime']
 TIER_UNITS = {'PRIME': 2.0, 'STRONG': 1.5, 'LEAN': 1.0, 'COVERAGE': 0.0}
 
 # ─── prop L5 leak quarantine (2026-10-03) ─────────────────────────────────────
@@ -264,12 +264,35 @@ def _windows_today(today: dt.date) -> dict[str, tuple[dt.date, dt.date]]:
     d7_start  = today - dt.timedelta(days=6)
     d30_start = today - dt.timedelta(days=29)
     lifetime_floor = dt.date(2020, 1, 1)
+    # == 2026-11-10 . THE APP WAS SUBTRACTING TWO WINDOWS TO GET LAST MONTH ==
+    # index.tsx derived previous-month as `d30 - mtd` with a comment calling
+    # it a "temporary proxy until server exposes 'prev_month' explicitly".
+    # It is not a proxy, it is a different window. On 2026-11-10 mtd covers
+    # Nov 1-10 and d30 covers Oct 12 - Nov 10, so the difference is
+    # Oct 12-31 -- twenty days, not October. Measured on the ledger surface
+    # that day:
+    #
+    #     shown as "October"   10-25  (-11.98u)   = Oct 12-31 exactly
+    #     true October         22-34   (-4.57u)
+    #
+    # It silently dropped Oct 1-11, which was 12-9, so it showed Andy his
+    # worst stretch as the whole month: 28.6% instead of 39.3%. The error
+    # also grows through the month and collapses to 0-0 at month end, when
+    # d30 and mtd converge. And `Math.max(0, d30 - mtd)` meant any window
+    # disagreement clamped to zero rather than showing anything was wrong.
+    #
+    # A calendar month is an absolute range, so it is computed as one. Note
+    # this is the only window whose end is NOT today; _aggregate takes an
+    # explicit (start, end) so that needs nothing special.
+    prev_month_end = mtd_start - dt.timedelta(days=1)
+    prev_month_start = prev_month_end.replace(day=1)
     return {
-        'mtd':      (mtd_start,          today),
-        'd7':       (d7_start,           today),
-        'd30':      (d30_start,          today),
-        'epoch':    (SHARP_RECORD_EPOCH, today),
-        'lifetime': (lifetime_floor,     today),
+        'mtd':        (mtd_start,          today),
+        'prev_month': (prev_month_start,   prev_month_end),
+        'd7':         (d7_start,           today),
+        'd30':        (d30_start,          today),
+        'epoch':      (SHARP_RECORD_EPOCH, today),
+        'lifetime':   (lifetime_floor,     today),
     }
 
 
