@@ -138,6 +138,12 @@ LADDER_COHORT_N_MIN     = 30       # pre-loosen baseline
 LADDER_CONSENSUS_MIN    = 4        # pre-loosen baseline (4-of-5 lens)
 LADDER_EDGE_MIN_PP      = 10.0     # pre-loosen baseline (real edge only)
 LADDER_ABS_JUICE_CAP    = -250     # unchanged — compounding math destroys past -250
+# 2026-11-10 · juice ceiling for a moneyline admitted on RANK rather than on
+# tier. The documented heavy-favourite ML trap starts at -200, and a
+# rank-admitted pick is the weaker of the two admission routes, so the two
+# weaknesses are not allowed to stack on a compounding surface. A tiered
+# (PRIME/STRONG) ML is still governed by LADDER_ABS_JUICE_CAP alone.
+LADDER_RANK_ML_JUICE_CAP = -200
 # 2026-11-04 · hard floor for the RELAXED scan only. Not a gate — nothing
 # can buy a leg past it. A ladder leg is a compounding leg, and the relaxed
 # scan's first LEAN candidate was a +2400 longshot our own model gave a 5.6%
@@ -479,10 +485,75 @@ def check_qualifier(row: dict, sport: str) -> Optional[dict]:
     try: odds_int = int(odds)
     except (TypeError, ValueError): return None
     if odds_int < LADDER_ABS_JUICE_CAP: return None  # hard: too deep juice
+    # == 2026-11-10 . A RANK-ADMITTED PICK MUST NOT ALSO CARRY HEAVY JUICE ==
+    #
+    # Tonight the ladder's only qualifier was `Orlando Magic ML` at -229,
+    # tier COVERAGE "via rank 78", 3/5 gates, with our own NBA LR calling it
+    # a coin flip (p=0.48) and the pick itself manufactured by the reroute
+    # path. LADDER_ABS_JUICE_CAP is -250, so -229 sailed through.
+    #
+    # The -250 cap was set when an ML candidate could only arrive on TIER,
+    # i.e. PRIME or STRONG with real conviction behind it. The 11-08 rank
+    # bypass deliberately opened the ladder to COVERAGE-tier picks, because
+    # NBA/NHL/NCAAB cap at conviction 55 and could never reach STRONG --
+    # Andy asked for that volume and it stays. But it changed what a
+    # qualifier can be, and the price gate never moved with it.
+    #
+    # A rank-admitted pick is a WEAKER claim than a tiered one by
+    # construction: it says "best available in its sport", not "earned a
+    # stake". Pairing the weaker claim with heavy juice is the worst
+    # combination on the one surface that compounds, and it runs straight
+    # into a documented house rule -- the heavy-favourite ML trap at -200
+    # and worse. Every ML rung the ladder has ever written sits at -135,
+    # -104 or +110; the deep-juice rungs (-295, -209, -203, -201) were all
+    # PROPS, which is a different gate and a different distribution.
+    #
+    # So the absolute cap is unchanged for a pick that earned its tier, and
+    # a rank-admitted moneyline additionally has to clear the trap line.
+    # This refuses by PRICE, not by tier, so it cannot re-break the 11-08
+    # sport coverage: a rank-admitted ML at a normal price still qualifies.
+    if ((not _by_tier) and is_side and market == 'ml'
+            and odds_int < LADDER_RANK_ML_JUICE_CAP):
+        print(f'    ⛔ ladder refused {label!r} ({sport}): rank-admitted '
+              f'(tier={tier}) moneyline at {odds_int} is past the '
+              f'{LADDER_RANK_ML_JUICE_CAP} heavy-favourite line')
+        return None
 
     implied = _implied_prob(odds_int)
     if implied is None: return None
     edge_pp = (win_prob - implied) if win_prob is not None else -999
+    # == 2026-11-10 . A NEGATIVE-EDGE LEG COULD STILL QUALIFY ==
+    #
+    # edge_pp is a SCORED gate, not a floor: missing it costs one of five
+    # and a pick passes on three. So the edge could be negative -- our own
+    # model probability BELOW the price's implied probability, i.e. we are
+    # knowingly taking the worse of it -- and the leg still qualified on
+    # tier + win_prob + consensus.
+    #
+    # Surfaced the moment the rank-admitted juice cap above refused Orlando
+    # Magic: the relaxed scan fell through to `Bowling Green ML` at -205,
+    # tier STRONG, model 61.2% against an implied 67.2% = edge -6.0pp, and
+    # would have written it. That is the same defect class the coherence
+    # gate already refuses by name ("our own number does not cover the line
+    # we published") -- a pick contradicted by our own numbers -- only
+    # expressed in price rather than in points. On the one surface that
+    # compounds, a leg we price as -EV is the last thing that should fill a
+    # dry streak.
+    #
+    # This is a hard floor, not a gate: nothing can buy past it, exactly
+    # like LADDER_RELAXED_WIN_PROB_FLOOR. It only fires where the edge is
+    # actually KNOWN -- win_prob None yields the -999 sentinel, which means
+    # "unmeasured", and an unmeasured edge is not evidence of a bad one
+    # (feedback_zero_rows_is_a_wiring_error). Those keep failing the scored
+    # gate as before.
+    #
+    # No historical rung is affected: every game-path rung ever written
+    # carries a positive edge (+2.9, +3.4, +20.7pp).
+    if win_prob is not None and edge_pp < 0:
+        print(f'    ⛔ ladder refused {label!r} ({sport}): our model has '
+              f'{win_prob:.1f}% but {odds_int} implies {implied:.1f}% '
+              f'- edge {edge_pp:+.1f}pp, we would be taking the worse of it')
+        return None
     if edge_pp >= LADDER_EDGE_MIN_PP:
         gates_passed += 1
         gate_notes.append(f'edge={edge_pp:+.1f}pp✓')
