@@ -324,6 +324,34 @@ const prettyCohort = (raw: string): string => {
 // values only — used at cold start before the registry fetch completes, or if
 // the query fails. Adding a new sport = INSERT into sport_registry, no app
 // rebuild. See fetchSportRegistry() below and getSports() / getSportEmoji().
+// == 2026-11-10 . THE DAWG LABEL READ "LA Clippers ML ML" ==
+// Two render sites appended a hardcoded " ML" to daily_dawg.team. That was
+// right when `team` held a bare team name, which it did through 2026-10-13
+// ('Cleveland Guardians', 'Chicago White Sox'). From 10-28 the writer began
+// storing the market in the string itself -- 'Tampa Bay Rays ML',
+// 'Seattle Kraken ML', 'LA Clippers ML' -- so 5 of the 137 daily_dawg rows,
+// i.e. every recent one, rendered the suffix twice.
+//
+// Same column, same rename, as the wrong-sport grading bug on 10-28: `team`
+// became 'Seattle Kraken ML' and a name test that predated the change could
+// no longer match it. A convention that changes under a reader needs the
+// reader normalized, not a second hardcoded guess.
+//
+// Both old and new rows are live, and a Dawg may legitimately be a spread
+// ("ML preferred over spread" is a preference, not a rule), so this takes
+// the market from the row where the row has one and never appends a market
+// word that is already in the string.
+const dawgLabel = (d: any): string => {
+  const raw = String(d?.team || '').trim();
+  if (!raw) return '';
+  const market = String(d?.market || '').toLowerCase();
+  // Already carries a market word: render as stored.
+  if (/\s(ML|PK)$/i.test(raw) || /[+-]\d/.test(raw)) return raw;
+  // A non-moneyline Dawg must not be labelled ML.
+  if (market && market !== 'ml') return raw;
+  return raw + ' ML';
+};
+
 const SPORTS_FALLBACK = ['NBA', 'NFL', 'NHL', 'MLB', 'NCAAB', 'NCAAF', 'UFC'];
 
 // Punctuation-insensitive team-name key for NHL context lookups. The Odds API
@@ -14193,7 +14221,7 @@ setJerryHistory(prev => {
           <Text style={{color:THEME.sharp,fontWeight:'800',fontSize:11}}>🐕 DAWG OF THE DAY</Text>
           <Text style={{color:THEME.sharp,fontSize:10,fontWeight:'700'}}>{sweatCard.dawg.tier} {sweatCard.dawg.conviction}</Text>
         </View>
-        <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{sweatCard.dawg.team} ML</Text>
+        <Text style={{color:'#fff',fontSize:14,fontWeight:'700'}}>{dawgLabel(sweatCard.dawg)}</Text>
         <Text style={{color:THEME.textDim,fontSize:11,marginTop:2}}>{sweatCard.dawg.matchup}</Text>
       </View>
     )}
@@ -17692,7 +17720,7 @@ setJerryHistory(prev => {
                         <Text style={{color:tierColor,fontSize:11,fontWeight:'800'}}>{d.tier} · {d.conviction}</Text>
                       </View>
                     </View>
-                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:22,marginBottom:4}}>{d.team} ML</Text>
+                    <Text style={{color:THEME.text,fontWeight:'800',fontSize:22,marginBottom:4}}>{dawgLabel(d)}</Text>
                     <Text style={{color:THEME.textDim,fontSize:12,marginBottom:10}}>{d.matchup} • Market has them {d.close_spread > 0 ? '+' : ''}{Number(d.close_spread).toFixed(1)}</Text>
                     {d.narrative && (
                       <Text style={{color:THEME.textDim,fontSize:13,lineHeight:20,fontStyle:'italic'}}>"{String(d.narrative).replace(/\*\*/g,'').replace(/\*/g,'').replace(/#{1,6}\s/g,'').trim()}"</Text>
