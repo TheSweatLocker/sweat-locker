@@ -396,6 +396,27 @@ def _load_sport_ctx(potd) -> dict:
         return {}
 
 
+def _proj_home_positive(sport: str):
+    """True/False if this sport's projected_spread is POSITIVE/NEGATIVE when
+    the HOME side is favoured; None when it has never been established.
+
+    Imported from the one table the coherence gate and the watchdog already
+    share rather than re-listed here. A hand-kept second copy of a lookup
+    the real code owns drifts the moment the real one changes
+    (feedback_a_blocklist_duplicating_a_lookup_table), and this one decides
+    which SIDE a sentence claims.
+    """
+    try:
+        from retier_from_sport_bars import _PROJ_HOME_POS
+        return _PROJ_HOME_POS.get(str(sport or '').upper())
+    except Exception:                                          # noqa: BLE001
+        try:
+            from consistency_watchdog import _PROJ_HOME_POSITIVE
+            return _PROJ_HOME_POSITIVE.get(str(sport or '').upper())
+        except Exception:                                      # noqa: BLE001
+            return None
+
+
 def build_prompt(potd):
     sport = (potd.get("sport") or "MLB").upper()
     if sport == "MLB":
@@ -455,7 +476,9 @@ def build_football_prompt(potd, sport):
     if is_prop and prop_player:
         facts.append(f"PROP SUBJECT (the ONLY player name allowed in prose): {prop_player}")
     # Market
-    if ctx.get("close_spread")  is not None: facts.append(f"Market spread: {ctx['close_spread']}")
+    if ctx.get("close_spread")  is not None:
+        facts.append(f"Market spread: {ctx['close_spread']} "
+                     f"(negative = {home} favoured)")
     if ctx.get("close_total")   is not None: facts.append(f"Market total: {ctx['close_total']}")
     if ctx.get("close_home_ml") is not None: facts.append(f"Home ML: {ctx['close_home_ml']}")
     if ctx.get("close_away_ml") is not None: facts.append(f"Away ML: {ctx['close_away_ml']}")
@@ -464,7 +487,75 @@ def build_football_prompt(potd, sport):
     if is_prop and ctx.get("prop_odds") is not None:
         facts.append(f"Prop odds: {ctx['prop_odds']}")
     # Model
-    if ctx.get("projected_spread") is not None: facts.append(f"Model projected spread: {ctx['projected_spread']}")
+    # == 2026-11-10 . THE WRITE-UP INVERTED ITS OWN EDGE ==
+    #
+    # This handed the model two bare numbers -- "Market spread: -15.5" and
+    # "Model projected spread: -16.2" -- with no sign convention and no
+    # stated relationship, and left it to infer the direction. On the
+    # 2026-11-10 NBA POTD it got it backwards and mis-rounded, twice:
+    #
+    #   "the model projects the spread to land at -16.2, a full point
+    #    TIGHTER than market"                       (0.7, and WIDER)
+    #   "-16.2 - a full 0.7 points tighter than the current market of -15.5"
+    #
+    # -16.2 is MORE home-favoured than -15.5 under NBA's convention, which
+    # is the whole reason the pick is a play: the market is underpricing the
+    # side we took. The sentence that explains the bet described the
+    # opposite relationship. The jerry_reads writer for the same game got it
+    # right ("just 0.7 points better than the current -15.5 ask") because it
+    # computes the comparison in Python; only this prompt outsourced it.
+    #
+    # build_mlb_prompt already states its convention inline ("negative =
+    # home favorite") and generate_nba_game_reads ships explicit
+    # *_convention strings into its payload. This branch never got either.
+    #
+    # Two changes. The convention is stated on both numbers, and the
+    # comparison itself is computed here and handed over as a finished
+    # phrase, so there is no subtraction left for the model to get wrong
+    # (feedback_magnitude_cannot_express_a_side: a magnitude cannot carry a
+    # side, so the SIDE is named in the text).
+    #
+    # Where the sport's convention is not proven, no comparison is offered
+    # at all and the prompt is told not to invent one. _PROJ_HOME_POSITIVE
+    # covers NCAAF and NBA only; guessing for the rest is how a sign bug
+    # ships.
+    _proj_sp = ctx.get("projected_spread")
+    _close_sp = ctx.get("close_spread")
+    _home_pos = _proj_home_positive(sport)
+    if _proj_sp is not None:
+        if _home_pos is None:
+            facts.append(f"Model projected spread: {_proj_sp} "
+                         f"(sign convention for {sport} is NOT established - "
+                         f"do not state which side it favours)")
+        else:
+            facts.append(
+                f"Model projected spread: {_proj_sp} "
+                f"({'positive' if _home_pos else 'negative'} = "
+                f"{home} favoured)")
+    if _proj_sp is not None and _close_sp is not None and _home_pos is not None:
+        try:
+            _pf = float(_proj_sp)
+            _cf = float(_close_sp)
+            # Model-vs-market in HOME points, sign-normalised so positive
+            # always means "our number likes the home side more".
+            _edge = (_pf - _cf) if _home_pos else (_cf - _pf)
+            _liked = home if _edge > 0 else away
+            if abs(_edge) < 0.05:
+                facts.append(
+                    "Model vs market: our number and the market agree on "
+                    "this spread (no edge either way). Say exactly that; do "
+                    "not manufacture an edge.")
+            else:
+                facts.append(
+                    f"Model vs market: our number likes {_liked} by "
+                    f"{abs(_edge):.1f} MORE points than the market does "
+                    f"(market {_cf:g}, model {_pf:g}). Use this sentence's "
+                    f"direction and this magnitude verbatim - do NOT "
+                    f"recompute it, do NOT describe the model number as "
+                    f"'tighter' or 'wider', and do NOT round "
+                    f"{abs(_edge):.1f} to a different number.")
+        except (TypeError, ValueError):
+            pass
     if ctx.get("projected_total")  is not None: facts.append(f"Model projected total: {ctx['projected_total']}")
     # Env
     if ctx.get("roof"): facts.append(f"Roof: {ctx['roof']}")
