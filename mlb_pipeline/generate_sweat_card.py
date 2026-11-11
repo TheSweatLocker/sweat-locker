@@ -2945,6 +2945,13 @@ def fetch_fade_plays(game_date: str) -> list:
     return out
 
 
+# 2026-11-10: a Dawg label that already names its market must not get a
+# second one appended. Matches a trailing ' ML'/' PK' or any embedded signed
+# number ('Boston Celtics -9.5'), which is every market-bearing shape
+# daily_dawg.team has held.
+_DAWG_HAS_MARKET = re.compile(r'(\s(?:ML|PK)$)|([+-]\d)', re.I)
+
+
 def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
                  fades=None, exclude_games=None):
     """Pick the 8 highest-conviction plays for tonight's social card.
@@ -3528,10 +3535,50 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
 
     # 2. DotD
     if dawg:
+        # == 2026-11-10 . THE LABEL READ "LA Clippers ML ML", AND THAT PUT
+        # THE SAME PLAY ON THE CARD TWICE ==
+        #
+        # This appended a hardcoded " ML" to daily_dawg.team. That was right
+        # while `team` held a bare name, which it did through 2026-10-13
+        # ('Cleveland Guardians', 'Chicago White Sox'). From 10-28 the writer
+        # began putting the market in the string itself -- 'Tampa Bay Rays
+        # ML', 'Seattle Kraken ML', 'LA Clippers ML' -- so every recent Dawg
+        # rendered the suffix twice, here and at both app render sites.
+        #
+        # The display was the smaller half. reconcile_card_recap_to_receipts
+        # seeds its `have` set from `norm(it['pick'] or it['label'])`, and
+        # this anchor carries no `pick`, so the doubled LABEL was the only
+        # identity it had. The matching receipt reads 'LA Clippers ML', which
+        # does not equal 'LA Clippers ML ML', so the guard missed and the
+        # reconciler appended the same play as a second row: top_8 slot 1
+        # (DotD) and slot 4 (ml), one game, one side, twice on the card.
+        # Normalizing the label fixes the duplicate as well as the text.
+        #
+        # A Dawg may also be a spread -- "ML preferred over spread" is a
+        # preference, not a rule -- so the market word is never appended to
+        # a string that already names one.
+        _dawg_team = str(dawg.get('team') or '').strip()
+        _dawg_mkt = str(dawg.get('market') or '').lower()
+        if not _dawg_team:
+            _dawg_label = ''
+        elif _DAWG_HAS_MARKET.search(_dawg_team):
+            _dawg_label = _dawg_team
+        elif _dawg_mkt and _dawg_mkt != 'ml':
+            _dawg_label = _dawg_team
+        else:
+            _dawg_label = f'{_dawg_team} ML'
+        # == SPORT COMES FROM THE ROW, NOT FROM THE MLB DEFAULT ==
+        # This slot set no `sport`, so it fell through to the silent 'MLB'
+        # default near the end of this file -- the one whose own comment says
+        # "this defaulted to 'MLB' SILENTLY, which is how an NFL POTD shipped
+        # as sport=MLB". Today's card carried the NBA Dawg (LA Clippers @
+        # Phoenix Suns) as sport=MLB, in the MLB offseason. daily_dawg has a
+        # sport column and it is correct there; this just never read it.
         add({
             "type": "DotD",
             "icon": "🐕",
-            "label": f"{dawg.get('team')} ML",
+            "label": _dawg_label,
+            "sport": dawg.get("sport"),
             "game": dawg.get("matchup"),
             "conviction": dawg.get("conviction"),
             "tier": dawg.get("tier"),
