@@ -198,7 +198,7 @@ def main():
     print('  player-game logs: %d over %d players' % (len(logs), len(hist)))
 
     plans = []
-    n_short = n_badline = 0
+    n_short = n_badline = n_unchanged = 0
     viol = 0
     for p in props:
         base = str(p.get('prop_type') or '').replace('_over', '') \
@@ -228,12 +228,56 @@ def main():
             tier = 'LEAN'
         else:
             tier = 'COVERAGE'
+        # snapshot BEFORE mutating: as_dict returns a copy, so these are two
+        # independent dicts and the comparison below is meaningful
+        cur_tier = str(p.get('tier') or '')
+        cur_sig = as_dict(p.get('signals'))
         sig = as_dict(p.get('signals'))
         sig['_stat_avg_l5'] = round(avg, 2)
         sig['_stat_recent_n'] = len(vals)
         sig['_line_vs_l5'] = round(ratio, 3)
         sig['_gate'] = ('nba_prop_gate 2026-10-26: %s ratio %.2f -> %s'
                         % (d, ratio, tier))
+        # == 2026-11-10 . IT REWROTE 25,825 ROWS TO THE VALUES THEY ALREADY
+        # HELD, AND THAT IS THE 900s TIMEOUT ==
+        #
+        # The step was measured still running at 900s and cancelled, three
+        # nights in a row, and it reads as a volume problem -- "too many
+        # props". It is not. Timed here:
+        #
+        #     read + compute, whole table        40s
+        #     props in scope                     27,650   (not today's 1,017)
+        #     planned writes                     25,825
+        #     per-row PATCH, median              0.341s
+        #     25,825 x 0.341s                    8,806s = 2.4 HOURS
+        #
+        # Two reasons it is the whole table rather than the slate: `pfilt` is
+        # empty unless --date is passed, and the workflow calls it bare. But
+        # the scope is not the bug either, because the work is redundant.
+        #
+        # Every value planned here is DETERMINISTIC for a settled prop: the
+        # three stats come from the player's PRIOR game logs, which stop
+        # changing once those games are final, and `_gate` carries a
+        # hardcoded date literal rather than today's. So on each run the
+        # planned tier and signals are byte-identical to the stored ones for
+        # every historical row. The tier counts said so in the output all
+        # along -- planned LEAN 6248 / SKIP 3456 against current LEAN 6248 /
+        # SKIP 3456, the same numbers.
+        #
+        # A batched upsert is NOT the fix and was tested first: POST with
+        # resolution=merge-duplicates and a partial column set
+        # ({id, signals}) 400s with 23502, because PostgREST INSERTs and
+        # every other NOT NULL column arrives null. The write has to stay
+        # one PATCH per row, so the only way to make it cheap is to not do
+        # it when nothing changed.
+        #
+        # Skipping unchanged rows leaves the full-history pass available for
+        # a genuine backfill -- a row whose stored value really does differ
+        # is still written -- while the steady-state nightly cost drops to
+        # the 40s read.
+        if cur_tier == tier and cur_sig == sig:
+            n_unchanged += 1
+            continue
         plans.append((p.get('id'), tier, sig))
 
     print('')
@@ -241,6 +285,10 @@ def main():
           ' (must be 0)' % viol)
     print('  planned: %d   skipped short window: %d   bad line/direction: %d'
           % (len(plans), n_short, n_badline))
+    print('  unchanged (already hold the planned tier + signals): %d'
+          % n_unchanged)
+    if plans:
+        print('  estimated write time at 0.341s/row: %.0fs' % (len(plans) * 0.341))
     c = collections.Counter(t for _i, t, _s in plans)
     print('  tier assignment: %s' % dict(c))
     cur = collections.Counter(str(p.get('tier')) for p in props)
