@@ -172,6 +172,59 @@ def analyze(sport: str, days: int, family_filter: str | None = None,
         for k in universal:
             del sig_stats[k]
 
+    # == 2026-11-11 . THE 100% TEST MISSES A BUNDLE WRITTEN ON A SUBSET ==
+    #
+    # The guard above drops a key present on EVERY graded row. A metadata
+    # bundle written by one code path is present on every row THAT PATH
+    # wrote and on none of the others, so (w+l) < graded_rows and all of it
+    # survives. Measured on the live NFL registry: 31 of 41 prop rows were
+    # signals-blob metadata and 27 of those were stamped ANTI_VALIDATED --
+    # "proven money losers" for fields like opp_src, opp_metric, devig,
+    # cal_version, p_market, prop_family, proj_shadow and tier_held.
+    #
+    # The giveaway is that they arrive in groups with IDENTICAL counts:
+    # eight keys at hit 46.5% n=964 and nine at hit 29.3% n=249. Perfectly
+    # equal (w, l) across many keys means they fired on exactly the same
+    # rows, which is what being written together as a block looks like. A
+    # real signal fires on its own subset and does not tie another eight
+    # keys to the decimal.
+    #
+    # This is not the zero-information case the guard above handles. The
+    # rows may genuinely lose -- 29.3% is far from the base rate. The
+    # defect is that ONE fact is registered NINE times, and the playbook
+    # gate demotes a prop when ">= 50% of positive contribution comes from
+    # ANTI_VALIDATED signals", so a single bundle can carry that vote by
+    # itself and demote on one piece of evidence counted nine ways
+    # (feedback_dedupe_per_source_not_per_row).
+    #
+    # So a bundle is collapsed to ONE representative rather than deleted:
+    # the fact is kept, its nine votes are not. The representative is the
+    # alphabetically first key, chosen only so the pick is stable across
+    # runs, and the others are reported so the collapse is visible.
+    #
+    # Latent when found: _playbook_prop_gate had stamped 0 of 600 recent
+    # NFL and MLB rows, so nothing had been demoted yet. MLB's registry is
+    # clean on its own numbers (17 blob keys, 0 ANTI_VALIDATED), which is
+    # consistent with MLB being the one sport whose prop ladder orders
+    # correctly.
+    bundled = {}
+    if graded_rows >= min_sample:
+        by_counts: dict = {}
+        for k, d in sig_stats.items():
+            by_counts.setdefault((d['w'], d['l']), []).append(k)
+        for counts, ks in by_counts.items():
+            if len(ks) < 3 or (counts[0] + counts[1]) < min_sample:
+                continue          # 1-2 keys can tie by chance; 3+ cannot
+            keep = sorted(ks)[0]
+            for k in sorted(ks)[1:]:
+                del sig_stats[k]
+            bundled[keep] = sorted(ks)[1:]
+        for keep, dropped in bundled.items():
+            print(f'  bundle collapsed: {keep} represents '
+                  f'{len(dropped) + 1} keys with identical counts '
+                  f'({", ".join(dropped[:4])}'
+                  f'{", ..." if len(dropped) > 4 else ""})')
+
     # Filter by min_sample + compute hit rate
     filtered = []
     for k, d in sig_stats.items():
