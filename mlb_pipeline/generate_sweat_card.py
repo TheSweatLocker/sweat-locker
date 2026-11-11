@@ -2952,6 +2952,18 @@ def fetch_fade_plays(game_date: str) -> list:
 _DAWG_HAS_MARKET = re.compile(r'(\s(?:ML|PK)$)|([+-]\d)', re.I)
 
 
+def _dawg_num(v):
+    """Numeric or None. The card stores odds/line as numbers; a string or a
+    null from daily_dawg must not reach the receipt as text."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f == int(f) else f
+
+
 def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
                  fades=None, exclude_games=None):
     """Pick the 8 highest-conviction plays for tonight's social card.
@@ -3574,12 +3586,35 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
         # as sport=MLB". Today's card carried the NBA Dawg (LA Clippers @
         # Phoenix Suns) as sport=MLB, in the MLB offseason. daily_dawg has a
         # sport column and it is correct there; this just never read it.
+        # == 2026-11-11 . THE DAWG TILE WENT DARK FOR WANT OF A PRICE ==
+        # receipt_invariants refused today's capture outright:
+        #     NHL dotd 'Edmonton Oilers -1.5': dotd receipt with no
+        #     pick_odds - a graded play with no price is priced at a guess
+        # and with the receipt refused the card's `dawg` block stored as {},
+        # so the tile rendered nothing on a night the Dawg existed.
+        #
+        # The price was never missing. daily_dawg.price_american is 120 on
+        # that row, matching close_puckline_home_price in the NHL context,
+        # and public_receipt's dotd builder already reads price_american off
+        # the source row. This slot simply never carried it: the DotD entry
+        # set label/sport/game/conviction/tier and no price at all, so the
+        # receipt minted FROM THE CARD had nothing to copy. Same slot, same
+        # omission as the `sport` field yesterday -- an anchor row assembled
+        # by hand drifts from the row it represents, one field at a time.
+        #
+        # `line` comes along for the same reason: this Dawg is a PUCK LINE
+        # (market 'rl', pick_line -1.5), not a moneyline, and a receipt that
+        # grades a -1.5 needs the number it graded at
+        # (feedback_consensus_line_must_be_posted: the displayed number has
+        # to be the one we settle).
         add({
             "type": "DotD",
             "icon": "🐕",
             "label": _dawg_label,
             "sport": dawg.get("sport"),
             "game": dawg.get("matchup"),
+            "odds": _dawg_num(dawg.get("price_american")),
+            "line": _dawg_num(dawg.get("pick_line")),
             "conviction": dawg.get("conviction"),
             "tier": dawg.get("tier"),
             "source_table": "daily_dawg",
@@ -5386,6 +5421,41 @@ def build_card():
                   f'may add at most {max(0, _earned)} — publishing the '
                   f'{_earned} we earned rather than filling to {_FLOOR}. '
                   f'A card of pure fill has no opinion in it.')
+        # == 2026-11-11 . THE FLOOR FILL RE-ADDED THE POTD ==
+        # `_have` is keyed on (sport, game_id) and the POTD slot carries
+        # game_id = NULL -- its source is daily_best_bet_history, which
+        # records the matchup and not the id. So the POTD's key is
+        # ('NBA', 'None'), the candidate's is ('NBA', '401909970'), they
+        # never collide, and the fill put the Play of the Day on the card a
+        # second time as a plain ml row:
+        #
+        #     POTD  Denver Nuggets ML (Jerry 54/100)  conv=54  -170
+        #     ml    Denver Nuggets ML                 conv=54  -170
+        #
+        # One play, two slots, on the list the app renders -- and two
+        # entries in the record when it grades. Exactly yesterday's doubled
+        # Dawg label in a different place: an anchor row's identity is thin,
+        # so anything matching on it has to match on more than one field
+        # (feedback_a_display_label_became_an_identity_key).
+        #
+        # add()'s own _play_signature would have caught this -- it strips
+        # " lean", "(jerry 54/100)" and any trailing "(...)" so the two
+        # labels normalise to the same string -- but the floor fill appends
+        # straight to unified_top_picks and never passes through add().
+        # So the label test is applied here too, on top of the id key
+        # rather than instead of it: an id match is still the stronger
+        # signal where an id exists.
+        import re as _re_floor
+
+        def _floor_norm(lbl):
+            t = str(lbl or '').strip().lower().replace(' lean', '').strip()
+            t = _re_floor.sub(r'\s*\(jerry\s+\d+/\d+\)\s*$', '', t).strip()
+            t = _re_floor.sub(r'\s*\([^)]*\)\s*$', '', t).strip()
+            return t
+
+        _have_labels = {_floor_norm(_p.get('label') or _p.get('pick'))
+                        for _p in unified_top_picks}
+        _have_labels.discard('')
         _added = []
         for _c in _cands:
             if len(_added) >= _need:
@@ -5393,7 +5463,14 @@ def build_card():
             _k = (str(_c.get('sport') or '').upper(), str(_c.get('game_id')))
             if _k in _have:
                 continue
+            _lbl = _floor_norm(_c.get('label') or _c.get('pick'))
+            if _lbl and _lbl in _have_labels:
+                print(f'  = floor: skipped {str(_c.get("label"))[:34]!r} — '
+                      f'already on the card (matched on label; the anchor '
+                      f'slot carries no game_id)')
+                continue
             _have.add(_k)
+            _have_labels.add(_lbl)
             _c['_floor_fill'] = True
             if not _priced(_c):
                 _c['_floor_fill_unpriced'] = True
