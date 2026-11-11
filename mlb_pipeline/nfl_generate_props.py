@@ -53,6 +53,9 @@ except ImportError:
     from requests.packages.urllib3.util.retry import Retry
 from dotenv import load_dotenv
 
+# Shared price-band policy (pure module, no side effects).
+from prop_odds_band import row_in_band
+
 
 # 2026-09-08: retry-enabled session for external API calls (The Odds API
 # specifically has flaky Windows-side ConnectionResetError intermittently).
@@ -2379,6 +2382,17 @@ def upsert_props(rows: list, dry_run: bool = False) -> int:
     # week despite scorer producing 172 STRONG / 22 LIGHT in dry-run.
     try:
         bridge_rows = [b for b in (_to_pipeline_props_shape(r) for r in rows) if b]
+        # == 2026-11-10 . PRICE BAND, ALL SPORTS ==
+        # Gated on the MAPPED shape, because that is where pick_side becomes
+        # `direction` and odds_american becomes book_over/under_odds -- a
+        # band check on the raw row would read absent columns and pass
+        # everything (feedback_a_gate_reading_an_unselected_column_always_
+        # passes). This is the one chokepoint every NFL write path crosses.
+        _n_band = len(bridge_rows)
+        bridge_rows = [b for b in bridge_rows if row_in_band(b)[0]]
+        if len(bridge_rows) < _n_band:
+            print(f'  band -300..+150: refused {_n_band - len(bridge_rows)} '
+                  f'NFL prop(s) outside the bettable range')
     except Exception as _e:
         print(f'  ⚠ shape-mapper raised: {_e}')
         return 0

@@ -31,6 +31,9 @@ from typing import Optional
 
 import requests
 
+# Shared price-band policy (pure module, no side effects).
+from prop_odds_band import row_in_band
+
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
@@ -253,6 +256,7 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
     print(f'  {len(events)} NHL events fetched')
 
     total_props = 0
+    n_out_of_band = 0
     now_iso = datetime.now(timezone.utc).isoformat()
     for ev in events:
         commence = ev.get('commence_time', '')
@@ -292,10 +296,37 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
                     'signals':        {'two_sided_price': slot.get('two_sided')},
                     'last_attached_at': now_iso,
                 }
+                # == 2026-11-10 . THE PRICE BAND, AT GENERATION ==
+                # Andy: "For NHL i dont wnat to see +1100 or -4000 props, hell
+                # for any sports thats pointless." Measured on tonight's board
+                # before this gate existed:
+                #     NBA   72 of 1,365 out of band (worst -420, longest +1100)
+                #     NHL  681 of 1,383 out of band (worst -10000, longest +9000)
+                # Half the NHL table was goals_under 0.5 on defencemen priced
+                # -1600 to -10000 -- risking 100 units to win 1 -- plus their
+                # goals_over twins at +7000 to +9000.
+                #
+                # Refusing at GENERATION rather than demoting later is the point:
+                # a row that never enters the table cannot be picked up by the
+                # Daily Degen, the Ladder's prop path or prop_playbook_decisions,
+                # none of which consult the card allowlist
+                # (feedback_guard_belongs_at_the_chokepoint). The band itself is
+                # CLAUDE.md's, unchanged for weeks; it just was never enforced
+                # outside mlb_pipeline.yml.
+                _band_ok, _band_why = row_in_band(payload)
+                if not _band_ok:
+                    n_out_of_band += 1
+                    if n_out_of_band <= 5:
+                        print('    band: dropped %s %s %s (%s)'
+                              % (payload['player_name'], payload['prop_type'],
+                                 payload['prop_line'], _band_why))
+                    continue
                 if upsert_prop(payload, dry_run=dry_run):
                     total_props += 1
 
     print(f'\n  {"[DRY] " if dry_run else ""}upserted {total_props} NHL props')
+    if n_out_of_band:
+        print(f'  band -300..+150: refused {n_out_of_band} prop(s) outside the bettable range')
     if total_props == 0 and events:
         # Say WHY, so an empty run is diagnosable rather than ambiguous.
         d = dict(_FETCH_DIAG)

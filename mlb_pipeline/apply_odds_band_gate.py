@@ -113,7 +113,25 @@ PUBLISHABLE = ('PRIME', 'STRONG', 'LEAN', 'LIGHT')
 
 
 def _today_et() -> str:
-    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)).strftime('%Y-%m-%d')
+    """Today in real ET, not on a fixed -4 offset.
+
+    2026-11-10, caught live while wiring the band sweep: at 04:20 UTC the
+    hardcoded -4 returned 2026-11-11 while true ET was 2026-11-10 23:20, so
+    the sweep scanned an empty date and reported "rows outside the band: 0"
+    on a night with 681 of them. The offset is only right from March to
+    November; for the 127 days a year that ET is EST it is an hour fast, and
+    it disagrees in the 04:00-04:59 UTC window -- exactly when this step's
+    cron lands (feedback_hardcoded_et_offset_breaks_in_est).
+
+    zoneinfo handles DST. The fallback errs toward the previous ET day,
+    which is the safe direction for a date that must not reach past today.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+    except Exception:                                          # noqa: BLE001
+        return (now - dt.timedelta(hours=5)).strftime('%Y-%m-%d')
 
 
 def page(table, params):
@@ -132,19 +150,13 @@ def page(table, params):
         off += 1000
 
 
-def backed_odds(row) -> int | None:
-    """The price on the side we are BACKING, not the prop's nominal over."""
-    d = str(row.get('direction') or '').strip().lower()
-    v = row.get('book_over_odds') if d == 'over' else row.get('book_under_odds')
-    if v is None:
-        return None
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    if -100 < f < 100:          # 0 / empty-column shapes are not prices
-        return None
-    return int(round(f))
+# 2026-11-10: backed_odds and the band now live in prop_odds_band, a pure
+# policy module with no side effects, so the generators can enforce the band
+# at write time without importing this script's credentials. The local copy
+# that used to sit here was deleted rather than left beside it: a hand-kept
+# second copy of a lookup drifts the moment one changes, and this one decides
+# whether a row is bettable at all.
+from prop_odds_band import BAND_LO, BAND_HI, backed_odds, row_in_band
 
 
 def scan(date: str):
@@ -164,6 +176,38 @@ def scan(date: str):
             if o is not None and o <= ODDS_FLOOR:
                 hits.append((sport, tbl, r, o))
     return hits
+
+
+def scan_band(date: str):
+    """-> [(sport, table, row, odds, why)] for rows outside the price band.
+
+    Deliberately NOT filtered by family or by tier, unlike scan(). Three
+    independent filters are why the band was never enforced outside MLB:
+
+      * this script runs in mlb_pipeline.yml only,
+      * FLOORED_FAMILIES holds MLB families, so no NHL or NBA prop_type is
+        ever eligible even when the loop reaches their tables,
+      * and the tier filter only looks at publishable rows, while every NHL
+        prop ever written sits at COVERAGE.
+
+    An unbettable price is unbettable at any tier, and a COVERAGE row is not
+    harmless: the Daily Degen, the Ladder's prop path and
+    prop_playbook_decisions all read the table directly without consulting
+    the card allowlist.
+    """
+    out = []
+    for sport, tbl in PROP_TABLES.items():
+        rows = page(tbl, {'select': 'id,player_name,prop_type,prop_line,'
+                                    'direction,tier,book_over_odds,'
+                                    'book_under_odds,game_date',
+                          'game_date': f'eq.{date}'})
+        for r in rows:
+            if str(r.get('tier') or '').upper() == 'SKIP':
+                continue                     # already out
+            ok, why = row_in_band(r)
+            if not ok:
+                out.append((sport, tbl, r, backed_odds(r), why))
+    return out
 
 
 def main() -> int:
@@ -192,6 +236,36 @@ def main() -> int:
         return 0
 
     date = args.date or _today_et()
+
+    # ── Band sweep first: an unbettable price is not a family question.
+    band = scan_band(date)
+    print(f'=== band sweep · {date} · {BAND_LO:+d}..{BAND_HI:+d} · '
+          f'{"APPLY" if args.apply else "DRY"} ===')
+    print(f'  rows outside the band: {len(band)}')
+    if band:
+        _bysport = collections.Counter(sp for sp, _t, _r, _o, _w in band)
+        print(f'  {dict(_bysport)}')
+        for sport, _t, r, o, why in sorted(band, key=lambda x: x[3])[:6]:
+            print(f'     {sport:<5} {str(r.get("player_name"))[:20]:20s} '
+                  f'{str(r.get("prop_type")):16s} {r.get("prop_line")} '
+                  f'tier={str(r.get("tier")):<8} {why}')
+        if args.apply:
+            _ok = _bad = 0
+            for sport, tbl, r, o, _why in band:
+                pr = requests.patch(f'{SB}/rest/v1/{tbl}', headers=H_W,
+                                    timeout=60, params={'id': f'eq.{r["id"]}'},
+                                    data=json.dumps({'tier': 'SKIP'}))
+                body = pr.json() if pr.content else []
+                if pr.status_code in (200, 204) and body and body[0].get('tier') == 'SKIP':
+                    _ok += 1
+                else:
+                    _bad += 1
+            print(f'  demoted {_ok}/{len(band)} to SKIP (verified by '
+                  f'read-back), {_bad} failed')
+        else:
+            print('  re-run with --apply to demote these to SKIP')
+    print('')
+
     hits = scan(date)
     print(f'=== apply_odds_band_gate · {date} · floor {ODDS_FLOOR} · '
           f'{"APPLY" if args.apply else "DRY"} ===')

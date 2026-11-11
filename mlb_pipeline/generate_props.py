@@ -17,6 +17,9 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# Shared price-band policy (pure module, no side effects).
+from prop_odds_band import row_in_band
+
 # 2026-09-28: season was hard-coded 2026 in the request below, where no
 # caller could override it — it would have served 2026 rows forever.
 try:
@@ -4223,6 +4226,24 @@ def upsert_props(props):
       ALTER TABLE mlb_pipeline_props ADD COLUMN lineup_state TEXT;
     Once added, the field flows through and the app can render PROJECTED
     vs CONFIRMED tags on hits props.)"""
+    if not props:
+        return 0
+    # == 2026-11-10 . PRICE BAND, ALL SPORTS ==
+    # CLAUDE.md's band is -300..+150 and until now the only enforcement was
+    # apply_odds_band_gate, which is family-scoped (hits/bb/hr) and runs
+    # post-hoc on publishable tiers only. Real published MLB prices in its
+    # own docstring include -7500, -5000, -1200: "a -7500 prop risks 75
+    # units to win 1."
+    #
+    # This does NOT replace that gate's -200 family floor, which stays
+    # exactly as measured -- rbis/runs/total_bases unders at -200..-300 are
+    # profitable (+46.36u on n=699) and sit INSIDE this band, so the two
+    # rules do not overlap.
+    _n_band = len(props)
+    props = [p for p in props if row_in_band(p)[0]]
+    if len(props) < _n_band:
+        print(f'  band -300..+150: refused {_n_band - len(props)} '
+              f'MLB prop(s) outside the bettable range')
     if not props:
         return 0
     # 2026-08-22 DEDUP GUARD: same (game_date, player_name, prop_type, direction,
