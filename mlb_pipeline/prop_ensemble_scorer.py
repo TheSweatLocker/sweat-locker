@@ -710,6 +710,7 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
         _conv = conviction
         _cur_dir = (prop.get('direction') or '').upper()
         _cur_odds = prop.get('book_over_odds') if 'OVER' in _cur_dir else prop.get('book_under_odds')
+        _r4_notes: list[str] = []
         try: _cur_odds_int = int(_cur_odds) if _cur_odds is not None else None
         except (TypeError, ValueError): _cur_odds_int = None
 
@@ -733,15 +734,56 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
             if int(_l5) >= 4 and int(_l10) >= 8:
                 tier = 'PRIME' if conviction >= 60 else 'STRONG'
             elif int(_l5) <= 1 and int(_l10) <= 3:
-                # Flip direction — downstream Jerry render must pull the
-                # NEW side from PropDecision.direction not from prop dict
+                # == 2026-11-10 . THREE CORRECTIONS THAT CANCELLED WRONG ==
+                #
+                # This used to do all of: rewrite prop['direction'] to the
+                # cold-opposite side, SWAP book_over_odds/book_under_odds in
+                # memory, and flip winner_side BACK<->FADE. Three expressions
+                # of one decision -- and _compute_edge_and_rec then derives
+                # the backed side from direction AND the verdict, so the flip
+                # was applied twice while the odds array was swapped once, and
+                # the pick ended up priced off the side we did NOT take.
+                #
+                # Measured by joining decisions to the props tables over
+                # 11-01..11-06: NBA 49 of 170 graded BACK decisions = 29%
+                # carried the wrong side's price. e.g. Jordan Walsh pra_over,
+                # direction rewritten to 'under', the book has NO under price
+                # at all, and the stored implied was 51.22 = the over's -105.
+                # The swap is what manufactured a price for a side the book
+                # never quoted.
+                #
+                # The swap also had no legitimate reader. The tier gate and
+                # juice cap read _cur_odds, computed ABOVE this block from the
+                # pre-flip direction, and nothing afterwards reads the
+                # positional columns except _compute_edge_and_rec.
+                #
+                # Andy's call on the semantics: a cold streak means bet the
+                # other side, but ONLY if that side is priced. So the
+                # direction flip stays, the odds stay canonical, and
+                # winner_side is SET to BACK rather than flipped -- R4's
+                # intent is to back the new side whatever the verdict was on
+                # the old one, and an inherited FADE would invert it straight
+                # back.
+                #
+                # Where the book quotes no price for the new side -- NBA
+                # props routinely carry one side only -- this stands down to
+                # COVERAGE instead of faking a number off the other side.
+                # You cannot bet a side nobody quoted. That is the behaviour
+                # change and it is the point.
                 _new_dir = 'under' if 'OVER' in _cur_dir else 'over'
                 prop['direction'] = _new_dir
-                # Swap odds so tier gate & juice cap read correct side
-                prop['book_over_odds'], prop['book_under_odds'] = \
-                    prop.get('book_under_odds'), prop.get('book_over_odds')
-                # Flip winner_side too (BACK/FADE was on original dir)
-                winner_side = 'FADE' if str(winner_side).upper() == 'BACK' else 'BACK'
+                _new_odds = (prop.get('book_under_odds') if _new_dir == 'under'
+                             else prop.get('book_over_odds'))
+                if _new_odds is None:
+                    tier = 'COVERAGE'
+                    winner_side = 'PASS'
+                    _r4_notes.append(
+                        f'R4 cold-flip to {_new_dir} refused: book has no '
+                        f'{_new_dir} price')
+                else:
+                    winner_side = 'BACK'
+                    _r4_notes.append(
+                        f'R4 cold-flip to {_new_dir} @ {_new_odds}')
 
         # R6 — Dip-zone dog fade: conviction 70-84 + dog odds (+100 or bigger)
         # → SKIP. 90d shows 38.8% n=67 in this bucket.
@@ -766,6 +808,13 @@ def score_prop(sport: str, ctx: dict, prop: dict) -> PropDecision:
                 tier = 'PRIME'
             elif tier == 'LEAN':
                 tier = 'STRONG'
+        # Surface what R4 did. A list that is only appended to is dead code
+        # and a refusal nobody can see is a refusal nobody will trust
+        # (feedback_green_step_that_writes_nothing) -- print it once per
+        # affected prop so a stand-down is visible in the run log.
+        for _n in _r4_notes:
+            print(f'    [R4] {prop.get("player_name")} '
+                  f'{prop.get("prop_type")} {prop.get("prop_line")}: {_n}')
     except (TypeError, ValueError):
         pass  # any bad row silently passes through unchanged
 
