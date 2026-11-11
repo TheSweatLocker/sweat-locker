@@ -96,6 +96,56 @@ RESULT_MAP = {
 }
 
 
+# == 2026-11-10 . EVERY FADE WAS GRADED ON THE SIDE WE DID NOT BACK ==
+#
+# This file never read `playbook_side` -- zero occurrences before today --
+# and resolved the graded side from `direction` alone, which matches the
+# props row exactly as its pass-1 index comment describes. But `direction`
+# is the side the BOOK listed. `playbook_side` is our verdict on it: BACK
+# means bet the listed side, FADE means bet the OPPOSITE one. So for every
+# FADE decision the inherited result is the outcome of the side we declined.
+#
+# Measured on NHL rows carrying actual_value, resolving the outcome from
+# actual_value vs prop_line independently of the stored grade:
+#
+#     side=FADE   result matches LISTED side: 25    matches BACKED side: 0
+#     side=BACK   both match (backed == listed, trivially): 33
+#
+# 25 of 25. Two of them plainly:
+#
+#     Matvei Michkov points_over 0.5, actual 1.0, FADE (we back the UNDER)
+#       -> he got a point, the under LOST, stored result = W
+#     Travis Konecny sog_over 1.5, actual 1.0, FADE (we back the UNDER)
+#       -> the under WON, stored result = L
+#
+# FADE share of graded BACK recommendations: MLB 551/1612 = 34%,
+# NHL 750/1474 = 51%, NFL 1/31, NBA 0/406. And `result` is what
+# refit_signal_registry weights signals on, so the refit has been learning
+# from inverted outcomes on a third of MLB and half of NHL.
+#
+# Correcting it moves MLB props from below break-even to a demonstrated
+# edge, which is why it stayed hidden: the bug made a winning book look
+# like a flat one.
+#
+#     MLB as recorded  850-762  52.7%  CI [50.3, 55.2]  ROI  +1.21%/bet
+#     MLB CORRECTED    925-687  57.4%  CI [55.0, 59.8]  ROI +10.21%/bet
+#     mean implied (break-even) 53.5%  -> CI lower bound 55.0% clears it
+#
+# Same lesson as feedback_grade_the_side_we_published: a FADE inverts the
+# published side, so the grade has to be taken from the verdict and not
+# from the listing. Push and Void are side-independent and never flip.
+_FLIP_RESULT = {'W': 'L', 'L': 'W'}
+
+
+def apply_side(short: str | None, playbook_side) -> str | None:
+    """Convert a LISTED-side grade into the grade of the side we published."""
+    if short is None:
+        return None
+    if str(playbook_side or '').upper() != 'FADE':
+        return short
+    return _FLIP_RESULT.get(short, short)
+
+
 def yesterday_et() -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=28)).strftime('%Y-%m-%d')
 
@@ -303,7 +353,7 @@ def grade_date(date_str: str, sport: str = 'MLB',
     params = {
         'sport':     f'eq.{sport}',
         'game_date': f'eq.{date_str}',
-        'select':    'id,player_name,prop_type,direction,prop_line,playbook_tier,result',
+        'select':    'id,player_name,prop_type,direction,prop_line,playbook_tier,result,playbook_side',
     }
     if not force:
         params['result'] = 'is.null'
@@ -359,6 +409,11 @@ def grade_date(date_str: str, sport: str = 'MLB',
                 tally['bad_legacy_result'] += 1
                 unresolved_examples.append((row['id'], key, f'legacy result={legacy_result!r}'))
                 continue
+            # The inherited grade is the LISTED side's outcome; a FADE
+            # published the opposite side. See apply_side().
+            short = apply_side(short, row.get('playbook_side'))
+            if str(row.get('playbook_side') or '').upper() == 'FADE':
+                tally['fade_inverted'] += 1
             updates.append({
                 'id': row['id'],
                 'result': short,
@@ -399,6 +454,12 @@ def grade_date(date_str: str, sport: str = 'MLB',
                     reason = 'stat missing / line missing'
                 unresolved_examples.append((row['id'], key, reason))
             continue
+        # grade_from_stats resolves the LISTED side (it takes prop_type for
+        # the stat and `direction` for the side), so a FADE needs the same
+        # inversion as pass 1. Both writers, not one.
+        short = apply_side(short, row.get('playbook_side'))
+        if str(row.get('playbook_side') or '').upper() == 'FADE':
+            tally['fade_inverted'] += 1
         updates.append({
             'id': row['id'],
             'result': short,
@@ -412,6 +473,9 @@ def grade_date(date_str: str, sport: str = 'MLB',
     print(f'  → resolved {len(updates)}: '
           f'{tally["W"]}W {tally["L"]}L {tally["P"]}P '
           f'(legacy={tally["from_legacy"]}, stats_api={tally["from_stats_api"]})')
+    if tally.get('fade_inverted'):
+        print(f'  ↔ {tally["fade_inverted"]} FADE decision(s) graded on the '
+              f'side we PUBLISHED, i.e. inverted from the listed side')
     dec = tally['W'] + tally['L']
     if dec:
         print(f'    hit rate: {100*tally["W"]/dec:.1f}% (playbook side-blind, over/under literal)')
@@ -480,6 +544,80 @@ def grade_date(date_str: str, sport: str = 'MLB',
     return dict(tally)
 
 
+def regrade_fades(sport: str, dry_run: bool = True) -> dict:
+    """Repair FADE rows graded before apply_side() existed.
+
+    A wrong grade needs its own repair path, not a silent rewrite inside the
+    nightly run (feedback_grade_each_row_not_the_date). Every row this
+    touches already HAS a result -- the inverse of the correct one -- so it
+    is off by default and prints exactly what it would change.
+
+    Only rows whose grade predates the fix are eligible: a row regraded by
+    the fixed grader is already correct and flipping it again would undo
+    the repair. The marker is `grade_source`, which the repair rewrites with
+    a '+fadefix' suffix so the operation is idempotent and visible in the
+    row itself rather than only in a log.
+    """
+    out = {'scanned': 0, 'eligible': 0, 'flipped': 0, 'errors': 0}
+    off = 0
+    todo = []
+    while True:
+        r = requests.get(
+            f'{SB}/rest/v1/prop_playbook_decisions',
+            headers=H_READ,
+            params={'sport': f'eq.{sport}', 'playbook_side': 'eq.FADE',
+                    'result': 'in.(W,L)',
+                    'select': 'id,result,grade_source,game_date,player_name,'
+                              'prop_type,direction,prop_line',
+                    'order': 'id.asc', 'limit': '1000', 'offset': str(off)},
+            timeout=60)
+        if r.status_code not in (200, 206):
+            print(f'  scan failed HTTP {r.status_code}: {r.text[:200]}')
+            return out
+        chunk = r.json() if isinstance(r.json(), list) else []
+        out['scanned'] += len(chunk)
+        for row in chunk:
+            gs = str(row.get('grade_source') or '')
+            if '+fadefix' in gs:
+                continue          # already repaired; never flip twice
+            todo.append(row)
+        if len(chunk) < 1000:
+            break
+        off += 1000
+    out['eligible'] = len(todo)
+    print(f'=== regrade_fades · {sport} ===')
+    print(f'  FADE rows with a W/L grade: {out["scanned"]}')
+    print(f'  not yet repaired          : {out["eligible"]}')
+    flips = {'W': 'L', 'L': 'W'}
+    for row in todo[:6]:
+        print(f'    eg id={row["id"]} {row["game_date"]} '
+              f'{row["player_name"]} {row["prop_type"]} '
+              f'{row["direction"]} {row["prop_line"]} : '
+              f'{row["result"]} -> {flips[row["result"]]}')
+    if dry_run:
+        print(f'  [DRY] would flip {out["eligible"]} row(s). '
+              f'Re-run with --apply to write.')
+        return out
+    for row in todo:
+        body = {'result': flips[row['result']],
+                'grade_source': (str(row.get('grade_source') or 'unknown')
+                                 + '+fadefix')}
+        rr = requests.patch(
+            f'{SB}/rest/v1/prop_playbook_decisions?id=eq.{row["id"]}',
+            headers={**H_WRITE, 'Prefer': 'return=representation'},
+            json=body, timeout=30)
+        if rr.status_code in (200, 204) and (rr.status_code == 204 or rr.json()):
+            out['flipped'] += 1
+        else:
+            out['errors'] += 1
+            if out['errors'] <= 3:
+                print(f'    write error id={row["id"]} HTTP '
+                      f'{rr.status_code} {rr.text[:160]}')
+    print(f'  flipped {out["flipped"]} of {out["eligible"]}'
+          + (f', {out["errors"]} error(s)' if out['errors'] else ''))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=yesterday_et(), help='YYYY-MM-DD (default: yesterday ET)')
@@ -489,10 +627,19 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--force', action='store_true',
                     help='Regrade rows that already have a result (defensive: default is off)')
+    ap.add_argument('--regrade-fades', action='store_true',
+                    help='Repair FADE rows graded on the listed side before '
+                         'apply_side() existed. Dry-run unless --apply.')
+    ap.add_argument('--apply', action='store_true',
+                    help='With --regrade-fades, actually write the flips')
     args = ap.parse_args()
 
     if not preflight():
         sys.exit(1)
+
+    if args.regrade_fades:
+        regrade_fades(args.sport, dry_run=not args.apply)
+        return
 
     if args.backfill > 0:
         end_date = datetime.strptime(args.date, '%Y-%m-%d')
