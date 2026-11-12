@@ -257,6 +257,31 @@ def main() -> int:
         # idempotent (the upsert writes the same finals).
         ('NBA results (today + yesterday)',
          ['nba_resolve_results.py', '--days', '2']),
+        # == 2026-11-12 . NCAAB WAS NEVER IN THIS CHAIN AT ALL ==========
+        # ANDY, 02:00 ET: "every day its a correction ... how should i
+        # have any trust in anything that being surfaced to users in app?"
+        #
+        # He was right, and this was the mechanism. The file above spends
+        # twenty lines explaining how NBA went dark because nothing asked
+        # for YESTERDAY -- and the sport with the MOST GAMES was not in
+        # this chain on any line. Grepping 'ncaab' in this file returned
+        # nothing.
+        #
+        # Measured at 02:05 ET on 2026-11-12, before this was added:
+        #
+        #     ncaab_game_results  2026-11-11   40 rows,   4 scored
+        #     ncaab_game_results  2026-11-10   65 rows,  64 scored
+        #
+        # 11-10 was fine only because the NCAAB pipeline's own resolve
+        # step had had an extra day to fire late. Running
+        # resolve_ncaab_results.py --days-back 2 by hand immediately
+        # patched 78 games and inserted 23, and every curated NCAAB
+        # surface for 11-11 -- Sweat Card, Dawg, Sharp, 47 game reads --
+        # was sitting ungraded behind it.
+        #
+        # Idempotent: PATCHes finals onto rows whose score is NULL.
+        ('NCAAB results', ['resolve_ncaab_results.py',
+                           '--days-back', str(max(args.days, 2))]),
     ):
         ok, _ = run(label, cmd)
         if not ok:
@@ -285,6 +310,22 @@ def main() -> int:
         # primary_play of 'USC ML'. It self-skips NFL inside the week lock
         # and skips started games, so it is safe on a timer.
         ('pick alignment', ['backfill_jerry_pick_alignment.py']),
+        # == 2026-11-12 . grade_jerry_reads WAS MISSING TOO =============
+        # This chain called grade_prop_jerry_reads (PROP reads) and never
+        # grade_jerry_reads (GAME reads). Two graders, names one word
+        # apart, and only one was wired -- so jerry_reads.result stayed
+        # NULL even on nights the chain ran clean.
+        #
+        # Measured 2026-11-12 02:00 ET: jerry_reads for 2026-11-11 was
+        # 0 of 66 graded, while the game_read RECEIPTS off the same calls
+        # had graded 35-22 via grade_public_receipts. The published record
+        # and its own source table disagreed, and the source table was
+        # the one the app reads.
+        #
+        # --sport defaults to every sport, so one call covers all of
+        # them. Must run BEFORE step 3: grade_public_receipts carries the
+        # result forward from here.
+        ('jerry_reads (game reads)', ['grade_jerry_reads.py']),
     ):
         ok, _ = run(label, cmd)
         if not ok:
