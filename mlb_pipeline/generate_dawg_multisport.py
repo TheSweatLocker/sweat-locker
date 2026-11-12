@@ -298,6 +298,60 @@ def main():
               '(-7.94u) historically — recorded under market=rl so they '
               'build their own record.' % mk['rl'])
 
+    # == 2026-11-12 . --one-per-day DID NOT MEAN ONE PER DAY ===========
+    # ANDY: "why did dawg have 3 plays should only be one somehtin is
+    # wont there?"
+    #
+    # daily_card.yml has passed --one-per-day since 10-28, and it was
+    # still producing 2 Dawgs on 11-11 and 3 on 11-10. --one-per-day picks
+    # one candidate PER RUN; the write is `on_conflict=sport,game_date`.
+    # daily_card fires after EVERY sport pipeline -- measured five times on
+    # 11-11 (21:37, 22:19, 23:26, 00:42, 02:03) -- so each run that ranks
+    # a DIFFERENT sport first lands on a different conflict key and
+    # INSERTS instead of replacing. N runs a day, up to N Dawgs:
+    #
+    #   11-10  NCAAF Miami (OH) 18:11 . NBA LA Clippers 18:25 . NHL NJ 18:40
+    #   11-11  NHL Edmonton 12:41 . NCAAB Delaware 21:40
+    #
+    # Worse than a miscount: the (sport, game_date) key also lets a LATER
+    # run overwrite the SAME sport's row while the earlier pick's receipt
+    # survives. 11-11 NCAAB shows exactly that -- Abilene Christian ML
+    # +220 has a graded dawg receipt (published 21:40:32, LOSS) and NO
+    # daily_dawg row at all, because Delaware replaced it. The Dawg record
+    # then carries a play that is not the Dawg.
+    #
+    # First published Dawg of the day WINS. A published play is published;
+    # swapping it after the fact is what minted the orphan. Refreshing the
+    # SAME game is still allowed so a price correction can land.
+    if a.one_per_day and best:
+        existing, _st = req('GET', 'daily_dawg',
+                            {'game_date': 'eq.%s' % gd,
+                             'select': 'sport,team,game_id,created_at',
+                             'order': 'created_at.asc'})
+        existing = existing or []
+        keep = [r for r in existing
+                if str(r.get('game_id')) != str(best[0].get('game_id'))]
+        if keep:
+            held = keep[0]
+            print('')
+            print('  ONE-PER-DAY: a Dawg is already published for %s -- '
+                  '%s %s (%s), written %s.'
+                  % (gd, held.get('sport'), held.get('team'),
+                     held.get('game_id'), str(held.get('created_at'))[:19]))
+            print("  Today's best candidate is %s %s. NOT writing it: a "
+                  'second row would be a second Dawg, and replacing the '
+                  'held one would orphan its receipt.'
+                  % (best[0].get('sport'), best[0].get('call_text')))
+            if len(existing) > 1:
+                print('  !! %d Dawg rows already exist for %s -- pre-fix '
+                      'duplicates, left alone (receipts are published):'
+                      % (len(existing), gd))
+                for r in existing:
+                    print('       %-7s %-30s %s'
+                          % (r.get('sport'), str(r.get('team'))[:30],
+                             r.get('game_id')))
+            return 0
+
     if not a.apply:
         print('')
         print('  DRY RUN -- nothing written. Re-run with --apply.')
