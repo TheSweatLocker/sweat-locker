@@ -108,6 +108,28 @@ MANUAL_ESPN_TO_CANONICAL = {
 }
 
 
+#: Odds API spellings no derivation from ESPN can reach, because the Odds
+#: API disagrees with ESPN about the MASCOT or still uses a retired school
+#: name. Keep this list tiny and only for forms observed live -- a growing
+#: hand-kept list is the bug in feedback_a_blocklist_duplicating_a_lookup_
+#: table, so anything derivable belongs in build_enriched_alt_names instead.
+#:
+#: Observed in ncaab_game_context on 2026-11-11:
+#:   'Grand Canyon Antelopes' -- ESPN mascot is "Lopes", Odds API spells it
+#:                               out, so no cross-product reaches it.
+#:   'IUPUI Jaguars'          -- school became IU Indianapolis in 2024;
+#:                               canonical is 'IU Indy' and the Odds API
+#:                               still ships the retired name.
+KNOWN_ODDS_API_ALIASES = {
+    'Grand Canyon':  ['Grand Canyon Antelopes', 'Antelopes'],
+    'IU Indy':       ['IUPUI Jaguars', 'IUPUI'],
+    # Odds API abbreviates the STATE name itself here ("Miss" for
+    # "Mississippi"), which no State↔St. rule reaches.
+    'Mississippi Valley St.': ['Miss Valley St Delta Devils',
+                               'Miss Valley St', 'Miss Valley State'],
+}
+
+
 # ─── name normalization ───────────────────────────────────────────
 
 _MASCOT_SUFFIXES = None  # populated at runtime from ESPN team.name
@@ -189,7 +211,8 @@ def fetch_espn_teams() -> list:
     return [t.get('team') for t in teams_wrap if t.get('team')]
 
 
-def build_enriched_alt_names(existing: list, espn_team: dict) -> list:
+def build_enriched_alt_names(existing: list, espn_team: dict,
+                             canonical: str = '') -> list:
     """Merge existing alt_names with newly derived variants from ESPN.
     Adds: displayName, name (mascot alone), short_display, abbreviation,
     and normalization variants of location."""
@@ -216,6 +239,36 @@ def build_enriched_alt_names(existing: list, espn_team: dict) -> list:
     # third-party pulls (Covers, VSiN, Barttorvik) match without extra passes
     for v in _normalizations(location):
         if v: alts.add(v)
+
+    # == 2026-11-11 . THE CROSS-PRODUCT WAS THE WHOLE GAP ==================
+    # Every variant above is of the SCHOOL ALONE ("San Diego St.",
+    # "San Diego State") or ESPN's one full displayName ("San Diego State
+    # Aztecs"). The Odds API uses neither: it ships the ABBREVIATED school
+    # WITH the mascot -- "San Diego St Aztecs" -- a form this function has
+    # never emitted, so ncaab_odds_pull's alias gate dropped the event and
+    # ncaab_game_context.canonical_team fell back to IDENTITY and stored the
+    # raw odds name. That name then matches nothing in ncaab_team_stats, so
+    # on 2026-11-11 eleven of forty-seven games carried NO close line, NO
+    # oddscrowd/splits money flow and NO KenPom ratings at once. One missing
+    # alias darkened three surfaces, and 11 of 11 dark games had an
+    # unresolvable name while 34 of 36 lit ones resolved.
+    #
+    # Cross the mascot with the school variants AND with the canonical's own
+    # variants: canonical carries forms ESPN's `location` does not
+    # ("Albany" vs ESPN's "UAlbany", "Cal Baptist" vs "California Baptist",
+    # "Sam Houston St." vs "Sam Houston"), and the Odds API sometimes tracks
+    # the canonical side. Adding an alias cannot mis-name a school the way a
+    # prefix strip can (feedback_prefix_strip_can_name_another_school) --
+    # it only ever adds a key pointing at a row we already chose -- but the
+    # caller still collision-checks before PATCHing.
+    if mascot:
+        schools = set(_normalizations(location)) | set(_normalizations(canonical or ''))
+        for v in schools:
+            if v and v.lower() != mascot.lower():
+                alts.add(f'{v} {mascot}')
+
+    for extra in KNOWN_ODDS_API_ALIASES.get(canonical or '', ()):
+        alts.add(extra)
 
     # Remove canonical itself (implicit)
     return sorted(a for a in alts if a)
@@ -311,7 +364,7 @@ def run(dry_run: bool = False) -> None:
         payload = {
             'espn_id': str(t.get('id')) if t.get('id') else None,
             'odds_api_name': t.get('displayName'),
-            'alt_names': build_enriched_alt_names(existing_alts, t),
+            'alt_names': build_enriched_alt_names(existing_alts, t, canonical),
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
         if patch_alias(canonical, payload, dry_run=dry_run):

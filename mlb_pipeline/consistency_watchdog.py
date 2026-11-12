@@ -821,14 +821,44 @@ def check_prop_direction_flip_drift(date: str) -> Optional[dict]:
 
 #: projected_spread orientation, from each sport's WRITER. Positive value means
 #: "positive = home favoured". Absent = not proven, do not check.
-_PROJ_HOME_POSITIVE = {'NCAAF': True, 'NBA': False}
+#:
+#: == 2026-11-11 . NCAAB WAS ABSENT, SO ITS GATE COULD NEVER FIRE =========
+#: coherence_ok() in retier_from_sport_bars reads this map and returns
+#: `True, ''` the moment a sport is missing -- "convention unproven, skip".
+#: NCAAB was missing, so on the biggest slate of the week (47 games) the
+#: gate built for the Houston Rockets self-contradiction was structurally
+#: dead, and 8 of the 13 priced NCAAB reads on 2026-11-11 published a side
+#: our OWN projection disagreed with: every one of the 5 spread picks sat on
+#: the side the model liked LESS (Tulsa -18.5 on a 17.62 projection,
+#: Arkansas -30.5 on 26.31, VMI -8.5 on 2.89, Michigan -3.5 while the model
+#: has Michigan LOSING by 1.33), and 3 MLs backed a team the model has
+#: losing outright (Temple +105, Delaware +135, Abilene Christian +220).
+#:
+#: Measured against ACTUAL home margins, not against the market -- market
+#: agreement is not accuracy (feedback_market_agreement_is_not_accuracy) --
+#: on all n=274 graded ncaab_game_results rows holding both numbers:
+#:     corr(home_margin, projected_spread) = +0.543   MAE as-is    13.08
+#:                                                    MAE negated  27.57
+#:     corr(home_margin, close_spread)     = -0.754   MAE negated   9.13
+#:                                                    MAE as-is    34.19
+#: So NCAAB carries OPPOSITE conventions on the same row, exactly like
+#: NCAAF: projected_spread is home-POSITIVE, close_spread is home-negative.
+#:
+#: Worth recording while we are here: projected_spread (MAE 13.08) is beaten
+#: by the closing line (9.13) AND out-correlated by raw adj_em_gap (+0.733
+#: vs +0.543), so it compresses blowouts badly and is not an edge source --
+#: it is only fit to veto a pick that contradicts it, which is all this map
+#: is used for.
+_PROJ_HOME_POSITIVE = {'NCAAF': True, 'NBA': False, 'NCAAB': True}
 
 #: close_spread orientation, proven 2026-10-20 by two methods on n=2132-7338.
-_CLOSE_HOME_POSITIVE = {'NFL': True, 'NCAAF': False, 'NBA': False, 'MLB': False}
+#: NCAAB added 2026-11-11 from the n=274 measurement documented above.
+_CLOSE_HOME_POSITIVE = {'NFL': True, 'NCAAF': False, 'NBA': False, 'MLB': False,
+                        'NCAAB': False}
 
 _CTX_TABLE = {'NBA': 'nba_game_context', 'NCAAF': 'ncaaf_game_context',
               'NFL': 'nfl_game_context', 'NHL': 'nhl_game_context',
-              'MLB': 'mlb_game_context'}
+              'MLB': 'mlb_game_context', 'NCAAB': 'ncaab_game_context'}
 
 
 def _implied(american) -> Optional[float]:
