@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -39,7 +40,13 @@ NCAAB_EXTRA_SELECT = 'projected_spread,projected_total,signal_confluence_net'
 
 
 def _et_today() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
+    # 2026-11-11: the NBA and NHL copies of this file were moved to a real
+    # zone on 2026-11-10 and this one was not, which is the whole shape of
+    # feedback_fix_every_writer_to_the_table. A hardcoded -4 is wrong the
+    # 127 days a year ET is EST -- it is EST now -- and the two disagree
+    # only in 04:00-04:59 UTC, exactly when a workflow_run cascade lands
+    # this script (feedback_hardcoded_et_offset_breaks_in_est).
+    return datetime.now(ZoneInfo('America/New_York')).date().isoformat()
 
 
 def run(game_date: str | None = None, dry_run: bool = False):

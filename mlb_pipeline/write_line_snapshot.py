@@ -29,6 +29,7 @@ CLI:
 from __future__ import annotations
 import argparse, os, sys, json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -65,6 +66,25 @@ CTX_TABLE = {
     # ticket/money split to fade - could only ever fire on football.
     'NBA':   'nba_game_context',
     'NHL':   'nhl_game_context',
+    # == 2026-11-11 . NCAAB, AND IT WAS HALF-ADDED ALREADY ================
+    # _ML_COLS below has carried 'NCAAB' for months, so somebody wired the
+    # hard half -- the per-sport column spelling -- and never added the
+    # table here. With the key missing, run() prints "no ctx table
+    # registered - skip" and returns 0, which is indistinguishable from a
+    # night with no games. Net effect: line_snapshot held
+    #   MLB 16,882 . NCAAF 2,179 . NFL 1,191 . NBA 847 . NHL 732 . NCAAB 0
+    # on the sport that plays the MOST games, 47 on 2026-11-11 alone.
+    #
+    # It is not that the data was missing. ncaab_pipeline.yml already
+    # scrapes NCAAB splits (pull_scoresandodds --sport NCAAB) and already
+    # aggregates them (splits_v2_pipeline --sport NCAAB), and 26-30 of 47
+    # context rows carry oddscrowd_snapshot/splits_summary right now. The
+    # time series was simply never appended, so every NCAAB fade signal is
+    # unweightable for want of history, and align_status_common's own
+    # load_public_splits_snapshot -- which READS line_snapshot at
+    # source='so' -- comes back empty for NCAAB, so NCAAB alignment is
+    # computed with no public-splits vote at all.
+    'NCAAB': 'ncaab_game_context',
 }
 
 
@@ -77,7 +97,11 @@ def _parse_snap(s):
 
 
 def _et_today() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+    # 2026-11-11: a hardcoded -4 is wrong the 127 days a year ET is EST, and
+    # it is EST now -- the two disagree in 04:00-04:59 UTC, exactly when a
+    # workflow_run cascade lands this script
+    # (feedback_hardcoded_et_offset_breaks_in_est). Real zone, no offset.
+    return datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
 
 
 def run(sport: str = 'MLB', game_date: str | None = None,

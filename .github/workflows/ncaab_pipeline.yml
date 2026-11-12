@@ -418,6 +418,33 @@ jobs:
           cd mlb_pipeline
           python splits_v2_pipeline.py --sport NCAAB
 
+      # == 2026-11-11 . THE SPLITS WERE SCRAPED AND NEVER ARCHIVED =========
+      # The two steps above have been writing NCAAB splits onto
+      # ncaab_game_context for months, and nothing ever appended the time
+      # series, because write_line_snapshot.py's CTX_TABLE had no 'NCAAB'
+      # key (its _ML_COLS map already did -- the hard half was wired and
+      # the easy half was not) and no workflow ever invoked it for NCAAB.
+      # line_snapshot therefore held
+      #   MLB 16,882 . NCAAF 2,179 . NFL 1,191 . NBA 847 . NHL 732 . NCAAB 0
+      # on the sport with the most games. Two things were broken by that:
+      # every NCAAB fade signal is unweightable without history, and
+      # align_status_common.load_public_splits_snapshot READS line_snapshot
+      # at source='so', so NCAAB alignment was computed with no public
+      # splits vote at all.
+      #
+      # Placed immediately after the aggregator and well before
+      # generate_ncaab_game_reads.py, because a splits step that lands
+      # after the reads loses the scorer its vote even when it succeeds
+      # (feedback_an_always_end_heartbeat_hides_a_cancelled_run).
+      - name: Archive NCAAB splits to line_snapshot
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python write_line_snapshot.py --sport NCAAB
+
       # 2026-08-23 season-ready: signal_registry calibration. Sport-universal
       # script — reads graded games from ncaab_game_results and refreshes
       # signal_registry hit_rates. Silent no-op until Nov 3 games grade.
