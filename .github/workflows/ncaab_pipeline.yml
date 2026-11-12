@@ -482,6 +482,33 @@ jobs:
           cd mlb_pipeline
           python write_line_snapshot.py --sport NCAAB
 
+      # == 2026-11-11 . ALIGNMENT WAS COMPUTED AFTER THE READS USED IT =====
+      # compute_align_status_ncaab.py is not invoked anywhere in this file.
+      # It runs only as an import inside pull_externals_ncaab.py (line ~712,
+      # wrapped in a try/except that prints a warning), and that step sits
+      # at position 40 -- AFTER generate_ncaab_game_reads.py at 35. So the
+      # reads were composed against the PREVIOUS run's alignment every
+      # night, and today's splits only reached align_status after nothing
+      # was left to read them. Exactly the ordering in
+      # feedback_an_always_end_heartbeat_hides_a_cancelled_run, where the
+      # NBA splits steps succeeded and still lost the scorer its vote.
+      #
+      # Every other sport has an explicit step before its reads
+      # (compute_align_status_{nba,nhl,nfl,ncaaf}.py); NCAAB was the only
+      # one relying on the indirect call. Added here, immediately after
+      # line_snapshot lands, so the public-splits vote align_status_common
+      # reads from that table is the one from tonight. The externals puller
+      # still recomputes later -- compute_and_write is idempotent, so the
+      # late pass simply refreshes with handicapper data once it arrives.
+      - name: NCAAB alignment (before the reads)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python compute_align_status_ncaab.py
+
       # 2026-08-23 season-ready: signal_registry calibration. Sport-universal
       # script — reads graded games from ncaab_game_results and refreshes
       # signal_registry hit_rates. Silent no-op until Nov 3 games grade.
