@@ -66,6 +66,43 @@ SPORT_RESULTS = {
     'NBA':   'nba_game_results',
 }
 
+# == 2026-11-12 . THE LEDGER HAS NEVER GRADED AN NCAAB LEG ===============
+# Morning audit found 32 chalk_parlay snapshots PENDING back to 2026-11-04;
+# `grade_ledger_snapshots --days 14` printed graded=0 skipped=32, i.e. it
+# refused every row it was asked to grade.
+#
+# Cause is a two-namespace join, the same one that made line_history look
+# empty for NCAAB. A ledger leg carries the CONTEXT game_id and the results
+# table is keyed on its own scheme:
+#
+#   leg.game_id              4a67ec53bead3f5556b92ef5ad63885c   (ctx hash)
+#   ncaab_game_results.id    ncaab_20261111_Pacific_Long_Beach_St.
+#
+# `_fetch_result` does `game_id=eq.<gid>` only, so every NCAAB leg returned
+# no row -> outcome NR -> combo NR -> `skipped += 1`. NHL is the control:
+# its ids (2026020297) are identical in both tables and NHL legs graded all
+# along, which is why this read as "nothing to grade" rather than a break.
+#
+# Fallback joins on (game_date, home_team, away_team) -- the same triple
+# grade_public_receipts uses (see ncaab_result_ids). Measured on the live
+# backlog: 32 of 34 distinct NCAAB leg ids resolve to a SCORED results row.
+#
+# ORIENTATION IS NEVER GUESSED. The one unresolved game has the two tables
+# disagreeing about which side is home -- ctx "Saint Joseph's @ South
+# Florida" vs results id ncaab_20261111_South_Florida_Saint_Joseph's. Trying
+# the reversed orientation would grade the OPPOSITE SIDE of the bet
+# (feedback_grade_the_side_we_published, feedback_magnitude_cannot_express_a_side),
+# so a disagreement stays NR and the snapshot stays ungraded, which is
+# honest. Exact orientation only.
+SPORT_CONTEXT = {
+    'MLB':   'mlb_game_context',
+    'NFL':   'nfl_game_context',
+    'NCAAF': 'ncaaf_game_context',
+    'NCAAB': 'ncaab_game_context',
+    'NHL':   'nhl_game_context',
+    'NBA':   'nba_game_context',
+}
+
 
 def _et_today() -> str:
     return (datetime.now(timezone.utc) - _et_shift_dst()).date().isoformat()
@@ -82,17 +119,52 @@ def _combined_odds(decs: list[float]) -> int:
     return int(round(100 * payout)) if payout >= 1 else int(round(-100 / payout))
 
 
+_SEL = 'game_id,home_score,away_score,home_team,away_team'
+
+
 def _fetch_result(sport: str, game_id: str) -> dict | None:
+    """The results row for this leg, by id or by (date, home, away).
+
+    See the SPORT_CONTEXT block above for why the second path exists and
+    why it refuses to flip home/away.
+    """
     table = SPORT_RESULTS.get(sport)
-    if not table: return None
-    r = requests.get(f'{SB}/rest/v1/{table}',
-                     headers=H_READ,
-                     params={'game_id': f'eq.{game_id}',
-                             'select': 'game_id,home_score,away_score,home_team,away_team',
-                             'limit': '1'},
-                     timeout=10)
+    if not table or not game_id:
+        return None
+    r = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ,
+                     params={'game_id': f'eq.{game_id}', 'select': _SEL,
+                             'limit': '1'}, timeout=10)
     rows = r.json() if r.status_code == 200 else []
-    return rows[0] if rows else None
+    if rows:
+        return rows[0]
+
+    # Second namespace: the leg is carrying a CONTEXT id.
+    ctx_table = SPORT_CONTEXT.get(sport)
+    if not ctx_table:
+        return None
+    c = requests.get(f'{SB}/rest/v1/{ctx_table}', headers=H_READ,
+                     params={'game_id': f'eq.{game_id}',
+                             'select': 'game_date,home_team,away_team',
+                             'limit': '1'}, timeout=10)
+    crows = c.json() if c.status_code == 200 else []
+    if not crows:
+        return None
+    ctx = crows[0]
+    gd, home, away = (ctx.get('game_date'), ctx.get('home_team'),
+                      ctx.get('away_team'))
+    if not (gd and home and away):
+        return None
+    r2 = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ,
+                      params={'game_date': f'eq.{gd}',
+                              'home_team': f'eq.{home}',
+                              'away_team': f'eq.{away}',
+                              'select': _SEL, 'limit': '2'}, timeout=10)
+    rows2 = r2.json() if r2.status_code == 200 else []
+    # More than one row on one (date, home, away) means duplicates in the
+    # results table; grading off an arbitrary one is feedback_unordered_data_zero_picks_a_vintage.
+    if len(rows2) != 1:
+        return None
+    return rows2[0]
 
 
 def _resolve_pick_side(leg: dict, result: dict) -> str | None:

@@ -326,6 +326,20 @@ def main() -> int:
         # them. Must run BEFORE step 3: grade_public_receipts carries the
         # result forward from here.
         ('jerry_reads (game reads)', ['grade_jerry_reads.py']),
+        # == 2026-11-12 . THE LEDGER WAS NOT IN THIS CHAIN EITHER ========
+        # Morning audit: 32 chalk_parlay snapshots PENDING back to 11-04.
+        # grade_ledger_snapshots is in a workflow but not here, and it was
+        # also refusing every row it saw (graded=0 skipped=32) because a
+        # ledger leg carries the CONTEXT game_id while the results table
+        # is keyed on its own scheme -- see the SPORT_CONTEXT block in that
+        # file. With the fallback join it grades 26 of 32.
+        #
+        # Third omission found in this file in one night (NCAAB resolver,
+        # grade_jerry_reads, this). The pattern is the lesson: a chain whose
+        # purpose is completeness has to assert its own coverage rather than
+        # be extended one surface at a time.
+        ('ledger snapshots', ['grade_ledger_snapshots.py',
+                              '--days', str(max(args.days, 7))]),
     ):
         ok, _ = run(label, cmd)
         if not ok:
