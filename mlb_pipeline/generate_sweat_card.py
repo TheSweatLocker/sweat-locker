@@ -110,6 +110,84 @@ CARD_INELIGIBLE_MARKETS = {('NHL', 'rl')}
 CARD_ML_JUICE_MAX = -300
 
 
+# == 2026-11-12 . A SPORT WITH NO MEASURED CARD EDGE MUST CLEAR A BAR =====
+# ANDY: "sweat card continue to tod not so weela nd thAts a main surface to
+# users so that needs to be better."
+#
+# He is right about the surface and the cause is not the picking. Measured
+# over every graded, usably-priced Sweat Card leg ever published:
+#
+#     sport     n     W-L      hit     ROI      95% CI
+#     MLB     604  362-242   59.9%   +5.5%  [ -1.5,+12.5]
+#     NCAAF    74   37-37    50.0%  -13.4%  [-33.5, +6.8]
+#     NBA      24   18-6     75.0%  +37.9%  [ +4.9,+70.9]
+#     NFL      23    9-14    39.1%  -27.1%  [-65.2,+11.0]
+#     NHL      14    5-9     35.7%  -33.8%  [-82.5,+14.9]
+#     NCAAB    12    3-9     25.0%  -50.6%  [-101.8,+0.6]
+#
+# The card was built and tuned on MLB, where it works. MLB is in offseason,
+# so it now fills its slots from NCAAB and NHL -- the two sports where the
+# engine has never shown an edge, and where NCAAB's own BETTABLE count is 0.
+# On 11-11 all four NCAAB legs were moneylines at conviction 50-51 and all
+# four lost.
+#
+# ANDY'S CALL (11-12): keep every sport on the card, raise the bar. So a
+# gated sport keeps its slots but a leg must clear BOTH a conviction floor
+# strictly above the pinned 50-51 band and a price inside the documented
+# -250..+150 discipline.
+#
+# HONESTY ABOUT WHAT THIS IS WORTH. Replayed over the 27 graded NCAAB+NHL
+# legs, the gate does NOT demonstrably improve the surface:
+#
+#     as published                   n=27  8-19  29.6%  -43.7% [-77.4,-10.0]
+#     conv>51 AND price -250..+150   n=18  6-12  33.3%  -37.8% [-80.1, +4.5]
+#       NCAAB  12 -> 6 legs   -50.6% -> -31.2%  CI [-117.8,+55.4]
+#       NHL    15 -> 12 legs  -38.2% -> -41.1%  (WORSE)
+#
+# The CIs overlap almost entirely and n=27 is below the n>=30 bar, so this
+# is a discipline change, not a measured improvement. It is recorded that
+# way deliberately: do not later quote the gate as having fixed the card
+# (feedback_sample_size_with_pct, feedback_a_comment_asserting_a_measurement).
+#
+# Remove a sport from this map the moment it earns an edge at n>=30; leaving
+# a sport out is what "no gate" means, so COVERAGE of this map is the thing
+# to audit, not its thresholds (feedback_absent_key_makes_a_gate_dead).
+CARD_UNPROVEN_SPORT_GATE = {
+    'NCAAB': {'min_conviction': 51, 'odds_min': -250, 'odds_max': 150},
+    'NHL':   {'min_conviction': 51, 'odds_min': -250, 'odds_max': 150},
+}
+
+
+def card_unproven_gate_ok(sport, conviction, odds):
+    """(ok, reason). True when `sport` is ungated or the leg clears the bar.
+
+    A missing price FAILS: the bar is expressed in price, so an unpriced
+    leg cannot be shown to clear it, and receipt_invariants refuses a
+    priceless play downstream anyway (feedback_204_is_not_a_write -- a
+    silent drop later is worse than a stated refusal here).
+    """
+    bar = CARD_UNPROVEN_SPORT_GATE.get(str(sport).upper())
+    if not bar:
+        return True, ''
+    try:
+        cv = float(conviction)
+    except (TypeError, ValueError):
+        return False, f'conviction {conviction!r} is not a number'
+    if cv <= bar['min_conviction']:
+        return False, (f'conviction {cv:g} is not above the pinned '
+                       f"{bar['min_conviction']} floor for {sport}")
+    if odds is None:
+        return False, f'no price on the row, so the {sport} price bar cannot be met'
+    try:
+        od = float(odds)
+    except (TypeError, ValueError):
+        return False, f'price {odds!r} is not a number'
+    if not (bar['odds_min'] <= od <= bar['odds_max']):
+        return False, (f'price {od:+g} is outside the {sport} card band '
+                       f"{bar['odds_min']:+g}..{bar['odds_max']:+g}")
+    return True, ''
+
+
 def _prop_side_odds(prop):
     """The posted price for the SIDE this prop pick takes, or None.
 
@@ -1904,6 +1982,18 @@ def fetch_football_picks(today: str,
             if _flip and _mk in ('rl', 'spread', 'puckline', 'pl'):
                 _odds = (row.get('close_spread_home_price') if _sd == 'HOME'
                          else row.get('close_spread_away_price'))
+
+            # Unproven-sport bar. Placed HERE because it is expressed in
+            # price and `_odds` is only resolved above -- and before
+            # `_entry` so a refused leg never enters the pool at all
+            # (feedback_gate_the_stored_row_not_the_inflight_row).
+            _gate_ok, _gate_why = card_unproven_gate_ok(
+                sport, pp.get('conviction'), _odds)
+            if not _gate_ok:
+                print(f'  ⛔ {sport} card: REFUSED {pp.get("label")!r} '
+                      f'({tier}) — {_gate_why}')
+                continue
+
             _entry = {
                 'sport': sport,
                 'game_id': row.get('game_id'),
