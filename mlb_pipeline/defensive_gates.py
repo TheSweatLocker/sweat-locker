@@ -2898,11 +2898,37 @@ def _recover_spread_from_close(pp: dict, ctx: dict,
 
 
 #: close_spread orientation: does a POSITIVE close_spread mean the HOME team
-#: is favoured? Proven 2026-10-20 by two methods on n=2132-7338; this is the
-#: same table consistency_watchdog._CLOSE_HOME_POSITIVE carries, and a sport
-#: ABSENT from it is unproven and must be SKIPPED rather than guessed
-#: (NHL and NCAAB are deliberately absent).
-_CHP_FOR_RECOVERY = {'NFL': True, 'NCAAF': False, 'NBA': False, 'MLB': False}
+#: is favoured? Proven 2026-10-20 by two methods on n=2132-7338. A sport
+#: ABSENT from it is unproven and must be SKIPPED rather than guessed.
+#:
+#: == 2026-11-11 . THIS WAS A HAND-KEPT SECOND COPY, AND IT DRIFTED =======
+#: The comment here used to claim this "is the same table
+#: consistency_watchdog._CLOSE_HOME_POSITIVE carries" and then restate it
+#: as a literal -- which is a promise no literal can keep. NCAAB's
+#: orientation was proven today (n=274 against ACTUAL home margins:
+#: corr(home_margin, close_spread) = -0.754, MAE 9.13 negated vs 34.19
+#: as-is) and added to the watchdog's table, and this copy went stale in
+#: the same commit: ncaab_game_context immediately printed "'Pepperdine
+#: ATS' has no line and sport='NCAAB' has no PROVEN close_spread
+#: orientation" on a sport that now has one.
+#:
+#: Same shape as feedback_a_blocklist_duplicating_a_lookup_table and
+#: feedback_fix_every_writer_to_the_table: the fix is to READ the one
+#: table, not to re-type it correctly a second time. Failure returns {},
+#: which reads as "unproven" and leaves the pick untouched -- the same
+#: direction this function already takes for an absent sport, so a broken
+#: import degrades to today's behaviour rather than guessing a side.
+def _chp_conventions() -> dict:
+    try:
+        from consistency_watchdog import _CLOSE_HOME_POSITIVE
+        return dict(_CLOSE_HOME_POSITIVE)
+    except Exception as e:
+        print(f'  ! cannot import close_spread conventions ({type(e).__name__}) '
+              f'-- line recovery from close_spread DISABLED, picks left as-is')
+        return {}
+
+
+_CHP_FOR_RECOVERY = _chp_conventions()
 
 
 def recover_pick_line(pp: dict | None, ctx: dict,
