@@ -1524,7 +1524,29 @@ def check_signal_wiring() -> Optional[dict]:
 #     NFL / NCAAF   kickoff_utc
 #     NBA           commence_time_utc
 #     NHL           commence_time
-#     NCAAB         game_time_et     <- ET, deliberately NOT parsed as UTC
+#     NCAAB         game_time_et     <- MISNAMED: it is UTC. See below.
+#
+# == 2026-11-11 . game_time_et IS UTC, SO NCAAB COULD NEVER GO CRITICAL ===
+# This map used to carry ('game_time_et', False) because the column name
+# says ET and guessing a timezone to sharpen a severity is how
+# feedback_window_from_runner_clock_is_a_day_ahead happened. Conservative
+# was the right instinct and the wrong answer: with is_utc False, an unread
+# NCAAB game can only ever reach WARNING, never CRITICAL, on the sport that
+# plays the most games -- 47 on 2026-11-11 alone. A severity that cannot
+# fire is a muted detector.
+#
+# Measured on all 506 rows carrying the column rather than reasoned from
+# the name:
+#   * 506 of 506 end in '+00:00'. It is an explicit offset-aware stamp, not
+#     a naive local one, so fromisoformat already returns the right instant.
+#   * Read as UTC and converted to ET, tip hours are 19:00 x197, 20:00 x96,
+#     21:00 x58, 18:00 x37, 22:00 x35 -- a textbook basketball slate.
+#   * Read as if already ET, 197 games tip at 00:00 and 96 at 01:00, which
+#     no college basketball schedule has ever looked like.
+# The name is wrong; the data is UTC. ncaab_odds_pull writes it from the
+# Odds API commence_time, which is UTC, and app/index.tsx has always
+# consumed it as a commence_time (index.tsx ~3447). This was the only
+# reader treating it as local.
 #     MLB           no usable column on the context table
 # Where there is no trustworthy UTC kickoff the check still fires, at WARNING
 # rather than CRITICAL, because "today and unread" is worth saying even when
@@ -1533,7 +1555,8 @@ def check_signal_wiring() -> Optional[dict]:
 _READ_KICKOFF_COL = {
     'NFL': ('kickoff_utc', True), 'NCAAF': ('kickoff_utc', True),
     'NBA': ('commence_time_utc', True), 'NHL': ('commence_time', True),
-    'NCAAB': ('game_time_et', False), 'MLB': (None, False),
+    # True: offset-aware UTC, proven on 506/506 rows -- see the block above.
+    'NCAAB': ('game_time_et', True), 'MLB': (None, False),
 }
 _READ_CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
              'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
