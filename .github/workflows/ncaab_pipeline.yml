@@ -436,6 +436,43 @@ jobs:
       # generate_ncaab_game_reads.py, because a splits step that lands
       # after the reads loses the scorer its vote even when it succeeds
       # (feedback_an_always_end_heartbeat_hides_a_cancelled_run).
+      # == 2026-11-11 . home_l10 / away_l10 HAD NEVER BEEN WRITTEN ========
+      # Those two columns exist ONLY on ncaab_game_context (the same select
+      # 400s on every other sport's context table) and stood at 0 of 506
+      # rows -- not 0 for today, 0 for the table's whole life. Meanwhile
+      # generate_ncaab_game_reads.py READS them, so the read prompt has been
+      # handed a null for form since the column shipped.
+      # enrich_team_form_universal does cover NCAAB but writes the VENUE
+      # family (home_ats_l10_at_home, away_ml_l10_on_road); overall last-10
+      # is a different fact and nothing owned it.
+      # Runs before the reads for the same reason the splits step does.
+      - name: NCAAB last-10 form
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python enrich_ncaab_l10.py --days 3
+
+      # == 2026-11-11 . A CLOSING LINE NO BOOK POSTED IS A FAKE RESULT =====
+      # 79.2% of ncaab_game_results.close_spread and 80.4% of close_total
+      # were not multiples of 0.5 (-45.25, -44.93, -1.28, 0.15) -- averages
+      # written by the pre-2026-11-02 consensus code, 4,256 of them in a
+      # single 2026-07 bulk backfill. A fake line makes a fake cover result,
+      # so every spread/total signal weight fit on that history was fit on
+      # fabricated outcomes. Reports only; it never edits a row. Non-fatal
+      # so a known-contaminated history cannot block the slate, but it stays
+      # loud in the log until the measurement paths all screen for it.
+      - name: Audit unpostable closing lines (all sports)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_unpostable_lines.py
+
       - name: Archive NCAAB splits to line_snapshot
         continue-on-error: true
         env:

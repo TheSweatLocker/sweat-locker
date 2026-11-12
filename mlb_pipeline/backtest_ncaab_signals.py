@@ -86,6 +86,8 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 JOIN_WINDOW_DAYS = 3
 
 
+from posted_line import is_postable
+
 def page(table: str, select: str, **extra) -> list:
     out, off = [], 0
     while True:
@@ -126,6 +128,50 @@ def build_pairs(verbose: bool = False):
                'close_spread,close_total,spread_result,total_result,home_win,'
                'close_home_ml,close_away_ml,home_ml_close,away_ml_close')
     graded = [r for r in res if r.get('home_score') is not None]
+
+    # == 2026-11-11 . 79% OF NCAAB CLOSING LINES WERE NEVER POSTED =========
+    # ncaab_odds_pull._consensus_spread AVERAGED across books until it was
+    # fixed on 2026-11-02, and ncaab_game_context._avg_market_line did the
+    # same. Everything written before that fix carries a number no book
+    # could take a bet on: close_spread values like -45.25, -44.93, -43.38,
+    # -1.28, 0.15. Measured across every sport's results table:
+    #
+    #   NCAAB close_spread  4,257 of 5,373 NOT postable   79.2%
+    #   NCAAB close_total   4,321 of 5,374 NOT postable   80.4%
+    #   NBA / NFL / NCAAF / MLB / NHL          0.0%-0.4%
+    #
+    # NCAAB alone, and all of it 2024-11..2025-04. A fake line makes a fake
+    # cover result (feedback_consensus_line_must_be_posted), so every
+    # spread and total signal weight fit on this history was fit on
+    # fabricated outcomes -- and nothing in this file, refit_signal_registry,
+    # calibrate_spread_split or refresh_prop_signal_calibration screened
+    # for it.
+    #
+    # Invalidate the FIELD, not the row. The moneylines on these same rows
+    # are genuine -- all 4,922 two-way pairs carry a plausible book hold
+    # (mean +4.32%, min +1.63%, max +6.16%, zero pairs under 0.5%, which no
+    # book would ever offer) -- so dropping the row would throw away valid
+    # ML outcomes to fix a spread problem. Nulling the untrustworthy column
+    # lets spread/total measurements skip the game while ML keeps full n.
+    #
+    # is_postable comes from posted_line, the module the 11-02 fix added,
+    # rather than a second local "multiple of 0.5" test
+    # (feedback_a_blocklist_duplicating_a_lookup_table).
+    _unpostable = {'close_spread': 0, 'close_total': 0}
+    for r in graded:
+        for _col in ('close_spread', 'close_total'):
+            if is_postable(r.get(_col)) is False:
+                r[_col] = None
+                if _col == 'close_spread':
+                    r['spread_result'] = None
+                else:
+                    r['total_result'] = None
+                _unpostable[_col] += 1
+    if any(_unpostable.values()):
+        print(f'  ! dropped unpostable lines (averaged, not quoted): '
+              f"close_spread {_unpostable['close_spread']}, "
+              f"close_total {_unpostable['close_total']} of {len(graded)} graded "
+              f'-- moneylines on those rows are kept, they are real')
     by_pair = collections.defaultdict(list)
     for r in graded:
         a, h = R.resolve(r['away_team']), R.resolve(r['home_team'])
