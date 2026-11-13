@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+import nfl_roof as _roof          # one definition of outdoor/indoor (2026-11-12)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -72,13 +73,11 @@ def nfl_tags(row: dict) -> list[str]:
     home = row.get('home_team'); away = row.get('away_team')
     if spread is not None and spread <= -7.0:
         tags.append('nfl_heavy_home_dog')
-    if roof in ('outdoors', 'open') and (
-        (temp is not None and temp <= 40) or (wind is not None and wind >= 12)
-    ):
+    if _roof.outdoor_under_qualifies(roof, temp, wind):
         tags.append('nfl_outdoor_under')
     if home and away and NFL_DIVISION.get(home) == NFL_DIVISION.get(away) and NFL_DIVISION.get(home):
         tags.append('nfl_div_home_cover')
-    if roof in ('dome', 'closed') and total is not None and total >= 47:
+    if _roof.is_indoor(roof) and total is not None and total >= 47:
         tags.append('nfl_dome_over')
     if spread is not None and spread > 0:
         tags.append('nfl_home_fav')

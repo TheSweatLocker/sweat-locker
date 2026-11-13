@@ -8393,7 +8393,14 @@ function NFLSituationalCard({ctx, homeTeam, awayTeam, cohortRecords}: any) {
   // is materially bad. Below 30°F (elite cold), >15 mph wind (real air-ball
   // territory). Weather section shows the raw numbers already; these are
   // the "this actually matters" flags.
-  const outdoor = roof && String(roof).toLowerCase() === 'outdoor';
+  // 2026-11-12: this tested ONLY the singular 'outdoor'. nfl_game_context
+  // happens to hold that (nfl_weather_pull writes it), but nfl_game_results
+  // and nflverse use 'outdoors', and 'open' is a retractable roof that IS
+  // open air. A one-string test meant the chips were one writer-rename away
+  // from going dark -- which is exactly how nfl_outdoor_under fired 0 times
+  // on 316 rows server-side. Mirrors mlb_pipeline/nfl_roof.OUTDOOR.
+  const outdoor = !!roof && ['outdoor', 'outdoors', 'open']
+    .includes(String(roof).trim().toLowerCase());
   const cold  = outdoor && ctx?.temp != null && Number(ctx.temp) < 30;
   const wind  = outdoor && ctx?.wind != null && Number(ctx.wind) > 15;
 

@@ -31,6 +31,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 import requests
 from dotenv import load_dotenv
+import nfl_roof as _roof          # one definition of outdoor/indoor (2026-11-12)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -889,7 +890,7 @@ def compute_projections(home_stats: dict, away_stats: dict, roof: str,
 
     # Venue adjustments (weather/dome apply to both sides equally)
     venue_adj = 0.0
-    if roof and roof.lower() in ('dome', 'closed'): venue_adj += DOME_ADJ
+    if _roof.is_indoor(roof): venue_adj += DOME_ADJ
     if temp is not None and int(temp) <= 35: venue_adj += COLD_ADJ
     if wind is not None and int(wind) >= 15: venue_adj += WIND_ADJ
 
@@ -1059,13 +1060,15 @@ def compute_cohort_tags(row: dict) -> list:
 
     if spread is not None and spread <= -7.0:
         tags.append('nfl_heavy_home_dog')
-    if roof in ('outdoors', 'open') and (
-        (temp is not None and temp <= 40) or (wind is not None and wind >= 12)
-    ):
+    # nfl_weather_pull writes 'outdoor' into THIS table while the literal
+    # set here only knew the nflverse 'outdoors' -- so this tag fired on
+    # 0 of 316 rows, ever, and the one validated NFL weather lens was
+    # unreachable. One definition now, in nfl_roof (2026-11-12).
+    if _roof.outdoor_under_qualifies(roof, temp, wind):
         tags.append('nfl_outdoor_under')
     if home and away and NFL_DIVISION.get(home) == NFL_DIVISION.get(away) and NFL_DIVISION.get(home):
         tags.append('nfl_div_home_cover')
-    if roof in ('dome', 'closed') and total is not None and total >= 47:
+    if _roof.is_indoor(roof) and total is not None and total >= 47:
         tags.append('nfl_dome_over')
     if spread is not None and spread > 0:
         tags.append('nfl_home_fav')

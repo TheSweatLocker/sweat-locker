@@ -56,6 +56,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 import market_line as ML
+import nfl_roof as _roof          # one definition of outdoor/indoor (2026-11-12)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     try:
@@ -215,13 +216,11 @@ def main():
     # 'open' is outdoors. Grouping on the condition rather than the stadium
     # type is both the right question and what keeps 'open' (n=2 in the latest
     # 1000) from being silently dropped by the sample floor.
-    _INDOOR = {'dome', 'closed'}
-    _OUTDOOR = {'outdoors', 'open'}
-
+    # 2026-11-12: these two literal sets knew only the nflverse spelling,
+    # so every nfl_game_context row ('outdoor') classified None and was
+    # DROPPED from the measurement -- 272 of 316. Shared definition now.
     def roof_cond(r):
-        v = str(r.get('roof') or '').lower()
-        return ('indoors' if v in _INDOOR else
-                'outdoors' if v in _OUTDOOR else None)
+        return _roof.roof_cond(r.get('roof'))
     test('ROOF CONDITION -> home cover', roof_cond)
     test('ROOF CONDITION -> OVER hit', roof_cond, outcome='over')
     test('DIVISION GAME -> home cover',

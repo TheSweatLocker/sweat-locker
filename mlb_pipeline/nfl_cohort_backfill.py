@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional
 import requests
 from dotenv import load_dotenv
+import nfl_roof as _roof          # one definition of outdoor/indoor (2026-11-12)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -114,9 +115,7 @@ def compute_cohorts_for_game(g: dict) -> list[str]:
     roof = (g.get('roof') or '').lower()
     temp = _f(g.get('temp'))
     wind = _f(g.get('wind'))
-    if roof in ('outdoors', 'open') and (
-        (temp is not None and temp <= 40) or (wind is not None and wind >= 12)
-    ):
+    if _roof.outdoor_under_qualifies(roof, temp, wind):
         cohorts.append('nfl_outdoor_under')
 
     # 3. Division game — home team POV
@@ -125,7 +124,7 @@ def compute_cohorts_for_game(g: dict) -> list[str]:
         cohorts.append('nfl_div_home_cover')
 
     # 4. Dome over — indoor + high total
-    if roof in ('dome', 'closed') and total is not None and total >= 47:
+    if _roof.is_indoor(roof) and total is not None and total >= 47:
         cohorts.append('nfl_dome_over')
 
     # (spread convention: nflverse positive = home fav)
