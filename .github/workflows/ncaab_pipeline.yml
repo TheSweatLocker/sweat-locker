@@ -776,6 +776,26 @@ jobs:
           cd mlb_pipeline
           python ncaab_resolve_primary_play.py
 
+      # ══ 2026-11-13 · SHADOW THE REBUILT CONVICTION ═══════════════════
+      # ncaab_conviction replaces a dead constant (266 of 274 picks inside
+      # 50-54) with a calibrated probability. The resolver stamps it under
+      # `_cal_*` and does NOT overwrite primary_play.conviction, because
+      # five live gates encode the old meaning -- _conviction_tier alone
+      # turns a true 89 on a de-vigged -800 favourite into "prime" and
+      # hands it to the POTD lock. This prints the gate delta nightly so
+      # the switch is thrown on accumulated evidence, not one replay.
+      # Report only: --strict is deliberately NOT passed, so a looser
+      # night is visible in the log without failing the pipeline.
+      - name: Shadow NCAAB calibrated conviction
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_ncaab_conviction_shadow.py
+
       # ══ 2026-11-06 · THE SYNC USED TO RUN BEFORE THE RESOLVER ════════
       # This step was at line 599, ABOVE the 4-lens resolver that writes the
       # primary_play it syncs, so it always carried the PREVIOUS run's pick.

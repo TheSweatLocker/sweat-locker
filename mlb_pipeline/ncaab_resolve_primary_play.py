@@ -18,7 +18,16 @@ LENS INVENTORY (production 2026-08-14)
      (existing, from ncaab_game_context.py compute_projections/confluence)
   2. MC: mc_probabilities.mc_expected_margin/mc_expected_total/mc_p_home
   3. Panel: panel_prediction.panel_projected_margin/panel_projected_total
-  4. Jerry: read from ncaab_jerry_reads.recommended_pick if present
+  4. Jerry: read from jerry_reads (sport='NCAAB'), echo rows refused.
+     ══ IT IS 3 LENSES IN PRACTICE, NOT 4 (measured 2026-11-13) ══
+     This lens queried `ncaab_jerry_reads`, a table that does not exist
+     (404 PGRST205), and the loader swallowed the error -- so it voted
+     no_signal on 274 of 274 rows from 2026-08-14 until today. _load_jerry
+     now reads the real table and says what it finds, but most LLM-authored
+     rows carry call_market=None and a present call is often a TOTAL, which
+     cannot vote on the side lens by construction. Treat the side lens as
+     3-voter until the reads carry a structured side, and read the count
+     this file prints rather than trusting the "/4" in its own output.
 
   V4 XGBoost slot reserved for Feb 2027 when we have accumulated
   our own daily rating snapshots.
@@ -492,9 +501,17 @@ def _load_games(game_date: date) -> list:
     # column NAME says ET and the VALUE is a UTC timestamp, verified
     # against the 11-06 slate (21:00:00 .. 03:30:00 for a 4pm-10:30pm ET
     # card), so it is compared against utcnow and never localised.
+    # adj_em_gap / home_adj_em / away_adj_em / is_neutral_site added
+    # 2026-11-13 for ncaab_conviction.margin_estimate. Without them the
+    # calibrated stamp read p_model=None on 25 of 25 picks and fell back to
+    # `market_only` -- which produces the SAME conviction at W_MODEL=0, so
+    # the wiring break was invisible in the output and would have starved
+    # the weekly refit of the very number it exists to measure
+    # ([[feedback_zero_rows_is_a_wiring_error]]).
     fields = ('game_id,home_team,away_team,projected_spread,projected_total,'
               'close_spread,close_total,open_spread,open_total,'
-              'close_home_ml,close_away_ml,game_time_et,'
+              'close_home_ml,close_away_ml,game_time_et,is_neutral_site,'
+              'adj_em_gap,home_adj_em,away_adj_em,'
               'signal_confluence_net,mc_probabilities,panel_prediction')
     r = requests.get(
         f'{SB}/rest/v1/ncaab_game_context?select={fields}'
@@ -506,15 +523,84 @@ def _load_games(game_date: date) -> list:
     return r.json() or []
 
 
+#: Rows the sync writes BACK from primary_play carry this suffix
+#: (sync_jerry_reads_from_ctx: prompt_version = f'{sport}_ctx_bridge_v1').
+#: Counting one as a lens vote would be the engine corroborating itself.
+_ECHO_SUFFIX = '_ctx_bridge_v1'
+
+
 def _load_jerry(game_date: date) -> dict:
-    """Return {game_id: recommended_pick} from ncaab_jerry_reads if table exists."""
+    """Return {game_id: pick string} for the Jerry lens.
+
+    == 2026-11-13 . THE 4TH LENS HAS NEVER VOTED, AND HERE IS WHY ════════
+    This asked for `ncaab_jerry_reads.recommended_pick`. There is no such
+    table:
+
+        GET /rest/v1/ncaab_jerry_reads -> 404 PGRST205
+        "Could not find the table 'public.ncaab_jerry_reads' in the schema
+         cache"
+
+    and the old body returned `{}` on any non-200, so a 404 was
+    indistinguishable from an empty slate. The file has printed
+    "jerry picks: 0" every run since it shipped on 2026-08-14, the lens has
+    voted `no_signal` on 274 of 274 rows, and the step is still named
+    "4-lens primary_play resolver"
+    ([[feedback_select_star_before_concluding_absent]],
+     [[feedback_swallowed_nameerror_is_a_false_condition]]).
+
+    The reads live in `jerry_reads` with sport='NCAAB'. Pointing at it is
+    necessary and NOT sufficient, which is why this returns what it can and
+    says what it cannot:
+
+      * ECHO. sync_jerry_reads_from_ctx writes `call_*` back from
+        primary_play with prompt_version 'ncaab_ctx_bridge_v1' -- 233 of
+        503 NCAAB rows. Within one pipeline pass the LLM generator (step
+        752) runs before this resolver (step 769) and the sync after it
+        (step 799), so the first pass is clean; a SECOND pass the same day
+        would read the engine's own prior pick back as corroboration. Those
+        rows are refused here ([[feedback_lens_independence_needs_
+        different_inputs]]).
+      * SHAPE. Of the 270 LLM-authored rows most carry call_market=None,
+        and a structured call that IS present is often a total
+        ('total/UNDER 163.5'). _side_votes matches a TEAM NAME inside the
+        string, so a total can never vote on the side lens and correctly
+        reads as no_signal there. Wiring the table does not by itself give
+        the side lens a 4th voter; the reads have to start carrying a
+        structured side. Counted and printed rather than assumed.
+    """
     r = requests.get(
-        f'{SB}/rest/v1/ncaab_jerry_reads?select=game_id,recommended_pick'
+        f'{SB}/rest/v1/jerry_reads'
+        f'?select=game_id,call_market,call_side,call_line,call_text,'
+        f'prompt_version&sport=eq.NCAAB'
         f'&game_date=eq.{game_date.isoformat()}',
         headers=H_READ, timeout=15)
-    if r.status_code != 200: return {}
-    return {row.get('game_id'): row.get('recommended_pick')
-            for row in (r.json() or []) if row.get('game_id')}
+    if r.status_code != 200:
+        # LOUD. The previous silent `return {}` is the whole reason this
+        # lens was dark for three months.
+        print(f'  ⚠ jerry lens read FAILED {r.status_code}: {r.text[:200]} '
+              f'— lens will vote no_signal on every game')
+        return {}
+    out, echo, shapeless = {}, 0, 0
+    for row in (r.json() or []):
+        gid = row.get('game_id')
+        if not gid:
+            continue
+        if str(row.get('prompt_version') or '').endswith(_ECHO_SUFFIX):
+            echo += 1
+            continue
+        pick = row.get('call_text') or ''
+        if not pick:
+            side = row.get('call_side')
+            if side:
+                pick = f"{side} {row.get('call_line') or ''}".strip()
+        if not pick:
+            shapeless += 1
+            continue
+        out[gid] = pick
+    if echo or shapeless:
+        print(f'  · jerry lens: {len(out)} usable, {echo} refused as our own '
+              f'echo, {shapeless} with no structured call')
+    return out
 
 
 def _write(game_id, result: dict) -> bool:
@@ -740,7 +826,18 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
             if not _ok:
                 _pp = dict(result.get('primary_play') or {})
                 _pp['_unactionable'] = _why
-                _pp['_unactionable_at'] = '2026-11-05'
+                # ══ 2026-11-13 · THIS WAS A FROZEN LITERAL ══════════════
+                # Every pick this gate has ever withdrawn carries
+                # `_unactionable_at: '2026-11-05'`, the day the gate
+                # shipped -- 77 rows, 5 of them on the 11-12 board. A
+                # stamp that says WHEN and never changes answers no
+                # question it was added to answer: it cannot tell a pick
+                # withdrawn tonight from one withdrawn a week ago, so
+                # neither a staleness check nor a repair can be keyed on
+                # it. consistency_watchdog only tests the key's PRESENCE,
+                # so dating it truthfully changes no gate.
+                from sweat_dates import et_today as _et
+                _pp['_unactionable_at'] = _et()
                 # Demoted to COVERAGE, an EXISTING non-publishable tier, not
                 # to a new word. The last time this file's neighbours
                 # invented one ("solid", conviction 60-69) the publish-lock
@@ -755,6 +852,79 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
                       f'{str(_pp.get("label"))[:34]!r} — {_why}')
         except ImportError:
             pass          # gate absent — publish as before rather than block
+
+        # ══ 2026-11-13 · CALIBRATED CONVICTION, WRITTEN ALONGSIDE ════════
+        # ANDY: "rebuild conviction model." ncaab_conviction holds the
+        # rebuild and its walk-forward measurement; this stamps its output
+        # onto the pick under `_cal_*` keys and does NOT touch
+        # primary_play.conviction.
+        #
+        # WHY NOT OVERWRITE IT. The rebuilt number is a calibrated
+        # PROBABILITY (50-97, p75 = 65), and five live gates encode the old
+        # 50-54 weight-sum meaning:
+        #
+        #   jerry_anchor_potd._conviction_tier   conv >= 80 -> "prime"
+        #   generate_sweat_card CARD_UNPROVEN_GATE['NCAAB'] min_conviction 51
+        #   conviction_scale.ANCHORS['NCAAB']    (51, 52, 54, 62)
+        #   steam_room_ladder                    "NBA/NHL/NCAAB cap at 55
+        #                                         and could never reach STRONG"
+        #   the app's "{conviction}% confidence" subtitle
+        #
+        # A de-vigged -800 favourite is a true 89, and _conviction_tier
+        # would read that as PRIME and hand it to the POTD publish lock --
+        # a display number becoming a gating tier, which has already cost
+        # two negative-edge POTDs ([[feedback_a_display_label_became_a_
+        # gating_tier]]) and 58 live cards ([[feedback_falsy_zero_invented_
+        # a_tier_and_a_confidence]]). Replayed over 11-07..11-12 the
+        # re-pinned gates are strictly stricter -- POTD 50 -> 36 eligible,
+        # card 50 -> 22 legs -- but that is a five-surface semantic
+        # migration and it is Andy's call, not a side effect of this stamp.
+        # audit_ncaab_conviction_shadow.py reports the delta nightly
+        # ([[feedback_suppression_gate_needs_shadow]]).
+        try:
+            import ncaab_conviction as _nc
+            _pp = result.get('primary_play')
+            if _pp:
+                _mk = str(_pp.get('type') or '').lower()
+                _side = _pp.get('side')
+                _od = _opp = None
+                if _mk == 'ml' and str(_side or '').upper() in ('HOME', 'AWAY'):
+                    _hm = (g.get('close_home_ml') if g.get('close_home_ml')
+                           is not None else g.get('home_ml_close'))
+                    _aw = (g.get('close_away_ml') if g.get('close_away_ml')
+                           is not None else g.get('away_ml_close'))
+                    _od, _opp = ((_hm, _aw) if str(_side).upper() == 'HOME'
+                                 else (_aw, _hm))
+                elif _mk in ('rl', 'spread', 'total'):
+                    # A posted NCAAB spread/total is quoted both ways near
+                    # -110. Using the real two-way price when we have it
+                    # would be better; we do not store it per side yet, so
+                    # this is flagged in _cal_source rather than hidden.
+                    _od = _opp = -110
+                _res = _nc.p_win(g, _mk, _side, line=_pp.get('line'),
+                                 odds=_od, opp_odds=_opp)
+                _pp['_cal_conviction'] = _nc.conviction(_res['p'])
+                _pp['_cal_p_win'] = (round(_res['p'], 4)
+                                     if _res['p'] is not None else None)
+                _pp['_cal_p_model'] = (round(_res['p_model'], 4)
+                                       if _res['p_model'] is not None else None)
+                _pp['_cal_p_market'] = (round(_res['p_market'], 4)
+                                        if _res['p_market'] is not None else None)
+                # raw_delta is UNVALIDATED and recorded for the weekly refit;
+                # credited_edge is what a gate may read, and is 0.0 until a
+                # market earns weight.
+                _pp['_cal_raw_delta_pp'] = _res['raw_delta_pp']
+                _pp['_cal_credited_edge_pp'] = _nc.credited_edge_pp(_res)
+                _pp['_cal_source'] = _res['source']
+                _pp['_cal_model'] = 'ncaab_conviction/2026-11-13'
+        except ImportError:
+            pass          # module absent — pick unchanged
+        except Exception as _ce:                             # noqa: BLE001
+            # Never let a stamp take down the resolver. Printed, not
+            # swallowed silently ([[feedback_swallowed_nameerror_is_a_
+            # false_condition]]).
+            print(f'  ⚠ calibrated conviction failed for {g.get("game_id")}: '
+                  f'{type(_ce).__name__}: {_ce}')
 
         tier_counts[result['sweat_tier']] = tier_counts.get(result['sweat_tier'], 0) + 1
 
