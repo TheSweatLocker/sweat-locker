@@ -309,6 +309,43 @@ jobs:
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_game_context.py" python ncaab_game_context.py
 
+      # == 2026-11-12 . is_neutral_site WAS FALSE ON 540 OF 540 ROWS =======
+      # ANDY: "ncaab game details ... and ncaab engine and models need more
+      # work alot more work."
+      #
+      # The flag is load-bearing. ncaab_mc_simulator:131 is
+      #     home_expected = home_eff * pace / 100 + (0.0 if neutral else HFA_POINTS)
+      # with HFA_POINTS = 3.5, and ncaab_panel_predictor:361 reads the same
+      # column. Stuck False, every neutral-site game was handed 3.5 points
+      # of home court that does not exist -- 39 of 540 rows (7.2%).
+      # `venue` was NULL on 540 of 540 too, while nba_game_context.venue is
+      # 264/264 and nhl is 397/397, and generate_ncaab_game_reads:160 reads
+      # ctx.get('venue') -- so the read prompt got a null for it.
+      #
+      # It also explains the duplicate result rows. ncaab_game_results held
+      # 13 matchups TWICE over 11-01..11-11, 12 of 13 with home and away
+      # swapped and one row of each pair scoreless, which made graders
+      # report "no result" and left 6 ledger tickets ungraded. Checked
+      # against ESPN: 14 of 14 of those pairs are neutral-site games,
+      # against a 7.1% base rate on the same dates. At a neutral site there
+      # IS no home team, so two feeds pick differently -- not a corrupt
+      # writer, a fact with no answer.
+      #
+      # Runs immediately after the context build, because the MC simulator
+      # (step ~667) and the panel model (~558) both read is_neutral_site and
+      # would otherwise use the previous run's value -- the same
+      # after-its-readers ordering bug as compute_align_status_ncaab on
+      # 11-11.
+      - name: NCAAB venue + neutral-site flag (ESPN)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "enrich_ncaab_venue.py" python enrich_ncaab_venue.py --days 3 --days-back 2
+
       # ══ 2026-10-21 · LAUNCH READINESS, BECAUSE THERE IS NO OTA ══
       #
       # The same defect has shipped three times, once per sport, and a user
