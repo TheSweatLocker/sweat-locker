@@ -52,6 +52,7 @@ from ncaab_season import season_label  # noqa: E402
 from sweat_dates import et_date_of  # noqa: E402
 from posted_line import posted_consensus as _posted_consensus  # noqa: E402
 from posted_line import posted_price as _posted_price  # noqa: E402
+import ncaab_team_resolver as _resolver   # the ONE name resolver (2026-11-12)
 SEASON = season_label()
 ODDS_SPORT_KEY = "basketball_ncaab"
 
@@ -99,7 +100,29 @@ def fetch_team_stats():
     if r.status_code != 200:
         return {}
     rows = r.json() or []
-    return {r["team"]: r for r in rows}
+    # ══ 2026-11-12 · RESOLVE BOTH SIDES OF THE JOIN ══════════════════════
+    # Keying on the raw `team` string made this half of the join the one
+    # spelling that had to be guessed at from the other side. Two of the
+    # 365 rows disagree with the alias table's canonical form:
+    #
+    #     ncaab_team_stats.team      alias canonical_name
+    #     'LSU New Orleans'          'New Orleans'
+    #     'FIU'                      "Florida Int'l"
+    #
+    # so a context row naming either school missed its ratings no matter
+    # how good the odds-side resolver got. Putting BOTH sides through
+    # ncaab_team_resolver means the join is on one vocabulary, and a new
+    # upstream spelling is one alias row rather than a code change.
+    # The raw key is kept too, so a team the resolver does not know yet
+    # still joins exactly as before.
+    out = {}
+    for row in rows:
+        raw = row.get("team")
+        out[raw] = row
+        canon = _resolver.resolve(raw)
+        if canon and canon != raw:
+            out.setdefault(canon, row)
+    return out
 
 
 def fetch_alias_map():
@@ -126,17 +149,52 @@ def canonical_team(odds_name, alias_map):
     """Normalize an Odds API team name to the canonical name used in
     ncaab_team_stats. Falls back to identity if no alias match found —
     the join just returns None for stats, which we surface as a missing
-    pipeline match rather than silently mis-attributing."""
+    pipeline match rather than silently mis-attributing.
+
+    ══ 2026-11-12 · A TEN-MASCOT LIST DECIDED WHICH GAMES HAD RATINGS ════
+    ANDY: "ncaab game details, name matching ... need more work."
+
+    This used to be a SECOND resolver: an exact `alias_map` hit, then a
+    hand-kept list of ten mascot suffixes (" wildcats", " bulldogs",
+    " tigers", " eagles", " hawks", " bears", " lions", " spartans",
+    " hurricanes", " sooners"). ncaab_team_resolver was sitting in the
+    same directory with 1,458 lookup keys, a real normalize() and a guard
+    against a strip that names a different school — and this module never
+    imported it.
+
+    Measured on tonight's 24-game slate, three away teams came back NULL
+    on every rating, line, projection and primary_play:
+
+        Loyola (MD) Greyhounds @ Towson          away_adj_em NULL
+        Maryland-Eastern Shore Hawks @ Rhode I.  away_adj_em NULL
+        West Florida Argonauts @ Alabama A&M     away_adj_em NULL
+
+    All three HAVE current-season ratings in ncaab_team_stats
+    (-18.57, -20.51, -18.47) and the resolver answers two of the three
+    exactly. "Greyhounds" and "Argonauts" are simply not in the list of
+    ten. "Hawks" IS — but the key is the raw lowercased string, so
+    'maryland-eastern shore hawks' strips to 'maryland-eastern shore'
+    with the HYPHEN intact and misses the 'maryland eastern shore' key,
+    while resolver.normalize() folds the hyphen first.
+
+    This is the same defect as the client-side stripMascot blocklist that
+    gated the NCAAB stats panel (feedback_a_blocklist_duplicating_a_lookup_table),
+    reached server-side through a different door. Resolve at the ONE
+    chokepoint.
+
+    The IDENTITY fallback is kept deliberately, per the contract above: a
+    name we cannot resolve must produce a missing join, never a close
+    match on the wrong school.
+    """
+    canon = _resolver.resolve(odds_name)
+    if canon:
+        return canon
+    # alias_map is still consulted: it is built from the same table but
+    # keyed on raw odds_api_name, so a row the resolver's normalizer
+    # happens to miss can still land here.
     key = (odds_name or "").lower().strip()
     if key in alias_map:
         return alias_map[key]
-    # Try stripping common mascot suffixes
-    for suffix in (" wildcats", " bulldogs", " tigers", " eagles", " hawks",
-                   " bears", " lions", " spartans", " hurricanes", " sooners"):
-        if key.endswith(suffix):
-            stripped = key.replace(suffix, "")
-            if stripped in alias_map:
-                return alias_map[stripped]
     return odds_name
 
 
