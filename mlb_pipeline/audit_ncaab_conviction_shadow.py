@@ -72,7 +72,9 @@ import ncaab_conviction as NC                      # noqa: E402
 #: The anchors adoption would install, measured on the NEW distribution over
 #: the 11-07..11-12 board (n=162 priced picks). Re-measure with this script
 #: before adopting -- that is what `suggested anchors` below prints.
-PROPOSED_ANCHORS = (50.0, 65.0, 93.0, 97.0)
+# 2026-11-13 . ADOPTED. These are the LIVE anchors now; the audit
+# re-measures them against tonight's board and reports drift.
+PROPOSED_ANCHORS = (50.0, 54.0, 63.0, 69.0)
 
 
 def _et_today() -> str:
@@ -224,6 +226,28 @@ def run(days_back: int = 0, strict: bool = False) -> int:
         print('\n  FAIL: adoption would be LOOSER than today on '
               + ', '.join(l[0] for l in looser))
         return 1
+    # == ADOPTION DRIFT ================================================
+    # conviction IS _cal_conviction as of 2026-11-13 (Andy: "adopt").
+    # If the two diverge, something downstream is writing conviction
+    # after the resolver and the sport has gone back to a number that
+    # nothing measured.
+    _drift = []
+    for _r in rows:
+        _p = _r['primary_play'] or {}
+        if _p.get('conviction') != _p.get('_cal_conviction'):
+            _drift.append(_p)
+    print('')
+    if _drift:
+        print('  !! ADOPTION DRIFT: ' + str(len(_drift)) + ' of '
+              + str(len(rows)) + ' picks carry conviction != _cal_conviction')
+        for _p in _drift[:6]:
+            print('       ' + str(_p.get('label')) + ': live '
+                  + str(_p.get('conviction')) + ' vs calibrated '
+                  + str(_p.get('_cal_conviction')))
+    else:
+        print('  adoption holds: conviction == _cal_conviction on all '
+              + str(len(rows)) + ' picks')
+
     print('\n  (report only; adopting the number is a five-gate migration '
           'named in the module docstring)')
     return 0

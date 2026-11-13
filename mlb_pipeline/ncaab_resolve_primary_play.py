@@ -917,6 +917,37 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
                 _pp['_cal_credited_edge_pp'] = _nc.credited_edge_pp(_res)
                 _pp['_cal_source'] = _res['source']
                 _pp['_cal_model'] = 'ncaab_conviction/2026-11-13'
+
+                # ══ 2026-11-13 · ADOPTED. Andy: "adopt." ═══════════════
+                # conviction IS the calibrated probability from here.
+                # That is what the field was always defined to be --
+                # model_edge.edge_pp is `conviction - implied*100` -- and
+                # the 50-54 band was a fake probability that printed a
+                # -20pp edge on every chalk play and capped the whole
+                # sport to COVERAGE for the wrong reason.
+                #
+                # The pick's TIER is not touched: it comes from lens
+                # agreement (`_top.tier`), which is the separation
+                # question. Two numbers, two questions -- exactly the
+                # split conviction_scale.py:175 already describes.
+                #
+                # UNPRICED -> conviction is REMOVED, not defaulted. There
+                # is no honest probability without a price, and every
+                # consumer fails closed on a missing one: the card gate
+                # refuses a non-numeric conviction, edge_pp returns None
+                # (so no tier cap is claimed either way), and the app
+                # renders "conviction not scored" rather than inventing a
+                # number ([[feedback_falsy_zero_invented_a_tier_and_a_
+                # confidence]] -- the `|| 55` that shipped a LEAN at "55%
+                # confidence" onto 58 live cards).
+                _cal = _pp.get('_cal_conviction')
+                _pp['_conviction_prev'] = _pp.get('conviction')
+                if _cal is not None:
+                    _pp['conviction'] = _cal
+                else:
+                    _pp.pop('conviction', None)
+                _pp['_conviction_basis'] = 'calibrated_probability'
+                _pp['_conviction_model'] = 'ncaab_conviction/2026-11-13'
         except ImportError:
             pass          # module absent — pick unchanged
         except Exception as _ce:                             # noqa: BLE001

@@ -128,9 +128,25 @@ MARGIN_BIAS = -1.80
 #: docstring. Raise one only when a measurement says to.
 W_MODEL = {'ml': 0.0, 'rl': 0.0, 'spread': 0.0, 'total': 0.0}
 
-#: Conviction floor. A pick we would publish is at worst a coin flip, and a
-#: calibrated 50 is the honest reading of an NCAAB spread.
-CONV_MIN, CONV_MAX = 50, 97
+#: == 2026-11-13 · THE FLOOR WAS 50, AND IT INVENTED EDGE ON EVERY DOG ==
+#: "A pick we would publish is at worst a coin flip" is reasoning about
+#: SELECTION, and conviction is not a selection number: `model_edge.edge_pp`
+#: is literally `conviction - implied_prob*100`. Clamping a dog UP to 50
+#: therefore manufactures a positive edge out of the clamp itself. Measured
+#: on tonight's board, against the live prices:
+#:
+#:     Pittsburgh ML      +135   implied 42.6   conv 50  ->  edge +7.4pp
+#:     Mississippi St ML  +140   implied 41.7   conv 50  ->  edge +8.3pp
+#:
+#: Neither number came from the model. Worse, a POSITIVE edge is the one
+#: case `cap_tier_for_edge` leaves alone, so the clamp did not just print a
+#: wrong figure -- it switched OFF the only guard that demotes an unbacked
+#: pick (feedback_magnitude_cannot_express_a_side: a floor cannot express a
+#: side, and a dog is the side below 50).
+#:
+#: A probability is allowed to be below a coin flip. Bounds are sanity rails
+#: only -- 0 and 100 are never honest outputs of a blended estimate.
+CONV_MIN, CONV_MAX = 1, 99
 
 
 def _f(v):
@@ -369,6 +385,21 @@ def _self_test() -> int:
     # one-sided price is still unpriced
     if p_win({'adj_em_gap': 9.0}, 'ml', 'HOME', odds=-300)['p'] is not None:
         bad.append('a one-sided price produced a conviction')
+
+    # == A DOG MUST BE ALLOWED BELOW A COIN FLIP ==========================
+    # conviction feeds model_edge.edge_pp as a probability. A floor at 50
+    # turns every underdog price into a fake positive edge, which is also
+    # the one case the tier cap does not catch. Guard the real prices.
+    import model_edge as _me
+    for _odds, _lo, _hi in ((135, -2.0, 2.0), (140, -2.0, 2.0)):
+        _p = devig(_odds, -int(_odds * 1.12))
+        _c = conviction(_p)
+        _e = _me.edge_pp(_c, _odds, 'ml')
+        if _e is None or not (_lo <= _e <= _hi):
+            bad.append(f'dog at {_odds:+d}: conviction {_c} prints edge '
+                       f'{_e} -- the clamp is inventing it')
+    if conviction(0.426) >= 50:
+        bad.append('a 42.6% probability must not read as a coin flip')
 
     # conviction maps and clamps, and 0.0 is NOT falsy-defaulted
     eq(conviction(0.92), 92, 0, 'conviction(0.92)')

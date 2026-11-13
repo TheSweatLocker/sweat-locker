@@ -65,7 +65,16 @@ ANCHORS = {
     # read as a median. The non-zero anchors are used because a conviction
     # of 0 is a missing measurement, not a weak opinion, and letting 137
     # zeros drag p50 down would hand the next real 51 an inflated rank.
-    'NCAAB': (51.0, 52.0, 54.0, 62.0),   # measured 11-07, n=141 non-zero
+    # ══ 2026-11-13 · NCAAB CONVICTION IS NOW A CALIBRATED PROBABILITY ══
+    # Andy: "adopt." ncaab_conviction replaced the weight-sum, so these
+    # anchors no longer describe a quality score -- they describe the
+    # distribution of P(our side wins). Re-measured on tonight's adopted
+    # board, n=31: p50 50, p75 54, p90 63, max 69.
+    #
+    # THEY MUST NOT BE USED AS A POTD RANK. See PROBABILITY_CONVICTION
+    # below: on a probability, the top percentile is the heaviest chalk,
+    # not the best play.
+    'NCAAB': (50.0, 54.0, 63.0, 69.0),   # measured 11-13, n=31 priced
     'UFC':   (25.0, 32.0, 72.0, 87.0),
 }
 
@@ -80,6 +89,49 @@ POTD_MIN_SCALED = 70.0
 #: conviction measurably earns its gate, and NCAAF is the only one where it is
 #: measurably inverted. Neither was asked to change.
 SPORT_ABSOLUTE_GATE = {'MLB': 70, 'NCAAF': 70}
+
+# ══ 2026-11-13 · A PROBABILITY CANNOT RANK QUALITY ═══════════════════════
+# Sports whose `conviction` is a CALIBRATED WIN PROBABILITY rather than a
+# quality score. For these, percentile anchoring is actively harmful: the
+# top of the distribution is the heaviest favourite, so `rank_key` orders
+# candidates by JUICE and POTD picks the worst price on the board.
+#
+# Measured on tonight's adopted NCAAB board (n=31, anchors re-measured):
+#
+#     conv 69  -275  Saint Mary's      <- ranks FIRST
+#     conv 68  -238  Virginia          <- wins once -275 fails the juice gate
+#     conv 63  -190  North Carolina
+#     ...
+#     conv 41  +135  Pittsburgh        <- ranks LAST
+#
+# i.e. the ordering is strictly by price, and the -250 juice gate then
+# hands POTD the most juiced survivor. That is the documented heavy-favourite
+# trap (CLAUDE.md: "-200+ moneylines have a 29% cover rate on -1.5") arrived
+# at structurally, the same way the favourite bias became the market chooser
+# on 10-29 ([[project_favourite_bias_was_the_market_chooser_1029]]).
+#
+# And there is no edge to rank on instead: NCAAB's measured model weight is
+# 0.00 on every market, so credited edge is 0.0 and every priced pick shows
+# -1.6 to -4.3pp, i.e. the vig. The separator that SHOULD serve here is
+# `conviction_rank`, and it is NULL on 32 of 32 NCAAB picks because
+# stamp_conviction_rank requires a `margin` the NCAAB ensemble never emits.
+#
+# So NCAAB is POTD-ineligible until it has a real separator. That is the
+# measurement, not a preference. To restore eligibility, give the sport a
+# stamped `_conviction_rank` (or carry the lens tier into jerry_reads) --
+# do NOT re-admit it by loosening a bar on the probability.
+PROBABILITY_CONVICTION = {'NCAAB'}
+
+#: Printed by POTD so an excluded sport is never silently absent.
+PROBABILITY_CONVICTION_REASON = (
+    'conviction is a calibrated win probability for this sport, so its top '
+    'percentile is the heaviest chalk, not the best play; needs a stamped '
+    '_conviction_rank to be ranked (conviction_scale.PROBABILITY_CONVICTION)')
+
+
+def is_probability_conviction(sport) -> bool:
+    """True when this sport's conviction is a probability, not a rank."""
+    return str(sport or '').upper() in PROBABILITY_CONVICTION
 
 
 def scaled(sport: str, conviction) -> float | None:
@@ -115,6 +167,10 @@ def potd_eligible(sport: str, conviction) -> bool:
             return float(conviction) >= SPORT_ABSOLUTE_GATE[sp]
         except (TypeError, ValueError):
             return False
+    if sp in PROBABILITY_CONVICTION:
+        # A probability cannot express POTD-worthiness. See the block at
+        # PROBABILITY_CONVICTION -- ranking it selects the worst price.
+        return False
     s = scaled(sp, conviction)
     return s is not None and s >= POTD_MIN_SCALED
 
@@ -123,6 +179,8 @@ def rank_key(sport: str, conviction) -> float:
     """Cross-sport ranking value. Raw conviction cannot be compared between
     sports, so POTD must pick its winner on the scaled axis or a 64 in NHL
     always loses to a 71 in NCAAF that means less."""
+    if str(sport or '').upper() in PROBABILITY_CONVICTION:
+        return 0.0        # must never win a tie-break on chalk
     s = scaled(sport, conviction)
     return s if s is not None else 0.0
 

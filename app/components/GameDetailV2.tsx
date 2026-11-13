@@ -1080,17 +1080,28 @@ function VerdictCard({ctx, awayTeam, homeTeam, sport, jerrySynthesis}: any) {
       // inverted (project_conviction_is_a_baseball_scale_1027).
       const rawConv = Number(jerrySynthesis.conviction);
       const hasConv = Number.isFinite(rawConv) && rawConv > 0;
+      // 2026-11-13 · NCAAB conviction is now a CALIBRATED PROBABILITY
+      // (ncaab_conviction, adopted today). P(win) is highest on the
+      // heaviest chalk, so this ladder would read a de-vigged -238
+      // favourite as STRONG purely because it is expensive. A probability
+      // may be DISPLAYED, never tiered. Server-side twin:
+      // jerry_anchor_potd._conviction_tier_for.
+      const probConv = String(sport || '').toUpperCase() === 'NCAAB';
       const jerryTier = !hasConv
         ? 'COVERAGE'
-        : rawConv >= 80 ? 'PRIME' : rawConv >= 65 ? 'STRONG' : 'LEAN';
+        : probConv
+          ? 'COVERAGE'
+          : rawConv >= 80 ? 'PRIME' : rawConv >= 65 ? 'STRONG' : 'LEAN';
       play = {
         type: jerrySynthesis.call_market || 'ml',
         tier: jerryTier,
         side: jerrySynthesis.call_side || 'HOME',
         label: jerrySynthesis.call_text,
-        sub: hasConv
-          ? `Jerry read · ${rawConv}% confidence`
-          : 'Jerry read · conviction not scored for this sport',
+        sub: !hasConv
+          ? 'Jerry read · conviction not scored for this sport'
+          : probConv
+            ? `Jerry read · ${rawConv}% win probability (calibrated)`
+            : `Jerry read · ${rawConv}% confidence`,
         conviction: hasConv ? rawConv : 0,
         _engine: 'jerry_synthesis',
       };

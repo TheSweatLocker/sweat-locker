@@ -130,6 +130,27 @@ def _conviction_tier(conv: int) -> str:
     return "lean"
 
 
+def _conviction_tier_for(sport, conv: int) -> str:
+    """Sport-aware wrapper. A conviction that is a calibrated PROBABILITY
+    must not mint a tier: P(win) is highest on the heaviest chalk, so a
+    de-vigged -600 favourite would read "prime" and hand itself to the POTD
+    publish lock -- the third time a display value became a gating tier
+    ([[feedback_conviction_is_a_probability_or_an_edge]]).
+
+    Today the -250 juice gate happens to cap a publishable NCAAB pick at
+    conviction 69, so "prime" is unreachable by arithmetic. That is a
+    coincidence between two numbers in two files, not a guarantee: loosen
+    the juice cap and the tier appears. State the invariant here instead.
+    """
+    try:
+        import conviction_scale as _cs
+        if _cs.is_probability_conviction(sport):
+            return "lean"
+    except Exception:                                        # noqa: BLE001
+        pass
+    return _conviction_tier(conv)
+
+
 LR_GATE_MIN = 0.60
 LR_GATE_MIN_RL = 0.55
 
@@ -878,6 +899,17 @@ def run(game_date: str | None = None, threshold: int = 70,
                 if _cs.potd_eligible(r.get("sport"), r.get("conviction"))
                 and (r.get("call_market") or "").lower() not in ("pass", "lean")]
     eligible.sort(key=lambda r: -_cs.rank_key(r.get("sport"), r.get("conviction")))
+    # 2026-11-13 · say WHY a sport is absent. A sport whose conviction is a
+    # calibrated probability is excluded on purpose (ranking it selects the
+    # worst price on the board) and a silent absence reads as "no games".
+    try:
+        _excl = sorted({str(r.get("sport") or "").upper() for r in reads
+                        if _cs.is_probability_conviction(r.get("sport"))})
+        if _excl:
+            print(f"  POTD excludes {', '.join(_excl)}: "
+                  f"{_cs.PROBABILITY_CONVICTION_REASON}")
+    except AttributeError:
+        pass          # older conviction_scale without the guard
     if eligible:
         print(f"  per-sport bar: {len(eligible)} eligible of {len(reads)} reads")
         for _r in eligible[:6]:
@@ -1214,7 +1246,7 @@ def run(game_date: str | None = None, threshold: int = 70,
         },
         "leanDisplay": f"{call} (Jerry {conv}/100)",
         "score": {"total": conv, "source": "jerry_conviction"},
-        "confidence": _conviction_tier(conv),
+        "confidence": _conviction_tier_for(winner_sport, conv),
         # 2026-09-08 defense-in-depth: if jerry_pick_scrub left a stale
         # "Model recomputed to X" template in short_read pointing to a
         # different pick than what the POTD is actually calling, that
@@ -1317,7 +1349,7 @@ def run(game_date: str | None = None, threshold: int = 70,
             _source_id = winner.get("game_id")
         if _source_id and _mkt2:
             _lock(winner_sport, _mkt2, _source_id,
-                  _conviction_tier(conv).upper() if callable(_conviction_tier) else "PRIME",
+                  _conviction_tier_for(winner_sport, conv).upper() if callable(_conviction_tier_for) else "PRIME",
                   conv,
                   "potd")
     except Exception as _e:
