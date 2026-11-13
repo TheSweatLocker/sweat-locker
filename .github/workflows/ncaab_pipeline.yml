@@ -732,6 +732,44 @@ jobs:
           cd mlb_pipeline
           python sync_jerry_reads_from_ctx.py --sport NCAAB --window 5
 
+      # == 2026-11-12 . THE CONSISTENCY CHECKER RAN ON FOUR SPORTS, NOT FIVE
+      # audit_read_pick_consistency.py has a step in nba_, ncaaf_, nfl_ and
+      # nhl_pipeline.yml and never had one here, although the script's own
+      # CTX_TABLE has carried 'NCAAB': 'ncaab_game_context' the whole time
+      # and --sport derives its choices from that map. The hard half was
+      # wired; the easy half was not (feedback_absent_key_makes_a_gate_dead).
+      #
+      # It was not idle capacity. First run, 58 NCAAB reads over 4 days:
+      # 11 findings -- 8 BADGE_VS_ENGINE where the read says "Pass" or
+      # "No play - moneyline past our juice" while the engine's primary_play
+      # wants a real total ('Under 147.5', 'Over 132.5'), and 3 totals whose
+      # prose never states a direction.
+      #
+      # That split is what corrupts the published record. Measured over
+      # 11-09..11-11, 17 of 89 graded NCAAB game_read receipts carry a
+      # DIFFERENT pick than the jerry_reads row their own source_id points
+      # at -- receipt 'Arkansas ML' WIN against read 'Arkansas -30.5' LOSS,
+      # receipt 'Under 147.5' WIN against read 'Loyola Marymount ML' LOSS --
+      # and the disagreement runs 12-5 in the receipt's favour. The app
+      # renders jerry_reads, so the user sees the honest call; the receipt
+      # banks the other one. 61.3% on receipts vs 51.7% on the reads.
+      #
+      # Placed after the sync rather than after generation, unlike the
+      # sibling pipelines: the 4-lens resolver and sync_jerry_reads_from_ctx
+      # both rewrite call_* after the prose is written, so checking at
+      # generation time would pass a read the sync is about to move.
+      # Non-blocking, matching the siblings -- a prose mismatch must not
+      # fail the slate.
+      - name: Audit read/pick consistency (NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "audit_read_pick_consistency.py (NCAAB)" python audit_read_pick_consistency.py --sport NCAAB --days 14
+
       # ══ 2026-11-06 · NCAAB WAS NEVER PRICED, ON ANY DATE ══════════════
       # price_picks runs per sport in the NBA, NCAAF, NFL and NHL pipelines
       # and was missing here, so `jerry_reads.price_american` was null on
