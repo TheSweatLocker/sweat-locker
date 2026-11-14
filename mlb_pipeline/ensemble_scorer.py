@@ -917,6 +917,39 @@ _SIDE_BASELINE = {
     ('NBA',   'ml'):  0.550,
     ('NBA',   'ats'): 0.502,
     ('NHL',   'ml'):  0.542,
+    # ══ 2026-11-13 · NCAAB HAD NO SIDE CONTROL, AND ITS HOME EDGE IS THE
+    #    BIGGEST OF ANY SPORT HERE ════════════════════════════════════════
+    # NCAAB was the one in-season sport absent from this table, so
+    # side_baseline returned None, so refit_signal_registry judged every
+    # NCAAB signal by the FLAT rule -- against the 58.33% ml JUICE breakeven.
+    # A blind bet on the home side returns 66.63%. Every home-ML signal
+    # between those two numbers was therefore eligible for promotion for
+    # performing WORSE than betting every home team blind.
+    #
+    # Not hypothetical. Wiring NCAAB into refit_signal_registry's
+    # SPORTS_WITH_CTX and running it --dry-run handed OFF_RATING_GAP
+    # tier=VALIDATED at the MAXIMUM weight 1.0 on hr=70.91% n=275: +12.6pp
+    # over juice, but only +4.3pp over blind home against a 2SE bar of
+    # 5.5pp, i.e. not distinguishable from home-court advantage. This is the
+    # favourite-bias mechanism the 10-11 and 10-28 fixes were written for,
+    # still live on the one sport with no entry
+    # ([[project_favourite_bias_was_the_market_chooser_1029]],
+    # [[feedback_signal_needs_a_direction_control]]).
+    #
+    # MEASURED over every graded row in ncaab_game_results (all seasons it
+    # holds), home perspective, pushes excluded:
+    #
+    #     home ml       66.63%   n=12,045    <- vs NBA 0.550, NCAAF 0.576
+    #     home ats      49.90%   n= 5,355
+    #     (over 50.48%, n=5,355 -- NOT entered: side_baseline returns None
+    #      for totals on purpose, since a cover rate says nothing about a
+    #      total and the over/under axis is measured in _PROP_SIDE_BASELINE)
+    #
+    # The ml sample is large because it needs only scores; ats is smaller
+    # because it needs a stored close_spread, which NCAAB carries on roughly
+    # 60% of played games.
+    ('NCAAB', 'ml'):  0.666,
+    ('NCAAB', 'ats'): 0.499,
 }
 
 

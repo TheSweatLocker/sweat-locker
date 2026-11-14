@@ -64,6 +64,31 @@ SPORTS_WITH_CTX = {
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
     'NBA':   ('nba_game_context',   'nba_game_results'),
     'NHL':   ('nhl_game_context',   'nhl_game_results'),
+    # ══ 2026-11-13 · NCAAB WAS MISSING, SO ITS REGISTRY COULD NEVER REFRESH ══
+    # collect_game_firings does `SPORTS_WITH_CTX.get(sport)`, so with no entry
+    # here this script could not compute an NCAAB weight even when run with no
+    # --sport (i.e. "all sports"). The 65 NCAAB registry rows were written ONCE
+    # by set_ncaab_signal_baseline.py and all carry
+    # last_computed_at = 2026-11-04.
+    #
+    # Nothing else refreshes them. ncaab_pipeline.yml has a step NAMED "Refresh
+    # NCAAB signal_registry from graded games" whose comment claims it "reads
+    # graded games from ncaab_game_results and refreshes signal_registry
+    # hit_rates" -- and it runs refresh_prop_signal_calibration.py, a PROP
+    # script, for the one sport the house rules bar props on. Run by hand it
+    # prints "no signals to calibrate -- abort" and, being
+    # continue-on-error, exits GREEN. A step's name is not its scope
+    # ([[project_mlb_pipeline_yml_owns_shared_surfaces_1103]],
+    # [[feedback_green_step_that_writes_nothing]]).
+    #
+    # So on 2026-11-18 -- MAX_REGISTRY_AGE_DAYS=14 after 11-04 -- _load_registry
+    # would have dropped all 65 rows as stale and every NCAAB signal would have
+    # silently fallen back to a prior, taking the sport's measured evidence from
+    # 2 signals to 0 with nothing in the logs.
+    #
+    # _SPREAD_COL already defaults to 'close_spread', which is the right column
+    # for ncaab_game_results.
+    'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
 }
 
 
@@ -1097,6 +1122,40 @@ def run(sport: str, days: int, dry_run: bool = False, min_n: int = 20) -> None:
         print(f'  [{sport}] ✓ wrote {written} registry rows')
 
 
+#: ══ 2026-11-13 · NCAAB COMPUTES, BUT DOES NOT WRITE YET ════════════════
+#: Adding NCAAB to SPORTS_WITH_CTX also makes the NIGHTLY ALL-SPORTS run
+#: (mlb_pipeline.yml: `refit_signal_registry.py --days 90 --min-n 10`, no
+#: --sport) start writing NCAAB rows. On tonight's data that is not safe
+#: yet, because this script stores ONE pooled weight per signal and NCAAB's
+#: only signal with a real sample does not have one edge:
+#:
+#:   OFF_RATING_GAP, n=275, pooled hr 70.91% vs its own side control 55.16%
+#:   -> tier VALIDATED at the MAXIMUM weight 1.0. Split by market and side:
+#:
+#:     ('ml','HOME')  n=125  91.20% vs blind 66.60%  +24.60pp  2SE  5.07  REAL
+#:     ('rl','HOME')  n=101  52.48% vs blind 49.90%   +2.58pp  2SE  9.94  NOISE
+#:     ('ml','AWAY')  n= 39  51.28% vs blind 33.40%  +17.88pp  2SE 16.01  thin
+#:     ('rl','AWAY')  n= 10  80.00% vs blind 50.10%  +29.90pp  2SE 25.30  thin
+#:
+#: It is a MONEYLINE signal. Pooled, w=1.0 would also credit the RUNLINE,
+#: where it measures inside its own noise bar -- and NCAAB ml already sits
+#: under a per-market ceiling, so the spread is exactly where NCAAB picks
+#: live. That is a pooled number across two different edges
+#: ([[feedback_pooled_slope_across_scales_is_fake]],
+#: [[feedback_tier_mix_reverses_the_sign]]).
+#:
+#: So NCAAB is computed and printed on every run and its rows are held back.
+#: This is a shadow, not a silence: `--sport NCAAB` shows exactly what would
+#: be written, and the numbers accrue in the log where they can be compared.
+#:
+#: EXIT CONDITION, written down so this is tunable and not permanent: remove
+#: NCAAB from this set once the tally is keyed per market_scope (the column
+#: already exists on signal_registry) so a signal cannot carry one weight
+#: across two markets it does not share an edge on. `--write-gated` forces a
+#: write before then, for a deliberate operator decision.
+WRITE_GATED_SPORTS = {'NCAAB'}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--sport', help='specific sport (default: all)')
@@ -1113,10 +1172,17 @@ def main():
     p.add_argument('--min-n', type=int, default=10,
                    help='minimum firings before writing a row (default 20)')
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--write-gated', action='store_true',
+                   help='also WRITE sports listed in WRITE_GATED_SPORTS')
     args = p.parse_args()
     sports = [args.sport] if args.sport else list(SPORTS_WITH_CTX.keys())
     for s in sports:
-        run(s, days=args.days, dry_run=args.dry_run, min_n=args.min_n)
+        gated = (str(s).upper() in WRITE_GATED_SPORTS) and not args.write_gated
+        if gated:
+            print(f'  [{s}] WRITE-GATED (see WRITE_GATED_SPORTS) — computing '
+                  f'and printing, writing nothing. --write-gated overrides.')
+        run(s, days=args.days, dry_run=(args.dry_run or gated),
+            min_n=args.min_n)
 
 
 if __name__ == '__main__':

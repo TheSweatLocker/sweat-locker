@@ -583,10 +583,32 @@ jobs:
           cd mlb_pipeline
           python compute_align_status_ncaab.py
 
-      # 2026-08-23 season-ready: signal_registry calibration. Sport-universal
-      # script — reads graded games from ncaab_game_results and refreshes
-      # signal_registry hit_rates. Silent no-op until Nov 3 games grade.
-      - name: Refresh NCAAB signal_registry from graded games
+      # ══ 2026-11-13 · THIS STEP'S NAME WAS NOT ITS SCOPE ═════════════════
+      # It was named "Refresh NCAAB signal_registry from graded games" and
+      # its comment claimed it "reads graded games from ncaab_game_results
+      # and refreshes signal_registry hit_rates". It ran
+      # refresh_prop_signal_calibration.py -- a PROP script -- for the one
+      # sport the house rules bar props on. Run by hand it prints
+      # "no signals to calibrate — abort", and being continue-on-error it
+      # exited GREEN every night.
+      #
+      # So NOTHING refreshed the NCAAB game registry. Its 65 rows were
+      # written once by set_ncaab_signal_baseline.py and all carry
+      # last_computed_at=2026-11-04; refit_signal_registry could not do it
+      # either, because NCAAB was missing from its SPORTS_WITH_CTX. At
+      # MAX_REGISTRY_AGE_DAYS=14 those rows go stale on 2026-11-18, after
+      # which every NCAAB signal silently falls back to a prior and the
+      # sport's measured evidence drops from 2 signals to 0.
+      #
+      # Now runs the real refit. It is WRITE-GATED for NCAAB inside the
+      # script (WRITE_GATED_SPORTS) because the registry stores one pooled
+      # weight per signal and NCAAB's only signal with a real sample is a
+      # moneyline edge that measures as noise on the runline -- so this logs
+      # what WOULD be written and writes nothing until the tally is keyed
+      # per market_scope. The staleness cliff is therefore still open and
+      # tracked, but at least the numbers now appear in the log every night
+      # instead of a prop script reporting success.
+      - name: Refresh NCAAB signal_registry from graded games (write-gated)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
         continue-on-error: true
         env:
@@ -594,7 +616,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python refresh_prop_signal_calibration.py --sport NCAAB --days 30
+          python refit_signal_registry.py --sport NCAAB --days 90 --min-n 10
 
       # 2026-09-02: Split — per-source calibration for NCAAB. Silent
       # no-op until Nov 3 season start.
