@@ -133,6 +133,57 @@ def _grade_ou(home_score: float, away_score: float, close_total: float | None) -
     return 'O' if actual > tot else 'U'
 
 
+#: ══ 2026-11-13 · "LAST 10 AT HOME" WAS CROSSING SEASONS ════════════════
+#: The window was `game_date < today, order desc, limit 10` with NO lower
+#: bound, so in November it reaches back into LAST season. Measured on the
+#: 2026-11-13 NCAAB slate, `home_ml_l10_at_home` was a 10-game record on
+#: every one of 55 games -- against teams that had played 2 to 4:
+#:
+#:     Hofstra   "9-1 at home (L10)"   actually 1-2 this season; 9 of those
+#:                                     10 games are 2025-26, Jan-Mar 2026
+#:     GW        "8-2"                 3-0      Auburn "9-1"   2-0
+#:
+#: So the ML family described last year's team while the ATS and OU families
+#: described this one, both labelled "L10 at home" on the same card. Worse,
+#: `home_ml_hot_at_home` (>= 8) fired on 22 of 55 games tonight purely off
+#: those stale records.
+#:
+#: The lower bound is the season opener from `sport_registry`, which
+#: compute_margin_strength already treats as the canonical boundary -- NOT
+#: the results table's own `season` column, which is NULL on 287 of 735
+#: NCAAB rows this season (39%) and so cannot bound anything.
+#:
+#: Cost of the fix, stated plainly: records get SMALL early in a season. That
+#: is the honest shape of "form" in week two, and the signals that read these
+#: columns now gate on the graded denominator rather than a bare win count
+#: ([[feedback_sample_size_with_pct]]).
+_SEASON_START_CACHE: dict = {}
+
+
+def season_start_for(sport: str):
+    """Season opener for `sport` from sport_registry, or None.
+
+    None means "no bound known" -- the caller then keeps the old unbounded
+    behaviour rather than inventing a date, because guessing a boundary would
+    silently reshape every record this module writes.
+    """
+    if sport in _SEASON_START_CACHE:
+        return _SEASON_START_CACHE[sport]
+    out = None
+    try:
+        r = requests.get(f'{SB}/rest/v1/sport_registry', headers=H_READ,
+                         params={'select': 'season_start',
+                                 'sport': f'eq.{sport}'}, timeout=15)
+        if r.status_code == 200 and r.json():
+            ss = r.json()[0].get('season_start')
+            if ss:
+                out = str(ss)[:10]
+    except Exception:
+        out = None
+    _SEASON_START_CACHE[sport] = out
+    return out
+
+
 def compute_team_venue_form(sport: str, team_name: str, game_date: str,
                              is_home: bool, n: int = 10) -> dict:
     """Team's last N games AT HOME (if is_home=True) or ON THE ROAD.
@@ -141,17 +192,28 @@ def compute_team_venue_form(sport: str, team_name: str, game_date: str,
     ctx_t, res_t, hs, as_, csp, cto = SPORT_CFG[sport]
     team_col = 'home_team' if is_home else 'away_team'
 
+    params = {
+        f'{team_col}': f'eq.{team_name}',
+        'game_date': f'lt.{game_date}',
+        hs: 'not.is.null',
+        'select': f'game_date,{hs},{as_},{csp},{cto}',
+        'order': 'game_date.desc',
+        'limit': str(n),
+    }
+    # One bound, applied as a SECOND game_date filter. PostgREST ANDs repeated
+    # column filters when they are passed as `and=(...)`, so the two are
+    # combined explicitly rather than by overwriting the key -- a dict cannot
+    # hold 'game_date' twice, and the silent overwrite is exactly how this
+    # would look fixed while still being unbounded.
+    ss = season_start_for(sport)
+    if ss:
+        params.pop('game_date')
+        params['and'] = f'(game_date.lt.{game_date},game_date.gte.{ss})'
+
     r = requests.get(
         f'{SB}/rest/v1/{res_t}',
         headers=H_READ,
-        params={
-            f'{team_col}': f'eq.{team_name}',
-            'game_date': f'lt.{game_date}',
-            hs: 'not.is.null',
-            'select': f'game_date,{hs},{as_},{csp},{cto}',
-            'order': 'game_date.desc',
-            'limit': str(n),
-        },
+        params=params,
         timeout=15,
     )
     games = r.json() if r.status_code == 200 else []
