@@ -167,8 +167,33 @@ def event_to_outcome(event: dict, by_espn: dict, by_name: dict) -> Optional[dict
 
     home_score = _i(home_c.get('score'))
     away_score = _i(away_c.get('score'))
-    status = ((event.get('status') or {}).get('type') or {}).get('state')
-    completed = status == 'post'   # ESPN: pre | in | post
+    _st = ((event.get('status') or {}).get('type') or {})
+    status = _st.get('state')
+    # ══ 2026-11-14 · ESPN USES 'post' FOR A POSTPONED GAME ════════════
+    # `state == 'post'` is NOT "played". ESPN returns, verbatim, for three
+    # games on 2026-11-14:
+    #
+    #   state=post  name=STATUS_POSTPONED  completed=False  scores=['0','0']
+    #
+    # So a postponed game arrived here as a FINAL with a 0-0 score, and
+    # compute_outcome_patch below does not care how implausible a score is:
+    # it wrote home_win=False, spread_result='away_covered' and
+    # total_result='under' for games that were never played. Any pick on
+    # one grades as a loss on a fabricated result.
+    #
+    # `type.completed` is the field ESPN actually means it with, so that is
+    # what is read. The 0-0 clause is belt-and-braces: no basketball game
+    # ends 0-0, so a 0-0 "final" is a status we have misread, not a result
+    # ([[feedback_model_output_needs_a_plausibility_guard]]).
+    #
+    # Three rows had already been written this way and are repaired by
+    # repair_postponed_zero_finals.py. The same `== 'post'` test is in
+    # ncaab_backfill_results.py, ncaaf_results_espn.py and ufc_grader.py —
+    # fixed together, because one writer patched is not a fix
+    # ([[feedback_fix_every_writer_to_the_table]]).
+    completed = bool(_st.get('completed')) and status == 'post'
+    if completed and home_score == 0 and away_score == 0:
+        completed = False
 
     commence = event.get('date', '')
     # ══ 2026-11-06 · R166: THE DATE MUST BE ET, NOT UTC ═══════════
@@ -262,6 +287,119 @@ def fetch_existing(game_ids: list) -> dict:
             f'"not stored yet" and would INSERT a duplicate row for every '
             f'one of them.')
     return out
+
+
+def fetch_fixture_index(finals: list) -> dict:
+    """Stored rows across the resolve window, indexed by UNORDERED team pair.
+
+    ══ 2026-11-14 · ORIENTATION IS NOT A FACT AT A NEUTRAL SITE ═══════
+    `fetch_existing` can only find a row whose game_id matches, and a
+    game_id embeds the orientation (`ncaab_<date>_<away>_<home>`). At a
+    neutral site there IS no home team, so ESPN and the odds feed pick
+    opposite ones — and then NEITHER id matches and the game goes down the
+    INSERT path. Measured season-to-date: **14 fixtures stored TWICE, 28
+    rows for 14 games**, and the split is the damage:
+
+        ours (odds feed)   close_spread 7.5    home_score NULL
+        ESPN's (inserted)  close_spread NULL   74-72
+
+    So the line sits on a row that never gets a score and the score sits on
+    a row that has no line. Neither can grade, which is why 13 of those
+    fixtures survived a full `--days-back 14` pass still unscored, and why
+    four chalk_parlay snapshots could never settle. Every one of the 13 has
+    `is_neutral_site = True` in ncaab_game_context — 13 of 13.
+
+    The dates disagree too (ctx 11-02 vs results 11-03 on UCLA/Arizona), so
+    the match is widened to +-1 day. Letting the existing `_owed_date` rule
+    then correct the stored date is what REPAIRS the receipt join, because
+    ESPN's ET date is the one grade_public_receipts shares with context.
+    """
+    if not finals:
+        return {}
+    days = sorted({str(o['game_date'])[:10] for o in finals if o.get('game_date')})
+    if not days:
+        return {}
+    lo = (date.fromisoformat(days[0]) - timedelta(days=1)).isoformat()
+    hi = (date.fromisoformat(days[-1]) + timedelta(days=1)).isoformat()
+    idx: dict = {}
+    off = 0
+    while True:
+        r = requests.get(
+            f'{SB}/rest/v1/ncaab_game_results',
+            params={'select': 'game_id,game_date,home_team,away_team,'
+                              'home_score,away_score,close_spread,close_total,'
+                              'spread_result,total_result',
+                    'and': f'(game_date.gte.{lo},game_date.lte.{hi})',
+                    'limit': 1000, 'offset': off},
+            headers=H_READ, timeout=60,
+        )
+        if r.status_code != 200:
+            # Loud, never swallowed: an unreadable lookup is identical to
+            # "no twin stored" and would insert the duplicate all over again
+            # ([[feedback_zero_rows_is_a_wiring_error]]).
+            raise RuntimeError(f'fetch_fixture_index HTTP {r.status_code}: '
+                               f'{r.text[:160]}')
+        body = r.json() or []
+        for row in body:
+            key = frozenset((row.get('home_team'), row.get('away_team')))
+            idx.setdefault(key, []).append(row)
+        if len(body) < 1000:
+            break
+        off += 1000
+    return idx
+
+
+def remap_onto_swapped_fixture(finals: list, existing: dict,
+                               idx: dict) -> int:
+    """Point an unmatched final at its orientation-swapped stored row.
+
+    SCORES ARE REASSIGNED BY TEAM NAME, NEVER BY POSITION. Swapping on
+    position would silently hand the home side the away team's points and
+    grade the OPPOSITE SIDE of what we published
+    ([[feedback_grade_the_side_we_published]],
+    [[feedback_magnitude_cannot_express_a_side]]). The name test has to hold
+    exactly in both directions or the game is left alone.
+
+    Refuses on ambiguity: 0 candidates means the game really is new, and >1
+    means two stored rows claim the fixture, which a resolver must not pick
+    between ([[feedback_prefix_strip_can_name_another_school]]).
+    """
+    swapped = 0
+    for o in finals:
+        if o['game_id'] in existing:
+            continue
+        key = frozenset((o['home_team'], o['away_team']))
+        if len(key) != 2:
+            continue
+        gd = date.fromisoformat(str(o['game_date'])[:10])
+        cands = []
+        for row in idx.get(key, []):
+            try:
+                rd = date.fromisoformat(str(row['game_date'])[:10])
+            except Exception:
+                continue
+            if abs((rd - gd).days) > 1:
+                continue
+            # Only an OPPOSITE orientation is of interest here; a matching
+            # one would already have been found by game_id.
+            if (row.get('home_team') == o['away_team']
+                    and row.get('away_team') == o['home_team']):
+                cands.append(row)
+        if len(cands) != 1:
+            if len(cands) > 1:
+                print(f'  ! {o["game_id"]}: {len(cands)} stored rows claim '
+                      f'this fixture — refusing to guess')
+            continue
+        row = cands[0]
+        o['home_score'], o['away_score'] = o['away_score'], o['home_score']
+        o['home_team'], o['away_team'] = row['home_team'], row['away_team']
+        o['game_id'] = row['game_id']
+        existing[row['game_id']] = row
+        swapped += 1
+        print(f'  ~ neutral-site orientation: {o["game_id"]} '
+              f'({row["away_team"]} @ {row["home_team"]}) '
+              f'{o["away_score"]}-{o["home_score"]}')
+    return swapped
 
 
 def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
@@ -459,6 +597,15 @@ def run(dates: list, dry_run: bool = False, skip_external: bool = False) -> None
     if _remapped:
         print(f'  {_remapped} game(s) remapped onto their legacy UTC-keyed '
               f'row so the date is PATCHED, not duplicated')
+
+    # Third and last resolution step, for the neutral-site games whose two
+    # feeds disagree about which team is home. See fetch_fixture_index.
+    _swapped = remap_onto_swapped_fixture(
+        finals, existing, fetch_fixture_index(finals))
+    if _swapped:
+        print(f'  {_swapped} neutral-site game(s) matched to their stored row '
+              f'in the opposite orientation (scores reassigned BY TEAM NAME)')
+
     print(f'  existing rows matched: '
           f'{sum(1 for o in finals if o["game_id"] in existing)}/{len(finals)}')
 

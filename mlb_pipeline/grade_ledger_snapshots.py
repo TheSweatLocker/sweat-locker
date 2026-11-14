@@ -162,9 +162,45 @@ def _fetch_result(sport: str, game_id: str) -> dict | None:
     rows2 = r2.json() if r2.status_code == 200 else []
     # More than one row on one (date, home, away) means duplicates in the
     # results table; grading off an arbitrary one is feedback_unordered_data_zero_picks_a_vintage.
-    if len(rows2) != 1:
+    if len(rows2) == 1:
+        return rows2[0]
+
+    # ══ 2026-11-14 · A NEUTRAL SITE HAS NO HOME TEAM ══════════════════
+    # Third path, for the fixture stored in the OPPOSITE orientation to
+    # context. The note above was right that a grader must not flip
+    # home/away — but nothing here needs to. `_resolve_pick_side` matches
+    # the leg's TEAM NAME against this row's own home_team/away_team, so a
+    # row returned in whatever orientation it is stored grades the side we
+    # published either way. The row only needs FINDING, not flipping.
+    #
+    # What it cost while it returned None: Saint Joseph's @ South Florida
+    # on 2026-11-11 is stored in results as `South Florida @ Saint
+    # Joseph's` (80-83) and in context as `Saint Joseph's @ South Florida`
+    # (is_neutral_site=True, Alumni Hall (Navy)). One game, two
+    # orientations, so the join above missed and FOUR chalk_parlay
+    # snapshots sat ungraded — the whole remaining ledger backlog.
+    #
+    # Dates are widened by a day because the two feeds disagree about that
+    # too, and exactly one row must match or we refuse: >1 means two rows
+    # claim the fixture, which is the duplicate state
+    # repair_ncaab_fixture_integrity.py exists to clear.
+    try:
+        gd_d = date.fromisoformat(str(gd)[:10])
+    except Exception:
         return None
-    return rows2[0]
+    cands = []
+    for off in (0, -1, 1):
+        d = (gd_d + timedelta(days=off)).isoformat()
+        r3 = requests.get(f'{SB}/rest/v1/{table}', headers=H_READ,
+                          params={'game_date': f'eq.{d}',
+                                  'home_team': f'eq.{away}',
+                                  'away_team': f'eq.{home}',
+                                  'select': _SEL, 'limit': '2'}, timeout=10)
+        if r3.status_code == 200:
+            cands += (r3.json() or [])
+    if len(cands) != 1:
+        return None
+    return cands[0]
 
 
 def _resolve_pick_side(leg: dict, result: dict) -> str | None:

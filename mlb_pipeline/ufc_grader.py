@@ -79,7 +79,14 @@ _UNPARSED_METHODS: list = []
 def parse_fight_result(comp: dict) -> Optional[dict]:
     """From an ESPN competition (fight), extract winner + method + rounds.
     Returns dict or None if not yet complete."""
-    if comp.get('status', {}).get('type', {}).get('state') != 'post':
+    # 2026-11-14: ESPN's state='post' also covers POSTPONED/CANCELED, so
+    # `type.completed` is checked too. A pulled fight has no `winner` flag
+    # and so would have fallen out below anyway, but the same `== 'post'`
+    # test DID fabricate 0-0 finals in resolve_ncaab_results, and a writer
+    # left on the broken idiom is the next one to bite
+    # ([[feedback_fix_every_writer_to_the_table]]).
+    _st = comp.get('status', {}).get('type', {}) or {}
+    if _st.get('state') != 'post' or not _st.get('completed'):
         return None
     competitors = comp.get('competitors', [])
     if len(competitors) < 2: return None

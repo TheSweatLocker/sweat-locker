@@ -1010,7 +1010,51 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_ncaab_results.py" python resolve_ncaab_results.py --days-back 2
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "resolve_ncaab_results.py" python resolve_ncaab_results.py --days-back 4
+          # 2026-11-14: --days-back was 2. A game that fails to resolve
+          # twice was then unreachable forever by the scheduled job, and
+          # recovering 11-13's 46 unscored finals needed a hand run with a
+          # wider window. 4 gives the 06:23 ET cron two more chances at a
+          # night it missed, at the cost of three extra ESPN calls.
+          #
+          # And the fixture repair runs right behind it, because the
+          # resolver's own INSERT path is what creates the duplicate it
+          # cleans: at a neutral site ESPN and the odds feed pick opposite
+          # home teams, so neither game_id matches and the game is stored a
+          # SECOND time — 14 fixtures, 28 rows, with the line on the row
+          # that never gets a score. Idempotent; prints "none" when clean.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "repair_ncaab_fixture_integrity.py" python repair_ncaab_fixture_integrity.py --apply --delete-dupes
+
+      # ══ 2026-11-14 · RECEIPT GRADING RAN BEFORE THE FINALS EXISTED ══
+      # grade_public_receipts is sequenced in nightly_cross_sport.sh, which
+      # mlb_grade_overnight fires at 01:10-04:10 UTC. That script resolves
+      # NCAAF, NFL and NHL finals itself and then grades — but NCAAB and NBA
+      # finals are resolved in THEIR OWN pipelines, hours LATER (11:23 and
+      # 12:13 UTC). So receipt grading for the two sports currently in
+      # season always ran BEFORE the scores it needed landed, and their
+      # receipts waited for the NEXT night's pass, a full 24h late.
+      #
+      # Measured on 2026-11-13 at 04:11 ET: every NBA receipt on the slate
+      # ungraded (9 game_read, 6 fade, 1 sharp_card) and NCAAB game_read 46
+      # of 60 — which is why no day-over-day read was possible at morning
+      # cadence. Same reasoning as "Grade NBA jerry_reads", wired in
+      # 2026-09-08 so "NBA doesn't wait on the MLB nightly step"; the
+      # RECEIPTS grader never got the same treatment.
+      #
+      # The script is sport-agnostic and idempotent, so running it here as
+      # well as in the nightly is safe — it grades whatever became
+      # gradeable ([[project_mlb_pipeline_yml_owns_shared_surfaces_1103]]).
+      - name: Grade public receipts now that NCAAB finals are in
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'resolver_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python grade_public_receipts.py --days 4
+          python grade_ledger_snapshots.py --days 4
 
       # ══ 2026-11-10 · OUR OWN NUMBER WAS ON NONE OF 11,949 RESULT ROWS ══
       # ncaab_game_results carried home_score on 99.3%, close_spread on

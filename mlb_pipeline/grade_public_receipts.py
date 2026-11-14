@@ -1122,6 +1122,114 @@ def grade_props(days: int, dry_run: bool) -> None:
     print(f'  patched {ok}, failed {fail}')
 
 
+#: Surfaces whose receipt CANNOT be graded against a game result, because
+#: the pick is not a game market — a parlay settles only when all its legs
+#: do. Their grade has to be inherited from the row they were built from.
+_INHERIT_SOURCES = {
+    'ledger': ('ledger_snapshots', 'id'),
+}
+
+
+def inherit_from_source(days: int, dry_run: bool) -> None:
+    """Mirror a source row's result onto a receipt that still has none.
+
+    ══ 2026-11-14 · "ALREADY LIVE" IS NOT "NOTHING TO DO" ═════════════
+    This file's own opening line says most surfaces "inherit a grade from
+    the table they were reconstructed from" — but nothing ever re-checked
+    that inheritance after the receipt existed. backfill_public_receipts
+    carries `result` in its payload and then dedupes on what is already
+    stored: run today it reported "345 reconstructed, 345 already live, 0 to
+    write". So a receipt written BEFORE its snapshot graded keeps a NULL
+    result forever.
+
+    Measured: 12 ledger receipts NULL while all 12 snapshots were graded
+    W/L — including every one of 2026-11-13, which is why the daily report
+    flagged `ledger MULTI 6 of 6 OVERDUE` on a night whose finals were all
+    in. A parlay cannot be graded the way the rest of this file grades, so
+    without inheritance the Ledger surface was unreachable
+    ([[feedback_fix_the_cache_not_the_frozen_receipt]]).
+
+    Writes are confirmed by READBACK, not by a 2xx: a PostgREST patch
+    returns 200 with zero rows when its filter matches nothing, and some
+    receipt columns are frozen against update
+    ([[feedback_204_is_not_a_write]],
+    [[feedback_receipt_audit_column_is_frozen_too]]).
+    """
+    since = (datetime.now(timezone.utc).date()
+             - timedelta(days=days)).isoformat()
+    print(f'\n=== inherit_from_source · since {since} '
+          f'{"(DRY)" if dry_run else "(APPLY)"} ===')
+    for surface, (src_table, src_key) in _INHERIT_SOURCES.items():
+        r = requests.get(f'{SB}/rest/v1/public_receipts', headers=H_READ,
+                         params={'select': 'id,source_id,game_date,result',
+                                 'surface': f'eq.{surface}',
+                                 'result': 'is.null',
+                                 'game_date': f'gte.{since}',
+                                 'limit': 1000}, timeout=60)
+        if r.status_code != 200:
+            print(f'  ✗ {surface}: read {r.status_code} {r.text[:120]}')
+            continue
+        rows = r.json() or []
+        ids = sorted({str(x['source_id']) for x in rows if x.get('source_id')})
+        if not ids:
+            print(f'  {surface}: nothing ungraded')
+            continue
+        # Chunked small: a long in.(...) is sent in the URL and this stack
+        # TRUNCATES it, returning PGRST100 that reads as "nothing stored"
+        # ([[feedback_in_filter_url_truncates_silently]]).
+        src: dict = {}
+        for i in range(0, len(ids), 20):
+            chunk = ','.join(ids[i:i + 20])
+            s = requests.get(f'{SB}/rest/v1/{src_table}', headers=H_READ,
+                             params={'select': f'{src_key},result,graded_at',
+                                     src_key: f'in.({chunk})',
+                                     'limit': 1000}, timeout=60)
+            if s.status_code != 200:
+                raise RuntimeError(f'{src_table} read {s.status_code}: '
+                                   f'{s.text[:160]}')
+            for row in (s.json() or []):
+                src[str(row[src_key])] = row
+        ok = skipped = failed = 0
+        for rec in rows:
+            srow = src.get(str(rec.get('source_id')))
+            raw = (srow or {}).get('result')
+            if not raw:
+                skipped += 1
+                continue
+            low = str(raw).strip().lower()
+            norm = ('WIN' if low in ('w', 'win') else
+                    'LOSS' if low in ('l', 'loss') else
+                    'PUSH' if low in ('p', 'push') else None)
+            if norm is None:
+                print(f'  ? {surface} {rec["id"]}: unmapped source result '
+                      f'{raw!r} — left alone')
+                skipped += 1
+                continue
+            if dry_run:
+                print(f'  [DRY] receipt {rec["id"]} '
+                      f'{str(rec.get("game_date"))[:10]} -> {norm}')
+                ok += 1
+                continue
+            pr = requests.patch(
+                f'{SB}/rest/v1/public_receipts',
+                headers={**H_WRITE, 'Prefer': 'return=representation'},
+                params={'id': f'eq.{rec["id"]}'},
+                json={'result': norm,
+                      'graded_at': (srow.get('graded_at')
+                                    or datetime.now(
+                                        timezone.utc).isoformat())},
+                timeout=60)
+            body = pr.json() if (pr.status_code == 200 and pr.text) else []
+            if not body or str(body[0].get('result')) != norm:
+                print(f'  ✗ receipt {rec["id"]}: patch did not take '
+                      f'({pr.status_code}, {len(body)} row(s) back)')
+                failed += 1
+                continue
+            ok += 1
+        print(f'  {surface}: inherited {ok}, source still ungraded {skipped}, '
+              f'failed {failed}')
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--surface')
@@ -1133,6 +1241,7 @@ def main():
                    help='print every grade with the score it came from')
     a = p.parse_args()
     run(a.surface, a.days, a.dry_run, a.verbose)
+    inherit_from_source(a.days, a.dry_run)
     if not a.skip_props:
         grade_props(a.days, a.dry_run)
 

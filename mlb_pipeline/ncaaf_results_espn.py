@@ -114,7 +114,14 @@ def espn_finals(date: str) -> dict:
         return out
     for e in r.json().get('events', []):
         c = e['competitions'][0]
-        if c['status']['type']['state'] != 'post':
+        # 2026-11-14: ESPN uses state='post' for a POSTPONED game too
+        # (name=STATUS_POSTPONED, completed=False, scores 0-0), so this
+        # filter alone admits an unplayed game as a 0-0 final. No NCAAF row
+        # has been written that way yet — this closes it before one is
+        # ([[feedback_fix_every_writer_to_the_table]]). Fixed with
+        # resolve_ncaab_results.py, where it HAD fired.
+        _st = c.get('status', {}).get('type', {}) or {}
+        if _st.get('state') != 'post' or not _st.get('completed'):
             continue
         try:
             a = [x for x in c['competitors'] if x['homeAway'] == 'away'][0]

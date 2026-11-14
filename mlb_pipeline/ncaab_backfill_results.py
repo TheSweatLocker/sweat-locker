@@ -238,9 +238,20 @@ def event_to_row(event: dict, by_espn: dict, by_name: dict, season: str) -> Opti
     game_id = f'ncaab_{_et}_{away_team}_{home_team}'.replace(' ', '_')
     legacy_game_id = f'ncaab_{_utc}_{away_team}_{home_team}'.replace(' ', '_')
 
-    status = ((event.get('status') or {}).get('type') or {}).get('state')
-    hs = _i(home_c.get('score')) if status == 'post' else None
-    as_ = _i(away_c.get('score')) if status == 'post' else None
+    # 2026-11-14: ESPN returns state='post' for a POSTPONED game, with
+    # name=STATUS_POSTPONED, completed=False and scores ['0','0'] — so
+    # `state == 'post'` alone backfills a 0-0 FINAL for a game nobody
+    # played. `type.completed` is the field ESPN means it with, and the 0-0
+    # clause is belt-and-braces: no basketball game ends 0-0. Same fix as
+    # resolve_ncaab_results.event_to_outcome, where it had already written
+    # three such rows ([[feedback_fix_every_writer_to_the_table]]).
+    _st = ((event.get('status') or {}).get('type') or {})
+    status = _st.get('state')
+    _done = bool(_st.get('completed')) and status == 'post'
+    hs = _i(home_c.get('score')) if _done else None
+    as_ = _i(away_c.get('score')) if _done else None
+    if hs == 0 and as_ == 0:
+        hs = as_ = None
 
     row = {
         'game_id': game_id,

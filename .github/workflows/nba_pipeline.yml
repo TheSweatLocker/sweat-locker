@@ -250,6 +250,48 @@ jobs:
         run: |
           cd mlb_pipeline
           python grade_jerry_reads.py --sport NBA
+          # ══ 2026-11-14 · THE RECEIPTS WAITED A FULL DAY ══════════════
+          # grade_public_receipts is sequenced in nightly_cross_sport.sh,
+          # which mlb_grade_overnight fires at 01:10-04:10 UTC. That script
+          # resolves NCAAF/NFL/NHL finals itself and then grades — but NBA
+          # finals are resolved HERE, at 12:13 UTC, hours later. So receipt
+          # grading always ran BEFORE the NBA scores it needed existed, and
+          # every NBA receipt waited for the next night's pass.
+          #
+          # Measured on 2026-11-13 at 04:11 ET: 9 game_read, 6 fade and 1
+          # sharp_card receipt ungraded, 100% of the slate, while NBA lag
+          # between game_date and resolved_at ran 1-3 days on all 18 dates
+          # this season. That is why no day-over-day read was available at
+          # morning cadence.
+          #
+          # This is the same reasoning that put grade_jerry_reads here on
+          # 2026-09-08 ("so NBA doesn't wait on the MLB nightly step"). The
+          # receipts grader never got it. Sport-agnostic and idempotent, so
+          # running it in both places is safe
+          # ([[project_mlb_pipeline_yml_owns_shared_surfaces_1103]]).
+          python grade_public_receipts.py --days 4
+          python grade_ledger_snapshots.py --days 4
+
+      # ══ 2026-11-14 · LAST NIGHT'S BOARD, BEFORE THE 8AM CADENCE ══════
+      # NBA is the LAST sport to settle each night (this pipeline's earliest
+      # cron is 12:13 UTC; NCAAB resolves at 11:23, NHL 12:05), so the first
+      # moment a complete cross-sport day exists is right here, ~07:15 ET.
+      # That is also the only placement that works: nightly_cross_sport.sh
+      # runs 01:10-04:10 UTC and would always report the night provisional.
+      #
+      # continue-on-error because this REPORTS, it does not fix — but its
+      # exit code is meaningful in the log: 2 = picks ungraded whose finals
+      # are already in, 1 = still waiting on finals, 0 = the day is complete
+      # and the numbers can be trusted.
+      - name: Daily performance board (every surface, every sport)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          cd mlb_pipeline
+          python daily_performance_report.py
 
       # ══ 2026-10-28 · NBA PROPS HAD NO SCHEDULED GRADER AT ALL ══
       # grade_props.py has carried 'NBA': 'nba_pipeline_props' in
