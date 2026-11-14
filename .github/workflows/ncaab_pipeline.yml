@@ -189,6 +189,41 @@ jobs:
           # only.
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "kenpom_pull.py (ratings+FF)"             python kenpom_pull.py --no-fanmatch
 
+      # ══ 2026-11-13 · THE NAME CHECK THAT GOES RED ═══════════════════════
+      # Andy: "SO ghow do we ensure name matching is not an issue going
+      # forward?" This step is the answer. "We ported that file" is a promise;
+      # this is a check.
+      #
+      # Five separate hand-rolled matchers have now shipped beside
+      # ncaab_team_aliases -- the app's stripMascot, ncaab_game_context,
+      # ncaab_team_stats' 'FIU', ncaab_odds_pull's exact-string dict (which
+      # cost DUKE its line), and ncaab_pipeline's identity fallback (which
+      # filed that team's 2026-27 ratings under 'LSU New Orleans', where
+      # nothing joins). Every one was invisible in the output: a card with no
+      # stats reads as a quiet night, a game with no line reads as a book
+      # that has not posted.
+      #
+      # It asserts two properties, so it does not need to know about any one
+      # scraper:
+      #   1. every team name on the LIVE Odds API slate resolves. This cannot
+      #      be measured from any table -- line_history only stores names that
+      #      already passed the gate, so it reads 100% clean by survivorship.
+      #   2. every team name stored in a table something JOINS ON resolves to
+      #      ITSELF, since a name that resolves but is not canonical still
+      #      breaks the join.
+      #
+      # DELIBERATELY NOT continue-on-error. A permanently-green name check is
+      # exactly what let five of these through.
+      - name: NCAAB name integrity (must be green)
+        if: steps.mode.outputs.mode != 'resolver_only'
+        env:
+          SUPABASE_URL:  ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:  ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          ODDS_API_KEY:  ${{ secrets.ODDS_API_KEY }}
+        run: |
+          cd mlb_pipeline
+          python audit_ncaab_name_integrity.py
+
       # ══ 2026-09-28 · FANMATCH IS DAILY, RATINGS ARE WEEKLY ══
       # Split deliberately. Ratings converge slowly and the step above keeps
       # them weekly to halve paid-API usage. Fanmatch IS the day's slate, so

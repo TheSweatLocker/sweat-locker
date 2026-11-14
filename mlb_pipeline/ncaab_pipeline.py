@@ -118,15 +118,54 @@ def run(season: str = None):
 
     ff_map = {t.get("TeamName"): t for t in four_factors}
     alias_map = fetch_alias_map()
-    print(f"  Alias map: {len(alias_map)} entries (identity fallback when missing)")
+    print(f"  Alias map: {len(alias_map)} entries")
+
+    # ══ 2026-11-13 · THE IDENTITY FALLBACK WROTE AN UNJOINABLE KEY ═══════
+    # This was `alias_map.get(kp_name, kp_name)` -- a one-field exact-string
+    # dict (kenpom_name only) with KenPom's RAW name as the fallback. When
+    # KenPom respells a school the row still got written, just under a key
+    # nothing joins on, so the team silently lost its CURRENT-season stats
+    # while prior seasons sat right beside it under the right name:
+    #
+    #     ncaab_team_stats  'LSU New Orleans'  2026-27   <- unreachable
+    #                       'New Orleans'      2025-26
+    #                       'New Orleans'      2024-25
+    #
+    # Nothing failed. The team just had no ratings on any surface.
+    #
+    # That is the FIFTH hand-rolled match beside ncaab_team_aliases
+    # ([[feedback_a_blocklist_duplicating_a_lookup_table]]). ncaab_team_resolver
+    # normalizes case, punctuation and mascot suffixes against the whole table
+    # (1,468 keys vs this dict's one column) and refuses a bare mascot rather
+    # than guessing. The dict stays as a fallback so this can never resolve
+    # FEWER names than before.
+    #
+    # An unresolved name is still written under its raw spelling -- dropping
+    # the team would trade a silent join failure for a silent absence -- but
+    # it is now printed LOUDLY and audit_ncaab_name_integrity.py turns red on
+    # it, so it cannot sit unnoticed for a season again.
+    import ncaab_team_resolver as _tr
+
+    def _canon(kp: str) -> tuple:
+        """(name_to_store, resolved?) for a KenPom team name."""
+        hit = _tr.resolve(kp)
+        if hit:
+            return hit, True
+        hit = alias_map.get(kp)
+        if hit:
+            return hit, True
+        return kp, False
 
     rows = []
+    unresolved = []
     for t in ratings:
         kp_name = t.get("TeamName")
         if not kp_name:
             continue
         ff = ff_map.get(kp_name, {})
-        canonical = alias_map.get(kp_name, kp_name)  # identity fallback
+        canonical, _ok = _canon(kp_name)
+        if not _ok:
+            unresolved.append(kp_name)
         try:
             adj_oe = float(t.get("AdjOE") or 0)
             adj_de = float(t.get("AdjDE") or 0)
@@ -167,6 +206,17 @@ def run(season: str = None):
             "coach": t.get("Coach") or None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
+
+    # LOUD, before the write: an unjoinable key is worse than a visible gap,
+    # and audit_ncaab_name_integrity.py exits 1 on any of these.
+    if unresolved:
+        print(f"  ⚠ {len(unresolved)} KenPom name(s) did NOT resolve to a "
+              f"canonical team — stored under the RAW spelling, which nothing "
+              f"joins on. Add alt_names to ncaab_team_aliases:")
+        for nm in sorted(set(unresolved)):
+            print(f"      {nm!r}")
+    else:
+        print(f"  ✓ all {len(rows)} KenPom names resolved to canonical teams")
 
     if upsert_team_stats(rows):
         print(f"  ✅ Upserted {len(rows)} team rows")
