@@ -36,16 +36,84 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 
 def _et_today() -> str:
-    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)).date().isoformat()
+    """Today's ET date, DST-correct.
+
+    2026-11-14: this was `(now_utc - timedelta(hours=4)).date()`. A fixed -4
+    disagrees with true ET in exactly one hour — 04:00-04:59 UTC, on the 127
+    EST days a year — where it reads a DAY AHEAD, and it is byte-identical
+    the rest of the time. That is not an idle hour: this audit is the thing
+    read to decide whether the overnight worked, and mlb_grade_overnight's
+    own crons land in it, so an audit run then would grade the state of
+    TOMORROW against today's slate and report every surface missing
+    ([[feedback_hardcoded_et_offset_breaks_in_est]],
+    [[feedback_window_from_runner_clock_is_a_day_ahead]]).
+
+    sweat_dates is the one place the offset is derived; the fallback errs to
+    the previous ET day, which is the safe direction for an audit.
+    """
+    try:
+        from sweat_dates import et_today
+        return et_today()
+    except Exception:                                        # noqa: BLE001
+        return (dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(hours=5)).date().isoformat()
 
 
-def _run_script(path: Path, args: list = None) -> tuple[int, str]:
+#: When each home-page surface is actually BUILT, as UTC HH:MM, measured
+#: from jerry_cache.created_at over 2026-11-06..11-13 rather than guessed:
+#:
+#:   best_bet_*    12:41 .. 13:44 UTC   (POTD)
+#:   sharp_card_*  12:57 .. 14:46 UTC
+#:
+#: Run before that, "MISSING" means NOT BUILT YET, which is not the same
+#: finding as "the build failed" — and this audit's own docstring says it is
+#: meant for ~8am ET. Run at 04:11 ET it reported four CRITICALs and exit 2
+#: for a day whose builds were still hours away. A check that is red every
+#: night is a check nobody reads
+#: ([[feedback_a_detector_must_know_the_intentional_case]]).
+#:
+#: The grace is wide on purpose: nba_pipeline.yml's own comment measures a
+#: 09:00 ET cron landing at "~1:24pm ET at median lateness", so GitHub cron
+#: lateness of several hours is normal here.
+SURFACE_BUILD_UTC = {
+    'POTD':        '13:45',
+    'Sharp Card':  '14:45',
+    'Dawg':        '14:45',
+    'Daily Degen': '14:45',
+}
+SURFACE_GRACE_MIN = 120
+
+
+def _surface_overdue(label: str) -> tuple[bool, str]:
+    """(is this surface late, note) — for a surface missing on TODAY."""
+    hhmm = SURFACE_BUILD_UTC.get(label)
+    if not hhmm:
+        return True, ''
+    now = dt.datetime.now(dt.timezone.utc)
+    hh, mm = (int(x) for x in hhmm.split(':'))
+    due = (now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+           + dt.timedelta(minutes=SURFACE_GRACE_MIN))
+    if now < due:
+        mins = int((due - now).total_seconds() // 60)
+        return False, f'not built yet — due in {mins // 60}h{mins % 60:02d}m'
+    return True, f'overdue (builds by {hhmm}Z +{SURFACE_GRACE_MIN}m)'
+
+
+def _run_script(path: Path, args: list = None,
+                timeout: int = 120) -> tuple[int, str]:
     """Run a script, return (exit_code, output). UTF-8 with replace to
-    survive Windows cp1252 decode issues on emoji-heavy child output."""
+    survive Windows cp1252 decode issues on emoji-heavy child output.
+
+    `timeout` is per-script because daily_performance_report walks every
+    surface's full pick history (prop_coverage alone is ~29k rows) and takes
+    ~100s even with the pickers running concurrently. At the old flat 120s it
+    printed "(timed out)", which is the one output a completeness gate must
+    never produce: it is indistinguishable from a clean night.
+    """
     try:
         env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
         r = subprocess.run(['python', str(path)] + (args or []),
-                           capture_output=True, timeout=120,
+                           capture_output=True, timeout=timeout,
                            cwd=str(path.parent), env=env)
         stdout = (r.stdout or b'').decode('utf-8', errors='replace')
         stderr = (r.stderr or b'').decode('utf-8', errors='replace')
@@ -391,9 +459,41 @@ def main():
 
     # Headlines — what the user will see today
     print('📱 TODAY (user surfaces):')
+    _today_et = _et_today()
     for k, v in collect_today_headlines(date).items():
-        icon = '✅' if 'MISSING' not in v else '🚨'
-        print(f'  {icon} {k:14} {v}')
+        if 'MISSING' not in v:
+            print(f'  ✅ {k:14} {v}')
+            continue
+        # Only TODAY's surfaces get the benefit of the clock — a past date
+        # that is missing one is missing it for good. See SURFACE_BUILD_UTC.
+        late, note = ((True, '') if date != _today_et
+                      else _surface_overdue(k))
+        icon = '🚨' if late else '·'
+        suffix = f'  ({note})' if note else ''
+        print(f'  {icon} {k:14} {v}{suffix}')
+
+    # ══ 2026-11-14 · LAST NIGHT, BEFORE THE 30-DAY BOARD ═══════════════
+    # Andy: "we should be assessing day to day performance across every
+    # surface in every sport". A 30-day window structurally cannot show
+    # that — one bad night moves a 129-pick denominator by under a point —
+    # and the completeness gate below is the part no record surface could
+    # ever report, because every picker in compute_surface_records filters
+    # `result=not.is.null`. An ungraded pick is invisible to all of them, so
+    # a half-graded night reads as a THIN night rather than a broken one.
+    #
+    # Shown FIRST because it decides whether the 30-day board underneath it
+    # is complete. --no-trend keeps the cadence fast; run the script
+    # directly for the d7/d30 columns and the leak board.
+    print('\n🌙 LAST NIGHT — every surface, every sport:')
+    rc_day, out_day = _run_script(here / 'daily_performance_report.py',
+                                  ['--no-trend'], timeout=300)
+    for line in (out_day or '').strip().split('\n'):
+        if line.strip():
+            print(f'  {line}')
+    if rc_day >= 2:
+        print('  🚨 CRITICAL — picks are ungraded and their finals ARE in')
+    elif rc_day == 1:
+        print('  ⚠️ provisional — still waiting on finals, numbers will move')
 
     # 30-day records — the receipts
     print('\n📊 30-DAY RECORDS:')
@@ -498,7 +598,11 @@ def main():
     except Exception as _e:                                    # noqa: BLE001
         print(f'   (checklist unavailable: {_e})')
 
-    worst = max(rc, rc2, rc3)
+    # rc_day carries the daily report: 2 = picks ungraded with their finals
+    # already in, 1 = still waiting on finals. Both belong in the exit code,
+    # because a cadence that exits 0 on an ungraded night is exactly how
+    # 2026-11-13 looked clean at 04:11 ET with 72 receipts unsettled.
+    worst = max(rc, rc2, rc3, rc_day)
     banner = ('🚨 ACTION REQUIRED' if worst >= 2
               else '⚠️ warnings present' if worst == 1
               else '✅ ALL GREEN')

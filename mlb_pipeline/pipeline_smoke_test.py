@@ -39,7 +39,64 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 
 def _et_today() -> str:
-    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)).date().isoformat()
+    """Today's ET date, DST-correct.
+
+    2026-11-14: was a fixed -4, which reads a DAY AHEAD during 04:00-04:59
+    UTC on the 127 EST days a year and is byte-identical otherwise. This
+    decides which slate the smoke test judges
+    ([[feedback_hardcoded_et_offset_breaks_in_est]]).
+    """
+    try:
+        from sweat_dates import et_today
+        return et_today()
+    except Exception:                                        # noqa: BLE001
+        return (dt.datetime.now(dt.timezone.utc)
+                - dt.timedelta(hours=5)).date().isoformat()
+
+
+#: When each home-page surface is actually BUILT, as UTC HH:MM, measured
+#: from jerry_cache.created_at over 2026-11-06..11-13: best_bet lands
+#: 12:41-13:44 UTC and sharp_card 12:57-14:46 UTC.
+#:
+#: Before that, an absent row means NOT BUILT YET — a different finding from
+#: "the build failed", and the one this file used to report. Run at 04:11 ET
+#: on 2026-11-14 it returned three CRITICALs and a WARNING for a day whose
+#: builds were still four hours out, which is how a morning cadence learns
+#: to ignore its own alarm
+#: ([[feedback_a_detector_must_know_the_intentional_case]]).
+#:
+#: Grace is wide deliberately: nba_pipeline.yml measures its own 09:00 ET
+#: cron landing at "~1:24pm ET at median lateness".
+_BUILD_UTC = {
+    'potd_published':       '13:45',
+    'sharp_card_published': '14:45',
+    'dawg_of_day':          '14:45',
+    'daily_degen':          '14:45',
+}
+_BUILD_GRACE_MIN = 120
+
+
+def _not_due_yet(name: str, date: str) -> str | None:
+    """A note if `name` is simply not built yet for `date`, else None.
+
+    Only ever true for TODAY: a past date missing a surface is missing it
+    for good, and must still report.
+    """
+    if date != _et_today():
+        return None
+    hhmm = _BUILD_UTC.get(name)
+    if not hhmm:
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    hh, mm = (int(x) for x in hhmm.split(':'))
+    due = (now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+           + dt.timedelta(minutes=_BUILD_GRACE_MIN))
+    if now >= due:
+        return None
+    mins = int((due - now).total_seconds() // 60)
+    return (f'not built yet — {name} builds by {hhmm}Z '
+            f'(+{_BUILD_GRACE_MIN}m grace), due in '
+            f'{mins // 60}h{mins % 60:02d}m')
 
 
 class Check:
@@ -75,6 +132,9 @@ def check_potd_published_today(date: str) -> Check:
     row = _get_first('jerry_cache', {'cache_key': f'eq.best_bet_{date}'},
                      select='cache_key,data,narrative')
     if not row:
+        _wait = _not_due_yet('potd_published', date)
+        if _wait:
+            return Check('potd_published', 'INFO', True, _wait)
         return Check('potd_published', 'CRITICAL', False,
                      f'No best_bet_{date} in jerry_cache — home page will show "no play tonight"',
                      {'fix': 'python jerry_anchor_potd.py'})
@@ -100,6 +160,9 @@ def check_sharp_card_published_today(date: str) -> Check:
     row = _get_first('jerry_cache', {'cache_key': f'eq.sharp_card_{date}'},
                      select='cache_key,data,fetched_at')
     if not row:
+        _wait = _not_due_yet('sharp_card_published', date)
+        if _wait:
+            return Check('sharp_card_published', 'INFO', True, _wait)
         return Check('sharp_card_published', 'CRITICAL', False,
                      f'No sharp_card_{date} in jerry_cache — Sharp Card tab will be empty',
                      {'fix': 'python generate_sharp_card.py'})
@@ -115,9 +178,41 @@ def check_sharp_card_published_today(date: str) -> Check:
                  f'Sharp Card: {len(items)} items · fetched {(row.get("fetched_at") or "?")[:19]}')
 
 
+def _out_of_season(sport: str, date: str) -> str | None:
+    """A note if `date` falls outside `sport`'s season, else None.
+
+    2026-11-14: an empty slate was reported CRITICAL ("Games tab will be
+    empty") for a sport whose season ENDED on 2026-11-05. The empty tab is
+    correct in November and there is nothing to fix, so the alarm was pure
+    noise on every run — and it was the last thing keeping this audit from
+    exiting 0 on a healthy day
+    ([[feedback_a_detector_must_know_the_intentional_case]]).
+
+    sport_registry.season_start/season_end is the same window
+    compute_margin_strength and enrich_team_form_universal already treat as
+    canonical. Returns None if the registry cannot be read, so an
+    unreachable table can never silence a real outage.
+    """
+    row = _get_first('sport_registry', {'sport': f'eq.{sport}'},
+                     select='season_start,season_end')
+    if not row:
+        return None
+    start, end = row.get('season_start'), row.get('season_end')
+    if not (start and end):
+        return None
+    d = str(date)[:10]
+    if str(start)[:10] <= d <= str(end)[:10]:
+        return None
+    return (f'{sport} is out of season ({start} .. {end}) — an empty slate '
+            f'is correct, not an outage')
+
+
 def check_mlb_slate_loaded(date: str) -> Check:
     n = _get_count('mlb_game_context', {'game_date': f'eq.{date}'})
     if n is None or n == 0:
+        _off = _out_of_season('MLB', date)
+        if _off:
+            return Check('mlb_slate_loaded', 'INFO', True, _off)
         return Check('mlb_slate_loaded', 'CRITICAL', False,
                      f'No MLB game_context rows for {date} — Games tab will be empty',
                      {'fix': 'python game_context.py --date ' + date})
@@ -218,6 +313,9 @@ def check_dawg_of_day(date: str) -> Check:
     row = _get_first('daily_dawg', {'game_date': f'eq.{date}'},
                      select='team,matchup,tier,conviction')
     if not row:
+        _wait = _not_due_yet('dawg_of_day', date)
+        if _wait:
+            return Check('dawg_of_day', 'INFO', True, _wait)
         return Check('dawg_of_day', 'WARNING', False,
                      f'No daily_dawg for {date} — home page Dawg tile blank',
                      {'fix': 'python generate_dawg_of_day.py'})
@@ -229,6 +327,9 @@ def check_dawg_of_day(date: str) -> Check:
 def check_daily_degen(date: str) -> Check:
     row = _get_first('daily_degen', {'game_date': f'eq.{date}'}, select='legs')
     if not row:
+        _wait = _not_due_yet('daily_degen', date)
+        if _wait:
+            return Check('daily_degen', 'INFO', True, _wait)
         return Check('daily_degen', 'WARNING', False,
                      f'No daily_degen for {date} — home page Degen tile blank')
     legs = row.get('legs') or []
