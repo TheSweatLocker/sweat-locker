@@ -46,6 +46,7 @@ from posted_line import posted_consensus as _posted_consensus  # noqa: E402
 from posted_line import posted_price as _posted_price  # noqa: E402
 from sweat_dates import et_and_utc_stamps  # noqa: E402
 from ncaab_result_ids import reconcile as _reconcile  # noqa: E402
+import ncaab_team_resolver as _tr  # noqa: E402
 SEASON = season_label()
 
 
@@ -82,6 +83,39 @@ def load_alias_map() -> dict:
             if alt: aliases[alt] = canon
         aliases[canon] = canon
     return aliases
+
+
+#: ══ 2026-11-13 · RESOLVE THE NAME, DO NOT LOOK IT UP ═══════════════════
+#: `aliases.get(raw)` is an EXACT-STRING dict hit, and the Odds API respells
+#: schools between pulls. Measured on tonight's 86-event feed, the dict
+#: refused 5 events and the resolver that was already in the repo took all
+#: 86 — with ZERO names it resolved differently:
+#:
+#:     SIU-Edwardsville Cougars   -> SIUE               (a HYPHEN; the table
+#:                                                       holds the space form)
+#:     GW Revolutionaries         -> George Washington  (initialism + the new
+#:                                                       nickname)
+#:     Mt. St. Mary's Mountaineers-> Mount St. Mary's   (Mt. vs Mount)
+#:     Prairie View Panthers      -> Prairie View A&M   (feed drops the A&M)
+#:     N Colorado Bears           -> Northern Colorado  (abbreviated + mascot)
+#:
+#: Four of those were live games tonight, one of them DUKE, and each lost its
+#: spread, total and both moneylines. `ncaab_team_resolver` normalizes case,
+#: punctuation and mascot suffixes against the same `ncaab_team_aliases`
+#: table, and refuses a bare mascot rather than guessing — so it cannot put a
+#: line on the wrong fixture, which is the only hazard a looser match adds
+#: ([[feedback_prefix_strip_can_name_another_school]]).
+#:
+#: This is the THIRD site where a hand-rolled match shadowed this table
+#: ([[feedback_a_blocklist_duplicating_a_lookup_table]]): the app's
+#: stripMascot, ncaab_game_context.canonical_team, and now here. The dict is
+#: kept only as a fallback so this can never resolve FEWER names than before.
+def _canon(raw, aliases: dict):
+    """Canonical name for a feed spelling, or None if genuinely unknown."""
+    hit = _tr.resolve(raw)
+    if hit:
+        return hit
+    return aliases.get(raw)
 
 
 def fetch_odds_api() -> tuple[list, int]:
@@ -156,8 +190,8 @@ def _consensus_ml(event: dict, team_raw: str) -> Optional[int]:
 def event_to_row(event: dict, aliases: dict) -> Optional[dict]:
     home_raw = event.get('home_team')
     away_raw = event.get('away_team')
-    home = aliases.get(home_raw)
-    away = aliases.get(away_raw)
+    home = _canon(home_raw, aliases)
+    away = _canon(away_raw, aliases)
     if not home or not away:
         return None
 
@@ -232,7 +266,7 @@ def event_to_ctx_patch(event: dict, aliases: dict):
     needed and none is attempted.
     """
     home_raw, away_raw = event.get('home_team'), event.get('away_team')
-    if not aliases.get(home_raw) or not aliases.get(away_raw):
+    if not _canon(home_raw, aliases) or not _canon(away_raw, aliases):
         return None
     eid = event.get('id')
     if not eid:
@@ -477,6 +511,30 @@ def run(dry_run: bool = False) -> None:
     print(f'  Odds API events: {len(events)}')
     if not events:
         print('  (offseason or no lines posted)'); return
+
+    # ══ 2026-11-13 · COUNT THE NAME GAPS BEFORE THE PREGAME FILTER ═════
+    # The alias gate used to sit INSIDE the pregame branch, so a feed name we
+    # cannot resolve was only reported if the game had not tipped yet.
+    # Tonight that printed "skipped 2" over FIVE unresolved events -- the
+    # report undercounted the defect it exists to surface, and the three it
+    # hid were the ones already lost for the day. Unresolved names are now
+    # counted over the whole feed, tipped or not, and a name the resolver
+    # refuses as AMBIGUOUS is called out separately: that is the guard
+    # working, not a missing alias.
+    unresolved = []
+    for event in events:
+        for raw in (event.get('away_team'), event.get('home_team')):
+            if _canon(raw, aliases):
+                continue
+            _, how = _tr.resolve(raw, with_method=True)
+            unresolved.append((raw, how))
+    if unresolved:
+        print(f'  ⚠ {len(unresolved)} unresolvable team name(s) in the feed '
+              f'(over all {len(events)} events, tipped or not):')
+        for raw, how in sorted(set(unresolved)):
+            print(f'      {raw!r} [{how}]')
+        print('      -> add alt_names to ncaab_team_aliases, never a constant '
+              'here; an [ambiguous] name is the guard refusing to guess')
 
     rows, skipped, lh_pairs, ctx_pairs = [], [], [], []
     for event in events:
