@@ -8943,16 +8943,179 @@ function NBAFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
 // Efficiency Panel is the NCAAB differentiator — reads home_adj_em /
 // away_adj_em / adj_em_gap directly (blended panel from KenPom + Torvik
 // + Haslam materialized by ncaab_efficiency_model.py, wired 8/25).
+// ══ 2026-11-13 · NCAAB CARD REVAMP ══════════════════════════════════════
+// Andy: "the ncaab cards themselves look like shit, we need to revamp
+// visually and ensure we are surfacing useful data. I dont find it very
+// useful or easy to comprehend."
+//
+// He was right, and the audit says why. ncaab_game_context carries 109
+// columns; the four cards here read 26 of them. Measured over tonight's 55
+// games, these were POPULATED and rendered NOWHERE:
+//
+//   signal_confluence_breakdown / _net   55/55   the engine's own reasoning
+//   home/away_efg_d                      55/55   the defensive half of the
+//                                                ONE four-factor that has one
+//   *_avg_ht_in / *_frontcourt_avg_ht    54-55/55
+//   *_avg_class_year, class_year_edge    54-55/55
+//   conference_home / conference_away    55/55
+//   venue, is_neutral_site               55/55
+//
+// So the card showed two offences side by side and called it "Four Factors",
+// while the column holding WHY the engine likes a side went unread. The
+// confluence breakdown is the comprehension fix and now leads the slot.
+//
+// Signs verified arithmetically against live rows, never assumed, because a
+// rendered direction is a claim about which team is better
+// ([[feedback_check_which_side_a_column_indexes]]):
+//   signal_confluence_net == home_count - away_count   445 of 445 rows
+//   frontcourt_ht_gap_home == home_fc - away_fc        301 of 301
+//   class_year_edge_home   == home_cls - away_cls      304 of 304
+// Positive = HOME on all three.
+//
+// What this deliberately does NOT do: invent a four-factor defensive
+// matchup. Only eFG has a `_d` column -- there is no to_d, or_d or ftr_d --
+// so TO%/OR%/FTR stay offence-vs-offence and the card now SAYS so instead
+// of implying a matchup ([[feedback_a_pair_needs_same_measure_and_scale]]).
+// h2h stays unread on purpose: 38 of 55 games have 0 prior meetings.
 function NCAABSlot({ctx, game}: any) {
   const homeTeam = ctx?.home_team || game?.home_team;
   const awayTeam = ctx?.away_team || game?.away_team;
   return (
     <>
-      <NCAABEfficiencyCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
-      <NCAABPaceCard       ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABEdgeMapCard     ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABEfficiencyCard  ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
       <NCAABFourFactorsCard ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
-      <NCAABFormRestCard   ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABPaceCard        ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABSizeCard        ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
+      <NCAABFormRestCard    ctx={ctx} homeTeam={homeTeam} awayTeam={awayTeam} />
     </>
+  );
+}
+
+// Plain-language name for each confluence key. A key with no entry here still
+// renders, humanised from the key itself, so a signal added upstream appears
+// as a row rather than vanishing from the map.
+const NCAAB_EDGE_LABELS: Record<string, string> = {
+  adj_em:        'Overall efficiency',
+  sos:           'Schedule faced',
+  defense:       'Defense',
+  efg_exploit:   'Shooting matchup',
+  or_exploit:    'Offensive boards',
+  to_exploit:    'Turnover battle',
+  ftr_exploit:   'Getting to the line',
+  tempo_control: 'Tempo control',
+  luck:          'Luck regression',
+};
+
+// Structural edges first, then the four-factor exploits, then the soft ones.
+// Alphabetical would open on "Defense" and bury "Overall efficiency".
+const NCAAB_EDGE_ORDER = ['adj_em', 'defense', 'sos', 'efg_exploit',
+                          'to_exploit', 'or_exploit', 'ftr_exploit',
+                          'tempo_control', 'luck'];
+
+function NCAABEdgeMapCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'edge_map', true);
+  if (!isEnabled) return null;
+  const bd = ctx?.signal_confluence_breakdown;
+  if (!bd || typeof bd !== 'object' || Array.isArray(bd)) return null;
+  const entries = Object.entries(bd)
+    .filter(([, v]) => v === 'home' || v === 'away')
+    .sort((a, b) => {
+      const ia = NCAAB_EDGE_ORDER.indexOf(a[0]);
+      const ib = NCAAB_EDGE_ORDER.indexOf(b[0]);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+  if (!entries.length) return null;
+
+  const homeCount = entries.filter(([, v]) => v === 'home').length;
+  const awayCount = entries.length - homeCount;
+  // The verdict is counted from the rows on screen, not read from
+  // signal_confluence_net, so the headline can never disagree with the list
+  // under it. (The two do agree: net == home - away on 445 of 445 rows.)
+  const leader = homeCount === awayCount ? null
+               : homeCount > awayCount ? homeTeam : awayTeam;
+  const leadCount = Math.max(homeCount, awayCount);
+  const leaderIsHome = leader != null && leader === homeTeam;
+
+  return (
+    <Section title="Edge Map" hint="which team owns each matchup">
+      <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12,
+                    borderWidth: 1, borderColor: C.border, marginBottom: 8}}>
+        <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800',
+                      letterSpacing: 0.6, marginBottom: 6}}>CONFLUENCE</Text>
+        {leader ? (
+          <Text style={{color: C.text, fontSize: 13, fontWeight: '700'}}>
+            <Text style={{color: leaderIsHome ? C.home : C.away}}>{leader}</Text>
+            {` owns ${leadCount} of ${entries.length} edges`}
+          </Text>
+        ) : (
+          <Text style={{color: C.text, fontSize: 13, fontWeight: '700'}}>
+            {`Split ${homeCount}-${awayCount} — no side owns this matchup`}
+          </Text>
+        )}
+        {/* Proportional bar: away share on the left, home on the right, the
+            same orientation as every row below. flex 0.001 keeps a 0-count
+            side from collapsing the other to nothing. */}
+        <View style={{flexDirection: 'row', height: 6, borderRadius: 3,
+                      overflow: 'hidden', marginTop: 8,
+                      backgroundColor: C.surface3}}>
+          <View style={{flex: Math.max(awayCount, 0.001), backgroundColor: C.away}} />
+          <View style={{flex: Math.max(homeCount, 0.001), backgroundColor: C.home}} />
+        </View>
+        <View style={{flexDirection: 'row', justifyContent: 'space-between',
+                      marginTop: 4}}>
+          <Text style={{color: C.away, fontSize: 9, fontWeight: '800'}}>
+            {abbrev3(awayTeam)} {awayCount}
+          </Text>
+          <Text style={{color: C.home, fontSize: 9, fontWeight: '800'}}>
+            {homeCount} {abbrev3(homeTeam)}
+          </Text>
+        </View>
+      </View>
+
+      {entries.map(([key, who]) => {
+        const isHome = who === 'home';
+        const label = NCAAB_EDGE_LABELS[key]
+          || key.replace(/_/g, ' ').replace(/\b\w/g, (m: string) => m.toUpperCase());
+        return (
+          <View key={key} style={{flexDirection: 'row', alignItems: 'center',
+                                  paddingVertical: 6, borderBottomWidth: 0.5,
+                                  borderBottomColor: C.border}}>
+            <Text style={{flex: 1.4, color: C.textDim, fontSize: 12}}
+                  numberOfLines={1}>{label}</Text>
+            {/* Two half-width lanes so the winning chip sits on that team's
+                side of the card and the column reads as a direction. */}
+            <View style={{flex: 1, alignItems: 'flex-end'}}>
+              {!isHome && (
+                <View style={{backgroundColor: C.away + '22', borderWidth: 1,
+                              borderColor: C.away + '55', borderRadius: 6,
+                              paddingHorizontal: 7, paddingVertical: 2}}>
+                  <Text style={{color: C.away, fontSize: 10, fontWeight: '800'}}>
+                    {abbrev3(awayTeam)}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View style={{flex: 1, alignItems: 'flex-start'}}>
+              {isHome && (
+                <View style={{backgroundColor: C.home + '22', borderWidth: 1,
+                              borderColor: C.home + '55', borderRadius: 6,
+                              paddingHorizontal: 7, paddingVertical: 2}}>
+                  <Text style={{color: C.home, fontSize: 10, fontWeight: '800'}}>
+                    {abbrev3(homeTeam)}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        );
+      })}
+      <Text style={{color: C.textMuted, fontSize: 10, marginTop: 8,
+                    lineHeight: 14}}>
+        Each row is one component the model compared. Owning more edges is not
+        the pick — the price still has to be wrong.
+      </Text>
+    </Section>
   );
 }
 
@@ -9077,28 +9240,116 @@ function NCAABPaceCard({ctx, homeTeam, awayTeam}: any) {
   );
 }
 
+// ══ 2026-11-13 · THIS SHOWED TWO OFFENCES AND CALLED IT A MATCHUP ═══════
+// Every row was `home_*_o` against `away_*_o`: both teams' OFFENCE. That is
+// a legitimate comparison but it is not the matchup, and the label did not
+// say which it was.
+//
+// eFG is the only four-factor with a defensive counterpart stored
+// (home_efg_d / away_efg_d, 55 of 55 tonight; there is no to_d, or_d or
+// ftr_d). So the shooting factor now renders as the real crossed matchup --
+// each offence against the defence it actually faces -- and the other three
+// stay offence-vs-offence under a header that says so. Inventing a defensive
+// number for the other three would be the same class of error as pairing
+// per-play EPA with per-game EPA ([[feedback_a_pair_needs_same_measure_and_scale]]).
+//
+// Advantage colouring: for eFG offence-vs-defence, HIGH is good for the
+// offence and LOW is good for the defence, so the two sides of one row are
+// not on the same "better" direction and neither is highlighted as a winner.
+// The crossed rows instead name the beneficiary in words underneath.
 function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'four_factors_ordered', true);
   if (!isEnabled) return null;
-  const h = {efg: ctx?.home_efg_o, to: ctx?.home_to_o, or: ctx?.home_or_o, ftr: ctx?.home_ftr_o};
-  const a = {efg: ctx?.away_efg_o, to: ctx?.away_to_o, or: ctx?.away_or_o, ftr: ctx?.away_ftr_o};
+  const h = {efg: ctx?.home_efg_o, efgD: ctx?.home_efg_d, to: ctx?.home_to_o,
+             or: ctx?.home_or_o, ftr: ctx?.home_ftr_o};
+  const a = {efg: ctx?.away_efg_o, efgD: ctx?.away_efg_d, to: ctx?.away_to_o,
+             or: ctx?.away_or_o, ftr: ctx?.away_ftr_o};
   if (h.efg == null && a.efg == null) return null;
   const pct = (v: any) => v == null ? '—' : `${Number(v).toFixed(1)}%`;
   const num = (v: any) => v == null ? '—' : Number(v).toFixed(2);
-  const factors = [
-    {label: 'eFG%', info: 'efg_pct', away: pct(a.efg), home: pct(h.efg)},
-    {label: 'TO%',  info: 'tov_pct', away: pct(a.to),  home: pct(h.to)},
-    {label: 'OR%',  info: 'orb_pct', away: pct(a.or),  home: pct(h.or)},
-    {label: 'FTR',  info: 'ft_rate', away: num(a.ftr), home: num(h.ftr)},
+
+  // One crossed row: `offence` shoots against `defence`. The gap is how much
+  // better that offence shoots than this defence usually allows.
+  const crossed = (off: any, def: any) => {
+    if (off == null || def == null) return null;
+    return Number(off) - Number(def);
+  };
+  const awayGap = crossed(a.efg, h.efgD);   // away offence vs home defence
+  const homeGap = crossed(h.efg, a.efgD);   // home offence vs away defence
+
+  const profile = [
+    {label: 'Turnover %',        info: 'tov_pct', away: pct(a.to),  home: pct(h.to)},
+    {label: 'Offensive reb %',   info: 'orb_pct', away: pct(a.or),  home: pct(h.or)},
+    {label: 'Free-throw rate',   info: 'ft_rate', away: num(a.ftr), home: num(h.ftr)},
   ];
+
   return (
-    <Section title="Four Factors" hint="ordered by predictive weight">
-      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5, borderBottomColor: C.border}}>
+    <Section title="Shooting &amp; Four Factors" hint="offence against the defence it faces">
+      {(awayGap != null || homeGap != null) && (
+        <View style={{backgroundColor: C.surface2, borderRadius: 10, padding: 12,
+                      borderWidth: 1, borderColor: C.border, marginBottom: 10}}>
+          <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800',
+                        letterSpacing: 0.6, marginBottom: 8}}>
+            eFG% MATCHUP
+          </Text>
+          {awayGap != null && (
+            <View style={{flexDirection: 'row', justifyContent: 'space-between',
+                          alignItems: 'center', paddingVertical: 4}}>
+              <Text style={{flex: 1.9, color: C.textDim, fontSize: 11}} numberOfLines={2}>
+                <Text style={{color: C.away, fontWeight: '700'}}>{abbrev3(awayTeam)}</Text>
+                {' offence vs '}
+                <Text style={{color: C.home, fontWeight: '700'}}>{abbrev3(homeTeam)}</Text>
+                {' defence'}
+              </Text>
+              <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700',
+                            textAlign: 'right'}}>
+                {pct(a.efg)} v {pct(h.efgD)}
+              </Text>
+              <Text style={{width: 56, textAlign: 'right', fontSize: 12, fontWeight: '800',
+                            color: awayGap > 0 ? C.away : C.home}}>
+                {awayGap > 0 ? '+' : ''}{awayGap.toFixed(1)}
+              </Text>
+            </View>
+          )}
+          {homeGap != null && (
+            <View style={{flexDirection: 'row', justifyContent: 'space-between',
+                          alignItems: 'center', paddingVertical: 4}}>
+              <Text style={{flex: 1.9, color: C.textDim, fontSize: 11}} numberOfLines={2}>
+                <Text style={{color: C.home, fontWeight: '700'}}>{abbrev3(homeTeam)}</Text>
+                {' offence vs '}
+                <Text style={{color: C.away, fontWeight: '700'}}>{abbrev3(awayTeam)}</Text>
+                {' defence'}
+              </Text>
+              <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700',
+                            textAlign: 'right'}}>
+                {pct(h.efg)} v {pct(a.efgD)}
+              </Text>
+              <Text style={{width: 56, textAlign: 'right', fontSize: 12, fontWeight: '800',
+                            color: homeGap > 0 ? C.home : C.away}}>
+                {homeGap > 0 ? '+' : ''}{homeGap.toFixed(1)}
+              </Text>
+            </View>
+          )}
+          <Text style={{color: C.textMuted, fontSize: 10, marginTop: 6, lineHeight: 14}}>
+            Positive means that offence shoots better than this defence usually
+            allows. Both can be positive — two good offences, or two soft defences.
+          </Text>
+        </View>
+      )}
+
+      <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '800',
+                    letterSpacing: 0.6, marginBottom: 2}}>
+        OFFENSIVE PROFILE — BOTH TEAMS WITH THE BALL
+      </Text>
+      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5,
+                    borderBottomColor: C.border}}>
         <Text style={{flex: 1.3, color: C.textMuted, fontSize: 9, fontWeight: '800'}}>FACTOR</Text>
-        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
-        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800', textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
+        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
+        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
       </View>
-      {factors.map((f: any, i: number) => (
+      {profile.map((f: any, i: number) => (
         <InfoCompareRow key={i} label={f.label} infoKey={f.info}
                         away={f.away} home={f.home} labelFlex={1.3} />
       ))}
@@ -9106,24 +9357,230 @@ function NCAABFourFactorsCard({ctx, homeTeam, awayTeam}: any) {
   );
 }
 
+// ══ 2026-11-13 · SIZE AND EXPERIENCE WERE STORED AND NEVER SHOWN ════════
+// *_avg_ht_in, *_frontcourt_avg_ht and *_avg_class_year sit at 54-55 of 55
+// on tonight's slate and nothing rendered them. In college basketball those
+// are the two edges with no professional analogue -- a team can be four
+// inches bigger up front, or a year and a half older, and nothing in the
+// efficiency panel says so.
+//
+// The gap columns' direction was verified against the component columns
+// rather than assumed: frontcourt_ht_gap_home == home_fc - away_fc on 301 of
+// 301 rows, class_year_edge_home == home_cls - away_cls on 304 of 304.
+// Positive = home. The card recomputes from the component values anyway, so
+// a future sign flip upstream cannot silently invert the sentence.
+//
+// Class year is a 1-4 scale (1 = freshman). A 0.1-year or 0.2-inch edge is
+// noise, so the summary sentence only appears past a threshold; the numbers
+// themselves always show.
+function NCAABSizeCard({ctx, homeTeam, awayTeam}: any) {
+  const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'size_experience', true);
+  if (!isEnabled) return null;
+  const h = {ht: ctx?.home_avg_ht_in, fc: ctx?.home_frontcourt_avg_ht,
+             cls: ctx?.home_avg_class_year};
+  const a = {ht: ctx?.away_avg_ht_in, fc: ctx?.away_frontcourt_avg_ht,
+             cls: ctx?.away_avg_class_year};
+  // A comparison card needs BOTH sides of at least one row. 73 of the 445
+  // NCAAB games since 11-05 carry roster data for exactly one team -- D2 and
+  // low-major visitors with no KenPom roster, plus a few whose ctx team name
+  // still carries its mascot and so missed the roster join -- and a card
+  // reading "6'6.3\" vs —" is worse than no card
+  // ([[feedback_coverage_pct_hides_dead_code]]).
+  const hasPair = (h.ht != null && a.ht != null)
+               || (h.fc != null && a.fc != null)
+               || (h.cls != null && a.cls != null);
+  if (!hasPair) return null;
+
+  // Inches as 6'11", which is how anyone reads a height.
+  const feet = (v: any) => {
+    if (v == null) return '—';
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    const ft = Math.floor(n / 12);
+    const inch = n - ft * 12;
+    return `${ft}'${inch.toFixed(1)}"`;
+  };
+  const yr = (v: any) => v == null ? '—' : Number(v).toFixed(2);
+  const diff = (hv: any, av: any) =>
+    (hv == null || av == null) ? null : Number(hv) - Number(av);
+
+  const fcGap  = diff(h.fc, a.fc);
+  const clsGap = diff(h.cls, a.cls);
+  const notes: string[] = [];
+  if (fcGap != null && Math.abs(fcGap) >= 1.0) {
+    notes.push(`${abbrev3(fcGap > 0 ? homeTeam : awayTeam)} is ${Math.abs(fcGap).toFixed(1)}" bigger in the frontcourt`);
+  }
+  if (clsGap != null && Math.abs(clsGap) >= 0.4) {
+    notes.push(`${abbrev3(clsGap > 0 ? homeTeam : awayTeam)} is ${Math.abs(clsGap).toFixed(1)} class years older`);
+  }
+
+  const rows = [
+    {label: 'Avg height',        away: feet(a.ht), home: feet(h.ht)},
+    {label: 'Frontcourt height', away: feet(a.fc), home: feet(h.fc)},
+    {label: 'Avg class year',    away: yr(a.cls),  home: yr(h.cls)},
+  ];
+
+  return (
+    <Section title="Size &amp; Experience" hint="roster build">
+      <View style={{flexDirection: 'row', paddingBottom: 4, borderBottomWidth: 0.5,
+                    borderBottomColor: C.border}}>
+        <Text style={{flex: 1.4, color: C.textMuted, fontSize: 9, fontWeight: '800'}} />
+        <Text style={{flex: 1, color: C.away, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(awayTeam)}</Text>
+        <Text style={{flex: 1, color: C.home, fontSize: 9, fontWeight: '800',
+                      textAlign: 'center'}}>{abbrev3(homeTeam)}</Text>
+      </View>
+      {rows.map((r: any, i: number) => (
+        <View key={i} style={{flexDirection: 'row', paddingVertical: 5}}>
+          <Text style={{flex: 1.4, color: C.textDim, fontSize: 12}}>{r.label}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700',
+                        textAlign: 'center'}}>{r.away}</Text>
+          <Text style={{flex: 1, color: C.text, fontSize: 12, fontWeight: '700',
+                        textAlign: 'center'}}>{r.home}</Text>
+        </View>
+      ))}
+      {notes.length > 0 && (
+        <View style={{marginTop: 8, padding: 10, borderRadius: 8,
+                      backgroundColor: C.accentBg, borderWidth: 1,
+                      borderColor: C.accent + '40'}}>
+          {notes.map((n: string, i: number) => (
+            <Text key={i} style={{color: C.text, fontSize: 11, lineHeight: 16}}>{n}</Text>
+          ))}
+        </View>
+      )}
+    </Section>
+  );
+}
+
+// ══ 2026-11-13 · FORM AND REST, WITH THE DENOMINATOR VISIBLE ════════════
+// Was one cramped line per team: `2-1 · L10 3-0 · rest 5d`. Three different
+// measures run together with middots, no venue split, and no conference or
+// venue even though both are stored on 55 of 55 rows.
+//
+// The venue splits are now shown because they are finally TRUE: the window
+// behind them had no season bound, so on this morning's slate
+// ml_l10_at_home was a full 10-game record on 55 of 55 games against teams
+// who had played 2 to 4 -- Hofstra read "9-1 at home" while being 1-2 this
+// season, with 9 of those games from last February and March. Fixed in
+// enrich_team_form_universal (bound to sport_registry.season_start).
+//
+// Every record prints its own denominator, because the three families do not
+// share one: ML grades on scores alone, while ATS and OU need a stored line,
+// and NCAAB has a line on roughly 60% of played games. So "1-0 ATS" next to
+// "3-0 ML" is not a contradiction, it means two of the three games have no
+// stored spread -- and the card has to say that rather than let the reader
+// assume a 10-game base ([[feedback_sample_size_with_pct]]). No percentages
+// here at all: at n=3 a rate would read as 100% and mean nothing.
 function NCAABFormRestCard({ctx, homeTeam, awayTeam}: any) {
   const isEnabled = useSectionEnabled('NCAAB', 'game_detail', 'form_rest', true);
   if (!isEnabled) return null;
-  const h = {rec: ctx?.home_record, l10: ctx?.home_l10, rest: ctx?.home_days_rest};
-  const a = {rec: ctx?.away_record, l10: ctx?.away_l10, rest: ctx?.away_days_rest};
+  const h = {rec: ctx?.home_record, l10: ctx?.home_l10, rest: ctx?.home_days_rest,
+             conf: ctx?.conference_home,
+             atsW: ctx?.home_ats_l10_at_home, atsL: ctx?.home_ats_l10_at_home_losses,
+             mlW: ctx?.home_ml_l10_at_home,   mlL: ctx?.home_ml_l10_at_home_losses,
+             ouO: ctx?.home_ou_l10_at_home_overs, ouU: ctx?.home_ou_l10_at_home_unders};
+  const a = {rec: ctx?.away_record, l10: ctx?.away_l10, rest: ctx?.away_days_rest,
+             conf: ctx?.conference_away,
+             atsW: ctx?.away_ats_l10_on_road, atsL: ctx?.away_ats_l10_on_road_losses,
+             mlW: ctx?.away_ml_l10_on_road,   mlL: ctx?.away_ml_l10_on_road_losses,
+             ouO: ctx?.away_ou_l10_on_road_overs, ouU: ctx?.away_ou_l10_on_road_unders};
   if (!h.rec && !a.rec && h.rest == null && a.rest == null) return null;
-  const line = (team: string, x: any) => (
-    <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4}}>
-      <Text style={{color: C.textDim, fontSize: 12}}>{abbrev3(team)}</Text>
-      <Text style={{color: C.text, fontSize: 12, fontWeight: '700'}}>
-        {x.rec || '—'} · L10 {x.l10 || '—'} · rest {x.rest != null ? `${x.rest}d` : '—'}
-      </Text>
-    </View>
-  );
+
+  // W-L with its own n. `== null` not falsy: 0 wins is a real record and
+  // `w || '—'` would print a dash for a team that is 0-3
+  // ([[feedback_falsy_zero_invented_a_tier_and_a_confidence]]).
+  const wl = (w: any, l: any) => {
+    if (w == null || l == null) return null;
+    const n = Number(w) + Number(l);
+    if (!isFinite(n) || n <= 0) return null;
+    return `${Number(w)}-${Number(l)}`;
+  };
+  const nOf = (w: any, l: any) => {
+    if (w == null || l == null) return 0;
+    const n = Number(w) + Number(l);
+    return isFinite(n) ? n : 0;
+  };
+
+  const teamBlock = (team: string, x: any, isHome: boolean) => {
+    const venueLabel = isHome ? 'at home' : 'on the road';
+    const splits = [
+      {k: 'ML',  v: wl(x.mlW, x.mlL),   n: nOf(x.mlW, x.mlL)},
+      {k: 'ATS', v: wl(x.atsW, x.atsL), n: nOf(x.atsW, x.atsL)},
+      {k: 'O/U', v: wl(x.ouO, x.ouU),   n: nOf(x.ouO, x.ouU)},
+    ].filter(s => s.v != null);
+    return (
+      <View style={{flex: 1, backgroundColor: C.surface2, borderRadius: 10,
+                    borderWidth: 1, borderColor: C.border, borderTopWidth: 2,
+                    borderTopColor: isHome ? C.home : C.away, padding: 10, gap: 2}}>
+        <Text style={{color: isHome ? C.home : C.away, fontSize: 11,
+                      fontWeight: '800'}} numberOfLines={1}>{abbrev3(team)}</Text>
+        {x.conf ? (
+          <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '700',
+                        letterSpacing: 0.4}}>{String(x.conf).toUpperCase()}</Text>
+        ) : null}
+        <Text style={{color: C.text, fontSize: 16, fontWeight: '800', marginTop: 2}}>
+          {x.rec || '—'}
+        </Text>
+        <Text style={{color: C.textMuted, fontSize: 10}}>
+          {`L10 ${x.l10 || '—'} · rest ${x.rest != null ? `${x.rest}d` : '—'}`}
+        </Text>
+        {splits.length > 0 ? (
+          <View style={{marginTop: 6, borderTopWidth: 0.5, borderTopColor: C.border,
+                        paddingTop: 5}}>
+            <Text style={{color: C.textMuted, fontSize: 9, fontWeight: '700',
+                          marginBottom: 3}}>
+              {`THIS SEASON ${venueLabel.toUpperCase()}`}
+            </Text>
+            {splits.map((s: any) => (
+              <View key={s.k} style={{flexDirection: 'row',
+                                      justifyContent: 'space-between'}}>
+                <Text style={{color: C.textDim, fontSize: 11}}>{s.k}</Text>
+                <Text style={{color: C.text, fontSize: 11, fontWeight: '700'}}>
+                  {s.v}
+                  <Text style={{color: C.textMuted, fontWeight: '400'}}>
+                    {` (${s.n}g)`}
+                  </Text>
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={{color: C.textMuted, fontSize: 10, marginTop: 6}}>
+            No {venueLabel} games yet this season
+          </Text>
+        )}
+      </View>
+    );
+  };
+
+  const neutral = ctx?.is_neutral_site === true;
   return (
-    <Section title="Form &amp; Rest">
-      {a.rec != null || a.rest != null ? line(awayTeam, a) : null}
-      {h.rec != null || h.rest != null ? line(homeTeam, h) : null}
+    <Section title="Form &amp; Rest" hint="this season only">
+      {(ctx?.venue || neutral) && (
+        <View style={{flexDirection: 'row', alignItems: 'center', gap: 6,
+                      marginBottom: 8, flexWrap: 'wrap'}}>
+          {ctx?.venue ? (
+            <Text style={{color: C.textMuted, fontSize: 11}}>{ctx.venue}</Text>
+          ) : null}
+          {neutral ? (
+            <View style={{backgroundColor: C.warnDim, borderWidth: 1,
+                          borderColor: C.warn + '55', borderRadius: 6,
+                          paddingHorizontal: 7, paddingVertical: 2}}>
+              <Text style={{color: C.warn, fontSize: 9, fontWeight: '800'}}>
+                NEUTRAL SITE
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      )}
+      <View style={{flexDirection: 'row', gap: 8}}>
+        {teamBlock(awayTeam, a, false)}
+        {teamBlock(homeTeam, h, true)}
+      </View>
+      <Text style={{color: C.textMuted, fontSize: 10, marginTop: 8, lineHeight: 14}}>
+        (Ng) is how many games that record covers. ML grades off the score; ATS
+        and O/U need a stored line, so their counts are usually lower.
+      </Text>
     </Section>
   );
 }
