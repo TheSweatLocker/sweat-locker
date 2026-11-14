@@ -325,6 +325,30 @@ TIER_THRESHOLDS_BY_SPORT = {
 #
 # The condition for lifting this is written down: >=10 enabled NCAAB game
 # signals carrying a measured hit rate on sample_n >= 30. Today it is 2.
+#
+# ══ 2026-11-13 · THE CONDITION AS WRITTEN IS SATISFIABLE BY WORTHLESS
+#    SIGNALS, SO IT IS TIGHTENED HERE RATHER THAN MET ════════════════════
+# After wiring NCAAB into refit_signal_registry, giving it the side baseline
+# it never had, and splitting the registry per market_scope, the count above
+# went 2 -> 13 and the condition reads MET. It is NOT being lifted, because
+# counting "carries a measured hit rate" counts measurement, not evidence.
+# Of those 13 on sample_n >= 30:
+#
+#     7  ANTI_VALIDATED   measured negative or dominated, weight 0.0
+#     2  PROVISIONAL      1 VALIDATED   1 DISCOVERY   1 UNVALIDATED
+#
+# So PRIME -- a 2-unit claim -- would have been unlocked mostly by signals
+# we measured and rejected. Worse, several of those rows (the six team_form
+# signals, origin BACKFILL_2026-10-29) were measured against the venue-form
+# columns whose window had no season floor until today, so their hit rates
+# describe data that no longer exists and should age out rather than be
+# counted ([[feedback_a_rolling_window_needs_a_season_floor]]).
+#
+# TIGHTENED CONDITION, and the one to use from here: >= 10 enabled NCAAB
+# game signals on sample_n >= 30 whose tier is VALIDATED, DISCOVERY or
+# PROVISIONAL -- i.e. positive evidence against their own side control, not
+# merely a number. Today that is 4. The cap stays at STRONG, which costs no
+# plays: every card surface admits STRONG.
 MAX_TIER_BY_SPORT = {'NBA': 'STRONG', 'NHL': 'STRONG', 'NCAAB': 'STRONG'}
 
 # == 2026-11-06 . A PER-MARKET CEILING, BECAUSE NCAAB ML WAS MEASURED ======
@@ -686,7 +710,41 @@ def _load_registry() -> dict:
                             continue
                     except (ValueError, TypeError):
                         pass
-                key = (row['signal_name'], row.get('sport') or '*')
+                # ══ 2026-11-13 · KEY THE SCOPE TOO, NOT JUST name+sport ══
+                # The note above diagnosed this exactly and then worked
+                # around it: with one key per (name, sport), a signal that
+                # fires on two markets gets ONE weight, chosen by sample
+                # size. Its own example is MLB long_rest_home_ats --
+                # 57.0% VALIDATED on `spread`, 48.1% UNVALIDATED on `rl` --
+                # so the `rl` market inherits a 0.5 weight it did not earn.
+                #
+                # 106 of 1054 (name, sport) pairs in the table carry more
+                # than one scope, and `signal_sources.market_scope` is
+                # populated, so the caller always knows which market it is
+                # asking about. There is no need to guess any more.
+                #
+                # What forced it: NCAAB's OFF_RATING_GAP, pooled 70.91% on
+                # n=275 against a 55.16% control, earns the MAXIMUM weight
+                # 1.0. Split by (market, side) against each cell's own blind
+                # rate and 2SE bar:
+                #     ('ml','HOME')  n=125  91.20% vs 66.60%  +24.60pp  REAL
+                #     ('rl','HOME')  n=101  52.48% vs 49.90%   +2.58pp  NOISE
+                # It is a moneyline signal. NCAAB ml already sits under a
+                # per-market ceiling, so the pooled weight would land its
+                # whole claim on the one market where it has no edge
+                # ([[feedback_pooled_slope_across_scales_is_fake]]).
+                #
+                # BOTH key shapes are stored in this one dict. The 3-tuple
+                # is the exact (name, sport, scope) answer; the 2-tuple
+                # keeps the previous best-evidenced-row behaviour for any
+                # caller that does not know its scope, so nothing that
+                # resolved before stops resolving. Tuple lengths differ, so
+                # the two namespaces cannot collide.
+                sport_key = row.get('sport') or '*'
+                scope_key = str(row.get('market_scope') or '*').lower()
+                out[(row['signal_name'], sport_key, scope_key)] = row
+
+                key = (row['signal_name'], sport_key)
                 prior = out.get(key)
                 if prior is not None:
                     collisions += 1
@@ -804,8 +862,20 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
 
     registry = _load_registry()
     sport = source_row.get('sport') or '*'
+    # 2026-11-13: ask for THIS signal's own market first. A signal that fires
+    # on two markets does not have one edge, and the registry already stores
+    # the rows per scope -- it was only the lookup that pooled them.
+    scope = str(source_row.get('market_scope') or '').lower() or None
     for lookup_key in (source_row.get('weight_registry_key'), source_row.get('signal_key')):
         if not lookup_key: continue
+        if scope and scope != '*':
+            reg = registry.get((lookup_key, sport, scope))
+            if reg:
+                hr = reg.get('hit_rate')
+                if hr is not None:
+                    try: hr = float(hr) / 100.0
+                    except (TypeError, ValueError): hr = None
+                return (hr, int(reg.get('sample_n') or 0), reg.get('tier'))
         # 2026-08-26: sport-specific ONLY. The `sport='*'` fallback silently
         # borrowed a different sport's weights when the sport-specific row
         # was missing (audit finding — same class of bug as the 8/21 cross-

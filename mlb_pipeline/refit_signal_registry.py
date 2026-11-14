@@ -648,6 +648,28 @@ def _firing_breakeven(market: str, src_side: str, row: dict) -> Optional[float]:
     return _american_to_be(row.get(col))
 
 
+#: ══ 2026-11-13 · TALLY PER MARKET, BECAUSE ONE SIGNAL IS NOT ONE EDGE ══
+#: A signal that fires on two markets gets ONE pooled hit rate, and the
+#: pooled number is an average of two different things. NCAAB's
+#: OFF_RATING_GAP is the clean case: pooled 70.91% on n=275 against a
+#: 55.16% control earns the MAXIMUM weight 1.0, but split against each
+#: cell's own blind rate and its own 2SE bar it is a moneyline signal only:
+#:
+#:     ('ml','HOME')  n=125  91.20% vs blind 66.60%  +24.60pp  2SE 5.07  REAL
+#:     ('rl','HOME')  n=101  52.48% vs blind 49.90%   +2.58pp  2SE 9.94  NOISE
+#:
+#: `mkt` was already counted on every path; only right/wrong, the control
+#: and the breakeven were pooled. These accumulate the same four quantities
+#: per market so build_rows can emit one registry row per market_scope
+#: ([[feedback_pooled_slope_across_scales_is_fake]]).
+def _mkt_cell(ct: dict, market: str) -> dict:
+    """Per-market sub-tally, created on first touch."""
+    bm = ct.setdefault('by_mkt', {})
+    return bm.setdefault(str(market), {'right': 0, 'wrong': 0,
+                                       'blind_sum': 0.0, 'blind_n': 0,
+                                       'be_sum': 0.0, 'be_n': 0})
+
+
 def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
     """{signal_key: {right, wrong, blind_sum}} from rows with primary_play.
 
@@ -697,17 +719,26 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
                 # Push / unresolved — skip for this signal on this game.
                 continue
             correct = (src_side == winner)
-            if correct: firings[base_key]['right'] += 1
-            else:       firings[base_key]['wrong'] += 1
+            cell = _mkt_cell(firings[base_key], market)
+            if correct:
+                firings[base_key]['right'] += 1
+                cell['right'] += 1
+            else:
+                firings[base_key]['wrong'] += 1
+                cell['wrong'] += 1
             _b = side_baseline(sport, market, src_side)
             if _b is not None:
                 firings[base_key]['blind_sum'] += _b
                 firings[base_key]['blind_n'] += 1
+                cell['blind_sum'] += _b
+                cell['blind_n'] += 1
             # The breakeven of the price this signal took, per firing.
             _be = _firing_breakeven(market, src_side, row)
             if _be is not None:
                 firings[base_key]['be_sum'] += _be
                 firings[base_key]['be_n'] += 1
+                cell['be_sum'] += _be
+                cell['be_n'] += 1
             firings[base_key]['mkt'][market] += 1
     return dict(firings)
 
@@ -821,13 +852,21 @@ def collect_attribution_firings(sport: str, days: int) -> dict[str, dict]:
         if verdict is None:
             _skipped += 1
             continue
-        if verdict: firings[key]['right'] += 1
-        else:       firings[key]['wrong'] += 1
+        cell = _mkt_cell(firings[key], _m) if _m else None
+        if verdict:
+            firings[key]['right'] += 1
+            if cell is not None: cell['right'] += 1
+        else:
+            firings[key]['wrong'] += 1
+            if cell is not None: cell['wrong'] += 1
         # the blind rate for the side THIS signal named, same row
         _bl = _sb(sport, _m, row.get('signal_side'))
         if _bl is not None:
             firings[key]['blind_sum'] += _bl
             firings[key]['blind_n'] += 1
+            if cell is not None:
+                cell['blind_sum'] += _bl
+                cell['blind_n'] += 1
     if _skipped:
         print(f'  [{sport}] {_skipped} attribution row(s) not countable '
               f'(neutral subject / cross-axis / push) — skipped, not defaulted')
@@ -864,27 +903,57 @@ def merge_firings(*dicts) -> dict[str, dict]:
             _m = v.get('mkt')
             if _m:
                 out[k]['mkt'].update(_m)
+            # 2026-11-13: and the PER-MARKET sub-tallies, same warning. A
+            # third key added to the collectors and dropped here would be
+            # the third instance of this exact silent no-op.
+            for _mk, _cell in (v.get('by_mkt') or {}).items():
+                dst = out[k].setdefault('by_mkt', {}).setdefault(
+                    str(_mk), {'right': 0, 'wrong': 0, 'blind_sum': 0.0,
+                               'blind_n': 0, 'be_sum': 0.0, 'be_n': 0})
+                for _f in ('right', 'wrong', 'blind_n', 'be_n'):
+                    dst[_f] += _cell.get(_f, 0)
+                for _f in ('blind_sum', 'be_sum'):
+                    dst[_f] += _cell.get(_f, 0.0)
     return dict(out)
 
 
+def _scope_key(v) -> str:
+    """Normalised market_scope for keying. NULL and '*' are the same bucket."""
+    sv = str(v or '*').strip().lower()
+    return sv or '*'
+
+
 def upsert_registry(rows: list[dict], dry_run: bool = False) -> int:
-    """PATCH existing rows by (signal_name, sport), POST new. Two-step
-    because signal_registry lacks a (signal_name, sport) unique constraint —
-    can't use PostgREST's on_conflict. Not ideal (2 round-trips per row)
-    but the row count is tiny (dozens, not thousands) so latency is fine."""
+    """PATCH existing rows by (signal_name, sport, market_scope), POST new.
+
+    Two-step because signal_registry lacks a unique constraint, so
+    PostgREST's on_conflict is unavailable. Row counts are dozens, so the
+    extra round-trip is free.
+
+    ══ 2026-11-13 · THE ID MAP POOLED THE SCOPE, SO A SPLIT WAS UNWRITABLE ══
+    This keyed on (signal_name, sport) with last-row-wins. 106 of 1054
+    name+sport pairs in the table already carry more than one market_scope,
+    so that map silently collapsed them -- and two rows for one signal
+    would both PATCH the SAME id, the second overwriting the first. Writing a
+    per-market split was impossible until this key included the scope.
+    `market_scope` is part of the table's real identity, which the loader in
+    ensemble_scorer has said since 2026-09-24.
+    """
     if dry_run or not rows:
         print(f'  [dry] would upsert {len(rows)} rows to signal_registry')
         return len(rows)
 
-    # Pull existing rows to build (signal_name, sport) → id map
+    # Pull existing rows to build (signal_name, sport, market_scope) → id map
     sports = sorted({r['sport'] for r in rows})
-    existing_ids: dict[tuple[str, str], int] = {}
+    existing_ids: dict[tuple, int] = {}
     for sp in sports:
         rr = requests.get(f'{SB}/rest/v1/signal_registry', headers=H_READ,
                           params={'sport': f'eq.{sp}',
-                                  'select': 'id,signal_name,sport'}, timeout=15)
+                                  'select': 'id,signal_name,sport,market_scope'},
+                          timeout=15)
         for row in (rr.json() or []):
-            existing_ids[(row['signal_name'], row['sport'])] = row['id']
+            existing_ids[(row['signal_name'], row['sport'],
+                          _scope_key(row.get('market_scope')))] = row['id']
 
     total = 0
     for row in rows:
@@ -893,7 +962,8 @@ def upsert_registry(rows: list[dict], dry_run: bool = False) -> int:
         # PostgREST 400s on an unknown key, so strip them here rather than
         # relying on every caller to remember.
         row = {k: v for k, v in row.items() if not k.startswith('_')}
-        key = (row['signal_name'], row['sport'])
+        key = (row['signal_name'], row['sport'],
+               _scope_key(row.get('market_scope')))
         if key in existing_ids:
             rid = existing_ids[key]
             payload = {k: v for k, v in row.items() if k not in ('signal_name', 'sport')}
@@ -962,7 +1032,46 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
 
     out = []
     dropped = 0
+
+    # ══ 2026-11-13 · ONE ROW PER MARKET THE SIGNAL ACTUALLY FIRED ON ═════
+    # A signal with firings in two markets does not have one edge, and a
+    # pooled hit rate averages two different things. Where a market carries
+    # min_n firings of its OWN, it gets its own row, its own control and its
+    # own tier -- so a moneyline edge can no longer hand its weight to a
+    # runline that measured as noise.
+    #
+    # When only one market clears min_n (the common case) behaviour is
+    # unchanged except that `market_scope` is now SET, from the dominant
+    # market, instead of left NULL on every INSERT. That matters because
+    # ensemble_scorer's lookup asks for the scope first now.
+    #
+    # The pick-control fields are NOT per-market: they are inherited from the
+    # pooled tally. That is deliberate -- the control can only DEMOTE, so
+    # inheriting it is conservative, and splitting a cell that already needs
+    # 30 disagreements would make it fire never
+    # ([[feedback_signal_needs_a_direction_control]]).
+    units: list = []
     for signal_key, ct in firings.items():
+        by = ct.get('by_mkt') or {}
+        eligible = {m: c for m, c in by.items()
+                    if (c.get('right', 0) + c.get('wrong', 0)) >= min_n}
+        if len(eligible) >= 2:
+            for m, c in eligible.items():
+                unit = dict(ct)
+                unit.update(c)
+                unit['mkt'] = Counter({m: c.get('right', 0) + c.get('wrong', 0)})
+                units.append((signal_key, str(m).lower(), unit))
+        else:
+            _mk = ct.get('mkt') or {}
+            dom = (max(_mk.items(), key=lambda z: z[1])[0] if _mk else '*')
+            units.append((signal_key, str(dom or '*').lower(), ct))
+
+    _split = sum(1 for k in {u[0] for u in units}
+                 if sum(1 for u in units if u[0] == k) > 1)
+    if _split:
+        print(f'  [{sport}] {_split} signal(s) split into per-market rows')
+
+    for signal_key, _scope, ct in units:
         n = ct['right'] + ct['wrong']
         if n < min_n:
             dropped += 1
@@ -1020,6 +1129,7 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             'signal_name': signal_key,
             'category': _infer_category(signal_key),
             'sport': sport,
+            'market_scope': _scope,
             'hit_rate': round(hr_frac * 100, 2),
             'sample_n': n,
             # Stripped before the upsert (see upsert_registry); carried
@@ -1148,12 +1258,18 @@ def run(sport: str, days: int, dry_run: bool = False, min_n: int = 20) -> None:
 #: This is a shadow, not a silence: `--sport NCAAB` shows exactly what would
 #: be written, and the numbers accrue in the log where they can be compared.
 #:
-#: EXIT CONDITION, written down so this is tunable and not permanent: remove
-#: NCAAB from this set once the tally is keyed per market_scope (the column
-#: already exists on signal_registry) so a signal cannot carry one weight
-#: across two markets it does not share an edge on. `--write-gated` forces a
-#: write before then, for a deliberate operator decision.
-WRITE_GATED_SPORTS = {'NCAAB'}
+#: EXIT CONDITION MET, same day. The tally is now keyed per market_scope,
+#: build_rows emits one row per market a signal actually fired on, and
+#: upsert_registry keys on (signal_name, sport, market_scope) so a split is
+#: writable at all. OFF_RATING_GAP now resolves as what it is:
+#:
+#:     ml  81.71%  n=164  VALIDATED  w=1.0
+#:     rl  54.95%  n=111  DISCOVERY  w=0.2146   <- was w=1.0 on the pooled row
+#:
+#: So the gate is empty. It stays as a mechanism, because the next sport that
+#: needs weights computed before they are trusted should shadow the same way
+#: rather than be silenced ([[feedback_suppression_gate_needs_shadow]]).
+WRITE_GATED_SPORTS: set = set()
 
 
 def main():
