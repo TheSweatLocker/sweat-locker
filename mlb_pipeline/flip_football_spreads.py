@@ -63,6 +63,7 @@ import os
 import sys
 
 import requests
+from flip_markers import flip_record, was_flipped
 
 _ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 if os.path.exists(_ENV):
@@ -433,7 +434,10 @@ def run(sport: str, date: str, apply: bool,
             no('RECEIPT ALREADY PUBLISHED — would show one number, grade '
                'another (--over-receipts accepts that, record-understating)')
             continue
-        if pp.get('_flipped_from'):
+        # 2026-11-14: a pick the oddscrowd gate already inverted
+        # (`_oc_flipped`) must not be inverted a second time back onto
+        # the side we started from. flip_markers.py reads every marker.
+        if was_flipped(pp):
             no('already flipped')
             continue
         # ══ A DELIBERATE UN-FLIP MUST NOT BE RE-FLIPPED ══

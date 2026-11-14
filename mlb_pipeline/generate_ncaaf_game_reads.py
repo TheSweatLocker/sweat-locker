@@ -28,6 +28,7 @@ import matchup_story
 from dotenv import load_dotenv
 
 from jerry_reads_dual_write import parse_synthesis, upsert_jerry_read
+from flip_markers import flip_record, was_flipped
 
 # 2026-10-27 · conviction band gate on the COVERAGE→LEAN promotion.
 # SHADOW ONLY (False). The pooled band finding is real and split-half
@@ -763,7 +764,11 @@ def render_prompt(templates, struct):
             # frozen on the original side -- gets a silent reversal with no
             # explanation. The flip is defensible on the measurement; pretending
             # it never happened is not.
-            _flip = _pp.get('_flipped_from')
+            # 2026-11-14: read EVERY flip marker, not just this one.
+            # The oddscrowd fade writes `_oc_flipped` and was invisible
+            # here, so 9 published flips since 10-01 lost the FADE
+            # framing Andy asked for. See flip_markers.py.
+            _flip = flip_record(_pp)
             if isinstance(_flip, dict):
                 _lines.append(
                     f"  *** THIS IS A DELIBERATE FADE OF OUR OWN ENGINE. The "
@@ -930,7 +935,7 @@ def run(force: bool = False, limit: Optional[int] = None,
                     pp = json.loads(pp)
                 except ValueError:
                     pp = None
-            is_flipped = isinstance(pp, dict) and bool(pp.get('_flipped_from'))
+            is_flipped = was_flipped(pp)   # any flip marker (flip_markers.py)
             if (flipped_only and is_flipped) or str(c.get('game_id')) in want:
                 sel.append(c)
         print(f'  filtered to {len(sel)} game(s)'

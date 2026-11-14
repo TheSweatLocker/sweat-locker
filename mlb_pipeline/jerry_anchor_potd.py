@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 # Single source of truth for market display text: rl -> RL in MLB, PL in NHL,
 # ATS in football. Imported rather than reimplemented so the two cannot drift.
 from ensemble_scorer import _market_label
+from flip_markers import flip_record, was_flipped
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -337,7 +338,11 @@ def _load_primary_play_candidates(gd: str, sports: list) -> list:
             # tier test immediately above. `_flipped_from` is the marker the
             # flip leaves behind, and this is the gate that honours that
             # instruction.
-            if pp.get('_flipped_from'):
+            # 2026-11-14: honour the instruction for EVERY flip gate.
+            # defensive_gates' oddscrowd fade writes `_oc_flipped`, so a
+            # flipped STRONG pick could still reach POTD through that key.
+            # flip_markers.py holds the one list of markers.
+            if was_flipped(pp):
                 continue
             conv = int(pp.get('conviction') or 0)
             side = str(pp.get('side') or '').upper()

@@ -25,6 +25,8 @@ import requests
 import matchup_story
 from anthropic_guard import call as _guarded_call  # noqa: F401
 from dotenv import load_dotenv
+from flip_markers import flip_record, was_flipped
+from sweat_dates import et_shift   # DST-correct ET offset (never hardcode -4)
 
 load_dotenv()
 
@@ -51,7 +53,7 @@ MODEL = "claude-haiku-4-5-20251001"
 
 
 def today_et():
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
+    return (datetime.now(timezone.utc) - et_shift()).strftime("%Y-%m-%d")
 
 
 def _et_date_from_utc(ts) -> str | None:
@@ -67,7 +69,7 @@ def _et_date_from_utc(ts) -> str | None:
         return None
     try:
         return (datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
-                .astimezone(timezone.utc) - timedelta(hours=4)).strftime('%Y-%m-%d')
+                .astimezone(timezone.utc) - et_shift()).strftime('%Y-%m-%d')
     except (TypeError, ValueError):
         # Malformed timestamp — fall back to the raw date slice rather
         # than writing nothing, but say so.
@@ -90,7 +92,7 @@ def ncaaf_week_write_locked():
     """
     if os.environ.get('NCAAF_UNLOCK_WEEK') == '1':
         return False
-    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    now_et = datetime.now(timezone.utc) - et_shift()
     dow = now_et.weekday()          # Mon=0 … Sun=6
     if dow in (0, 1, 2):            # Mon/Tue/Wed — next week's prep
         return False
@@ -118,7 +120,7 @@ def nfl_week_write_locked():
     """
     if os.environ.get('NFL_UNLOCK_WEEK') == '1':
         return False
-    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    now_et = datetime.now(timezone.utc) - et_shift()
     dow = now_et.weekday()  # Mon=0 Tue=1 Wed=2 Thu=3 Fri=4 Sat=5 Sun=6
     # Tue / Wed — free to generate next week
     if dow in (1, 2):
@@ -150,7 +152,7 @@ def nfl_week_start_thu():
     per-day to per-week so subsequent-day cron runs no-op.
     2026-09-02 v2: Wed rolls forward per NFL Week 1 opener (Wed 9/3).
     """
-    now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+    now_et = datetime.now(timezone.utc) - et_shift()
     dow = now_et.weekday()  # Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
     if dow == 2:  # Wednesday — roll forward to tomorrow (Thursday)
         thu = now_et + timedelta(days=1)
@@ -161,7 +163,7 @@ def nfl_week_start_thu():
 
 
 def now_et_human():
-    d = datetime.now(timezone.utc) - timedelta(hours=4)
+    d = datetime.now(timezone.utc) - et_shift()
     return f"{d.strftime('%A, %B')} {d.day}, {d.year}"
 
 
@@ -2006,7 +2008,8 @@ def render_prompt(templates, struct):
             # receipt is frozen on the original side -- gets a silent
             # reversal. The flip is defensible on the measurement; hiding it
             # is not.
-            _flip = pp.get('_flipped_from')
+            # 2026-11-14: any flip marker, not just this one (flip_markers.py).
+            _flip = flip_record(pp)
             if isinstance(_flip, dict):
                 _lines.append(
                     f"  *** THIS IS A DELIBERATE FADE OF OUR OWN ENGINE. The "
@@ -2631,7 +2634,7 @@ def run():
     # games) sat past this cutoff with no read, every Wednesday, healing
     # itself by Friday. Now derived from season_calendar.read_horizon.
     from season_calendar import read_horizon
-    _today_et = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    _today_et = (datetime.now(timezone.utc) - et_shift()).date()
     _hz = read_horizon('NFL', on=_today_et)
     # End of the horizon DATE in ET = (date + 1 day) 00:00 ET = +04:00 UTC.
     cutoff = (datetime(_hz.year, _hz.month, _hz.day, tzinfo=timezone.utc)
@@ -2658,7 +2661,7 @@ def run():
                     _pp = json.loads(_pp)
                 except ValueError:
                     _pp = None
-            if isinstance(_pp, dict) and _pp.get('_flipped_from'):
+            if was_flipped(_pp):   # any flip marker (flip_markers.py)
                 _flipped.add(str(_c.get('game_id')))
         games = [g for g in games if str(g.get("id")) in _flipped]
         print(f"  --flipped-only: {len(_flipped)} flipped context row(s), "

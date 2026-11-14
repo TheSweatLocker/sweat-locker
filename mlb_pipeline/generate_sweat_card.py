@@ -23,6 +23,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
+from flip_markers import flip_record, was_flipped
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -1832,9 +1833,16 @@ def fetch_football_picks(today: str,
             # Arizona -10 -> Iowa State +11.5, recreating the pick that had
             # just been removed as unsupported. The band check runs on the
             # PRE-flip line, and the best posted quote can land past the band.
+            # 2026-11-14: `_oc_flipped` is a flip too. The oddscrowd fade
+            # inverts sides in defensive_gates and this guard could not see
+            # it, so an already-inverted NCAAF spread was still eligible for
+            # the composer's own flip -- a double flip back onto the side we
+            # started from. Live exposure that morning: Alabama -14
+            # (flipped from Vanderbilt +17.5). flip_markers.py reads all of
+            # them.
             if (sport == 'NCAAF'
                     and str(pp.get('type') or '').lower() in ('rl', 'spread')
-                    and not isinstance(pp.get('_flipped_from'), dict)
+                    and not was_flipped(pp)
                     and not isinstance(pp.get('_unflipped_from'), dict)):
                 try:
                     from flip_football_spreads import (
@@ -2009,11 +2017,13 @@ def fetch_football_picks(today: str,
                 # its own. The football lock downstream needs to know a pick
                 # is a recorded flip either way, or it reuses the published
                 # pick and the card contradicts its own badge.
+                # 2026-11-14: read every flip marker, or the lock below
+                # does not know an oddscrowd-flipped pick is a flip and the
+                # card contradicts its own badge -- the exact failure this
+                # field was added to prevent (flip_markers.py).
                 'flipped_from': (
                     _flip['from'] if _flip
-                    else ((pp.get('_flipped_from') or {}).get('label')
-                          if isinstance(pp.get('_flipped_from'), dict)
-                          else None)),
+                    else ((flip_record(pp) or {}).get('label'))),
                 'type': pp.get('type'),
                 'conviction': pp.get('conviction') or 0,
                 'sub': pp.get('sub'),

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from flip_markers import flip_record, was_flipped
 
 _env = Path(__file__).parent / '.env'
 if _env.exists():
@@ -2228,7 +2229,12 @@ def _compose_other_sport_sides(rows: list, sport: str,
         #
         # An override is a deliberate decision with a recorded prior value.
         # It is never a candidate for a statistical inversion.
-        _src_flipped = (isinstance(pp.get('_flipped_from'), dict)
+        # 2026-11-14: `_flipped_from` is not the only word for a flip.
+        # defensive_gates writes `_oc_flipped` for the oddscrowd fade, so a
+        # pick that gate had ALREADY inverted was still eligible here --
+        # a double flip, landing back on the original side wearing the
+        # flipped label. was_flipped() reads every marker (flip_markers.py).
+        _src_flipped = (was_flipped(pp)
                         or bool(pp.get('manual'))
                         or isinstance(pp.get('_manual_correction'), dict)
                         or isinstance(pp.get('_unflipped_from'), dict))

@@ -509,14 +509,52 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
                 def _fam(t):
                     return 'total' if str(t or '') == 'total' else 'side'
                 _same_family = _fam(rows[0].get('call_market')) == _fam(ptype)
+                # ══ 2026-11-14 · A SIDE FLIP INVERTS THE ARGUMENT TOO ═════
+                # The 11-06 rule above is right that prose must not protect
+                # a stale pick, and right that a total<->side change makes
+                # the prose argue a different BET. It missed that a change
+                # of SIDE makes it argue a different TEAM, which is the
+                # same defect with a worse symptom: the paragraph printed
+                # under the pick is the case AGAINST it.
+                #
+                # `_fam` buckets ml and rl together as 'side', so every
+                # HOME<->AWAY flip inside that bucket read as "same family"
+                # and kept prose written for the other team.
+                #
+                # Measured on jerry_reads 11-01..11-14, NCAAF (the only
+                # sport whose game_id carries both team names, so the only
+                # one this test can see): of 95 reads where both names
+                # resolve in the prose, 10 LEAD WITH and MENTION MORE the
+                # team we did not pick. Three are live today, and one of
+                # them is the Dog of the Day at card rank 2 --
+                # `North Carolina ML` under a paragraph reading
+                # "a 12.4-point efficiency gap that favors the away team
+                # decisively". Other sports use hashed ids, so their rate
+                # is UNMEASURED by this method, not known to be zero.
+                #
+                # generate_nfl_game_reads already owns a reconciler for
+                # exactly this class (matchup_story.reconcile_edge_side,
+                # measured on 145/224 comparable NCAAF games). This path
+                # bypassed it by keeping prose the generator never saw.
+                #
+                # So the prose survives only when the pick it was written
+                # for is the same BET and the same TEAM.
+                _same_side = (str(rows[0].get('call_side') or '').upper()
+                              == str(side or '').upper())
+                _keep_prose = _same_family and _same_side
+                _why = ('' if _keep_prose
+                        else (', family changed so prose replaced'
+                              if not _same_family
+                              else ', SIDE changed so prose replaced'))
                 _prose_only = True
                 print(f'  ✎ {matchup}: prose kept, pick refreshed '
                       f'({rows[0].get("call_market")} -> {ptype}'
-                      f'{"" if _same_family else ", family changed so prose replaced"})')
+                      f'{_why})')
                 # Drop the prose from the payload so the stored prose
-                # survives the upsert. Across a total<->side family change
-                # we DO replace it, because then it argues a different bet.
-                if _same_family:
+                # survives the upsert. Across a family OR side change we
+                # DO replace it, because then it argues a different bet or
+                # a different team.
+                if _keep_prose:
                     payload.pop('short_read', None)
                     payload.pop('long_read', None)
 

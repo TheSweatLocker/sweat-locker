@@ -569,10 +569,28 @@ def reroute_ml_if_trapped(decision, ctx: dict, sport: str = 'NCAAF'):
 def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
     """Flip ensemble picks when OddsCrowd sharp $ conviction dissents.
 
-    Empirical from 14d audit: when ensemble picks side X on ML/RL/TOTAL and
-    OC has money% >= 60 on the OPPOSITE side, our pick lost 7-30 (81%).
-    Flipping to OC's side would have won 30-7 (81%). Same principle for
-    RL / TOTAL — OC dissent with money conviction is a real reversal signal.
+    Empirical from a 14d audit RUN 2026-08-25, in MLB season: when ensemble
+    picks side X on ML/RL/TOTAL and OC has money% >= 60 on the OPPOSITE
+    side, our pick lost 7-30 (81%). Flipping to OC's side would have won
+    30-7 (81%). Same principle for RL / TOTAL — OC dissent with money
+    conviction is a real reversal signal.
+
+    ══ 2026-11-14 · THAT SAMPLE IS MLB AND IT IS THE ONLY ONE ══════════
+    The 7-30 above is an August MLB measurement. This gate now fires almost
+    entirely on football, where it has NEVER been re-measured. Measured
+    2026-11-14 on every graded _oc_flipped ML pick:
+
+        NCAAF  flipped (published) side  3-4   42.9%  n=7
+               original side would be    4-3   57.1%
+        NFL                              n=0
+        NHL                              1-1          n=2
+
+    n=7 is far under the n>=30 gate, so this is NOT a finding that the rule
+    is wrong — it is a finding that the rule is unmeasured where it runs.
+    Until there is a per-sport sample, treat a flip here as an unvalidated
+    override and do not let it reach a surface that implies measurement.
+    9 of 15 _oc_flipped NCAAF picks since 10-01 reached a publishable tier,
+    one of them a Dog of the Day.
 
     Applied post-ensemble so the audit trail preserves the ensemble's raw
     pick alongside the flipped output. Downgrades tier one step to signal
@@ -709,8 +727,34 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
             'orig_tier': orig_tier,
             'oc_pick': oc_pick,
             'oc_money_pct': oc_money,
+            # ══ 2026-11-14 · DO NOT QUOTE A FROZEN RECORD AS A LIVE ONE ══
+            # This read "14d dissent-band record 7-30 (81% fade edge)" --
+            # a HARDCODED literal, not a computation. It is the 2026-08-25
+            # tightening sample (see the threshold comment above), taken in
+            # MLB season, and it has been stamped onto every flipped pick
+            # since, in a field named `reason` that audit tooling and prose
+            # both read. "14d" made a sample from August read as the last
+            # fortnight.
+            #
+            # Measured this morning on football ML, the only place this gate
+            # is currently firing: the FLIPPED (published) side went 3-4,
+            # n=7 -- the original side would have been 4-3. That is not
+            # evidence the rule is wrong; n=7 is far under the n>=30 gate.
+            # It is evidence the rule is UNMEASURED on football while
+            # advertising an 81% edge, which is the part that had to stop.
+            # 9 of 15 _oc_flipped NCAAF picks since 10-01 reached a
+            # publishable tier carrying this claim.
+            #
+            # So the reason now states the RULE and the PROVENANCE of its
+            # threshold, and claims no current record. A real number here
+            # needs a backfilled per-sport measurement
+            # (feedback_a_comment_asserting_a_measurement,
+            #  feedback_signal_needs_a_direction_control).
             'reason': (f'OC dissent flip: money% {oc_money:.0f} on {oc_pick} '
-                       f'vs our {orig_side}. 14d dissent-band record 7-30 (81% fade edge).'),
+                       f'vs our {orig_side}. Rule: fade our own side when it '
+                       f'dissents from money at or above the threshold '
+                       f'(set 2026-08-25 on an MLB sample; not re-measured '
+                       f'per sport).'),
         }
         pp['sub'] = (f'OC-dissent flip. Ensemble had {orig_label}; '
                      f'OC has {oc_money:.0f}% money on the other side.')
