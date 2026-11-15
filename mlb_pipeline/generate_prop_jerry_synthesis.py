@@ -479,9 +479,30 @@ def _apply_cell_gate(sport: str, prop: dict, parsed: dict) -> None:
 
 
 def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: str) -> bool:
-    # 2026-11-02: gate FIRST, so every field written below -- call_verdict,
-    # generator_verdict, the receipt that is captured from this row -- is
-    # built from the gated decision rather than being patched afterwards.
+    # ══ 2026-11-14 · THE SNAPSHOT HAS TO BE TAKEN BEFORE THE OVERRIDE ══════
+    # `generator_verdict` / `generator_conviction` exist for exactly one
+    # purpose, stated in migration 20260925a: an immutable record of what the
+    # generator said BEFORE any override touched it, so Andy's question --
+    # "does the override even work" -- is answerable.
+    #
+    # On 2026-11-02 (5342fe03) `_apply_cell_gate` was placed first in this
+    # function. That is RIGHT for `call_verdict` and for the receipt captured
+    # off this row: both must ship the gated decision. It is WRONG for the two
+    # snapshot columns, which are read 40-odd lines below and so recorded the
+    # POST-gate value. Measured 2026-11-14: 2,671 reads carry a cell-gate
+    # demotion (NBA 2,147, NFL 524) and `generator_verdict` is 'PASS' on
+    # 2,671 of 2,671 -- a 100% loss of the one fact the column holds.
+    #
+    # The cost is not cosmetic. `audit_override_impact` detects an override as
+    # `generator_verdict != call_verdict`, so the single largest demoter in
+    # the repo registered ZERO overrides and its correctness was unmeasurable
+    # through the tool built to measure it. Same shape as
+    # feedback_receipt_audit_column_is_frozen_too: one write set the value and
+    # dropped its own provenance stamp.
+    #
+    # So: snapshot here, gate after. Nothing else about the ordering changes.
+    _gen_verdict = parsed.get('call_verdict')
+    _gen_conviction = _clamp_conviction(parsed.get('conviction'))
     _apply_cell_gate(sport, prop, parsed)
     # 2026-08-22: 'source' field distinguishes 'llm' (Jerry Claude synth) from
     # 'template' (render_prop_template.py deterministic renderer). If parsed
@@ -527,12 +548,15 @@ def upsert_read(sport: str, prop: dict, parsed: dict, prompt: str, game_date: st
         # answerable, and the refit override could never be evaluated against
         # the decision it overrode.
         #
-        # Captured HERE, after this function's own direction-contradiction
-        # downgrade, because that check is part of the generator's judgement
-        # rather than an external override. Those mutators PATCH named columns,
-        # so they cannot touch these two by construction.
-        'generator_verdict': parsed.get('call_verdict'),
-        'generator_conviction': _clamp_conviction(parsed.get('conviction')),
+        # Captured at the TOP of this function (2026-11-14) -- after the
+        # caller's own direction-contradiction downgrade, which IS part of the
+        # generator's judgement, and before _apply_cell_gate, which is not.
+        # Reading `parsed` here instead would re-introduce the 2026-11-02
+        # regression documented at the top of this function. Those eight
+        # mutators PATCH named columns, so they cannot touch these two by
+        # construction.
+        'generator_verdict': _gen_verdict,
+        'generator_conviction': _gen_conviction,
         **{k: v for k, v in parsed.items() if k != 'source'},
     }
     try:
