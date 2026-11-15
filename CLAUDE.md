@@ -39,7 +39,8 @@ Compliance / ToS.
 ### 7. Sport terminology
 
 - **Sweat Card** = the dashboard/home screen (yesterday recap + POTD + Dawg + composite; top-8 curated)
-- **The Sharp** = the Steam Room tab (composed 15-pick slate; internal DB surface still named `sharp_card` for legacy reasons, but user-facing label is always "The Sharp" — never "Sharp Card" or "Sharp Plays")
+- **The Sharp** = the Steam Room tab (internal DB surface still named `sharp_card` for legacy reasons, but user-facing label is always "The Sharp" — never "Sharp Card" or "Sharp Plays")
+  - **Slate size is 3–5, not 15.** Andy set the band on 2026-11-04: "The Sharp should be like 3-5 every day." It is enforced by `SHARP_CARD_TARGET_MIN = 3` / `SHARP_CARD_ITEM_CAP = 5` in `generate_sharp_card.py:137`. A 5-item Sharp on a 55-game Saturday is the spec working, **not** a thin card to investigate — this line used to say "15-pick slate" and that wording survived the directive by ten days. Change the two constants to re-tune; nothing else needs touching.
 - Do not conflate the two — different denominators, different discipline. When Andy or docs use "the Sharp record" they mean the Steam Room slate; when they say "Sweat Card" they mean the dashboard top-8.
 
 ## Working conventions

@@ -218,7 +218,11 @@ SHARP_CARD_MLB_SIDES_TARGET = 5
 # When Sharp Card is running cold, publish a smaller + higher-conviction deck.
 # Read 7-day rolling hit rate from daily_surface_records.sharp_card; if
 # < COLD_HIT_RATE_THRESHOLD over N>=COLD_MIN_SAMPLE plays, enter cold-mode:
-#   • Cap total items at COLD_ITEM_CAP (from SHARP_CARD_ITEM_CAP=50 → 15)
+#   • Cap total items at COLD_ITEM_CAP (from SHARP_CARD_ITEM_CAP)
+#     2026-11-14: this line used to read "50 → 15". Both numbers are
+#     stale — Andy set the band to 3-5 on 11-04, so the cap is 5 and
+#     COLD_ITEM_CAP is the floor, 3. A comment quoting a config value
+#     goes wrong the first time the value moves; read the constant.
 #   • Tag the card with cold_state='cold' so app renders warning banner
 # Auto-normalizes when 7d rolling ≥ WARM_HIT_RATE_THRESHOLD.
 COLD_LOOKBACK_DAYS = 7
@@ -2501,6 +2505,20 @@ def _compose_ufc(ufc_reads: list) -> list[dict]:
             'odds': odds,
             'line': None,
             'units': units,
+            # ══ 2026-11-14 · A PRIME LEG WITH NO CONFIDENCE NUMBER ══════
+            # Every other sport's Sharp item carries `conviction`; this one
+            # never did. The fetch at _fetch_all already SELECTS it and
+            # gates on `conviction=gte.55`, so the value was in hand and
+            # thrown away -- the two UFC legs on the 11-14 card shipped
+            # tier=PRIME with the key absent entirely.
+            #
+            # Absent is the dangerous shape, not null: a consumer doing
+            # `Number(conviction) || 55` renders "55% confidence" under a
+            # PRIME badge, which is the exact fabrication that put an
+            # invented tier on 58 live cards on 11-03
+            # (feedback_falsy_zero_invented_a_tier_and_a_confidence).
+            # Carry the real number so nothing downstream has to guess.
+            'conviction': r.get('conviction'),
         })
     if shadow_juice:
         verb = 'DROPPED' if UFC_ENFORCE_ML_JUICE_CAP else 'kept (shadow only)'
