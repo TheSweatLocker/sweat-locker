@@ -283,13 +283,46 @@ def fetch_nhl_player_stats_for_date(date_str: str):
         return {}, 0
 
     # Which players do we actually need? Only those carrying a prop that day.
+    # ══ 2026-11-15 · limit=5000 RETURNED 1000, AND 411 PROPS WENT Void ═════
+    # This read asked for limit=5000 and PostgREST capped it server-side at
+    # 1000 (`content-range: 0-999/1414` on 2026-11-14, proven by hand). So the
+    # player set was built from 1,000 of 1,414 prop rows -- and UNORDERED, so a
+    # different subset each run. Every player who appeared only in the rows past
+    # the cap was absent from stats_map, which sends the prop into grade_date's
+    # "player not found in a FINAL boxscore" branch, and that branch writes
+    # result='Void'. 411 of 1,414 NHL props for 11-14 were Voided that way --
+    # a returned stake on a game the player did play.
+    #
+    # Same shape as the NBA name fold fixed in this commit and as the 09-12
+    # pagination fix on the prop fetch below: asking for more than the cap does
+    # not raise, it silently truncates. Page it, and assert the total.
     names: set = set()
     try:
-        pr = requests.get(f'{SB}/rest/v1/nhl_pipeline_props', headers=H_READ,
-                          params={'select': 'player_name',
-                                  'game_date': f'eq.{date_str}',
-                                  'limit': '5000'}, timeout=25)
-        names = {r['player_name'] for r in (pr.json() or []) if r.get('player_name')}
+        _off, _total = 0, None
+        while True:
+            pr = requests.get(f'{SB}/rest/v1/nhl_pipeline_props',
+                              headers={**H_READ, 'Prefer': 'count=exact'},
+                              params={'select': 'player_name',
+                                      'game_date': f'eq.{date_str}',
+                                      'order': 'id.asc',
+                                      'limit': '1000',
+                                      'offset': str(_off)}, timeout=25)
+            pr.raise_for_status()
+            _b = pr.json() or []
+            if _total is None:
+                _total = int(pr.headers.get('content-range', '*/0')
+                             .split('/')[-1] or 0)
+            names |= {r['player_name'] for r in _b if r.get('player_name')}
+            _off += len(_b)
+            if len(_b) < 1000 or _off >= (_total or 0):
+                break
+        if _total and _off < _total:
+            # Never grade from a partial player set: an absent player is
+            # Voided, so a short read invents no-actions.
+            print(f'  ⚠ listed only {_off} of {_total} NHL prop rows — '
+                  f'refusing to grade from a partial player set')
+            return {}, len(finals)
+        print(f'  {len(names)} NHL prop player(s) across {_off} prop row(s)')
     except Exception as e:
         print(f'  ⚠ could not list NHL prop players: {e}')
         return {}, len(finals)
