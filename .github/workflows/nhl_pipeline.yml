@@ -146,6 +146,28 @@ jobs:
       # Grades yesterday by default. Stats come from api-web.nhle.com per
       # player; a resolved player with no game-log row that date is Voided as a
       # DNP rather than graded against an implicit zero.
+      # ══ 2026-11-15 · A ONE-DAY WINDOW MAKES EVERY OUTAGE PERMANENT ═════
+      # This step ran `grade_props.py --sport NHL` with no --backfill, and
+      # that defaults to --date yesterday_et() with --backfill 0: exactly
+      # ONE date per run. Any date the run misses is never revisited.
+      #
+      # It was missed. nba_pipeline and nhl_pipeline wrote no heartbeat
+      # between 2026-11-06 00:01Z and 2026-11-09 22:15Z — a 3.9-day
+      # blackout. The grader came back on 11-09, graded "yesterday"
+      # (11-08, which had no props), and 2026-11-05's 348 NBA props stayed
+      # at result=NULL permanently, two whole games of them.
+      #
+      # The deferral paths inside grade_prop make this worse: the
+      # suspect-zero guard and the no-stat-yet path both return None
+      # specifically so "the next grader run picks it up once stats are
+      # real" — a next run that a one-day window cannot provide. Three
+      # props from 10-26 sat NULL for 20 days for exactly that reason and
+      # resolved on the first re-run.
+      #
+      # 7 days, and it is close to free: grade_date now counts the ungraded
+      # rows for a date BEFORE fetching that day's boxscores, so an
+      # already-graded date costs one HEAD request. The row filter is
+      # `result.is.null`, so this never touches a graded row.
       - name: Grade NHL props
         continue-on-error: true
         env:
@@ -154,7 +176,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           cd mlb_pipeline
-          python grade_props.py --sport NHL
+          python grade_props.py --sport NHL --backfill 7
 
       # 2026-09-08 wired: grade NHL jerry_reads immediately after resolver.
       # Prior gap: NHL not in grade_jerry_reads RESULTS_TABLE map, so

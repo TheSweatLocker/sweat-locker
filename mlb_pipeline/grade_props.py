@@ -200,8 +200,51 @@ def fetch_nba_player_stats_for_date(date_str: str):
                   if g.get('home_score') is not None]
     except Exception:
         finals = []
-    stats = get_player_boxscores(date_str, finals_only=True)
-    return stats, len(finals)
+    stats = get_player_boxscores(date_str, finals_only=True) or {}
+
+    # ══ 2026-11-15 · THE KEY WAS NORMALISED ON ONE SIDE ONLY ═══════════════
+    # nba_data_client keys this map with `displayName.lower()` -- its
+    # docstring says so -- and grade_prop looks it up with _norm_name(),
+    # which also strips periods, apostrophes and accents. So every NBA
+    # player whose name carries one never matched: 'Kelly Oubre Jr.' folds
+    # to 'kelly oubre jr' and the map holds 'kelly oubre jr.'.
+    #
+    # The miss is not a harmless skip. It falls into the "player not found
+    # in a FINAL boxscore" branch in grade_date, which writes result='Void'
+    # -- a returned stake. Kelly Oubre played 23 minutes and took 3 rebounds
+    # on 2026-10-26 against a 3.5 line, and both his props are Void.
+    # Measured population below; every "Jr.", "P.J." and "De'Aaron" in the
+    # league is in it.
+    #
+    # The NHL fetcher below has been right since 09-23 because it builds its
+    # keys with _norm_name from the prop names themselves. This path returned
+    # the client's dict verbatim and never got the same treatment.
+    #
+    # Fold here rather than in nba_data_client: that client's contract is
+    # "ESPN's spelling, lowercased", other callers rely on it, and the
+    # asymmetry belongs to whoever does the lookup.
+    _by_norm: dict = defaultdict(list)
+    for _raw, _row in stats.items():
+        _by_norm[_norm_name(_raw)].append(_raw)
+    folded: dict = {}
+    _amb = []
+    for _k, _raws in _by_norm.items():
+        if len(_raws) == 1:
+            folded[_k] = stats[_raws[0]]
+            continue
+        # Two different ESPN spellings folding to one key is exactly the
+        # collision that makes a name join dangerous. Store a present-but-
+        # statless marker: grade_prop finds no stat and defers (NULL), and
+        # the not-found branch does not fire, so it is never Voided either.
+        # Left ungraded and counted, never resolved by picking one.
+        folded[_k] = {'_ambiguous': True}
+        _amb.append(f'{_k} <- {_raws}')
+    if _amb:
+        print(f'  WARN {len(_amb)} boxscore name(s) collide after folding '
+              f'— left ungraded, not guessed, not Voided:')
+        for _a in _amb[:10]:
+            print(f'      {_a}')
+    return folded, len(finals)
 
 
 def fetch_nhl_player_stats_for_date(date_str: str):
@@ -437,6 +480,41 @@ def grade_date(date_str: str, sport: str = 'MLB', dry_run: bool = False) -> dict
     if not table:
         print(f'sport {sport} not supported yet'); return {}
     print(f'=== grade_props · {sport} · {date_str} ===')
+
+    # ══ 2026-11-15 · COUNT BEFORE FETCHING A BOXSCORE ══════════════════════
+    # Added so `--backfill N` costs nothing on the N-1 days that are already
+    # graded. Everything below this point fetches a full day of player stats
+    # (for NBA: one ESPN scoreboard call plus one summary call per game)
+    # BEFORE it looks at whether a single prop on that date needs grading.
+    # With the one-day window that was free; a 7-day window would have paid
+    # it seven times a run to do nothing.
+    #
+    # A failure here must NOT skip the date — an unreachable count is not
+    # "nothing to grade" (feedback_zero_rows_is_a_wiring_error), so the
+    # except branch falls through to the full path.
+    if not FORCE_REGRADE:
+        try:
+            _cq = requests.get(
+                f'{SB}/rest/v1/{table}',
+                headers={**H_READ, 'Prefer': 'count=exact'},
+                params={'game_date': f'eq.{date_str}', 'select': 'id', 'limit': '1',
+                        'tier': 'in.(PRIME,STRONG,LEAN,SKIP,COVERAGE)',
+                        'or': '(result.is.null,'
+                              'and(prop_type.in.(outs_over,outs_under),final_value.eq.0))'},
+                timeout=30)
+            if _cq.status_code in (200, 206):
+                _n = int(_cq.headers.get('content-range', '*/0').split('/')[-1])
+                if _n == 0:
+                    print('  0 ungraded props on this date — skipped before '
+                          'fetching stats')
+                    return {}
+                print(f'  {_n} ungraded prop(s) on this date')
+            else:
+                print(f'  WARN pre-count returned {_cq.status_code} — '
+                      f'proceeding with the full path')
+        except requests.RequestException as _e:
+            print(f'  WARN pre-count failed ({_e}) — proceeding with the '
+                  f'full path')
 
     # ══ 2026-10-02 · PRESEASON IS GRADED ON PURPOSE, BUT NOT PUBLISHED ══
     # My first cut here REFUSED to grade preseason at all. Andy's call, and the
