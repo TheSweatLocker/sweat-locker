@@ -188,10 +188,47 @@ def build_rescheduled():
                 continue          # NOT YET PLAYED. A playoff series lists the
                                   # same matchup on several future dates; only a
                                   # date already PAST with no score was missed.
-            # any LATER row for the same matchup means this one was re-dated
-            if any(d2 > d for d2, _s2, _g2 in games[i + 1:]):
+            # ══ 2026-11-15 · A LATER ROW IS NOT PROOF OF A RE-DATE ══════════
+            # "same teams on a later date" was taken as fact. It is not. The
+            # results tables also carry PHANTOM scoreless schedule rows — one
+            # matchup written under several dates, only one of which is real:
+            #
+            #   ncaab  Washington @ Utah      11-14, 11-15, 12-05  (real: 12-05)
+            #   ncaab  Idaho St. @ Seattle    11-14, 11-15, 11-17  (real: 11-15)
+            #   ncaaf  Ole Miss  @ Oklahoma   11-14, 11-15         (real: 11-15)
+            #
+            # When the phantom is the EARLIER row, the real upcoming game plays
+            # the part of the "later successor" and the phantom's date looks
+            # like a game that was missed. So the 2026-11-14 POTD — Ole Miss ML
+            # +120, Jerry 79, the most visible pick on the card — was settled
+            # Void while its game was still 2.5 hours from kickoff. That is the
+            # precise outcome the docstring above forbids: "voiding early would
+            # destroy a live pick."
+            #
+            # The fix is to demand of the successor what makes it a successor:
+            # that it has actually come and gone. A row still in the future, or
+            # dated today, is a game that has not been played — nothing has
+            # been missed yet, and the pick is live, not orphaned. A scored
+            # successor also qualifies, which keeps the postponement case this
+            # function was written for (TB @ CLE 10-16 → 10-17) working from
+            # the morning after the replay instead of the night of it.
+            #
+            # Air Force @ Pacific 11-14 → 11-15 is a REAL postponement (ESPN
+            # says STATUS_POSTPONED) and is voided one day later than before.
+            # One day of a stale recap row is the price of not settling a live
+            # pick; Andy's 10-17 ask was for accuracy, not for speed.
+            _successors = [(d2, _s2) for d2, _s2, _g2 in games[i + 1:] if d2 > d]
+            _played_successor = any(
+                _s2 is not None or (_stale(d2) or 0) >= 1
+                for d2, _s2 in _successors
+            )
+            if _successors and _played_successor:
                 out.add((sport, d, home, away))
                 out.add((sport, gid))
+            elif _successors:
+                print(f'  · {sport} {d} {away} @ {home}: successor '
+                      f'{sorted(x[0] for x in _successors)} has not been '
+                      f'played — NOT a re-date yet, pick left live')
     return out
 
 

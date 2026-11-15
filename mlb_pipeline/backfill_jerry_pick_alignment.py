@@ -12,7 +12,7 @@ CLI:
     python backfill_jerry_pick_alignment.py --dry-run
 """
 from __future__ import annotations
-import argparse, os, sys, json
+import argparse, os, re, sys, json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -216,6 +216,46 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
             patch['call_line'] = line
         if read_row.get('call_text') != label:
             patch['call_text'] = label
+        # ══ 2026-11-15 · THE NUMBER MOVED AND THE SENTENCE DID NOT ═════════
+        # The comment above says full alignment "resyncs prose and
+        # conviction" and line-only "does not belong on a number" — so prose
+        # was left to the full path on purpose. The consequence is a read
+        # whose badge and whose first six characters disagree:
+        #
+        #   2026-11-15  POTD  call_line -8.0  call_text 'BUF -8'
+        #                     short_read 'BUF -8.5: Power ratings favor...'
+        #
+        # short_read is the prose the app renders and the text Andy quotes
+        # when he posts the Play of the Day, so the published number was
+        # half a point off the priced one on a key NFL number. 6 of 920
+        # spread/total reads since 10-01 carry this, NFL only, five at half a
+        # point and one at a full point — and one of them was today's POTD.
+        #
+        # A line refresh owns every surface that shows that line, prose
+        # included. Only the LEADING "<TEAM> <NUM>:" token is rewritten, and
+        # only when it still quotes the line being replaced — if the prose
+        # says something this function cannot account for, it is left alone
+        # rather than guessed at. See feedback_verify_rendered_prose_not_templates.
+        if 'call_line' in patch:
+            _sr = read_row.get('short_read')
+            _old = read_row.get('call_line')
+            if _sr and _old is not None and label:
+                _m = re.match(r"^(\s*[A-Za-z .&'()/-]{2,24}?\s*)"
+                              r'([+-]?\d+(?:\.\d+)?)(\s*:)', str(_sr))
+                _lbl = re.search(r'([+-]?\d+(?:\.\d+)?)\s*$', str(label))
+                if _m and _lbl:
+                    try:
+                        _quoted = float(_m.group(2))
+                    except ValueError:
+                        _quoted = None
+                    if _quoted is not None and abs(_quoted - float(_old)) < 0.01:
+                        patch['short_read'] = (
+                            _m.group(1) + _lbl.group(1) + _m.group(3)
+                            + str(_sr)[_m.end():])
+                    elif _quoted is not None and abs(_quoted - float(line)) > 0.01:
+                        print(f"    ! read {read_row.get('id')}: prose quotes "
+                              f'{_quoted} but call_line was {_old} and is now '
+                              f'{line} — prose left as-is, not guessed')
         return patch or None
 
     # ── 2026-09-22: DELEGATE, don't duplicate ───────────────────────

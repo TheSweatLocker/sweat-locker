@@ -276,13 +276,64 @@ def _fetch_game_result(sport: str, game_id: str) -> dict | None:
     r = requests.get(f'{SB}/rest/v1/{tbl}',
                      headers=H_R,
                      params={'game_id': f'eq.{game_id}',
-                             'select': f'{home_col},{away_col},home_team,away_team'},
+                             'select': f'{home_col},{away_col},home_team,'
+                                       f'away_team,game_date'},
                      timeout=15)
     if r.status_code != 200 or not r.json():
         return None
     row = r.json()[0]
     hs = row.get(home_col); as_ = row.get(away_col)
-    if hs is None or as_ is None: return None
+    if hs is None or as_ is None:
+        # ══ 2026-11-15 · A POTD WHOSE GAME MOVED COULD NEVER SETTLE ═════════
+        # game_id is date-stamped in every sport here (ncaaf_20261114_O...),
+        # so a postponed or mis-dated game mints a NEW id and the pick's own
+        # id points at a row that will never carry a score. This returned
+        # None, the caller printed "cannot grade yet", and the row stayed
+        # Pending for good — which is how the 2026-11-14 POTD (Ole Miss ML
+        # +120, Jerry 79) ended up on a phantom 11-14 schedule row while the
+        # real game was on 11-15.
+        #
+        # void_orphaned_picks used to "resolve" exactly this by writing Void,
+        # settling a live pick as a returned stake. That path is now gated on
+        # the successor having actually been played, which leaves this gap to
+        # close properly: follow the matchup forward to the row that has a
+        # score. Bounded to +WINDOW days so a pick cannot be graded against
+        # the next meeting of the same two teams weeks later — Washington @
+        # Utah is listed on 11-14, 11-15 AND 12-05, and only the December
+        # game is real.
+        _WINDOW = 5
+        d0 = str(row.get('game_date') or '')[:10]
+        ht, at = row.get('home_team'), row.get('away_team')
+        if not (d0 and ht and at):
+            return None
+        try:
+            _lo = dt.date.fromisoformat(d0)
+        except ValueError:
+            return None
+        _hi = (_lo + dt.timedelta(days=_WINDOW)).isoformat()
+        r2 = requests.get(f'{SB}/rest/v1/{tbl}', headers=H_R,
+                          params={'home_team': f'eq.{ht}',
+                                  'away_team': f'eq.{at}',
+                                  'game_date': f'gt.{d0}',
+                                  f'{home_col}': 'not.is.null',
+                                  'select': f'{home_col},{away_col},home_team,'
+                                            f'away_team,game_date',
+                                  'order': 'game_date.asc', 'limit': '1'},
+                          timeout=15)
+        if r2.status_code != 200 or not r2.json():
+            return None
+        row2 = r2.json()[0]
+        d2 = str(row2.get('game_date') or '')[:10]
+        if not d2 or d2 > _hi:
+            print(f'    (same matchup found on {d2}, beyond the {_WINDOW}d '
+                  f're-date window from {d0} — not grading against it)')
+            return None
+        hs = row2.get(home_col); as_ = row2.get(away_col)
+        if hs is None or as_ is None:
+            return None
+        print(f'    re-dated: {at} @ {ht} had no score on {d0}, grading '
+              f'against the {d2} result')
+        row = row2
     return {
         'home_score': float(hs), 'away_score': float(as_),
         'home_team': row.get('home_team'), 'away_team': row.get('away_team'),
