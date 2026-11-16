@@ -626,8 +626,33 @@ def sharp_card_rows(items: list, game_date: str) -> list[dict]:
         if not isinstance(it, dict):
             continue
         sport = str(it.get('sport') or '').upper()
-        market = str(it.get('type') or '').lower()
+        # ══ 2026-11-16 · TWO WRITERS, TWO WORDS FOR THE MARKET ══
+        # The sides path emits `type` ('ml' / 'rl' / 'total' / 'spread').
+        # The measured-cell prop path added on 2026-11-01 emits a wholly
+        # different item shape — `market: 'prop'`, plus `game`, `why`,
+        # `cell_roi`, `cell_n`, and NO `type` key at all:
+        #
+        #   10-28 item: type='prop'  market=None   conviction=72
+        #   11-15 item: type=None    market='prop' conviction=None
+        #
+        # Reading only `type`, every one of those prop legs fell straight
+        # through the `continue` below, so it was published to
+        # jerry_cache (where the app reads it) and never got a receipt.
+        # No receipt means no leg in daily_surface_records, which means
+        # The Sharp's PUBLIC RECORD counted its sides and silently
+        # dropped its props: last prop receipt 2026-10-28, while 8 prop
+        # legs shipped in the 8 days to 11-15 alone. Measured over
+        # 11-08..11-15 the gap ran the stated record 52.6% / +2.0% ROI
+        # (n=19) against 46.4% / -10.2% (n=28) for what actually shipped.
+        #
+        # Accept either word. A receipt must describe what shipped, and
+        # the writer that shipped it is free to name the field; this is
+        # the reconciler, so the tolerance belongs here.
+        # See feedback_three_writers_three_manual_markers,
+        # feedback_a_display_label_became_an_identity_key.
+        market = str(it.get('type') or it.get('market') or '').lower()
         if not sport or not market:
+            print(f'  ! receipt skipped, no market: {str(it)[:120]}')
             continue
         # Anchor precedence matters. `game_id` was only added to Sharp
         # Card items on 2026-09-17, so every earlier totals pick carries
