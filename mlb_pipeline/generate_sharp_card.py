@@ -2962,7 +2962,12 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
                           f'type={_l.get("type")!r} market={_l.get("market")!r} '
                           f'{str(_l.get("pick"))[:48]!r}')
             _res = _capture(_rcpt_rows, surface='sharp_card')
-            _landed = (_res.get('written', 0) + _res.get('already', 0))
+            # `dup_bet` counts a leg already live under a DIFFERENT source_id
+            # — recorded, so not a gap. `skipped` is the one to surface: it
+            # holds the invariant refusals, which are intentional but still
+            # mean the record will not carry that leg.
+            _landed = (_res.get('written', 0) + _res.get('already', 0)
+                       + _res.get('dup_bet', 0))
             if _landed != len(items):
                 print(f'  !! RECEIPT GAP: {len(items)} leg(s) published, '
                       f'{_landed} receipted — the record for The Sharp '
