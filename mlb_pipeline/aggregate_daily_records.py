@@ -395,6 +395,19 @@ def agg_sharp_card(date: str) -> list[dict] | None:
     Item shape (see generate_sharp_card.py):
       {tier, type ('ml'/'total'/'rl'/'prop'), sport, pick (label),
        odds, units (stake), matchup, player_name?, prop_type?, direction?, line?}
+
+    == 2026-11-16 - ROLLBACK IS NOT SAFE FOR PROP LEGS ==
+    That item shape is the OLD one. The measured-cell prop path added on
+    2026-11-01 emits `market: 'prop'` with no `type` key, and carries
+    player_name but neither prop_type nor direction. This function reads
+    `it.get('type')` only (so a prop leg falls out of the dispatch entirely)
+    and its prop branch then requires player AND prop_type AND direction.
+    Both gates miss the new shape, so reverting the record to this path would
+    drop prop legs again by a second mechanism -- see
+    feedback_a_record_counted_sides_and_dropped_props. Left unchanged on
+    purpose: a half-tolerance here would look like coverage without being it.
+    If this is ever re-wired, resolve the leg by its prop id
+    (`it['id']` + `it['source_table']`), not by parsing the item.
     """
     # 1. Load the cached items — source of truth
     card = requests.get(f'{SB}/rest/v1/jerry_cache',
