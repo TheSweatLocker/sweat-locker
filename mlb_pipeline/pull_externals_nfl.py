@@ -178,7 +178,8 @@ def complete_pull_log(pull_id: Optional[str], status: str,
                       picks_pulled: int = 0, games_covered: int = 0,
                       error_message: Optional[str] = None,
                       http_status: Optional[int] = None,
-                      duration_ms: Optional[int] = None) -> None:
+                      duration_ms: Optional[int] = None,
+                      notes: Optional[str] = None) -> None:
     if not pull_id: return
     payload = {
         'completed_at': datetime.now(timezone.utc).isoformat(),
@@ -186,6 +187,8 @@ def complete_pull_log(pull_id: Optional[str], status: str,
         'games_covered': games_covered, 'error_message': error_message,
         'http_status': http_status, 'duration_ms': duration_ms,
     }
+    if notes:
+        payload['notes'] = str(notes)[:500]
     try:
         requests.patch(
             f'{SB}/rest/v1/external_pull_log?pull_id=eq.{pull_id}',
@@ -848,10 +851,26 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
                           f'{p.confidence or ""}')
             else:
                 count = write_picks(picks, pull_id)
+                # == 2026-11-16 - A 200 IS TRANSPORT, NOT EXTRACTION ====
+                # status is hardcoded 'success' here, and the CHECK
+                # constraint allows only success/failed/running, so a
+                # source that fetched fine and parsed NOTHING logs exactly
+                # like a healthy one. oddscrowd did that for six straight
+                # days across every sport -- the site dropped the
+                # Bets/Money split block its parser anchors on -- and the
+                # biggest external source in the book went dark unseen.
+                # `notes` carries what status cannot, and is queryable:
+                #   external_pull_log?notes=ilike.*ZERO-EXTRACTION*
+                _zn = None
+                if count == 0 and slate:
+                    _zn = (f'ZERO-EXTRACTION: {len(slate)} slate game(s), '
+                           f'0 picks parsed, http {http_status} - the page '
+                           f'likely changed shape or dropped the data')
                 complete_pull_log(
                     pull_id, status='success',
                     picks_pulled=count, games_covered=games_covered,
                     http_status=http_status, duration_ms=duration_ms,
+                    notes=_zn,
                 )
                 print(f'  ✓ {cfg["label"]}: {count} picks / {games_covered} games / '
                       f'{duration_ms}ms')

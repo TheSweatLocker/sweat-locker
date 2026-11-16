@@ -715,6 +715,19 @@ bash "$RUN_STEP" --detector --label "audit_team_alias_gaps.py (nightly)" \
   python audit_team_alias_gaps.py
 bash "$RUN_STEP" --detector --label "audit_data_quality.py (nightly)" \
   python audit_data_quality.py
+
+# == 2026-11-16 - A DEAD EXTERNAL SOURCE HAD NO DETECTOR IN ANY WORKFLOW ==
+# audit_external_source_coverage.py was written on 2026-10-10 for exactly
+# this bug class -- vsin and bettingpros dark inside a hardcoded NCAAF
+# subset -- and was then never scheduled anywhere. So when oddscrowd, the
+# largest external source in the book (38,781 picks all-time), stopped
+# parsing on ~11-10 because the site dropped the Bets/Money split block its
+# scraper anchors on, nothing noticed for six days: every run logged
+# http 200 and status success. A detector existing is not a detector
+# running (feedback_a_writer_in_no_workflow). Read-only, so it reports and
+# never blocks the nightly.
+bash "$RUN_STEP" --detector --label "audit_external_source_coverage.py (nightly)" \
+  python audit_external_source_coverage.py --stale-days 7
 bash "$RUN_STEP" --detector --label "reconcile_resolution.py (nightly)" \
   python reconcile_resolution.py --days 7
 

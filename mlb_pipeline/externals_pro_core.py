@@ -149,13 +149,21 @@ def start_pull_log(source: str, sport: str, triggered_by: str) -> Optional[str]:
     return None
 
 
-def complete_pull_log(pull_id, status, picks=0, games=0, err=None, ms=None):
+def complete_pull_log(pull_id, status, picks=0, games=0, err=None, ms=None,
+                      notes=None):
     if not pull_id:
         return
     body = {'status': status, 'completed_at': _et_now().isoformat(),
             'picks_pulled': picks, 'games_covered': games}
     if err:
         body['error_message'] = str(err)[:500]
+    # 2026-11-16: `status` can only be success/failed/running (CHECK
+    # constraint), so a source that fetched fine and EXTRACTED NOTHING has
+    # no status to wear -- it is logged 'success' like a good run. `notes`
+    # is where that distinction goes, because it is queryable:
+    #   external_pull_log?notes=ilike.*ZERO-EXTRACTION*
+    if notes:
+        body['notes'] = str(notes)[:500]
     if ms is not None:
         body['duration_ms'] = ms
     try:
@@ -540,7 +548,7 @@ class SportPuller:
             return 0
         chosen = sources or list(self.fetchers().keys())
         total = 0
-        ok = fail = 0
+        ok = fail = zero = 0
         for name in chosen:
             fn = self.fetchers().get(name)
             if not fn:
@@ -570,10 +578,33 @@ class SportPuller:
             # this is why SportPuller sports never appeared in the watchdog.
             # A non-200 fetch is 'failed', not a softer word the table would
             # reject — the constraint is the contract.
+            # == 2026-11-16 - AN HTTP 200 IS A TRANSPORT FACT, NOT AN
+            # EXTRACTION FACT ==========================================
+            # oddscrowd fetched 200 OK on every run for six days and
+            # returned ZERO picks each time, because the site removed the
+            # Bets/Money split block the parser anchors on. Status came
+            # only from the HTTP code, so all six days logged 'success'
+            # and the biggest external source in the book went dark in
+            # silence. A parse that yields nothing from a slate that HAS
+            # games is the signature of a layout change -- recorded now.
+            zero_note = None
+            if status == 200 and n == 0 and slate:
+                zero_note = (f'ZERO-EXTRACTION: http 200 over {len(slate)} '
+                             f'slate game(s) but 0 picks parsed - the page '
+                             f'likely changed shape or dropped the data')
+                print(f'  !! {name}: ZERO-EXTRACTION - 200 OK across '
+                      f'{len(slate)} slate game(s), 0 picks parsed. '
+                      f'Treat as DARK, not as an empty slate.')
+                zero += 1
             complete_pull_log(pull_id, 'success' if status == 200 else 'failed',
-                              picks=n, games=games, ms=ms)
+                              picks=n, games=games, ms=ms, notes=zero_note)
             print(f'  ✓ {name}: {n} picks / {games} games ({ms}ms)')
             total += n
             ok += 1
-        print(f'\n=== Summary === sources ok/fail: {ok}/{fail} · picks: {total}')
+        print(f'\n=== Summary === sources ok/fail: {ok}/{fail} · picks: {total}'
+              + (f' . ZERO-EXTRACTION sources: {zero}' if zero else ''))
+        if zero:
+            print(f'  !! {zero} source(s) returned 200 and parsed nothing. '
+                  f'A dark source is not an off-day - run '
+                  f'audit_external_source_coverage.py')
         return total
