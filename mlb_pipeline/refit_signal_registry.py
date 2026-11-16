@@ -142,6 +142,32 @@ def _tier_for(n: int, hit_rate_frac: float,
             return 'DISCOVERY'
         return 'UNVALIDATED'
 
+    # == 2026-11-16 - PROMOTE ON THE PRICE, DEMOTE ON THE SIDE =============
+    # Andy, after the NBA/NCAAB engine audit: change the edge basis live.
+    #
+    # `be_frac` used to be a pass/fail GATE while the edge that decides the
+    # tier was hit_rate - blind_frac. So a signal could clear the juice by a
+    # hair and still be VALIDATED on a big margin over a blind bet. NCAAB
+    # OFF_RATING_GAP is the case: n=219, hit 78.08%, side baseline 58.57%,
+    # "+19.52pp", weight 1.00 -- and 49.2% against the spread. Beating a
+    # blind bet on your own side is not an edge if the price already took
+    # the difference. [[feedback_flat_110_inflates_every_ml_figure]]
+    #
+    # The two directions need DIFFERENT bars, and collapsing them to one
+    # would be a mistake either way round:
+    #
+    #   PROMOTION (VALIDATED / DISCOVERY) -> vs the PRICE breakeven.
+    #       That is the only bar that corresponds to making money.
+    #
+    #   DEMOTION (ANTI_VALIDATED) -> vs the SIDE baseline, unchanged.
+    #       ANTI_VALIDATED triggers an auto-FLIP in ensemble_scorer, and you
+    #       may only flip a signal carrying INVERSE information, i.e. one
+    #       doing worse than a blind bet on the side it picked. Being below
+    #       breakeven is not inverse information -- nearly every
+    #       moneyline-favourite signal is below breakeven -- and flipping on
+    #       that basis would invert a large and correct family of signals.
+    #       [[feedback_fade_not_suppress_803]]
+    #       [[feedback_magnitude_cannot_express_a_side]]
     edge = hit_rate_frac - blind_frac
     if n >= 25 and edge < -se2:
         return 'ANTI_VALIDATED'
@@ -153,6 +179,8 @@ def _tier_for(n: int, hit_rate_frac: float,
     _juice = be_frac if be_frac is not None else 0.5238
     if hit_rate_frac < _juice:
         return 'UNVALIDATED'
+    # The promotion edge, measured against the price rather than the side.
+    edge = hit_rate_frac - _juice
     # The bar matches the strength of the claim the label makes.
     # VALIDATED says "proven", so it pays the full 2SE. DISCOVERY says
     # "promising, thin sample" — 1SE, explicitly provisional.

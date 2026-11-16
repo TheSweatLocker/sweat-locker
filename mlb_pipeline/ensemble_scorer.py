@@ -62,6 +62,31 @@ from signal_expr import evaluate, evaluate_bool, evaluate_str, evaluate_float, r
 
 BREAKEVEN = 0.524  # -110 breakeven
 
+# == 2026-11-16 - BREAKEVEN IS NOT 0.524 ON A MONEYLINE =====================
+# Andy, after the NBA/NCAAB engine audit: change the edge basis live.
+#
+# edge_weight scaled every measured signal from this one flat -110 constant,
+# so a moneyline signal was credited with ~6 points of edge it does not have
+# and its weight came out far too high. That is the favourite-bias engine in
+# one line: a signal that only identifies the better team hits 78% on the ML,
+# clears 0.524 by 25 points, and earns the maximum weight -- while the same
+# input is 49.2% against the spread.
+#
+# These are the measured per-market medians, the same numbers
+# refit_signal_registry._MARKET_BE_FALLBACK uses, so the scorer and the
+# registry finally agree on what "breakeven" means.
+# [[feedback_flat_110_inflates_every_ml_figure]]
+#
+# 'fight' is deliberately absent: UFC prices were never measured for this,
+# and inventing a bar is how an unmeasured number starts looking measured
+# ([[feedback_comment_asserting_a_measurement]]). It falls back to BREAKEVEN.
+MARKET_BREAKEVEN = {'ml': 0.5833, 'rl': 0.5238, 'total': 0.5238}
+
+
+def market_breakeven(market):
+    """Breakeven win rate for a market, or None when it was never measured."""
+    return MARKET_BREAKEVEN.get(str(market or '').lower())
+
 # Candidate labels by market (per-sport where markets differ)
 CANDIDATES_BY_MARKET = {
     'ml':    ['HOME_ML', 'AWAY_ML'],
@@ -1120,7 +1145,8 @@ def side_baseline(sport: Optional[str], market: Optional[str],
 def edge_weight(hit_rate: Optional[float], n: int,
                 tier: Optional[str] = None,
                 is_recent: bool = False,
-                baseline: Optional[float] = None) -> float:
+                baseline: Optional[float] = None,
+                breakeven: Optional[float] = None) -> float:
     """Translate (hit_rate, n, tier) into weight in [0, 1].
 
     ANTI_VALIDATED → 0 (fade signal, not evidence).
@@ -1190,7 +1216,13 @@ def edge_weight(hit_rate: Optional[float], n: int,
     # Beat a blind bet on the SAME SIDE, not a flat coin flip. See
     # _SIDE_BASELINE. `baseline` is None for every caller until
     # ENSEMBLE_SIDE_BASELINE=1, so this is BREAKEVEN as before.
-    bar = BREAKEVEN if baseline is None else max(baseline, BREAKEVEN)
+    # == 2026-11-16 - THE BAR IS THIS MARKET'S BREAKEVEN ===================
+    # `breakeven` is the measured per-market bar (ml 0.5833, rl/total
+    # 0.5238). It was a flat 0.524 for every market, which handed moneyline
+    # signals ~6 points of phantom edge. None means the market was never
+    # measured (UFC 'fight'), and then the old constant still applies.
+    _be = breakeven if breakeven is not None else BREAKEVEN
+    bar = _be if baseline is None else max(baseline, _be)
     edge_pp = hit_rate - bar
     if edge_pp <= 0:
         return 0.0
@@ -2590,7 +2622,8 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
         _base = (side_baseline(sport, market, op.side)
                  if _use_side_base else None)
         w = edge_weight(op.hit_rate, op.sample_n, op.tier,
-                        is_recent=op.is_recent, baseline=_base)
+                        is_recent=op.is_recent, baseline=_base,
+                        breakeven=market_breakeven(market))
         if w == 0 and op.strength == 0:
             continue
         c = Contribution(

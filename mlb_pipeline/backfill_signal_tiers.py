@@ -317,7 +317,53 @@ def fetch_ufc_fights(days: int) -> list[dict]:
     return out
 
 
-def grade_side(side: str, ctx: dict) -> str | None:
+#: == 2026-11-16 - `close_spread` CARRIES TWO OPPOSITE CONVENTIONS =========
+#: Measured by correlating each sport's ctx.close_spread against the actual
+#: home margin (home_score - away_score) over every joined graded game:
+#:
+#:     NFL     n=147  corr +0.598  mean  +0.88   HOME MARGIN (+ = home fav)
+#:     NCAAF   n=771  corr -0.771  mean -10.24   home line   (- = home fav)
+#:     NCAAB   n=481  corr -0.755  mean -13.17   home line
+#:     NBA     n=204  corr -0.560  mean  -0.86   home line
+#:     NHL     n=325  corr -0.233  mean  -0.33   home line
+#:
+#: grade_side below does `adjusted = margin + line`, which is correct ONLY
+#: for the home-line convention. For NFL it inverted every spread grade, and
+#: the error is not even a constant bias -- for a home favourite it marks a
+#: cover whenever home loses by less than the line (far too generous), and
+#: for a home dog it demands home WIN by the line (far too harsh). So it
+#: scrambled rather than shifted.
+#:
+#: What it cost: nfl_home_spread_edge was recorded at 15.8% (n=38) and
+#: nfl_away_spread_edge_v3 at 17.8% (n=45). An independent replay of the
+#: same conditions against the same finals, grading on the measured
+#: convention, gives 36.4% (16/44) and 50.0% (27/54). Both had been written
+#: ANTI_VALIDATED, and ensemble_scorer auto-flips any ANTI signal with
+#: n>=25 and hr<=0.47 AND PROMOTES IT TO VALIDATED -- so a scrambled grade
+#: was about to ship as an ~84% ATS signal at full weight.
+#:
+#: NOT fixed by negating close_spread at the fetch: the NFL condition_exprs
+#: are written against the home-margin convention and read the column
+#: directly (nfl_home_spread_edge is `(v4_spread - close_spread) >= 2.0`,
+#: and v4_spread is home-margin too), so flipping the column would break
+#: the conditions while fixing the grade. The convention is declared here
+#: instead, so a sport has to say which one it uses.
+#: [[feedback_one_column_two_side_conventions]]
+#: [[feedback_check_which_side_a_column_indexes]]
+#: [[feedback_magnitude_cannot_express_a_side]]
+SPREAD_IS_HOME_MARGIN = {'NFL'}
+
+
+def _home_line(ctx: dict, sport: str | None) -> float | None:
+    """ctx.close_spread normalised to the HOME LINE (negative = home fav)."""
+    try:
+        v = float(ctx.get('close_spread'))
+    except (TypeError, ValueError):
+        return None
+    return -v if str(sport or '').upper() in SPREAD_IS_HOME_MARGIN else v
+
+
+def grade_side(side: str, ctx: dict, sport: str | None = None) -> str | None:
     """Grade a candidate side against the game result. Returns 'W'|'L'|'P'|None."""
     # UFC fight candidates use _winner ('A'|'B')
     if side in ('FIGHTER_A_ML', 'FIGHTER_B_ML'):
@@ -341,16 +387,16 @@ def grade_side(side: str, ctx: dict) -> str | None:
     if side == 'HOME_RL':
         # HOME -1.5 covers if margin > 1.5, i.e. home wins by 2+
         margin = hs - as_
-        try: line = float(ctx.get('close_spread') or -1.5)
-        except (TypeError, ValueError): line = -1.5
+        line = _home_line(ctx, sport)
+        if line is None: line = -1.5
         adjusted = margin + line  # home gets `line` (negative if favored)
         if adjusted > 0: return 'W'
         if adjusted < 0: return 'L'
         return 'P'
     if side == 'AWAY_RL':
         margin = as_ - hs
-        try: line = -float(ctx.get('close_spread') or -1.5)  # away's line = -home_line
-        except (TypeError, ValueError): line = 1.5
+        _hl = _home_line(ctx, sport)
+        line = 1.5 if _hl is None else -_hl   # away's line = -home_line
         adjusted = margin + line
         if adjusted > 0: return 'W'
         if adjusted < 0: return 'L'
@@ -397,7 +443,7 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
         side = evaluate_str(side_expr, ctx_attr)
         if not side:
             continue
-        result = grade_side(side, game)
+        result = grade_side(side, game, _sport)
         if result == 'W': w += 1
         elif result == 'L': l += 1
         elif result == 'P': p += 1
