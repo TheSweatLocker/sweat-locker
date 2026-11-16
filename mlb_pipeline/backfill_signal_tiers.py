@@ -71,13 +71,56 @@ def fetch_signals(sport: str = 'MLB') -> list[dict]:
 
 
 # Sport → (context_table, results_table)
+# == 2026-11-16 - 'NBA' WAS MISSING, SO --sport NBA READ THE MLB TABLES ==
+# SPORT_TABLES.get(sport, SPORT_TABLES['MLB']) means an absent key is not an
+# error, it is a silent substitution. `--sport NBA` replayed 67 NBA
+# signal_sources against mlb_game_context, matched nothing, and fell through
+# to the "no games" branch below -- which SEEDED ALL 67 NBA SIGNALS AS
+# UNVALIDATED weight 0.3, overwriting whatever refit_signal_registry had
+# correctly computed earlier in the same pipeline. The NBA registry being
+# 73-of-88 UNVALIDATED was this missing key, not the evidence.
+# [[feedback_absent_key_makes_a_gate_dead]]
 SPORT_TABLES = {
     'MLB':   ('mlb_game_context',   'mlb_game_results'),
     'NFL':   ('nfl_game_context',   'nfl_game_results'),
     'NCAAF': ('ncaaf_game_context', 'ncaaf_game_results'),
     'NCAAB': ('ncaab_game_context', 'ncaab_game_results'),
     'NHL':   ('nhl_game_context',   'nhl_game_results'),
+    'NBA':   ('nba_game_context',   'nba_game_results'),
 }
+
+#: Sports whose context and results tables DO NOT share a game_id space.
+#: NCAAB ctx is a 32-hex hash while its results key is
+#: 'ncaab_20270307_Arizona_Houston'; NFL ctx is a hash while its results key
+#: is '20270110_TB_NO'. An id join returns 0 of 683 and 0 of 133, and zero
+#: rows read is a wiring error, not a finding. These bridge on the teams and
+#: the date instead. [[feedback_join_on_resolved_names_not_a_composed_key]]
+NAME_JOIN_SPORTS = {'NCAAB', 'NFL'}
+
+#: Diagnostics from the last fetch so run() can tell an off-day from a broken
+#: join. Seeding UNVALIDATED priors on a wiring error is how good tiers die.
+LAST_FETCH = {'ctx_in_window': 0, 'joined': 0, 'strategy': None}
+
+#: Measured per-market breakeven, mirroring refit_signal_registry's
+#: _MARKET_BE_FALLBACK. A flat -110 (0.5238) is ~6 points light on a
+#: moneyline, which is the whole of the favourite-bias mechanism.
+_BE_FALLBACK = {'ml': 0.5833, 'rl': 0.5238, 'total': 0.5238}
+
+
+def _norm_team(v) -> str:
+    import re as _re
+    return _re.sub(r'[^a-z0-9]', '', str(v or '').lower())
+
+
+def _amer_to_be(odds):
+    """Breakeven win rate implied by American odds, as a fraction."""
+    try:
+        o = float(odds)
+    except (TypeError, ValueError):
+        return None
+    if o == 0:
+        return None
+    return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
 
 
 def fetch_games_with_results(days: int, sport: str = 'MLB') -> list[dict]:
@@ -85,7 +128,11 @@ def fetch_games_with_results(days: int, sport: str = 'MLB') -> list[dict]:
     if sport == 'UFC':
         return fetch_ufc_fights(days)
 
-    ctx_table, res_table = SPORT_TABLES.get(sport, SPORT_TABLES['MLB'])
+    if sport not in SPORT_TABLES:
+        raise SystemExit(f'no context/results tables registered for '
+                         f'{sport!r} - add it to SPORT_TABLES rather '
+                         f'than silently replaying another sport')
+    ctx_table, res_table = SPORT_TABLES[sport]
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     yesterday = (date.today() - timedelta(days=1)).isoformat()
 
@@ -105,23 +152,77 @@ def fetch_games_with_results(days: int, sport: str = 'MLB') -> list[dict]:
         r = requests.get(
             f'{SB}/rest/v1/{res_table}'
             f'?game_date=gte.{cutoff}&game_date=lte.{yesterday}'
-            f'&select=game_id,home_score,away_score&limit=1000&offset={off}',
+            f'&select=game_id,game_date,home_team,away_team,home_score,'
+            f'away_score,close_home_ml,close_away_ml'
+            f'&limit=1000&offset={off}',
             headers=H_READ, timeout=30)
         chunk = r.json() if r.status_code == 200 else []
         results_rows += chunk
         if len(chunk) < 1000: break
 
-    results = {r['game_id']: r for r in results_rows}
-    out = []
-    for c in ctx_rows:
-        r = results.get(c.get('game_id'))
-        if not r: continue
+    def _attach(c, r):
         try:
             c['_home_score'] = int(r['home_score'])
             c['_away_score'] = int(r['away_score'])
         except (TypeError, ValueError, KeyError):
-            continue
-        out.append(c)
+            return False
+        # Carry the PRICE the side actually took, so the tier bar can be the
+        # breakeven of that price instead of a flat -110 on a moneyline.
+        for k in ('close_home_ml', 'close_away_ml'):
+            if c.get(k) is None and r.get(k) is not None:
+                c[k] = r[k]
+        return True
+
+    out = []
+    by_id = {str(r['game_id']): r for r in results_rows}
+    for c in ctx_rows:
+        r = by_id.get(str(c.get('game_id')))
+        if r and _attach(c, r):
+            out.append(c)
+    strategy = 'game_id'
+
+    # == 2026-11-16 - AN ID JOIN ACROSS TWO ID SPACES RETURNS ZERO ==========
+    # NCAAB matched 0 of 683 and NFL 0 of 133, because the results key is a
+    # composed string while the context key is a hash. Both sports then fell
+    # into the "no games" branch and had every signal seeded UNVALIDATED.
+    # [[feedback_zero_rows_is_a_wiring_error]]
+    if ctx_rows and (sport in NAME_JOIN_SPORTS
+                     or len(out) < 0.2 * len(ctx_rows)):
+        from collections import defaultdict as _dd
+        byname = _dd(list)
+        for r in results_rows:
+            byname[(_norm_team(r.get('away_team')),
+                    _norm_team(r.get('home_team')))].append(r)
+        bridged = []
+        for c in ctx_rows:
+            cands = byname.get((_norm_team(c.get('away_team')),
+                                _norm_team(c.get('home_team'))))
+            if not cands:
+                continue
+            cd = str(c.get('game_date'))[:10]
+            best, bd = None, None
+            for r in cands:
+                try:
+                    d = (date.fromisoformat(str(r['game_date'])[:10])
+                         - date.fromisoformat(cd)).days
+                except Exception:
+                    continue
+                if bd is None or abs(d) < abs(bd):
+                    bd, best = d, r
+            # +/-1 day only. A results row two days out is a DIFFERENT meeting
+            # of the same two teams, not this game.
+            if best is not None and abs(bd) <= 1 and _attach(c, best):
+                bridged.append(c)
+        if len(bridged) > len(out):
+            print(f'  join: game_id matched {len(out)}/{len(ctx_rows)}; '
+                  f'name+date bridge matched {len(bridged)} - using the bridge')
+            out, strategy = bridged, 'name+date'
+
+    LAST_FETCH.update({'ctx_in_window': len(ctx_rows), 'joined': len(out),
+                       'strategy': strategy})
+    if ctx_rows:
+        print(f'  join[{strategy}]: {len(out)}/{len(ctx_rows)} context rows '
+              f'matched a graded result ({len(results_rows)} results read)')
     return out
 
 
@@ -284,6 +385,9 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
     fires = 0
     blind_sum = 0.0
     blind_n = 0
+    be_sum = 0.0
+    be_n = 0
+    mkt_n = defaultdict(int)
     _sport = source.get('sport')
     for game in games:
         ctx_attr = AttrDict(game)
@@ -304,10 +408,27 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
             _mkt = ('ml' if _s.endswith('_ML')
                     else 'rl' if _s.endswith('_RL') else None)
             if _mkt:
+                mkt_n[_mkt] += 1
                 _b = _side_baseline(_sport, _mkt, _s)
                 if _b is not None:
                     blind_sum += _b
                     blind_n += 1
+                # == 2026-11-16 - THE BAR IS THE PRICE, NOT A FLAT -110 =====
+                # _tier_for already accepts a price-aware `be_frac` and
+                # refit_signal_registry has passed one since 10-29. THIS
+                # caller never did, so every moneyline signal was judged
+                # against 0.5238 -- ~6 points light. NCAAB OFF_RATING_GAP sat
+                # VALIDATED on hit 78.08% vs a 58.57% side baseline, a
+                # +19.5pp "edge" that is pure favourite bias: the same input
+                # is 49.2% ATS. A favourite detector scored +19.5pp and got
+                # promoted. [[feedback_flat_110_inflates_every_ml_figure]]
+                if _mkt == 'ml':
+                    _col = ('close_home_ml' if _s.startswith('HOME')
+                            else 'close_away_ml')
+                    _be = _amer_to_be(game.get(_col))
+                    if _be is not None:
+                        be_sum += _be
+                        be_n += 1
 
     n_dec = w + l  # exclude pushes from hit rate math
     hit_rate = round(100 * w / n_dec, 1) if n_dec else None
@@ -358,7 +479,15 @@ def backfill_signal(source: dict, games: list[dict]) -> dict:
     if n_dec < 15 or hit_rate is None:
         tier = 'UNVALIDATED'
     elif _tier_for is not None:
-        tier = _tier_for(n_dec, hit_rate / 100.0, blind)
+        # Same 80% coverage bar refit uses: a breakeven computed from a
+        # fifth of the firings is not this signal's breakeven. Falls back to
+        # the measured per-market median, still far closer than a flat -110.
+        if be_n >= max(10, int(n_dec * 0.8)):
+            be_frac = be_sum / be_n
+        else:
+            _dom = max(mkt_n.items(), key=lambda z: z[1])[0] if mkt_n else ''
+            be_frac = _BE_FALLBACK.get(_dom)
+        tier = _tier_for(n_dec, hit_rate / 100.0, blind, be_frac)
     else:
         # Import failed — fall back to the original flat ladder rather
         # than crash a nightly job. Side-blind, and noisy by design.
@@ -431,6 +560,27 @@ def run(days: int = 60, dry_run: bool = False,
         # registry with UNVALIDATED rows (weight 0.3) so the ensemble knows
         # the signals exist. Once games grade, the next backfill will
         # overwrite with real hit rates + tier upgrades.
+        #
+        # == 2026-11-16 - BUT "NO GAMES" HAD TWO CAUSES, AND ONE IS A BUG ===
+        # This branch cannot tell a genuine off-day from a join that matched
+        # nothing, and it WRITES either way. NBA (missing SPORT_TABLES key),
+        # NCAAB and NFL (ctx/results in different id spaces) all arrived here
+        # with a FULL slate of graded games, and all three had every signal
+        # overwritten as UNVALIDATED weight 0.3 -- erasing what
+        # refit_signal_registry computed correctly earlier in the same
+        # pipeline. A prior is a statement about absent evidence; writing one
+        # over evidence we failed to READ is a lie about the evidence.
+        # [[feedback_zero_rows_is_a_wiring_error]],
+        # [[feedback_any_null_finding_must_be_investigated]]
+        if LAST_FETCH.get('ctx_in_window'):
+            print(f'  !! REFUSING TO SEED: {LAST_FETCH["ctx_in_window"]} '
+                  f'{sport} context row(s) in the window but '
+                  f'{LAST_FETCH["joined"]} matched a graded result '
+                  f'(join={LAST_FETCH["strategy"]}).')
+            print('     That is a BROKEN JOIN, not an off-day. Seeding '
+                  'UNVALIDATED priors here would overwrite real measured '
+                  'tiers with a prior. Nothing written.')
+            return 1
         print('  no games — seeding registry with UNVALIDATED priors (weight 0.3)')
         empty_stats = {'fires': 0, 'w': 0, 'l': 0, 'p': 0, 'n_dec': 0,
                        'hit_rate': None, 'edge_pp': None,
