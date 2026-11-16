@@ -396,7 +396,7 @@ def frozen_quote(sport: str, game_id, market: str, side: str | None = None):
     return None
 
 def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
-            quiet: bool = False) -> dict:
+            quiet: bool = False, mode: str = 'live') -> dict:
     """Write live receipts. Returns {'written': n, 'failed': n, 'skipped': n}.
 
     Never raises: a publisher must not lose its card because an audit row
@@ -419,8 +419,14 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             continue
         r.setdefault('surface', surface)
         r.setdefault('published_at', now)
-        # The affirmative claim. Nothing else in the codebase sets this.
-        r['capture_mode'] = 'live'
+        # The affirmative claim: this row was written in the same breath as
+        # the publish. 2026-11-16: `mode` exists so a repair can come through
+        # THIS chokepoint — invariant screen, first-write-wins, dedupe — and
+        # still label itself honestly as 'reconstructed'. The alternative was
+        # a parallel inserter, and a guard on one source of eight is not a
+        # guard (feedback_guard_belongs_at_the_chokepoint). Default stays
+        # 'live'; only a backfiller may pass anything else, and it must.
+        r['capture_mode'] = mode
         r = sanitize(recover_line(r))
         # B142: refuse a line-bearing market with no line. A receipt is the
         # published record, and an ungradeable row in it becomes a fabricated
@@ -477,7 +483,8 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
     if dry_run:
         out['written'] = len(payload)
         if not quiet:
-            print(f'  [DRY] would capture {len(payload)} live receipt(s) → {surface}')
+            print(f'  [DRY] would capture {len(payload)} {mode} '
+                  f'receipt(s) → {surface}')
         return out
     # First-write-wins enforced in code, not by ON CONFLICT — see _live_keys
     # for why the partial index of 20261025a cannot be an arbiter here.
@@ -523,7 +530,8 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
         if resp.status_code in (200, 201, 204):
             out['written'] = len(fresh)
             if not quiet:
-                print(f'  🧾 captured {len(fresh)} LIVE receipt(s) → {surface}')
+                print(f'  🧾 captured {len(fresh)} {mode.upper()} '
+                      f'receipt(s) → {surface}')
         elif resp.status_code == 409:
             # Raced another writer. The batch is all-or-nothing, so retry one
             # row at a time: a single collision must not cost the rest of the

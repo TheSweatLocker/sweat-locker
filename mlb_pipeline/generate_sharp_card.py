@@ -2924,10 +2924,49 @@ def _publish(today: str, items: list[dict], dry_run: bool, force: bool = False,
         # later reconstruction can never overwrite it, and a republish is
         # idempotent. Fail-soft — never lose the card over an audit row —
         # but never silent.
+        #
+        # ══ 2026-11-16 · COUNT WHAT SHIPPED AGAINST WHAT WAS RECEIPTED ══
+        # The builder read the market from it['type'] alone. The prop path
+        # added 11-01 emits market='prop' with no type key, so every prop leg
+        # hit a bare `continue` here: published to users, never receipted, and
+        # therefore absent from daily_surface_records, which is where The
+        # Sharp's PUBLIC RECORD is computed from. It ran 18 days and 13 legs
+        # that way, and the record read BETTER than the product because the
+        # legs it lost were losers (stated 52.6% / +2.0% ROI n=19 against
+        # 46.4% / -10.2% n=28 for what actually shipped).
+        #
+        # Nothing caught it. assert_publish_invariant.py is the one
+        # cross-surface check and it classifies "a surface has no row" as
+        # INFO on purpose -- not every game reaches every surface -- so an
+        # absence is indistinguishable from a legitimate gap there. An
+        # agreement check cannot see a surface that is silently EMPTY.
+        #
+        # So count here, where the publisher still knows what it published.
+        # A leg can be refused on purpose (receipt_invariants drops a
+        # priceless rl, correctly), so this does not fail the publish; it
+        # names the gap in the publisher's own log every time it happens.
+        # feedback_a_green_step_that_writes_nothing.
         try:
             from public_receipt import capture as _capture
             from public_receipt import sharp_card_rows as _rows
-            _capture(_rows(items, today), surface='sharp_card')
+            _rcpt_rows = _rows(items, today)
+            if len(_rcpt_rows) != len(items):
+                _built = {str(r.get('pick_label')) for r in _rcpt_rows}
+                _lost = [i for i in items if str(i.get('pick')) not in _built]
+                print(f'  !! RECEIPT GAP: published {len(items)} leg(s) but '
+                      f'built only {len(_rcpt_rows)} receipt row(s) — '
+                      f'{len(_lost)} leg(s) would go unrecorded and drop out '
+                      f'of the record for The Sharp')
+                for _l in _lost[:6]:
+                    print(f'       lost: {_l.get("sport")} '
+                          f'type={_l.get("type")!r} market={_l.get("market")!r} '
+                          f'{str(_l.get("pick"))[:48]!r}')
+            _res = _capture(_rcpt_rows, surface='sharp_card')
+            _landed = (_res.get('written', 0) + _res.get('already', 0))
+            if _landed != len(items):
+                print(f'  !! RECEIPT GAP: {len(items)} leg(s) published, '
+                      f'{_landed} receipted — the record for The Sharp '
+                      f'will count {_landed} of {len(items)} ({_res})')
         except Exception as _e:
             print(f'  ⚠ live receipt capture (sharp_card) failed: {_e}')
     else:
