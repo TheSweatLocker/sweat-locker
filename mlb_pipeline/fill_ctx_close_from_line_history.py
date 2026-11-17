@@ -65,6 +65,7 @@ import json
 import os
 import statistics
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -428,11 +429,36 @@ def run_sport(sport: str, a) -> int:
                                 + dt.timedelta(days=1)).isoformat()}
                 if _cur is not None:
                     _p['captured_at'] = 'lt.%s' % _cur
-                _part, _st = req('GET', 'line_history', _p)
+                # 2026-11-17 - RETRY THE DISCOVERY READ, AND FAIL ON STDERR.
+                # The season-wide scan is gone (778s -> 21s), but this read
+                # still 500s with 57014 now and then: it is CONTENTION on a
+                # shared table, not depth, and it took the whole NCAAB sport
+                # down on the 03:06Z run after succeeding on the one before.
+                # A transient that aborts a nightly step is a retry, not a
+                # finding. Second and third attempts halve the page as well,
+                # because a smaller statement is likelier to land under load.
+                #
+                # And the abort goes to STDERR. run_step.sh's non-detector
+                # branch captures stderr ONLY -- deliberately, so the other
+                # ~100 steps keep line buffering -- so a fatal printed to
+                # stdout records stderr_tail = '' and is undiagnosable from
+                # the DB, which is exactly what the 21s failure row looked
+                # like this morning. A fatal belongs on stderr.
+                _part, _st = None, None
+                for _try, _wait in ((0, 0), (1, 2), (2, 5)):
+                    if _wait:
+                        time.sleep(_wait)
+                        _p['limit'] = '400'
+                    _part, _st = req('GET', 'line_history', _p)
+                    if isinstance(_part, list):
+                        break
+                    print('  .. line_history discovery %s attempt %d/3 (%s)'
+                          % (_date, _try + 1, _st))
                 if not isinstance(_part, list):
                     print('  !! line_history discovery failed for %s (%s) '
-                          '- ABORTING this sport rather than pricing off a '
-                          'partial quote set' % (_date, _st))
+                          'after 3 attempts - ABORTING this sport rather '
+                          'than pricing off a partial quote set'
+                          % (_date, _st), file=sys.stderr)
                     return 1
                 if not _part:
                     break

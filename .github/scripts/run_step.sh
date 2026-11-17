@@ -370,6 +370,17 @@ try:
         tail = fh.read()[-1200:]
 except Exception:
     pass
+# 2026-11-17 - AN EMPTY TAIL MUST SAY WHICH KIND OF EMPTY IT IS.
+# The non-detector branch captures STDERR ONLY, on purpose, so the other
+# ~100 steps keep line buffering. A script that prints its fatal to
+# stdout therefore records tail = '' and reads exactly like the telemetry
+# bug fixed on 11-16 -- which cost a round this morning on
+# fill_ctx_close_from_line_history (21s, rc=1, nothing to go on). Saying
+# so turns an ambiguous blank into a statement.
+if not tail.strip():
+    tail = ('(no stderr: this step diagnoses on stdout, so only the '
+            'workflow step log has the reason. Give it --detector to '
+            'capture stdout too, or print its fatal to stderr.)')
 print(json.dumps({
     'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
     'event': 'step_failed',

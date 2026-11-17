@@ -887,19 +887,29 @@ jobs:
           # today. mlb_pipeline.yml calls the same script bare for this reason.
           # A watchdog that reddens the run on every warning gets ignored,
           # which is worse than not having one.
-          set +e
-          python consistency_watchdog.py
-          code=$?
-          set -e
-          if [ "$code" -ge 2 ]; then
-            # Critical — record it so the gate fails the run.
-            bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
-              --label "consistency_watchdog.py CRITICAL (exit $code)" false
-          elif [ "$code" -eq 1 ]; then
-            echo "::warning::consistency_watchdog: non-critical checks tripped — see log"
-          else
-            echo "ok: consistency_watchdog.py (all checks clean)"
-          fi
+          # ══ 2026-11-17 · THE STEP THAT FAILS MOST OFTEN HAD NO TAIL ══
+          # Measured this morning: 13 of the 17 step_failed rows in the
+          # last 14 hours were THIS step, every one carrying an EMPTY
+          # stderr_tail. Not the run_step.sh hole fixed on 11-16 — this
+          # CALL SITE recorded the failure by running `false`, and
+          # `false` writes nothing, so there was nothing to capture BY
+          # CONSTRUCTION. The watchdog's own output — which names the
+          # tripped check and the games — went to the step log and
+          # nowhere queryable, which is the whole reason Andy's only
+          # way to see a critical was the failure email.
+          #
+          # I fixed the branch yesterday and missed the call site. Same
+          # lesson as feedback_fix_every_writer_to_the_table.
+          #
+          # `--detector` already implements this script's exit contract
+          # (consistency_watchdog.py:521 — 0 clean / 1 warnings /
+          # 2 critical) EXACTLY: exit 1 is recorded as a finding and
+          # leaves the run green, exit >= 2 fails the run through the
+          # gate AND carries the captured output as the tail. So the
+          # hand-rolled block is replaced by the flag written for it.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --detector --label "consistency_watchdog.py" \
+            python consistency_watchdog.py
 
       # ══ 2026-09-28 · CROSS-SPORT MATVIEWS BELONG IN THE CROSS-SPORT JOB ══
       # team_situational_records_full and team_stats_rolling_full are refreshed

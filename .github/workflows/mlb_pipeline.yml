@@ -2471,6 +2471,15 @@ jobs:
       # LEAN 0-0 vs 258 graded, NCAAF 3-1 vs 34-15, badge vs detail).
       # Watchdog surfaces the class BEFORE users see it.
       # continue-on-error so a watchdog outage doesn't block Sweat Card.
+      #
+      # 2026-11-17 - THIS COPY IS DELIBERATELY INFORMATIONAL.
+      # daily_card.yml owns the GATED copy (run_step.sh --detector), which
+      # records a critical to workflow_heartbeat with the output as its
+      # tail and reddens the run through the gate. The watchdog is
+      # sport-agnostic, so that one copy already covers every sport;
+      # routing this one through run_step.sh too would write a second
+      # heartbeat row and a second failure email for the same critical.
+      # Log-only here is the choice, not an oversight.
       - name: Consistency watchdog
         continue-on-error: true
         env:
