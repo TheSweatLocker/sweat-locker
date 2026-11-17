@@ -114,10 +114,46 @@ MEASURED = {
     'away_team_under_trend_season':            (-5.53, 51.52, 33, -1.65),
 }
 
+# ══ 2026-11-17 · A _HANDLER_ SENTINEL IS NOT A DEAD EXPRESSION ══════════
+# This set used to hold all seven names below under the comment
+# "conditions that raise NameError, so they can NEVER be true on any row",
+# and scored them 0.0 / REJECTED with that sentence as the reason. For the
+# key-dispatched ones the sentence is FALSE.
+#
+# `condition_expr = '_HANDLER_LINE_FLAG'` is a MARKER, not an expression.
+# ensemble_scorer dispatches these by signal_key -- see the
+# `elif base_key == 'sharp_split_confirmed':` branch at ensemble_scorer
+# :1382 -- and never evaluates the string. 19 signals across all six
+# sports carry a _HANDLER_ sentinel, and they are the sharp-money and
+# external-handicapper lenses, not placeholders.
+#
+# Consequence, live since 2026-11-03: sharp_split_confirmed_ncaab,
+# sharp_split_triple_confirmed_ncaab and sharp_scenario_match_ncaab all
+# sit at recommended_weight 0.0 / REJECTED, which means THE SHARP-MONEY
+# LENS IS SWITCHED OFF IN NCAAB -- the biggest slate in the book -- on a
+# premise that was never true. I nearly repeated the mistake in the other
+# direction today by reading the sentinel as dead
+# ([[feedback_a_detector_must_know_the_intentional_case]],
+# [[feedback_zero_rows_is_a_wiring_error]]).
+#
+# They are NOT re-weighted here. "Not measurable by this script" is not
+# evidence of an edge, and an unmeasured signal must not outweigh a
+# measured one ([[feedback_unmeasured_signal_must_not_outweigh_measured]],
+# [[feedback_verdicts_issued_without_a_sample_size]]). They move to
+# NOT_EVALUABLE_HERE so the registry stops asserting a reason that is
+# false, and the weight decision stays Andy's, with a measurement.
+
+#: Key-dispatched in ensemble_scorer. The sentinel in condition_expr is a
+#: marker; this script cannot evaluate them, which is NOT the same as them
+#: being unable to fire.
+HANDLER_DISPATCHED = {'sharp_split_triple_confirmed_ncaab',
+                      'sharp_split_confirmed_ncaab',
+                      'sharp_scenario_match_ncaab',
+                      'external_handicapper_pick_ncaab'}
+
 #: conditions that raise NameError, so they can NEVER be true on any row
-DEAD_EXPR = {'sharp_split_triple_confirmed_ncaab', 'sharp_split_confirmed_ncaab',
-             'sharp_scenario_match_ncaab', 'external_handicapper_pick_ncaab',
-             'oddscrowd_ml_fade_boost_ncaab', 'oddscrowd_spread_fade_boost_ncaab',
+DEAD_EXPR = {'oddscrowd_ml_fade_boost_ncaab',
+             'oddscrowd_spread_fade_boost_ncaab',
              'oddscrowd_total_fade_boost_ncaab'}
 #: reference ctx columns that exist in NO table
 DEAD_COLS = {'ncaab_panel_total', 'ncaab_efficiency_home_dominant',
@@ -145,6 +181,12 @@ def page(table: str, select: str, **extra) -> list:
 
 def decide(name: str, scope: str):
     """(weight, tier, note, sample_n, hit, baseline) for one signal."""
+    if name in HANDLER_DISPATCHED:
+        return (0.0, 'NOT_EVALUABLE_HERE',
+                'key-dispatched in ensemble_scorer (the _HANDLER_ string in '
+                'condition_expr is a marker, not an expression), so this '
+                'script cannot measure it - weight withheld pending a '
+                'measurement, NOT because it cannot fire', 0, None, None)
     if name in DEAD_EXPR:
         return (0.0, 'REJECTED',
                 'condition raises NameError (bare _HANDLER_ placeholder) so it '
@@ -206,7 +248,8 @@ def main() -> int:
     print()
     for r, name, scope, w, tier, note, n, hit, base in sorted(
             plan, key=lambda x: (-x[3], x[1])):
-        if w > 0 or tier in ('ANTI_VALIDATED', 'REJECTED'):
+        if w > 0 or tier in ('ANTI_VALIDATED', 'REJECTED',
+                             'NOT_EVALUABLE_HERE'):
             print(f'   {name[:40]:40} {str(scope or "-"):5} w={w:.3f} '
                   f'{tier:15} n={n}')
             print(f'       {note[:104]}')

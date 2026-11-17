@@ -410,7 +410,33 @@ def main() -> int:
           f'of {len(rows)}')
     for r in never:
         print(f'   {r["key"]}')
-    errs = eval_error_report()
+    # ══ 2026-11-17 · A _HANDLER_ SENTINEL IS NOT AN EXPRESSION ERROR ══
+    # These three came out as ('?', 'NameError', '_HANDLER_EXTERNAL') and
+    # friends, under a heading saying a swallowed error is a FALSE
+    # condition. True in general, wrong here: `condition_expr =
+    # '_HANDLER_LINE_FLAG'` is a MARKER. ensemble_scorer dispatches those
+    # signals by signal_key (the `elif base_key == 'sharp_split_confirmed':`
+    # branch at ensemble_scorer:1382) and never evaluates the string, so
+    # they fire in production and simply cannot be measured from here.
+    #
+    # It matters because a backtest that reports them as errors invites
+    # exactly the conclusion set_ncaab_signal_baseline drew on 11-03 —
+    # weight 0.0 / REJECTED, "can never be true on any row" — which turned
+    # the sharp-money lens off in NCAAB for two weeks
+    # ([[feedback_a_detector_must_know_the_intentional_case]],
+    # [[feedback_zero_rows_is_a_wiring_error]]).
+    _all = eval_error_report()
+    errs = [e for e in _all if '_HANDLER_' not in str(e)]
+    _dispatched = [e for e in _all if '_HANDLER_' in str(e)]
+    if _dispatched:
+        print(f'\n-- {len(_dispatched)} signal(s) are KEY-DISPATCHED in '
+              f'ensemble_scorer, not expression-evaluated. They fire in '
+              f'production and are NOT measurable here:')
+        for e in _dispatched[:12]:
+            print(f'   {e}')
+        print('   Do not read their absence from the table above as "no '
+              'edge" — it is "not measured" '
+              '(feedback_verdicts_issued_without_a_sample_size).')
     if errs:
         print(f'\n!! {len(errs)} expression errors — a swallowed error is a '
               f'FALSE condition, not an absent signal '
