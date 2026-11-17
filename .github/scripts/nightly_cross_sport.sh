@@ -718,6 +718,18 @@ echo "── audits ──"
 # separate times while being asked the wrong question. A live-data
 # detector cannot cover a parser: it only sees what today's board
 # happens to contain.
+# == 2026-11-16 - A SIGNAL READING A COLUMN THAT DOES NOT EXIST ========
+# audit_data_feeds has printed "COLUMN DOES NOT EXIST" for a while,
+# returned 0, and was scheduled in NO WORKFLOW AT ALL -- the same
+# shape as audit_external_source_coverage, written in October for a
+# bug class and first actually run on 11-16. It found 7 of NCAAB's 66
+# enabled signals and 1 of NFL's 100 permanently dark, and the NCAAB
+# ones were precisely the INDEPENDENT lenses. It now exits non-zero on
+# that one condition, which is never a judgement call: a thin column
+# is a coverage question, an absent one is always a defect.
+bash "$RUN_STEP" --detector --label "audit_data_feeds.py --section signals" \
+  python audit_data_feeds.py --section signals
+
 bash "$RUN_STEP" --detector --label "run_guard_tests.py (nightly unit)" \
   python run_guard_tests.py
 

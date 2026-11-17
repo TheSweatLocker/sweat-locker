@@ -132,6 +132,31 @@ def grade(pct):
     return 'OK'
 
 
+#: {(sport, column): [signal_key, ...]} for every ENABLED signal that reads
+#: a column its sport's context table does not have. Such a signal can
+#: never fire: its condition opens with `ctx.X is not None`, X is absent, so
+#: the test is permanently false and the lens is dark.
+#:
+#: == 2026-11-16 - WHY THIS IS NOW A FAILURE AND NOT A PRINT ==============
+#: ANDY: "same shit conotinue to ahpen day after day this is unsat". This
+#: audit has printed "COLUMN DOES NOT EXIST" for a while, returned 0, AND
+#: WAS SCHEDULED IN NO WORKFLOW AT ALL -- the same shape as
+#: audit_external_source_coverage, which was written in October for a bug
+#: class and never run until 11-16. Measured today: 7 of NCAAB's 66 enabled
+#: signals (10.6%) and 1 of NFL's 100 are dark this way, and the NCAAB ones
+#: are precisely the INDEPENDENT lenses -- 3-point shooting, conference
+#: dynamics, home court -- which is the other half of why six of nine
+#: NCAAB lenses collapsed onto one team-efficiency reading.
+#:
+#: A thin column is a judgement call about data coverage. A column that does
+#: not exist is not: it is always a defect, in the signal or in the writer.
+#: So that one condition exits non-zero.
+#: [[feedback_a_lens_can_be_dark_behind_a_404]]
+#: [[feedback_coverage_pct_hides_dead_code]]
+#: [[feedback_a_writer_in_no_workflow]]
+DEAD_COLUMNS: dict = {}
+
+
 def section_signals(sports):
     print('=' * 78)
     print(' 1 · SIGNAL INPUTS — every column an enabled signal reads')
@@ -210,6 +235,8 @@ def section_signals(sports):
                 print(f'       … and {len(items) - 14} more')
         if missing:
             print(f'   COLUMN DOES NOT EXIST: {len(missing)}')
+            for c, keys in sorted(missing.items()):
+                DEAD_COLUMNS[(sport, c)] = sorted(keys)
             for c, keys in sorted(missing.items())[:10]:
                 print(f'       {c[:44]:<46}read by {len(keys)} signal(s)')
 
@@ -364,6 +391,9 @@ def section_props(sports):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sport', default=None)
+    ap.add_argument('--allow-dead-columns', action='store_true',
+                    help='report a signal reading a non-existent column '
+                         'without failing (ad-hoc use only)')
     ap.add_argument('--section', default='all',
                     choices=('all', 'signals', 'externals', 'grading',
                              'props'))
@@ -379,6 +409,28 @@ def main():
         section_grading(sports)
     if a.section in ('all', 'props'):
         section_props(sports)
+
+    if DEAD_COLUMNS and not a.allow_dead_columns:
+        print()
+        print('=' * 78)
+        print(' AN ENABLED SIGNAL READS A COLUMN THAT DOES NOT EXIST')
+        print('=' * 78)
+        print(' Such a signal can NEVER fire -- its condition opens with')
+        print(' `ctx.X is not None`, X is absent, so the test is')
+        print(' permanently false and the lens is dark. Either point the')
+        print(' signal at the column that holds the data, or disable it.')
+        print(' Leaving it enabled makes the registry claim a lens the')
+        print(' engine does not have.')
+        print()
+        _n = 0
+        for (sp, col), keys in sorted(DEAD_COLUMNS.items()):
+            print(f'   {sp:<6} {col[:38]:<40} {", ".join(keys)}')
+            _n += len(keys)
+        print()
+        print(f' {len(DEAD_COLUMNS)} column(s), {_n} signal-read(s), '
+              f'across {len({k[0] for k in DEAD_COLUMNS})} sport(s).')
+        print(' Re-run with --allow-dead-columns to report without failing.')
+        return 1
     return 0
 
 

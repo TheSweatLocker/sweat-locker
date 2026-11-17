@@ -74,8 +74,15 @@ def load_contexts(sb_url: str, sb_key: str, context_table: str,
     # current_total + home_ml_* fields). Try the full SELECT first, then
     # progressively drop optional columns on 42703.
     core_sel = 'game_id,away_team,home_team,close_total,close_spread'
-    rlm_sel  = 'open_total,current_total,home_ml_open,home_ml_close,home_ml_odds'
-    optional_cols = ['current_total', 'home_ml_open', 'home_ml_close', 'home_ml_odds', 'open_total']
+    # 2026-11-16: open_home_ml/close_home_ml added — the football tables use
+    # the PREFIX spelling and carry it at 199/200 while the suffix columns sit
+    # empty or absent, which had ML RLM dead for NFL and NCAAF. Both
+    # spellings are requested and the reader takes whichever is populated.
+    rlm_sel  = ('open_total,current_total,home_ml_open,home_ml_close,'
+                'home_ml_odds,open_home_ml,close_home_ml')
+    optional_cols = ['current_total', 'home_ml_open', 'home_ml_close',
+                     'home_ml_odds', 'open_home_ml', 'close_home_ml',
+                     'open_total']
     sel = (core_sel + ',' + rlm_sel + (',' + extra_select if extra_select else ''))
     h = {'apikey': sb_key, 'Authorization': f'Bearer {sb_key}'}
 
@@ -349,7 +356,40 @@ def build_alignment(c: dict, ext_rows: list, lens_fields: dict,
             line_side = 'O' if cur > opn else 'U'
             note = f'total {opn}→{cur}'
         elif surface == 'ml':
-            opn = c.get('home_ml_open'); cur = c.get('home_ml_close') or c.get('home_ml_odds')
+            # ══ 2026-11-16 · FOOTBALL NAMES THESE THE OTHER WAY ROUND ══
+            # The two football context tables use the close_*/open_* PREFIX
+            # convention and the other three use the *_close/*_open SUFFIX
+            # convention. This read only ever knew the suffix form, so
+            # measured over the last 200 rows per sport:
+            #
+            #   sport  home_ml_close   twin close_home_ml
+            #   NBA       179/200          ABSENT
+            #   NHL       166/200          154/200
+            #   NCAAB     157/200          147/200
+            #   NFL         0/200          199/200   <- 4 EMPTY ml columns
+            #   NCAAF      ABSENT          199/200
+            #
+            # So MONEYLINE REVERSE-LINE-MOVEMENT HAS BEEN DEAD FOR NFL AND
+            # NCAAF, returning 'no_line_data' on every game. The select
+            # above even documents "NCAAF missing home_ml_* fields" and the
+            # response was to DROP the columns rather than find the twins
+            # that were sitting there at 199/200.
+            #
+            # Same family as close_spread being home-MARGIN in NFL and
+            # home-LINE everywhere else. Fix is a fallback chain, not a
+            # per-sport branch, so a table that renames again degrades to
+            # the other spelling instead of going quiet.
+            # [[feedback_football_and_the_rest_name_columns_differently]]
+            # [[feedback_a_zero_fill_column_can_have_a_populated_twin]]
+            # [[feedback_fallback_select_must_degrade_per_column]]
+            #
+            # NOTE this ACTIVATES an ML RLM lens for two sports where it has
+            # never fired. Logged in docs/daily/2026-11-16.md.
+            opn = (c.get('home_ml_open')
+                   if c.get('home_ml_open') is not None
+                   else c.get('open_home_ml'))
+            cur = (c.get('home_ml_close') or c.get('home_ml_odds')
+                   or c.get('close_home_ml'))
             if opn is None or cur is None:
                 return {'rlm': False, 'sharp_side': None, 'direction_note': 'no_line_data'}
             try:
