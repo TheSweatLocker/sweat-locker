@@ -108,6 +108,22 @@ _LINE_REQUIRED_MARKETS = ('total', 'rl', 'spread', 'puckline')
 _TRAILING_LINE_RE = re.compile(r'(?:^|\s)([+-]?\d+(?:\.\d+)?)\s*$')
 _LINE_SANITY_MAX = 400.0
 
+# The number that FOLLOWS a market word ("ATS -3.5", "Under 148.5",
+# "RL +1.5"). Anchored on the market word for the same reason
+# _TRAILING_LINE_RE is anchored at the end: an unanchored \d+ finds the 76
+# in "Philadelphia 76ers".
+#
+# `\s*` and NOT `[^0-9+-]*`: the permissive version skipped across " (Jerry "
+# and pulled **55** out of "(Jerry 55/100)", so a bare
+# "Golden State Warriors ATS (Jerry 55/100)" recovered a FIFTY-FIVE POINT
+# SPREAD -- under _LINE_SANITY_MAX, so nothing downstream would have caught
+# it. test_receipt_line_guard.py is what found it; the case is pinned there.
+# The number must follow the market word with only whitespace between, and
+# `(?![\d/])` refuses a fraction like 55/100 outright.
+_AFTER_MARKET_LINE_RE = re.compile(
+    r'\b(?:ats|spread|rl|pl|puckline|over|under|o/u)\b\s*'
+    r'([-+]?\d+(?:\.\d+)?)(?![\d/])', re.I)
+
 
 def recover_line(row: dict):
     """Fill pick_line from pick_label where the label carries the number.
@@ -118,9 +134,18 @@ def recover_line(row: dict):
     """
     if row.get('pick_line') is not None:
         return row
-    if str(row.get('market') or '').lower() not in _LINE_REQUIRED_MARKETS:
+    if _effective_market(row) not in _LINE_REQUIRED_MARKETS:
         return row
-    m = _TRAILING_LINE_RE.search(str(row.get('pick_label') or ''))
+    _lbl = str(row.get('pick_label') or '')
+    m = _TRAILING_LINE_RE.search(_lbl)
+    if not m:
+        # 2026-11-16: the trailing anchor cannot see a number that is not
+        # last, and a POTD label never ends in one -- "Golden State
+        # Warriors ATS -3.5 (Jerry 55/100)" ends in ')'. So try the number
+        # that FOLLOWS a market word. Still anchored on a market word, so
+        # it can no more pick the 76 out of "76ers" than the trailing
+        # anchor could.
+        m = _AFTER_MARKET_LINE_RE.search(_lbl)
     if not m:
         return row
     try:
@@ -133,8 +158,13 @@ def recover_line(row: dict):
 
 
 def unactionable(row: dict) -> bool:
-    """True when this row claims a line-bearing market but carries no line."""
-    return (str(row.get('market') or '').lower() in _LINE_REQUIRED_MARKETS
+    """True when this row claims a line-bearing market but carries no line.
+
+    Reads the EFFECTIVE market, so a POTD or DotD spread is guarded like
+    any other spread -- see `_effective_market`. A parlay or a fight is
+    not, because neither has a single line to carry.
+    """
+    return (_effective_market(row) in _LINE_REQUIRED_MARKETS
             and row.get('pick_line') is None)
 
 
@@ -741,19 +771,89 @@ def norm_result(v) -> str | None:
     return _RESULT_MAP.get(str(v).strip().lower(), str(v).strip().upper() or None)
 
 
+#: Market words, as WORD-BOUNDED patterns mapped to the canonical code.
+#:
+#: == 2026-11-16 - WHY THESE ARE REGEXES AND NOT `in` CHECKS ==============
+#: A substring test for 'ats' matches **Bearcats, Wildcats, Bobcats,
+#: Wildcats** -- Arizona, Kentucky, Villanova, Kansas State and Cincinnati
+#: all field one -- so `'ats' in label` would call a moneyline on the
+#: Wildcats a SPREAD and then demand a line for it. Same family as the
+#: prefix strip that named another school.
+#: [[feedback_prefix_strip_can_name_another_school]]
+#: [[feedback_parse_a_pick_by_shape_not_vocabulary]]
+_MARKET_WORDS = (
+    (re.compile(r'\b(?:over|under|o/u)\b', re.I),            'total'),
+    (re.compile(r'\b(?:ats|spread)\b', re.I),                'spread'),
+    (re.compile(r'\b(?:pl|puck\s*line|puckline)\b', re.I),   'puckline'),
+    (re.compile(r'\b(?:rl|run\s*line)\b', re.I),             'rl'),
+    (re.compile(r'\b(?:ml|moneyline|money\s*line)\b', re.I), 'ml'),
+)
+
+#: A team followed by a signed number and nothing else that names a market
+#: ("Baylor -6", "Brooklyn Nets +4.5") is a spread. Checked LAST, after the
+#: market words, so "Buffalo Sabres -1.5" is still read as the puckline it
+#: says it is.
+_BARE_SIGNED_RE = re.compile(r'[-+]\d+(?:\.\d+)?\s*(?:\(|$)')
+
+
 def _bet_market(label: str) -> str | None:
-    """Best-effort real market behind a display label ("Braves ML (Jerry
-    88/100)" -> ml). Recorded in audit, never in `market` — POTD/DotD
-    keep their own market codes so the 177 rows already using them stay
-    countable."""
-    t = str(label or '').lower()
-    if ' ml' in t or t.endswith('ml'):
-        return 'ml'
-    if 'over' in t or 'under' in t:
-        return 'total'
-    if any(s in t for s in ('-1.5', '+1.5', 'rl', 'run line')):
-        return 'rl'
+    """The real market behind a display label, or None.
+
+    "Braves ML (Jerry 88/100)" -> ml.  Recorded in audit, never written to
+    `market`: POTD/DotD keep their own codes so the rows already using them
+    stay countable. `_effective_market` below is what makes those codes
+    answerable to the line guard anyway.
+
+    == 2026-11-16 . THIS RETURNED None FOR EVERY FOOTBALL/BASKETBALL SPREAD
+    It knew ' ml', 'over'/'under', and '-1.5'/'+1.5'/'rl' -- so
+    "Golden State Warriors ATS (Jerry 55/100)" matched NOTHING and the
+    audit recorded bet_market=None. That was the second of two chances to
+    notice a spread had no number, and it is why a bare POTD label reached
+    the record and graded VOID (2026-11-08 'Boston Celtics ATS').
+    """
+    t = str(label or '')
+    for rx, code in _MARKET_WORDS:
+        if rx.search(t):
+            return code
+    if _BARE_SIGNED_RE.search(t):
+        return 'spread'
     return None
+
+
+#: `market` values that are a SURFACE or a BET STRUCTURE rather than a
+#: market. For these the real market lives in audit.bet_market.
+#:
+#: potd/dotd are SINGLE-GAME picks, so they can be a spread or a total and
+#: must answer to the line guard. parlay/chalk_parlay/fight genuinely have
+#: no single line -- a parlay's numbers live on its legs and a fight has
+#: none -- so they stay exempt. Measured over 12,000 receipts since
+#: 2026-10-01: chalk_parlay 30, potd 14, dotd 12, fight 5, parlay 1.
+_SURFACE_MARKETS = {'potd', 'dotd'}
+_NO_LINE_STRUCTURES = {'parlay', 'chalk_parlay', 'fight', 'prop', 'unknown'}
+
+
+def _effective_market(row: dict) -> str:
+    """The market this row should be GUARDED as.
+
+    == 2026-11-16 . A SURFACE NAME IN THE MARKET COLUMN DISARMED THE GUARD
+    `unactionable` and `recover_line` both key on `market`, and
+    potd_rows/dawg_rows write `market='potd'`/`'dotd'` -- a SURFACE name in
+    a market column. So the POTD, the single most prominent pick in the
+    app, was structurally exempt from the line guard, from recover_line and
+    from the spread price band. The guard was never wrong; it was never
+    ASKED. [[feedback_a_display_label_became_an_identity_key]]
+    [[feedback_guard_belongs_at_the_chokepoint]]
+
+    `market` is deliberately NOT rewritten -- the stored codes stay
+    countable -- so this resolves the market for guard purposes only, from
+    audit.bet_market and then from the label itself.
+    """
+    m = str(row.get('market') or '').strip().lower()
+    if m not in _SURFACE_MARKETS:
+        return m
+    aud = row.get('audit')
+    bm = (aud or {}).get('bet_market') if isinstance(aud, dict) else None
+    return str(bm or _bet_market(row.get('pick_label')) or m).lower()
 
 
 def potd_rows(records: list, game_date: str | None = None) -> list[dict]:

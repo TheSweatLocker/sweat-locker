@@ -637,6 +637,39 @@ def projection_gap(sport: str, ctx_row: dict, side: str, line) -> float | None:
     return round(ours + ln, 2)
 
 
+#: Today's published positions, loaded once per run. None until first use.
+_POS_CACHE: dict | None = None
+_POS_DATE: str | None = None
+
+
+def _opposing_positions(date: str, sport: str, away, home, team) -> list:
+    """[(surface, label)] already published on the OTHER side of this game.
+
+    Fails OPEN: an empty mapping means no conflict is known, so a lookup
+    problem can never block the whole build. That is the same posture the
+    Ledger's POTD guard already takes, and the alternative -- refusing
+    every play because one read failed -- is worse than the bug.
+    """
+    global _POS_CACHE, _POS_DATE
+    if _POS_CACHE is None or _POS_DATE != date:
+        try:
+            from published_positions import published_positions
+            _POS_CACHE = published_positions(date)
+            _POS_DATE = date
+            print(f'  published positions today: {len(_POS_CACHE)} game(s) '
+                  f'already staked on a play surface')
+        except Exception as e:                                 # noqa: BLE001
+            print(f'  ! published_positions unavailable '
+                  f'({type(e).__name__}: {e}) - the own-play guard is INERT '
+                  f'this run, so a both-sides publish is possible')
+            _POS_CACHE, _POS_DATE = {}, date
+    try:
+        from published_positions import opposing
+        return opposing(_POS_CACHE, sport, away, home, team)
+    except Exception:                                          # noqa: BLE001
+        return []
+
+
 def build_plays(date: str) -> list[dict]:
     """Today's fade plays. One per (game, market) at most."""
     splits = latest_public_splits(date)
@@ -772,6 +805,34 @@ def build_plays(date: str) -> list[dict]:
             line = home_handicap if fade == 'HOME' else -home_handicap
             team = home if fade == 'HOME' else away
             label = f'{team} {line:+g}'
+            # ══ 2026-11-16 · DO NOT FADE OUR OWN PLAY ════════════════
+            # ANDY: "same shit conotinue to ahpen day after day this is
+            # unsat". cross_surface_opposite_sides has been the single
+            # biggest CI failure in the repo, 35 of 67 step failures in
+            # three days, and it is not a false alarm. Tonight The Fade
+            # published "New Orleans Pelicans +3" while the POTD, the
+            # Sweat Card and a Ledger leg were all on Golden State -- we
+            # staked BOTH SIDES of our own Play of the Day, and a user
+            # looking at two tabs could back both.
+            #
+            # The Fade had no exclusion of any kind. generate_ledger has
+            # had one since 10-03 and states the right principle in its
+            # own comment -- "PUBLISHED is the test" -- so this asks that
+            # question of the one record of what we published.
+            #
+            # THE FADE YIELDS, and that is the correct direction: the
+            # public-money fade is an unmeasured-to-validated tracking
+            # surface (see FADE_VALIDATED), while the POTD and the Sweat
+            # Card are the headline. Fading a game we have not staked is
+            # untouched -- that is the tab's whole purpose.
+            # [[feedback_guard_belongs_at_the_chokepoint]]
+            _opp = _opposing_positions(date, sport, away, home, team)
+            if _opp:
+                _srcs = ', '.join(sorted({s for s, _ in _opp}))
+                skipped[f'we already publish the other side ({_srcs})'] += 1
+                print(f'    - fade skip {label!r} - we publish '
+                      f'{_opp[0][1]!r} in this game ({_srcs})')
+                continue
         else:
             ct = f(c.get('close_total'))
             if ct is None:

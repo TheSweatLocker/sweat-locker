@@ -711,6 +711,16 @@ bash "$RUN_STEP" --detector --label "morning_brief.py --fix (nightly)" \
 # ── 6. AUDITS — read-mostly detectors, last so they see final state ─────
 echo ""
 echo "── audits ──"
+# == 2026-11-16 - THE GUARD UNIT TESTS ==================================
+# No unit test ran anywhere in CI before today. That is how
+# public_receipt.unactionable -- the guard written to stop a bare
+# spread label reaching the public record -- let one through three
+# separate times while being asked the wrong question. A live-data
+# detector cannot cover a parser: it only sees what today's board
+# happens to contain.
+bash "$RUN_STEP" --detector --label "run_guard_tests.py (nightly unit)" \
+  python run_guard_tests.py
+
 bash "$RUN_STEP" --detector --label "audit_team_alias_gaps.py (nightly)" \
   python audit_team_alias_gaps.py
 bash "$RUN_STEP" --detector --label "audit_data_quality.py (nightly)" \

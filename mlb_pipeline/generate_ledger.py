@@ -162,6 +162,38 @@ def teaser_price(sport: str, market: str, original_odds: int | float,
 # FETCH TODAY'S PICKS
 # ═══════════════════════════════════════════════════════════════════════
 
+#: Today's published positions across every play surface, loaded once.
+_PUB_POS_CACHE: dict | None = None
+
+
+def _opposing_published(sport, away, home, team) -> list:
+    """[(surface, label)] already published on the OTHER side of this game.
+
+    Fails OPEN, like _potd_game_ids below: an empty mapping reads as "no
+    conflict known", so a lookup problem never blocks the whole build.
+    Shared with generate_the_fade and consistency_watchdog — one set of
+    play surfaces, one label parser, one answer.
+    """
+    global _PUB_POS_CACHE
+    if _PUB_POS_CACHE is None:
+        try:
+            from published_positions import published_positions
+            import datetime as _dt
+            _PUB_POS_CACHE = published_positions(_dt.date.today().isoformat())
+            print(f'  published positions today: {len(_PUB_POS_CACHE)} '
+                  f'game(s) already staked on a play surface')
+        except Exception as e:                                 # noqa: BLE001
+            print(f'  ⚠ published_positions unavailable '
+                  f'({type(e).__name__}: {e}) — the own-play guard is INERT '
+                  f'this run; falling back to the tier/POTD test only')
+            _PUB_POS_CACHE = {}
+    try:
+        from published_positions import opposing
+        return opposing(_PUB_POS_CACHE, sport, away, home, team)
+    except Exception:                                          # noqa: BLE001
+        return []
+
+
 _POTD_GIDS_CACHE: set | None = None
 
 
@@ -295,6 +327,32 @@ def fetch_chalk_candidates(game_date: str, sports: list[str]) -> list[dict]:
             # which is how the White Sox qualify. Their primary_play is
             # COVERAGE/55 too, but it is the Play of the Day, which is as
             # published as anything we ship.
+            # ══ 2026-11-16 · "PUBLISHED IS THE TEST" — NOW IT ACTUALLY IS
+            # The three tests below asked the ENGINE what it liked
+            # (primary_play.tier) or whether the game was the POTD. The
+            # Dawg does not go through primary_play's tier -- it is an
+            # underdog surface publishing on its own authority -- so
+            # tonight "Washington Wizards ML +146" was live on the Dawg
+            # AND the Sweat Card while this function published two chalk
+            # legs on Memphis Grizzlies ML. Both sides, one game, one tab
+            # apart.
+            #
+            # This comment already said the right thing in 10-03:
+            # "PUBLISHED is the test, not merely 'the engine leaned'".
+            # It just had no way to ask. published_positions reads the one
+            # record of what we published -- live receipts on play
+            # surfaces -- and is shared with The Fade's identical guard
+            # and with the watchdog that reports the failure, so a
+            # detector and its gate cannot disagree.
+            # [[feedback_fix_every_writer_to_the_table]]
+            _pub_opp = _opposing_published(row.get('sport'),
+                                           row.get('away_team'),
+                                           row.get('home_team'), chalk_team)
+            if _pub_opp:
+                _srcs = ', '.join(sorted({s for s, _ in _pub_opp}))
+                print(f'    ⊘ chalk skip {chalk_team} ML — we PUBLISH '
+                      f'{_pub_opp[0][1]!r} in this game ({_srcs})')
+                continue
             _opp_ml = pp_type == 'ml' and pp_side and pp_side != chalk_side
             if _opp_ml:
                 _pub_tier = str(pp.get('tier') or '').upper() in (

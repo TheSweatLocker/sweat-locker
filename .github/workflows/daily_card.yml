@@ -244,6 +244,20 @@ jobs:
           # supported-sport list, so adding a sport in the script is enough and
           # this file never has to change again. Do not "fix" this by hardcoding
           # a sport here; that reintroduces the exact failure.
+          # ══ 2026-11-16 · THE GUARDS NOW HAVE TESTS, AND THEY RUN HERE
+          # Andy: "same shit conotinue to ahpen day after day this is
+          # unsat". Measured today: NO unit test ran anywhere in CI, so a
+          # guard could be asking the wrong question for weeks with only
+          # the symptom visible. public_receipt.unactionable was written
+          # to stop a bare spread label reaching the record and let one
+          # through three separate times (10-31, 11-08, 11-16) because it
+          # keyed on `market`, and potd_rows writes market='potd'.
+          #
+          # Runs FIRST and through run_step, so a broken guard turns the
+          # run red via --gate while the card still builds. A guard test
+          # failing means a guard is now wrong; it is not a stale test.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "run_guard_tests.py (unit)" python run_guard_tests.py
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "settle_prop_receipts.py" python settle_prop_receipts.py --commit
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \

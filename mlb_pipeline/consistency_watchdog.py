@@ -1142,6 +1142,34 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
     }
 
 
+#: Surfaces that STAKE a play, as opposed to covering a game. A game read
+#: is an OPINION on every game, most of it never staked, so a surface
+#: taking the other side of one is a decision and not a defect -- the first
+#: run of the check below flagged 6 games and 4 were The Fade opposing a
+#: game read, which is the Fade's entire purpose.
+#: [[feedback_a_detector_must_know_the_intentional_case]]
+#:
+#: Module level since 2026-11-16: the server-side filter in the query and
+#: the `_is_play` test both read it, and a hand-kept second copy of a
+#: lookup set is how these drift ([[feedback_a_blocklist_duplicating_a_lookup_table]]).
+#:
+#: READ from published_positions, which is the set the COMPOSITION guard
+#: uses, so the detector and the gate that is supposed to satisfy it can
+#: never disagree about which surfaces stake a play. The local literal was
+#: already wrong in exactly that way: it listed `dotd` but not `dawg`, and
+#: the Dawg writes surface='dawg' -- so the Dawg's side was invisible here
+#: and tonight's Memphis conflict was reported as sweat_card-only.
+#: [[feedback_fix_every_writer_to_the_table]]
+try:
+    from published_positions import PLAY_SURFACES as _PLAY_SURFACES
+    _PLAY = set(_PLAY_SURFACES) | {'prop_jerry'}
+except ImportError:                                        # pragma: no cover
+    print('  ! published_positions unavailable - play-surface set is a '
+          'LOCAL COPY and may be stale')
+    _PLAY = {'sweat_card', 'sharp_card', 'potd', 'dotd', 'dawg', 'fade',
+             'ledger', 'daily_degen', 'prop_jerry', 'ladder'}
+
+
 def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
     """Two of our surfaces published OPPOSITE sides of the same game.
 
@@ -1187,14 +1215,42 @@ def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
         # the Degen's NCAAF legs entirely -- which is how half of tonight's
         # contradiction (Tulane -8.5 vs the Sharp's Charlotte +8.5) stayed
         # invisible. Match each leg on the leg's own sport instead.
-        rc = requests.get(
-            f'{SB}/rest/v1/public_receipts', headers=H_R, timeout=20,
-            params={'select': 'surface,sport,pick_label,audit',
-                    'game_date': f'eq.{date}', 'limit': '1000'})
-        if rc.status_code != 200:
+        # ══ 2026-11-16 · THIS CHECK WAS MEASURING A TRUNCATED READ ═══
+        # One unordered `limit=1000` on a date that holds 1,497 receipts,
+        # 976 of them prop_jerry. The play surfaces were CROWDED OUT by
+        # props: the page came back with 4 sweat_card, 5 ledger, 2 fade,
+        # 1 dawg and NO potd at all, so the POTD could not be compared
+        # even once the label parser could read it. Every count this
+        # check has ever reported was a floor, not the truth.
+        #
+        # Filtered server-side to the surfaces it already restricts
+        # itself to, and paginated. That makes the read both complete
+        # and an order of magnitude smaller.
+        # [[feedback_never_measure_from_truncated_output]]
+        # [[feedback_in_filter_url_truncates_silently]]
+        _recs, _off = [], 0
+        while True:
+            rc = requests.get(
+                f'{SB}/rest/v1/public_receipts', headers=H_R, timeout=30,
+                params={'select': 'surface,sport,pick_label,audit',
+                        'game_date': f'eq.{date}',
+                        'surface': 'in.(%s)' % ','.join(sorted(_PLAY)),
+                        'order': 'id', 'offset': str(_off),
+                        'limit': '1000'})
+            if rc.status_code != 200:
+                _recs = None
+                break
+            _page = rc.json() or []
+            _recs += _page
+            if len(_page) < 1000:
+                break
+            _off += 1000
+            if _off > 20000:
+                break
+        if _recs is None:
             continue
         flat = []
-        for x in (rc.json() or []):
+        for x in _recs:
             a = x.get('audit') if isinstance(x.get('audit'), dict) else {}
             legs = a.get('legs')
             if isinstance(legs, list) and legs:
@@ -1209,7 +1265,28 @@ def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
                     continue
                 flat.append((str(x['surface']), str(x['pick_label'])))
 
+        # ══ 2026-11-16 · THIS PARSER COULD NOT SEE THE POTD ══════════
+        # It stripped a trailing ' ML'/' ATS'/' RL'/' PL' or a trailing
+        # number. A POTD label ends in a PARENTHETICAL -- "Golden State
+        # Warriors ATS -3.5 (Jerry 55/100)" -- so it stripped nothing,
+        # returned the whole string, matched neither team, and the POTD
+        # was INVISIBLE here. Tonight that is why the alert named
+        # ledger-vs-fade and missed the far worse potd-vs-fade: we had
+        # staked the other side of our own Play of the Day.
+        #
+        # Now shared with the composition guard that has to prevent the
+        # same thing, so a detector and the gate that answers it can
+        # never disagree about what a label says.
+        # [[feedback_parse_a_pick_by_shape_not_vocabulary]]
+        # [[feedback_fix_every_writer_to_the_table]]
+        try:
+            from published_positions import team_of as _team_of
+        except ImportError:                                # pragma: no cover
+            _team_of = None
+
         def _team(lbl: str) -> str:
+            if _team_of is not None:
+                return _team_of(lbl) or ''
             t = str(lbl or '').strip()
             for suf in (' ML', ' ATS', ' RL', ' PL'):
                 if t.endswith(suf):
@@ -1229,11 +1306,10 @@ def check_cross_surface_opposite_sides(date: str) -> Optional[dict]:
         #
         # A contradiction only matters when we STAKED BOTH SIDES -- two
         # surfaces that publish plays, on opposite sides of one game.
-        _play = {'sweat_card', 'sharp_card', 'potd', 'dotd', 'fade',
-                 'ledger', 'daily_degen', 'prop_jerry', 'ladder'}
-
+        # Hoisted to module level as _PLAY (2026-11-16) so the server-side
+        # surface filter above and this test can never name different sets.
         def _is_play(surf: str) -> bool:
-            return str(surf).split('/')[0] in _play
+            return str(surf).split('/')[0] in _PLAY
 
         for away, home in pairs:
             hits = {}
