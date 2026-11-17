@@ -730,6 +730,20 @@ echo "── audits ──"
 bash "$RUN_STEP" --detector --label "audit_data_feeds.py --section signals" \
   python audit_data_feeds.py --section signals
 
+# == 2026-11-16 - A FEED CAN GO DARK WITH EVERY PULL LOGGED AS SUCCESS ===
+# oddscrowd stopped returning picks on 11-10 -- the site dropped the
+# Bets/Money block its parser anchors on -- and logged HTTP 200 / success
+# for six days. The ZERO-EXTRACTION note added the same day makes the PULL
+# visible; this watches the thing that actually matters, which is what
+# share of the games we are PRICING carry each layer at all.
+#
+# --days 1 on purpose: a forward slate legitimately has no line yet, and
+# gating on tomorrow's games reports the schedule as a defect. NFL and
+# NCAAF are skipped inside the script for the same reason -- their
+# pipelines are weekly, so a mid-week slate has no same-day splits pull.
+bash "$RUN_STEP" --detector --label "verify_end_to_end_all_sports.py --gate" \
+  python verify_end_to_end_all_sports.py --days 1 --gate
+
 bash "$RUN_STEP" --detector --label "run_guard_tests.py (nightly unit)" \
   python run_guard_tests.py
 

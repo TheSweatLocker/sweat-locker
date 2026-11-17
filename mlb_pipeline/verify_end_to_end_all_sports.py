@@ -86,6 +86,42 @@ LAYERS = [
 ]
 
 
+#: layer -> minimum share of the slate it must cover, under --gate.
+#:
+#: == 2026-11-16 - THE MONEY-FLOW LENS WENT DARK AND NOTHING SAID SO =====
+#: ANDY: "same shit conotinue to ahpen day after day this is unsat".
+#: oddscrowd stopped returning picks on 2026-11-10 -- the site dropped the
+#: Bets/Money split block its parser anchors on -- and it kept logging HTTP
+#: 200 / status success for six days. The ZERO-EXTRACTION note added on
+#: 11-16 makes THE PULL visible, but nothing was watching the thing that
+#: actually matters: what share of the games we are pricing have money flow
+#: at all. Measured that evening: NBA 62%, NCAAB 17%, NHL 15%, NFL 0%,
+#: NCAAF 0%, and every populated snapshot sourced from scoresandodds with
+#: zero oddscrowd.
+#:
+#: FLOORS ARE DELIBERATELY LOW. The point is to catch a lens going DARK,
+#: not to argue about coverage: a sport with games on the board and under
+#: a fifth of them carrying public money is a broken feed, not a thin one.
+#: Set higher only with a measurement behind it.
+#:
+#: The spread/total/moneyline floors are high because those are the prices
+#: we publish against -- a slate without them cannot be graded honestly.
+#: [[feedback_coverage_pct_hides_dead_code]]
+#: [[feedback_a_lens_can_be_dark_behind_a_404]]
+GATE_FLOORS = {
+    'spread': 0.70,
+    'total': 0.70,
+    'money flow': 0.20,
+}
+
+#: Sports whose pipelines run WEEKLY, so a mid-week slate legitimately
+#: carries no same-day externals or splits pull. Gating them on a Tuesday
+#: would report the schedule as a defect
+#: ([[feedback_a_detector_must_know_the_intentional_case]],
+#: [[feedback_a_season_filter_does_not_exclude_preseason]]).
+GATE_SKIP_SPORTS = {'NFL', 'NCAAF'}
+
+
 def page(tbl: str, params: dict) -> list:
     out, off = [], 0
     while True:
@@ -110,6 +146,9 @@ def main() -> int:
     ap.add_argument('--date', default=dt.date.today().isoformat())
     ap.add_argument('--days', type=int, default=2,
                     help='window width forward from --date, inclusive')
+    ap.add_argument('--gate', action='store_true',
+                    help='exit non-zero when a GATED layer is below its '
+                         'floor on a sport that has games in the window')
     a = ap.parse_args()
     if not (SB and KEY):
         print('SUPABASE env missing')
@@ -120,6 +159,7 @@ def main() -> int:
     print(f'=== end-to-end data verification · {lo} .. {hi} · read-only ===')
 
     width = max(len(n) for n, _ in LAYERS) + 1
+    breaches: list = []
     for sport, tbl in CTX.items():
         rows = page(tbl, {'select': '*', 'game_date': f'gte.{lo}',
                           'and': f'(game_date.lte.{hi})'})
@@ -150,6 +190,10 @@ def main() -> int:
                     f'spellings sees NULL') if dead and f else ''
             print(f'   {name:<{width}} {bar} {f:3}/{n:<3} '
                   f'({pct:5.1f}%)  [{col}]{note}')
+            _floor = GATE_FLOORS.get(name)
+            if (_floor is not None and sport not in GATE_SKIP_SPORTS
+                    and (f / n) < _floor):
+                breaches.append((sport, name, f, n, _floor, col))
 
         # externals + reads + props are separate tables, same window
         ex = page('external_picks',
@@ -199,6 +243,28 @@ def main() -> int:
                   f'{len(pr)} prop row(s)')
 
     print('\nOK >=90% · THIN >=50% · POOR >0% · DARK 0% · ABSENT no column')
+
+    if a.gate and breaches:
+        print()
+        print('=' * 74)
+        print(' A DATA LAYER IS BELOW ITS FLOOR ON A LIVE SLATE')
+        print('=' * 74)
+        for sp, name, f, n, floor, col in breaches:
+            print(f'   {sp:<6} {name:<12} {f}/{n} '
+                  f'({100.0 * f / n:.1f}%)  floor {100 * floor:.0f}%  '
+                  f'[{col}]')
+        print()
+        print(' This is a FEED going dark, not thin coverage. Check the')
+        print(' puller first:')
+        print('   external_pull_log?notes=ilike.*ZERO-EXTRACTION*'
+              '&order=started_at.desc')
+        print(' A source can answer HTTP 200 for days while parsing')
+        print(' nothing -- that is what oddscrowd did from 2026-11-10,')
+        print(' and the money-flow lens went dark on most of the board')
+        print(' with every pull logged as a success.')
+        return 1
+    if a.gate:
+        print('\ngate: every floor met')
     return 0
 
 
