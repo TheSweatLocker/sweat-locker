@@ -197,6 +197,7 @@ def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
                 groups[(source, sport, 'ALL', win_days)].append(r)
 
     payloads = []
+    _withheld_unpriced_ml = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for (source, sport, surface, win_days), items in groups.items():
         w = sum(1 for x in items if _norm_result(x.get('result')) == 'WIN')
@@ -233,6 +234,12 @@ def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
         # its n is real information -- but the RATE is withheld rather than
         # fabricated. A NULL is visibly absent; 0.0% on n=2 is a false claim.
         MIN_GRADED_FOR_RATE = 30
+        # Share of a MONEYLINE group that must carry a price before its
+        # hit rate is quotable. Half is low on purpose: the question is
+        # whether we can SEE the prices at all, not whether coverage is
+        # good. oddscrowd (69-88%) clears it; every 0%-priced source does
+        # not.
+        MIN_PRICED_SHARE_FOR_ML_RATE = 0.50
         hit_rate = (round(100 * w / n_graded, 2)
                     if n_graded >= MIN_GRADED_FOR_RATE else None)
         # 2026-10-10 · B73c · ROI only over PRICED picks, and NULL when the
@@ -253,6 +260,60 @@ def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
                  for x in items]
         decided = [u for u in units if u is not None]
         unpriced = sum(1 for u in units if u is None)
+        # ══ 2026-11-17 · AN UNPRICED MONEYLINE HIT RATE IS NOT A RECORD ══
+        # The note above is right that "a hit rate needs no price" — for a
+        # SPREAD or a TOTAL. Those sit at roughly -110 everywhere, so a hit
+        # rate is comparable across sources and against a ~52.4% breakeven.
+        # A MONEYLINE has no such anchor: picking -2000 mismatches produces
+        # a spectacular hit rate and no edge whatsoever.
+        #
+        # Measured 2026-11-17 over external_picks since 10-01 — only
+        # oddscrowd (69-88%) and pickswise (100%) carry prices at all, and
+        # every other source is at ZERO. The sources that look best are
+        # exactly the unpriced moneyline ones:
+        #     dimers NCAAB 170W-33L  83.7%  n=203  0% priced
+        #     dimers MLB            79.5%  n=215  0% priced
+        #     dimers NBA            67.4%  n=141  0% priced
+        #     dimers NCAAF          68.9%  n=209  0% priced
+        # and ensemble_scorer weights opinions BY hit_rate, so the one
+        # number that is guaranteed to mean nothing was carrying the most
+        # weight. This was open as "dimers NCAAB 83.4% needs the
+        # per-market, per-price split" — the split cannot be done, because
+        # the price is not there to split on.
+        #
+        # Withheld at the CHOKEPOINT rather than in each consumer, the way
+        # the n_graded floor already is, so every reader inherits it
+        # ([[feedback_guard_belongs_at_the_chokepoint]],
+        # [[feedback_flat_110_inflates_every_ml_figure]],
+        # [[feedback_the_engine_scores_winners_not_prices]]).
+        #
+        # ALL-surface rows are withheld too when the group is moneyline-
+        # dominated, because 'ALL' is what a consumer falls back to.
+        #
+        # The floor is a SHARE, not "any unpriced pick". `unpriced` above
+        # is deliberately strict because ROI needs every price; a hit rate
+        # does not, and oddscrowd sits at 69-88% priced. My first cut used
+        # `unpriced > 0` and withheld oddscrowd as well, under a message
+        # that said "no price on any graded pick" — which for oddscrowd
+        # would have been a false statement in our own logs. Count the
+        # prices directly, too: a LOSS scores -1.0 with or without a
+        # price, so `unpriced` undercounts unpriced losses and is the
+        # wrong thing to measure coverage with.
+        _priced = sum(1 for x in items
+                      if x.get('odds_american') is not None)
+        _priced_share = (_priced / n) if n else 0.0
+        _ml_share = (sum(1 for x in items
+                         if str(x.get('surface') or '').lower() == 'ml')
+                     / n) if n else 0.0
+        _is_ml_group = (str(surface).lower() == 'ml'
+                        or (str(surface).upper() == 'ALL'
+                            and _ml_share >= 0.80))
+        if (_is_ml_group and hit_rate is not None
+                and _priced_share < MIN_PRICED_SHARE_FOR_ML_RATE):
+            _withheld_unpriced_ml.append(
+                (source, sport, surface, win_days, hit_rate, n_graded,
+                 _priced_share))
+            hit_rate = None
         # Same floor on ROI, for the same reason: an ROI built from two
         # graded picks is noise wearing a percent sign.
         roi = (round(100 * sum(decided) / n, 2)
@@ -267,6 +328,18 @@ def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
         })
 
     print(f'  rollup rows to write: {len(payloads)}')
+    if _withheld_unpriced_ml:
+        print('    rows whose rate is WITHHELD as an UNPRICED MONEYLINE: %d'
+              % len(_withheld_unpriced_ml))
+        _seen = set()
+        for _src, _sp, _sf, _wd, _hr, _ng, _ps in sorted(
+                _withheld_unpriced_ml):
+            if (_src, _sp) in _seen:
+                continue
+            _seen.add((_src, _sp))
+            print('      %-14s %-6s %-5s was %.1f%% on n=%d with only '
+                  '%.0f%% of picks priced - a winner count, not an edge'
+                  % (_src, _sp, _sf, _hr, _ng, 100 * _ps))
     # == 2026-10-28 . R17 . IT HAD NO --dry-run AND WROTE ANYWAY ==
     # Same gap as generate_daily_degen, which cost an accidental overwrite
     # of a live card earlier today. This writes external_source_track_record,

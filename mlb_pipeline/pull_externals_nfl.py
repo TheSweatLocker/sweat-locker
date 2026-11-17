@@ -181,6 +181,16 @@ def complete_pull_log(pull_id: Optional[str], status: str,
                       duration_ms: Optional[int] = None,
                       notes: Optional[str] = None) -> None:
     if not pull_id: return
+    # 2026-11-17 - A 0-PICK RUN FROM A SOURCE THAT WAS ALIVE IS DARK.
+    # Every row in this table said 'success' (586 of 586 since 11-10)
+    # while oddscrowd pulled 0 picks on 61 of 66 runs. One decision,
+    # five callers - see pull_status.py.
+    try:
+        import pull_status as _ps
+        status, notes = _ps.effective_status(
+            pull_id, status, picks_pulled, notes)
+    except Exception:
+        pass
     payload = {
         'completed_at': datetime.now(timezone.utc).isoformat(),
         'status': status, 'picks_pulled': picks_pulled,
