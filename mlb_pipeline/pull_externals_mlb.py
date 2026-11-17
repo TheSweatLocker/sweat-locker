@@ -509,6 +509,17 @@ def find_game_id(slate: list, home_hint: str, away_hint: str) -> Optional[str]:
 # STUBBED for now — real scrapers will call WebFetch or use per-source APIs.
 # Each returns a list of ExternalPick objects.
 
+#: Sources whose fetcher returns ([], 200) ON PURPOSE -- the site
+#: gates picks or money share behind a paywall. Zero picks from one
+#: of
+#: these is the documented state, not a parser that broke, so the
+#: ZERO-EXTRACTION note is suppressed for them. Derived from the
+#: fetchers in THIS file on 2026-11-16; a stub that starts working
+#: must leave this set in the same edit, or its real failures would
+#: be suppressed too.
+_DELIBERATE_STUBS = {'ballparkpal', 'cbs', 'fangraphs', 'oddsshark', 'scp'}
+
+
 def fetch_dimers(slate: list, game_date: str) -> tuple[list, int]:
     """Dimers.com/bet-hub/mlb/schedule — JS-rendered via Playwright.
 
@@ -1578,8 +1589,21 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
                 # biggest external source in the book went dark unseen.
                 # `notes` carries what status cannot, and is queryable:
                 #   external_pull_log?notes=ilike.*ZERO-EXTRACTION*
+                #
+                # 2026-11-16, SAME DAY, SECOND PASS: the first version of
+                # this flagged every DELIBERATE stub on every run -- the
+                # fetchers that `return [], 200` on purpose because the
+                # source gates its picks behind a paywall (recorded
+                # 2026-09-25 so nobody re-derives it). A detector that
+                # cannot tell a deliberate no-op from a broken parser
+                # turns its own signal into noise and buries the oddscrowd
+                # finding it was written for; that trap has already muted
+                # one invariant in this repo.
+                # [[feedback_a_detector_must_know_the_intentional_case]]
+                # [[feedback_a_detector_can_be_the_defect]]
                 _zn = None
-                if count == 0 and slate:
+                if (count == 0 and slate
+                        and source not in _DELIBERATE_STUBS):
                     _zn = (f'ZERO-EXTRACTION: {len(slate)} slate game(s), '
                            f'0 picks parsed, http {http_status} - the page '
                            f'likely changed shape or dropped the data')

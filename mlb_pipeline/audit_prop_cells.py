@@ -39,10 +39,20 @@ try:
 except Exception:                                              # noqa: BLE001
     pass
 
-for _l in Path(__file__).with_name('.env').read_text().split('\n'):
-    if '=' in _l and not _l.startswith('#'):
-        _k, _v = _l.split('=', 1)
-        os.environ.setdefault(_k.strip(), _v.strip())
+# 2026-11-16: this read .env UNCONDITIONALLY, so every CI run crashed before
+# the first line of the audit:
+#   FileNotFoundError: .../mlb_pipeline/.env
+# On the runner there is no .env -- the secrets arrive as real environment
+# variables -- so the file is correctly absent and the audit could never run
+# in the one place it was scheduled (MLB Refit Weekly Retrain). Every other
+# script in this directory already guards the same read with an exists()
+# check; this one was the outlier. [[feedback_fix_every_writer_to_the_table]]
+_envf = Path(__file__).with_name('.env')
+if _envf.exists():
+    for _l in _envf.read_text().split('\n'):
+        if '=' in _l and not _l.startswith('#'):
+            _k, _v = _l.split('=', 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 SB = os.environ['SUPABASE_URL'].rstrip('/')
 K = os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or os.environ['SUPABASE_KEY']
 H = {'apikey': K, 'Authorization': 'Bearer ' + K}

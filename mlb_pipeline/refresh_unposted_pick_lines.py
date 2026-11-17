@@ -118,16 +118,48 @@ _KICKOFF_KEYS = ('kickoff_utc', 'commence_time', 'game_time_utc',
 
 
 def _probe_kickoff_columns(table: str) -> list:
-    keep = []
-    for c in _KICKOFF_KEYS:
-        try:
-            r = requests.get(f'{SB}/rest/v1/{table}', headers=H_R, timeout=15,
-                             params={'select': c, 'limit': '1'})
-        except Exception:                                      # noqa: BLE001
-            continue
-        if r.status_code in (200, 206):
-            keep.append(c)
-    return keep
+    """Which of the kickoff column names this table actually has.
+
+    == 2026-11-16 . THE PROBE WAS BEING COUNTED AS THE BUG ==============
+    This used to ask for ONE COLUMN AT A TIME and keep the names that
+    returned 200. It worked -- ncaaf_game_context has kickoff_utc and the
+    function found it -- but the three misses each raised a schema 400,
+    and sb_observer classifies a 42703 as "OUR BUGS (schema/constraint -
+    never transient)" and fails the step. `refresh_unposted_pick_lines.py
+    NCAAF` is the SECOND most frequent CI failure of the last three days,
+    10 of 67, entirely on this:
+
+        SCHEMA 42703 GET ncaaf_game_context
+          - column ncaaf_game_context.commence_time does not exist
+          - column ncaaf_game_context.game_time_utc does not exist
+          - column ncaaf_game_context.start_time_utc does not exist
+
+    Nothing was ever wrong with the slate. A deliberate probe is not a
+    defect, and a detector that cannot tell the two apart turns a working
+    step into a nightly red X and an email to Andy
+    ([[feedback_a_detector_must_know_the_intentional_case]],
+    [[feedback_a_detector_can_be_the_defect]]).
+
+    One `select=*` read answers the same question with no 400 at all --
+    the row's own keys ARE the column list
+    ([[feedback_select_star_before_concluding_absent]],
+    [[feedback_list_the_columns_before_declaring_data_lost]]). An empty
+    table yields no row and therefore no names, which degrades to the same
+    "no kickoff column" branch the old code took on a total miss.
+    """
+    try:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H_R, timeout=15,
+                         params={'select': '*', 'limit': '1'})
+    except Exception:                                          # noqa: BLE001
+        return []
+    if r.status_code not in (200, 206):
+        return []
+    try:
+        rows = r.json() or []
+    except ValueError:
+        return []
+    have = set(rows[0].keys()) if rows else set()
+    return [c for c in _KICKOFF_KEYS if c in have]
 
 
 def _has_started(ctx_row: dict) -> bool:

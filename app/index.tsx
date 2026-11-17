@@ -13762,7 +13762,10 @@ setJerryHistory(prev => {
 
            {/* 2026-09-07 ADAPTIVE RECORD CHIPS (queue item 4a). Chip row
                showing top 2-3 in-season sports by hit-rate on THE SHARP
-               (Steam Room tab picks — 15-pick composed slate). Sits above
+               (Steam Room tab picks — 3-5 item composed slate; this said
+               "15-pick" until 2026-11-16, ten days after Andy set the
+               band at 3-5 and the cap was already enforced in
+               generate_sharp_card.py). Sits above
                the RecapStrip (which shows the SWEAT CARD top-8 curated
                dashboard slice — different denominator).
                NAMING (per Andy 9/17): "Sweat Card" = dashboard/home
@@ -13776,10 +13779,48 @@ setJerryHistory(prev => {
                under the chips so users know what window + surface. */}
            {(() => {
              if (!surfaceRecords || !Object.keys(surfaceRecords).length) return null;
+             // ══ 2026-11-16 · THE IN-SEASON GATE, FINALLY IMPLEMENTED ══
+             // ANDY: "up top for the sharp last 30D on top of home screen
+             // it mentions mlb 7-6 why would it say that if mlb hasnt been
+             // played in awhile its offseason just looks dumb."
+             //
+             // He is right, and the number was never WRONG — it was STALE.
+             // MLB's last graded Sharp pick is 2026-10-28, so a true
+             // 30-day window legitimately still holds 13 of them and would
+             // keep publishing "MLB 7-6" on the home hero until 11-27.
+             // AdaptiveRecordChips.tsx has promised "top-3 IN-SEASON
+             // sports" in its docstring since 9-14 and the in-season half
+             // was never implemented anywhere — the only filter was sample
+             // size, which an offseason sport passes for a month.
+             //
+             // GATE ON RECENCY, NOT ON A SEASON CALENDAR. surface_records
+             // already carries `last_pick_date` on every row and the
+             // client already selects '*', so this costs no extra query
+             // and there are no season end-dates to rot. Hardcoding
+             // "MLB ends Oct 31" is the thing that broke in the first
+             // place. See feedback_verify_freshness_by_recency_not_date.
+             //
+             // 10 DAYS clears every weekly sport with room to spare —
+             // NCAAF plays Saturdays, so a Friday read is 6 days out, and
+             // NFL's longest gap is 4 — while an offseason sport falls off
+             // ~10 days after its last game. It also correctly drops a
+             // sport that is in season but has not been PICKED lately:
+             // NHL's last Sharp receipt is 11-04 because the 3-5 item cap
+             // has favoured NCAAB, so "NHL 36%" is a 12-day-old claim.
+             const STALE_DAYS = 10;
+             const nowMs = Date.now();
              const rows: {sport: string; w: number; l: number; pct: number; un: number}[] = [];
              for (const sp of ['MLB','NFL','NCAAF','NCAAB','NBA','NHL']) {
                const rec = surfaceRecords[`${sp}|sharp_card|d30`] || surfaceRecords[`${sp}|sharp_card|mtd`];
                if (!rec) continue;
+               // Hermes-safe date math: read the ISO day parts directly.
+               // new Date(someLocaleString) is a V8-only parse and returns
+               // Invalid Date on Hermes — see
+               // feedback_hermes_date_reparse_is_v8_only.
+               const lpd = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(rec.last_pick_date || ''));
+               if (!lpd) continue;   // undated row vouches for nothing
+               const ageDays = (nowMs - Date.UTC(+lpd[1], +lpd[2] - 1, +lpd[3])) / 86400000;
+               if (ageDays > STALE_DAYS) continue;
                const w = rec.wins || 0, l = rec.losses || 0;
                const total = w + l;
                // 2026-09-17: min n=10 AND either net-positive OR ≥50% hit rate.
@@ -13793,7 +13834,13 @@ setJerryHistory(prev => {
                if (pct < 0.50 && un <= 0) continue;
                rows.push({sport: sp, w, l, pct, un});
              }
-             if (rows.length < 2) return null;
+             // 2026-11-16: was `< 2`. With the staleness gate above, tonight
+             // leaves exactly one qualifying sport (NCAAF 26-18, +4.87u) —
+             // NBA is 6-3 at n=9, one pick under the sample floor, and NFL
+             // and NCAAB are both under water. A single in-season chip is
+             // the honest version of what was a single STALE chip; going
+             // dark would hide a real record to avoid looking thin.
+             if (rows.length < 1) return null;
              rows.sort((a, b) => (b.pct - a.pct) || (b.un - a.un));
              const top = rows.slice(0, 3);
              return (

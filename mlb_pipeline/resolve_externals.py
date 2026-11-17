@@ -195,6 +195,158 @@ SPORT_CONFIG = {
 }
 
 
+#: ══ 2026-11-16 · THE TABLE WAS RIGHT AND THE KEY SPACE WAS WRONG ══════
+#: ANDY: "i want you to verify data ened to end across all sports on all
+#: games, money flow, externals, stats, etc".
+#:
+#: NCAAB external picks: 2,600 collected, **4 graded**. Every other sport
+#: is 95-99%. So all six NCAAB external sources carry NO track record, and
+#: ensemble_scorer._handler_external therefore weights every one of them at
+#: the ramp-up prior instead of at what it has actually earned -- a
+#: handicapper 0-for-20 on NCAAB counts the same as one at 60%.
+#:
+#: This is the FIFTH incarnation of the same defect (NCAAF 09-01, NHL
+#: 10-08, NBA 10-22 were missing SPORT_CONFIG entries; 11-08 was a PRESENT
+#: entry naming the context table instead of the results table). The 11-08
+#: fix named the right table and the symptom did not change, because the
+#: two tables do not share a key space:
+#:
+#:     external_picks.game_id       '7cf2cadb51955c4f64f21b41af66e583'
+#:     ncaab_game_results.game_id   'ncaab_20261115_Dartmouth_Boston_University'
+#:
+#: An md5 hash and a composed slug can never join, so the run reported
+#: `result rows fetched: 0 (of 637 referenced game_ids)` and EXITED 0 --
+#: the green step that writes nothing, for the fifth time
+#: ([[feedback_green_step_that_writes_nothing]],
+#: [[feedback_zero_rows_is_a_wiring_error]]).
+#:
+#: THE BRIDGE IS (date + resolved team names), NOT A REBUILT SLUG.
+#: Composing 'ncaab_<date>_<away>_<home>' ourselves is the thing that
+#: produced 21 duplicate NCAAF rows with home/away inverted
+#: ([[feedback_join_on_resolved_names_not_a_composed_key]]). Names go
+#: through ncaab_team_resolver, which exists for exactly this bridge, reads
+#: the 365-row ncaab_team_aliases table rather than guessing, and carries a
+#: _suffix_claims_another guard against the trap where stripping a mascot
+#: names a DIFFERENT school ([[feedback_prefix_strip_can_name_another_school]]).
+#:
+#: MEASURED on the 637 ungraded game_ids of the last 14 days:
+#:     found in ncaab_game_context                 637 / 637
+#:     bridged on (date, resolved home, away)      627 / 637   (98.4%)
+#:     of those, carrying a final score            596
+#:     team names the resolver could not resolve     0
+#: Exact-string matching alone reached 529/637, so the alias table is worth
+#: 98 games; the 10 residual misses are games ncaab_game_results does not
+#: hold at all (e.g. Kansas @ Kentucky 11-10), which is a results-coverage
+#: gap and not a naming one.
+#:
+#: Sports absent from this map are UNAFFECTED -- their ids already join
+#: directly, and the bridge only ever runs when the direct join came back
+#: materially empty.
+_NAME_BRIDGE = {
+    'NCAAB': {'ctx_table': 'ncaab_game_context',
+              'resolver': 'ncaab_team_resolver'},
+}
+
+#: Below this share of referenced game_ids resolved, try the name bridge.
+#: Not 0: a partially-joining key space is the same bug as a fully broken
+#: one and should not have to be fully broken before it is noticed.
+_BRIDGE_IF_UNDER = 0.50
+
+
+def _norm_team(v, resolver=None) -> str:
+    """Canonical team name, via the sport's alias table where one exists."""
+    if resolver is not None:
+        try:
+            r = resolver.resolve(v)
+            if r:
+                return str(r)
+        except Exception:                                      # noqa: BLE001
+            pass
+    import re as _re
+    return _re.sub(r'[^a-z0-9]', '', str(v or '').lower())
+
+
+def _bridge_result_map(sport: str, picks: list, result_map: dict) -> dict:
+    """Extra result_map entries, keyed by the PICK's own game_id.
+
+    Returns {} for any sport without a configured bridge, so this is inert
+    everywhere it is not needed.
+    """
+    spec = _NAME_BRIDGE.get(str(sport or '').upper())
+    if not spec:
+        return {}
+    cfg = SPORT_CONFIG[sport]
+    resolver = None
+    if spec.get('resolver'):
+        try:
+            resolver = __import__(spec['resolver'])
+            resolver.load_aliases()
+        except Exception as e:                                 # noqa: BLE001
+            # Degrade to normalised exact matching rather than abort: it
+            # reached 529/637 on its own, which is still 130x the status quo.
+            print(f'  ! {spec["resolver"]} unavailable ({type(e).__name__}: '
+                  f'{e}) - bridging on normalised names only')
+
+    dates = sorted({p['game_date'] for p in picks if p.get('game_date')})
+    if not dates:
+        return {}
+    lo, hi = dates[0], dates[-1]
+
+    def _page(tbl: str, select: str) -> list:
+        out, off = [], 0
+        while True:
+            r = requests.get(
+                f'{SB}/rest/v1/{tbl}', headers=H_READ, timeout=60,
+                params={'select': select, 'game_date': f'gte.{lo}',
+                        'and': f'(game_date.lte.{hi})',
+                        'offset': str(off), 'limit': '1000'})
+            if r.status_code != 200:
+                print(f'  ! bridge read of {tbl} failed {r.status_code}: '
+                      f'{r.text[:160]}')
+                return out
+            j = r.json() or []
+            out += j
+            if len(j) < 1000:
+                return out
+            off += 1000
+            if off > 50000:
+                return out
+
+    ctx = {c['game_id']: c for c in
+           _page(spec['ctx_table'], 'game_id,game_date,home_team,away_team')}
+    res = _page(cfg['results_table'],
+                cfg['select_cols'] + ',game_date,home_team,away_team')
+    if not ctx or not res:
+        print(f'  ! bridge has nothing to work with '
+              f'(ctx={len(ctx)}, results={len(res)})')
+        return {}
+
+    rmap = {}
+    for r_ in res:
+        rmap[(r_.get('game_date'),
+              _norm_team(r_.get('home_team'), resolver),
+              _norm_team(r_.get('away_team'), resolver))] = r_
+
+    extra, no_ctx, no_res = {}, 0, 0
+    for gid in {p['game_id'] for p in picks}:
+        if gid in result_map:
+            continue
+        c = ctx.get(gid)
+        if not c:
+            no_ctx += 1
+            continue
+        r_ = rmap.get((c.get('game_date'),
+                       _norm_team(c.get('home_team'), resolver),
+                       _norm_team(c.get('away_team'), resolver)))
+        if r_ is None:
+            no_res += 1
+            continue
+        extra[gid] = r_
+    print(f'  name bridge via {spec["ctx_table"]}: +{len(extra)} game(s) '
+          f'resolved  (no ctx row: {no_ctx}, no results row: {no_res})')
+    return extra
+
+
 def _audit_callers() -> list:
     """Every sport a workflow asks this script for, that it cannot serve.
 
@@ -539,6 +691,32 @@ def run(sport: str = 'MLB', days: Optional[int] = None,
     result_map = fetch_result_map(sport, game_ids)
     print(f'  result rows fetched: {len(result_map)} '
           f'(of {len(game_ids)} referenced game_ids)')
+
+    # A direct id join that resolves almost nothing is a KEY SPACE
+    # mismatch, not a quiet night. Try the (date + resolved names) bridge
+    # before grading, and only then decide whether this run is honest.
+    _cov = (len(result_map) / len(game_ids)) if game_ids else 1.0
+    if _cov < _BRIDGE_IF_UNDER:
+        print(f'  direct game_id join resolved only {100 * _cov:.1f}% - '
+              f'trying the name bridge')
+        result_map.update(_bridge_result_map(sport, picks, result_map))
+        _cov = (len(result_map) / len(game_ids)) if game_ids else 1.0
+        print(f'  after bridge: {len(result_map)} of {len(game_ids)} '
+              f'({100 * _cov:.1f}%)')
+    if game_ids and not result_map:
+        # Exiting 0 here is what hid this defect five times. There are
+        # ungraded picks, they name real games, and NOTHING joined: that is
+        # a wiring error and it must be loud.
+        print('')
+        print(f'*** {sport}: {len(game_ids)} referenced game_ids and ZERO '
+              f'result rows joined - NOTHING WAS GRADED ***')
+        print(f'    this is a key-space or schema mismatch between '
+              f'external_picks.game_id and '
+              f'{SPORT_CONFIG[sport]["results_table"]}.game_id,')
+        print(f'    not an empty slate. Compare one of each before '
+              f'assuming the night was quiet:')
+        print(f'      external_picks.game_id  e.g. {game_ids[0]!r}')
+        raise SystemExit(1)
 
     cfg = SPORT_CONFIG[sport]
     tally = {'W': 0, 'L': 0, 'P': 0, 'pending': 0, 'failed': 0}

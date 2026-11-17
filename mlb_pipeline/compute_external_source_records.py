@@ -151,9 +151,34 @@ def run(sport_filter: str | None = None, dry_run: bool = False) -> None:
         source = (r.get('source') or 'unknown').lower()
         sport = r.get('sport') or 'ALL'
         market = (r.get('surface') or 'ALL').lower()
-        # Age of pick in days
+        # Age of pick in days.
+        #
+        # == 2026-11-16 - AGED FROM WHEN *WE* GRADED IT, NOT WHEN IT PLAYED =
+        # This read `resolved_at or game_date`, so the window measured how
+        # long ago OUR RESOLVER RAN. Tonight's NCAAB backfill graded 2,060
+        # picks at once, every one stamped resolved_at=today, so games from
+        # 11-02 landed in the 7-DAY window and all four windows came back
+        # identical:
+        #
+        #   scoresandodds ALL   7d n=666 hit=48.8
+        #   scoresandodds ALL  30d n=666 hit=48.8
+        #   scoresandodds ALL  90d n=666 hit=48.8
+        #   scoresandodds ALL  all n=666 hit=48.8
+        #
+        # It is not an NCAAB quirk: ANY backfill or --force-regrade does
+        # this to every sport, and it always makes the short windows look
+        # like the lifetime record. "How has this source done lately" is a
+        # question about WHEN THE GAMES WERE PLAYED, so game_date is the
+        # basis and resolved_at is only the fallback for a row that somehow
+        # has no game_date. [[feedback_verify_freshness_by_recency_not_date]]
+        # [[feedback_a_lag_is_not_a_disagreement]]
+        #
+        # This moves real numbers: external_source_track_record feeds
+        # ensemble_scorer._handler_external, so a source's recent-form
+        # weight changes to what the window actually says. That is the
+        # point -- the previous value was wrong by construction.
         try:
-            resolved_str = r.get('resolved_at') or r.get('game_date')
+            resolved_str = r.get('game_date') or r.get('resolved_at')
             if isinstance(resolved_str, str):
                 if 'T' in resolved_str:
                     d = datetime.fromisoformat(resolved_str.replace('Z','+00:00')).date()

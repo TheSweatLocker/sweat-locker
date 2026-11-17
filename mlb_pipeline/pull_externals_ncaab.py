@@ -546,6 +546,14 @@ def fetch_covers(slate: list, game_date: str, aliases: dict) -> tuple:
 #   vsin        data.vsin.com/propicks is client-rendered behind a sign-in.
 #   bettingpros picks, projections, EV and money% are all premium; the free
 #               data duplicates money-flow sources we already have.
+#: Sources whose fetcher returns ([], 200) ON PURPOSE. Zero picks from one
+#: of these is the documented state, not a parser that broke, so the
+#: ZERO-EXTRACTION note below is suppressed for them. Keep this set next to
+#: the stubs it names — a stub that starts working must leave the set in the
+#: same edit, or the real failure would then be suppressed too.
+_DELIBERATE_STUBS = {'vsin', 'bettingpros'}
+
+
 def fetch_vsin(slate: list, game_date: str, aliases: dict) -> tuple:
     return [], 200
 
@@ -689,8 +697,19 @@ def run_pull(game_date: str, sources: list, triggered_by: str,
                 # biggest external source in the book went dark unseen.
                 # `notes` carries what status cannot, and is queryable:
                 #   external_pull_log?notes=ilike.*ZERO-EXTRACTION*
+                #
+                # 2026-11-16, SAME DAY, SECOND PASS: the first version of
+                # this flagged vsin and bettingpros on EVERY run. Both are
+                # DELIBERATE stubs -- `return [], 200` -- because both gate
+                # picks and money% behind a paywall, recorded 2026-09-25 so
+                # nobody re-derives it. A detector that cannot tell a
+                # deliberate no-op from a broken parser turns its own
+                # signal into noise and buries the oddscrowd finding it was
+                # written for; that trap has already muted one invariant
+                # here. [[feedback_a_detector_must_know_the_intentional_case]]
+                # [[feedback_a_detector_can_be_the_defect]]
                 _zn = None
-                if count == 0 and slate:
+                if count == 0 and slate and source not in _DELIBERATE_STUBS:
                     _zn = (f'ZERO-EXTRACTION: {len(slate)} slate game(s), '
                            f'0 picks parsed, http {http_status} - the page '
                            f'likely changed shape or dropped the data')

@@ -39,6 +39,9 @@ type SR = {
   units_net: number;
   window_key?: string;
   sample_n?: number;
+  /** 2026-11-16: the sport's most recent graded pick, used by the
+   *  in-season gate below. surface_records carries it on every row. */
+  last_pick_date?: string | null;
 };
 
 type Props = {
@@ -89,11 +92,27 @@ export function AdaptiveRecordChips({fetcher, theme, minSample = 10, maxChips = 
   if (rows === null) return null;  // initial load — render nothing (avoid flash)
 
   // Filter to sports with meaningful sample + rank by units.
+  //
+  // 2026-11-16: the in-season half of this component's own docstring was
+  // never implemented — the only filter here was sample size, and an
+  // offseason sport passes that for a month. It published "MLB 7-6" on the
+  // home hero 19 days after MLB's last game. The live copy of this block
+  // is inline in app/index.tsx and carries the same gate with the full
+  // write-up; this file is not currently wired up, and gets the gate so a
+  // future wire-up does not reintroduce the bug.
+  // feedback_fix_every_writer_to_the_table
+  const STALE_DAYS = 10;
+  const nowMs = Date.now();
   const eligible = rows
     .filter((r) => {
       const total = (r.wins || 0) + (r.losses || 0);
       const n = r.sample_n ?? total;
-      return n >= minSample;
+      if (n < minSample) return false;
+      // Hermes-safe: read ISO parts, never reparse a locale string.
+      const lpd = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(r.last_pick_date || ''));
+      if (!lpd) return false;
+      const ageDays = (nowMs - Date.UTC(+lpd[1], +lpd[2] - 1, +lpd[3])) / 86400000;
+      return ageDays <= STALE_DAYS;
     })
     .sort((a, b) => (b.units_net || 0) - (a.units_net || 0))
     .slice(0, maxChips);

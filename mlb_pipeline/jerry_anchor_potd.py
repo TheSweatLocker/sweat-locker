@@ -664,6 +664,74 @@ def _potd_odds(winner: dict, gd: str) -> int | None:
     return None
 
 
+#: == 2026-11-16 - "GOLDEN STATE WARRIORS ATS" HAS NO NUMBER TO BET =======
+#: ANDY, on tonight's POTD: "POTD says Golden State ATS, the spread could
+#: chnage right? So it should be an actual spread".
+#:
+#: He is right, and it is not cosmetic. The read itself (jerry_reads
+#: id=20840) says 'Golden State Warriors -3.5' with call_line=-3.5 -- but
+#: it only said that from 23:01Z, when the alignment backfill filled the
+#: number in. THE POTD PUBLISHED AT 13:34Z, when call_line was still NULL,
+#: so the rl branch below rendered the bare market word and the potd
+#: receipt went out with pick_line NULL and pick_side NULL.
+#:
+#: That is the exact shape of 2026-10-31, when twelve NBA receipts on
+#: finished dates were a line market with no line and could never be
+#: graded (defensive_gates._recover_spread_from_close, written for it).
+#: On the most prominent play in the app it is worse than ungradeable: a
+#: spread moves, so "Golden State ATS" tells a user to bet whatever number
+#: the book is showing them, which is not the bet we made.
+#:
+#: THE SIGN IS THE WHOLE RISK, so it is not guessed. The convention comes
+#: from the ONE proven table, consistency_watchdog._CLOSE_HOME_POSITIVE,
+#: read rather than re-typed ([[feedback_a_blocklist_duplicating_a_lookup_table]],
+#: [[feedback_fix_every_writer_to_the_table]]) -- defensive_gates already
+#: had a hand-kept second copy of it and that copy drifted. A sport absent
+#: from the table is SKIPPED and the label stays bare, which is why NHL is
+#: safe here: NHL is absent, and its 'rl' is the fixed +/-1.5 puckline
+#: whose labels deliberately carry no number, so recovering one would
+#: invent a bet ([[feedback_consensus_line_must_be_posted]]).
+#:
+#: VERIFIED ON THIS GAME, two independent ways: close_spread +3.5 with NBA
+#: home-positive=False gives a home line of +3.5 and an away line of -3.5,
+#: which matches both the read's own later call_line (-3.5) and
+#: away_ml_close -161 (Golden State is the favourite, so its spread must be
+#: negative). [[feedback_magnitude_cannot_express_a_side]]
+def _recovered_spread_line(ctx: dict, side: str,
+                           sport: Optional[str]) -> Optional[float]:
+    """ctx.close_spread as THIS side's own betting line, or None."""
+    try:
+        from consistency_watchdog import _CLOSE_HOME_POSITIVE
+    except Exception as _e:                                    # noqa: BLE001
+        print(f'  ! close_spread conventions not importable '
+              f'({type(_e).__name__}) - POTD label left bare')
+        return None
+    hp = dict(_CLOSE_HOME_POSITIVE).get(str(sport or '').upper())
+    if hp is None:
+        print(f'  ! sport={sport!r} has no PROVEN close_spread orientation '
+              f'- POTD label left bare rather than guessing the sign')
+        return None
+    sd = str(side or '').upper()
+    if sd not in ('HOME', 'AWAY'):
+        return None
+    raw = ctx.get('close_spread')
+    try:
+        cs = float(raw)
+    except (TypeError, ValueError):
+        print(f'  ! POTD spread has no call_line and no close_spread '
+              f'({raw!r}) - label left bare')
+        return None
+    # hp True  => a POSITIVE close_spread means HOME is favoured, so the
+    #             home team's own line is the negation.
+    # hp False => a NEGATIVE close_spread means HOME is favoured, so the
+    #             home team's line is close_spread as stored.
+    home_line = -cs if hp else cs
+    line = home_line if sd == 'HOME' else -home_line
+    print(f'  - POTD spread had NO call_line; recovered {line:+g} for '
+          f'{sd} from close_spread={cs:+g} ({sport} home-positive={hp})')
+    return line
+
+
 def run(game_date: str | None = None, threshold: int = 70,
         dry_run: bool = False, force: bool = False) -> None:
     gd = game_date or today_et()
@@ -1228,8 +1296,12 @@ def run(game_date: str | None = None, threshold: int = 70,
     elif _mkt == "rl":
         team = ctx["home_team"] if _side == "HOME" else ctx["away_team"] if _side == "AWAY" else None
         if team:
-            # Preserve line suffix if present in original call
+            # Preserve line suffix if present in original call; when the
+            # read has not been given its number yet, recover it from the
+            # posted close rather than publishing a bare market word.
             line = winner.get("call_line")
+            if line is None:
+                line = _recovered_spread_line(ctx, _side, winner_sport)
             line_str = f" {line:+g}" if line is not None else ""
             # 2026-10-04 · "RL" IS THE RUN LINE. Andy, on today's POTD: it read
             # "BUF RL -7" — baseball jargon on the most prominent play on the
