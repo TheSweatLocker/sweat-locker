@@ -264,7 +264,26 @@ if [ "$DETECTOR" = "1" ]; then
     rm -f "$_out"
     exit 0
   fi
-  rm -f "$_out"
+  # ══ 2026-11-16 · A DETECTOR'S FAILURE HAD NO TAIL AT ALL ═════════════
+  # This line used to be `rm -f "$_out"`, deleting the captured output
+  # immediately before the shared failure path below — which reads
+  # `${_err:-/dev/null}`. `_err` is only ever set in the else-branch, so
+  # EVERY failed --detector step recorded stderr_tail = '' and could not
+  # be diagnosed from the DB at all.
+  #
+  # Measured on 2026-11-14..16: `morning_brief.py --fix (nightly)` failed
+  # 5 times with rc=2 and `refresh_team_recent_games` once, and all six
+  # rows carried an empty tail. Those were the only two causes in the
+  # whole failure set I could not explain, and this is why. It is the
+  # same defect the 10-29 note below describes and fixed for the other
+  # branch only — telemetry that reports nothing while looking like it
+  # works ([[feedback_fix_every_writer_to_the_table]]).
+  #
+  # A detector's capture is combined stdout+stderr, which is MORE context
+  # than the stderr-only branch gets, so handing it over as-is is strictly
+  # better than nothing. The file lives in the runner temp dir and is
+  # discarded with the job.
+  _err="$_out"
 else
   # ══ 2026-10-29 · CAPTURE *WHY*, NOT JUST THAT IT FAILED ══════════════
   # The heartbeat recorded label + rc + duration and nothing else, so

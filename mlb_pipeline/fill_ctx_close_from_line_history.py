@@ -332,12 +332,147 @@ def run_sport(sport: str, a) -> int:
         # the first cut of this indexed 41 of the 78 games from that
         # truncated read, then reported "quotes found: 0" as though the
         # board were empty (feedback_never_measure_from_truncated_output).
-        _lh = paged('line_history', _sel, 'captured_at.desc',
-                    sport='eq.%s' % sport,
-                    commence_time='gte.%sT00:00:00Z' % season_open)
-        if not isinstance(_lh, list):
-            print('  !! line_history bulk read failed')
-            return 1
+        # ══ 2026-11-16 · THIS SCAN GREW ALL SEASON AND THEN TIMED OUT ══
+        # It was ONE read filtered `commence_time >= season_open`, which
+        # widens every day the season runs. line_history holds hundreds of
+        # thousands of quotes, so Postgres started cancelling it:
+        #
+        #   57014: canceling statement due to statement timeout
+        #
+        # 8 of the last 67 CI step failures, each after ~778s, and because
+        # `paged` calls sys.exit on a failed read it took the whole
+        # `--sport ALL` run down with it -- NBA and NHL included.
+        #
+        # NARROWING THE WINDOW IS NOT THE FIX, AND I TRIED TWO WRONG ONES
+        # FIRST, so the measurements are here to stop a third.
+        #
+        #   * A 7-day slice still holds 333,898 NCAAB quotes. The window was
+        #     never the problem: the FIRST page of every shape returns in
+        #     0.4s. What dies is DEEP OFFSET PAGING -- `paged` walks
+        #     offset=0,1000,... and Postgres rescans every skipped row, so
+        #     cost grows with depth (0.4s at 20,000, 2.5s at 50,000,
+        #     cancelled beyond) and a week needs 334 pages.
+        #   * Keyset paging on `id` is correct (unique, no ties to skip) but
+        #     `id` is NOT INDEXED here: order=id.desc costs 2.8s on page one
+        #     and fails deeper, while order=captured_at.desc costs 0.5s.
+        #     Keyset on captured_at is the fast path and is WRONG on its
+        #     own, because quotes are written in batches sharing a
+        #     timestamp, so a `lt.<cursor>` boundary silently drops every
+        #     row tying with the last of a page.
+        #
+        # THE REAL POINT IS THAT WE NEVER NEEDED THE WHOLE DAY. One date
+        # holds 104,890 quotes across 3 markets and 5 books -- about 30 rows
+        # per game per capture, polled every ~25 minutes -- and the closing
+        # consensus only needs each game's LAST capture. So instead of
+        # reading the day and indexing it, DISCOVER each game's feed id from
+        # the newest captures (a couple of pages covers a date, because one
+        # capture batch carries every game on the board) and then read each
+        # target game on its own `game_id`, limit 400 -- exactly the pattern
+        # the non-alias branch below has always used.
+        #
+        # Discovery stops as soon as every target game for that date has
+        # been located, and a date that cannot be fully located is REPORTED
+        # per game rather than silently half-filled.
+        # 4 PAGES, NOT 40, AND THE NUMBER IS MEASURED. A date holds ~105k
+        # quotes over ~58 capture batches, so ONE batch is ~1,800 rows and
+        # two full batches fit in 4 pages. A capture batch carries every
+        # game the books have on the board, so a target absent from the two
+        # newest batches for its own date WAS NEVER LINED -- it is not
+        # hiding deeper in the day.
+        #
+        # Verified against the data rather than assumed: ctx holds
+        # 'Toledo @ Michigan St.' on 11-05 and line_history's Toledo rows
+        # for that date are 'Toledo Rockets @ Detroit Mercy Titans'. The
+        # teams are in the feed; THOSE GAMES ARE NOT. 152 of the 154 NCAAB
+        # targets are like that -- early-season non-conference games the
+        # books do not post -- which is exactly what this script's own NBA
+        # note already concluded ("60 of 65 are preseason and are not a
+        # defect at all; books barely line those games").
+        #
+        # The first version of this cap was 40 and spent 407 pages per run
+        # to locate 2 games. An unlined game is COVERAGE, not a defect, and
+        # a nightly step must not grind for it.
+        _DISC_PAGE_CAP = 4
+        _by_date: dict = {}
+        for c in targets:
+            _by_date.setdefault(str(c['game_date'])[:10], []).append(c)
+        _slug_of: dict = {}               # (date, home, away) -> feed game_id
+        _disc_pages = 0
+        for _date in sorted(_by_date):
+            _need = set()
+            for c in _by_date[_date]:
+                _ch, _ca = resolve(c.get('home_team')), resolve(c.get('away_team'))
+                if _ch and _ca:
+                    _need.add((_ch, _ca))
+            if not _need:
+                continue
+            _cur, _dp = None, 0
+            while _need and _dp < _DISC_PAGE_CAP:
+                # commence_time is UTC and the target date is ET, so an
+                # evening game commences AFTER 00:00Z the next day. A
+                # 00:00Z..00:00Z window on the ET date therefore misses
+                # every night game -- my first cut did exactly that and
+                # reported 0 of 154 games "not found", which is the shape
+                # of a wiring error, not a finding
+                # ([[feedback_zero_rows_is_a_wiring_error]],
+                # [[feedback_a_window_from_runner_clock_is_a_day_ahead]]).
+                # The window spans the ET date generously and `et_date_of`
+                # below decides what actually belongs to it -- the same
+                # function the original index used, for the same reason.
+                _p = {'select': 'game_id,matchup,commence_time,captured_at',
+                      'sport': 'eq.%s' % sport, 'order': 'captured_at.desc',
+                      'limit': '1000',
+                      'commence_time': 'gte.%sT00:00:00Z' % _date,
+                      'and': '(commence_time.lt.%sT12:00:00Z)'
+                             % (dt.date.fromisoformat(_date)
+                                + dt.timedelta(days=1)).isoformat()}
+                if _cur is not None:
+                    _p['captured_at'] = 'lt.%s' % _cur
+                _part, _st = req('GET', 'line_history', _p)
+                if not isinstance(_part, list):
+                    print('  !! line_history discovery failed for %s (%s) '
+                          '- ABORTING this sport rather than pricing off a '
+                          'partial quote set' % (_date, _st))
+                    return 1
+                if not _part:
+                    break
+                for _q in _part:
+                    if et_date_of(_q.get('commence_time')) != _date:
+                        continue
+                    _a, _h = resolve_matchup(_q.get('matchup'))
+                    if not _a or not _h:
+                        continue
+                    _k = (_h, _a)
+                    if _k in _need:
+                        _slug_of[(_date, _h, _a)] = _q.get('game_id')
+                        _need.discard(_k)
+                _cur = _part[-1]['captured_at']
+                _dp += 1
+                _disc_pages += 1
+                if len(_part) < 1000:
+                    break
+            if _need:
+                print('  %s: %d of %d target game(s) NOT LINED by any book '
+                      'in the feed (checked the %d newest capture page(s)) '
+                      '- coverage, not a defect'
+                      % (_date, len(_need), len(_by_date[_date]), _dp))
+        print('  [alias join] located %d of %d target game(s) in '
+              'line_history using %d discovery page(s)'
+              % (len(_slug_of), len(targets), _disc_pages))
+
+        # Now one small, indexed read per located game.
+        _lh = []
+        for (_date, _h, _a), _slug in _slug_of.items():
+            _part, _st = req('GET', 'line_history',
+                             {'select': _sel, 'sport': 'eq.%s' % sport,
+                              'game_id': 'eq.%s' % _slug,
+                              'order': 'captured_at.desc', 'limit': '400'})
+            if not isinstance(_part, list):
+                print('  !! read for %s failed (%s) - skipped' % (_slug, _st))
+                continue
+            _lh += _part
+        print('  line_history per-game read: %d quote(s) over %d game(s)'
+              % (len(_lh), len(_slug_of)))
         if not _lh:
             print('  !! line_history returned 0 %s quotes since %s — WIRING '
                   'ERROR, not an empty board.' % (sport, season_open))
