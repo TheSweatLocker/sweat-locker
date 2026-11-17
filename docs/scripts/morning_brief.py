@@ -274,13 +274,39 @@ def section_5_regressions(target_date: str, today: str) -> dict:
             'msg': f'{mismatch} NCAAF jerry_reads have game_date != game_id embedded date — generator regressed to today_et()',
         })
 
-    # 3. 2026-09-08 signal coverage: flag if a sport's props have >50%
-    # rows with empty `_lr_tier_raw` — that's the NFL prop signal gap
-    # (project_nfl_prop_signal_gap_908) we're watching for regression
-    # or resolution. Only checks sports w/ >=10 props for the target date
-    # to avoid noise on offday counts.
-    for sport, table in [('MLB', 'mlb_pipeline_props'),
-                          ('NFL', 'nfl_pipeline_props')]:
+    # 3. LR PROP SIGNAL COVERAGE — MLB ONLY, AND ON THE SHADOW KEY.
+    #
+    # == 2026-11-17 · THIS CHECK REPORTED TWO DELIBERATE DECISIONS =======
+    # Written 2026-09-08 for project_nfl_prop_signal_gap_908, it asked both
+    # MLB and NFL for `_lr_tier_raw` and has been standing at 100% empty on
+    # NFL ever since. Measured today over 571 NFL / 10,043 NBA / 5,333 NHL
+    # props since 11-10: `_lr_tier_raw` is 0.0% on EVERY sport. Not a
+    # regression — two intentional choices stacked:
+    #
+    #   1. The model is mlb_prop_logreg.json, MLB-trained, and the LR block
+    #      lives inside backfill_prop_lookback.backfill_mlb(). backfill_nfl()
+    #      has no LR path at all and never claimed one, so asking NFL for the
+    #      field can only ever return 0%.
+    #   2. LR TIER AUTHORITY WAS REVOKED on 2026-09-22 (the model was fit on
+    #      leaked features — see the long note at backfill_prop_lookback
+    #      :1020). With MLB_PROP_LR_TIER off, the live path writes
+    #      `_lr_tier_raw_SHADOW`, never `_lr_tier_raw`. So the authoritative
+    #      key is SUPPOSED to be empty, and will be until a leak-free retrain
+    #      lands.
+    #
+    # A detector that does not know the intentional case manufactures a
+    # standing CRITICAL and trains you to ignore the list
+    # ([[feedback_a_detector_must_know_the_intentional_case]],
+    # [[feedback_a_missing_tier_can_be_the_gate_working]]).
+    #
+    # What IS worth watching is the SHADOW: the stated reason for still
+    # stamping it is so lr_vs_legacy_grader can measure the retrain when it
+    # lands. A dark shadow means that measurement is impossible and nobody
+    # would know ([[feedback_a_lens_can_be_dark_behind_a_404]]).
+    _lr_authority = os.environ.get(
+        'MLB_PROP_LR_TIER', '').strip().lower() in ('1', 'on', 'true', 'yes')
+    _lr_key = '_lr_tier_raw' if _lr_authority else '_lr_tier_raw_shadow'
+    for sport, table in [('MLB', 'mlb_pipeline_props')]:
         rows = _rows(table, {'game_date': f'eq.{target_date}',
                               'select': 'signals', 'limit': '200'})
         if len(rows) < 10: continue
@@ -290,13 +316,16 @@ def section_5_regressions(target_date: str, today: str) -> dict:
             if isinstance(sig, str):
                 try: sig = json.loads(sig)
                 except (json.JSONDecodeError, TypeError): sig = {}
-            if not sig.get('_lr_tier_raw'): empty_lr += 1
+            if not sig.get(_lr_key): empty_lr += 1
         pct_empty = round(100 * empty_lr / len(rows))
         if pct_empty > 50:
             regressions.append({
                 'name': f'{sport.lower()}_lr_signal_gap',
                 'severity': 'medium',
-                'msg': f'{sport}: {empty_lr}/{len(rows)} ({pct_empty}%) props have empty _lr_tier_raw — signal pipeline may be regressing',
+                'msg': (f'{sport}: {empty_lr}/{len(rows)} ({pct_empty}%) '
+                        f'props have empty {_lr_key} — the LR shadow is '
+                        f'dark, so lr_vs_legacy_grader cannot measure a '
+                        f'retrain'),
             })
 
     return {'count': len(regressions), 'items': regressions}

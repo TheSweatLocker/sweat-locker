@@ -191,7 +191,7 @@ class Claim:
     """One surface's statement about which bet this is."""
 
     def __init__(self, surface, side, market, line, label, extra='',
-                 flip_reason=''):
+                 flip_reason='', swap_reason=''):
         self.surface = surface
         # ══ 2026-10-28 · A DELIBERATE FADE IS NOT A WRONG SIDE ══
         # The Sharp publishes the OPPOSITE side of our own read on short
@@ -207,6 +207,25 @@ class Claim:
         # is now its own class: still printed, never CRITICAL, never a
         # --fail-on side failure.
         self.flip_reason = str(flip_reason or '')
+        # ══ 2026-11-17 · A JUICE-CAP SWAP IS NOT A WRONG MARKET ══
+        # Same shape, one market over. generate_sharp_card swaps a
+        # moneyline for the spread ON PURPOSE when the ML price breaks the
+        # juice cap, and says so in its own audit trail:
+        #   "PRIME confluence (5 signals, 3.8 edge) [juice-cap swap: ML
+        #    →spread]"
+        # The badge keeps stating the engine's primary play (UTEP ML) --
+        # correctly, because that IS the read -- so the two surfaces
+        # disagree on MARKET while agreeing on SIDE, and every one of
+        # those was counted as part of the B144 backlog that keeps this
+        # file pinned at `--fail-on side`.
+        #
+        # It is the same lesson as the flip above: a surface doing what it
+        # was built to do, naming the reason in writing, is not a defect
+        # ([[feedback_a_detector_must_know_the_intentional_case]],
+        # [[feedback_a_missing_tier_can_be_the_gate_working]]). SIDE must
+        # still match -- a swap that also changes the team is a real
+        # mismatch and stays CRITICAL.
+        self.swap_reason = str(swap_reason or '')
         self.side = norm_side(side)
         self.market = norm_mkt(market)
         self.line = f(line)
@@ -222,6 +241,10 @@ class Claim:
 #: opposite side ON PURPOSE. generate_sharp_card / generate_sweat_card write
 #: "fades our own <read> read - short football spreads flipped are ...".
 _FLIP_MARK = 'fades our own'
+
+#: Text generate_sharp_card writes when it publishes the SPREAD because the
+#: moneyline price broke the juice cap. Same side, different market, stated.
+_SWAP_MARK = 'juice-cap swap'
 
 
 def check_sport(sport: str, date: str) -> dict:
@@ -293,7 +316,8 @@ def check_sport(sport: str, date: str) -> dict:
             claims.append(Claim(f'card:{src}', s,
                                 leg.get('type') or leg.get('market'),
                                 leg.get('line'), leg.get('label'),
-                                flip_reason=_lr if _FLIP_MARK in _lr else ''))
+                                flip_reason=_lr if _FLIP_MARK in _lr else '',
+                                swap_reason=_lr if _SWAP_MARK in _lr else ''))
 
         for rc in receipts.get(gid, []):
             s = norm_side(rc.get('pick_side'))
@@ -306,7 +330,8 @@ def check_sport(sport: str, date: str) -> dict:
                                 rc.get('market'), rc.get('pick_line'),
                                 rc.get('pick_label'),
                                 extra=f"id={rc.get('id')}",
-                                flip_reason=_rsn if _FLIP_MARK in _rsn else ''))
+                                flip_reason=_rsn if _FLIP_MARK in _rsn else '',
+                                swap_reason=_rsn if _SWAP_MARK in _rsn else ''))
 
         known = [c for c in claims if c.side and c.market]
         if len(known) < 2:
@@ -341,6 +366,10 @@ def check_sport(sport: str, date: str) -> dict:
             # the step. If the reason is absent the dissent is still CRITICAL
             # -- silence is not a licence.
             if c.flip_reason and kind == 'SIDE':
+                row['why'], row['reason'] = 'FLIP', c.flip_reason
+                flips.append(row)
+            elif c.swap_reason and kind == 'MARKET':
+                row['why'], row['reason'] = 'SWAP', c.swap_reason
                 flips.append(row)
             else:
                 critical.append(row)
@@ -380,6 +409,7 @@ def main() -> int:
     print('')
     tot_c = tot_w = tot_u = tot_g = tot_f = 0
     _crit_by_sport = {}
+    _flip_by_sport = {}
     for sp in sports:
         res = check_sport(sp, date)
         if not res:
@@ -388,6 +418,7 @@ def main() -> int:
         fl = res.get('flips') or []
         tot_f += len(fl)
         _crit_by_sport[sp] = c
+        _flip_by_sport[sp] = fl
         tot_c += len(c)
         tot_w += len(w)
         tot_u += len(u)
@@ -398,15 +429,15 @@ def main() -> int:
                                      + (f' / {nmkt} MARKET' if nmkt else ''))
         print(f'  {sp:<6} games={res["games"]:<4} {status}'
               f'{f"  line-drift={len(w)}" if w else ""}'
-              f'{f"  intentional-flip={len(fl)}" if fl else ""}'
+              f'{f"  intentional={len(fl)}" if fl else ""}'
               f'{f"  unverifiable={len(u)}" if u else ""}')
         for x in sorted(fl, key=lambda z: z['mu']):
             od, ag = x['odd'], x['agree']
-            print(f"     ↻ {x['mu']:<12} [FLIP] "
+            print(f"     ↻ {x['mu']:<12} [{x.get('why', 'FLIP')}] "
                   f"{len(ag)} surface(s) say {ag[0].label!r} "
                   f"({x['winner'][0]}/{x['winner'][1]})  "
                   f"BUT {od.surface} says {od.label!r} ON PURPOSE "
-                  f"— {od.flip_reason[:70]} {od.extra}")
+                  f"— {str(x.get('reason') or '')[:70]} {od.extra}")
         for x in sorted(c, key=lambda z: (z['kind'] != 'SIDE', z['mu'])):
             od, ag = x['odd'], x['agree']
             mark = '✖' if x['kind'] == 'SIDE' else '⚠'
@@ -424,12 +455,17 @@ def main() -> int:
 
     print('')
     print(f'  games checked {tot_g}   CRITICAL {tot_c}   '
-          f'line-drift {tot_w}   intentional-flip {tot_f}   '
+          f'line-drift {tot_w}   intentional {tot_f}   '
           f'unverifiable {tot_u}')
     if tot_f:
-        print(f'  {tot_f} FLIP row(s): a surface that names the read it is '
-              f'fading in its own audit trail. Not a defect — but if the flip '
-              f'itself is ever wrong, these are the rows it lives in.')
+        _nflip = sum(1 for sp in sports for x in (_flip_by_sport.get(sp) or [])
+                     if x.get('why', 'FLIP') == 'FLIP')
+        print(f'  {tot_f} INTENTIONAL row(s) ({_nflip} FLIP / '
+              f'{tot_f - _nflip} SWAP): a surface that names what it is '
+              f'doing in its own audit trail — fading our read, or taking '
+              f'the spread because the moneyline broke the juice cap. Not a '
+              f'defect — but if the flip or the swap is ever wrong, these '
+              f'are the rows it lives in.')
     tot_side = sum(1 for sp in sports for x in (_crit_by_sport.get(sp) or [])
                    if x['kind'] == 'SIDE')
     if tot_c:

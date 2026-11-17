@@ -679,6 +679,20 @@ bash "$RUN_STEP" --label "backfill_public_receipts.py (nightly)" \
 # in the displayed record on the following night.
 bash "$RUN_STEP" --label "reconcile_stale_side_receipts.py (B144 loop)"   python reconcile_stale_side_receipts.py --apply
 
+# 2026-11-17 - REPORT GAME_READ RECEIPTS THAT NO LONGER STATE THEIR READ.
+# The upsert key is the READ id and the identity columns are frozen, so a
+# regenerated read leaves the receipt holding the first call forever.
+# Measured today over 873 live rows since 11-01: 165 diverge, and on those
+# rows the record reads 95W-65L where the reads call for 84W-66L.
+#
+# UNGRADED ones are repaired automatically inside backfill_public_receipts,
+# where no published number moves. This step is the GRADED half: it reports
+# the count and the record delta and writes NOTHING, because changing a
+# published record is a decision. --detector so the finding is visible and
+# the run stays green.
+bash "$RUN_STEP" --detector --label "receipt_divergence.py" \
+  python receipt_divergence.py --since 2026-11-01
+
 # ══ 2026-11-05 · NCAAB RECEIPTS WITH NO PRICE ═══════════════════
 # Written 2026-11-04 for B142 and scheduled nowhere -- the same shape the note
 # above names: "a repair tool that is not on a clock is a repair that happened

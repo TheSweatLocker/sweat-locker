@@ -502,6 +502,34 @@ def _american(v):
 
 def backfill_jerry_reads(sport: str, dry_run: bool = False) -> int:
     print(f'\n=== backfill_jerry_reads · {sport} ===')
+    # ══ 2026-11-17 · THE REFUSED UPSERT LEFT A LIE IN THE RECORD ══
+    # The upsert key below is (sport, surface, game_date, source_id) and
+    # source_id is the READ's id, which does NOT change when the read's
+    # call changes. pick_side/pick_line/pick_label are frozen by the
+    # trigger in 20260918b, so when a read is regenerated with a different
+    # call this function tries to UPDATE a frozen row, is SILENTLY REFUSED
+    # (PATCH returns 200, nothing changes), and the receipt keeps the pick
+    # as it stood on the first pass.
+    #
+    # The 10-22 "game day or earlier" fix killed the 121 future-dated ones
+    # and left same-day regeneration as the exposure. Measured 2026-11-17
+    # over the 873 live game_read receipts since 11-01: 165 state a
+    # different bet than the read they cite, and on those rows the record
+    # reads 95W-65L where the reads call for 84W-66L -- ELEVEN WINS of
+    # inflation, including 'Under 155.5 WIN' against a read of
+    # 'Over 134.5 Loss' on the same game.
+    #
+    # Repairing an UNGRADED one changes no published number and stops a
+    # wrong row ever grading, so it happens here, automatically, every run.
+    # Repairing a GRADED one moves a published record, so it stays a
+    # decision: `receipt_divergence.py` reports it with the delta and only
+    # acts under --apply ([[feedback_grade_the_side_we_published]]).
+    if not dry_run:
+        try:
+            import receipt_divergence as _rdv
+            _rdv.repair_ungraded(sport)
+        except Exception as _e:                              # noqa: BLE001
+            print(f'  divergence pre-pass unavailable: {_e}')
     # Get is_potd if column exists; fallback to null
     # 2026-10-04: price_american and the snapshot matchup were NOT selected,
     # so every game_read receipt was written with pick_odds and matchup NULL
