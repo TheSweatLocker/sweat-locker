@@ -69,7 +69,7 @@ CLI
 """
 from __future__ import annotations
 import argparse, os, sys, re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -977,13 +977,61 @@ def run(game_date: Optional[date] = None, dry_run: bool = False) -> int:
     return n_ok
 
 
+# ══ 2026-11-17 · ONE CLOCK-DERIVED DATE COULD NOT COVER THIS CRON ═══════
+# The 11-03 note in run() is right that UTC was wrong, and switching to ET
+# was right. But a SINGLE date from ANY clock is still wrong here, because
+# the resolver and the context builder do not work the same date:
+#
+#   ncaab_game_context.py builds the UPCOMING board (it follows the odds
+#   feed forward), while run() resolved exactly et_today().
+#
+# The `23 20 * * *` card_only cron is set for 4pm ET but GitHub ran it at
+# 03:01 UTC on 11-17 = 10:01pm ET on the 16th. At that hour et_today() is
+# STILL 11-16, whose 23 games had all tipped, so the started-game guard
+# refused every one: "23 game(s) already tipped - pick left as published /
+# 0 rows resolved", exit 0, nothing written, and the step is
+# `continue-on-error: true` so nothing recorded it either.
+#
+# Meanwhile the 11-17 board had been written by ncaab_game_context.py and
+# kept its PRELIMINARY primary_play -- the cap/floor shape with no
+# `conviction`, no `score` and no `_engine`. sync_jerry_reads_from_ctx
+# then wrote `conviction: None` for all of it (its line 409 reads
+# pp['conviction']), and conviction is the input every gate uses.
+#
+# Measured cost: resolver stamp coverage decayed from 100% of ctx rows on
+# 11-04..11-06 to 0 of 43 on 11-17, and NULL conviction on NCAAB reads
+# that make a call went 1 of 37 on 11-07 to 32 of 32 on 11-17 -- the
+# biggest board in the book, 53 games, invisible to the POTD threshold,
+# the Sweat Card and The Sharp. NCAAB was the only sport with a single
+# NULL conviction; every other sport was at zero.
+#
+# So: do not ask a clock which slate to resolve. Resolve the whole
+# forward window the context builder may have written. This is safe
+# BECAUSE of the started-game guard -- a tipped game is refused, so a
+# wider window can only ever reach games that have not started
+# (feedback_a_window_from_runner_clock_is_a_day_ahead,
+#  feedback_validate_a_gate_at_the_hour_it_runs).
+DEFAULT_DAYS_AHEAD = 1
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--game-date', help='YYYY-MM-DD; defaults to today')
+    p.add_argument('--game-date',
+                   help='YYYY-MM-DD; one date only. Omit to resolve the '
+                        'ET-today..+N window.')
+    p.add_argument('--days-ahead', type=int, default=DEFAULT_DAYS_AHEAD,
+                   help='days past ET today to also resolve (default '
+                        f'{DEFAULT_DAYS_AHEAD}); ignored with --game-date')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args()
-    gd = date.fromisoformat(args.game_date) if args.game_date else None
-    run(gd, dry_run=args.dry_run)
+    if args.game_date:
+        return run(date.fromisoformat(args.game_date),
+                   dry_run=args.dry_run)
+    from sweat_dates import et_today
+    base = date.fromisoformat(et_today())
+    for _i in range(max(1, args.days_ahead + 1)):
+        run(base + timedelta(days=_i), dry_run=args.dry_run)
+    return 0
 
 
 if __name__ == '__main__':

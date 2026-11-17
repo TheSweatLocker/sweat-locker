@@ -346,6 +346,23 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             print(f'  ⛔ {away[:14]} @ {home[:14]}: refusing '
                   f'{_derive_call_text(pp, home, away)!r} at {_refused_ml:g} '
                   f'(ML_JUICE_MAX {ML_JUICE_MAX:g}) — read set to pass')
+        # ══ 2026-11-17 · THE COHERENCE REFUSAL WAS NOT "THE SAME SHAPE" ══
+        # The block above exists because a refusal that leaves call_text
+        # naming the pick ships a row saying call_market='pass' and
+        # call_text='Arkansas State ML' in the same breath, and THE APP
+        # RENDERS call_text. The coherence gate added later claims in its
+        # own comment to use "the same shape the ML juice gate uses" -- but
+        # it only set ptype/side and left call_text and call_line alone, so
+        # it reproduced verbatim the bug the ML path documents.
+        #
+        # Measured on 2026-11-17: three NCAAB reads carried
+        # call_market='pass', call_side=NULL and still held
+        # call_line=-2.5 with call_text='Southern Miss -2.5'. The badge
+        # showed the spread, the read said pass, and
+        # assert_publish_invariant counted all three as MARKET CRITICAL
+        # (feedback_two_writers_two_words_for_a_flip).
+        if _refused_coh is not None:
+            call_text = 'No play — our own projection does not cover this line'
         long_read = narrative
         if narrative:
             short_read, long_read = _parse_narrative(narrative)
@@ -402,7 +419,12 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             'prompt_version': f'{sport.lower()}_ctx_bridge_v1',
             'call_market': ptype,
             'call_side':   side or None,
-            'call_line':   None if _refused_ml is not None else pp.get('line'),
+            # A refusal of EITHER kind withdraws the playable call, so the
+            # line goes with it. Keying this on _refused_ml alone left a
+            # coherence-refused spread holding its line (see above).
+            'call_line':   (None if (_refused_ml is not None
+                                     or _refused_coh is not None)
+                            else pp.get('line')),
             'call_text':   call_text,
             'short_read':  short_read,
             'long_read':   long_read,

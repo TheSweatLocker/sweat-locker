@@ -831,7 +831,12 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
         run: |
           cd mlb_pipeline
-          python ncaab_resolve_primary_play.py
+          # 2026-11-17: this was a bare `python` call under
+          # continue-on-error, so when it resolved 0 rows for ten days
+          # nothing recorded it. run_step.sh puts the failure in
+          # workflow_heartbeat where the morning audit reads it
+          # (feedback_read_step_failures_from_the_db).
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "ncaab_resolve_primary_play.py"             python ncaab_resolve_primary_play.py
 
       # ══ 2026-11-13 · SHADOW THE REBUILT CONVICTION ═══════════════════
       # ncaab_conviction replaces a dead constant (266 of 274 picks inside

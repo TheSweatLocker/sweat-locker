@@ -133,6 +133,24 @@ bash "$RUN_STEP" --label "resolve_nfl_results.py (nightly)" \
 bash "$RUN_STEP" --label "nhl_resolve_results.py (nightly)" \
   python nhl_resolve_results.py
 
+# == 2026-11-17 . NBA IS THE THIRD INSTANCE OF THE COMMENT ABOVE ========
+# Read the 10-01 note: "That commit added the NFL resolver and never added
+# NHL". This is the same omission a third time. nba_resolve_results.py
+# works and lived ONLY in nba_pipeline.yml, whose crons are daytime ET and
+# which GitHub ran at 21:57Z and 22:54Z on 11-16 -- BEFORE that night's
+# games. The generic safety net, resolve_chain, is set for 8 runs a day
+# but MEASURED 2-4: it fired 3x on 11-13, 2x on 11-16 and once on 11-17,
+# leaving a 9h gap across exactly the hours the finals land.
+#
+# Measured this morning at 13:30Z: all 8 NBA games from 11-16 carried NULL
+# scores, so morning_brief read NBA 0/8 graded, every NBA game_read was
+# ungraded, and the POTD -- an NBA pick, graded by grade_potd off
+# nba_game_results.home_score -- was still Pending 11 hours after the
+# final. Running the resolver by hand wrote 8/8 and the brief went green.
+# Nothing was broken except the order ([[feedback_fix_every_writer_to_the_table]]).
+bash "$RUN_STEP" --label "nba_resolve_results.py (nightly)" \
+  python nba_resolve_results.py --days 2
+
 bash "$RUN_STEP" --label "resolve_ladder_results.py (nightly)" \
   python resolve_ladder_results.py
 
@@ -692,6 +710,17 @@ bash "$RUN_STEP" --label "reconcile_stale_side_receipts.py (B144 loop)"   python
 # the run stays green.
 bash "$RUN_STEP" --detector --label "receipt_divergence.py" \
   python receipt_divergence.py --since 2026-11-01
+
+# == 2026-11-17 . A NULL CONVICTION NEVER REACHES A GATE =================
+# NCAAB's 4-lens resolver stopped stamping primary_play and ten days
+# passed before anyone looked, because the symptom was a NULL rather than
+# a breach. conviction is the input the POTD threshold, the Sweat Card
+# tier floor and The Sharp all read, so a NULL does not FAIL those gates
+# -- it silently never reaches them, and the biggest board in the book
+# went invisible instead of loud. One printed number catches it on day
+# one. Detector: a FINDING keeps the run green and lands in the log.
+bash "$RUN_STEP" --detector --label "audit_read_conviction_coverage.py" \
+  python audit_read_conviction_coverage.py --days 2
 
 # ══ 2026-11-05 · NCAAB RECEIPTS WITH NO PRICE ═══════════════════
 # Written 2026-11-04 for B142 and scheduled nowhere -- the same shape the note
