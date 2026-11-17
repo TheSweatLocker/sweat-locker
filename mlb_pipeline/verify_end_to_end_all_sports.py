@@ -121,6 +121,30 @@ GATE_FLOORS = {
 #: [[feedback_a_season_filter_does_not_exclude_preseason]]).
 GATE_SKIP_SPORTS = {'NFL', 'NCAAF'}
 
+#: layer -> how many days back its floor is measured, instead of on the
+#: window being printed.
+#:
+#: == 2026-11-17 - A FLOOR MEASURED AT THE WRONG HOUR CRIES WOLF DAILY ===
+#: I validated this gate at ~20:00 ET, when the day's splits are in. The
+#: nightly that runs it fires at 10:30Z and 12:30Z -- 6:30am and 8:30am ET
+#: -- and public money for THAT day's slate has not been pulled yet at
+#: either. Measured at 05:50Z today: NHL 0/11, NCAAB 0/53, NBA 1/5. So the
+#: money-flow floor would breach EVERY morning, on a healthy feed.
+#:
+#: It runs under --detector, so a breach is a finding and the run stays
+#: green -- but a finding that fires every day is noise, and noise is how
+#: a watchdog gets ignored. daily_card.yml's own 09-28 note says exactly
+#: this about the consistency watchdog.
+#:
+#: So money flow is judged on the LAST COMPLETED slate, where 0% means the
+#: feed is dark rather than early. The line layers stay on today's slate:
+#: those prices must exist BEFORE we publish against them, so measuring
+#: them late would miss the thing that matters.
+#: [[feedback_a_window_from_runner_clock_is_a_day_ahead]]
+#: [[feedback_verify_freshness_by_recency_not_date]]
+#: [[feedback_a_detector_can_be_the_defect]]
+GATE_LAG_DAYS = {'money flow': 1}
+
 
 def page(tbl: str, params: dict) -> list:
     out, off = [], 0
@@ -160,6 +184,7 @@ def main() -> int:
 
     width = max(len(n) for n, _ in LAYERS) + 1
     breaches: list = []
+    lagged: dict = {}      # (sport, date) -> ctx rows, read at most once
     for sport, tbl in CTX.items():
         rows = page(tbl, {'select': '*', 'game_date': f'gte.{lo}',
                           'and': f'(game_date.lte.{hi})'})
@@ -191,9 +216,27 @@ def main() -> int:
             print(f'   {name:<{width}} {bar} {f:3}/{n:<3} '
                   f'({pct:5.1f}%)  [{col}]{note}')
             _floor = GATE_FLOORS.get(name)
-            if (_floor is not None and sport not in GATE_SKIP_SPORTS
-                    and (f / n) < _floor):
-                breaches.append((sport, name, f, n, _floor, col))
+            if _floor is not None and sport not in GATE_SKIP_SPORTS:
+                _lag = GATE_LAG_DAYS.get(name, 0)
+                if not _lag:
+                    _gf, _gn, _gd = f, n, None
+                else:
+                    _gd = (dt.date.fromisoformat(lo)
+                           - dt.timedelta(days=_lag)).isoformat()
+                    _lrows = lagged.get((sport, _gd))
+                    if _lrows is None:
+                        _lrows = page(tbl, {'select': '*',
+                                            'game_date': f'eq.{_gd}'})
+                        lagged[(sport, _gd)] = _lrows
+                    _gn = len(_lrows)
+                    _gf = sum(1 for r in _lrows
+                              if r.get(col) not in (None, ''))
+                    print(f'   {"":<{width}} gated on {_gd}: '
+                          f'{_gf}/{_gn}' + (' (no slate - not gated)'
+                                            if not _gn else ''))
+                if _gn and (_gf / _gn) < _floor:
+                    breaches.append((sport, name, _gf, _gn, _floor, col,
+                                     _gd))
 
         # externals + reads + props are separate tables, same window
         ex = page('external_picks',
@@ -249,10 +292,10 @@ def main() -> int:
         print('=' * 74)
         print(' A DATA LAYER IS BELOW ITS FLOOR ON A LIVE SLATE')
         print('=' * 74)
-        for sp, name, f, n, floor, col in breaches:
+        for sp, name, f, n, floor, col, gd in breaches:
             print(f'   {sp:<6} {name:<12} {f}/{n} '
                   f'({100.0 * f / n:.1f}%)  floor {100 * floor:.0f}%  '
-                  f'[{col}]')
+                  f'[{col}]' + (f'  on {gd}' if gd else ''))
         print()
         print(' This is a FEED going dark, not thin coverage. Check the')
         print(' puller first:')
