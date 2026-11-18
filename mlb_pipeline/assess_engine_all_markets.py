@@ -60,6 +60,12 @@ SPORTS = {
     'NHL':   ('nhl_game_context', 'nhl_game_results', False),
     'MLB':   ('mlb_game_context', 'mlb_game_results', False),
     'NBA':   ('nba_game_context', 'nba_game_results', True),
+    # 2026-11-18: NCAAB was MISSING from this dict while already being
+    # listed in REAL_SPREAD below -- the intent was recorded and the entry
+    # never added, so the biggest board in the book was absent from every
+    # engine assessment. It is the sport now carrying the slate and one of
+    # the two worst on edge, and B214 cannot be decided without it.
+    'NCAAB': ('ncaab_game_context', 'ncaab_game_results', True),
 }
 #: Sports whose close_spread is a real point spread. MLB/NHL run a fixed
 #: run/puck line, so ATS is not a market we can grade there.
@@ -335,6 +341,7 @@ def run(sport):
         gm = {(str(x.get('game_date'))[:10], str(x.get('game_id'))): x
               for x in jr}
         jp, jt = [], defaultdict(list)
+        _noline = 0
         for r in tt:
             k = (r['date'], str(r['c'].get('game_id')))
             x = gm.get(k)
@@ -343,13 +350,40 @@ def run(sport):
             side = str(x.get('call_side') or '').upper()
             if side not in ('OVER', 'UNDER'):
                 continue
-            t = (side == 'OVER', r['ct'], r['tot'])
+            # ══ 2026-11-18 · GRADE AT THE LINE WE PUBLISHED ═════════════
+            # This graded the published side against `r['ct']`, the
+            # CONTEXT's close_total -- not against `call_line`, the number
+            # the read actually went out on. Those differ by a point or
+            # more routinely in NCAAB (the 11-17 Sharp published Over
+            # 130.5 while the close came in at 128.5), so the record was
+            # being scored on a bet we never made
+            # ([[feedback_grade_the_side_we_published]]).
+            #
+            # It is not a small effect: on NCAAB it reported published
+            # totals 20-44 / 31.2% while `jerry_reads`' own graded results
+            # over an overlapping window are 52W-41L. A number that wrong
+            # feeding B214 would have sent the engine rework at the wrong
+            # target.
+            #
+            # close_total is kept ONLY as a fallback for a read with no
+            # call_line, and those are counted and printed separately
+            # rather than silently mixed into the same record.
+            _pl = f(x.get('call_line'))
+            if _pl is None:
+                _noline += 1
+                _pl = r['ct']
+            if _pl is None:
+                continue
+            t = (side == 'OVER', _pl, r['tot'])
             jp.append(t)
             cv = f(x.get('conviction'))
             band = ('conv 70+' if cv is not None and cv >= 70
                     else 'conv 60-69' if cv is not None and cv >= 60
                     else 'conv <60' if cv is not None else 'conv n/a')
             jt[band].append(t)
+        if _noline:
+            print(f'    note: {_noline} of {len(jp)} published totals had '
+                  f'no call_line and fell back to close_total')
         flat('PUBLISHED totals (jerry_reads)', jp)
         for k in sorted(jt, key=lambda x: -len(jt[x])):
             flat(f'  {k}', jt[k])
@@ -364,7 +398,15 @@ def main() -> int:
           'split, real prices, free controls.')
     print(f'ATS and totals at {PRICE} (breakeven {BREAKEVEN:.2f}%); '
           f'moneyline at its own price. TEST slice only.\n')
-    for s in ([a.sport] if a.sport else ['NCAAF', 'NFL', 'NHL', 'MLB']):
+    # ══ 2026-11-18 · DERIVE THE RUN LIST FROM SPORTS ════════════════════
+    # This was the literal ['NCAAF', 'NFL', 'NHL', 'MLB']. NBA had been in
+    # SPORTS for weeks and NCAAB was named in REAL_SPREAD, yet neither ever
+    # appeared in a default run -- so "NBA and NCAAB are absent from
+    # assess_engine_all_markets" looked like missing configuration when the
+    # config was there and this list was the gate. Adding a sport to SPORTS
+    # now runs it; a hand-maintained duplicate of a registry is a registry
+    # that silently drifts ([[feedback_a_blocklist_duplicating_a_lookup_table]]).
+    for s in ([a.sport] if a.sport else sorted(SPORTS)):
         try:
             run(s)
         except Exception as e:                                 # noqa: BLE001
