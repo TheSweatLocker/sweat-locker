@@ -342,6 +342,10 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
           cd mlb_pipeline
+          # 2026-11-18: the moneyline juice gate runs before the builder, so
+          # a regression fails the step instead of shipping "Kansas ML" at
+          # -2100 to the reads. No pytest in this repo, so this is the test.
+          python ncaab_game_context.py --self-test
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "ncaab_game_context.py" python ncaab_game_context.py
 
       # == 2026-11-12 . is_neutral_site WAS FALSE ON 540 OF 540 ROWS =======

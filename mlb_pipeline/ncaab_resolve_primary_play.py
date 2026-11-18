@@ -97,6 +97,12 @@ from ncaab_game_context import NCAAB_ML_TIER_CAP  # noqa: E402
 #: apply_ml_juice_cap_to_card; POTD stays stricter at -250.
 ML_JUICE_MAX = -300.0
 
+#: Spread magnitude past which a FAVOURITE's missing moneyline is read as
+#: "no book will write it" rather than "not fetched yet". Mirrors
+#: defensive_gates._ml_odds_too_juiced and ncaab_game_context's constant of
+#: the same purpose; see the note at the ml_blocked computation below.
+UNKNOWN_PRICE_FAV_SPREAD = 20.0
+
 SB = os.environ['SUPABASE_URL']; KEY = os.environ['SUPABASE_KEY']
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 H_WRITE = {**H_READ, 'Content-Type': 'application/json',
@@ -356,12 +362,49 @@ def resolve(ctx: dict, mc: Optional[dict], panel: Optional[dict],
                     _ml_price = None
                 if _ml_price is not None:
                     break
-    # Unknown price does NOT block. An absent number is not evidence of a
-    # bad one, and refusing on unknown would silently delete coverage on
-    # every game the odds feed has not reached yet
-    # (feedback_column_presence_is_not_contamination).
+    # Unknown price does NOT block, with one exception added 2026-11-18.
+    # An absent number is generally not evidence of a bad one, and refusing
+    # on unknown would silently delete coverage on every game the odds feed
+    # has not reached yet (feedback_column_presence_is_not_contamination).
+    #
+    # BUT a FAVOURITE laying 30-plus points has no posted moneyline because
+    # no book will write it, not because the feed is behind: there the NULL
+    # is the sentinel, exactly as -100000 is. Measured on the stored column
+    # for 11-16..11-19, this hole was carrying 13 ML plays on favourites
+    # laying 29.5 to 40.5 — Vanderbilt -40.5, Missouri -40.5, LSU -37.5,
+    # Texas -38.5 (tomorrow) — six of them emitted by THIS resolver, i.e.
+    # the gate below was working on price and leaking on absence.
+    #
+    # Andy, 2026-11-18, on the same defect reaching the read surface: "why
+    # is this still happening, when I bring up items why are things never
+    # fixed." It was still happening because the juice ceiling was fixed
+    # here on price only, while the legacy producer in ncaab_game_context
+    # had no ceiling at all and this one had an open door. Both are closed
+    # in the same change (feedback_fix_every_writer_to_the_table).
+    #
+    # 20 is defensive_gates._ml_odds_too_juiced's threshold, reused rather
+    # than re-invented. A DOG with an unknown price still passes.
     ml_blocked = _ml_price is not None and _ml_price < ML_JUICE_MAX
-    if ml_blocked:
+    if not ml_blocked and _ml_price is None and close_spread is not None:
+        try:
+            _spr = float(close_spread)
+        except (TypeError, ValueError):
+            _spr = None
+        if _spr is not None:
+            _home_is_fav = _spr < 0
+            _picking_fav = ((ml_side == 'HOME' and _home_is_fav)
+                            or (ml_side == 'AWAY' and not _home_is_fav))
+            if _picking_fav and abs(_spr) > UNKNOWN_PRICE_FAV_SPREAD:
+                ml_blocked = True
+                print(f'    ml suppressed: {ml_side} favourite laying '
+                      f'{abs(_spr):g} has NO posted moneyline — treated as '
+                      f'past the juice cap, not as a feed gap '
+                      f'— falling through to totals')
+    # Only the PRICE path can format a price. The unknown-price path above
+    # has already reported itself, and reaching here with _ml_price None
+    # formatted None with :g and raised TypeError on 15 of 157 contexts in
+    # shadow — a log line must never be able to kill the caller.
+    if ml_blocked and _ml_price is not None:
         print(f'    ml suppressed: {ml_side} at {_ml_price:g} is past the '
               f'{ML_JUICE_MAX:g} juice cap (breakeven '
               f'{100.0 * abs(_ml_price) / (abs(_ml_price) + 100.0):.1f}%) '

@@ -531,6 +531,92 @@ NCAAB_TOTAL_TIER_CAP = "COVERAGE"
 #: into ncaab_game_results so the question can be asked at all.
 NCAAB_ML_TIER_CAP = "COVERAGE"
 
+#: ══ 2026-11-18 · THE TIER CAP ABOVE WAS NEVER A GATE ══════════════════
+#:
+#: Andy, 2026-11-18: "I am still seeing jerry reads with juiced up ml plays
+#: like Kansas ... model said KU by 22.3 but play was KU ml when they were
+#: 16.5 point favorites. why is this still happening, when I bring up items
+#: why are things never fixed."
+#:
+#: He is right, and the receipt is exact. UNLV @ Kansas, 2026-11-17:
+#:
+#:     model.projected_spread    22.3      (KU by 22.3)
+#:     market.close_spread      -16.5      (KU laying 16.5)
+#:     market.close_home_ml     -2100      <- what we put up
+#:     primary_play              "Kansas ML", type ml, PRIME->COVERAGE
+#:
+#: The displayed read even argued the spread: "The model projects a 22-point
+#: Kansas win; market is laying only 16.5 ... that 5.8-point edge between
+#: projection and spread ... Edge lives there." The 5.8 points live on the
+#: SPREAD. We recommended the moneyline at -2100, where breakeven is 95.5%.
+#:
+#: WHY THE CAP DID NOT STOP IT. The measurement in NCAAB_ML_TIER_CAP's own
+#: docstring is correct and damning -- 4,981 favourite-ML plays, not one
+#: price band clears breakeven, and it concludes "there is no price at which
+#: to let this through". The implementation then let it through at EVERY
+#: price and changed the badge from PRIME to COVERAGE. A tier is a label;
+#: it does not remove the play from the read. This is exactly
+#: feedback_a_display_label_became_a_gating_tier, and it is the same shape
+#: as the 11-17 finding that zeroing conviction while leaving the tier bars
+#: alone was cosmetic.
+#:
+#: MEASURED COST, read surface, since 2026-11-10: 123 of 334 ML primary
+#: plays were priced past -300 (NCAAB 73, NCAAF 48, NBA 2), ten of them at
+#: -100000 -- a price no book posts, i.e. a sentinel for "no moneyline
+#: offered" that we rendered as a recommendation. 18 reached graded
+#: receipts: 13-5, 72.2%, ROI -15.8%. They LIFT the displayed hit rate by
+#: ~1pp while losing money, which is feedback_flat_110_inflates_every_ml_figure
+#: and feedback_the_engine_scores_winners_not_prices in one row.
+#:
+#: WHY HERE AND NOT ONLY AT THE CHOKEPOINT. `defensive_gates` already owns
+#: `_ml_odds_too_juiced` (-300, and it correctly treats unknown odds on a
+#: >20pt favourite as juiced) and `reroute_ml_if_trapped`, which is the
+#: reroute-to-the-spread Andy asked for on 2026-09-03: "make sure no heavy
+#: juice chalk being promoted". Both are reachable ONLY from the LR-override
+#: branch, and NCAAB is the one sport that never calls
+#: apply_all_defensive_gates at all -- MLB, NBA, NHL, NFL and NCAAF all do.
+#: So for NCAAB every gate in that module is dark. Wiring NCAAB into the
+#: chokepoint is the right structural fix and it carries the LR override
+#: with it, so it needs a shadow run and Andy's sign-off; it is NOT a 6pm
+#: change on a live slate. This constant closes the hole at the SOURCE in
+#: the meantime, which is the repo's own source+chokepoint pattern.
+#:
+#: -300 adds no new threshold. It is the number already enforced in
+#: ncaab_resolve_primary_play.ML_JUICE_MAX, defensive_gates._ml_odds_too_juiced,
+#: SOLE_PICK_ML_JUICE_MAX and apply_ml_juice_cap_to_card, with POTD stricter
+#: at -250. The sibling resolver suppressed its three ML branches on the same
+#: reasoning and recorded why the fallthrough is safe: "blocking the three ML
+#: branches lets the same game fall through to its total branches, which is
+#: strictly better than publishing an unplayable moneyline: the game keeps
+#: coverage, just not a fake recommendation." Same chain shape here -- the
+#: branches are early-returns in priority order, so a blocked ML falls to
+#: rule 2/4 totals.
+#:
+#: AN UNKNOWN PRICE DOES NOT BLOCK, WITH ONE EXCEPTION THAT THE DATA FORCED.
+#: In general an absent number is not evidence of a bad one, and refusing on
+#: unknown would delete coverage on every game the odds feed has not yet
+#: reached (feedback_column_presence_is_not_contamination). My first draft of
+#: this gate stopped there and called `_ml_odds_too_juiced`'s ">20pt
+#: favourite with no price" rule a guess. Shadowing 256 contexts over
+#: 11-14..11-19 showed it is not a guess: of the 8 ML plays that survived on
+#: an unknown price, SEVEN were favourites laying 32.5 to 46.5 points --
+#: USC -46.5, Vanderbilt -40.5, Missouri -40.5, Maryland -35.5, Baylor -34.5,
+#: Minnesota -33.5, Nebraska -32.5. The price is NULL on exactly those games
+#: *because* no book writes the moneyline; NULL is the sentinel, the same way
+#: -100000 is. Letting them through on "unknown" would have reproduced the
+#: whole defect through the one door left open, which is the partial fix Andy
+#: is objecting to. So a favourite past _UNKNOWN_PRICE_FAV_SPREAD blocks too,
+#: matching _ml_odds_too_juiced exactly rather than inventing a second rule.
+#: A DOG with an unknown price still passes -- a dog's absent price is a feed
+#: gap, not a sentinel.
+NCAAB_ML_JUICE_MAX = -300.0
+
+#: Spread magnitude past which a favourite's MISSING moneyline is read as
+#: "no book will write it" rather than "not fetched yet". 20 is
+#: defensive_gates._ml_odds_too_juiced's number; see the note above for the
+#: 7 rows that justify reusing it.
+_UNKNOWN_PRICE_FAV_SPREAD = 20.0
+
 
 def compute_primary_play(ctx, alias_map=None):
     """Analog of mlb_game_context.compute_primary_play. Spreads/totals/ML
@@ -580,8 +666,52 @@ def compute_primary_play(ctx, alias_map=None):
     if proj_total is not None and close_total is not None:
         total_edge = round(float(proj_total) - float(close_total), 2)
 
+    # ── 2026-11-18 · AN OUT-OF-BAND MONEYLINE IS NOT SELECTED ──────────
+    # See NCAAB_ML_JUICE_MAX. Column names are tried in the order the
+    # context tables actually use them; NCAAB carries both spellings, and
+    # `_ml_odds_too_juiced` reads a third (`*_ml_odds`), so all three are
+    # accepted here rather than assuming one
+    # (feedback_a_zero_fill_column_can_have_a_populated_twin).
+    _ml_price = None
+    _cands = (("close_home_ml", "home_ml_odds", "home_ml_close")
+              if ml_side == "HOME" else
+              ("close_away_ml", "away_ml_odds", "away_ml_close"))
+    for _c in _cands:
+        _v = ctx.get(_c)
+        if _v is None:
+            continue
+        try:
+            _ml_price = float(_v)
+        except (TypeError, ValueError):
+            _ml_price = None
+        if _ml_price is not None:
+            break
+    ml_blocked = _ml_price is not None and _ml_price < NCAAB_ML_JUICE_MAX
+    if ml_blocked:
+        print(f"    ml suppressed: {ml_side} at {_ml_price:g} is past the "
+              f"{NCAAB_ML_JUICE_MAX:g} juice cap (breakeven "
+              f"{100.0 * abs(_ml_price) / (abs(_ml_price) + 100.0):.1f}%) "
+              f"— falling through to totals")
+    # A FAVOURITE with NO price past the spread threshold: the missing price
+    # is the sentinel, not a feed gap. See the constant's note.
+    elif _ml_price is None and close_spread is not None:
+        try:
+            _spr = float(close_spread)
+        except (TypeError, ValueError):
+            _spr = None
+        if _spr is not None:
+            _home_is_fav = _spr < 0
+            _picking_fav = ((ml_side == "HOME" and _home_is_fav)
+                            or (ml_side == "AWAY" and not _home_is_fav))
+            if _picking_fav and abs(_spr) > _UNKNOWN_PRICE_FAV_SPREAD:
+                ml_blocked = True
+                print(f"    ml suppressed: {ml_side} favourite laying "
+                      f"{abs(_spr):g} has NO posted moneyline — treated as "
+                      f"past the juice cap, not as a feed gap "
+                      f"— falling through to totals")
+
     # 1. PRIME ML — confluence + meaningful spread edge above trap zone
-    if conf >= 4 and abs_edge >= 2.0:
+    if conf >= 4 and abs_edge >= 2.0 and not ml_blocked:
         return {
             "type": "ml",
             "tier": NCAAB_ML_TIER_CAP,
@@ -645,7 +775,7 @@ def compute_primary_play(ctx, alias_map=None):
         }
 
     # 3. STRONG ML — moderate confluence + meaningful spread edge
-    if conf >= 2 and abs_edge >= 1.5:
+    if conf >= 2 and abs_edge >= 1.5 and not ml_blocked:
         return {
             "type": "ml",
             "tier": NCAAB_ML_TIER_CAP,
@@ -970,7 +1100,67 @@ def run():
                   f"{pp.get('tier') or 'none'} | {pp.get('label', '-')}")
 
 
+def _juice_gate_self_test() -> int:
+    """Pin the 2026-11-18 moneyline juice gate. No DB, no network.
+
+    There is no pytest in this environment, so a gate with no self-test is a
+    gate that regresses silently (feedback_no_unit_test_ran_in_ci). Run with
+    `python ncaab_game_context.py --self-test`.
+    """
+    import io as _io
+    import contextlib as _ctx
+
+    def ctx(ml_home=None, ml_away=None, spread=-16.5, proj=22.3, conf=5,
+            total=150.0, proj_total=150.0):
+        return {
+            "signal_confluence_net": conf, "projected_spread": proj,
+            "close_spread": spread, "home_team": "Home", "away_team": "Away",
+            "close_home_ml": ml_home, "close_away_ml": ml_away,
+            "close_total": total, "projected_total": proj_total,
+        }
+
+    # (name, ctx, expect primary_play type is 'ml'?)
+    cases = [
+        # Andy's row: KU -2100 ML on a 16.5 spread, model by 22.3.
+        ("juiced home fav -2100 is NOT ml", ctx(ml_home=-2100), False),
+        ("in-band home fav -250 IS ml", ctx(ml_home=-250), True),
+        ("boundary: exactly -300 IS ml", ctx(ml_home=-300), True),
+        ("just past: -301 is NOT ml", ctx(ml_home=-301), False),
+        # Unknown price. A favourite past 20 points has no posted ML because
+        # no book writes it; a short favourite may simply not be fetched yet.
+        ("unknown price, fav laying 35.5, NOT ml",
+         ctx(ml_home=None, spread=-35.5, proj=30.0), False),
+        ("unknown price, fav laying 13.5, IS ml",
+         ctx(ml_home=None, spread=-13.5, proj=18.0), True),
+        # A DOG with no price is a feed gap, not a sentinel: still allowed.
+        # Built carefully: close_spread -25.5 means HOME lays 25.5, and a
+        # NEGATIVE projected_spread makes the model prefer AWAY, so the pick
+        # is the 25.5-point DOG. My first draft of this case used
+        # close_spread +25.5, which makes AWAY the favourite -- the gate
+        # blocked it and was right to. The case was wrong, not the gate.
+        ("unknown price, DOG side, IS ml",
+         ctx(ml_home=None, spread=-25.5, proj=-30.0), True),
+    ]
+    failures = 0
+    for name, c, want_ml in cases:
+        buf = _io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            pp = compute_primary_play(c)
+        got_ml = bool(pp) and pp.get("type") == "ml"
+        ok = got_ml == want_ml
+        if not ok:
+            failures += 1
+        print(f'  {"ok  " if ok else "FAIL"} {name} '
+              f'(got {pp.get("type") if pp else "no play"})')
+    print(f'\n{"PASS" if not failures else "FAIL"}: '
+          f'{len(cases) - failures}/{len(cases)} juice-gate cases')
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    import sys
+    if "--self-test" in sys.argv:
+        raise SystemExit(_juice_gate_self_test())
     try:
         from season_gate import season_gate_or_exit
         season_gate_or_exit('NCAAB')
