@@ -509,6 +509,56 @@ def main() -> int:
             iN = 100.0 * sum(p['imp'] for p in cn) / len(cn)
             print(f'      mean implied  claim {ip:.1f}%  vs  '
                   f'concede {iN:.1f}%   (price now held close)')
+
+    print('\n' + '-' * 96)
+    print('8. SHADOW - what flipping _CONVICTION_NOISE_TERMS_ZEROED does')
+    print('-' * 96)
+    print('  The flag sets base=50, margin_boost=0, so every ensemble_v2')
+    print('  conviction becomes the CONSTANT 50. lr_v1 is untouched because')
+    print('  its conviction is a win probability, not this formula.')
+    POTD_MIN = 70   # jerry_anchor_potd.py:950
+    before = [p for p in allp if p['conv'] >= POTD_MIN]
+    after = [p for p in allp
+             if (50 if p['engine'] == 'ensemble_v2' else p['conv'])
+             >= POTD_MIN]
+    print(f'\n  POTD-eligible (conviction >= {POTD_MIN}):   '
+          f'before {len(before)}   after {len(after)}')
+    for lbl, sel in (('before', before), ('after', after)):
+        mix = defaultdict(int)
+        for p in sel:
+            mix[p['engine']] += 1
+        sports = defaultdict(int)
+        for p in sel:
+            sports[p['sport']] += 1
+        print(f'    {lbl:<7} engines {dict(mix)}')
+        print(f'            sports  {dict(sports)}')
+        pr = [p for p in sel if p['imp'] is not None]
+        if pr:
+            print(f'            mean implied price '
+                  f'{100*sum(p["imp"] for p in pr)/len(pr):.1f}%  '
+                  f'(n={len(pr)} priced)')
+    lost = [p for p in before if p['engine'] == 'ensemble_v2']
+    if lost:
+        bys = defaultdict(int)
+        for p in lost:
+            bys[p['sport']] += 1
+        print(f'\n  ** {len(lost)} picks lose POTD eligibility entirely: '
+              f'{dict(bys)}')
+        print('     Every one is ensemble_v2. Whatever remains eligible is')
+        print('     lr_v1 only, whose conviction IS a win probability, so')
+        print('     the POTD pool becomes HEAVY FAVOURITES by construction')
+        print('     -- the documented -200+ ML trap.')
+    ties = defaultdict(int)
+    for p in allp:
+        if p['engine'] == 'ensemble_v2':
+            ties[p['date']] += 1
+    worst = sorted(ties.items(), key=lambda x: -x[1])[:3]
+    if worst:
+        print('\n  Tie hazard at jerry_anchor_potd.py:974 '
+              '(sort on rank_key):')
+        for d, c in worst:
+            print(f'    {d}: {c} ensemble_v2 picks would all hold '
+                  f'conviction 50 -> {c}-way tie, broken by list order')
     return 0
 
 

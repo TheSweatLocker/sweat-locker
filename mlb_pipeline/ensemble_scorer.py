@@ -3205,6 +3205,63 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # This change removes the one term measured cleanly inverse; it does not
     # make the number meaningful.
     classes_boost = 0
+
+    # ══ 2026-11-17 · BOTH REMAINING TERMS MEASURED NON-RANKING ═══════════
+    # Andy: "I want to fix the root cause of conviction being shit."
+    # `audit_conviction_by_engine.py`, n=1738 graded picks since 09-01, all
+    # five sports, outcomes taken from each sport's own graded home_win /
+    # spread_result / total_result columns:
+    #
+    #   win_score   0.0-0.3   50.1%  n=383      margin  0.0-0.1   48.6%  n=243
+    #               0.3-0.6   54.7%  n= 64              0.1-0.3   53.5%  n=170
+    #               0.6-1.0   45.3%  n= 75              0.3-0.6   49.2%  n= 59
+    #               1.0-1.5   47.6%  n= 42              0.6+      49.2%  n=118
+    #
+    # win_score is BELOW breakeven exactly in the 0.6-1.5 range where this
+    # formula pays its largest bonus (+6 to +15). margin is flat across all
+    # four bands. So `conviction` is a linear function of two measured-noise
+    # variables, and within this engine alone:
+    #
+    #   spearman(conviction, win) = +0.0008   z=+0.03   n=1233
+    #
+    # It was never miscalibrated -- there is nothing in it to calibrate. That
+    # is why three calibration passes failed: each re-weighted two terms that
+    # carry no signal. The 09-29 note on `base` said exactly this would need
+    # "its own study"; this is that study.
+    #
+    # WHY THIS IS A FLAG AND NOT A DELETION. Zeroing both terms makes
+    # conviction the CONSTANT 50 for every ensemble_v2 pick, and a constant
+    # cannot be thresholded. Two surfaces break the moment it flips:
+    #   * jerry_anchor_potd.py:950 filters `conviction >= 70`, so NO
+    #     ensemble_v2 pick is ever POTD-eligible again. POTD would draw only
+    #     from lr_v1 picks, whose conviction IS a win probability -- i.e.
+    #     heavy favourites, straight into the documented -200+ ML trap.
+    #   * `eligible.sort(key=rank_key)` at :974 ties every pick, and a tie
+    #     broken by list order picks an arbitrary vintage
+    #     (feedback_unordered_data_zero_picks_a_vintage).
+    # So the gate re-tune has to land in the same change as the flip, and
+    # that re-tune needs a decision about what POTD selects on INSTEAD --
+    # which this measurement does not answer, because nothing in the
+    # ensemble ranks.
+    #
+    # NOT THE WHOLE DEFECT. `tier` is promoted by thresholds on the SAME
+    # terms plus win_classes (the PRIME/STRONG bars above, `min_score` /
+    # `min_classes` / `min_margin`), and win_classes was measured
+    # monotonically INVERSE on 09-29 and removed from conviction but never
+    # from the tier bars. Tier does not rank either:
+    #     spearman(tier_rank, win) = -0.0216  z=-0.88  n=1665
+    #     PRIME     n=33   45.5%   priced n=26  42.3% vs 62.9% imp  -20.6pp
+    #     COVERAGE  n=882  55.9%   priced n=669 57.0% vs 59.2% imp   -2.2pp
+    # (PRIME's priced n=26 is under the n>=30 bar, so read the DIRECTION,
+    # not the figure.) Tier is what drives stake sizing, card inclusion and
+    # The Sharp's gate, so flipping this flag alone is COSMETIC -- it stops
+    # the displayed number asserting a ranking while PRIME/STRONG keep doing
+    # it. See docs/knowledge/project_engine_calibration_discussion_1117.md
+    # section 7 and BACKLOG B214.
+    _CONVICTION_NOISE_TERMS_ZEROED = False   # measured 2026-11-17, see above
+    if _CONVICTION_NOISE_TERMS_ZEROED:
+        base, margin_boost = 50, 0
+
     conviction = int(round(base + margin_boost + classes_boost))
     conviction = max(45, min(97, conviction))
 

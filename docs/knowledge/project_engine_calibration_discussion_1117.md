@@ -312,7 +312,79 @@ So roughly half the raw inversion in §7.4 was the dog proxy, and **half
 of it is real**: at the same price, the picks where our model disagrees
 with the market hit 50.0% and the ones where it agrees hit 58.0%.
 
-### 7.6 What this settles
+
+### 7.6 TIER is built from the same noise, and does not rank either
+
+Andy chose *"zero the noise terms now"*. Checking the blast radius first
+turned up the thing that makes that change **cosmetic**.
+
+`tier` is not derived from `conviction`. It is promoted independently, by
+threshold tests on **`win_score`, `win_classes` and `margin`**
+(`ensemble_scorer.py` ~:3021, the `min_score` / `min_classes` /
+`min_margin` bars). Those are the same two terms measured as noise in
+§7.3 — **plus `win_classes`, which was measured monotonically inverse on
+09-29, removed from `conviction`, and never removed from the tier bars.**
+
+Measured the same way, n=1665 with a tier in COVERAGE/LEAN/STRONG/PRIME:
+
+```
+spearman(tier_rank, win) = -0.0216   z=-0.88   n=1665   -> NO RANK
+```
+
+| tier | n | hit | priced | vs implied |
+|---|---|---|---|---|
+| COVERAGE | 882 | 55.9% | 669 | **−2.2 pp** |
+| LEAN | 397 | 52.9% | 72 | +4.4 pp |
+| STRONG | 353 | 55.0% | 151 | −1.1 pp |
+| **PRIME** | **33** | **45.5%** | 26 | **−20.6 pp** |
+
+PRIME — the label carrying the most confidence, driving stake sizing and
+card inclusion — is the **worst** bucket. Its priced n=26 is under the
+n≥30 bar, so read the **direction**, not the figure; the direction matches
+the NCAAF `rl:STRONG` 40.0% / −23.6% ROI result in §1. Meanwhile
+**COVERAGE**, the bucket that explicitly means *"we cannot assert an
+edge"*, is the best of the large buckets on edge.
+
+**Consequence for the chosen fix:** tier is what moves money — stake size,
+card inclusion, The Sharp's gate, the PRIME/STRONG language users read.
+Zeroing the conviction terms stops the **displayed number** asserting a
+ranking while **PRIME/STRONG keep asserting it**. The conviction change is
+necessary but not sufficient.
+
+### 7.7 Shadow: what flipping the flag actually does
+
+Implemented as `_CONVICTION_NOISE_TERMS_ZEROED` in `ensemble_scorer.py`,
+**default False**, with the measurement in the comment. Shadowed over the
+same n=1738 (§8 of `audit_conviction_by_engine.py`):
+
+```
+POTD-eligible (conviction >= 70, jerry_anchor_potd.py:950)
+  before 316   engines {ensemble_v2: 226, lr_v1: 90}
+               sports  {NCAAF 282, NFL 23, NHL 5, NCAAB 4, NBA 2}
+  after   90   engines {lr_v1: 90}
+               sports  {NCAAF 81, NFL 8, NHL 1}
+```
+
+Two blocking consequences, which is why the flag is off:
+
+1. **NBA and NCAAB lose POTD eligibility entirely** — the two sports
+   carrying the slate right now. NCAAB has **0% `lr_v1` coverage**, so it
+   would never produce a POTD again. The remaining pool is `lr_v1` only,
+   whose conviction *is* a win probability, so POTD becomes **heavy
+   favourites by construction** — straight into the documented −200+ ML
+   trap.
+2. **Up to a 76-way tie.** Every `ensemble_v2` pick holds exactly 50, and
+   `eligible.sort(key=rank_key)` at :974 then ties them all; 2026-09-12
+   would have been a 76-way tie, 11-07 a 74-way, broken by list order
+   (`feedback_unordered_data_zero_picks_a_vintage`). Arbitrary selection
+   is worse than noisy selection, because it is silent.
+
+So the flip needs a POTD chooser that is not conviction, and the
+measurement says **nothing in the ensemble ranks** — so that chooser has
+to come from outside it. That is the open decision, not an implementation
+detail.
+
+### 7.8 What this settles
 
 1. **Conviction cannot be repaired by re-weighting.** Both of its inputs
    are measured noise. Any formula over `win_score` and `margin` is a
@@ -328,7 +400,7 @@ with the market hit 50.0% and the ones where it agrees hit 58.0%.
    close is what a well-fit model with no edge looks like — which is the
    honest ceiling currently in the building.
 
-### 7.7 What this does NOT license
+### 7.9 What this does NOT license
 
 **Fading ourselves is not a betting rule yet.** n=118 on the claim-edge
 side, pooled across five sports, is one study
