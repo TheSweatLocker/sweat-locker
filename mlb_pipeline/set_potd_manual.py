@@ -63,8 +63,14 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 HW = dict(H, **{'Content-Type': 'application/json'})
 HW_UP = dict(HW, **{'Prefer': 'resolution=merge-duplicates,return=minimal'})
 
+# 2026-11-17: NCAAB was absent, so the one tool for setting a POTD by
+# hand could not set one on the biggest board in the book -- it exited
+# 2 on `--sport NCAAB` with 'invalid choice'. Same shape as
+# feedback_absent_key_makes_a_gate_dead: the hard half (the resolver,
+# the reads, the card) was wired for NCAAB and the one-line map was not.
 CTX = {'NFL': 'nfl_game_context', 'NCAAF': 'ncaaf_game_context',
        'NBA': 'nba_game_context', 'NHL': 'nhl_game_context',
+       'NCAAB': 'ncaab_game_context',
        'MLB': 'mlb_game_context'}
 LOCK_ET_HOUR = 12
 
@@ -89,11 +95,28 @@ def main() -> int:
     a = ap.parse_args()
 
     now = dt.datetime.now(dt.timezone.utc)
-    et = now - dt.timedelta(hours=4)
-    date = a.date or et.date().isoformat()
-    print(f'=== set_potd_manual · {date} · ET {et:%H:%M} · '
-          f'{"APPLY" if a.apply else "DRY RUN"} ===')
-    if et.hour >= LOCK_ET_HOUR and not a.force_past_lock:
+    # 2026-11-17: this was `now - timedelta(hours=4)`, which is EDT.
+    # From the November change to March it is an hour fast, so the
+    # 12:00 ET lock actually bit at 11:00 ET and the banner misreported
+    # the hour it was deciding on -- measured today, it printed
+    # 'ET 20:06' at a real 19:06 ET. A lock is the one clock that must
+    # not drift ([[feedback_hardcoded_et_offset_breaks_in_est]]).
+    try:
+        from zoneinfo import ZoneInfo
+        et = now.astimezone(ZoneInfo('America/New_York'))
+    except Exception:                                      # noqa: BLE001
+        from sweat_dates import et_today as _et_today
+        # last resort: trust the shared helper for the DATE and refuse
+        # to guess the HOUR, rather than guess it wrong by one.
+        et = None
+        date = a.date or _et_today()
+    if et is not None:
+        date = a.date or et.date().isoformat()
+    _et_txt = f'{et:%H:%M}' if et is not None else 'unknown'
+    _mode = 'APPLY' if a.apply else 'DRY RUN'
+    print(f'=== set_potd_manual · {date} · ET {_et_txt} · {_mode} ===')
+    if (et is not None and et.hour >= LOCK_ET_HOUR
+            and not a.force_past_lock):
         print(f'  REFUSED — past the {LOCK_ET_HOUR:02d}:00 ET card lock. '
               f'--force-past-lock to override.')
         return 1
