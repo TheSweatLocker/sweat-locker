@@ -329,9 +329,38 @@ def check(date: str, surface: str) -> None:
              if no_ctx else ''))
 
 
+def _default_card_date() -> str:
+    """The ET slate date, not the UTC one.
+
+    ══ 2026-11-17 · THE EVENING CHECK WAS BLIND TO THE LIVE CARD ═══════
+    This defaulted to the UTC date, which rolls at 19:00 ET (20:00 in
+    summer). So from 7pm ET onward it checked TOMORROW's card, reported
+    "NOT PUBLISHED yet — nothing to check" and exited FAIL 0 while
+    tonight's published card was live.
+
+    Measured tonight: at 19:30 ET it printed `card integrity 2026-11-18
+    ... FAIL 0 warn 0`, and the same run forced to `--date 2026-11-17`
+    returned **FAIL 4** on the live Sharp — a total published at a stale
+    line (card 'Over 130.5' vs engine 'Over 128.5'), and a
+    'Vanderbilt -42.5' whose engine label is 'Under 147.5' and whose
+    jerry_read says `pass`, i.e. the write-up is for another market.
+
+    A FAIL 0 that was computed on an unbuilt card is worse than no check,
+    because it reads as an all-clear ([[feedback_a_green_step_that_writes_nothing]],
+    [[feedback_a_window_from_runner_clock_is_a_day_ahead]],
+    [[feedback_hardcoded_et_offset_breaks_in_est]]).
+    """
+    try:
+        from sweat_dates import et_today
+        return et_today()
+    except Exception:                                         # noqa: BLE001
+        from zoneinfo import ZoneInfo
+        return str(datetime.now(ZoneInfo('America/New_York')).date())
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--date', default=str(datetime.now(timezone.utc).date()))
+    ap.add_argument('--date', default=_default_card_date())
     ap.add_argument('--surface', choices=['sweat_card', 'sharp_card'])
     a = ap.parse_args()
     surfaces = [a.surface] if a.surface else ['sweat_card', 'sharp_card']
