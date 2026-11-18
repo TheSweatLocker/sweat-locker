@@ -59,6 +59,7 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -789,8 +790,32 @@ _SHARP_PROP_LABEL = re.compile(r'^(.+?)\s+(Over|Under)\s+([\d.]+)\s+(.+)$', re.I
 _SHARP_PROP_STAT = {
     'OUTS': 'outs', 'HA': 'ha', 'KS': 'ks',
     'BB': 'bb', 'ER': 'er', 'HITS': 'hits',
+    # ══ 2026-11-17 · FOOTBALL AND BASKETBALL WERE NEVER IN THIS MAP ══
+    # Both cards publish NBA and NFL props and this map held only MLB
+    # pitcher stats, so a label that parsed fine still died on
+    # stat_unmapped. The chain named it itself: 'stat_unmapped:PASS_ATTEM',
+    # 'stat_unmapped:RECEPTION_'. Every stem below is copied from the
+    # distinct prop_type values actually present in the props tables, not
+    # guessed — a wrong stem would put a fabricated result on a published
+    # receipt ([[feedback_absent_key_makes_a_gate_dead]]).
+    'PASS_ATTEMPTS': 'pass_attempts', 'PASS_YDS': 'pass_yds',
+    'PASS_TDS': 'pass_tds', 'PASS_COMPLETIONS': 'pass_completions',
+    'PASS_INTERCEPTIONS': 'pass_interceptions',
+    'RUSH_YDS': 'rush_yds', 'RUSH_ATTEMPTS': 'rush_attempts',
+    'RECEPTION_YDS': 'reception_yds', 'RECEPTIONS': 'receptions',
+    'ANYTIME_TD': 'anytime_td',
+    'PTS': 'pts', 'PRA': 'pra', 'REB': 'reb', 'AST': 'ast',
+    'THREES': 'threes', 'STEALS': 'steals', 'BLOCKS': 'blocks',
 }
-PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props'}
+PROPS_TABLE = {'MLB': 'mlb_pipeline_props', 'NFL': 'nfl_pipeline_props',
+               'NBA': 'nba_pipeline_props'}
+
+# "Meleek Thomas PTS UNDER 12.5" -> player / stat / direction / line.
+# The NBA card writes the stat BEFORE the direction, which _SHARP_PROP_LABEL
+# (player/direction/line/stat) cannot match at all, so those receipts were
+# landing in label_unparseable rather than being graded.
+_CARD_PROP_LABEL_STAT_FIRST = re.compile(
+    r'^(.+?)\s+([A-Za-z_]+)\s+(Over|Under)\s+([\d.]+)\s*$', re.I)
 
 
 def _grade_sharp_card_props(recs: list, patches: list, skipped: Counter) -> None:
@@ -870,6 +895,117 @@ def _grade_sharp_card_props(recs: list, patches: list, skipped: Counter) -> None
         norm = _RESULT_MAP.get(str(hits[0]).strip().lower())
         if not norm:
             skipped[f'unmapped:{str(hits[0])[:12]}'] += 1
+            continue
+        patches.append((rec['id'], norm))
+
+
+def _grade_card_props_by_source_ref(recs: list, patches: list,
+                                    skipped: Counter) -> None:
+    """Grade card prop receipts whose source_id is `prop:<ref>` with NO pipes.
+
+    ══ 2026-11-17 · TWO SPORTS HAD NO GRADING PATH AT ALL ══════════════
+    Measured over 30 days: NBA sweat_card props were 5 of 5 ungraded and
+    NFL sharp_card 2 of 14 — a published play that can never be graded,
+    which drops the leg out of the record rather than reporting it
+    ([[feedback_a_record_counted_sides_and_dropped_props]]).
+
+    Neither grader covered them. `settle_prop_receipts` is MLB/NFL-scoped
+    and selected zero. Here, `_grade_sweat_card_props` splits source_id on
+    '|' and requires exactly 3 parts, so a reference with no pipes fell
+    through; and NBA was absent from PROPS_TABLE entirely.
+
+    There are two no-pipe shapes, and they need different lookups:
+
+      prop:72926                          -> an INTEGER props-table id.
+                                             Direct FK, so inherit it.
+      prop:39dbdb7fdc78bd01ceac2fc7048bc1fd -> 32 hex, and NOT an id:
+                                             nba_pipeline_props.id is a
+                                             bigint and this value is its
+                                             **game_id**. The receipt
+                                             identifies the GAME, and the
+                                             only thing naming the prop is
+                                             the label. That is a capture
+                                             defect in the writer, but
+                                             these rows are already
+                                             published and a receipt's
+                                             claim columns are frozen, so
+                                             they can only ever be graded
+                                             from what they already carry.
+
+    Same discipline as the two graders above: the label's number must
+    equal the source row's prop_line, and the match must be UNIQUE —
+    a player holds both sides of a line and most of several lines, and
+    grading the wrong one puts a fabricated result on a published receipt.
+    """
+    for rec in recs:
+        sid = str(rec.get('source_id') or '')
+        ref = sid[len('prop:'):].strip()
+        sport = str(rec.get('sport') or 'MLB').upper()
+        tbl = PROPS_TABLE.get(sport)
+        if not tbl:
+            skipped[f'no_props_table:{sport}'] += 1
+            continue
+        label = str(rec.get('pick_label') or '')
+        _m = re.search(r'(\d+(?:\.\d+)?)', label)
+        shown = _f(_m.group(1)) if _m else None
+
+        rows: list = []
+        if ref.isdigit():
+            rows = list(paged(
+                f'{SB}/rest/v1/{tbl}?id=eq.{ref}'
+                f'&select=player_name,prop_type,prop_line,result'))
+        else:
+            # Scope by the game the receipt names, then identify the prop
+            # from the label. Scoping first is what makes the label safe:
+            # one game, one player, one stat, one line.
+            lm = (_CARD_PROP_LABEL_STAT_FIRST.match(label.strip())
+                  or _SHARP_PROP_LABEL.match(label.strip()))
+            if not lm:
+                skipped['card_ref_label_unparseable'] += 1
+                continue
+            if lm.re is _CARD_PROP_LABEL_STAT_FIRST:
+                player, stat, direction, line_s = (lm.group(1), lm.group(2),
+                                                   lm.group(3), lm.group(4))
+            else:
+                player, direction, line_s, stat = (lm.group(1), lm.group(2),
+                                                   lm.group(3), lm.group(4))
+            stem = _SHARP_PROP_STAT.get(stat.strip().upper())
+            if not stem:
+                skipped[f'stat_unmapped:{stat.strip().upper()[:12]}'] += 1
+                continue
+            want_line = _f(line_s)
+            prop_type = f'{stem}_{direction.strip().lower()}'
+            q_player = quote(player.strip(), safe='')
+            all_rows = list(paged(
+                f'{SB}/rest/v1/{tbl}?game_id=eq.{quote(ref, safe="")}'
+                f'&player_name=eq.{q_player}'
+                f'&prop_type=eq.{prop_type}'
+                f'&select=player_name,prop_type,prop_line,result'))
+            rows = [r for r in (all_rows or [])
+                    if want_line is not None
+                    and _f(r.get('prop_line')) is not None
+                    and abs(_f(r.get('prop_line')) - want_line) < 1e-9]
+        if not rows:
+            skipped['card_ref_no_prop_row'] += 1
+            continue
+        # The published number and the source row must agree.
+        if shown is not None:
+            pl = _f(rows[0].get('prop_line'))
+            if pl is not None and abs(pl - shown) > 1e-9:
+                skipped['card_ref_line_mismatch'] += 1
+                print(f'    ⚠ {label[:44]!r}: label says {shown}, source row '
+                      f'says {pl} — NOT graded')
+                continue
+        res = [r.get('result') for r in rows if r.get('result')]
+        if not res:
+            skipped['card_ref_source_ungraded'] += 1
+            continue
+        if len({str(r).strip().lower() for r in res}) > 1:
+            skipped['card_ref_ambiguous'] += 1
+            continue
+        norm = _RESULT_MAP.get(str(res[0]).strip().lower())
+        if not norm:
+            skipped[f'unmapped:{str(res[0])[:12]}'] += 1
             continue
         patches.append((rec['id'], norm))
 
@@ -1034,12 +1170,23 @@ def grade_props(days: int, dry_run: bool) -> None:
     # source_id is the packed 'prop:player|type|line', not an id — so the
     # inherit above silently misses every one. Recovered from that string.
     _sw_done = {r['id'] for r in sharp}
-    sweat = [r for r in recs
-             if r['id'] not in _sw_done
-             and str(r.get('source_id') or '').startswith('prop:')]
+    _prop_ref = [r for r in recs
+                 if r['id'] not in _sw_done
+                 and str(r.get('source_id') or '').startswith('prop:')]
+    # 2026-11-17: the packed form has exactly 3 pipe-separated parts. A
+    # no-pipe reference is a props-table id or a game_id, which the packed
+    # parser cannot read at all — it required len(parts) == 3 and counted
+    # the rest as sweat_sid_unparseable. Split them and give each its own
+    # lookup rather than letting one shape mask the other.
+    sweat = [r for r in _prop_ref
+             if '|' in str(r.get('source_id') or '')]
+    refs = [r for r in _prop_ref
+            if '|' not in str(r.get('source_id') or '')]
     if sweat:
         _grade_sweat_card_props(sweat, patches, skipped)
-    _sw_done |= {r['id'] for r in sweat}
+    if refs:
+        _grade_card_props_by_source_ref(refs, patches, skipped)
+    _sw_done |= {r['id'] for r in _prop_ref}
 
     other = [r for r in recs
              if r['id'] not in _sw_done
