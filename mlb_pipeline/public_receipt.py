@@ -1148,7 +1148,39 @@ def _card_anchor(it: dict, market: str, label: Any) -> str:
         gid = it.get('game_id')
         if gid not in (None, '', 'None'):
             return str(gid)
-    anchor = it.get('source_key') or it.get('game_id') or it.get('id')
+    # ══ 2026-11-18 · A PROP MUST NEVER ANCHOR ON A BARE game_id ═════════
+    # The chain below used to read `source_key or game_id or id`, so any
+    # prop dict without a source_key fell through to game_id -- producing
+    # exactly the collision the docstring above warns about. It was live:
+    # fetch_nba_prop_floor emitted no source_key and no `id` (its props-row
+    # id sat under the private `_prop_id`), so 11-16 wrote
+    # source_id='prop:a613d212...' and 'prop:39dbdb7f...' -- the GAME's id.
+    # Two props in one game would have collapsed into one receipt and one
+    # of the two bets would have vanished from the ledger.
+    #
+    # The producer is fixed, but this is the chokepoint every prop writer
+    # passes through, and a guard on one of eight sources is not a guard
+    # ([[feedback_guard_belongs_at_the_chokepoint]]). Order now prefers the
+    # props-row id over the game, and a bare game_id is refused outright in
+    # favour of a composite that still distinguishes two props in one game.
+    _pid = it.get('id') or it.get('_prop_id')
+    anchor = it.get('source_key') or _pid
+    if not anchor:
+        _gid = it.get('game_id')
+        _lbl = it.get('label') or label or ''
+        if _gid not in (None, '', 'None'):
+            # Keep the game for scope, but NEVER alone: the label carries
+            # player + stat + side + line, which is what makes two props in
+            # the same game two receipts instead of one.
+            anchor = f'{_gid}|{_lbl}|{it.get("line")}'
+            # ASCII only. This runs inside a receipt writer, and a cp1252
+            # stdout raises UnicodeEncodeError on a decorative glyph -- a
+            # log line must never be able to kill a publish.
+            print('  !! prop with no source_key or prop id - anchoring on '
+                  f'game+label ({anchor[:70]}). Give the producer a '
+                  'source_key.')
+        else:
+            anchor = None
     if isinstance(anchor, str) and ':' in anchor:
         anchor = anchor.split(':', 1)[1]
         if market and anchor.endswith(':' + market):

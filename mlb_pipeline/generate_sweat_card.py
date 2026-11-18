@@ -1335,6 +1335,31 @@ def fetch_nba_prop_floor(game_date, per_game=1):
             'line': line,
             'tier': r.get('tier'),
             'conviction': r.get('conviction'),
+            # ══ 2026-11-18 · THIS DICT HAD NO source_key, SO ITS RECEIPT
+            # ANCHORED ON THE GAME ═══════════════════════════════════════
+            # public_receipt._card_anchor resolves a prop's identity as
+            # `source_key or game_id or id`. This dict carried neither
+            # source_key nor `id` (the props row id was under the private
+            # `_prop_id`), so the chain fell through to game_id and wrote
+            # source_id='prop:<32-hex game_id>' -- the exact shape that
+            # function's own docstring warns about: "a game_id would
+            # collapse every prop in a game into one row (the defect fixed
+            # on 10-04)". Two NBA props in the same game would have become
+            # ONE receipt.
+            #
+            # Live rows it produced: 5507438 'Meleek Thomas PTS UNDER 12.5'
+            # and 5507439 'Cam Spencer PRA UNDER 24.5' on 11-16, both with
+            # player_name NULL and prop_type NULL, because the parse at
+            # public_receipt.py:1245 reads those two fields out of
+            # source_key and there was none to read.
+            #
+            # Same family as the 11-15 NFL leg whose backfill audit says
+            # "the measured-cell prop path emits market='prop' with no type
+            # key, so this leg published with no receipt": a measured-cell
+            # path emitting a different dict shape than the main path.
+            'source_key': f"{r.get('player_name')}|{pt}|{line:g}",
+            'prop_line': line,
+            'id': r.get('id'),
             '_prop_id': r.get('id'),
             '_player': str(r.get('player_name') or ''),
             '_projection': r.get('projection'),
