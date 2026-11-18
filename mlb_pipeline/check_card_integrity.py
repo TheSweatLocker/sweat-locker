@@ -61,6 +61,7 @@ except Exception:
 START_COLS = ('kickoff_utc', 'game_time_utc', 'start_time_utc', 'commence_time')
 fails: list[str] = []
 warns: list[str] = []
+drifts: list[str] = []
 
 
 def F(msg):
@@ -71,6 +72,76 @@ def F(msg):
 def W(msg):
     warns.append(msg)
     print(f'  ⚠ warn  {msg}')
+
+
+def D(msg):
+    """Post-lock engine drift. Reported, counted, NOT gating."""
+    drifts.append(msg)
+    print(f'  ~ drift {msg}')
+
+
+# ══ 2026-11-18 · A DETECTOR MUST KNOW THE INTENTIONAL CASE ═════════════
+# Check 1 below carried the comment "the card must agree with the engine as
+# it stands NOW". That premise is wrong by construction after the lock
+# hour, and it produced 4 FAILs on 11-17 that were all expected behaviour.
+#
+# The card is DELIBERATELY immutable. `generate_sharp_card._publish` hard
+# locks at SHARP_CARD_HARD_LOCK_ET_HOUR (default 12 ET) and refuses a
+# republish "even with --force", quoting Andy's 09-19 directive: "whatever
+# comes out in the morning stays. No more refreshing the sweat card,
+# sharp, or jerry game analysis picks." The ENGINE, by contrast, keeps
+# re-deriving from the live board all day.
+#
+# So after the lock the two are SUPPOSED to diverge. Measured on the
+# 11-17 FAIL 4: the card published `Over 130.5` at 15:41Z, which was the
+# live number (fanduel 130.5 at 13:28Z, espnbet 130.5 at 14:26Z); the
+# market then drifted down (draftkings 128.5 at 14:54Z, espnbet 17:26Z,
+# betmgm 20:57Z) and the engine's label followed to `Over 128.5`. Nothing
+# was wrong with the card. That is a LAG, not a disagreement
+# ([[feedback_a_lag_is_not_a_disagreement]]).
+#
+# The severity rule is whether the finding is STILL ACTIONABLE:
+#   * before the lock -> FAIL. The card can still be rebuilt.
+#   * at/after the lock -> DRIFT. Republish is refused, so a FAIL is
+#     unactionable noise - and a detector that fails every day from
+#     12:00 ET is a detector nobody reads
+#     ([[feedback_a_detector_can_be_the_defect]]).
+# Only the engine-comparison checks move. Checks about what we published
+# being wrong ON ITS OWN TERMS - juice traps, prose naming the other team,
+# a spread with no line - stay FAIL at every hour, because those are
+# defects in the frozen artifact itself, not drift away from a moving
+# reference.
+def _past_hard_lock(surface: str, card_date: str) -> tuple[bool, int, int]:
+    """(past_lock, et_hour, lock_hour) for this surface's own lock hour.
+
+    Keyed on the CARD'S date, not just the clock. A card for a date earlier
+    than ET today is locked at every hour -- checking yesterday's card at
+    3am must not report FAILs, which is what a bare `hour >= lock` test
+    does ([[feedback_a_window_from_runner_clock_is_a_day_ahead]]).
+    """
+    env = ('SWEAT_CARD_HARD_LOCK_ET_HOUR' if surface == 'sweat_card'
+           else 'SHARP_CARD_HARD_LOCK_ET_HOUR')
+    lock = int(os.environ.get(env, '12'))
+    try:
+        from sweat_dates import et_now as _et_now
+        _now = _et_now()
+    except Exception:                                          # noqa: BLE001
+        from datetime import datetime as _d
+        try:
+            from zoneinfo import ZoneInfo
+            _now = _d.now(ZoneInfo('America/New_York'))
+        except Exception:                                      # noqa: BLE001
+            # Refuse to GUESS the hour with a fixed offset - that is the
+            # EDT/EST bug this repo has fixed in four files. With no tz
+            # database, treat the card as locked: the conservative read
+            # reports drift instead of crying FAIL.
+            return True, -1, lock
+    today = _now.strftime('%Y-%m-%d')
+    if card_date < today:
+        return True, _now.hour, lock          # a past slate is always locked
+    if card_date > today:
+        return False, _now.hour, lock         # tomorrow's card is still open
+    return _now.hour >= lock, _now.hour, lock
 
 
 def _card_items(data) -> list:
@@ -173,6 +244,17 @@ def check(date: str, surface: str) -> None:
         W(f'{key}: published with ZERO items')
         return
 
+    # Severity for the ENGINE-comparison checks only. See the long note by
+    # D() above: past this surface's hard lock the card cannot be rebuilt,
+    # so divergence from a still-moving engine is expected and unactionable.
+    _past, _eth, _lockh = _past_hard_lock(surface, date)
+    E = D if _past else F
+    print(f'  engine-comparison severity: '
+          f'{"DRIFT (non-gating)" if _past else "FAIL (gating)"} — '
+          f'ET {_eth if _eth >= 0 else "unknown"}'
+          f'{"" if _eth >= 0 else " (no tz db — assuming locked)"} '
+          f'vs {surface} hard lock {_lockh:02d}:00 ET')
+
     # One context fetch per sport present on the card.
     ctx_by_sport = {}
     for sp in {str(i.get('sport')) for i in items}:
@@ -212,11 +294,13 @@ def check(date: str, surface: str) -> None:
         pp = ctx.get('primary_play') or {}
         side = str(pp.get('side') or '').upper()
 
-        # 1 · the card must agree with the engine as it stands NOW
+        # 1 · the card vs the engine. BEFORE the lock these are failures the
+        # card can still be rebuilt to fix; AFTER it, the card is immutable
+        # by design and the engine has moved on, so they are drift.
         if str(pp.get('type') or '').lower() != typ:
-            F(f'{tag}: card market {typ!r} != engine {pp.get("type")!r}')
+            E(f'{tag}: card market {typ!r} != engine {pp.get("type")!r}')
         if pp.get('label') and str(pp['label']).strip() != pick.strip():
-            F(f'{tag}: card pick != engine label {pp["label"]!r}')
+            E(f'{tag}: card pick != engine label {pp["label"]!r}')
         if pp.get('tier') and str(pp['tier']).upper() != tier:
             W(f'{tag}: card tier {tier} != engine {pp["tier"]}')
 
@@ -273,12 +357,16 @@ def check(date: str, surface: str) -> None:
             W(f'{tag}: spread pick with no line on the card')
         rd = reads.get(gid)
         if rd:
+            # jerry_reads is re-synced from the engine all day too, so it
+            # drifts away from the frozen card for the same reason the
+            # engine does — including to `pass` when the engine withdraws
+            # the call after the lock. Same severity rule.
             if rd.get('call_market') and str(rd['call_market']).lower() != typ:
-                F(f'{tag}: jerry_read call_market {rd["call_market"]!r} != '
+                E(f'{tag}: jerry_read call_market {rd["call_market"]!r} != '
                   f'card {typ!r} — the write-up is for another market')
             if rd.get('call_side') and side and \
                     str(rd['call_side']).upper() != side:
-                F(f'{tag}: jerry_read call_side {rd["call_side"]} != pick side {side}')
+                E(f'{tag}: jerry_read call_side {rd["call_side"]} != pick side {side}')
             if rd.get('price_american') is None:
                 W(f'{tag}: no price captured — ungradeable for ROI')
             # the 10-02 defect: prose arguing the other team
@@ -358,19 +446,68 @@ def _default_card_date() -> str:
         return str(datetime.now(ZoneInfo('America/New_York')).date())
 
 
+def _self_test() -> int:
+    """Pin the clock and assert the severity rule both ways.
+
+    The rule's whole value is that it still FAILS before the lock. A change
+    that only ever returns DRIFT would silently disable this detector, and
+    the live data cannot exercise the pre-lock path at 3am, so it is
+    asserted here instead of assumed.
+    """
+    from datetime import datetime as _d
+    from zoneinfo import ZoneInfo
+    import sweat_dates as _sd
+    _et = ZoneInfo('America/New_York')
+    cases = [
+        ('2026-11-18 09:00', '2026-11-18', 'today pre-lock',   False),
+        ('2026-11-18 12:00', '2026-11-18', 'today at lock',    True),
+        ('2026-11-18 16:00', '2026-11-18', 'today post-lock',  True),
+        ('2026-11-18 02:00', '2026-11-17', 'past slate, 2am',  True),
+        ('2026-11-18 02:00', '2026-11-19', 'future slate',     False),
+    ]
+    _orig = getattr(_sd, 'et_now', None)
+    bad = 0
+    try:
+        for clock, card, label, want in cases:
+            _sd.et_now = (lambda c: (lambda: _d.strptime(
+                c, '%Y-%m-%d %H:%M').replace(tzinfo=_et)))(clock)
+            got, hour, lock = _past_hard_lock('sharp_card', card)
+            ok = got == want
+            bad += 0 if ok else 1
+            print(f'  {"ok " if ok else "BAD"} {label:<18} '
+                  f'et={hour:02d} lock={lock:02d} -> '
+                  f'{"DRIFT" if got else "FAIL"} (want '
+                  f'{"DRIFT" if want else "FAIL"})')
+    finally:
+        if _orig is not None:
+            _sd.et_now = _orig
+    print(f'\nself-test: {len(cases) - bad}/{len(cases)} passed')
+    return 1 if bad else 0
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--date', default=_default_card_date())
     ap.add_argument('--surface', choices=['sweat_card', 'sharp_card'])
+    ap.add_argument('--self-test', action='store_true',
+                    help='assert the lock severity rule and exit')
     a = ap.parse_args()
+    if a.self_test:
+        raise SystemExit(_self_test())
     surfaces = [a.surface] if a.surface else ['sweat_card', 'sharp_card']
     print(f'== card integrity · {a.date} == '
           f'(heavy-ML threshold {HEAVY_ML_THRESHOLD:+d})')
     for s in surfaces:
         check(a.date, s)
-    print(f'\n{"=" * 60}\nFAIL {len(fails)} · warn {len(warns)}')
+    print(f'\n{"=" * 60}\nFAIL {len(fails)} · warn {len(warns)} · '
+          f'drift {len(drifts)}')
     if fails:
         print('\nFAILURES:')
         for f in fails:
             print(f'  - {f}')
+    if drifts:
+        print('\nPOST-LOCK DRIFT (expected — the card is frozen, the engine '
+              'is not; not gating):')
+        for d in drifts:
+            print(f'  - {d}')
     raise SystemExit(1 if fails else 0)

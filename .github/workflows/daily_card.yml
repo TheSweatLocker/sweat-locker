@@ -520,7 +520,15 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           PYTHONIOENCODING: utf-8
-        run: python check_card_integrity.py
+        # 2026-11-18: --self-test first. The severity rule added today only
+        # FAILs before the surface's hard lock (after it the card is
+        # immutable, so divergence from the still-moving engine is drift,
+        # not a defect). A regression that made it always return DRIFT
+        # would silently disable this whole check, and nothing else in CI
+        # would notice, so the rule is asserted on every run.
+        run: |
+          python check_card_integrity.py --self-test
+          python check_card_integrity.py
 
       # ══ 2026-10-06 · PRICE WHAT WE JUST PUBLISHED ══
       # 2,523 of 17,932 receipts (14.1%) carry no price, and it is the
