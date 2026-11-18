@@ -185,3 +185,155 @@ So there are two separate problems and they have been getting confused:
 - Everything above pools tiers across the window; no per-tier temporal
   stability check yet.
 - UFC (n=18) and MLB (n=31) are below the n≥30 gate for most cuts.
+
+## 7. The conviction root cause, measured (added 2026-11-17 evening)
+
+Andy: *"I want to fix the root cause of conviction being shit."* New
+script `audit_conviction_by_engine.py`, **n=1738 graded picks** since
+09-01 across all five sports, outcomes taken from each sport's own graded
+`home_win` / `spread_result` / `total_result` columns so no spread sign is
+derived.
+
+### 7.1 What conviction is, structurally
+
+**One column, four formulas, four different units.** Since 10-01:
+
+| writer | picks | the number *is* |
+|---|---|---|
+| `ensemble_scorer.py:3208` (`ensemble_v2`) | 1247 | `50 + win_score×10 + margin×20` — signal **agreement** |
+| `lr_v1` override | 458 | `p_home_win × 100` — a **probability** |
+| `conviction_scale.rank_from_signals/2026-10-30` | 562 | a **percentile rank**, layered on top |
+| `ncaab_conviction/2026-11-13` | 153 | a **calibrated probability** |
+| *(no `_engine`)* | 223 | the preliminary shape — the NULL class fixed this morning |
+
+The mixture ratio differs **by sport**: NFL is 46% `lr_v1`, NCAAB 0%,
+NHL 60%. So "conviction 70" is a different claim in each sport, and the
+POTD threshold, the Sweat Card tier floor and The Sharp all read it with
+**one** number. That is a real defect and it is the source of the daily
+NULL-and-rescale breakage.
+
+### 7.2 But that is NOT why it fails to rank
+
+The cheap hypothesis — *it's a mixture, normalise the units and the gates
+work* — had to be tested first, because it is much cheaper than an engine
+rework. It is **dead**:
+
+```
+_engine=ensemble_v2   n=1233   spearman(conviction, win) = +0.0008  z=+0.03  -> NO RANK
+_engine=lr_v1         n= 503   spearman(conviction, win) = +0.0233  z=+0.52  -> NO RANK
+whole pool            n=1738   spearman                   = +0.0329  z=+1.37  -> NO RANK
+```
+
+`+0.0008` is as close to exactly zero as a measurement gets. **Within a
+single formula, on its own scale, conviction carries no information about
+whether the pick wins.** Normalising the units fixes the plumbing and
+changes nothing about the signal.
+
+### 7.3 Both inputs to the formula are noise
+
+`ensemble_scorer` has carried this comment since 09-29: *"win_score, which
+drives `base` (the 50-80 term), is ALSO non-monotonic on the same sample
+… conviction still does not rank pick quality and must not be trusted for
+stake sizing until `base` has its own study."* **The study is now done.**
+
+| `win_score` | n | hit | vs implied |
+|---|---|---|---|
+| 0–0.3 | 383 | 50.1% | −4.7 pp |
+| 0.3–0.6 | 64 | 54.7% | −4.2 pp |
+| **0.6–1.0** | 75 | **45.3%** | −1.8 pp |
+| **1.0–1.5** | 42 | **47.6%** | — |
+
+| `margin` | n | hit |
+|---|---|---|
+| 0–0.1 | 243 | 48.6% |
+| 0.1–0.3 | 170 | 53.5% |
+| 0.3–0.6 | 59 | 49.2% |
+| 0.6+ | 118 | 49.2% |
+
+`win_score` is flat-to-inverse and **below breakeven exactly in the
+0.6–1.5 range where the formula pays +6 to +15 points**. `margin` is flat
+across all four bands, 48.6–53.5%, nothing to rank with.
+
+**So conviction is a linear function of two measured-noise variables.** It
+is not miscalibrated — there is nothing in it to calibrate. That is the
+root cause, and it explains why every calibration pass has failed: each
+one re-weighted two terms that contain no signal.
+
+### 7.4 The constructive fix also fails *as currently built*
+
+The obvious replacement is to make conviction mean what everyone reads it
+as: **our probability for the published side minus the implied probability
+at the price taken.** Only `lr_v1` and the NCAAB calibrated model emit a
+probability at all, giving n=521 picks with both a probability and a price.
+
+```
+spearman(model edge, win) = -0.1518   z=-3.46   n=521   -> INVERSE
+```
+
+| model's claimed edge | n | hit | vs implied |
+|---|---|---|---|
+| ≤ −5 pp | 166 | 68.1% | −1.2 pp |
+| −5…0 pp | 181 | 63.5% | +0.7 pp |
+| 0…+5 pp | 85 | 55.3% | −3.2 pp |
+| +5…+10 pp | 25 | 56.0% | *(under n)* |
+| **≥ +10 pp** | 64 | **43.8%** | **−7.8 pp** |
+
+The more edge our model claims, the worse the pick does — monotonically,
+at z=−3.46.
+
+### 7.5 The price control, because model vote is a dog proxy
+
+This repo has been fooled twice by exactly this shape
+(`project_favourite_bias_was_the_market_chooser_1029`,
+`feedback_model_vote_may_be_a_dog_proxy`), so §7.4 does not count until
+the price is held fixed. And the proxy **is** real: claim-edge picks
+average **55.8%** implied against **65.9%** for concede picks — a 10 pp
+longer price.
+
+Holding price roughly fixed, the inversion survives in the pick-dense
+middle of the board and vanishes at the top:
+
+| implied band | claim edge | concede price | gap |
+|---|---|---|---|
+| 45–55% | 47.8% (n=46) | 60.5% (n=38) | **−12.7 pp** |
+| 55–65% | 51.4% (n=72) | 57.3% (n=150) | **−5.9 pp** |
+| 65–80% | 75.0% (n=32) | 75.4% (n=114) | −0.4 pp |
+| 80%+ | *no picks* | 82.1% (n=39) | — |
+
+**Pooled 45–65%, where the price is now within 3 pp:**
+
+```
+claim edge      n=118   hit 50.0%   vs imp 56.0%   edge -6.0pp
+concede price   n=188   hit 58.0%   vs imp 59.0%   edge -1.0pp
+mean implied    claim 56.0%  vs  concede 59.0%
+```
+
+So roughly half the raw inversion in §7.4 was the dog proxy, and **half
+of it is real**: at the same price, the picks where our model disagrees
+with the market hit 50.0% and the ones where it agrees hit 58.0%.
+
+### 7.6 What this settles
+
+1. **Conviction cannot be repaired by re-weighting.** Both of its inputs
+   are measured noise. Any formula over `win_score` and `margin` is a
+   formula over nothing.
+2. **It cannot be repaired by normalising units**, though it should be
+   normalised anyway for the plumbing: `spearman +0.0008` inside one
+   engine.
+3. **It cannot be switched to model-edge either**, because our model's
+   disagreement with the market is anti-informative at the same price
+   (−8.0 pp on n=118 vs 188).
+4. **The only component not losing is `lr_v1`**: −0.2 pp on n=384 priced,
+   versus −3.9 pp for `ensemble_v2` on n=540. A model that matches the
+   close is what a well-fit model with no edge looks like — which is the
+   honest ceiling currently in the building.
+
+### 7.7 What this does NOT license
+
+**Fading ourselves is not a betting rule yet.** n=118 on the claim-edge
+side, pooled across five sports, is one study
+(`feedback_slope_is_not_a_betting_rule`,
+`feedback_unmeasured_signal_must_not_outweigh_measured`). Before any
+"fade the model" surface exists it needs: a per-sport split, a temporal
+split (does it hold in the second half?), and a sport-neutral control. It
+is a finding about **what conviction should be built from**, not a play.
