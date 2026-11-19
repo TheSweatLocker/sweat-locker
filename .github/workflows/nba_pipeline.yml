@@ -1056,6 +1056,44 @@ jobs:
       # -195. It fills the NUMBER only, from the same ctx column the label
       # builder would have used; the side is read off the stored pick and
       # never re-derived.
+      # ══ 2026-11-18 · THE POST-PASS RAN ON TWO SPORTS, NOT SIX ══════
+      # ANDY: "OKC went out at -7.5 and -6.5 on the same bet."
+      #
+      # apply_pick_gates_post_pass.py existed since 10-02 and had a step in
+      # nfl_ and ncaaf_pipeline.yml ONLY. NBA is the sport that needs it
+      # most: measured on the 2026-11-18 forward board, stored
+      # primary_play.line against each row's own market column --
+      #
+      #     NFL  94/94 exact   NCAAF 16/16   NHL 10/10   NCAAB 7/8
+      #     NBA   3/12 exact                      <- nine stale lines
+      #
+      # including "Houston Rockets -7.5" while the board had Houston -14.5,
+      # and "Over 221.5" against a 226.5 total. NBA plays daily and its
+      # spreads move intraday, where an NFL game is days out and an NHL
+      # puckline cannot move at all -- so NBA is where a pick's line goes
+      # stale, and it was the sport with no pass to catch it.
+      #
+      # Runs BEFORE the line repair and the read sync below, so the
+      # re-anchored number is what reaches jerry_reads: the repair step only
+      # fills a line that is NULL, and the alignment step that follows is
+      # --line-only, so it carries a corrected number onto the read without
+      # ever being able to change the pick.
+      #
+      # Demotions and reroutes only -- the pass refuses any result that
+      # would raise a tier, so this cannot re-score the board.
+      - name: Apply defensive-gate fixes to stored picks (post-pass, NBA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # The line re-anchor is asserted before the pass that applies it.
+          python defensive_gates.py --self-test
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "apply_pick_gates_post_pass.py (NBA)" \
+            python apply_pick_gates_post_pass.py --sport NBA --apply
+
       - name: Repair spread picks published without a line (NBA)
         continue-on-error: true
         env:

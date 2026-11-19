@@ -703,6 +703,13 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           SINCE=$(date -u -d '7 days ago' +%Y-%m-%d)
+          # 2026-11-18: a quote at our line is only live if it is
+          # within STALE_QUOTE_MAX_MIN of that market's last sweep. A
+          # dead line keeps its last quote forever, which is how OKC
+          # -7.5 carried a real betmgm -105 from nineteen hours
+          # earlier. Asserted here because nothing else in CI would
+          # notice the bound regressing.
+          python price_picks.py --self-test
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
             --label "backfill_receipt_prices.py" \
             python backfill_receipt_prices.py --since "$SINCE" --apply

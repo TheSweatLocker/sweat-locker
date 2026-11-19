@@ -73,8 +73,29 @@ import re as _re_mod
 # Blocked here rather than at the call sites because the reroute has three
 # entry points and a row rerouted on an EARLIER run comes back as type 'rl'
 # (see the note at apply_heavy_ml_spread_reroute).
+#
+# ══ 2026-11-18 · NCAAB ADDED, MEASURED BEFORE IT COULD EVER FIRE ═════════
+# NCAAB joined TABLES in apply_pick_gates_post_pass today, which would have
+# switched this reroute on for it for the first time. Measured first, on
+# every NCAAB game with a graded result and a closing favourite price,
+# 2026-11-01..11-18 (n=532 favourites, 341 of them past -300). The ML is
+# priced at its REAL close, the spread at -110 -- not flat -110 on both,
+# which is the error feedback_flat_110_inflates_every_ml_figure names:
+#
+#     favourite ML past -300      297-44   87.1%   -25.07u   ROI -7.4%
+#     same-side spread @ -110     164-177  48.1%   -27.91u   ROI -8.2%
+#
+# The spread is not an escape, it is the same loss: moving the bet recovers
+# nothing. Blocking it keeps the -300 ceiling in ncaab_game_context and
+# ncaab_resolve_primary_play as the operative rule -- fall through to the
+# total, which is what those two now do -- instead of quietly converting a
+# juiced moneyline into an equally bad spread.
+#
+# This is a market-level baseline over all favourites, NOT a measurement of
+# our own selection. It answers "is the spread better than the ML here"
+# (no) and does not claim our picks are sound.
 # REVERT: set to frozenset().
-LR_REROUTE_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF'})
+LR_REROUTE_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF', 'NCAAB'})
 LR_SIDE_FLIP_BLOCKED_SPORTS = frozenset({'NHL', 'NCAAF'})
 
 
@@ -3075,6 +3096,191 @@ def recover_pick_line(pp: dict | None, ctx: dict,
 recover_total_line = recover_pick_line
 
 
+# ══ 2026-11-18 · A PICK MAY NOT CARRY A LINE THAT IS OFF THE BOARD ═══════
+#: Minimum gap between a stored pick's line and the live market before the
+#: pick is re-anchored. Half a point is the smallest move any book makes, so
+#: anything at or above it is a real move and not a rounding artifact.
+LINE_REANCHOR_MIN_DRIFT = 0.5
+
+#: Past this much drift the conviction was earned against a line that no
+#: longer exists, so the pick is re-anchored AND capped. Laying 14.5 is not
+#: the bet that was scored at 7.5, even though both are "Houston".
+LINE_REANCHOR_CAP_DRIFT = 2.0
+
+#: Tier ceiling applied past that drift. LEAN, not STRONG, because PRIME and
+#: STRONG share the 2u stake on the Sharp ladder and a demotion that does not
+#: cross a stake boundary is a no-op -- the lesson apply_ncaaf_prime_ml_cap
+#: paid for in full.
+LINE_REANCHOR_TIER_CAP = 'LEAN'
+
+
+def _live_market_line(pp: dict, ctx: dict):
+    """(magnitude_of_live_line, column_used) for this pick's market.
+
+    MAGNITUDE ONLY, AND THAT IS WHAT MAKES THIS SAFE. close_spread is
+    HOME-relative in NBA, NCAAF and NCAAB and AWAY-relative in NFL (verified
+    99.7% n=331 and 100.0% n=284 against spread_result). Branching on that
+    convention per sport is the minefield apply_heavy_ml_spread_reroute
+    already refused to walk into, and it does not matter here: both numbers
+    describe the SAME game's spread, so |pick.line| == |close_spread|
+    whichever side the column is written from and whichever side we picked.
+    The pick's own sign says whether it lays or takes, and it is preserved.
+
+    A total has no sides, so it compares directly.
+    """
+    t = str(pp.get('type') or '').lower()
+    if t == 'total':
+        for c in ('close_total', 'total_close'):
+            v = ctx.get(c)
+            if v is not None:
+                try:
+                    return abs(float(v)), c
+                except (TypeError, ValueError):
+                    return None, None
+        return None, None
+    if t in ('rl', 'spread', 'ats', 'pl', 'puckline'):
+        for c in ('close_spread', 'close_puckline_home', 'close_run_line'):
+            v = ctx.get(c)
+            if v is not None:
+                try:
+                    return abs(float(v)), c
+                except (TypeError, ValueError):
+                    return None, None
+    return None, None
+
+
+def apply_stale_line_gate(pp: dict | None, ctx: dict,
+                          sport: str = 'MLB') -> dict | None:
+    """Re-anchor a pick whose line has left the board.
+
+    ANDY, 2026-11-18: "OKC went out at -7.5 and -6.5 on the same bet."
+
+    The POTD and the Sweat Card froze Oklahoma City -7.5. The Sharp froze
+    -6.5 and was right: line_history has -7.5 last posted anywhere at
+    11:26:08Z and never again, while the POTD published at 13:55Z -- so the
+    number we told subscribers to bet had been off the board for two and a
+    half hours before we printed it. This is NOT the hard lock preserving a
+    published record; the line was already dead when it was published.
+
+    MEASURED on the 2026-11-18 forward board, stored primary_play.line
+    against each row's own live market column:
+
+        NFL     94 of 94 exact
+        NCAAF   16 of 16 exact
+        NHL     10 of 10 exact      (puckline is pinned at +/-1.5)
+        NCAAB    7 of  8 exact
+        NBA      3 of 12 exact      <- nine stale lines
+
+    NBA is the whole problem, and the reason is structural rather than a
+    coding difference: its builder takes the line from the same ensemble
+    `top.line` NHL's does, but NBA plays daily and its spreads move
+    intraday, while an NFL game is days from kickoff and an NHL puckline
+    cannot move at all. Nothing anywhere compared a stored pick's line to
+    the board.
+
+    What that was hiding, worse than the row Andy caught:
+
+        Houston Rockets -7.5     board had Houston -14.5    (7.0 off)
+        Over 221.5               board had 226.5            (5.0 off)
+        Los Angeles Lakers -10.5 board had -12.5
+        Miami Heat -12.5         board had -14.5
+
+    Houston -7.5 is not a bet that existed anywhere.
+
+    WHY RE-ANCHOR RATHER THAN WITHDRAW. Publishing the live line is strictly
+    better than publishing a number nobody offers. Withdrawal is the
+    stronger claim and would need its own shadow week
+    (feedback_suppression_gate_needs_shadow), so it is not taken here.
+
+    AND NOTHING DOWNSTREAM RE-JUDGES THE NEW BET -- DO NOT ASSUME IT DOES.
+    The first draft of this docstring said the edge pass would re-check a
+    re-anchored pick, because apply_pick_gates_post_pass runs
+    model_edge.apply_to_pick after this chain. That is false for exactly the
+    population this gate touches: model_edge.edge_pp() refuses anything that
+    is not a moneyline, by design and for a good reason -- conviction is a
+    probability of WINNING, and a spread needs a cover probability the
+    pipeline does not compute. So a re-anchored spread or total is re-judged
+    by nothing, and the cap below is the only restraint on it.
+
+    Past LINE_REANCHOR_CAP_DRIFT the tier is therefore capped, because the
+    conviction was scored against the old number. The cap only fires from
+    PRIME/STRONG, where it crosses the 2u -> 1u stake boundary and so is a
+    real reduction rather than a label (apply_ncaaf_prime_ml_cap measured a
+    PRIME -> STRONG demotion as an exact no-op). A pick ALREADY at LEAN with
+    a large drift is re-anchored and stamped but keeps its stake: demoting
+    it would land on COVERAGE, which is outside the publishable set, and
+    that is suppression wearing a tier label. Those rows are the open
+    question this gate deliberately does not answer -- they need the shadow
+    week, and `_line_reanchored.drift` is the column to measure them on.
+
+    FAILS CLOSED. No market column, an unparseable one, or a pick with no
+    line of its own leaves the pick untouched -- the chokepoint runs
+    mid-build where these columns are not reliably populated, and that is
+    the exact shape apply_unpriced_market_gate's `_any()` fails open on.
+    """
+    try:
+        if not (pp and isinstance(pp, dict)):
+            return pp
+        own = pp.get('line')
+        if own is None:
+            return pp
+        try:
+            own = float(own)
+        except (TypeError, ValueError):
+            return pp
+        mkt, col = _live_market_line(pp, ctx)
+        if mkt is None:
+            return pp
+        drift = abs(abs(own) - mkt)
+        if drift < LINE_REANCHOR_MIN_DRIFT:
+            return pp
+        is_total = str(pp.get('type') or '').lower() == 'total'
+        # Preserve the pick's own sign; only the magnitude is re-anchored.
+        new_line = mkt if (is_total or own >= 0) else -mkt
+        before_line = own
+        before_tier = str(pp.get('tier') or '').upper()
+        pp['line'] = new_line
+
+        # THE PROSE MOVES WITH THE LINE. A label or subtitle still naming the
+        # old number is the same defect one layer up: the card rendered
+        # "OKC -7.5" off the LABEL, not off this field.
+        def _swap(s):
+            if not isinstance(s, str):
+                return s
+            for a, b in ((f'{before_line:+g}', f'{new_line:+g}'),
+                         (f'{before_line:g}', f'{new_line:g}')):
+                if a in s:
+                    return s.replace(a, b)
+            return s
+
+        pp['label'] = _swap(pp.get('label'))
+        pp['sub'] = _swap(pp.get('sub'))
+        pp['_line_reanchored'] = {
+            'from': before_line, 'to': new_line,
+            'drift': round(drift, 2), 'market_column': col,
+            'sport': str(sport).upper(),
+            'basis': 'the published line was not on the board; NBA measured '
+                     '3 of 12 stored pick lines exact on 2026-11-18 against '
+                     '94/94 NFL and 16/16 NCAAF',
+        }
+        _n = pp.get('audit_note') or ''
+        pp['audit_note'] = ((_n + ' · ') if _n else '') + (
+            f'line re-anchored {before_line:g} -> {new_line:g} '
+            f'(market {mkt:g})')
+        if drift > LINE_REANCHOR_CAP_DRIFT and before_tier in ('PRIME',
+                                                               'STRONG'):
+            pp['tier'] = LINE_REANCHOR_TIER_CAP
+            pp['_line_reanchored']['tier_before'] = before_tier
+            pp['_line_reanchored']['tier_after'] = LINE_REANCHOR_TIER_CAP
+            _r = pp.get('edge_reason') or ''
+            pp['edge_reason'] = ((_r + ' · ') if _r else '') + (
+                f'line moved {drift:g} points after scoring '
+                f'({before_line:g} -> {new_line:g}) — capped')
+    except Exception:
+        return pp
+    return pp
+
+
 def apply_stored_edge_cap(pp: dict | None) -> dict | None:
     """Cap a bettable tier whose OWN stored model edge is non-positive.
 
@@ -3347,6 +3553,14 @@ def apply_all_defensive_gates(pp: dict | None, ctx: dict, sport: str = 'MLB') ->
     # These gates catch pipeline-side contradictions BEFORE they render.
     pp = apply_vault_fade_dissent_gate(pp, ctx)
     pp = apply_trap_game_gate(pp, ctx, sport=sport)
+    # ══ 2026-11-18 · THE LINE MUST BE ON THE BOARD ══
+    # Andy: "OKC went out at -7.5 and -6.5 on the same bet." The POTD
+    # published -7.5 two and a half hours after it last posted anywhere.
+    # Runs LAST among the mutating gates so it re-anchors whatever pick
+    # actually survived — including one apply_ml_lr_override replaced,
+    # which is the hole apply_heavy_ml_spread_reroute had to be moved
+    # down the chain to escape.
+    pp = apply_stale_line_gate(pp, ctx, sport=sport)
     pp = apply_stored_edge_cap(pp)
     pp = apply_publish_gate(pp, ctx)
     return pp
@@ -3604,3 +3818,115 @@ def apply_mlb_total_lr_override(pp, ctx):
 # Backwards-compat alias — existing MLB callers still work
 def apply_mlb_ml_lr_override(pp, ctx):
     return apply_ml_lr_override(pp, ctx, sport='MLB')
+
+
+def _stale_line_self_test() -> int:
+    """Pin the line re-anchor. No pytest in this repo, so this is the test.
+
+    Wired into CI ahead of the builders so a regression fails the step
+    instead of shipping another -7.5 nobody can bet.
+    """
+    def pick(**kw):
+        d = {'type': 'rl', 'side': 'HOME', 'tier': 'STRONG',
+             'conviction': 65, 'line': -7.5,
+             'label': 'Oklahoma City Thunder -7.5', 'sub': 'OKC -7.5 is the play'}
+        d.update(kw)
+        return d
+
+    cases = []
+
+    # 1. The row Andy caught, end to end.
+    p = apply_stale_line_gate(pick(), {'close_spread': -6.5}, sport='NBA')
+    cases.append(('the OKC row: -7.5 re-anchored to the live -6.5',
+                  p['line'] == -6.5
+                  and p['label'] == 'Oklahoma City Thunder -6.5'
+                  and p['sub'] == 'OKC -6.5 is the play'
+                  and p['_line_reanchored']['drift'] == 1.0
+                  # 1.0 drift is under the cap, so STRONG survives
+                  and p['tier'] == 'STRONG', p))
+
+    # 2. An AWAY pick against a HOME-relative column. This is the case the
+    #    magnitude rule exists for: close_spread +14.5 means the HOME side is
+    #    getting 14.5, so our AWAY favourite is laying 14.5, and a naive
+    #    signed comparison would have read the drift as 22.
+    p = apply_stale_line_gate(
+        pick(side='AWAY', line=-7.5, label='Houston Rockets -7.5',
+             sub='Houston Rockets -7.5: model projects an edge'),
+        {'close_spread': 14.5}, sport='NBA')
+    cases.append(('Houston -7.5 vs a board at 14.5: away pick, home-relative '
+                  'column, 7.0 drift, capped',
+                  p['line'] == -14.5
+                  and p['label'] == 'Houston Rockets -14.5'
+                  and p['tier'] == 'LEAN'
+                  and p['_line_reanchored']['tier_before'] == 'STRONG', p))
+
+    # 3. A DOG keeps its plus sign.
+    p = apply_stale_line_gate(
+        pick(side='AWAY', line=2.5, label='Chicago Bulls +2.5',
+             sub='Chicago Bulls +2.5'),
+        {'close_spread': -1.5}, sport='NBA')
+    cases.append(('a dog re-anchors to +1.5 and keeps its sign',
+                  p['line'] == 1.5 and p['label'] == 'Chicago Bulls +1.5', p))
+
+    # 4. Totals compare directly and never take a sign.
+    p = apply_stale_line_gate(
+        pick(type='total', side='OVER', line=221.5, label='Over 221.5',
+             sub='Over 221.5 is the play'),
+        {'close_total': 226.5}, sport='NBA')
+    cases.append(('Over 221.5 re-anchors to 226.5 and is capped at 5.0 drift',
+                  p['line'] == 226.5 and p['label'] == 'Over 226.5'
+                  and p['tier'] == 'LEAN', p))
+
+    # 5. An exact line is left completely alone, stamp included.
+    p = apply_stale_line_gate(
+        pick(line=-4.5, label='Toronto Raptors -4.5'),
+        {'close_spread': -4.5}, sport='NBA')
+    cases.append(('an exact line is untouched and carries no stamp',
+                  p['line'] == -4.5 and '_line_reanchored' not in p, p))
+
+    # 6. Below the half-point floor nothing moves. 0.4 is not a real move.
+    p = apply_stale_line_gate(
+        pick(line=-6.9), {'close_spread': -6.5}, sport='NBA')
+    cases.append(('a 0.4 gap is under the floor and does not re-anchor',
+                  p['line'] == -6.9 and '_line_reanchored' not in p, p))
+
+    # 7. FAILS CLOSED with no market column -- the mid-build case.
+    p = apply_stale_line_gate(pick(), {}, sport='NBA')
+    cases.append(('no market column: pick untouched (the mid-build shape)',
+                  p['line'] == -7.5 and '_line_reanchored' not in p, p))
+
+    # 8. A moneyline has no line of its own and must not be touched.
+    p = apply_stale_line_gate(
+        pick(type='ml', line=None, label='Atlanta Hawks ML'),
+        {'close_spread': -6.5}, sport='NBA')
+    cases.append(('a moneyline carries no line, so nothing to re-anchor',
+                  p['line'] is None and p['label'] == 'Atlanta Hawks ML', p))
+
+    # 9. An unparseable market column must not delete the pick's line.
+    p = apply_stale_line_gate(pick(), {'close_spread': 'n/a'}, sport='NBA')
+    cases.append(('a junk market column leaves the line alone',
+                  p['line'] == -7.5 and '_line_reanchored' not in p, p))
+
+    # 10. A big move on a tier BELOW the cap must not be promoted to LEAN.
+    #     LEAN -> LEAN is fine; COVERAGE must stay COVERAGE.
+    p = apply_stale_line_gate(
+        pick(tier='COVERAGE', line=-7.5), {'close_spread': -14.5},
+        sport='NBA')
+    cases.append(('a 7-point move does not PROMOTE a COVERAGE pick to LEAN',
+                  p['tier'] == 'COVERAGE', p))
+
+    bad = 0
+    for name, ok, got in cases:
+        print(f'  [{"PASS" if ok else "FAIL"}] {name}')
+        if not ok:
+            bad += 1
+            print(f'         got {got}')
+    print(f'  {len(cases) - bad}/{len(cases)} passed')
+    return 1 if bad else 0
+
+
+if __name__ == '__main__':
+    import sys
+    if '--self-test' in sys.argv:
+        raise SystemExit(_stale_line_self_test())
+    print(__doc__ or 'defensive_gates: import me, or pass --self-test')

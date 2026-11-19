@@ -24,6 +24,10 @@ than a blank one:
   * a pick is priced ONLY by books quoting its exact line. PIT +3.5 is
     not priced off a book offering +3.0 — different bet, different
     probability. Unmatched lines are reported, never substituted.
+  * and only by quotes that are still LIVE. A line that leaves the board
+    keeps its last quote forever, because the quote index is keyed on the
+    line. "Latest at that line" is not "currently posted", so a dead line
+    kept being priced off its own fossil - see STALE_QUOTE_MAX_MIN.
   * consensus is computed in probability space. American odds are
     discontinuous across zero, so a plain median over a mixed-sign book
     list is meaningless; it once returned -1 for a pick'em spread.
@@ -156,6 +160,94 @@ def ncaab_key(game_date, away, home) -> str | None:
 #: offsets.
 QUOTE_SCAN_PAGES = 40
 
+#: A quote at our line is only LIVE if it is no older than this, measured
+#: against the newest capture for that same (game, market, side) across ALL
+#: lines - i.e. against the board's last refresh, not against the clock.
+#:
+#: ANDY, 2026-11-18: OKC went out at -7.5 on the POTD and the Sweat Card and
+#: -6.5 on the Sharp, on the same bet. The Sharp was right. jerry_reads 22549
+#: held call_line -7.5 beside price_best -105 / betmgm / 9 books, priced_at
+#: 00:35Z - and that -105 is a REAL betmgm quote at the exact line -7.5, from
+#: 02:56Z, nineteen hours earlier. -7.5 last posted anywhere at 11:26Z and
+#: never came back; the board was -6.5 at twelve books when the read priced.
+#: So the exact-line rule held and the row was still a fiction: we published a
+#: number nobody would take, with a price and a book name next to it.
+#:
+#: MEASURED on the 2026-11-18 board, 2,202 non-ml line-groups, each aged
+#: against its own (game, market, side) board latest. The distribution is
+#: bimodal, not a gradient - a line is on the board or it is gone:
+#:
+#:        0-1 min   1222      <- quoted in the last sweep
+#:       15-31 min   100      <- one missed sweep
+#:       46-61 min    68
+#:       61-91 min    46
+#:      91-121 min    18      <- the trough
+#:     121-241 min    96
+#:     241-721 min   470
+#:        721+ min   182      <- fossils; OKC -7.5 sat here at 810 min
+#:
+#: Captures sweep every ~30 min, so 90 minutes is three sweeps: it tolerates
+#: two consecutive misses and still kills every fossil. The trough at 91-121
+#: holds 18 of 2,202 groups, so the cut costs almost nothing either way.
+#:
+#: NOT APPLIED TO 'ml'. A moneyline has one line per side, so its group
+#: cannot fossilise - every ml group measured 0.0 min on all five sports.
+#: Ageing it out could only delete a good price. Same reason NHL puckline and
+#: MLB run line are safe at any threshold: both are fixed at +/-1.5 and so
+#: are always on the board (NHL spread measured 100% at 0.0 min).
+STALE_QUOTE_MAX_MIN = 90.0
+
+
+def _drop_stale_lines(grouped: dict, max_min: float = STALE_QUOTE_MAX_MIN,
+                      report: dict | None = None) -> dict:
+    """Drop line-groups whose newest quote predates the board's last refresh.
+
+    Keyed per (game_id, market, side): the freshest capture across every line
+    IS the board's last refresh for that market, because a sweep writes all
+    books and all lines together. A group far behind it is a line no book is
+    offering any more.
+
+    'ml' groups are never dropped - see STALE_QUOTE_MAX_MIN.
+    """
+    from datetime import datetime, timezone
+
+    def _ts(v):
+        try:
+            d = datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    newest_line, board = {}, {}
+    for (gid, mk, sd, ln), rows in grouped.items():
+        t = max((_ts(r.get('captured_at')) for r in rows
+                 if _ts(r.get('captured_at')) is not None), default=None)
+        if t is None:
+            continue
+        newest_line[(gid, mk, sd, ln)] = t
+        bk = (gid, mk, sd)
+        if bk not in board or t > board[bk]:
+            board[bk] = t
+
+    out, dropped = {}, []
+    for k, rows in grouped.items():
+        gid, mk, sd, ln = k
+        t = newest_line.get(k)
+        if mk == 'ml' or t is None:
+            out[k] = rows
+            continue
+        age = (board[(gid, mk, sd)] - t).total_seconds() / 60.0
+        if age > max_min:
+            dropped.append((gid, mk, sd, ln, round(age, 1)))
+            continue
+        out[k] = rows
+    if report is not None:
+        report['dropped'] = dropped
+    if dropped:
+        print(f'  . {len(dropped)} line-group(s) dropped as off the board '
+              f'(older than {max_min:g} min behind their own market)')
+    return out
+
 
 def quote_index(sport: str, lo: str) -> dict:
     """Latest quote per (game_id, market, side, line), newest wins.
@@ -241,7 +333,10 @@ def quote_index(sport: str, lo: str) -> dict:
     grouped = defaultdict(list)
     for (gid, mk, sd, ln, _b), x in latest.items():
         grouped[(gid, mk, sd, ln)].append(x)
-    return grouped
+    # A dead line keeps its last quote forever because the key holds the line.
+    # Age every group against its own board before anything can be priced off
+    # it. This is the chokepoint: price_one must never see a fossil.
+    return _drop_stale_lines(grouped)
 
 
 def price_one(grouped: dict, key: str, market: str, side: str, line, text: str) -> dict:
@@ -749,6 +844,68 @@ def main():
         print('DRY RUN — re-run with --write to store.')
 
 
+
+def _stale_quote_self_test() -> int:
+    """Pin the staleness bound. No pytest in this repo, so this is the test.
+
+    Wired into CI ahead of the pricer so a regression fails the step instead
+    of shipping another -7.5 beside a -6.5 price.
+    """
+    B = '2026-11-19T00:56:12+00:00'   # board's last sweep
+
+    def grp(items):
+        """items: (market, line, captured_at) -> grouped shape for one game."""
+        g = {}
+        for mk, ln, cap in items:
+            g.setdefault(('G1', mk, 'home', ln), []).append(
+                {'book': 'betmgm', 'price': -110, 'captured_at': cap})
+        return g
+
+    cases = [
+        # (name, grouped, line-keys expected to SURVIVE)
+        ('the OKC row: -7.5 fossil at 810 min dies, live -6.5 lives',
+         grp([('spread', -7.5, '2026-11-18T11:26:08+00:00'),
+              ('spread', -6.5, B)]),
+         {('G1', 'spread', 'home', -6.5)}),
+        ('one missed sweep (30 min) survives',
+         grp([('spread', -7.0, '2026-11-19T00:26:12+00:00'),
+              ('spread', -6.5, B)]),
+         {('G1', 'spread', 'home', -7.0), ('G1', 'spread', 'home', -6.5)}),
+        ('89 min survives, 91 min does not - the boundary, both sides',
+         grp([('spread', -8.0, '2026-11-18T23:27:12+00:00'),
+              ('spread', -9.0, '2026-11-18T23:25:12+00:00'),
+              ('spread', -6.5, B)]),
+         {('G1', 'spread', 'home', -8.0), ('G1', 'spread', 'home', -6.5)}),
+        ('a moneyline is NEVER aged out, however old',
+         grp([('ml', None, '2026-11-17T01:00:00+00:00'), ('ml', None, B)]),
+         {('G1', 'ml', 'home', None)}),
+        ('a lone line is its own board, so it cannot be stale',
+         grp([('spread', -6.5, '2026-11-18T06:00:00+00:00')]),
+         {('G1', 'spread', 'home', -6.5)}),
+        ('totals age the same way as spreads',
+         grp([('total', 227.5, '2026-11-18T02:56:11+00:00'),
+              ('total', 230.5, B)]),
+         {('G1', 'total', 'home', 230.5)}),
+        ('an unparseable captured_at is KEPT - a bad timestamp must not '
+         'silently delete a price',
+         grp([('spread', -6.5, 'not-a-timestamp')]),
+         {('G1', 'spread', 'home', -6.5)}),
+    ]
+    bad = 0
+    for name, grouped, want in cases:
+        got = set(_drop_stale_lines(grouped).keys())
+        ok = got == want
+        print(f'  [{"PASS" if ok else "FAIL"}] {name}')
+        if not ok:
+            bad += 1
+            print(f'         want {sorted(map(str, want))}')
+            print(f'         got  {sorted(map(str, got))}')
+    print(f'  {len(cases) - bad}/{len(cases)} passed')
+    return 1 if bad else 0
+
+
 if __name__ == '__main__':
     sys.stdout.reconfigure(encoding='utf-8')
+    if '--self-test' in sys.argv:
+        raise SystemExit(_stale_quote_self_test())
     main()

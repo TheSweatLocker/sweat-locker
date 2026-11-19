@@ -882,6 +882,38 @@ jobs:
       # them, so it protects the prose by refusing to update the pick (R189).
       # Ordering had to be right first; without it, fixing the guard would
       # just have propagated a stale pick faster.
+      # ══ 2026-11-18 · NCAAB WAS DARK TO THE GATES TWICE OVER ═════════
+      # It is the one sport whose builder never calls
+      # apply_all_defensive_gates, AND it was missing from this pass's
+      # TABLES dict -- so every gate in defensive_gates was unreachable for
+      # NCAAB by two independent routes. That is how "Kansas ML" shipped at
+      # -2100 on a 16.5 spread.
+      #
+      # Before switching this on, the ML->spread reroute it carries was
+      # measured for NCAAB on 532 graded favourites (2026-11-01..11-18),
+      # the moneyline at its real close and the spread at -110:
+      #
+      #     favourite ML past -300      297-44   87.1%   ROI -7.4%
+      #     same-side spread @ -110     164-177  48.1%   ROI -8.2%
+      #
+      # The spread recovers nothing, so NCAAB went into
+      # LR_REROUTE_BLOCKED_SPORTS and the -300 ceiling in
+      # ncaab_game_context stays the operative rule. A dry run on the
+      # 2026-11-18 forward board reported CHANGED 0, i.e. this is inert
+      # today and exists to catch the next one.
+      - name: Apply defensive-gate fixes to stored picks (post-pass, NCAAB)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          python defensive_gates.py --self-test
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "apply_pick_gates_post_pass.py (NCAAB)" \
+            python apply_pick_gates_post_pass.py --sport NCAAB --apply
+
       - name: Sync NCAAB jerry_reads from ctx
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

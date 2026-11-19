@@ -65,6 +65,13 @@ TABLES = {
     'NHL':   'nhl_game_context',
     'NBA':   'nba_game_context',
     'MLB':   'mlb_game_context',
+    # 2026-11-18: NCAAB was the one sport missing from this dict AND the one
+    # sport whose builder never calls apply_all_defensive_gates, so every
+    # gate in that module was dark for it twice over -- which is how
+    # "Kansas ML" shipped at -2100 on a 16.5 spread. Adding it here is the
+    # cheaper half of the fix: this pass only demotes and reroutes, so it
+    # cannot re-score the NCAAB board.
+    'NCAAB': 'ncaab_game_context',
 }
 # Field on each table that carries kickoff/first-pitch, for the started check.
 START_COLS = ('kickoff_utc', 'game_time_utc', 'start_time_utc', 'commence_time')
