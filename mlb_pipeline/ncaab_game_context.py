@@ -1157,10 +1157,79 @@ def _juice_gate_self_test() -> int:
     return 1 if failures else 0
 
 
+def _client_parity_self_test() -> int:
+    """The client re-implements this module's spread math. Pin the two together.
+
+    == 2026-11-19 . ONE CONSTANT, TWO WRITERS, THIRTEEN DAYS APART ==========
+    ADJ_EM_TO_MARGIN replaced a /3.0 divisor here on 11-06 on measured
+    grounds. `app/index.tsx` carried the SAME divisor in its own NCAAB branch
+    and nobody changed it, so the client kept projecting a third of the real
+    margin until 11-19 (feedback_fix_every_writer_to_the_table).
+
+    The client also computed its spread edge as a DIFFERENCE where every
+    other writer in the repo sums: `projected_spread` is a home MARGIN
+    (positive = home favored) and `close_spread` is a home HANDICAP
+    (negative = home favored), so agreement sums to zero. Measured on 454
+    post-fix NCAAB games, subtracting read mean |edge| 26.22 pts where the
+    real disagreement is 2.91, which pinned the client's spreadMismatchScore
+    at its 85 ceiling on 83% of the slate -- 100% of every game with a spread
+    of 6 or more (feedback_a_pair_needs_same_measure_and_scale,
+    feedback_edge_formula_sign_audit).
+
+    A comment asking two files to stay in step is not a guard
+    (feedback_comment_asserting_a_measurement), so this reads the client.
+    """
+    import os
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    client = os.path.join(os.path.dirname(here), "app", "index.tsx")
+    if not os.path.exists(client):
+        print(f"  skip  client not present at {client}")
+        print("\nPASS: 0/0 client-parity cases (client absent)")
+        return 0
+    with open(client, "r", encoding="utf-8", errors="replace") as fh:
+        src = fh.read()
+    failures, checks = 0, []
+
+    m = re.search(r"NCAAB_ADJ_EM_TO_MARGIN\s*=\s*([0-9.]+)", src)
+    if m is None:
+        checks.append((False, "client declares NCAAB_ADJ_EM_TO_MARGIN", "absent"))
+    else:
+        got = float(m.group(1))
+        checks.append((abs(got - ADJ_EM_TO_MARGIN) < 1e-9,
+                       f"client constant {got} == pipeline {ADJ_EM_TO_MARGIN}",
+                       f"client={got} pipeline={ADJ_EM_TO_MARGIN}"))
+
+    # The divisor must be gone from the client's NCAAB branch.
+    checks.append(("(homeTeam.adjEM - awayTeam.adjEM) / 3" not in src,
+                   "client no longer divides adjEM gap by 3", "divisor present"))
+
+    # Every spread-edge site must SUM. A difference on this pair doubles it.
+    bad = re.findall(r"(?:predictedSpread|projectedSpread)\s*-\s*"
+                     r"(?:postedSpread|sc\.marketSpread|marketSpread)", src)
+    checks.append((not bad, "client sums projection + handicap (never subtracts)",
+                   f"{len(bad)} subtraction site(s): {bad[:3]}"))
+
+    for ok, name, detail in checks:
+        if not ok:
+            failures += 1
+        print(f'  {"ok  " if ok else "FAIL"} {name}'
+              f'{"" if ok else "  <- " + detail}')
+    print(f'\n{"PASS" if not failures else "FAIL"}: '
+          f'{len(checks) - failures}/{len(checks)} client-parity cases')
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
     import sys
     if "--self-test" in sys.argv:
-        raise SystemExit(_juice_gate_self_test())
+        # Run BOTH, then combine. `a() or b()` short-circuits, so a failing
+        # juice gate would skip client parity entirely and the run would
+        # report one defect while hiding another
+        # (feedback_early_bail_before_the_fixed_gate).
+        _rc_juice = _juice_gate_self_test()
+        _rc_client = _client_parity_self_test()
+        raise SystemExit(1 if (_rc_juice or _rc_client) else 0)
     try:
         from season_gate import season_gate_or_exit
         season_gate_or_exit('NCAAB')

@@ -4038,6 +4038,14 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
       } catch { /* fall through to defaults */ }
     })();
   }, []);
+  // adjEM differential -> expected game margin. Mirrors
+  // ncaab_game_context.ADJ_EM_TO_MARGIN, fitted 2026-11-06 against two
+  // independent targets (0.973 vs actual final margins n=134, 0.935 vs the
+  // posted close_spread n=189). Replaced a /3.0 divisor in the pipeline that
+  // day; this file kept the divisor until 11-19. If that constant moves,
+  // move this one with it.
+  const NCAAB_ADJ_EM_TO_MARGIN = 0.97;
+
   const getSweatTier = (score, serverTier?: string) => {
     // Prefer server tier when provided — MLB games ship sweat_tier in
     // mlb_game_context (computed by play_of_day._sweat_tier with full
@@ -4073,6 +4081,8 @@ const yesterday = fmt(new Date(now - 24*60*60*1000));
     let sosDelta = 0;
     let spreadEdge = 0;
     let efgMismatch = 0;
+    // Mirrors ncaab_game_context.ADJ_EM_TO_MARGIN. Keep the two in step: this
+    // file held /3.0 for thirteen days after the pipeline stopped using it.
     let fourFactorBoost = 0;
     let predictedSpread = 0;
     let fanmatchGame = null;
@@ -4139,7 +4149,14 @@ const allSpreadsRaw = bookmakers.map(bm => {
   return homeOutcome ? homeOutcome.point : null;
 }).filter(x => x !== null);
 const postedSpread = allSpreadsRaw.length ? allSpreadsRaw.reduce((a,b)=>a+b,0)/allSpreadsRaw.length : null;
-spreadEdge = postedSpread !== null ? predictedSpread - postedSpread : 0;
+// SUM, not difference -- predictedSpread is a home MARGIN (homePred -
+// visitorPred), postedSpread is the signed home HANDICAP, so the two agree
+// at zero. Subtracting doubled it: measured on 454 post-fix NCAAB games the
+// mean |spreadEdge| read 26.22 pts where the real disagreement is 2.91, and
+// spreadMismatchScore sat pinned at its 85 ceiling on 83% of the slate --
+// 100% of every game with a spread of 6 or more. A score that is constant
+// across the slate carries no information into modelMismatch's 0.65 weight.
+spreadEdge = postedSpread !== null ? predictedSpread + postedSpread : 0;
 
     const spreadMismatchScore = Math.min(85, 40 + Math.abs(spreadEdge) * 8);
 
@@ -4209,9 +4226,27 @@ modelMismatch = Math.min(85, modelMismatch);
     const homeTeam = fuzzyMatchTeam(homeStripped, bartData, 'team');
     //console.log('FALLBACK MATCH:', awayStripped, '->', awayTeam?.team, '|', homeStripped, '->', homeTeam?.team);
    if(awayTeam && homeTeam) {
-  predictedSpread = (homeTeam.adjEM - awayTeam.adjEM) / 3;
-  const postedSpread = spreads.length ? spreads[0] : null;
-  spreadEdge = postedSpread ? predictedSpread - postedSpread : 0;
+  // 2026-11-19 · /3 WAS FIXED IN THE PIPELINE ON 11-06 AND NEVER HERE.
+  // ncaab_game_context.ADJ_EM_TO_MARGIN replaced this same /3.0 divisor
+  // ("wrong by ~3x, fabricated an 11.77-point spread_edge on every game")
+  // after fitting against two independent targets. That writer was fixed;
+  // this one was not, so the client kept the divisor for thirteen days.
+  predictedSpread = (homeTeam.adjEM - awayTeam.adjEM) * NCAAB_ADJ_EM_TO_MARGIN;
+  // `spreads` (above) is Math.abs(point) -- a MAGNITUDE, which cannot express
+  // a side, so it read every away favourite as a home one. Take the signed
+  // home point, exactly as the fanmatch path above does.
+  const postedSpreadRaw = bookmakers.map((bm: any) => {
+    const s = bm.markets && bm.markets.find((m: any) => m.key==='spreads');
+    const h = s && s.outcomes && s.outcomes.find((o: any) => o.name === game.home_team);
+    return h && h.point != null ? h.point : null;
+  }).filter((x: any) => x !== null);
+  const postedSpread = postedSpreadRaw.length
+    ? postedSpreadRaw.reduce((a: number, b: number)=>a+b,0)/postedSpreadRaw.length : null;
+  // SUM, not difference: predictedSpread is a home MARGIN (+10 = home by 10),
+  // postedSpread is a home HANDICAP (-10 = home laying 10), so agreement sums
+  // to zero. See the NBA path's `nrGap + marketSpread` and MLB's documented
+  // `spread_delta = projected_spread + close_spread`.
+  spreadEdge = postedSpread !== null ? predictedSpread + postedSpread : 0;
   const spreadMismatchScore = Math.min(85, 40 + Math.abs(spreadEdge) * 8);
   sosDelta = (awayTeam.sos||0) - (homeTeam.sos||0);
   const sosConfidence = Math.abs(sosDelta) > 2 ? Math.min(20, Math.abs(sosDelta) * 2.5) : 0;
@@ -15751,7 +15786,15 @@ setJerryHistory(prev => {
       let spreadEdge = 0;
       if (sc?.modelMismatch != null) spreadEdge = Math.abs(sc.modelMismatch);
       else if (sc?.projectedSpread != null && sc?.marketSpread != null) {
-        spreadEdge = Math.min(100, Math.abs(sc.projectedSpread - sc.marketSpread) * 10);
+        // SUM, not difference. projectedSpread is a home MARGIN (positive =
+        // home favored) and marketSpread is the signed home HANDICAP
+        // (negative = home favored), so agreement sums to zero -- the same
+        // pair the NBA path adds as `nrGap + marketSpread` and that MLB
+        // documents as load-bearing: `spread_delta = projected_spread +
+        // close_spread`. Subtracting doubled the magnitude, and with the *10
+        // scale and the 100 cap this sorting signal pinned at its ceiling for
+        // any game expected to be decided by 5 or more.
+        spreadEdge = Math.min(100, Math.abs(sc.projectedSpread + sc.marketSpread) * 10);
       }
 
       // (2) LR conviction signal. 2026-10-20 B99: this had its own map chain
