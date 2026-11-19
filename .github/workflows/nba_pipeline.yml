@@ -235,6 +235,33 @@ jobs:
           # split_sharp_card_record.py, refresh_calibration_notes.py and
           # cross_sport_lines.yml. See B157.
           python nba_player_log_ingest.py --since 2026-10-01 --apply
+          # ══ 2026-11-19 · STAMP THE PHASE, OR THE RECORDS DROP THE GAMES ══
+          # team_situational_records gates NBA on season_type = 'regular',
+          # and excludes NULL ON PURPOSE (unknown is not regular). But
+          # season_type's ONLY writer is this script, and this script was in
+          # NO workflow — it last ran by hand around 2026-10-22, the day its
+          # migration shipped. Every NBA game from 10-23 on was therefore
+          # NULL, and NULL is excluded:
+          #
+          #     season_type = 'regular'     40 games   counted
+          #     season_type = NULL         182 games   SILENTLY DROPPED
+          #     season_type = 'preseason'   65 games   correctly excluded
+          #
+          # So every NBA team's Situational Records card was built from 1-4
+          # games while the team had played 12-17. That is the same
+          # "starts 0-0 essentially" Andy reported on 2026-10-21, returning
+          # by a different route: that fix corrected the season LABEL, this
+          # one is the season PHASE, and a gate whose column nothing writes
+          # always takes the same branch.
+          #
+          # --only-null skips any date already fully stamped, so the daily
+          # cost is one ESPN scoreboard call per genuinely new date. No
+          # --season: hardcoding one here is how each scraper came to invent
+          # its own season (see feedback_each_scraper_invented_its_own_season).
+          # Runs in the SAME step as the resolver, immediately after it, so
+          # the games this run just finalised get their phase before the
+          # team_situational_records refresh below reads them.
+          python backfill_nba_season_type.py --only-null || true
 
       # 2026-09-08 wired: grade NBA jerry_reads right after resolver so
       # NBA doesn't wait on the MLB nightly step. Parallels NHL wiring —

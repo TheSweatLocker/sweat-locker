@@ -132,6 +132,51 @@ jobs:
           cd mlb_pipeline
           python nhl_resolve_results.py
 
+      # ══ 2026-11-19 · THE PUCK LINE AND THE GRADE THAT DEPENDS ON IT ══
+      # Andy asked me to verify the ATS and moneyline records on the
+      # Canucks @ Kraken card. The moneyline records were exact to the game
+      # (5-17-1 and 9-8-1, matching the league's own standings, goal totals
+      # and L10). Both ATS records were ONE GAME SHORT, and so was every
+      # other team that played on 2026-11-07:
+      #
+      #     nhl_game_results.close_puckline   NULL on all 12 of that slate
+      #     nhl_game_context.close_spread     -1.5/+1.5 on all 12
+      #
+      # The line was never missing. It was in the other table under a
+      # different name, so the grader could not produce a spread_result and
+      # all 12 games dropped out of team_situational_records. 24 teams, one
+      # game each, cutting OPPOSITE WAYS: Vancouver read 10-12 when it is
+      # 10-13, Seattle 9-8 when it is 10-8. A short denominator renders as a
+      # perfectly plausible record, which is why it survived 12 days with
+      # nothing on screen or in any check to say so.
+      #
+      # NEITHER of these scripts was in ANY workflow. backfill_game_grades
+      # has been the one owner of "who covered" since it was written, for
+      # three sports, and it has only ever been run by hand. So had the two
+      # sibling writers for this column (backfill_closing_lines,
+      # backfill_nba_season_type) — see feedback_a_writer_in_no_workflow.
+      #
+      # ORDER MATTERS: fill the line, then grade it. Both are idempotent and
+      # only ever fill a NULL, so a re-run is a no-op rather than a rewrite,
+      # and the line-fill refuses anything that is not exactly +/-1.5 —
+      # this column historically held MONEYLINE PRICES and grading off those
+      # fabricated 1,120 rows at a believable 52.5/47.5 home/away split.
+      # Runs BEFORE the team_situational_records refresh below, which is the
+      # surface that consumes the grade.
+      - name: Fill NHL puck lines + grade the spread (situational records)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # Self-test first — no pytest in this repo, so the module's own
+          # cases are the only unit test that runs. The one that matters
+          # guards against a moneyline price being written in as a line.
+          python backfill_nhl_puckline_from_ctx.py --self-test
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_nhl_puckline_from_ctx.py" python backfill_nhl_puckline_from_ctx.py --since 2026-09-01
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "backfill_game_grades.py --sport NHL" python backfill_game_grades.py --sport NHL
+
       # ══ 2026-10-02 · NHL PROPS WERE NEVER GRADED ══
       # nhl_generate_props (step below) had written 7,587 rows since 09-29 and
       # every one sat at result=NULL, because grade_props.SPORT_PROPS_TABLE had

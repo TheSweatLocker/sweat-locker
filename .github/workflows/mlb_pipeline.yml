@@ -2489,6 +2489,54 @@ jobs:
           cd mlb_pipeline
           python consistency_watchdog.py
 
+      # ══ 2026-11-19 · SITUATIONAL RECORDS, ALL SIX SPORTS ══
+      # Andy: "We need to ensure every sport is surfacing correct
+      # situational records and ensure that fuck up isnt happening anymore."
+      #
+      # One NHL card's ATS record being a game short turned out to be three
+      # sports deep, all the same shape — a game that silently did not get
+      # COUNTED:
+      #   NCAAB  as_fav/as_dog produced ZERO rows for all 362 teams. is_fav
+      #          read close_home_ml (0% filled) over the twin home_ml_close
+      #          (94%), and NULL is not FALSE, so both `is_fav` and
+      #          `NOT is_fav` excluded every row. Two of the card's four
+      #          filter rows, absent league-wide.
+      #   NBA    182 of 222 regular-season games dropped on a NULL
+      #          season_type whose only writer was unscheduled.
+      #   NHL    the whole 12-game 2026-11-07 slate, on a NULL puck line
+      #          that sat populated in the sibling table.
+      #
+      # NOTHING WAS MIS-GRADED. I regraded all six sports from score + line:
+      # exactly one wrong grade in 4,000+ games. The records were wrong
+      # because the DENOMINATOR was short — and a short denominator renders
+      # as a perfectly plausible record, which is why all three survived.
+      # So this counts, and leaves grading to backfill_game_grades.
+      #
+      # It lives here because mlb_pipeline.yml owns the shared cross-sport
+      # surfaces (project_mlb_pipeline_yml_owns_shared_surfaces_1103), and
+      # next to consistency_watchdog because both answer "is what the app
+      # shows still true". Exit 1 on a shortfall or an absent filter; exit 2
+      # on a read failure, because 0 rows read is a wiring error and never a
+      # finding. A sport with nothing to measure prints SKIPPED, never
+      # clean — the lesson of the LR-shadow check that read only MLB and so
+      # could not fail after the season ended.
+      - name: Situational records audit (cross-sport)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+        run: |
+          cd mlb_pipeline
+          # --self-test first: there is no pytest in this repo, so a module's
+          # own cases are the only unit tests that run anywhere. GitHub runs
+          # a `run:` block as `bash -e`, so a failing self-test aborts the
+          # step before the live audit — which is the intent. If the
+          # detector's own arithmetic is broken its verdict on the data is
+          # worthless, and a detector that cannot fail is worse than none
+          # because it is reported as a pass.
+          python audit_situational_records.py --self-test
+          python audit_situational_records.py
+
       # 2026-09-09 PIPELINE SMOKE TEST — read-only sanity that every
       # user-visible surface has data. Runs AFTER consistency_watchdog
       # so we get both cross-table drift AND presence checks in the run

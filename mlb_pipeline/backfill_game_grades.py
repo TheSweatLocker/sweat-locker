@@ -81,6 +81,26 @@ SPORTS = {
     'NBA':   {'results': 'nba_game_results', 'spread_col': 'close_spread',
               'total_col': 'close_total', 'scored_col': 'total_points',
               'spread_sane': 40.0, 'total_range': (150.0, 300.0)},
+    # NCAAF added 2026-11-19, found by audit_situational_records: 13 scored
+    # 2026 games carry no spread_result and 14 no total_result, so they are
+    # absent from every team's ATS and O/U record. Same shape as NBA above —
+    # the lines were already there, nothing ever turned them into a grade.
+    # Bands are wide because college football is. MEASURED on all 878 priced
+    # 2026 rows: close_spread -58.5..+30.5, close_total 36.5..78.5. The band
+    # is 70, not 60 — 60 would sit 1.5 points from a line that really
+    # occurred, and a band that narrow refuses real data the first week a
+    # bigger mismatch is posted. 70 still refuses every moneyline price,
+    # which is the thing this guard is for: |price| is at least ~100, so
+    # there is no overlap to get wrong.
+    # NCAAF's close_spread is a HOME HANDICAP (negative = home favoured),
+    # verified not assumed: its sign agrees with the cheaper moneyline on
+    # 714 of 720 scored 2026 games (99.2%). That matters because NFL, alone
+    # among the sports, stores the opposite convention in the same column
+    # name — grade_spread() takes a handicap, so a sport with NFL's
+    # convention must NOT be added here without negating it first.
+    'NCAAF': {'results': 'ncaaf_game_results', 'spread_col': 'close_spread',
+              'total_col': 'close_total', 'scored_col': 'total_points',
+              'spread_sane': 70.0, 'total_range': (20.0, 120.0)},
 }
 
 
