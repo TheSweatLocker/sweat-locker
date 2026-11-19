@@ -97,20 +97,44 @@ def check(sport, warn_only=False):
     r2 = requests.get(
         f"{SUPABASE_URL}/rest/v1/jerry_reads",
         headers=HDRS,
-        params={'select': 'game_id', 'sport': f'eq.{sport}',
+        # ══ 2026-11-19 · A ROW IS NOT A READ ═════════════════════════════
+        # This selected game_id only, so a row's EXISTENCE counted as
+        # coverage. sync_jerry_reads_from_ctx writes a bridge stub -- a row
+        # with a one-clause short_read built from primary_play and an EMPTY
+        # long_read -- whenever the real generator did not cover a game. Game
+        # detail renders jerry_reads.long_read, so on 2026-11-19 this script
+        # printed "NFL week 11+12: 29/29 reads [OK]" and "All app-visible
+        # football games have a read" while 26 of those 29 cards were BLANK,
+        # for 18 days. Presence is not content
+        # (feedback_coverage_pct_hides_dead_code,
+        # feedback_column_presence_is_not_contamination).
+        params={'select': 'game_id,long_read,prompt_version',
+                'sport': f'eq.{sport}',
                 'game_date': f'gte.{today}', 'limit': '2000'},
         timeout=30)
     if r2.status_code != 200:
         print(f'  {sport}: jerry_reads fetch failed {r2.status_code}')
         return 0 if warn_only else -1
-    have = {x.get('game_id') for x in r2.json()}
+    _rows = r2.json()
+    have = {x.get('game_id') for x in _rows
+            if (x.get('long_read') or '').strip()}
+    # A row that exists but renders nothing, reported separately so the two
+    # failures are never conflated: no row at all vs a row with no prose.
+    _stub = {x.get('game_id') for x in _rows
+             if not (x.get('long_read') or '').strip()}
 
     missing = [g for g in ctx if g.get('game_id') not in have]
+    _stubbed = [g for g in ctx if g.get('game_id') in _stub]
     tag = 'OK' if not missing else ('WARN' if warn_only else 'GAP')
     print(f'  {sport:<6s} week {cur}+{cur + 1}: '
-          f'{len(ctx) - len(missing)}/{len(ctx)} reads  [{tag}]')
+          f'{len(ctx) - len(missing)}/{len(ctx)} reads with PROSE  [{tag}]')
+    if _stubbed:
+        print(f'      {len(_stubbed)} row(s) exist with an EMPTY long_read '
+              f'— game detail renders blank for these')
     for g in missing:
-        print(f"      NO READ  {g['game_date']}  "
+        _why = 'STUB (row exists, no prose)' if g.get('game_id') in _stub \
+            else 'NO ROW'
+        print(f"      {_why:<28s} {g['game_date']}  "
               f"{g.get('away_team')}@{g.get('home_team')}  ({g.get('game_id')})")
     return len(missing)
 

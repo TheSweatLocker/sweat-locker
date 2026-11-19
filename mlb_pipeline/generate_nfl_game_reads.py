@@ -2622,8 +2622,31 @@ def run():
 
     games = fetch_odds_games()
     if not games:
-        print("  No NFL games on the slate (offseason / no odds available).")
-        return
+        # ══ 2026-11-19 · A GREEN EXIT HID 26 BLANK CARDS FOR 18 DAYS ══════
+        # This used to print and `return`, i.e. exit 0. The NFL read step in
+        # nfl_pipeline.yml did not pass ODDS_API_KEY (the injury-regen step
+        # calling this same script always did), so the fetch returned [] on
+        # every cron, this branch fired, and run_step.sh recorded a 0-second
+        # SUCCESS. sync_jerry_reads_from_ctx then wrote a bridge stub per
+        # game -- short_read present, long_read EMPTY -- and game detail
+        # renders long_read, so NFL cards were blank while
+        # verify_read_coverage said 29/29 OK because it counts ROWS.
+        #
+        # season_gate_or_exit('NFL') already ran at import, so reaching here
+        # IN SEASON is a wiring error, not an empty slate
+        # (feedback_zero_rows_is_a_wiring_error,
+        # feedback_green_step_that_writes_nothing). Name the likely cause and
+        # fail, so the next occurrence is a red step instead of a quiet one.
+        if not ODDS_API_KEY:
+            print("  !! ODDS_API_KEY is not set — fetch_odds_games() cannot "
+                  "return a slate. This is the 2026-11-19 defect: the step "
+                  "is missing the key, NOT an empty slate.")
+            sys.exit(2)
+        print("  !! fetch_odds_games() returned NO games while the season "
+              "gate says NFL is in season. Treating as a wiring error "
+              "(odds feed down, key rejected, or sport key changed) rather "
+              "than an empty slate.")
+        sys.exit(2)
     # Filter to the window the app can actually display.
     # 2026-09-06: bumped 8→10 to reach Week 1 MNF (game 9/15 8pm ET was
     # 9+ days out on Sat morning runs — the fetch_nfl_contexts horizon

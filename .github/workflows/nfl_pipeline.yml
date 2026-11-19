@@ -1335,6 +1335,19 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 2026-11-19 · THIS STEP RAN 0s GREEN FOR 18 DAYS WITHOUT THIS KEY.
+          # generate_nfl_game_reads builds its slate from fetch_odds_games(),
+          # unlike every other sport's generator, which reads its own context
+          # table. With no key the fetch returns [], the script prints "No NFL
+          # games on the slate (offseason / no odds available)" and returns 0,
+          # so run_step.sh logged a 0-second SUCCESS. Meanwhile
+          # sync_jerry_reads_from_ctx wrote a bridge stub per game -- a row
+          # with a short_read and an EMPTY long_read -- and game detail
+          # renders long_read, so 26 of 29 NFL cards were blank for paying
+          # users while verify_read_coverage reported 29/29 OK (it counts
+          # rows, not prose). The Injury-triggered regen step below has
+          # always passed this key to the SAME script.
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           # Empty unless the dispatcher ticked unlock_week; the generator
           # only treats the literal '1' as an override.
           NFL_UNLOCK_WEEK: ${{ (github.event_name == 'workflow_dispatch' && inputs.unlock_week) && '1' || '' }}
