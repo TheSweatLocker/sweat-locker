@@ -2531,6 +2531,47 @@ def apply_heavy_ml_spread_reroute(pp: dict | None, ctx: dict,
     if isinstance(_sub, str) and old_label and _sub.startswith(f'{old_label}:'):
         out['sub'] = out['label'] + _sub[len(str(old_label)):]
 
+    # ══ 2026-11-18 · AND THE VERDICT IN WORDS, NOT ONLY THE TIER CAP ══════
+    # The block below already refuses to carry the moneyline's VERDICT onto
+    # the spread, and drops the tier cap earned on the ML edge. It left the
+    # same verdict standing in the user-visible PROSE, because
+    # apply_ml_lr_override writes a sub of the form
+    #
+    #     "Model win probability on Thunder · 65% vs 73% implied
+    #      — the market is shorter than we are"
+    #
+    # which does not start with "{label}:" and so slipped past the rewrite
+    # above. On the 2026-11-18 Sharp that sentence was the stated reason for
+    # the deck's LARGEST play, 1.8u, on a pick that was the SPREAD: the 73%
+    # is the moneyline's implied probability (OKC ~-250), and read literally
+    # the card told a subscriber we were 8pp short on our own biggest bet
+    # while Buffalo's genuine +9.9pp got 1.5u.
+    #
+    # Same reasoning as the cap: conviction is a probability of WINNING and a
+    # spread needs a cover probability, so the comparison is not merely
+    # stale, it is a category error -- model_edge.edge_pp() refuses non-ML
+    # picks for exactly this reason. The spread is UNEVALUATED, not short.
+    #
+    # NARROW ON PURPOSE, like _stale_ml_sub in the post pass. It fires only
+    # on the exact artifact -- a sub carrying " vs N% implied" on a pick this
+    # reroute has just moved off the moneyline -- and it keeps the model's
+    # own number, which is still true. Anything else is left alone.
+    _sub2 = out.get('sub')
+    if isinstance(_sub2, str) and '% implied' in _sub2 and ' vs ' in _sub2:
+        _lead = _sub2.split(' vs ', 1)[0].rstrip(' ·-—')
+        if _lead:
+            out['sub'] = (f'{_lead} — moneyline past our juice ceiling at '
+                          f'{price:g}, so the read is expressed on the '
+                          f'spread (no cover probability, so no edge is '
+                          f'claimed)')
+            out['_ml_implied_prose_dropped'] = {
+                'was': _sub2, 'ml_price': price,
+                'basis': 'conviction is a win probability; a spread needs a '
+                         'cover probability. Same reason '
+                         'drop_ml_edge_cap_on_spread exists, applied to the '
+                         'prose instead of the tier.',
+            }
+
     # ══ 2026-10-07 · DO NOT CARRY THE MONEYLINE'S VERDICT ONTO THE SPREAD ══
     # The tier arriving here was capped by the MONEYLINE edge: conviction
     # minus the ML's implied probability. model_edge.py's own module note says
@@ -3925,8 +3966,66 @@ def _stale_line_self_test() -> int:
     return 1 if bad else 0
 
 
+def _reroute_prose_self_test() -> int:
+    """Pin the ML-implied prose drop on a rerouted spread.
+
+    The 2026-11-18 Sharp stated "65% vs 73% implied -- the market is shorter
+    than we are" as the reason for its 1.8u top play, on a pick that was the
+    spread. 73% was the moneyline's implied probability.
+    """
+    def ml(sub):
+        return {'type': 'ml', 'side': 'HOME', 'tier': 'STRONG',
+                'conviction': 65, 'line': None,
+                'label': 'Oklahoma City Thunder ML', 'sub': sub}
+
+    ctx = {'close_home_ml': -250, 'close_away_ml': 210, 'close_spread': -6.5,
+           'home_team': 'Oklahoma City Thunder', 'away_team': 'Atlanta Hawks'}
+    cases = []
+
+    out = apply_heavy_ml_spread_reroute(
+        ml('Model win probability on Thunder · 65% vs 73% implied '
+           '— the market is shorter than we are'), dict(ctx), sport='NBA')
+    cases.append((
+        'the Sharp 1.8u row: the ML-implied comparison is dropped, the '
+        'model number kept, and the spread claims no edge',
+        out.get('type') == 'rl'
+        and '% implied' not in str(out.get('sub'))
+        and 'shorter than we are' not in str(out.get('sub'))
+        and '65%' in str(out.get('sub'))
+        and '_ml_implied_prose_dropped' in out, out.get('sub')))
+
+    # NARROWNESS. A sub with no implied comparison must survive untouched --
+    # the same trap _stale_ml_sub documents, where a broad rewrite would have
+    # deleted a user-facing gate disclosure.
+    keep = ('⚠ Downgraded to LEAN: MC sim at 42%')
+    out = apply_heavy_ml_spread_reroute(ml(keep), dict(ctx), sport='NBA')
+    cases.append(('a gate disclosure with no implied comparison is untouched',
+                  out.get('sub') == keep
+                  and '_ml_implied_prose_dropped' not in out, out.get('sub')))
+
+    # The ensemble's own "{label}: reason" shape keeps its existing repair and
+    # must not also be eaten by the new branch.
+    out = apply_heavy_ml_spread_reroute(
+        ml('Oklahoma City Thunder ML: Model projects a 5.4-point edge'),
+        dict(ctx), sport='NBA')
+    cases.append(('the "{label}: reason" shape still re-labels to the spread',
+                  str(out.get('sub')).startswith('Oklahoma City Thunder -6.5:')
+                  and '_ml_implied_prose_dropped' not in out, out.get('sub')))
+
+    bad = 0
+    for name, ok, got in cases:
+        print(f'  [{"PASS" if ok else "FAIL"}] {name}')
+        if not ok:
+            bad += 1
+            print(f'         got {got!r}')
+    print(f'  {len(cases) - bad}/{len(cases)} passed')
+    return 1 if bad else 0
+
+
 if __name__ == '__main__':
     import sys
     if '--self-test' in sys.argv:
-        raise SystemExit(_stale_line_self_test())
+        _rc = _stale_line_self_test()
+        _rc |= _reroute_prose_self_test()
+        raise SystemExit(_rc)
     print(__doc__ or 'defensive_gates: import me, or pass --self-test')

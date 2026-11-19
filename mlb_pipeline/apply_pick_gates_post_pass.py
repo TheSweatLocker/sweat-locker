@@ -213,6 +213,55 @@ def main() -> int:
                 new['sub'] = f"{new['label']}:{_s.split(':', 1)[1]}"
                 sub_fixed += 1
 
+            # ══ 2026-11-18 · THE MONEYLINE'S IMPLIED % ON A SPREAD PICK ══
+            # apply_heavy_ml_spread_reroute now drops this clause when it
+            # reroutes, but for exactly the reason the repair above exists, a
+            # row rerouted on an EARLIER run comes back as type 'rl' and
+            # returns early from that gate -- so a row already carrying the
+            # artifact can only be repaired here.
+            #
+            # Measured 2026-11-18, stored rows from 11-01: 46 non-ml picks
+            # state a moneyline implied probability as their reason -- NFL 41,
+            # NBA 5. The 11-18 Sharp's 1.8u top play was one of them,
+            # "65% vs 73% implied -- the market is shorter than we are" on a
+            # SPREAD, where 73% is the OKC moneyline at about -250. NFL's
+            # variant asserts a negative number outright: "SEA - 63% vs 69%
+            # implied - -6.2pp edge".
+            #
+            # conviction is a probability of WINNING; a spread needs a cover
+            # probability, which the pipeline does not compute. So the clause
+            # is not stale, it is a category error -- model_edge.edge_pp()
+            # refuses non-ML picks for this very reason. The spread is
+            # UNEVALUATED, not short, and the repair says so while keeping
+            # the model's own number, which is still true.
+            #
+            # NARROW, like _stale_ml_sub: only a non-ml pick whose sub
+            # carries " vs N% implied".
+            def _ml_implied_on_non_ml(d):
+                s = d.get('sub')
+                if not isinstance(s, str):
+                    return False
+                if str(d.get('type') or '').lower() == 'ml':
+                    return False
+                return '% implied' in s and ' vs ' in s
+
+            if _ml_implied_on_non_ml(new):
+                _s = new['sub']
+                _lead = _s.split(' vs ', 1)[0].rstrip(' ·-—')
+                if _lead:
+                    new = dict(new)
+                    new['sub'] = (
+                        f'{_lead} — expressed on the spread, so no cover '
+                        f'probability and no edge is claimed')
+                    new['_ml_implied_prose_dropped'] = {
+                        'was': _s, 'repaired_by': 'apply_pick_gates_post_pass',
+                        'basis': 'conviction is a win probability; a spread '
+                                 'needs a cover probability. model_edge.'
+                                 'edge_pp() refuses non-ML picks for the '
+                                 'same reason.',
+                    }
+                    sub_fixed += 1
+
             if before == after and new.get('sub') == pp.get('sub'):
                 same += 1
                 continue

@@ -2106,8 +2106,24 @@ def _compose_other_sport_sides(rows: list, sport: str,
                 _mkt = g.get('close_spread')
                 if _mkt is not None and pick_line is not None and \
                         abs(abs(float(_mkt)) - abs(float(pick_line))) >= 0.25:
+                    # ══ 2026-11-18 · THE PAIR HAS TO BE THE SAME MEASURE ══
+                    # The detection above is magnitude-based and right. The
+                    # DISPLAY was not: it stored a SIGNED pick_line beside an
+                    # UNSIGNED market_now, so today's OKC row read
+                    # {'pick_line': -6.5, 'market_now': 7.5} — a reader sees
+                    # fourteen points of movement on a line that moved one,
+                    # and cannot tell which way it went.
+                    #
+                    # close_spread's own sign is not usable here: it is
+                    # HOME-relative in NBA/NCAAF/NCAAB and AWAY-relative in
+                    # NFL. So the magnitude is re-signed to the PICK's own
+                    # convention, which is the only frame the two numbers
+                    # share. Now -6.5 -> -7.5 reads as laying one more point,
+                    # and +2.5 -> +1.5 as taking one fewer.
+                    _m = abs(float(_mkt))
                     line_moved = {'pick_line': float(pick_line),
-                                  'market_now': abs(float(_mkt))}
+                                  'market_now': (_m if float(pick_line) >= 0
+                                                 else -_m)}
             except (TypeError, ValueError):
                 pass
 
