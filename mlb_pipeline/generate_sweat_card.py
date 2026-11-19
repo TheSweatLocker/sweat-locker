@@ -5401,10 +5401,48 @@ def build_card():
     # measured — NBA sides. NHL is NOT vetoed here because I have not graded
     # it the same way, and an unmeasured cell must not inherit a measured
     # one's verdict.
+    # ══ 2026-11-19 · NCAAB ML ADDED, ON THE MEASUREMENT THIS ASKED FOR ════
+    # The note above says the veto is "scoped to what is actually measured"
+    # and that an unmeasured cell must not inherit a measured one's verdict.
+    # That names its own extension condition, and NCAAB ML now meets it.
+    #
+    # On 11-19 the floor put Oregon ML -130 and New Mexico St. ML -128 at
+    # ranks 3 and 4 of a 4-pick card. Measured on 399 graded NCAAB favourite
+    # MLs carrying OUR OWN post-fix projection (projected_spread holds two
+    # models -- /3 before 11-06, *0.97 after -- so pre-11-06 rows are
+    # excluded; feedback_a_derived_column_can_hold_two_models), each at its
+    # own close:
+    #
+    #     band          n    hit     breakeven    ROI
+    #     -300..-200   42   81.0%      71.6%    +13.11%
+    #     -200..-150   51   58.8%      63.5%     -7.71%
+    #     -150..-100   58   50.0%      56.8%    -12.23%   <- both of today's
+    #
+    # -300..-200 reads positive but the 4,981-row baseline behind
+    # NCAAB_ML_TIER_CAP puts that span at +0.01% on n=891, so +13% on n=42 is
+    # noise around a measured zero, not a licence. Splitting on our own
+    # disagreement with the market gives no monotone separation, and the
+    # direction-only control is -5.62% even on the favourites we actively
+    # like -- so there is no sub-cell to carve out as live.
+    #
+    # ANDY approved the veto on 11-19, having pushed back the same day on
+    # anything resembling abandoning the market. This is not that: the market
+    # keeps its reads, its cap and its record. What it loses is the right to
+    # fill a CARD SLOT from a cell we have measured below breakeven, which is
+    # the rule this dict already enforces for NBA sides.
+    #
+    # NCAAB ml is capped at COVERAGE by MAX_TIER_BY_SPORT_MARKET, so the
+    # floor is its only route onto the card; vetoing it here takes NCAAB ML
+    # off the Sweat Card until the cell measures differently. Today that
+    # leaves a 2-pick card, which is what the note above prefers outright:
+    # "a slot filled from a cell we have measured below breakeven is worse
+    # than a short card."
     _MEASURED_LOSING_FILL = {
         # (sport, market): (hit_pct, n, note)
         ('NBA', 'rl'):     (45.76, 59, 'our graded NBA spread picks'),
         ('NBA', 'spread'): (45.76, 59, 'our graded NBA spread picks'),
+        ('NCAAB', 'ml'):   (50.00, 58, 'our graded NCAAB favourite ML '
+                                       '-150..-100, -12.23% ROI'),
     }
 
     def _measured_loser(c):
@@ -5507,8 +5545,20 @@ def build_card():
         _cands = [c for c in _cands if not _measured_loser(c)]
         for _v in _vetoed:
             _hit, _n, _why = _measured_loser(_v)
+            # 2026-11-19: this said "under the 52.38% breakeven" for every
+            # cell. 52.38% is the -110 SPREAD breakeven; a moneyline's is its
+            # own price (the NCAAB cell added today needs 56.8%), so on an ML
+            # the line stated a true hit rate against the wrong bar -- two
+            # numbers printed as a pair that are not the same measure
+            # (feedback_a_pair_needs_same_measure_and_scale). The note now
+            # carries its own comparison and the breakeven is only named
+            # where it is the right one.
+            _bar = (' under the 52.38% breakeven'
+                    if str(_v.get('type') or
+                           _v.get('market') or '').lower() != 'ml' else '')
             print(f'  = floor: refused {str(_v.get("label"))[:34]!r} — '
-                  f'{_why} run {_hit}% on n={_n}, under the 52.38% breakeven')
+                  f'{_why} run {_hit}% on n={_n},{_bar or " measured below "
+                  "breakeven at its own price"}')
         # priced first, then unpriced, each block in calibrated order
         _cands.sort(key=lambda p: (not _priced(p),
                                    -p.get('_calibrated', 0.0),
