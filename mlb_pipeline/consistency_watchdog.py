@@ -652,43 +652,124 @@ def check_lean_prop_rollup(date: str) -> Optional[dict]:
     return None
 
 
+#: Sports with an LR model file, and which shadows that model can produce.
+#: Derived from defensive_gates._LR_MODEL_* — a sport with no model cannot
+#: carry a shadow, so asking for one would make this check cry wolf every
+#: night (NCAAB has no ncaab_ml_logreg.json and is deliberately absent;
+#: feedback_a_missing_tier_can_be_the_gate_working).
+_LR_SHADOW_SPORTS = {
+    'MLB':   {'table': 'mlb_game_context',   'ml': True,  'total': True},
+    'NFL':   {'table': 'nfl_game_context',   'ml': True,  'total': True},
+    'NCAAF': {'table': 'ncaaf_game_context', 'ml': True,  'total': True},
+    'NHL':   {'table': 'nhl_game_context',   'ml': True,  'total': False},
+    'NBA':   {'table': 'nba_game_context',   'ml': True,  'total': False},
+}
+
+
 def check_lr_shadow_coverage(date: str) -> Optional[dict]:
-    """Every MLB game with primary_play should have _lr_ml_shadow and
-    _lr_total_shadow populated. Gap = downstream LR gates silently no-op."""
-    r = requests.get(
-        f'{SB}/rest/v1/mlb_game_context',
-        headers=H_R,
-        params={'game_date': f'eq.{date}', 'primary_play': 'not.is.null',
-                'select': 'primary_play,home_team,away_team', 'limit': '30'},
-        timeout=15,
-    )
-    if r.status_code != 200: return None
-    rows = r.json() or []
-    if not rows: return None
-    ml_ok = tot_ok = 0
-    missing = []
-    for c in rows:
-        pp = c.get('primary_play')
-        if isinstance(pp, str):
-            try: pp = json.loads(pp)
-            except Exception: pp = {}
-        pp = pp or {}
-        has_ml = bool((pp.get('_lr_ml_shadow') or {}).get('p_home_win'))
-        has_tot = bool((pp.get('_lr_total_shadow') or {}).get('p_over'))
-        if has_ml: ml_ok += 1
-        if has_tot: tot_ok += 1
-        if not (has_ml and has_tot):
-            missing.append({'game': f'{c.get("away_team","?")[:12]} @ {c.get("home_team","?")[:12]}',
-                            'ml': has_ml, 'total': has_tot})
-    total = len(rows)
-    if ml_ok == total and tot_ok == total: return None
+    """Every game with a primary_play should carry the LR shadows its sport
+    has a model for. A gap means downstream LR gates silently no-op.
+
+    == 2026-11-19 · THIS CHECK READ ONLY MLB, AND MLB IS OUT OF SEASON =====
+    It queried mlb_game_context alone and returned None — reported CLEAN — on
+    zero rows. MLB's season ended 2026-11-05, so from that date it was
+    structurally incapable of failing and would have stayed so through the
+    entire NBA/NHL/NCAAF/NFL winter. Measured on 2026-11-19 while it reported
+    clean: NHL carried an ML shadow on 2 of 12 games with a play.
+
+    Two separate defects in one function, both worth naming:
+      * ZERO ROWS READ AS A PASS. An empty read is a wiring error or an
+        out-of-season sport, never evidence of health
+        (feedback_zero_rows_is_a_wiring_error,
+        feedback_a_detector_can_be_the_defect).
+      * ONE SPORT STOOD IN FOR ALL OF THEM. A guard on 1 source of 6 is not
+        a guard (feedback_guard_belongs_at_the_chokepoint).
+
+    A sport with no forward rows is now reported as SKIPPED rather than
+    counted as clean, and a check that can see nothing at all says so
+    instead of staying silent.
+    """
+    per_sport, missing, skipped = {}, [], []
+    for sport, spec in sorted(_LR_SHADOW_SPORTS.items()):
+        try:
+            r = requests.get(
+                f'{SB}/rest/v1/{spec["table"]}',
+                headers=H_R,
+                params={'game_date': f'eq.{date}',
+                        'primary_play': 'not.is.null',
+                        'select': 'primary_play,home_team,away_team',
+                        'limit': '60'},
+                timeout=15,
+            )
+        except Exception:
+            skipped.append({'sport': sport, 'why': 'request failed'})
+            continue
+        if r.status_code != 200:
+            skipped.append({'sport': sport, 'why': f'http {r.status_code}'})
+            continue
+        rows = r.json() or []
+        if not rows:
+            # Not clean — simply nothing to judge. Out of season, or no slate.
+            skipped.append({'sport': sport, 'why': 'no forward rows'})
+            continue
+        ml_ok = tot_ok = 0
+        for c in rows:
+            pp = c.get('primary_play')
+            if isinstance(pp, str):
+                try: pp = json.loads(pp)
+                except Exception: pp = {}
+            pp = pp or {}
+            has_ml = bool((pp.get('_lr_ml_shadow') or {}).get('p_home_win'))
+            has_tot = bool((pp.get('_lr_total_shadow') or {}).get('p_over'))
+            if has_ml: ml_ok += 1
+            if has_tot: tot_ok += 1
+            _want_ml = spec['ml'] and not has_ml
+            _want_tot = spec['total'] and not has_tot
+            if _want_ml or _want_tot:
+                missing.append({
+                    'sport': sport,
+                    'game': f'{str(c.get("away_team") or "?")[:12]} @ '
+                            f'{str(c.get("home_team") or "?")[:12]}',
+                    'ml': has_ml,
+                    'total': has_tot if spec['total'] else 'n/a',
+                })
+        n = len(rows)
+        per_sport[sport] = {
+            'games': n,
+            'ml': f'{ml_ok}/{n}' if spec['ml'] else 'no model',
+            'total': f'{tot_ok}/{n}' if spec['total'] else 'no model',
+            'ml_pct': (ml_ok / n) if spec['ml'] else 1.0,
+            'total_pct': (tot_ok / n) if spec['total'] else 1.0,
+        }
+    if not per_sport:
+        # Every sport skipped. Previously indistinguishable from clean.
+        return {
+            'check_name': 'lr_shadow_coverage_gap',
+            'severity': 'WARNING',
+            'message': 'LR shadow coverage could not be evaluated for ANY '
+                       'sport — no forward rows with a primary_play. This is '
+                       'not a pass.',
+            'detail': {'skipped': skipped,
+                       'fix_hint': 'confirm a slate exists for this date'},
+        }
+    bad = {s: v for s, v in per_sport.items()
+           if v['ml_pct'] < 1.0 or v['total_pct'] < 1.0}
+    if not bad:
+        return None
+    _worst = min(min(v['ml_pct'], v['total_pct']) for v in bad.values())
     return {
         'check_name': 'lr_shadow_coverage_gap',
-        'severity': 'WARNING' if (ml_ok/total >= 0.8 and tot_ok/total >= 0.8) else 'CRITICAL',
-        'message': f'MLB LR shadow coverage: ML {ml_ok}/{total}, Total {tot_ok}/{total}. '
-                   f'Games without shadow silently no-op the LR gate.',
-        'detail': {'missing_games': missing[:10],
-                   'fix_hint': 'python recompute_primary_play.py --force'},
+        'severity': 'WARNING' if _worst >= 0.8 else 'CRITICAL',
+        'message': 'LR shadow coverage gap: '
+                   + '; '.join(f'{s} ML {v["ml"]} Total {v["total"]}'
+                               for s, v in sorted(bad.items()))
+                   + '. Games without a shadow silently no-op the LR gate.',
+        'detail': {'per_sport': per_sport,
+                   'missing_games': missing[:12],
+                   'skipped': skipped,
+                   'sports_with_no_lr_model': ['NCAAB'],
+                   'fix_hint': 'python recompute_primary_play.py --force '
+                               '--sport <X>'},
     }
 
 
