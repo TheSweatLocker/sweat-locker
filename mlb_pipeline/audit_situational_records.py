@@ -179,6 +179,12 @@ TWINS = {
     'nhl_game_results': {},
 }
 
+#: The date from which the excluded-population check looks. Deliberately a
+#: constant rather than per-sport: the point is to catch scored rows the
+#: season filter drops, and a per-sport floor derived from the same season
+#: label would inherit the bug being looked for.
+SEASON_FLOOR = '2026-08-01'
+
 MARKETS = ('spread', 'total', 'ml')
 #: Which result column backs each market. Football and the rest agree here;
 #: it is the LINE columns that differ by sport, not the result columns.
@@ -340,6 +346,52 @@ def audit(only=None, today=None):
                     print(f'         WHOLE-SLATE OUTAGE on '
                           f'{sorted(allsame)} -- every scored game that day '
                           f'is missing it, which is a feed gap, not noise')
+                    rc = 1
+
+        # 1b -- THE EXCLUDED POPULATION.
+        #
+        # 2026-11-20. Andy asked me to check Harvard's game data. NCAAB has
+        # 997 scored games since 2026-10-01 and this audit reported 625 of
+        # them, graded 624/625, i.e. essentially perfect -- because it
+        # queries `season = eq.2026-27` exactly as the matview does, and
+        # 344 rows carry season = NULL. Those 344 are the SAME 344 that have
+        # no closing line (997 scored - 653 with close_spread), so a third
+        # of the season is both ungraded AND invisible to every team's
+        # record, and this detector could not see it.
+        #
+        # THAT IS THE DEFECT THIS CHECK EXISTS FOR: an audit that inherits
+        # the filter of the thing it audits is blind to exactly what that
+        # filter removes. Mirroring the matview is right for the shortfall
+        # arithmetic above and wrong as the whole picture, so the excluded
+        # rows get counted separately and loudly.
+        if cfg['season_col']:
+            _all, _err = _page(cfg['table'],
+                               {'select': f"game_id,game_date,home_score,"
+                                          f"{cfg['season_col']}",
+                                'game_date': f'gte.{SEASON_FLOOR}'})
+            if _err:
+                print(f'   excluded-population read failed -- {_err}')
+            else:
+                _sc = [r for r in _all if r.get('home_score') is not None
+                       and str(r.get('game_date'))[:10] < today]
+                _out = [r for r in _sc
+                        if str(r.get(cfg['season_col'])) != str(cfg['season'])]
+                if _out:
+                    _by = collections.Counter(
+                        str(r.get(cfg['season_col'])) for r in _out)
+                    print(f'   CRITICAL: {len(_out)} of {len(_sc)} scored '
+                          f'games since {SEASON_FLOOR} are EXCLUDED by the '
+                          f'season filter and so appear in NO record '
+                          f'({len(_out) / len(_sc) * 100:.1f}%)')
+                    print(f'      their {cfg["season_col"]} values: '
+                          f'{dict(_by.most_common(5))}')
+                    _nul = [r for r in _out if r.get(cfg['season_col']) is None]
+                    if _nul:
+                        _d = collections.Counter(
+                            str(r['game_date'])[:10] for r in _nul)
+                        print(f'      {len(_nul)} have a NULL '
+                              f'{cfg["season_col"]}, dates '
+                              f'{dict(sorted(_d.most_common(4)))}')
                     rc = 1
 
         # 2 -- ABSENT FILTER (the NCAAB defect class)
