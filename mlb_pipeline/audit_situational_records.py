@@ -192,6 +192,41 @@ RESULT_COL = {'spread': 'spread_result', 'total': 'total_result',
               'ml': 'home_win'}
 
 
+def _newest_situational_migration():
+    """The live matview definition, so checks can ask what the READER does
+    rather than assume. Returns '' when the migrations are not on disk."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     '..', 'supabase', 'migrations')
+    if not os.path.isdir(d):
+        return ''
+    cand = sorted(f for f in os.listdir(d) if 'situational' in f)
+    if not cand:
+        return ''
+    try:
+        return open(os.path.join(d, cand[-1]), encoding='utf-8').read()
+    except Exception:                                      # noqa: BLE001
+        return ''
+
+
+_MIG_SQL = None
+
+
+def _reader_coalesces(col, twin):
+    """True when the matview resolves `col` through COALESCE with `twin`.
+
+    Whitespace-insensitive, because the SQL wraps the expression across
+    lines and a literal substring match would miss it and re-report a fixed
+    defect as CRITICAL.
+    """
+    global _MIG_SQL
+    if _MIG_SQL is None:
+        _MIG_SQL = ' '.join(_newest_situational_migration().split())
+    if not _MIG_SQL:
+        return False
+    return (f'COALESCE({col}, {twin})' in _MIG_SQL
+            or f'COALESCE({twin}, {col})' in _MIG_SQL)
+
+
 def _page(table, params, cap=200000):
     """Page a table. Returns (rows, error). An error is a WIRING fault, not
     an empty result -- the caller must not treat them alike."""
@@ -423,6 +458,21 @@ def audit(only=None, today=None):
             if tw:
                 rescued = [r for r in nulls if r.get(tw) is not None]
                 if rescued:
+                    # 2026-11-20: a populated twin is only a DEFECT while the
+                    # reader still names one column. 20261119a made the
+                    # matview COALESCE over both NCAAB moneyline pairs, so
+                    # close_home_ml being 100% empty stopped mattering -- and
+                    # this check went on calling it CRITICAL, which is a
+                    # detector that does not know the intentional case
+                    # ([[feedback_a_detector_must_know_the_intentional_case]],
+                    # [[feedback_a_convention_with_correct_readers]]). So ask
+                    # the migration what the reader actually does.
+                    if _reader_coalesces(col, tw):
+                        print(f'{msg} -- the TWIN `{tw}` carries '
+                              f'{len(rescued)} of them, and the matview '
+                              f'COALESCEs the pair, so this is resolved by '
+                              f'the reader. Informational.')
+                        continue
                     print(f'{msg} -- and the TWIN `{tw}` is populated on '
                           f'{len(rescued)} of them. CRITICAL: the reader is '
                           f'pointed at the wrong column name.')
@@ -509,6 +559,14 @@ def _self_test():
     src = open(os.path.abspath(__file__), encoding='utf-8').read()
     cases.append(('0 scored rows reports SKIPPED, not clean',
                   "SKIPPED -- 0 scored games" in src))
+
+    # 6b -- the twin check must distinguish a reader that was FIXED from a
+    # reader pointed at the wrong name. 20261119a COALESCEs the NCAAB pair;
+    # before this, the audit went on calling that resolved case CRITICAL.
+    cases.append(('a COALESCEd pair is recognised as resolved',
+                  _reader_coalesces('close_home_ml', 'home_ml_close')))
+    cases.append(('a pair the reader does NOT coalesce stays a defect',
+                  not _reader_coalesces('close_puckline', 'close_spread')))
 
     # 7 -- the mirrored matview rules still match the live migration, so a
     # shortfall is a real gap and not two descriptions drifting apart.

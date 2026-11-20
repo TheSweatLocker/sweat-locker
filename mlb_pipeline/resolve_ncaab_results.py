@@ -38,6 +38,7 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 from sweat_dates import et_and_utc_stamps  # noqa: E402
+from ncaab_season import season_label  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 SB = os.environ.get('SUPABASE_URL')
@@ -216,10 +217,49 @@ def event_to_outcome(event: dict, by_espn: dict, by_name: dict) -> Optional[dict
     game_id = f'ncaab_{_et}_{away_team}_{home_team}'.replace(' ', '_')
     legacy_game_id = f'ncaab_{_utc}_{away_team}_{home_team}'.replace(' ', '_')
 
+    # ══ 2026-11-20 · SEASON, OR THE GAME IS IN NO RECORD AT ALL ══
+    # Andy: "chase thwe write root ccause fixes please for the love of god
+    # this cant keep happening."
+    #
+    # This writer never set `season`. The design is that ncaab_odds_pull
+    # CREATES the row (with season and the closing line) and this one PATCHes
+    # the scores in -- but when the odds feed never covered the game, this
+    # upserts the row itself, and it landed with season NULL.
+    #
+    # MEASURED 2026-11-20 on ncaab_game_results: 344 of 1,105 rows since
+    # 2026-10-01 had season NULL, 343 of them scored. They are EXACTLY the
+    # 344 scored games with no close_spread (997 scored - 653 priced), so one
+    # population carried two symptoms. team_situational_records groups by
+    # season and the app queries season=eq.2026-27, so a NULL put those games
+    # in NO team's record -- 34.3% of the season, invisible, including
+    # Harvard's 2026-11-13 loss at George Washington.
+    #
+    # The missing LINE is not fixable here and is not a defect: the books do
+    # not post every low-major game, so spread_res/total_res stay NULL and
+    # the matview already excludes them per-market. But the MONEYLINE result
+    # needs no line, so with `season` set these games correctly rejoin every
+    # team's straight-up record.
+    #
+    # season_label() is the canonical NCAAB helper (ncaab_season.py), the
+    # same one ncaab_odds_pull uses, so the two writers cannot disagree about
+    # what the label is ([[feedback_each_scraper_invented_its_own_season]]).
+    # It is keyed on THIS GAME'S date, never the runner's clock -- a resolver
+    # run with --days-back can straddle the August rollover, and a window
+    # taken from the run time is how a day-ahead bug gets in
+    # ([[feedback_window_from_runner_clock_is_a_day_ahead]]).
+    try:
+        _season = season_label(date.fromisoformat(str(game_date)[:10]))
+    except (TypeError, ValueError):
+        # Never guess. A row with no parseable date keeps season NULL and is
+        # reported by audit_situational_records' excluded-population check
+        # rather than being filed under today's season.
+        _season = None
+
     return {
         'game_id': game_id,
         'legacy_game_id': legacy_game_id,
         'game_date': game_date,
+        'season': _season,
         'home_team': home_team,
         'away_team': away_team,
         'home_score': home_score if completed else None,

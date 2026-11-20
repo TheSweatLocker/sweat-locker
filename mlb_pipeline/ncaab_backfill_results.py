@@ -51,6 +51,7 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 from sweat_dates import et_and_utc_stamps  # noqa: E402
+from ncaab_season import parse_label  # noqa: E402
 from ncaab_result_ids import reconcile as _reconcile  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -76,6 +77,28 @@ SEASON_WINDOWS = {
     '2024-25': ('20241104', '20250407'),
     '2025-26': ('20251104', '20260406'),
 }
+
+
+def season_window(label: str) -> tuple:
+    """Start/end YYYYMMDD for a season label, derived when not listed.
+
+    2026-11-20: this table ended at 2025-26, so `--season 2026-27` printed
+    "unknown season" and the tool could not be pointed at the CURRENT
+    season -- which is the one that needed it. A hardcoded table of seasons
+    goes stale every November by construction, and the failure is silent in
+    the sense that it looks like operator error rather than a stale
+    constant ([[feedback_each_scraper_invented_its_own_season]]).
+
+    The listed windows are kept because they are the real, tight historical
+    ranges. Anything unlisted is derived from the label instead of refused:
+    Nov 1 of the opening year through Apr 15 of the closing one, which is
+    wider than any real season. Wider is safe for a backfill -- ESPN simply
+    returns no events for a date with no games -- whereas refusing is not.
+    """
+    if label in SEASON_WINDOWS:
+        return SEASON_WINDOWS[label]
+    end_year = parse_label(label)          # '2026-27' -> 2027
+    return (f'{end_year - 1}1101', f'{end_year}0415')
 
 
 def _f(v):
@@ -395,10 +418,16 @@ def main():
         season = args.season or f'{args.start[:4]}'
         run(args.start, args.end, season, args.dry_run, args.batch_size)
     elif args.season:
-        if args.season not in SEASON_WINDOWS:
-            print(f'  ✗ unknown season {args.season}. Known: {list(SEASON_WINDOWS)}')
+        try:
+            s, e = season_window(args.season)
+        except (TypeError, ValueError):
+            print(f'  ✗ cannot parse season {args.season!r}. '
+                  f'Listed: {list(SEASON_WINDOWS)}; anything else is '
+                  f'derived from a YYYY-YY label.')
             return
-        s, e = SEASON_WINDOWS[args.season]
+        if args.season not in SEASON_WINDOWS:
+            print(f'  · {args.season} is not in SEASON_WINDOWS — window '
+                  f'DERIVED as {s}→{e}')
         run(s, e, args.season, args.dry_run, args.batch_size)
     else:
         print('  ✗ specify --season or --start + --end')
