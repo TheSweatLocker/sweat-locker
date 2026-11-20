@@ -28,7 +28,20 @@ on:
     # the label normalizer can only re-derive from whatever close_spread
     # holds and nothing had refreshed it since Tuesday's opening pull.
     - cron: '33 */6 * * 3,4,5,6,0'
-    - cron: '33 18 * * 4'   # Thu 2pm ET   — TNF finalize (weekly card LOCK)
+    # 2026-11-20: the explicit Thursday 18:33 entry is REMOVED because it was
+    # an exact duplicate of the line above: `33 */6 * * 3,4,5,6,0` fires at
+    # 00:33, 06:33, 12:33 and 18:33 on Wed-Sun, so Thursday 18:33 was already
+    # covered. Two schedule entries landing on the same minute is at best a
+    # no-op and at worst a second concurrent run of a heavy pipeline, which
+    # is exactly the kind of thing that saturated the database today.
+    # The TNF finalize still happens at 18:33 Thursday via the */6 rule --
+    # cadence unchanged, one fewer trigger.
+    #
+    # NOT CHANGED, and it needs Andy's call: that */6 rule is what actually
+    # puts NFL in the 18:33 slot every Wed-Sun. Shifting the offset (e.g.
+    # `33 3-23/6` -> 03:33/09:33/15:33/21:33) would clear the evening window
+    # for good, but it moves FOUR run times for the sport whose reads are
+    # the most kickoff-sensitive, so it is not a change to make unilaterally.
     - cron: '33 14 * * 6'   # Sat 10am ET  — Sunday early-slate lock
     - cron: '10 12 * * 0'   # Sun 8am ET   — final Sunday card
     - cron: '33 14 * * 1'   # Mon 10am ET  — MNF finalize + Sunday resolver

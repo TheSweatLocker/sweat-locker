@@ -43,7 +43,18 @@ on:
     #
     # Keeping the 12 UTC run too: it builds context/reads for the day, and
     # a second pass also re-resolves.
-    - cron: '13 18 * * *'   # ~4:54pm ET actual — post-market, pre-tip
+    # 2026-11-20: MOVED off 18:13 to break the evening cron pileup that took
+    # the database down today. Measured on workflow_heartbeat over 7 days:
+    # 134 of 192 failed steps (70%) fell in 17:00-23:00 UTC, and 18:00-18:33
+    # held mlb_pipeline (18:00), keep_alive (18:00), this (18:13) and a
+    # sport pipeline on top depending on the day. Postgres was alive the
+    # whole time -- checkpoints writing 149s of every 300s window, and
+    # "autovacuum worker took too long to start; canceled" -- so PostgREST
+    # could not get a connection inside Cloudflare's 20s budget and the app
+    # served 522 on the anon key for ~2h.
+    # 19:10 UTC is 2:10pm ET, still hours ahead of any NBA tip, and ~70min
+    # clear of mlb_pipeline's 18:00 start.
+    - cron: '10 19 * * *'   # ~2:10pm ET — post-market, pre-tip
     # ══ 2026-10-21 · A THIRD SLOT, AND IT CORRECTS THE NOTE ABOVE ══
     # ANDY, 9:06am ET: "Also bot seeing moeny flwo data on nba games tighr
     # now." He was right: nba_game_context had splits_summary on 3 of 28 rows
