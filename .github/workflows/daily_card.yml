@@ -221,6 +221,47 @@ jobs:
           # that needs none of them.
           pip install requests python-dotenv python-dateutil pytz
 
+      # ══ 2026-11-20 · BYTE-COMPILE BEFORE RUNNING ANYTHING ══
+      # Andy: "ALl theGH woekflow look liek they are fialing" / "somehting
+      # has always been up wiht workflows i ahve brought it up 100s of times".
+      #
+      # generate_sweat_card.py and refresh_yesterday_recap.py (which imports
+      # it) had been dying in ZERO SECONDS on every run of this workflow
+      # since b5417ad5 the previous afternoon:
+      #
+      #   File ".../generate_sweat_card.py", line 5560
+      #     f'{_why} run {_hit}% on n={_n},{_bar or " measured below "
+      #   SyntaxError: unterminated string literal
+      #
+      # A replacement field spanning two lines with same-type nested quotes.
+      # PEP 701 legalised that in 3.12; this job pins 3.11. The author's
+      # interpreter is 3.14, so the file compiled clean locally, was
+      # byte-identical to HEAD, and ran to completion on the authoring
+      # machine while being unparseable here. Today's Sweat Card was not
+      # built by the pipeline at all.
+      #
+      # THE CHEAP GUARD IS THE TARGET INTERPRETER ITSELF. compileall parses
+      # every file with the SAME 3.11 that will import them, so this class of
+      # defect fails here -- loudly, naming the file and line, before any
+      # step runs -- instead of one step dying in 0s with the reason only in
+      # a step log nobody reads. It is also the only reliable detector:
+      # `py_compile` and `ast.parse(feature_version=(3,11))` on 3.12+ BOTH
+      # accept the construct (measured), so a local syntax check gives a
+      # false all-clear. mlb_pipeline/check_ci_python_compat.py is the
+      # author-side counterpart for machines newer than CI.
+      #
+      # No `continue-on-error`, deliberately: a SyntaxError means the step
+      # cannot run at all, so there is nothing to degrade gracefully into.
+      # `-x` excludes the archived _legacy tree, which holds a file that is
+      # unparseable on EVERY version and is in no workflow. The directory
+      # form is required: `mlb_pipeline/*.py` expands to 941 paths and dies
+      # with "Argument list too long" — which would have failed this step for
+      # the wrong reason. Verified: exit 1 naming the file and line on a
+      # SyntaxError, exit 0 on the current tree.
+      - name: Byte-compile pipeline scripts (fail fast on a SyntaxError)
+        run: |
+          python -m compileall -q -x '_legacy|__pycache__' mlb_pipeline
+
       # Settle anything gradeable BEFORE composing, so today's surfaces
       # carry yesterday's results rather than a page of "Pending" — which
       # is exactly what the 09-28 card showed.

@@ -171,8 +171,13 @@ def main() -> int:
     newly = [c for c in changes if c['result'] == 'UNGRADEABLE']
     print(f'\n=== {"WOULD APPLY" if dry else "APPLIED"} ===')
     print(f'  rows rewritten      : {fixed}')
-    print(f'  verdict CHANGED     : {len(verdict_flips)}'
-          f'  {dict(Counter(f"{c['result']}->{c['new']}" for c in verdict_flips))}')
+    # 2026-11-20: the inner f-string reused the OUTER f-string's quote for
+    # its dict keys (f'... f"{c['result']}" ...'), which PEP 701 allows from
+    # 3.12 and CI (3.11) rejects at import. .format keeps it quote-safe on
+    # both. See check_ci_python_compat.py.
+    _flips = dict(Counter('{}->{}'.format(c['result'], c['new'])
+                          for c in verdict_flips))
+    print(f'  verdict CHANGED     : {len(verdict_flips)}  {_flips}')
     print(f'  UNGRADEABLE resolved: {len(newly)}'
           f'  {dict(Counter(c["new"] for c in newly))}')
     print(f'  already correct     : {unchanged}')

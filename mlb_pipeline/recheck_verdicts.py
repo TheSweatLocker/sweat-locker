@@ -185,8 +185,14 @@ def run_sport(sport, args):
         print()
         return
     home_pos = c_margin > 0
-    print(f'   >> projected_spread is a home {"MARGIN (positive = home "
-          "favoured)" if home_pos else "LINE (negative = home favoured)"}')
+    # 2026-11-20: built before the f-string. The conditional used to sit
+    # inside the replacement field across two lines, which PEP 701 allows
+    # from 3.12 and CI (3.11) rejects as a SyntaxError at import. Not
+    # scheduled today, so it was latent -- it would have died in 0s the
+    # moment anything imported it. See check_ci_python_compat.py.
+    _conv = ('MARGIN (positive = home favoured)' if home_pos
+             else 'LINE (negative = home favoured)')
+    print(f'   >> projected_spread is a home {_conv}')
 
     # normalise everything to "model's projected home margin"
     for j in joined:

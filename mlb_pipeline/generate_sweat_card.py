@@ -5556,9 +5556,20 @@ def build_card():
             _bar = (' under the 52.38% breakeven'
                     if str(_v.get('type') or
                            _v.get('market') or '').lower() != 'ml' else '')
+            # 2026-11-20: the suffix is built BEFORE the f-string, not inside
+            # it. The previous version put `_bar or " measured below "
+            # "breakeven at its own price"` directly in the replacement
+            # field, spanning two lines with same-type nested quotes. PEP 701
+            # allows that from Python 3.12; this repo's CI pins 3.11, where it
+            # is a hard SyntaxError at import. My local interpreter is 3.14, so
+            # the file compiled clean on my machine and could not be parsed on
+            # the runner -- generate_sweat_card AND refresh_yesterday_recap
+            # (which imports it) died in 0s on every daily_card run from
+            # b5417ad5 until this fix. Keep f-string replacement fields on one
+            # line and free of nested same-type quotes.
+            _why_tail = _bar or (' measured below breakeven at its own price')
             print(f'  = floor: refused {str(_v.get("label"))[:34]!r} — '
-                  f'{_why} run {_hit}% on n={_n},{_bar or " measured below "
-                  "breakeven at its own price"}')
+                  f'{_why} run {_hit}% on n={_n},{_why_tail}')
         # priced first, then unpriced, each block in calibrated order
         _cands.sort(key=lambda p: (not _priced(p),
                                    -p.get('_calibrated', 0.0),
