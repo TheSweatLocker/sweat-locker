@@ -809,6 +809,35 @@ def _column_exists(table: str, col: str) -> bool:
     ck = (table, col)
     if ck in _COLCHECK:
         return _COLCHECK[ck]
+
+    # ══ 2026-11-20 · ASK FOR THE COLUMN LIST, NOT FOUR 400s ══
+    # The probe itself is right and stays: it removes the ordering
+    # dependency between a SQL paste and a deploy. What was wrong is that
+    # it asked ONE COLUMN AT A TIME, so every column a sport does not have
+    # cost a 400. Four price columns across five sports is 20 requests per
+    # run, 15 of them failures, and daily_card runs ~14 times a day.
+    #
+    # Measured in Andy's postgres logs on 2026-11-20, a 57-minute window:
+    # ~109 of ~115 errors were `42703 column does not exist`, and the
+    # biggest single contributor was this block of 4 columns x 4 tables
+    # repeating five times. On a 262 MB instance already spending 149s of
+    # every 300s checkpointing, those round-trips compete for the
+    # connections the app needs -- the day PostgREST stopped answering
+    # inside Cloudflare's 20s budget and the app served 522.
+    #
+    # `select=*&limit=1` returns one row whose KEYS are the full column
+    # list, so one SUCCESSFUL request answers all four questions and logs
+    # nothing. Cached per table.
+    cols = _table_columns(table)
+    if cols is not None:
+        ok = col in cols
+        _COLCHECK[ck] = ok
+        return ok
+
+    # Fall back to the single-column probe when the column list is
+    # unavailable -- an EMPTY table returns no row and therefore no keys,
+    # which says nothing about the schema and must not be read as "absent"
+    # ([[feedback_select_star_before_concluding_absent]]).
     try:
         r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
                          params={'select': col, 'limit': 1}, timeout=15)
@@ -818,6 +847,36 @@ def _column_exists(table: str, col: str) -> bool:
         ok = False
     _COLCHECK[ck] = ok
     return ok
+
+
+#: table -> frozenset of column names, or None when it could not be
+#: determined. None is NOT "no columns": it means fall back to probing.
+_TABLECOLS: dict = {}
+
+
+def _table_columns(table: str):
+    """Every column on `table`, from one `select=*&limit=1`.
+
+    Returns None — never an empty set — when the answer is unknown, so a
+    caller cannot mistake "I could not tell" for "the column is absent".
+    That distinction is the whole reason the 2026-10-01 NameError bug was
+    invisible: a fail-closed guard with no positive control reads exactly
+    like a working one.
+    """
+    if table in _TABLECOLS:
+        return _TABLECOLS[table]
+    out = None
+    try:
+        r = requests.get(f'{SB}/rest/v1/{table}', headers=H,
+                         params={'select': '*', 'limit': 1}, timeout=15)
+        if r.status_code == 200:
+            body = r.json()
+            if isinstance(body, list) and body and isinstance(body[0], dict):
+                out = frozenset(body[0].keys())
+    except Exception as e:                                 # noqa: BLE001
+        print(f'  ⚠ column list failed for {table}: {e}')
+    _TABLECOLS[table] = out
+    return out
 
 
 def _side_price(res: dict, keys: dict, side: str, market: str):
