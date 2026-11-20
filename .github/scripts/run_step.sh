@@ -37,6 +37,43 @@
 
 set -uo pipefail
 
+# ══ 2026-11-20 · ONE NAME FOR A WORKFLOW ══
+# Andy: "somehting has always been up wiht workflows i ahve brought it up
+# 100s of times" -- and the reason it could never be answered is that
+# workflow_heartbeat recorded every workflow under TWO names that never
+# overlap. Measured over 7 days, 1,188 rows, 26 distinct `workflow` values
+# for 13 real workflows:
+#
+#   snake_case  (13)  emitted ONLY  start, end          <- the per-workflow curls
+#   Display Name (13) emitted ONLY  step_durations,
+#                                   step_failed,
+#                                   step_failures        <- THIS script
+#
+# So `GROUP BY workflow` returns a run's lifecycle OR its step failures,
+# never both, and there is no mapping table -- only a shared run_id. Worse,
+# nhl_pipeline and resolve_chain have no Display-name twin at all, so their
+# step failures were invisible to any per-workflow query.
+#
+# Fixed here rather than in the 31 workflow files, and fixed TOWARDS THE
+# SLUG rather than the display name, because `name:` is editable prose that
+# changes whenever someone retitles a workflow while the FILENAME is the
+# stable identity. GITHUB_WORKFLOW_REF is
+# `owner/repo/.github/workflows/daily_card.yml@refs/heads/main`, so
+# stripping at `@` and taking the basename gives exactly the slug the
+# start/end curls already write.
+#
+# The display name is not lost: it goes into meta.workflow_display.
+# NOTE the one-time discontinuity -- rows written before this change stay
+# under their display name, so a query spanning 2026-11-20 sees both.
+_wf_ref="${GITHUB_WORKFLOW_REF:-}"
+_wf_ref="${_wf_ref%%@*}"
+WF_SLUG="$(basename "${_wf_ref:-}" .yml 2>/dev/null || true)"
+if [ -z "$WF_SLUG" ] || [ "$WF_SLUG" = "." ] || [ "$WF_SLUG" = "/" ]; then
+  WF_SLUG="${GITHUB_WORKFLOW:-unknown}"
+fi
+export WF_SLUG
+export WF_DISPLAY="${GITHUB_WORKFLOW:-unknown}"
+
 TALLY="${STEP_FAILURE_TALLY:-${RUNNER_TEMP:-/tmp}/pipeline_step_failures}"
 FINDINGS="${TALLY}_findings"
 # 2026-11-02 . EVERY step's duration, not only the failures.
@@ -90,11 +127,12 @@ try:
 except Exception:
     rows = []
 rows.sort(key=lambda z: -z['duration_s'])
-print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+print(json.dumps({'workflow': os.environ.get('WF_SLUG') or os.environ.get('GITHUB_WORKFLOW', 'unknown'),
                   'event': 'step_durations',
                   'sport': 'MULTI',
                   'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
-                  'meta': {'steps': len(rows),
+                  'meta': {'workflow_display': os.environ.get('WF_DISPLAY',''),
+                           'steps': len(rows),
                            'total_s': sum(z['duration_s'] for z in rows),
                            'slowest': rows[:20]}}))
 PYDUR
@@ -159,10 +197,11 @@ try:
     lines = [l.rstrip('\n') for l in open(sys.argv[1], encoding='utf-8', errors='replace') if l.strip()]
 except Exception:
     lines = []
-print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+print(json.dumps({'workflow': os.environ.get('WF_SLUG') or os.environ.get('GITHUB_WORKFLOW', 'unknown'),
                   'event': 'step_failures',
                   'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
-                  'meta': {'count': len(lines), 'failed': lines}}))
+                  'meta': {'workflow_display': os.environ.get('WF_DISPLAY',''),
+                           'count': len(lines), 'failed': lines}}))
 PYJSON
       if [ -s /tmp/_sl_stepfail.json ]; then
         curl -sf -X POST "$SUPABASE_URL/rest/v1/workflow_heartbeat"           -H "apikey: $SUPABASE_KEY"           -H "Authorization: Bearer $SUPABASE_KEY"           -H "Content-Type: application/json"           -H "Prefer: return=minimal"           --data-binary @/tmp/_sl_stepfail.json >/dev/null 2>&1 || true
@@ -220,10 +259,11 @@ if [ "$MLB_ONLY" = "1" ]; then
       _hbs="$(mktemp)"
       STEP_LABEL="$LABEL" python3 - <<'PYSK' > "$_hbs" 2>/dev/null || true
 import json, os
-print(json.dumps({'workflow': os.environ.get('GITHUB_WORKFLOW','unknown'),
+print(json.dumps({'workflow': os.environ.get('WF_SLUG') or os.environ.get('GITHUB_WORKFLOW', 'unknown'),
                   'event': 'step_skipped',
                   'run_id': os.environ.get('GITHUB_RUN_ID','local'),
-                  'meta': {'label': os.environ.get('STEP_LABEL',''),
+                  'meta': {'workflow_display': os.environ.get('WF_DISPLAY',''),
+                           'label': os.environ.get('STEP_LABEL',''),
                            'reason': 'no MLB slate (off-season)'}}))
 PYSK
       if [ -s "$_hbs" ]; then
@@ -382,10 +422,11 @@ if not tail.strip():
             'workflow step log has the reason. Give it --detector to '
             'capture stdout too, or print its fatal to stderr.)')
 print(json.dumps({
-    'workflow': os.environ.get('GITHUB_WORKFLOW', 'unknown'),
+    'workflow': os.environ.get('WF_SLUG') or os.environ.get('GITHUB_WORKFLOW', 'unknown'),
     'event': 'step_failed',
     'run_id': os.environ.get('GITHUB_RUN_ID', 'local'),
-    'meta': {'label': os.environ.get('STEP_LABEL', ''),
+    'meta': {'workflow_display': os.environ.get('WF_DISPLAY', ''),
+             'label': os.environ.get('STEP_LABEL', ''),
              'rc': int(os.environ.get('STEP_RC') or 0),
              'duration_s': int(os.environ.get('STEP_DUR') or 0),
              'stderr_tail': tail},
