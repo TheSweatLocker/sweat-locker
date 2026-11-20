@@ -139,7 +139,15 @@ def run(sport: str, dry_run: bool) -> int:
     rows = []
     for off in range(0, 40000, 1000):
         r = _S.get(f'{SB}/rest/v1/{cfg["results"]}', headers=H_READ, timeout=40,
-                   params={'select': f'game_id,home_score,away_score,'
+                   # 2026-11-20: `home_win` added to the SELECT in the same
+                   # change that started filling it. A gate on an unselected
+                   # column reads None for every row, so without this the
+                   # new `if r.get('home_win') is None` would be true
+                   # everywhere and rewrite the whole table rather than the
+                   # 22 rows that need it. I made exactly that mistake
+                   # earlier today auditing NBA season_type
+                   # ([[feedback_a_gate_reading_an_unselected_column_always_passes]]).
+                   params={'select': f'game_id,home_score,away_score,home_win,'
                                      f'{cfg["spread_col"]},{cfg["total_col"]},'
                                      f'spread_result,total_result,{cfg["scored_col"]}',
                            'order': 'game_date.asc', 'limit': 1000, 'offset': off})
@@ -193,6 +201,30 @@ def run(sport: str, dry_run: bool) -> int:
 
         if r.get(cfg['scored_col']) is None:
             upd[cfg['scored_col']] = hs + as_
+
+        # ══ 2026-11-20 · THE MONEYLINE RESULT NEEDS NO LINE ══
+        # This script filled spread_result and total_result and left
+        # home_win alone, so a row it graded still had a NULL moneyline
+        # result -- and team_situational_records' ml market reads home_win.
+        # Measured on ncaaf_game_results season 2026: 22 of 784 scored games
+        # had home_win NULL while ALL 22 already carried a spread_result and
+        # a total_result. Zero were ties. So they were graded for two markets
+        # and absent from the third, which is the one market that needs no
+        # line at all.
+        #
+        # Deriving it here rather than in a fourth writer: this module is
+        # already the single owner of "turn a final into a grade" for four
+        # sports, and the alternative is another script with its own copy of
+        # `hs > as_` ([[feedback_fix_every_writer_to_the_table]]).
+        #
+        # A TIE STAYS NULL, deliberately. home_win is a boolean about who
+        # won; on a draw neither side did, and writing False would make the
+        # home team's ml record count a loss it did not take. NFL and NHL
+        # regulation can end level, so this is not hypothetical -- it is
+        # simply absent from this NCAAF sample.
+        if r.get('home_win') is None and hs != as_:
+            upd['home_win'] = hs > as_
+            mix['home_win_set'] += 1
 
         if upd:
             patches.append((r['game_id'], upd))
