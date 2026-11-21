@@ -252,15 +252,51 @@ jobs:
       #
       # No `continue-on-error`, deliberately: a SyntaxError means the step
       # cannot run at all, so there is nothing to degrade gracefully into.
-      # `-x` excludes the archived _legacy tree, which holds a file that is
-      # unparseable on EVERY version and is in no workflow. The directory
-      # form is required: `mlb_pipeline/*.py` expands to 941 paths and dies
-      # with "Argument list too long" — which would have failed this step for
-      # the wrong reason. Verified: exit 1 naming the file and line on a
-      # SyntaxError, exit 0 on the current tree.
-      - name: Byte-compile pipeline scripts (fail fast on a SyntaxError)
+      #
+      # ══ 2026-11-21 · THE GUARD'S BLAST RADIUS EXCEEDED WHAT IT GUARDED ══
+      #
+      # The version of this step committed yesterday was:
+      #
+      #     python -m compileall -q -x '_legacy|__pycache__' mlb_pipeline
+      #
+      # It caught the defect it was written for. It then took the whole
+      # product down for 21 hours.
+      #
+      # grade_money_flow.py:471 has held a nested f-string illegal on 3.11
+      # since 6f2d8aef (10-20): an outer f-string delimited with ' holding an
+      # inner one delimited with ", whose dict keys reuse that ". It is in NO
+      # workflow — nothing runs it, nothing imports it — so it was inert for
+      # a month. Parsing every file in the directory made that one dormant
+      # line a hard dependency of the Sweat Card, POTD, the Sharp, the Dawg,
+      # the Ladder, the Ledger, the receipts and the matview refresh.
+      #
+      # MEASURED, from the runner's own step records: 13 consecutive runs
+      # failed at step 6 of 26 in 6-12 seconds, every later step `skipped`.
+      # The first was 2026-11-20T22:15:35Z, 22 seconds after the push. Every
+      # run before it took 280-780s. Because the end-heartbeat is
+      # `if: always()`, all 13 still posted a start and an end, so
+      # workflow_heartbeat showed 8 runs on 11-21 and no step_failed row at
+      # all — the steps that report failures never ran
+      # ([[feedback_an_always_end_heartbeat_hides_a_cancelled_run]]).
+      #
+      # A gate must fail on what the job cannot do without. 969 files is not
+      # that: this job runs 30 scripts, 93 files with their imports. The rest
+      # of the directory is one-off audits, backfills and other sports'
+      # scripts — an unparseable one is a real bug worth reporting, and not a
+      # reason to withhold today's card.
+      #
+      # So: BLOCKING on the closure of what this workflow invokes, ADVISORY
+      # on everything else. Both sets are derived from this file, so adding a
+      # step extends the blocking set automatically and the two cannot drift.
+      # Verified both directions on 3.11.18: generate_sweat_card.py and
+      # refresh_yesterday_recap.py (yesterday's real defect) are IN the
+      # blocking set; grade_money_flow.py (today's outage) is OUT of it.
+      - name: Byte-compile the scripts this job runs (fail fast on a SyntaxError)
         run: |
-          python -m compileall -q -x '_legacy|__pycache__' mlb_pipeline
+          python mlb_pipeline/compile_workflow_scripts.py \
+            --workflow .github/workflows/daily_card.yml \
+            --dir mlb_pipeline \
+            --advisory
 
       # Settle anything gradeable BEFORE composing, so today's surfaces
       # carry yesterday's results rather than a page of "Pending" — which

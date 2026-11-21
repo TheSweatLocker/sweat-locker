@@ -88,12 +88,58 @@ def ci_python_version(root='.'):
     return found
 
 
+def _git_tracked_py(path, root='.'):
+    """Tracked .py files under `path`, or None if git cannot answer.
+
+    None means "fall back to the directory walk" — never "no files", which
+    would turn this check into a silent no-op
+    ([[feedback_zero_rows_is_a_wiring_error]]).
+    """
+    import subprocess
+    try:
+        r = subprocess.run(['git', '-C', root, 'ls-files', '-z', '--', path],
+                           capture_output=True, timeout=60)
+        if r.returncode != 0:
+            return None
+        out = r.stdout.decode('utf-8', 'replace')
+    except Exception:                                      # noqa: BLE001
+        return None
+    files = []
+    for rel in out.split('\0'):
+        if not rel.endswith('.py'):
+            continue
+        parts = rel.replace('\\', '/').split('/')
+        if '_legacy' in parts or '__pycache__' in parts:
+            continue
+        files.append(os.path.normpath(os.path.join(root, rel)))
+    return sorted(files) or None
+
+
 def scan_source(src, filename='<src>'):
     """Return a list of (lineno, kind, detail) findings.
 
     Walks tokens. In 3.12+ an f-string is FSTRING_START ... FSTRING_END with
     the replacement-field expression tokenised in between, which is what
     makes the three checks possible at all.
+
+    == 2026-11-21 - A STACK, NOT A SINGLE QUOTE ==
+    The first version kept ONE `quote`, captured at depth 1, and compared
+    every nested string against it. That is correct only while f-strings do
+    not nest. grade_money_flow.py:471 was an outer f-string delimited with
+    an apostrophe holding an INNER f-string delimited with a double quote,
+    whose dict keys then reused that double quote. It is the inner
+    delimiter the keys collide with; measured against the outer apostrophe
+    all three looked legal, so this checker called the file clean while
+    3.11 rejected it outright.
+
+    Each f-string carries its own delimiter, so a nested string has to be
+    compared against every OPEN one -- the innermost usually, but a collision
+    with an outer frame is just as fatal.
+
+    That miss is why the Sweat Card went dark for a day: the file is in no
+    workflow, nothing imported it and nothing complained, until
+    daily_card.yml began byte-compiling the directory and a dormant line
+    became a hard dependency of every surface in the product.
     """
     out = []
     try:
@@ -106,44 +152,56 @@ def scan_source(src, filename='<src>'):
         # bad construct, so there is nothing this check can add.
         return []
 
-    depth = 0
-    start_tok = None
-    quote = ''
-    triple = False
+    def _delims(tok_string):
+        """(quote, is_triple) for an FSTRING_START or a STRING token.
+
+        Strips the prefix rather than slicing a fixed offset. A nested
+        rb'x' / r"x" / f"x" carries one or two prefix letters, so
+        tok_string[:1] reads the PREFIX as the delimiter and then matches
+        nothing -- the second way this check could report a clean file.
+        """
+        body = tok_string.lstrip('rRbBuUfF')
+        if body[:3] in ('"""', "'''"):
+            return body[:3], True
+        return body[:1], False
+
+    # One frame per OPEN f-string, innermost last. A nested string is checked
+    # against all of them: the innermost is the usual collision, but reusing
+    # an OUTER frame's delimiter is equally fatal on 3.11.
+    stack = []
     for t in toks:
         if t.type == tokenize.FSTRING_START:
-            depth += 1
-            if depth == 1:
-                start_tok = t
-                s = t.string
-                triple = s.endswith(('"""', "'''"))
-                quote = s[-3:] if triple else s[-1:]
+            q, triple = _delims(t.string)
+            stack.append((t, q, triple))
             continue
         if t.type == tokenize.FSTRING_END:
-            depth -= 1
-            if depth == 0 and start_tok is not None:
+            if stack:
+                start_tok, _q, triple = stack.pop()
                 if not triple and t.end[0] != start_tok.start[0]:
                     out.append((start_tok.start[0], 'MULTILINE_FSTRING_FIELD',
                                 'replacement field spans lines '
                                 f'{start_tok.start[0]}-{t.end[0]} in a '
                                 'single-line f-string (legal from 3.12 only)'))
-                start_tok = None
             continue
-        if depth and start_tok is not None:
-            # Inside an f-string: inspect the expression tokens.
-            if t.type == tokenize.STRING and not triple:
-                q = ('"""' if t.string.startswith('"""')
-                     else "'''" if t.string.startswith("'''")
-                     else t.string[:1])
-                if q == quote:
-                    out.append((t.start[0], 'NESTED_SAME_QUOTE',
-                                f'nested string reuses the f-string quote '
-                                f'{quote!r} (legal from 3.12 only)'))
-            if t.type in (tokenize.STRING, tokenize.NAME, tokenize.OP) \
-                    and '\\' in t.string:
-                out.append((t.start[0], 'BACKSLASH_IN_FIELD',
-                            'backslash inside a replacement field '
-                            '(legal from 3.12 only)'))
+        if not stack:
+            continue
+        # Inside an f-string: inspect the expression tokens.
+        if t.type == tokenize.STRING:
+            q, _tri = _delims(t.string)
+            for i, (start_tok, fq, triple) in enumerate(stack):
+                if triple or q != fq:
+                    continue
+                out.append((t.start[0], 'NESTED_SAME_QUOTE',
+                            f'nested string reuses the delimiter {fq!r} of '
+                            f'the f-string opened on line '
+                            f'{start_tok.start[0]} (nesting depth {i + 1} '
+                            f'of {len(stack)}) (legal from 3.12 only)'))
+                break
+        if t.type in (tokenize.STRING, tokenize.NAME, tokenize.OP) \
+                and '\\' in t.string:
+            out.append((t.start[0], 'BACKSLASH_IN_FIELD',
+                        'backslash inside a replacement field '
+                        '(legal from 3.12 only)'))
     return out
 
 
@@ -164,11 +222,40 @@ def main(path, root='.'):
     if os.path.isfile(path):
         files = [path]
     else:
-        for dirpath, dirnames, filenames in os.walk(path):
+        # ══ 2026-11-21 · SCAN WHAT CI COMPILES, NOT WHAT LOOKS LIKE SCRATCH ══
+        # This skipped every `_*.py` on the CLAUDE.md note that they are
+        # gitignored scratch. 133 of them are COMMITTED (the ignore rule
+        # post-dates them, and tracked beats ignored), so CI checks them out
+        # and `compileall` parses them — while this checker, the author-side
+        # counterpart meant to agree with it, did not look at a single one.
+        # A checker whose file set is narrower than the gate's file set
+        # cannot clear the gate.
+        #
+        # `_legacy` is excluded to match daily_card.yml's `-x _legacy`: it
+        # holds a file unparseable on EVERY version, so reporting it is a
+        # standing false alarm against a gate that does not read it. If that
+        # `-x` ever goes, this must go with it.
+        #
+        # TRACKED FILES, because that is what the gate compiles. The gate
+        # runs on a CI checkout, which is exactly the tracked tree. The walk
+        # below sees 2080 files here against CI's 969 — the extra 1100 are
+        # local scratch, and scanning them produced 2 findings in an
+        # untracked, gitignored file that can never reach CI. A file set
+        # WIDER than the gate's cries wolf; a set NARROWER than it (the
+        # `_*.py` skip above) misses the real thing. Neither clears the gate,
+        # so the criterion is tracked-or-not: not the filename, and not the
+        # ignore rule — 133 `_*.py` files match .gitignore:91 and are
+        # committed anyway, and tracked beats ignored.
+        tracked = _git_tracked_py(path, root)
+        if tracked is not None:
+            files = tracked
+        for dirpath, dirnames, filenames in ([] if tracked is not None
+                                             else os.walk(path)):
             dirnames[:] = [d for d in dirnames
-                           if d not in ('.git', '__pycache__', 'node_modules')]
+                           if d not in ('.git', '__pycache__', 'node_modules',
+                                        '_legacy')]
             for f in sorted(filenames):
-                if f.endswith('.py') and not f.startswith('_'):
+                if f.endswith('.py'):
                     files.append(os.path.join(dirpath, f))
 
     bad = 0
@@ -202,6 +289,24 @@ def _self_test():
     OK_TRIPLE = "x = f'''\n{a}\n{b}\n'''\n"
     OK_PLAIN = "x = f'{a} and {b:.2f}'\n"
 
+    # ── 2026-11-21 · the defect this checker reported CLEAN ──
+    # grade_money_flow.py:471, verbatim. An f-string nested inside another
+    # f-string: outer delimiter ', inner ", dict keys reusing the inner ".
+    # The single-quote version of this scanner compared the keys against the
+    # OUTER ' and passed the file, while 3.11.18 rejected it with
+    # "f-string: f-string: unmatched '[" -- the doubled prefix is the
+    # tokeniser saying the collision is one level down.
+    NESTED_FSTRING = (
+        "x = (f'{f\"{best[\"w\"]}-{best[\"l\"]}-{best[\"p\"]}\":>12}')\n")
+    # Its fix: hoist the inner f-string into a name.
+    NESTED_FIXED = ("r = f'{best[\"w\"]}-{best[\"l\"]}-{best[\"p\"]}'\n"
+                    "x = (f'{r:>12}')\n")
+    # Nesting with DISTINCT delimiters at every level is legal on 3.11.
+    OK_NESTED_DIFF = "x = f'{f\"{a}\"}'\n"
+    # A prefixed nested string: t.string[:1] read 'r' as the delimiter and
+    # matched nothing, so this collision was invisible too.
+    PREFIXED_SAME_QUOTE = "x = f'{d[r'k']}'\n"
+
     cases = [
         ('the real broken line is caught',
          any(k == 'MULTILINE_FSTRING_FIELD'
@@ -217,14 +322,77 @@ def _self_test():
         # The two checks that gave a false all-clear and let this ship.
         ('py_compile/ast alone would NOT catch it',
          _ast_accepts(BROKEN_MULTILINE)),
+        # ── the 11-21 regressions ──
+        ('a NESTED f-string reusing its OWN delimiter is caught',
+         any(k == 'NESTED_SAME_QUOTE'
+             for _, k, _ in scan_source(NESTED_FSTRING))),
+        ('its fix is clean', scan_source(NESTED_FIXED) == []),
+        ('nesting with distinct delimiters is allowed',
+         scan_source(OK_NESTED_DIFF) == []),
+        ('a PREFIXED nested string reusing the delimiter is caught',
+         any(k == 'NESTED_SAME_QUOTE'
+             for _, k, _ in scan_source(PREFIXED_SAME_QUOTE))),
+        # The positive control for the whole exercise: 3.11 must actually
+        # reject the fixture, or the checker is agreeing with nothing.
+        ('3.11 really rejects the nested fixture',
+         not _parses_on(NESTED_FSTRING, (3, 11))),
+        ('3.11 really accepts its fix', _parses_on(NESTED_FIXED, (3, 11))),
     ]
-    fails = 0
+    fails = skipped = 0
     for name, ok in cases:
+        # None = could not be determined on THIS interpreter. Printed SKIP,
+        # never PASS: a control that reports the expected answer when it did
+        # not run is the exact failure mode this file exists to prevent
+        # ([[feedback_a_synthesized_failure_carries_no_tail]]).
+        if ok is None:
+            skipped += 1
+            print(f'  SKIP  {name}')
+            continue
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")
         if not ok:
             fails += 1
-    print(f'\n  {len(cases) - fails}/{len(cases)} self-test cases passed')
+    ran = len(cases) - skipped
+    print(f'\n  {ran - fails}/{ran} self-test cases passed'
+          + (f' · {skipped} skipped (need a {CI_TARGET[0]}.{CI_TARGET[1]} '
+             f'interpreter; this is {sys.version_info[0]}.'
+             f'{sys.version_info[1]})' if skipped else ''))
     return 1 if fails else 0
+
+
+def _parses_on(src, ver):
+    """True/False if `src` parses on Python `ver`; None if undecidable here.
+
+    Only a real interpreter of that version answers this. ast.parse's
+    feature_version does NOT -- proven by the case above it -- so when this
+    runs on anything other than `ver` and no matching interpreter is on PATH,
+    the honest answer is None. CI pins 3.11, so on CI these controls DO run,
+    which is where they matter most.
+    """
+    import shutil
+    import subprocess
+    if sys.version_info[:2] == tuple(ver):
+        try:
+            compile(src, '<control>', 'exec')
+            return True
+        except SyntaxError:
+            return False
+    exe = shutil.which(f'python{ver[0]}.{ver[1]}')
+    if not exe:
+        cand = os.path.expanduser(
+            os.path.join('~', 'AppData', 'Roaming', 'uv', 'python',
+                         f'cpython-{ver[0]}.{ver[1]}-windows-x86_64-none',
+                         'python.exe'))
+        exe = cand if os.path.exists(cand) else None
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, '-c',
+                            'import sys;compile(sys.stdin.read(),"c","exec")'],
+                           input=src, capture_output=True, text=True,
+                           timeout=30)
+        return r.returncode == 0
+    except Exception:                                      # noqa: BLE001
+        return None
 
 
 def _ast_accepts(src):

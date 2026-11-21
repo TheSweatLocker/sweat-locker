@@ -467,8 +467,17 @@ def main() -> int:
                 weight, tier = weight_for(best['edge'], best['n'],
                                           half_pct, best['be'],
                                           wins=best['w'])
+                # 2026-11-21: the W-L-P cell was an f-string nested inside
+                # another f-string, with the inner one reusing its own `"` for
+                # the dict keys. PEP 701 legalised that in 3.12; it is a hard
+                # SyntaxError on the 3.11 that CI pins, and has been since this
+                # file was written (6f2d8aef, 10-20). Harmless while no
+                # workflow ran it -- and then daily_card started byte-compiling
+                # the whole directory and this one dormant line took down every
+                # surface in the product. Hoisted out of the format spec.
+                _rec = f'{best["w"]}-{best["l"]}-{best["p"]}'
                 print(f'  {bname:<22}{market:<7}{best["direction"]:<7}'
-                      f'{f"{best["w"]}-{best["l"]}-{best["p"]}":>12}'
+                      f'{_rec:>12}'
                       f'{best["hit"]:>7.1f}%{best["be"]:>7.1f}%'
                       f'{best["edge"]:>+8.1f}{weight:>6.2f}  {tier:<21} '
                       f'{halves[0]} / {halves[1]}'
