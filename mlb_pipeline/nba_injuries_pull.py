@@ -178,16 +178,55 @@ def _fail(msg: str) -> None:
     print(f'nba_injuries_pull: {msg}', file=sys.stderr)
 
 
-def fetch_html() -> Optional[str]:
-    try:
-        r = requests.get(ESPN_URL, headers=HEADERS, timeout=20)
-    except Exception as e:
-        _fail(f'fetch failed: {e}')
-        return None
-    if r.status_code != 200:
-        _fail(f'ESPN returned HTTP {r.status_code}')
-        return None
-    return r.text
+# ══ 2026-11-21 · A 202 MEANS "COME BACK", AND ONE SHOT NEVER DID ══
+# nba_injuries_pull failed 9 times since 11-14, twice today, always the same
+# way:
+#
+#   nba_injuries_pull: ESPN returned HTTP 202
+#   nba_injuries_pull: no HTML from ESPN — nothing written
+#
+# 202 Accepted is not a refusal. ESPN's edge answers it while the page is
+# still being produced, and the body carries no table — so the single GET
+# below treated a "not ready yet" as a hard failure and wrote nothing. Cost,
+# measured: nba_injuries' newest updated_at was 2026-11-20T00:38Z when this
+# was written, 44 hours stale, with NBA games on the card that night. The
+# same table went SEVEN DAYS stale on 10-14 for a different reason, which is
+# how it earned the loud failure path above.
+#
+# So: retry the codes that mean "not now" (202, 429, 5xx) with backoff, and
+# only then fail. A 403/404 is a refusal or a moved page and is NOT retried —
+# hammering it would not help and would look like abuse.
+#
+# RETRY_CODES deliberately excludes 200: a 200 with an unparseable body is a
+# different defect, and parse_injuries + the write-count guard already own it
+# ([[feedback_green_step_that_writes_nothing]]).
+RETRY_CODES = (202, 429, 500, 502, 503, 504)
+FETCH_TRIES = 4
+FETCH_BACKOFF = 3.0            # 3s, 6s, 12s — ~21s of waiting at worst
+
+
+def fetch_html(tries: int = FETCH_TRIES) -> Optional[str]:
+    import time
+    last = None
+    for attempt in range(1, tries + 1):
+        try:
+            r = requests.get(ESPN_URL, headers=HEADERS, timeout=20)
+        except Exception as e:
+            last = f'fetch failed: {e}'
+            print(f'  · attempt {attempt}/{tries}: {last}')
+        else:
+            if r.status_code == 200:
+                if attempt > 1:
+                    print(f'  · recovered on attempt {attempt}/{tries}')
+                return r.text
+            last = f'ESPN returned HTTP {r.status_code}'
+            print(f'  · attempt {attempt}/{tries}: {last}')
+            if r.status_code not in RETRY_CODES:
+                break          # a refusal, not a "not ready" — stop early
+        if attempt < tries:
+            time.sleep(FETCH_BACKOFF * (2 ** (attempt - 1)))
+    _fail(last or 'no response from ESPN')
+    return None
 
 
 def parse_injuries(html: str) -> list[dict]:
