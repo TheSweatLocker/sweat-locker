@@ -1739,6 +1739,7 @@ def check_locked_pick_line_drift() -> Optional[dict]:
     crit = 0
     crit_started = 0
     sign_bad: list = []
+    no_play_drift: list = []
     for sport, tbl in _DRIFT_SPORTS.items():
         # nba_game_context and ncaab_game_context have NO pick_locked_at
         # column, and naming a missing column makes PostgREST 400 the WHOLE
@@ -1769,6 +1770,28 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                 continue
             if sport in ('NFL', 'NCAAF') and not g.get('pick_locked_at'):
                 continue
+            # ══ 2026-11-21 · IT SAID "WE PUBLISH" ABOUT UNPUBLISHED PICKS ══
+            # This check had no tier filter, so it counted no-plays. After the
+            # sign fix, 9 of the 11 drifted picks were PASS or COVERAGE, and
+            # ALL THREE remaining CRITICALs were no-plays: Utah State +7 is
+            # tier PASS, conviction 40 — an engine pass, not an offer. The
+            # message "We publish a number nobody can bet" was describing
+            # numbers we never published, and the two genuinely published
+            # drifted picks were both under the 2.0 CRITICAL threshold.
+            #
+            # A no-play that drifts is still worth SEEING (it is the same
+            # stale-quote symptom), so it is counted and reported separately
+            # rather than dropped — but it cannot raise a CRITICAL about
+            # publishing. feedback_a_missing_tier_can_be_the_gate_working
+            #
+            # The no-play words are defensive_gates' own list MINUS the empty
+            # string, deliberately: that gate treats a missing tier as
+            # already-unpublished so it fails CLOSED by capping. For a
+            # DETECTOR, failing closed is the opposite — an unknown or absent
+            # tier must be REPORTED, not silently exempted.
+            # feedback_a_gate_reading_an_unselected_column_always_passes
+            _tier = str(pp.get('tier') or '').upper()
+            _no_play = _tier in ('COVERAGE', 'PASS', 'SKIP', 'LIGHT')
             try:
                 ours = float(pp.get('line'))
                 mag = abs(float(g.get('close_spread')))
@@ -1842,8 +1865,15 @@ def check_locked_pick_line_drift() -> Optional[dict]:
             gap = ours - close_for_us          # >0 = our number beats market
             if abs(gap) < DRIFT_REPORT_PTS:
                 continue
-            drifted += 1
             hrs = ((ko - now).total_seconds() / 3600.0) if ko else None
+            if _no_play:
+                no_play_drift.append(
+                    f"{sport} {g.get('away_team')} @ {g.get('home_team')} "
+                    f"{str(g.get('game_date'))[:10]}: {pp.get('label')!r} "
+                    f"tier {_tier}, market {close_for_us:+g} ({gap:+.1f})"
+                    + (f', kickoff {hrs:.0f}h' if hrs is not None else ''))
+                continue
+            drifted += 1
             is_crit = (abs(gap) >= DRIFT_CRITICAL_PTS
                        and hrs is not None and hrs <= DRIFT_IMMINENT_HOURS)
             # ══ 2026-11-21 · "INSIDE 72h" HAD NO LOWER BOUND ═══════════════
@@ -1867,7 +1897,7 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                 + (f', kickoff {hrs:.0f}h' if hrs is not None else '')
                 + ('  <-- unbettable, ALREADY KICKED OFF' if started
                    else '  <-- unbettable and on screen' if is_crit else ''))
-    if not drifted and not early and not sign_bad:
+    if not drifted and not early and not sign_bad and not no_play_drift:
         return None
     worst.sort(key=lambda s: '<--' not in s)
     return {
@@ -1886,12 +1916,20 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                if crit else '')
             + (f'; {early} pick(s) locked more than '
                f'{DRIFT_MAX_LOCK_LEAD_DAYS:g}d before kickoff' if early else '')
-            + '. We publish a number nobody can bet.'),
+            + (f'. {len(no_play_drift)} more drifted at a NO-PLAY tier '
+               f'(not published, not counted above)' if no_play_drift else '')
+            # Only a CRITICAL earns the "nobody can bet" line. A 1-point gap
+            # is worth seeing and is not that claim.
+            + ('. We publish a number nobody can bet.' if crit
+               else '. No published pick is in critical drift.' if drifted
+               else '. No published pick is drifted.')),
         'detail': {'drifted': drifted, 'critical': crit,
                    'critical_pre_kickoff': crit - crit_started,
                    'critical_already_started': crit_started,
                    'line_sign_mismatch': len(sign_bad),
                    'line_sign_mismatch_rows': sign_bad[:10],
+                   'no_play_drift': len(no_play_drift),
+                   'no_play_drift_rows': no_play_drift[:10],
                    'locked_too_early': early, 'worst': worst[:10],
                    'fix_hint': 'lock_football_slate.py --unlock-beyond-slate '
                                'frees picks outside the slate window; a pick '
