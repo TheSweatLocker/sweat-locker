@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -1714,11 +1715,30 @@ DRIFT_CRITICAL_PTS = 2.0
 DRIFT_IMMINENT_HOURS = 72.0
 
 
+#: Trailing signed number on a published label: "Texas -20.5", "Iowa +8.5".
+#: Anchored at the end so a team name carrying digits (76ers) is not read as
+#: the line (feedback_parse_a_pick_by_shape_not_vocabulary).
+_LABEL_NUM_RE = re.compile(r'([+-]\s?\d+(?:\.\d+)?)\s*$')
+
+
+def _label_line_number(label) -> Optional[float]:
+    """The number a published label prints, or None if it prints none."""
+    m = _LABEL_NUM_RE.search(str(label or ''))
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(' ', ''))
+    except ValueError:
+        return None
+
+
 def check_locked_pick_line_drift() -> Optional[dict]:
     """Published spread lines that the market has left behind."""
     now = datetime.now(timezone.utc)
     worst, early, drifted = [], 0, 0
     crit = 0
+    crit_started = 0
+    sign_bad: list = []
     for sport, tbl in _DRIFT_SPORTS.items():
         # nba_game_context and ncaab_game_context have NO pick_locked_at
         # column, and naming a missing column makes PostgREST 400 the WHOLE
@@ -1754,6 +1774,36 @@ def check_locked_pick_line_drift() -> Optional[dict]:
                 mag = abs(float(g.get('close_spread')))
             except (TypeError, ValueError):
                 continue
+            # ══ 2026-11-21 · MEASURE AGAINST THE NUMBER WE PUBLISHED ══════
+            # `primary_play.line` is the number this check compares to the
+            # market, but the LABEL is what the user was shown and what the
+            # grader settles (verified: 16 of 16 graded receipts whose line
+            # and label disagreed in sign were graded at the label). When
+            # the two disagree, trusting `line` measures a bet nobody made:
+            # defensive_gates' OC-dissent flip rewrote side/label/tier and
+            # left `line` on the pre-flip side, so Arkansas @ Texas reported
+            # as a 41-point market move -- exactly 2x 20.5 -- when the
+            # published pick matched the market to the half-point. Two of
+            # five CRITICALs that morning were this, and the message said
+            # "we publish a number nobody can bet" about a number we did
+            # not publish.
+            #
+            # The source is fixed and the 48 affected rows repaired, so this
+            # is a standing guard, not a workaround: a same-magnitude sign
+            # disagreement is reported AS a sign defect and the drift maths
+            # uses the published number, so no future writer can turn this
+            # class of bug into a phantom market move again.
+            # feedback_grade_at_the_published_line
+            # feedback_a_detector_can_be_the_defect
+            _labn = _label_line_number(pp.get('label'))
+            if (_labn is not None and abs(_labn) == abs(ours)
+                    and (_labn < 0) != (ours < 0)):
+                sign_bad.append(
+                    f"{sport} {g.get('away_team')} @ {g.get('home_team')} "
+                    f"{str(g.get('game_date'))[:10]}: published "
+                    f"{pp.get('label')!r} but primary_play.line is "
+                    f"{ours:+g} — same number, wrong side")
+                ours = _labn
             lk = _read_parse_ts(g.get('pick_locked_at'))
             ko = _read_parse_ts(g.get('kickoff_utc')
                                 or g.get('commence_time_utc'))
@@ -1796,29 +1846,52 @@ def check_locked_pick_line_drift() -> Optional[dict]:
             hrs = ((ko - now).total_seconds() / 3600.0) if ko else None
             is_crit = (abs(gap) >= DRIFT_CRITICAL_PTS
                        and hrs is not None and hrs <= DRIFT_IMMINENT_HOURS)
+            # ══ 2026-11-21 · "INSIDE 72h" HAD NO LOWER BOUND ═══════════════
+            # `hrs <= 72` is true at -3h as well as +3h, so a game that
+            # already kicked off counted as imminent: 2 of today's 3
+            # CRITICALs were games 1 and 3 hours PAST kickoff. That is still
+            # worth a CRITICAL -- a number nobody can bet is on screen
+            # either way -- but a started game cannot be re-priced, so the
+            # two are counted and labelled separately. The pre-kickoff ones
+            # are the only ones anybody can act on, and burying them in a
+            # single total is how an actionable one gets read as noise.
+            started = is_crit and hrs < 0
             if is_crit:
                 crit += 1
+                if started:
+                    crit_started += 1
             worst.append(
                 f"{sport} {g.get('away_team')} @ {g.get('home_team')} "
                 f"{str(g.get('game_date'))[:10]}: published {ours:+g}, "
                 f"market {close_for_us:+g} ({gap:+.1f})"
                 + (f', kickoff {hrs:.0f}h' if hrs is not None else '')
-                + ('  <-- unbettable and on screen' if is_crit else ''))
-    if not drifted and not early:
+                + ('  <-- unbettable, ALREADY KICKED OFF' if started
+                   else '  <-- unbettable and on screen' if is_crit else ''))
+    if not drifted and not early and not sign_bad:
         return None
     worst.sort(key=lambda s: '<--' not in s)
     return {
         'check_name': 'locked_pick_line_drift',
-        'severity': 'CRITICAL' if crit else 'WARNING',
+        'severity': 'CRITICAL' if (crit or sign_bad) else 'WARNING',
         'message': (
-            f'{drifted} locked spread pick(s) carry a line the market has '
+            (f'{len(sign_bad)} pick(s) store a line on the side we did NOT '
+             f'publish (same number, wrong sign) — a writer is flipping the '
+             f'label and leaving the line. ' if sign_bad else '')
+            + f'{drifted} locked spread pick(s) carry a line the market has '
             f'moved off'
             + (f', {crit} of them unbettable on a game inside '
-               f'{int(DRIFT_IMMINENT_HOURS)}h' if crit else '')
+               f'{int(DRIFT_IMMINENT_HOURS)}h'
+               + (f' ({crit - crit_started} still ahead of kickoff, '
+                  f'{crit_started} already started)' if crit_started else '')
+               if crit else '')
             + (f'; {early} pick(s) locked more than '
                f'{DRIFT_MAX_LOCK_LEAD_DAYS:g}d before kickoff' if early else '')
             + '. We publish a number nobody can bet.'),
         'detail': {'drifted': drifted, 'critical': crit,
+                   'critical_pre_kickoff': crit - crit_started,
+                   'critical_already_started': crit_started,
+                   'line_sign_mismatch': len(sign_bad),
+                   'line_sign_mismatch_rows': sign_bad[:10],
                    'locked_too_early': early, 'worst': worst[:10],
                    'fix_hint': 'lock_football_slate.py --unlock-beyond-slate '
                                'frees picks outside the slate window; a pick '

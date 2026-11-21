@@ -720,14 +720,54 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
         away = ctx.get('away_team', 'AWAY')
         cs = ctx.get('close_spread')
         ct = ctx.get('close_total')
+        new_line = _SENTINEL = object()       # only rl ever changes the line
         if mkt == 'ml':
             new_label = f'{home} ML' if new_side == 'HOME' else f'{away} ML'
         elif mkt == 'rl':
+            # ══ 2026-11-21 · THIS FLIPPED THE LABEL AND LEFT THE LINE ══════
+            # The signed line was computed HERE, spent on the label string,
+            # and thrown away -- `pp['line']` was never written. So a flip
+            # from the dog to the favourite left the pick reading
+            # `label "Texas -20.5"` beside `line +20.5`: the right number
+            # with the wrong sign, on 48 of 52 `_oc_flipped` NCAAF spread
+            # picks. locked_pick_line_drift reads the NUMBER, so Arkansas @
+            # Texas measured as a 41-point market move (2x 20.5) and went
+            # out as a CRITICAL "we publish a number nobody can bet" when
+            # the published pick matched the market exactly. Iowa @ Illinois
+            # did the same at 17. Two of five CRITICALs were this.
+            #
+            # The record was never wrong -- graders settle off the label,
+            # verified on all 16 graded sign-disagreeing receipts, 6 of
+            # which would have flipped result had the line been used. So
+            # this is a detector-blinding defect, not a records defect.
+            #
+            # `primary_play.line` is signed from the PICKED SIDE's point of
+            # view (documented and verified on live rows in
+            # generate_sharp_card._flip_short_spread), so the opposite
+            # side's number is exactly its negation. Negating OUR OWN line
+            # is also what the other two flip writers already do
+            # (flip_football_spreads.py `new_line = -ours`,
+            # _flip_short_spread `new_line = -line`) and it needs no
+            # per-sport orientation sign -- which matters, because the
+            # `float(cs)` form this replaces was sport-BLIND: NFL stores
+            # close_spread as the opposite convention to NCAAF/NBA, so on
+            # NFL it had the label's sign backwards too.
+            # feedback_magnitude_cannot_express_a_side
+            # feedback_two_writers_two_words_for_a_flip
+            # feedback_edge_formula_sign_audit
+            _team = home if new_side == 'HOME' else away
             try:
-                line = float(cs) if new_side == 'HOME' else -float(cs)
-                new_label = f"{home if new_side == 'HOME' else away} {line:+g}"
+                new_line = -float(pp.get('line'))
             except (TypeError, ValueError):
-                new_label = f"{home if new_side == 'HOME' else away} RL"
+                # No line to invert. Deriving one from close_spread would
+                # mean guessing the per-sport orientation, and a guessed
+                # convention is indistinguishable from a known one, so the
+                # label goes out without a number and repair_spread_labels.py
+                # fills it with the convention it already encodes.
+                new_line = _SENTINEL
+                new_label = f'{_team} RL'
+            else:
+                new_label = f'{_team} {new_line:+g}'
         elif mkt == 'total':
             try:
                 new_label = f"{'Over' if new_side == 'OVER' else 'Under'} {float(ct)}"
@@ -739,12 +779,16 @@ def apply_oc_flip_gate(pp: dict | None, ctx: dict) -> dict | None:
         tier_step = {'PRIME': 'STRONG', 'STRONG': 'LEAN', 'LEAN': 'LEAN'}
         new_tier = tier_step.get(orig_tier or 'LEAN', 'LEAN')
 
+        orig_line = pp.get('line')
         pp['side'] = new_side
         pp['label'] = new_label
         pp['tier'] = new_tier
+        if new_line is not _SENTINEL:
+            pp['line'] = new_line
         pp['_oc_flipped'] = {
             'orig_side': orig_side,
             'orig_label': orig_label,
+            'orig_line': orig_line,
             'orig_tier': orig_tier,
             'oc_pick': oc_pick,
             'oc_money_pct': oc_money,
