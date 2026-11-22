@@ -955,6 +955,33 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --label "dropped-cron watchdog"             python watchdog_workflow_heartbeat.py
 
+      - name: card_self_contradiction policy test
+        working-directory: mlb_pipeline
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # ══ 2026-11-22 · THE POLICY, NOT THE WHOLE TREE ══
+          # card_self_contradiction sat CRITICAL for four straight weeks
+          # because COVER — a test measured to carry no signal — was in its
+          # blocking set, and eight genuine wrong-sided publishes sat
+          # unexamined underneath it. The severity policy now rests on a
+          # measurement, and a measurement is exactly the kind of thing a
+          # later edit undoes by accident.
+          #
+          # Scoped deliberately narrow: ONE module's policy, run immediately
+          # before that module, with no DB. A broad "run every test" step
+          # here is the compileall mistake from 11-20, where a dormant line
+          # in an unused file killed 13 Sweat Card runs over 21 hours
+          # (feedback_a_guards_blast_radius).
+          #
+          # --detector, so a failure is RECORDED as a finding and the card
+          # still ships: exit 1 is a finding and leaves the run green, exit
+          # >= 2 fails through the gate. A detector's own unit test must not
+          # be able to withhold the product it watches.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --detector --label "test_card_self_contradiction.py" \
+            python test_card_self_contradiction.py
+
       - name: Consistency watchdog
         working-directory: mlb_pipeline
         env:

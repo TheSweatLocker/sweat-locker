@@ -952,8 +952,104 @@ def _implied(american) -> Optional[float]:
     return (abs(a) / (abs(a) + 100.0)) if a < 0 else (100.0 / (a + 100.0))
 
 
+#: Minimum gap in implied probability before the closing moneyline is allowed
+#: to name a favourite. At -108/-111 the two sides are 51.9% and 52.6%: the
+#: book is calling it a coin flip and the "favourite" is rounding noise. Two
+#: NCAAF near-pick'em games (Kennesaw State -108/-111, Western Kentucky
+#: -111/-109) were the only false positives this arbiter produced across 531
+#: published spread picks, and both sit under this gate.
+#: [[feedback_a_consensus_line_must_be_posted]]
+_ML_FAV_GAP = 0.06
+
+#: The ONLY kind of card_self_contradiction finding that blocks a publish.
+#: COVER, SIDE and PRICE were each replayed and graded on 2026-11-22 and none
+#: of them separates winners from losers (see check_card_self_contradiction's
+#: docstring); STALE and BOARD are value and data complaints. Kept as a
+#: module constant so a test can refuse a future re-promotion.
+_CSC_BLOCKING_KINDS = ('FLIP',)
+
+
+def _published_wrong_side(line, side, fav) -> bool:
+    """True when our own number puts `side` on the wrong side of the price.
+
+    `line < 0` is us calling `side` a favourite. `fav` is who the closing
+    moneyline says the favourite IS. When those disagree, the number we
+    published names a different bet than the board -- regardless of any
+    spread column or per-sport sign convention.
+    """
+    if fav not in ('HOME', 'AWAY') or side not in ('HOME', 'AWAY'):
+        return False
+    try:
+        ln = float(line)
+    except (TypeError, ValueError):
+        return False
+    if ln == 0:
+        return False
+    return (ln < 0) != (side == fav)
+
+
+def _ml_favourite(g) -> Optional[str]:
+    """'HOME' | 'AWAY' | None — who the CLOSING MONEYLINE says is favoured.
+
+    The point of this helper is that it reads no spread column and no
+    per-sport sign table, so it cannot inherit the convention bug it is here
+    to arbitrate. The two tables disagree on ML naming, hence both spellings
+    ([[feedback_football_and_the_rest_name_columns_differently]]).
+    """
+    def _first(*names):
+        for n in names:
+            v = g.get(n)
+            if v not in (None, ''):
+                return v
+        return None
+    h = _implied(_first('close_home_ml', 'home_ml_close'))
+    a = _implied(_first('close_away_ml', 'away_ml_close'))
+    if h is None or a is None or abs(h - a) < _ML_FAV_GAP:
+        return None
+    return 'HOME' if h > a else 'AWAY'
+
+
 def check_card_self_contradiction(date: str) -> Optional[dict]:
-    """Published picks that disagree with the numbers printed beside them."""
+    """Published picks that disagree with the numbers printed beside them.
+
+    ══ 2026-11-22 · WHICH OF THESE TESTS HAS EARNED A CRITICAL ════════════
+    This check had been CRITICAL continuously since 2026-10-25 (backlog R66)
+    and was reported untouched in the daily log on 11-04, 11-09, 11-14 and
+    11-21. A permanently-red check is a muted check, so every test below was
+    replayed over all stored context (2026-08-21 .. 2027-01-10, 88 dates) and
+    graded from final scores. Moneyline buckets are priced at the close,
+    because a win rate is a favourite/dog mix and not a record
+    ([[feedback_an_unpriced_moneyline_rate_is_not_a_record]]).
+
+      test   fires          flagged outcome        clean outcome
+      COVER  188 of 375     48.6%  n=105           51.2%  n=170
+             (50.1% of the eligible spread card — half of it)
+      SIDE    30 of 165     -5.70u n=28, fav/dog   -1.03u n=124, 111/13
+             13/15 — the 61.3%-vs-41.4% win-rate gap is the MIX
+      PRICE   49 of 216     62.5%, -0.9% ROI n=40  53.7%, -8.2% ROI n=136
+             — BACKWARDS: the picks it calls mispriced did BETTER
+      FLIP     9 total      8 of 9 verified wrong-sided vs the closing ML
+      STALE   30 total      29 genuine stale holds, 1 false (see below)
+
+    So the three tests that ask a second model to ratify the pick (COVER,
+    SIDE, PRICE) carry no measured signal at any threshold, and PRICE's point
+    estimate runs the wrong way. None of the three may raise a
+    publish-blocking CRITICAL: `projected_spread` and the LR probability are
+    not what CHOSE most of these picks, so disagreeing with them is a
+    cross-model difference of opinion, not a pick contradicting itself
+    ([[feedback_lens_independence_needs_different_inputs]],
+    [[feedback_a_derived_column_can_hold_two_models]],
+    [[feedback_unmeasured_signal_must_not_outweigh_measured]]). They stay
+    REPORTED, at WARNING, with the numbers above, so the next person can
+    re-measure rather than rediscover.
+
+    FLIP keeps the CRITICAL. It is not a prediction claim at all — it says
+    the number we published names a different bet than the board does, which
+    is true or false regardless of how the game went. It was right 8 times
+    out of 9 against an arbiter that touches no spread column.
+    [[feedback_a_detector_can_be_the_defect]] ·
+    [[feedback_verdicts_issued_without_a_sample_size]]
+    """
     problems = []
     for sport, tbl in _CTX_TABLE.items():
         # 2026-10-21 DISK IO: was `select=*`, which pulls 334 columns on
@@ -1065,7 +1161,13 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                     # gap on a model with multi-point error. Anything under a
                     # point is agreement, not contradiction.
                     if (threshold - got) >= 1.0:
-                        _lay = float(pl0) < 0
+                        # A favourite whose projection is NEGATIVE is not
+                        # "ahead by only -7.3" — it is LOSING. The old prose
+                        # printed a signed number into an "ahead by" clause
+                        # and read as nonsense on exactly the rows that
+                        # matter most.
+                        # [[feedback_magnitude_cannot_express_a_side]]
+                        _lay = float(pl0) < 0 and got >= 0
                         problems.append({
                             'sport': sport, 'game': match, 'kind': 'COVER',
                             'tier': tier,
@@ -1073,7 +1175,8 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                                 (f'laying {float(pl0):+g} on {side} but our '
                                  f'projection has that side by only {got:+.1f}'
                                  if _lay else
-                                 f'taking {float(pl0):+g} on {side} but our '
+                                 f'{"taking" if float(pl0) > 0 else "laying"} '
+                                 f'{float(pl0):+g} on {side} but our '
                                  f'projection has that side losing by '
                                  f'{abs(got):.1f}')
                                 + f' — short of the published line by '
@@ -1083,8 +1186,18 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                     pass
 
             # ── B. published line vs the board ─────────────────────────
+            # ══ 2026-11-22 · A MONEYLINE PICK HAS NO LINE TO COMPARE ══
+            # This ran on every market. `Marshall ML` (2026-10-31, STRONG)
+            # carried a residual primary_play.line of 2.5 left over from the
+            # reroute that chose the ML, and the test read it as the bet:
+            # reported FLIP against close_spread 2.5 when the board and the
+            # pick AGREED — Marshall was the -146 favourite and the spread
+            # had them -2.5. On an ML pick `line` is not what we published,
+            # so there is nothing here to be stale or flipped.
+            # [[feedback_parse_a_pick_by_shape_not_vocabulary]]
             pl, cs = pp.get('line'), g.get('close_spread')
-            if pl is not None and cs is not None:
+            if (pl is not None and cs is not None
+                    and market in ('rl', 'spread')):
                 try:
                     # ══ 2026-10-21 · MY OWN CHECK HAD A CONVENTION BUG ══
                     # First refined run reported FLIP on BYU @ UCF, LSU @
@@ -1129,14 +1242,58 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                     #   * the board moved far enough that the published number
                     #     is stale rather than favourable
                     if (a < 0) != (b < 0) and abs(a - b) >= 1.0:
-                        problems.append({
-                            'sport': sport, 'game': match, 'kind': 'FLIP',
-                            'tier': tier,
-                            'detail': (f'published {a:+g} but the board is '
-                                       f'{b:+g} — the SIGN differs, so the '
-                                       f'published pick and the board do not '
-                                       f'describe the same bet'),
-                        })
+                        # ══ 2026-11-22 · ASK THE MONEYLINE WHICH IT IS ══
+                        # A sign difference has two causes that deserve
+                        # different words and different severities:
+                        #   * our number is on the WRONG SIDE — we published
+                        #     "BAL +8.5" on a team the book had at -375. A
+                        #     data-integrity defect, true regardless of the
+                        #     result, and the publish-blocker.
+                        #   * the stored close_spread contradicts its OWN
+                        #     closing moneyline, in which case our number is
+                        #     the one the price agrees with and the COLUMN is
+                        #     the suspect. Not a pick defect.
+                        # (A line that moved across zero since the lock reads
+                        # as the first case, correctly: whatever moved it, the
+                        # number we are showing is on the wrong side of the
+                        # board now. TEN @ IND went out at IND -6.5 and closed
+                        # with TEN the -205 favourite.)
+                        # The moneyline settles which, and it reads no spread
+                        # column, so it cannot inherit the convention bug that
+                        # produced the three false alarms documented above.
+                        _fav = _ml_favourite(g)
+                        _wrong_side = _published_wrong_side(pl, side, _fav)
+                        if _wrong_side:
+                            problems.append({
+                                'sport': sport, 'game': match, 'kind': 'FLIP',
+                                'tier': tier,
+                                'detail': (
+                                    f'published {float(pl):+g} on {side}, but '
+                                    f'the closing moneyline has {_fav} as '
+                                    f'the favourite — our own number puts '
+                                    f'{side} on the '
+                                    + ('favourite' if float(pl) < 0 else 'dog')
+                                    + ' side of a bet the book prices the '
+                                      'other '
+                                    f'way. The published pick names a '
+                                    f'different bet than the board.'),
+                            })
+                        else:
+                            problems.append({
+                                'sport': sport, 'game': match, 'kind': 'BOARD',
+                                'tier': tier,
+                                'detail': (
+                                    f'published {a:+g} but close_spread reads '
+                                    f'{b:+g} — the sign differs, and the '
+                                    + ('closing moneyline agrees with OUR '
+                                       'number, so the stored close_spread is '
+                                       'the suspect, not the pick'
+                                       if _fav is not None else
+                                       'closing moneyline is inside '
+                                       f'{_ML_FAV_GAP*100:.0f}pp of a '
+                                       'pick\'em, so nothing here can say '
+                                       'which number is right')),
+                            })
                     else:
                         # ══ THIRD CONVENTION SLIP, SAME CHECK ══
                         # This compared MAGNITUDES, which is wrong for a dog.
@@ -1152,7 +1309,31 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
                         # board currently offers, which is the only version of
                         # this that costs anything.
                         board_side = b if side == 'HOME' else -b
-                        if float(pl) < board_side - 1.0:
+                        # ══ 2026-11-22 · THE REFRESHER ALREADY ANSWERED ══
+                        # South Carolina +15 (2026-11-21, LEAN) fired here as
+                        # "the board now offers +16.5 — we are holding a WORSE
+                        # number". But refresh_unposted_pick_lines had moved
+                        # that pick 16.5 -> 15.0 hours earlier, having checked
+                        # SEVEN books and recorded "no book was posting the
+                        # published number". close_spread still held 16.5, so
+                        # the check was reporting the refresher's own fix as
+                        # the defect, and offering a number proven to be on no
+                        # board. A stale column beside a refreshed pick is the
+                        # column that is stale.
+                        # [[feedback_a_dead_value_keyed_on_itself_is_immortal]]
+                        # [[feedback_a_stale_line_beside_a_current_price]]
+                        _ref = pp.get('_line_refreshed')
+                        _was = (_ref.get('was')
+                                if isinstance(_ref, dict) else None)
+                        try:
+                            _rejected = (
+                                _was is not None
+                                and abs(float(_was)) == abs(board_side))
+                        except (TypeError, ValueError):
+                            _rejected = False
+                        if _rejected:
+                            pass
+                        elif float(pl) < board_side - 1.0:
                             problems.append({
                                 'sport': sport, 'game': match,
                                 'kind': 'STALE', 'tier': tier,
@@ -1205,21 +1386,46 @@ def check_card_self_contradiction(date: str) -> Optional[dict]:
 
     if not problems:
         return None
-    # FLIP, SIDE, COVER and PRICE are all "the pick argues with its own
-    # numbers". STALE is a value complaint, not a contradiction.
-    hard = [x for x in problems
-            if x['kind'] in ('PRICE', 'SIDE', 'COVER', 'FLIP')]
+    # ══ 2026-11-22 · ONLY ONE OF THESE TESTS HAS EARNED A CRITICAL ══
+    # `hard` used to be PRICE, SIDE, COVER and FLIP, on the reasoning that
+    # all four are "the pick argues with its own numbers". Three of them are
+    # not that. They ask a SECOND model to ratify a pick the first one made,
+    # and the replay in this function's docstring shows none of the three
+    # separates winners from losers — PRICE's point estimate runs backwards.
+    # COVER alone fired on half the eligible spread card, which is how this
+    # check came to sit CRITICAL for four straight weeks with eight genuine
+    # wrong-sided publishes buried inside it.
+    #
+    # FLIP is different in kind, not just in strength: it says the number we
+    # published names a different bet than the board does, arbitrated by the
+    # closing moneyline, and that is true or false whatever the result. That
+    # is what a publish-blocker should be.
+    hard = [x for x in problems if x['kind'] in _CSC_BLOCKING_KINDS]
     kinds = ', '.join(sorted({x['kind'] for x in problems}))
+    soft = len(problems) - len(hard)
     return {
         'check_name': 'card_self_contradiction',
-        # A pick that argues with its own numbers is a publish-quality
-        # problem, not a cosmetic one — but a held line on its own is not.
         'severity': 'CRITICAL' if hard else 'WARNING',
-        'message': (f'{len(problems)} published pick(s) disagree with the '
-                    f'numbers shown beside them ({kinds}).'),
-        'detail': {'problems': problems[:25],
-                   'fix_hint': 'card_self_contradiction — see the note above '
-                               'this check for what each kind means'},
+        'message': (
+            (f'{len(hard)} published pick(s) name a DIFFERENT BET than the '
+             f'board — our number puts our side on the wrong side of a price '
+             f'the book sets the other way. ' if hard else '')
+            + (f'{soft} pick(s) disagree with a model number shown beside '
+               f'them ({kinds}); reported, not blocking — COVER, SIDE and '
+               f'PRICE are measured to carry no signal, see the note above '
+               f'this check.' if soft else '')),
+        'detail': {
+            # Hard first: a 25-row cap used to let COVER crowd the FLIPs out
+            # of the payload entirely.
+            # [[feedback_never_measure_from_truncated_output]]
+            'problems': (hard + [x for x in problems if x['kind']
+                                 not in _CSC_BLOCKING_KINDS])[:25],
+            'blocking': len(hard),
+            'reported_only': soft,
+            'by_kind': {k: sum(1 for x in problems if x['kind'] == k)
+                        for k in sorted({x['kind'] for x in problems})},
+            'fix_hint': 'card_self_contradiction — FLIP is the blocking kind; '
+                        'see the note above this check for what each means'},
     }
 
 
