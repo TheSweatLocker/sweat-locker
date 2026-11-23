@@ -24,7 +24,24 @@ Pure-function tests on purpose: the check itself needs six table reads, which
 is why its policy went four weeks without one.
 [[feedback_no_unit_test_ran_in_ci]] · [[feedback_a_detector_can_be_the_defect]]
 """
-import consistency_watchdog as cw
+import os
+
+# 2026-11-23: this test failed in CI on every daily_card run from the hour it
+# shipped -- "exit 1 after 0s", which is an import crash, not an assertion.
+# consistency_watchdog reads SUPABASE_URL/KEY at MODULE level (line 45), and
+# falls back to mlb_pipeline/.env, which exists locally and does not exist on
+# a runner. So the test passed 12/12 here and KeyError'd there, and --detector
+# faithfully recorded a finding nobody had written.
+#
+# The fix is NOT to hand a pure-function test the production secrets. These
+# twelve assertions touch no table; placeholders keep that true, make the
+# module importable anywhere, and mean an accidental request fails loudly on a
+# dead host instead of reaching the real database. setdefault, so a real
+# environment (or .env) still wins when one is present.
+os.environ.setdefault('SUPABASE_URL', 'http://127.0.0.1:0/unused-by-this-test')
+os.environ.setdefault('SUPABASE_KEY', 'unused-by-this-test')
+
+import consistency_watchdog as cw  # noqa: E402  (must follow the env guard)
 
 
 # ── 1. FLIP, and only FLIP, blocks ────────────────────────────────────────
