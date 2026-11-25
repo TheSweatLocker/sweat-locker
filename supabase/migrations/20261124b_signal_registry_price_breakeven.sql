@@ -57,11 +57,45 @@
 -- down for every sport. Teaching edge_weight to USE it is a separate change,
 -- behind its own flag and a shadow period, because it rescores every sport.
 --
--- A NOTE FOR WHOEVER WIRES THE READER. edge_weight returns 0.0 the moment
--- edge_pp <= 0, so the price bar is a CLIFF: ncaaf_home_field_baseline at
--- 70.90% against a 71.39% bar is inside its own 2SE band (+/-3.3pp on n=189)
--- and would swing between 0.88 and 0.00 on noise. The reader should ramp
--- across the bar, or allow an SE margin, rather than inherit that step.
+-- A NOTE FOR WHOEVER WIRES THE READER -- AND A CORRECTION TO IT.
+--
+-- WHAT THIS FILE ORIGINALLY CLAIMED, on 11-24: that edge_weight returning
+-- 0.0 the moment edge_pp <= 0 makes the price bar a CLIFF, that
+-- ncaaf_home_field_baseline at 70.90% against a 71.39% bar sits inside its
+-- own 2SE band of +/-3.3pp on n=189, and that its weight would therefore
+-- swing between 0.88 and 0.00 on noise, so the reader needed a ramp.
+--
+-- THAT WAS WRONG ON BOTH NUMBERS, and the reader shipped on 11-25
+-- (a41af348) without a ramp because it is not needed. Measured:
+--
+--     bar fixed at 71.39%, hit rate wiggled   |   hit fixed at 70.90%, bar wiggled
+--       hr 70.90%  edge -0.49pp  w 0.0000     |     bar 70.90%  w 0.0000
+--       hr 71.39%  edge +0.00pp  w 0.0000     |     bar 70.50%  w 0.0645
+--       hr 71.50%  edge +0.11pp  w 0.0182     |     bar 70.00%  w 0.1393
+--       hr 72.00%  edge +0.61pp  w 0.0967     |     bar 58.33%  w 0.8769
+--
+-- edge_weight is CONTINUOUS at the bar: edge_component is
+-- 1 - exp(-edge_pp/0.06), which goes to 0 as edge_pp goes to 0 from above.
+-- A 1pp wiggle in the hit rate moves the weight between 0.000 and 0.018,
+-- not between 0.88 and 0.00. The 0.8769 is the weight under the FLAT bar --
+-- a REGIME difference between two bars 13pp apart, not noise sensitivity.
+-- And 0.5/sqrt(189) = 3.64pp is ONE SE; 2SE is 7.27pp, so the 3.3 quoted
+-- above was 1SE mislabelled.
+--
+-- The lesson is the one this repo keeps relearning: a sentence asserting a
+-- measurement is not a measurement, and a comment left unchecked becomes
+-- the next person's design constraint
+-- (feedback_comment_asserting_a_measurement).
+--
+-- WHAT THE READER ACTUALLY NEEDS, and has: the select for this column must
+-- be probe-guarded. fetch_all_rows answers a PostgREST 400 by returning the
+-- rows it has, which is NONE, and an empty signal_registry does not error --
+-- every signal falls to UNMEASURED_FLOOR and the engine prices six sports
+-- off a 0.20 constant (feedback_zero_rows_is_a_wiring_error). And a FADE
+-- opinion must not inherit this bar: it is the breakeven of the prices the
+-- FADED side took, and fading a -250 favourite buys a +210 dog whose bar is
+-- 32%, not 71%. Reusing it would zero every fade -- the only surface we
+-- have that makes money (feedback_check_which_side_a_column_indexes).
 --
 -- No NOTIFY pgrst: it makes Andy's SQL client report 42P01 relation "a", and
 -- Supabase ships a DDL event trigger that reloads the schema itself
