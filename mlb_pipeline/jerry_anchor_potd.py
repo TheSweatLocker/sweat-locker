@@ -84,6 +84,25 @@ CONTEXT_TABLE_BY_SPORT = {
 }
 
 
+#: POTD_DOG_GATE=0 turns the 2026-11-25 dog refusal off without a deploy.
+#: Default ON: it is the only one-pick-per-day rule measured positive in
+#: BOTH halves of the live-sport window, and it agrees with an independent
+#: measurement on 2,130 frozen ensemble firings.
+_POTD_DOG_GATE = os.environ.get('POTD_DOG_GATE', '1').strip().lower() \
+    not in ('0', 'off', 'false', 'no')
+
+
+def _potd_price_missing(r: dict) -> bool:
+    """True when no american price could be resolved for this candidate.
+
+    Reads the CACHED `_potd_price` key, so it must be called only after the
+    resolution loop has run. A candidate whose price is genuinely absent is
+    demoted and counted, never silently treated as priced
+    ([[feedback_dict_get_on_a_guessed_column]]).
+    """
+    return r.get('_potd_price') is None
+
+
 def _context_table(sport: str) -> Optional[str]:
     return CONTEXT_TABLE_BY_SPORT.get((sport or "").upper())
 
@@ -999,72 +1018,178 @@ def run(game_date: str | None = None, threshold: int = 70,
     # be POTD — they're often anti-consensus plays priced heavy by books."
     # Fetch ML for each eligible ML pick and filter out ones at -200+ juice.
     # Non-ML picks (total/rl/prop) unaffected.
-    ml_picks = [r for r in eligible if (r.get("call_market") or "").lower() == "ml"]
-    if ml_picks:
-        # Route each ML pick to its sport-specific context table (2026-08-03
-        # universalization). Skip juice gate for sports without a
-        # context table registered — best-effort, don't block the POTD.
-        ml_lookup = {}
-        by_sport = {}
-        for r in ml_picks:
-            by_sport.setdefault((r.get("sport") or "MLB").upper(), []).append(r)
-        for sport, sport_picks in by_sport.items():
-            ctx_table = _context_table(sport)
-            if not ctx_table: continue
-            game_ids = list({p["game_id"] for p in sport_picks})
-            in_str = ','.join(f'"{g}"' for g in game_ids)
-            resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/{ctx_table}",
-                headers=H_READ,
-                params={"game_id": f"in.({in_str})", "game_date": f"eq.{gd}",
-                        "select": "game_id,home_ml_close,away_ml_close"},
-                timeout=15,
-            )
-            rows = resp.json() if resp.status_code == 200 else []
-            for c in (rows if isinstance(rows, list) else []):
-                ml_lookup[c["game_id"]] = c
-        filtered = []
-        skipped_juice = []
+    # ══ 2026-11-25 · THE JUICE GATE WAS DEAD IN NFL AND NCAAF ══════════
+    # The block this replaces fetched prices with
+    #     select=game_id,home_ml_close,away_ml_close
+    # against each sport's context table. nfl_game_context has no
+    # `away_ml_close` and ncaaf_game_context has neither spelling, so
+    # PostgREST answered 42703 on the WHOLE query, `rows` became [], the
+    # lookup stayed empty, `pick_ml` was None, and `pick_ml is not None and
+    # pick_ml <= -200` was False for every football moneyline ever offered
+    # to it. The -200 cap had never once applied in those two sports.
+    #
+    # That is not theoretical: Oregon State ML went out as the POTD on
+    # 2026-11-07 at **-225** (receipt 5484768, LOSS), straight through a cap
+    # that reads -200. Measured fill behind the old select, 11-01 onward:
+    #     nfl_game_context   home_ml_close   0/164   away_ml_close ABSENT
+    #     ncaaf_game_context BOTH SPELLINGS ABSENT
+    #     nhl 173/209 · nba 181/193 · ncaab 787/1000   (these three worked)
+    # A gate reading a column its table does not have always passes
+    # ([[feedback_a_gate_reading_an_unselected_column_always_passes]],
+    #  [[feedback_football_and_the_rest_name_columns_differently]],
+    #  [[feedback_select_star_before_concluding_absent]]).
+    #
+    # So the price is no longer resolved here at all. `_potd_odds` already
+    # solves this exact problem for the winner -- it tries both spellings,
+    # selects *, matches call_market, and falls back to jerry_reads -- and a
+    # second hand-kept copy of a lookup is what drifted in the first place
+    # ([[feedback_fix_every_writer_to_the_table]]). It is called once per
+    # eligible candidate and the result is cached on the row, so the gates
+    # below, the ranking, and the receipt all read ONE price.
+    for _r in eligible:
+        if "_potd_price" not in _r:
+            _r["_potd_price"] = _potd_odds(_r, gd)
+
+    def _implied(odds):
+        """Implied win probability of an american price, or None."""
+        try:
+            o = float(odds)
+        except (TypeError, ValueError):
+            return None
+        if o == 0 or -100 < o < 100:
+            return None          # not a quotable american price
+        return (-o / (-o + 100.0)) if o < 0 else (100.0 / (o + 100.0))
+
+    _unpriced = [r for r in eligible if _potd_price_missing(r)]
+
+    # ══ 2026-11-25 · THE DOG GATE, MEASURED TWICE ══════════════════════
+    # ANDY: "we need to be better at picking POTD".
+    #
+    # The POTD is a SELECTION, so its own hit rate cannot say whether the
+    # selection adds value. Measured against the pool it draws from -- the
+    # same-day same-sport game_read receipts -- it SUBTRACTS value in the
+    # live sports:
+    #     POTD live        n= 32  hit 43.8%  implied 54.8%  ROI -21.31%
+    #     POOL live        n=436  hit 55.7%  implied 57.5%  ROI  -3.33%
+    # Picking at random from its own candidates would have beaten it by
+    # ~18pp. In MLB the same chooser returns +2.05% on n=142, which is the
+    # now-familiar shape: fitted to MLB
+    # ([[feedback_conviction_was_fitted_to_mlb]]).
+    #
+    # Replaying one-pick-per-day selectors over 73 live-sport pool days,
+    # each split early/late at the window midpoint so a fit shows itself:
+    #     A  top conv pct (the rule today)   n=73  63.0%  ROI  +2.13%
+    #                                        early  +6.0% / late  -1.6%
+    #     B  A + no dogs (implied >= 0.50)   n=73  68.5%  ROI +10.34%
+    #                                        early +15.0% / late  +5.8%
+    #     F  sides only, 50-65%              n=68  69.1%  ROI +17.55%
+    #                                        early +55.3% / late -14.1%  FIT
+    #     H  totals only, 50-65%             n=39  35.9%  ROI -32.22%
+    # F and C score higher and INVERT between halves, so they are fits and
+    # are not shipped. B is the only positive rule positive in both halves,
+    # and it was not discovered here: the dog refusal was already measured
+    # on 2,130 frozen ensemble firings (worse than +186 went 2 for 60,
+    # -54.01u) and this is a second, disjoint dataset agreeing
+    # ([[feedback_signals_firing_on_dogs_went_2_for_60]]).
+    #
+    # The live POTD receipts say it a third way -- plus-money POTDs went
+    # 1-4: USF +112 L, Ole Miss +120 L, Hawks +110 L, Sabres -1.5 +180 L,
+    # 76ers +105 W.
+    #
+    # AN UNPRICED CANDIDATE IS NOT REFUSED, it is DEMOTED below every
+    # priced one, so it can still carry a day on which nothing priced is
+    # eligible ("WE NEED A POTD every day"). Refusing it would make the
+    # gate decide on absence, and the count is printed every run rather
+    # than passed in silence ([[feedback_a_null_never_reaches_a_gate]]).
+    if _POTD_DOG_GATE:
+        _kept, _dogs = [], []
         for r in eligible:
-            if (r.get("call_market") or "").lower() != "ml":
-                filtered.append(r); continue
-            ctx_row = ml_lookup.get(r["game_id"], {})
-            side = (r.get("call_side") or "").upper()
-            pick_ml = ctx_row.get("home_ml_close") if side == "HOME" else ctx_row.get("away_ml_close")
-            # ══ 2026-09-29 · BACK TO -200, BY ANDY'S CALL ══
-            # This was loosened -200 → -250 on 2026-09-12 on the grounds that
-            # -200 tossed legitimate plays: Brewers ML conv 100 @ -207 (won
-            # 9/11, LR 1.00) and Dodgers ML conv 91 @ -209 (won, LR 0.91),
-            # with the LR ≥ 0.60 gate downstream holding EV positive.
-            #
-            # Reverted because the evidence is lopsided the other way. The
-            # loosening rested on two winning anecdotes. Against it sit two
-            # systematic measurements already in the record: heavy-fav ML at
-            # -200+ is a documented trap (29% cover on the -1.5), and the NFL
-            # fav-ML study found 65.2% win rate but -4.9% ROI overall and
-            # -22.8% on PRIME — the engine picks favourites it cannot price.
-            # n=2 wins do not outweigh that.
-            #
-            # It also ends a real inconsistency: generate_sweat_card has
-            # refused ML at <= -200 since 2026-08-04, with a comment claiming
-            # "same principle as jerry_anchor_potd" that stopped being true on
-            # 9/12. Today it bit — POTD published Atlanta ML -205 while the
-            # Sweat Card rejected that exact play, so the headline pick was one
-            # the card itself would not carry. One threshold now, both surfaces.
-            #
-            # Cost of the tighter gate: some days Jerry passes on the POTD.
-            # _write_no_play handles that, and an honest no-play is the
-            # cheaper failure.
-            if pick_ml is not None and pick_ml <= -200:
-                ct = (r.get('call_text') or '?')[:30]
-                skipped_juice.append(f"{ct} at {pick_ml} (below -200 cap)")
+            p = _implied(r.get("_potd_price"))
+            if p is not None and p < 0.50:
+                _dogs.append(f"{(r.get('call_text') or '?')[:30]} "
+                             f"at {r['_potd_price']:+d} "
+                             f"(implied {p * 100:.1f}% < 50%)")
                 continue
-            filtered.append(r)
-        if skipped_juice:
-            print(f"  🚫 POTD juice gate: skipped {len(skipped_juice)} ML picks at -200+")
-            for s in skipped_juice[:5]:
+            _kept.append(r)
+        if _dogs:
+            print(f"  🚫 POTD dog gate: refused {len(_dogs)} plus-money "
+                  f"candidate(s) — measured 2-for-60 worse than +186")
+            for s in _dogs[:5]:
                 print(f"      · {s}")
-        eligible = filtered
+        if not _kept and eligible:
+            print(f"  ⚠ POTD dog gate refused EVERY eligible candidate "
+                  f"({len(eligible)}) — passing rather than taking a dog")
+        eligible = _kept
+    else:
+        print("  ⓘ POTD dog gate OFF (POTD_DOG_GATE=0)")
+
+    # The -200 ML cap, now reading the resolved price so it applies in all
+    # six sports. Threshold and rationale unchanged from 2026-09-29 below.
+    #
+    # ══ 2026-09-29 · BACK TO -200, BY ANDY'S CALL ══
+    # This was loosened -200 → -250 on 2026-09-12 on the grounds that
+    # -200 tossed legitimate plays: Brewers ML conv 100 @ -207 (won
+    # 9/11, LR 1.00) and Dodgers ML conv 91 @ -209 (won, LR 0.91),
+    # with the LR ≥ 0.60 gate downstream holding EV positive.
+    #
+    # Reverted because the evidence is lopsided the other way. The
+    # loosening rested on two winning anecdotes. Against it sit two
+    # systematic measurements already in the record: heavy-fav ML at
+    # -200+ is a documented trap (29% cover on the -1.5), and the NFL
+    # fav-ML study found 65.2% win rate but -4.9% ROI overall and
+    # -22.8% on PRIME — the engine picks favourites it cannot price.
+    # n=2 wins do not outweigh that.
+    #
+    # It also ends a real inconsistency: generate_sweat_card has
+    # refused ML at <= -200 since 2026-08-04, with a comment claiming
+    # "same principle as jerry_anchor_potd" that stopped being true on
+    # 9/12. Today it bit — POTD published Atlanta ML -205 while the
+    # Sweat Card rejected that exact play, so the headline pick was one
+    # the card itself would not carry. One threshold now, both surfaces.
+    #
+    # Cost of the tighter gate: some days Jerry passes on the POTD.
+    # _write_no_play handles that, and an honest no-play is the
+    # cheaper failure.
+    filtered = []
+    skipped_juice = []
+    for r in eligible:
+        if (r.get("call_market") or "").lower() != "ml":
+            filtered.append(r)
+            continue
+        pick_ml = r.get("_potd_price")
+        if pick_ml is not None and pick_ml <= -200:
+            ct = (r.get('call_text') or '?')[:30]
+            skipped_juice.append(f"{ct} at {pick_ml} (below -200 cap)")
+            continue
+        filtered.append(r)
+    if skipped_juice:
+        print(f"  🚫 POTD juice gate: skipped {len(skipped_juice)} "
+              f"ML picks at -200+")
+        for s in skipped_juice[:5]:
+            print(f"      · {s}")
+    eligible = filtered
+
+    # Say how many candidates reached the price gates with NO price, every
+    # run, named. This is the number that would make both gates dark, so it
+    # is reported rather than inferred from a quiet pass.
+    if _unpriced:
+        print(f"  ⚠ POTD price unresolved on {len(_unpriced)} of "
+              f"{len(_unpriced) + len([r for r in eligible if not _potd_price_missing(r)])}"
+              f" eligible candidate(s) — these pass both price gates "
+              f"and sort BELOW every priced candidate")
+        for r in _unpriced[:5]:
+            print(f"      · {str(r.get('sport')):6s} "
+                  f"{str(r.get('call_text'))[:34]:34s} "
+                  f"mkt={r.get('call_market')}")
+
+    # Demote unpriced candidates: a priced play outranks an unpriced one at
+    # equal standing, so the unpriced one only wins a day on which nothing
+    # priced survived the gates. Ranking is otherwise UNCHANGED -- the
+    # measurement says the gain is the dog refusal, and every re-ranking
+    # that scored higher (F, G) inverted between halves.
+    eligible.sort(key=lambda r: (_potd_price_missing(r),
+                                 -_cs.rank_key(r.get("sport"),
+                                               r.get("conviction"))))
 
     if not eligible:
         print(f"  ⚠ no eligible reads after juice gate — Jerry passing")
