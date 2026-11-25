@@ -443,7 +443,20 @@ def main() -> int:
                     help='exit 1 on non-blocking warnings too '
                          '(default: warnings print and exit 0)')
     a = ap.parse_args()
-    sports = [a.sport] if a.sport else ['NFL', 'NCAAF', 'NBA', 'NHL']
+    # == 2026-11-24 . A BARE RUN AUDITED FOUR SPORTS OF SIX ==============
+    # This was ['NFL', 'NCAAF', 'NBA', 'NHL'] -- the four Andy named when the
+    # script was written on 10-29. CTX_TABLE has carried MLB and NCAAB since,
+    # and --sport accepts both, so the HARD half was wired and the easy half
+    # was not: a bare `python audit_read_pick_consistency.py` silently skipped
+    # NCAAB, which holds 52 of the 54 reads whose prose sells a market their
+    # badge is not. Exactly the shape of the 11-12 gap recorded in
+    # ncaab_pipeline.yml ("the consistency checker ran on four sports, not
+    # five") -- a second copy of the sport list, one update behind the map.
+    #
+    # CI is unaffected: every pipeline passes --sport. This is for anyone
+    # running it by hand, including a morning audit.
+    # (feedback_absent_key_makes_a_gate_dead)
+    sports = [a.sport] if a.sport else sorted(CTX_TABLE)
 
     all_f = []
     print(f'=== audit_read_pick_consistency · {date.today()} · +{a.days}d ===')
