@@ -312,7 +312,19 @@ bash "$RUN_STEP" --label "compute_sweat_rating.py (all sports)" \
 # team_computed_stats is a current snapshot, so backfilling a played game
 # would stamp post-game info on a pre-game row and poison every future
 # backtest reading these columns (project_rolling_stats_leak_trap_929).
-for _sp in NCAAF NFL; do
+# 2026-11-24 . ANDY: "SOS should be tracked for every sport."
+# It already was, per TEAM: compute_margin_strength above loops all six and
+# writes sor/sos into team_computed_stats (NFL 32, NCAAF 137, NBA 30,
+# NCAAB 366, NHL 32, MLB 30 teams). The JOIN onto the game row ran for two.
+# 20261124a adds the eight sor/sos columns to nba/ncaab/nhl/mlb_game_context;
+# until it is applied those four exit 1 with "A migration must add them
+# first", which `|| true` absorbs, so wiring them now is safe either way.
+# Upcoming-slate name match verified 2026-11-24: NBA 30/30, NCAAB 206/206,
+# NHL 32/32, NFL 32/32 -- so these fill on the first run after the migration.
+# NCAAF is 137/138: Louisiana Monroe has no rating in team_computed_stats at
+# all, and is deliberately NOT aliased to 'Louisiana', which is UL Lafayette
+# (feedback_prefix_strip_can_name_another_school).
+for _sp in NCAAF NFL NBA NCAAB NHL MLB; do
   bash "$RUN_STEP" --label "populate_game_sor.py ($_sp)" \
     python populate_game_sor.py --sport "$_sp" || true
 done

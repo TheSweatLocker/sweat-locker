@@ -73,7 +73,20 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 SB, H = ML.SB, ML.H
 H_W = {**H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
-CTX = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context'}
+# == 2026-11-24 . ANDY: "SOS should be tracked for every sport." ==========
+# It already WAS tracked for every sport: compute_margin_strength.py runs
+# nightly over NFL NCAAF NHL NBA NCAAB MLB and writes sor/sos per team into
+# team_computed_stats (verified 2026-11-24: NFL 32, NCAAF 137, NBA 30,
+# NCAAB 366, NHL 32, MLB 30 teams). What was tracked for only TWO sports was
+# the JOIN onto the game row -- this map, and the --sport choices below.
+#
+# Nothing else here needed changing: the body already probes the table for
+# whichever sor/sos columns exist and writes only those, so the four new
+# sports work the moment 20261124a adds their columns and are refused with a
+# clear message until then.
+CTX = {'NCAAF': 'ncaaf_game_context', 'NFL': 'nfl_game_context',
+       'NBA': 'nba_game_context', 'NCAAB': 'ncaab_game_context',
+       'NHL': 'nhl_game_context', 'MLB': 'mlb_game_context'}
 
 #: ncaaf_game_context spells one team differently from team_computed_stats.
 #: Measured 2026-10-10: 104 of 105 teams on the upcoming slate matched by
@@ -136,7 +149,7 @@ def today_et():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--sport', default='NCAAF', choices=('NCAAF', 'NFL'))
+    ap.add_argument('--sport', default='NCAAF', choices=tuple(sorted(CTX)))
     ap.add_argument('--dry-run', action='store_true', dest='dry')
     a = ap.parse_args()
     sport = a.sport
