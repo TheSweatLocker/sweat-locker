@@ -819,6 +819,25 @@ jobs:
         run: |
           cd mlb_pipeline
           bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" --label "generate_ncaab_game_reads.py" python generate_ncaab_game_reads.py
+          # == 2026-11-24 . DID THE ---SHORT--- CONTRACT ACTUALLY LAND? =====
+          # short_read was a verbatim prefix of long_read on 88.2% of the last
+          # 30 days of NCAAB reads (NBA 97.1%, NHL 98.0%, NCAAF 88.3%),
+          # because only NFL's and MLB's prompt templates asked for the
+          # sections and the other four fell through to
+          # `short = raw[:480]; long_ = raw` -- a prefix by construction.
+          #
+          # The contract was added to those four templates WITHOUT end-to-end
+          # verification: the local ANTHROPIC_API_KEY returns 401, so only a
+          # CI run can prove the model honours it. This step is that proof,
+          # and it runs immediately after the generation it judges.
+          #
+          # --detector: a prose-shape regression is a finding, not a reason to
+          # withhold the slate. Loose 50% threshold on purpose -- the question
+          # is "did the contract land at all", and a checker that cries wolf
+          # gets muted.
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --detector --label "verify_short_read_distinct.py (NCAAB)" \
+            python verify_short_read_distinct.py --sport NCAAB --days 2
 
       # ────── 4-LENS RESOLVER (2026-08-14 Session 4) ──────
       # Runs LAST in card-build sequence (after MC + Panel + Jerry).

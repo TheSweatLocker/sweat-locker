@@ -57,6 +57,50 @@ def _f(v):
     except (TypeError, ValueError): return None
 
 
+# == 2026-11-24 . A PLACEHOLDER MUST NOT REACH THE PROMPT AS A REAL RATE ==
+# 161 ncaab_game_context rows carry to_o = 100.0 and efg_d = 100.0 or 200.0
+# with efg_o = NULL -- a preseason snapshot written 2026-10-30..11-15, before
+# the four-factor feed had real numbers, that nothing re-derives.
+# ncaab_team_stats itself is clean in all three seasons (to_o 10.09..30.40)
+# and the same teams are correct in their other rows.
+#
+# _f() only coerces, so build_struct fed 'to_o': 100.0 straight into the LLM
+# prompt. A turnover rate cannot be 100%, and Jerry quotes what the struct
+# gives him -- the universal template says "Jerry's mouth is bounded by the
+# struct", so a junk input becomes a junk published sentence.
+#
+# 147 of the 161 are PAST games and are deliberately NOT repaired: current
+# team stats include the results of those very games, so writing them back
+# would be retroactive feature leakage and would make any backtest on them
+# look better than reality (feedback_walk_forward_misses_feature_leak). The
+# other 14 are future games outside the 5-day refresh horizon, and the
+# pipeline rewrites them with real numbers as the slate nears -- verified: of
+# 45 rows dated after today, the 29 refreshed today all carry a real to_o.
+#
+# So the durable protection is here, at the point of USE: a four-factor value
+# outside its possible range is None, exactly as a missing one is. Per-factor
+# bounds, because one cap does not fit columns whose medians are 18, 33, 38
+# and 52 -- a single >= 40 rule silently discards every normal FTR and eFG%
+# row (feedback_one_sentinel_cap_across_scales).
+_FF_MAX = {'to_o': 40.0, 'or_o': 70.0, 'ftr_o': 99.0,
+           'efg_o': 80.0, 'efg_d': 80.0}
+
+
+def _ff(ctx, key):
+    """A four-factor value, or None when it is absent OR impossible.
+
+    `key` is the full column name, e.g. 'home_to_o'.
+    """
+    v = _f(ctx.get(key))
+    if v is None:
+        return None
+    cap = next((c for suffix, c in _FF_MAX.items() if key.endswith(suffix)),
+               None)
+    if cap is not None and (v <= 0.0 or v >= cap):
+        return None
+    return v
+
+
 def sb_get(path, params=None):
     qs = '&'.join(f'{k}={v}' for k, v in (params or {}).items())
     url = f"{SUPABASE_URL}/rest/v1/{path}{'?' if qs else ''}{qs}"
@@ -185,22 +229,22 @@ def build_struct(ctx):
                 'adj_oe': _f(ctx.get('home_adj_oe')),
                 'adj_de': _f(ctx.get('home_adj_de')),
                 'tempo':  _f(ctx.get('home_tempo')),
-                'efg_o':  _f(ctx.get('home_efg_o')),
-                'efg_d':  _f(ctx.get('home_efg_d')),
-                'to_o':   _f(ctx.get('home_to_o')),
-                'or_o':   _f(ctx.get('home_or_o')),
-                'ftr_o':  _f(ctx.get('home_ftr_o')),
+                'efg_o':  _ff(ctx, 'home_efg_o'),
+                'efg_d':  _ff(ctx, 'home_efg_d'),
+                'to_o':   _ff(ctx, 'home_to_o'),
+                'or_o':   _ff(ctx, 'home_or_o'),
+                'ftr_o':  _ff(ctx, 'home_ftr_o'),
             },
             'away': {
                 'adj_em': _f(ctx.get('away_adj_em')),
                 'adj_oe': _f(ctx.get('away_adj_oe')),
                 'adj_de': _f(ctx.get('away_adj_de')),
                 'tempo':  _f(ctx.get('away_tempo')),
-                'efg_o':  _f(ctx.get('away_efg_o')),
-                'efg_d':  _f(ctx.get('away_efg_d')),
-                'to_o':   _f(ctx.get('away_to_o')),
-                'or_o':   _f(ctx.get('away_or_o')),
-                'ftr_o':  _f(ctx.get('away_ftr_o')),
+                'efg_o':  _ff(ctx, 'away_efg_o'),
+                'efg_d':  _ff(ctx, 'away_efg_d'),
+                'to_o':   _ff(ctx, 'away_to_o'),
+                'or_o':   _ff(ctx, 'away_or_o'),
+                'ftr_o':  _ff(ctx, 'away_ftr_o'),
             },
         },
         'situational': {
