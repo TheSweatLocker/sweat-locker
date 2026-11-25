@@ -569,26 +569,41 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
     # Joining context unconditionally cost MLB 254 game rows -> 25 and
     # swapped a frozen audit trail for a mutable one. Only fall back to
     # the join for sports whose results table lacks the column.
+    # == 2026-11-24 . SELECT THE PRICE COLUMNS, OR THE PRICE BAR IS DEAD ==
+    # _firing_breakeven reads the closing price off this row. Until today
+    # neither select asked for one, so it read None on every firing, be_n
+    # stayed 0 for all six sports (0 of 91 cells measured), and the
+    # price-aware tier rule from 2026-10-29 never executed once.
+    # Resolved per table because the names differ by sport, and appended to
+    # the explicit select because an explicit select silently blanks
+    # anything it does not name (feedback_explicit_select_silent_blanks).
+    _pc = resolve_price_cols(results_table)
+    _pc_cols = sorted({c for pair in _pc.values() for c in pair})
+    print(f'  [{sport}] price columns resolved on {results_table}: '
+          + (', '.join(f'{m}={_pc[m][0]}/{_pc[m][1]}' for m in sorted(_pc))
+             if _pc else 'NONE -- every market keeps the flat fallback'))
+    _extra = (',' + ','.join(_pc_cols)) if _pc_cols else ''
     direct = requests.get(
         f'{SB}/rest/v1/{results_table}',
         headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
         params={'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
                 'select': 'game_id,home_score,away_score,close_spread,'
-                          'close_total,primary_play'},
+                          'close_total,primary_play' + _extra},
         timeout=30)
     if direct.status_code in (200, 206):
         rows = direct.json() or []
         print(f'  [{sport}] game rows from results.primary_play '
               f'(last {days}d): {len(rows)}')
-        return _tally_game_firings(rows, sport)
+        return _tally_game_firings(rows, sport, _pc)
 
     _sc = _SPREAD_COL.get(sport, 'close_spread')
     res_rows = _page(results_table, {
         'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
         # alias the sport's own spread column to close_spread so the
-        # grading below reads one name
+        # grading below reads one name. Price columns appended from the
+        # resolved map -- see the comment on the direct path above.
         'select': 'game_date,home_team,away_team,home_score,away_score,'
-                  f'close_spread:{_sc},close_total'})
+                  f'close_spread:{_sc},close_total' + _extra})
     if not res_rows:
         print(f'  [{sport}] WARNING: results fetch returned 0 rows from '
               f'{results_table} (spread col {_sc!r}) — if that table has '
@@ -622,7 +637,7 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
           f'{len(rows)} of {len(res_rows)} results, '
           f'{len(ctx_rows)} context rows')
 
-    return _tally_game_firings(rows, sport)
+    return _tally_game_firings(rows, sport, _pc)
 
 
 # ══ 2026-10-29 · THE JUICE BAR WAS A FLAT 52.38% ON EVERY MARKET ════════
@@ -648,11 +663,86 @@ _MARKET_BE_FALLBACK = {'ml': 0.5833, 'rl': 0.5238, 'total': 0.5238,
                        'prop': 0.5283}
 
 # Only NHL stores a spread/total price; MLB stores no price at all.
-_PRICE_COLS = {
-    'ml':    ('close_home_ml', 'close_away_ml'),
-    'rl':    ('close_puckline_home_price', 'close_puckline_away_price'),
-    'total': ('close_total_over_price', 'close_total_under_price'),
+#: == 2026-11-24 . THE PRICE BAR NEVER RAN, AND THE NAMES DIFFER ==========
+#: This was a single map read off the results row. Two things were wrong.
+#:
+#: 1. NEITHER SELECT ASKED FOR A PRICE COLUMN. collect_game_firings selects
+#:    `game_id,home_score,away_score,close_spread,close_total,primary_play`
+#:    on the direct path and `game_date,home_team,away_team,home_score,
+#:    away_score,close_spread:<col>,close_total` on the join path. So
+#:    row.get('close_home_ml') was None on EVERY firing, be_n stayed 0,
+#:    be_frac fell back to _MARKET_BE_FALLBACK, and the price-aware tier
+#:    rule added 2026-10-29 never once executed. Measured 2026-11-24: 0 of
+#:    91 signal-market cells at n>=20 had a measured breakeven, across all
+#:    six sports (feedback_explicit_select_silent_blanks).
+#:
+#: 2. THE COLUMN NAMES DIFFER BY SPORT. Fill measured on ~900 recent played
+#:    rows per table:
+#:
+#:      close_home_ml / close_away_ml   NFL 100%  NCAAF 91.7%  NHL 85.9%
+#:                                      NBA 85.5%  NCAAB 0.0%  MLB absent
+#:      home_ml_close / away_ml_close   NCAAB 74.2%  MLB 98.2%
+#:
+#:    NCAAB carries BOTH spellings and the one this file asked for is the
+#:    empty twin (feedback_a_zero_fill_column_can_have_a_populated_twin).
+#:
+#: rl / total prices exist on nhl_game_results only (38.3%), and on no other
+#: results table, so those markets keep the flat fallback by necessity --
+#: which is now visible in the log rather than silent.
+_PRICE_COL_CANDIDATES = {
+    'ml': (('close_home_ml', 'close_away_ml'),
+           ('home_ml_close', 'away_ml_close')),
+    'rl': (('close_puckline_home_price', 'close_puckline_away_price'),),
+    'total': (('close_total_over_price', 'close_total_under_price'),),
 }
+
+#: Kept for any caller still importing it; the live path uses the resolved
+#: per-table map below.
+_PRICE_COLS = {m: c[0] for m, c in _PRICE_COL_CANDIDATES.items()}
+
+
+def resolve_price_cols(table: str, sample: int = 400) -> dict:
+    """{market: (home_col, away_col)} for the best-FILLED pair this table has.
+
+    Probes the live table rather than trusting a hardcoded name, for two
+    reasons. A select naming a column the table lacks is a PostgREST 400
+    that would take the whole refit down. And a column the table HAS but
+    never fills is worse than a missing one, because the measurement then
+    goes silently absent instead of loudly failing.
+
+    RESOLVED ON FILL, NOT PRESENCE. The first version of this took the first
+    pair that existed, and ncaab_game_results carries BOTH spellings --
+    close_home_ml at 0.0% and home_ml_close at 74.2% -- so it chose the
+    empty twin and reproduced the very bug it was added to fix. Candidate
+    order is now only a tie-break.
+    """
+    try:
+        r = requests.get(
+            f'{SB}/rest/v1/{table}', headers=H_READ, timeout=60,
+            params={'select': '*', 'limit': sample,
+                    'home_score': 'not.is.null',
+                    'order': 'game_date.desc'})
+        rows = r.json() if r.status_code == 200 else []
+    except Exception:                                      # noqa: BLE001
+        rows = []
+    if not rows:
+        return {}
+    cols = set(rows[0].keys())
+    out = {}
+    for market, cands in _PRICE_COL_CANDIDATES.items():
+        best, best_fill = None, 0
+        for pair in cands:
+            if not all(c in cols for c in pair):
+                continue
+            fill = sum(1 for x in rows
+                       if all(x.get(c) is not None for c in pair))
+            if fill > best_fill:
+                best, best_fill = pair, fill
+        # A pair filled on under 10% of settled rows cannot support an 80%
+        # coverage gate; naming it only hides the gap behind a column name.
+        if best and best_fill >= max(10, int(0.10 * len(rows))):
+            out[market] = best
+    return out
 
 
 def _american_to_be(odds) -> Optional[float]:
@@ -666,9 +756,16 @@ def _american_to_be(odds) -> Optional[float]:
     return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
 
 
-def _firing_breakeven(market: str, src_side: str, row: dict) -> Optional[float]:
-    """Breakeven of the side this signal actually took on this game."""
-    cols = _PRICE_COLS.get(market)
+def _firing_breakeven(market: str, src_side: str, row: dict,
+                      price_cols: Optional[dict] = None) -> Optional[float]:
+    """Breakeven of the side this signal actually took on this game.
+
+    `price_cols` is the per-table resolved map from resolve_price_cols. It
+    defaults to the legacy single map so an older caller still works, but
+    the live path always passes the resolved one -- the names differ by
+    sport and the legacy map is the EMPTY twin on NCAAB.
+    """
+    cols = (price_cols or _PRICE_COLS).get(market)
     if not cols:
         return None
     first_side = {'ml': 'HOME', 'rl': 'HOME', 'total': 'OVER'}[market]
@@ -698,7 +795,8 @@ def _mkt_cell(ct: dict, market: str) -> dict:
                                        'be_sum': 0.0, 'be_n': 0})
 
 
-def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
+def _tally_game_firings(rows: list, sport: Optional[str] = None,
+                        price_cols: Optional[dict] = None) -> dict:
     """{signal_key: {right, wrong, blind_sum}} from rows with primary_play.
 
     Shared by both fetch paths (results.primary_play for MLB, the
@@ -761,7 +859,7 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None) -> dict:
                 cell['blind_sum'] += _b
                 cell['blind_n'] += 1
             # The breakeven of the price this signal took, per firing.
-            _be = _firing_breakeven(market, src_side, row)
+            _be = _firing_breakeven(market, src_side, row, price_cols)
             if _be is not None:
                 firings[base_key]['be_sum'] += _be
                 firings[base_key]['be_n'] += 1
@@ -1011,6 +1109,35 @@ _PICK_COLS = ('pick_control_pct', 'discrimination_pp', 'disagree_n')
 _PICK_COLS_PRESENT: Optional[bool] = None
 
 
+_PRICE_BE_COL = 'price_breakeven_pct'
+_PRICE_BE_PRESENT = None
+
+
+def _have_price_be_col() -> bool:
+    """True once 20261124b has been applied. Probed once per process.
+
+    Same contract as _have_pick_control_cols below: a select on a missing
+    column is a 400 with no rows, so this probes rather than guesses, and
+    any doubt returns False so a failed probe cannot cost us the refit
+    (feedback_select_star_before_concluding_absent).
+    """
+    global _PRICE_BE_PRESENT
+    if _PRICE_BE_PRESENT is None:
+        try:
+            r = requests.get(f'{SB}/rest/v1/signal_registry', headers=H_READ,
+                             params={'select': _PRICE_BE_COL, 'limit': '1'},
+                             timeout=10)
+            _PRICE_BE_PRESENT = (r.status_code == 200)
+            if not _PRICE_BE_PRESENT:
+                print(f'  . {_PRICE_BE_COL} not present yet (20261124b '
+                      f'unapplied) - the measured price bar is computed and '
+                      f'used for the TIER, but cannot be stored for the '
+                      f'scorer to read')
+        except Exception:                                  # noqa: BLE001
+            _PRICE_BE_PRESENT = False
+    return bool(_PRICE_BE_PRESENT)
+
+
 def _have_pick_control_cols() -> bool:
     """True once 20261029c has been applied. Probed once per process.
 
@@ -1172,6 +1299,22 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
                 'disagree_n': _dis_n}
                if pick_ctl is not None and _have_pick_control_cols() else {}),
             'tier': tier,
+            # == 2026-11-24 . THE PRICE BAR, STORED SO IT CAN BE READ =====
+            # be_frac is the mean breakeven of the prices THIS signal fired
+            # at, at 80% coverage, else the per-market median fallback. It
+            # has decided the tier since 2026-10-29 and was then discarded,
+            # so the scorer kept judging every signal against a flat
+            # market breakeven: ml 58.33% for a signal firing at -250.
+            #
+            # Measured 2026-11-24 once the select was fixed (the columns it
+            # reads were never requested, so this never ran at all): 51 of
+            # 91 signal-market cells at n>=20 have a measured breakeven, and
+            # against it 17 signals lose weight, 5 go to zero, 3 gain.
+            # ncaaf_home_field_baseline hits 70.90% on n=189 against a
+            # 71.39% breakeven -- a signal that looks strong against its
+            # 57.60% blind baseline and is under water at its own prices.
+            **({'price_breakeven_pct': round(be_frac * 100, 2)}
+               if be_frac is not None and _have_price_be_col() else {}),
             'recommended_weight': weight,
             'direction_hint': 'FADE' if tier == 'ANTI_VALIDATED' else 'FOLLOW',
             # ══ 2026-10-29 · THE CONTROL WAS COMPUTED AND THROWN AWAY ══
