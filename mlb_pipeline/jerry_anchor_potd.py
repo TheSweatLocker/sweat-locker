@@ -84,12 +84,31 @@ CONTEXT_TABLE_BY_SPORT = {
 }
 
 
-#: POTD_DOG_GATE=0 turns the 2026-11-25 dog refusal off without a deploy.
-#: Default ON: it is the only one-pick-per-day rule measured positive in
-#: BOTH halves of the live-sport window, and it agrees with an independent
-#: measurement on 2,130 frozen ensemble firings.
-_POTD_DOG_GATE = os.environ.get('POTD_DOG_GATE', '1').strip().lower() \
-    not in ('0', 'off', 'false', 'no')
+#: ══ 2026-11-25 · DEFAULT FLIPPED TO OFF, SAME DAY IT SHIPPED ══
+#: This shipped ON a few hours earlier on the strength of a one-pick-per-day
+#: replay over the game_read pool (rule B: +10.34%, positive in both halves)
+#: plus the frozen-firing dog measurement.
+#:
+#: It is now OFF by default because the SAME method, applied to matchup
+#: history later the same day, produced a result that a DIRECTION-ONLY
+#: CONTROL destroyed: "back AWAY when the home team won 0-1 of the last 5"
+#: returned +29.19u / +13.21% on n=221 and looked like an edge -- until
+#: backing AWAY in EVERY eligible game returned +5.80% on n=716, NCAAF's
+#: control alone returned +16.34%, and in NHL the h2h filter made the result
+#: WORSE than the control (+2.74% vs +13.25%). The pool replay that
+#: justified rule B was never given that control: I never measured what
+#: refusing an arbitrary candidate does, so I cannot presently separate
+#: "refusing dogs helps" from "refusing anything shifts the pick toward a
+#: price band that happened to run well in this window"
+#: ([[feedback_signal_needs_a_direction_control]]).
+#:
+#: The dog evidence may well survive that test -- it has three datasets
+#: behind it -- but it has not been given it, and an ungated surface as
+#: prominent as the POTD is the wrong place to carry an untested rule
+#: ([[feedback_the_ungated_surface_is_the_dangerous_one]]).
+#: POTD_DOG_GATE=1 turns it back on with no deploy.
+_POTD_DOG_GATE = os.environ.get('POTD_DOG_GATE', '0').strip().lower() \
+    in ('1', 'on', 'true', 'yes')
 
 
 def _potd_price_missing(r: dict) -> bool:
