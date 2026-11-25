@@ -1278,9 +1278,24 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         # computed from a fifth of the firings is not this signal's bar.
         # Falls back to the measured per-market median, which is still far
         # closer than a flat -110 on a moneyline.
+        # ══ 2026-11-25 · ONE COLUMN CANNOT HOLD TWO MEANINGS ══
+        # `be_frac` is the TIER's input and it legitimately falls back to the
+        # flat per-market constant when price coverage is thin. a4662a42 then
+        # stored be_frac in price_breakeven_pct, so 169 of 219 stored bars
+        # (77%) were the flat number -- 58.33 for ml -- written under a name
+        # that says "the prices this signal actually fired at". A reader
+        # cannot tell the two apart, and the scorer would have judged a
+        # signal against 58.33% while believing it was using the price.
+        #
+        # `be_measured` is the storable one: None unless the 80% coverage
+        # gate passed. The tier behaviour is UNCHANGED
+        # ([[feedback_a_derived_column_can_hold_two_models]],
+        #  [[feedback_column_presence_is_not_contamination]]).
         _en = ct.get('be_n') or 0
+        be_measured = None
         if _en >= max(10, int(n * 0.8)):
             be_frac = ct['be_sum'] / _en
+            be_measured = be_frac
         else:
             _mk = ct.get('mkt') or {}
             _dommk = max(_mk.items(), key=lambda z: z[1])[0] if _mk else ''
@@ -1350,8 +1365,15 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
             # ncaaf_home_field_baseline hits 70.90% on n=189 against a
             # 71.39% breakeven -- a signal that looks strong against its
             # 57.60% blind baseline and is under water at its own prices.
-            **({'price_breakeven_pct': round(be_frac * 100, 2)}
-               if be_frac is not None and _have_price_be_col() else {}),
+            # Always SEND the key once the column exists, with None when
+            # the bar is not measured. upsert_registry PATCHes, so a key
+            # omitted leaves whatever is already there -- the 169 flat
+            # values written by a4662a42 would have survived every future
+            # refit. Sending None heals them on the next run
+            # ([[feedback_a_refused_upsert_freezes_a_lie]]).
+            **({'price_breakeven_pct': (round(be_measured * 100, 2)
+                                        if be_measured is not None else None)}
+               if _have_price_be_col() else {}),
             'recommended_weight': weight,
             'direction_hint': 'FADE' if tier == 'ANTI_VALIDATED' else 'FOLLOW',
             # ══ 2026-10-29 · THE CONTROL WAS COMPUTED AND THROWN AWAY ══
