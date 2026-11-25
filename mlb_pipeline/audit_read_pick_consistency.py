@@ -147,6 +147,20 @@ def _pp(row: dict):
     return pp if isinstance(pp, dict) else None
 
 
+#: The write-path guard's detector, imported so there is ONE
+#: implementation. Optional import: this auditor must still run its other
+#: rules if the module cannot be loaded, but it says so rather than
+#: silently dropping rule 6 (feedback_a_swallowed_nameerror_is_a_false_
+#: condition).
+try:
+    from jerry_reads_dual_write import (
+        other_market_directive as _other_market_directive)
+except Exception as _omd_err:                           # noqa: BLE001
+    _other_market_directive = None
+    print(f'  ! rule 6 UNAVAILABLE - cannot import the other-market '
+          f'detector ({_omd_err}); every other rule still runs')
+
+
 def _label(pp: dict) -> str:
     for k in ('pick_label', 'label', 'call_text', 'text'):
         v = pp.get(k)
@@ -382,6 +396,39 @@ def audit(sport: str, days: int, verbose: bool) -> dict:
         if mkt in ACTIONABLE and label and len(prose.strip()) < 60:
             add('PICK_WITH_NO_PROSE', f'{len(prose.strip())} chars of prose')
 
+        # 6 · THE PROSE ASSERTS A BET ON ANOTHER MARKET.
+        #
+        #     == 2026-11-24 · WHAT RULE 4 WAS MISSING ==
+        #     Rule 4 checks a TOTAL pick's prose takes its direction. It has
+        #     no converse, so a moneyline badge over prose that closes
+        #     "Under 144.5. Edge lives there." was never checked by anything.
+        #
+        #     Measured over all 3,964 jerry_reads: 54 published reads do
+        #     this. NCAAB 52 of 564 side-market reads (9.2%); MLB 2 of 379
+        #     (0.5%, the two 09-23 rows that motivated prose_is_stale); ZERO
+        #     in NCAAF, NBA, NHL and NFL.
+        #
+        #     RUNS AT EVERY TIER, unlike rules 1 and 3b. The tier exemption
+        #     above is right about pass-prose: a COVERAGE read admitting
+        #     there is no play AGREES with the engine. It says nothing about
+        #     a COVERAGE read selling a DIFFERENT bet, which misleads
+        #     whatever tier it carries — and the exemption is precisely why
+        #     this was invisible, since MAX_TIER_BY_SPORT_MARKET caps every
+        #     NCAAB moneyline at COVERAGE and 88% of them land there.
+        #
+        #     The detector is imported, not reimplemented, so the auditor and
+        #     the write-path guard cannot drift
+        #     (feedback_fix_every_writer_to_the_table). Its two shapes and
+        #     the cases it deliberately ignores are documented at
+        #     jerry_reads_dual_write.other_market_directive; every one of the
+        #     54 hits was read by eye before either shipped.
+        if _other_market_directive is not None and label:
+            _omd = _other_market_directive(prose, mkt)
+            if _omd:
+                _code_o, _sent_o, _ = _omd
+                add('PROSE_SELLS_ANOTHER_MARKET',
+                    f'{_code_o}: {_sent_o[:120]!r}')
+
     return {'sport': sport, 'reads': checked, 'ctx': len(ctx),
             'findings': findings}
 
@@ -454,7 +501,14 @@ def main() -> int:
     #                        advances (the NFL 11-08 rows).
     #   PICKED_TEAM_ABSENT / TOTAL_DIRECTION_ABSENT   weaker text rules,
     #                        kept visible but never blocking.
-    BLOCKING = ('PROSE_DECLINES_THE_PICK', 'PROSE_PROJECTS_THE_OTHER_TEAM')
+    #   PROSE_SELLS_ANOTHER_MARKET     the write-up asserts a bet on a
+    #                                  market the badge is not selling.
+    #                                  Structured and unambiguous: a total
+    #                                  directive under a side badge is two
+    #                                  different bets on one screen. Blocks
+    #                                  at every tier (see rule 6).
+    BLOCKING = ('PROSE_DECLINES_THE_PICK', 'PROSE_PROJECTS_THE_OTHER_TEAM',
+                'PROSE_SELLS_ANOTHER_MARKET')
     hard = [f for f in all_f if f['code'] in BLOCKING]
     warn = [f for f in all_f if f['code'] not in BLOCKING]
     print(f'\n  total findings: {len(all_f)}   BLOCKING: {len(hard)}   '

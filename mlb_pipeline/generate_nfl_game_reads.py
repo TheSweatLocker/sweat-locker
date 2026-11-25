@@ -2545,6 +2545,24 @@ def upsert_jerry_read_nfl(game, struct, parsed, narrative,
         'call_odds_est': None,
         'conviction': parsed.get('conviction') or 0,
     }
+    # == 2026-11-24 . THE PROSE MUST NOT SELL ANOTHER MARKET =============
+    # Same guard as jerry_reads_dual_write.upsert_jerry_read, applied here
+    # because THIS function is a separate writer -- exactly the trap the
+    # 2026-09-24 marker-leak comment above records. NFL measured 0 of 199
+    # side-market reads affected, so this is prevention, not a repair.
+    try:
+        from jerry_reads_dual_write import strip_other_market_directive
+        _mkt = str(payload.get('call_market') or '').lower()
+        _s, _cs = strip_other_market_directive(payload.get('short_read'), _mkt)
+        _l, _cl = strip_other_market_directive(payload.get('long_read'), _mkt)
+        if _cs or _cl:
+            print(f'  * NFL {game_id}: prose asserted a bet the badge is not '
+                  f'selling ({payload.get("call_text")!r}) -- cut '
+                  f'{(_cs + _cl)!r}')
+            payload['short_read'] = _s
+            payload['long_read'] = _l
+    except Exception as _og:                            # noqa: BLE001
+        print(f'  ! other-market guard skipped ({_og})')
     r = requests.post(
         f'{SUPABASE_URL}/rest/v1/jerry_reads?on_conflict=sport,game_id,game_date',
         headers={**SB_WRITE, 'Prefer': 'resolution=merge-duplicates,return=minimal'},

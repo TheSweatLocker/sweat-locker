@@ -403,6 +403,131 @@ def prose_is_stale(short: str | None, market: str, label: str,
     return len(sr) < 100
 
 
+# == 2026-11-24 . THE PROSE MUST NOT SELL A MARKET THE BADGE IS NOT ======
+# Andy: "ensure this stops fucking happening".
+#
+# prose_is_stale() above has caught "ml badge + prose naming a total" since
+# 2026-09-23 and is correct. It has only ever been handed `short_read`.
+#
+# Measured 2026-11-24 over all 3,964 jerry_reads: 54 published reads carry
+# a side-market badge while their prose ASSERTS a total as the bet, and in
+# 66 of 68 candidates the offending sentence sits in the closing 200
+# characters of long_read -- which no guard has ever read. short_read is a
+# truncated PREFIX of long_read on 99.9% of NCAAB reads, so the tail is
+# exactly the part the guard could never see.
+#
+#     badge 'VMI ML'  .  prose closes "...3.5 points south of the line -
+#                        is the real signal. Under 144.5. Edge lives there."
+#
+# Rate by sport: NCAAB 52 of 564 side-market reads (9.2%), MLB 2 of 379
+# (0.5%, both the 09-23 rows that motivated prose_is_stale), and ZERO in
+# NCAAF, NBA, NHL and NFL. It is a long_read problem, not a short_read one.
+#
+# PRECISION OVER RECALL, the same standard as
+# audit_read_pick_consistency.py. A read MAY discuss the total -- that is
+# good analysis. It may not ASSERT one as the bet. So the detector fires on
+# two unambiguous shapes only, and all 54 hits were read by eye before this
+# shipped:
+#
+#   ASSERTED  'Under 150.5 is the play'  over/under + number followed by a
+#             verdict phrase in the same sentence
+#   BARE      'Under 144.5'              a standalone directive sentence:
+#             the over/under leads and the whole sentence is <= 40 chars
+#
+# Explicitly NOT flagged: a hedged mention ("the secondary lean is the
+# under", "if you want the total"), and any sentence naming a total without
+# claiming it -- "pace compresses this toward the under" argues for the
+# side, it does not offer a competing bet. A detector that fires on the
+# by-design case gets muted
+# (feedback_a_detector_must_know_the_intentional_case).
+#
+# Lives HERE rather than in the auditor because this module is the one path
+# every generator's write passes through, and a guard belongs at the
+# chokepoint, not on one of its callers
+# (feedback_guard_belongs_at_the_chokepoint). The auditor imports these
+# same functions, so there is one implementation rather than two that drift.
+_SIDE_MARKETS = ('ml', 'rl', 'spread', 'puckline')
+
+#: A sentence boundary that is NOT a decimal point. The first version split
+#: on every '.', so '68.5' became a sentence break and every match this
+#: reported was unreadable garbage
+#: (feedback_never_measure_from_truncated_output).
+_SENT_END = re.compile(r'(?<!\d)[.!?]+(?=\s|$)|[.!?]+(?=\s+[A-Z(])|\n+')
+_OU_NUM = re.compile(r'\b(over|under)\s+(\d+(?:\.\d+)?)\b', re.I)
+_OU_VERDICT = re.compile(
+    r'is\s+the\s+(?:play|read|call|bet|side|number|lean|way|angle)\b'
+    r'|is\s+where\s+the\s+edge|sits\s+at\s+(?:PRIME|STRONG)\b'
+    r'|has\s+the\s+edge\b|take\s+the\b|hammer\b'
+    r'|clears\s+the\s+(?:gap|number)', re.I)
+_OU_HEDGED = re.compile(
+    r'\b(secondary|minor|smaller|lesser|alternative|backup|if\s+you|'
+    r'worth\s+a\s+look|also\s+live)\b', re.I)
+
+
+def _sentence_spans(text: str):
+    """[(start, end)] over text, split on real sentence ends only."""
+    out, pos, n = [], 0, len(text or '')
+    for m in _SENT_END.finditer(text or ''):
+        if m.end() > pos:
+            out.append((pos, m.end()))
+        pos = m.end()
+    if pos < n:
+        out.append((pos, n))
+    return out
+
+
+def other_market_directive(prose, market):
+    """The sentence asserting a bet on another market, or None.
+
+    Returns (code, sentence, (start, end)) so a caller can report it or cut
+    it out. Only runs for a SIDE badge: a total badge is free to say 'Under
+    144.5', because that is the bet it is selling.
+    """
+    mkt = str(market or '').strip().lower()
+    if mkt not in _SIDE_MARKETS or not prose:
+        return None
+    for s, e in _sentence_spans(prose):
+        sent = ' '.join(prose[s:e].split())
+        m = _OU_NUM.search(sent)
+        if not m or _OU_HEDGED.search(sent):
+            continue
+        if _OU_VERDICT.search(sent[m.start():]):
+            return ('ASSERTED', sent, (s, e))
+        if m.start() <= 2 and len(sent) <= 40:
+            return ('BARE', sent, (s, e))
+    return None
+
+
+def strip_other_market_directive(prose, market):
+    """Remove every other-market directive sentence -> (prose, [removed]).
+
+    Cutting the sentence is the honest repair. Rewriting it to point at the
+    badge would invent a claim the writer never made, and regenerating costs
+    an LLM call this write path cannot make. What is left is the analysis
+    minus a recommendation we are not offering, and a read missing one
+    sentence beats a read selling the wrong bet.
+
+    Leftover separators ('|', dashes) are swept, so the cut cannot leave a
+    dangling delimiter in published prose.
+    """
+    removed = []
+    out = prose or ''
+    for _ in range(6):                    # bounded; one hit is the normal case
+        hit = other_market_directive(out, market)
+        if not hit:
+            break
+        _code, sent, (s, e) = hit
+        removed.append(sent)
+        out = out[:s] + out[e:]
+    if removed:
+        out = re.sub(r'[ \t]*\|[ \t]*(?=\||$)', '', out)
+        out = re.sub(r'(?m)^[ \t]*[|—–-]+[ \t]*', '', out)
+        out = re.sub(r'[ \t]*[|—–][ \t]*(?=[.!?]|$)', '', out)
+        out = re.sub(r'\n{3,}', '\n\n', out)
+        out = re.sub(r'[ \t]{2,}', ' ', out).strip()
+    return (out or None), removed
+
+
 def derive_short_read(short: str | None, long: str | None,
                       narrative: str | None = None) -> str | None:
     """A short_read worth showing, derived from long_read when needed.
@@ -871,6 +996,31 @@ def upsert_jerry_read(*, sport: str, game_id: str, game_date: str,
     # narrative, so it must see the text in the shape the parser expects.
     parsed['short_read'] = strip_markdown_emphasis(parsed.get('short_read'))
     parsed['long_read'] = strip_markdown_emphasis(parsed.get('long_read'))
+
+    # == 2026-11-24 . THE PROSE MUST NOT SELL ANOTHER MARKET ==============
+    # See other_market_directive() above for the measurement and the two
+    # shapes it fires on. Runs HERE, last, because the badge is only final
+    # at this point: alignment against fresh primary_play, the model
+    # deference gate and the marker/emphasis strips have all run, so
+    # parsed['call_market'] is the market this read actually sells.
+    #
+    # Both fields are cleaned. long_read is the one that matters -- the
+    # directive sat in its closing sentence on 66 of 68 candidates -- and it
+    # is cleaned from the same (long_read or narrative) expression the
+    # payload below uses, so the narrative fallback cannot smuggle the
+    # sentence back in past the guard.
+    _mkt_final = str(parsed.get('call_market') or '').lower()
+    _long_src = _demarker(parsed.get('long_read') or narrative or '',
+                          'long_read')
+    _sr_clean, _cut_s = strip_other_market_directive(
+        parsed.get('short_read'), _mkt_final)
+    _lr_clean, _cut_l = strip_other_market_directive(_long_src, _mkt_final)
+    if _cut_s or _cut_l:
+        print(f'  * {sport} {game_id}: prose asserted a bet the badge is not '
+              f'selling ({parsed.get("call_text")!r}, market '
+              f'{_mkt_final!r}) -- cut {(_cut_s + _cut_l)!r}')
+        parsed['short_read'] = _sr_clean
+        parsed['long_read'] = _lr_clean
 
     _short_raw = parsed.get('short_read') or ''
     _long_raw = _demarker(parsed.get('long_read') or narrative or '', 'long_read')

@@ -411,6 +411,21 @@ def sync_sport(sport: str, gd: str, dry: bool = False) -> tuple[int, int, int]:
             if _verdict and short_read and not short_read.startswith(_verdict):
                 short_read = f'{_verdict} - {short_read}'
 
+        # == 2026-11-24 . THE PROSE MUST NOT SELL ANOTHER MARKET =======
+        # The bridge carries prose written for whatever the pick used to be.
+        # Same guard, same one implementation, as upsert_jerry_read.
+        try:
+            from jerry_reads_dual_write import strip_other_market_directive
+            _s2, _cs2 = strip_other_market_directive(short_read, ptype)
+            _l2, _cl2 = strip_other_market_directive(long_read, ptype)
+            if _cs2 or _cl2:
+                print(f'  * {sport} {gid}: bridge prose asserted a bet the '
+                      f'badge is not selling ({call_text!r}, market '
+                      f'{ptype!r}) -- cut {(_cs2 + _cl2)!r}')
+                short_read, long_read = _s2, _l2
+        except Exception as _og:                        # noqa: BLE001
+            print(f'  ! other-market guard skipped ({_og})')
+
         payload = {
             'sport': sport,
             'game_id': gid,

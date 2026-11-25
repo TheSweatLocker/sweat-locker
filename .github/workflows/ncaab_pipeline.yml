@@ -952,6 +952,34 @@ jobs:
       # generation time would pass a read the sync is about to move.
       # Non-blocking, matching the siblings -- a prose mismatch must not
       # fail the slate.
+      # == 2026-11-24 . PIN THE OTHER-MARKET GUARD =======================
+      # 54 published reads carried a side badge over prose asserting a total
+      # as the bet -- NCAAB 52 of 564 side-market reads (9.2%) against 0 in
+      # NCAAF, NBA, NHL and NFL. The cause was not a missing guard:
+      # prose_is_stale has caught that shape since 09-23 and had only ever
+      # been handed short_read, which is a truncated PREFIX of long_read on
+      # 99.9% of NCAAB reads, while the sentence sat in long_read's closing
+      # 200 characters on 66 of 68 candidates.
+      #
+      # jerry_reads_dual_write now cuts those sentences on every write path,
+      # and rule 6 of the auditor below reports any that survive. Both read
+      # one implementation, and these 14 assertions are what stop a later
+      # edit from quietly narrowing it -- especially the four that pin what
+      # must NOT fire, since prose that merely argues toward the total is the
+      # commonest legitimate shape in the table.
+      #
+      # No DB, no secrets: a pure-function test handed production credentials
+      # is the "exit 1 after 0s" import crash that broke every daily_card run
+      # for a day (feedback_exit_1_after_0s_is_an_import_crash). --detector,
+      # so a failure is recorded as a finding and the slate still ships.
+      - name: Test other-market guard (pure functions)
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
+        run: |
+          cd mlb_pipeline
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --detector --label "test_other_market_guard.py" \
+            python test_other_market_guard.py
+
       - name: Audit read/pick consistency (NCAAB)
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'card_only'
         continue-on-error: true

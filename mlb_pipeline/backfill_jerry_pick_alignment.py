@@ -273,7 +273,8 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     # resync, future tier rules — applies here automatically, and the two
     # cannot drift again because the second copy no longer exists.
     from jerry_reads_dual_write import (enforce_primary_play_alignment,
-                                        derive_short_read)
+                                        derive_short_read,
+                                        strip_other_market_directive)
 
     _FIELDS = ('call_market', 'call_side', 'call_line', 'call_text',
                'conviction', 'short_read', 'long_read')
@@ -301,6 +302,25 @@ def align_row(sport: str, read_row: dict, pp: dict, ctx_home: str, ctx_away: str
     if str(aligned.get('call_market') or '').lower() != 'pass':
         aligned['short_read'] = derive_short_read(
             aligned.get('short_read'), aligned.get('long_read'))
+
+    # == 2026-11-24 . THE PROSE MUST NOT SELL ANOTHER MARKET =============
+    # This writer is precisely where the contradiction is MOST likely: it
+    # re-points a badge at a pick the prose was not written for, and its own
+    # docstring says aligning a stale read "moves the contradiction rather
+    # than removing it". Cutting the competing directive is the part that
+    # can be done without an LLM call.
+    _mkt_a = str(aligned.get('call_market') or '').lower()
+    if _mkt_a != 'pass':
+        _sa, _ca = strip_other_market_directive(aligned.get('short_read'),
+                                                _mkt_a)
+        _la, _cl3 = strip_other_market_directive(aligned.get('long_read'),
+                                                 _mkt_a)
+        if _ca or _cl3:
+            print(f'    * prose asserted a bet the badge is not selling '
+                  f'({aligned.get("call_text")!r}, market {_mkt_a!r}) -- cut '
+                  f'{(_ca + _cl3)!r}')
+            aligned['short_read'] = _sa
+            aligned['long_read'] = _la
 
     patch = {}
     for k in _FIELDS:
