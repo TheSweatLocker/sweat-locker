@@ -486,6 +486,10 @@ class Opinion:
     # of the untested-signal floor (0.20) so newly-shipped analytics can
     # actually influence picks before accumulating 50+ graded observations.
     is_recent: bool = False
+    # 2026-11-25: the signal's OWN measured price breakeven as a fraction,
+    # off the same registry row as hit_rate. None = not measured, keep the
+    # flat market bar. Read only when ENSEMBLE_PRICE_BAR is on.
+    price_be: Optional[float] = None
 
 
 @dataclass
@@ -683,6 +687,56 @@ def _load_sources(sport: str) -> list[dict]:
 MAX_REGISTRY_AGE_DAYS = 14
 
 
+# ══ 2026-11-25 · THE BAR THE SIGNAL ACTUALLY HAS TO BEAT ══
+# refit_signal_registry stores price_breakeven_pct: the mean breakeven of
+# the closing prices a signal FIRED AT, over its own graded firings. That is
+# the number a signal must beat to make money. edge_weight has always been
+# handed max(side_baseline, flat market breakeven) instead -- ml 0.5833 --
+# so a selector firing at -250 was judged against 58.33% when its real bar
+# is 71.4%. Measured consequence: market=ml hits 62.7% against a 59.4%
+# implied and returns -0.0% ([[feedback_the_bar_is_never_the_price_the_
+# signal_fires_at]], [[feedback_the_engine_loses_to_the_close]]).
+#
+# DEFAULT OFF. Switching the bar rescores every sport, and the replay says
+# 17 signals lose weight with 5 going to zero. Run with
+# ENSEMBLE_PRICE_BAR=shadow to log what it WOULD do without changing a
+# pick; ENSEMBLE_PRICE_BAR=1 to apply it.
+_PRICE_BAR_MODE = os.environ.get('ENSEMBLE_PRICE_BAR', '0').strip().lower()
+_PRICE_BE_COL_OK: Optional[bool] = None
+_PRICE_BAR_SHADOW: list = []
+
+
+def _price_be_column_exists() -> bool:
+    """One HEAD-shaped probe for signal_registry.price_breakeven_pct.
+
+    Cached for the process. Returns False when the migration has not been
+    applied, when the probe itself fails, and when the price bar is off --
+    there is no reason to widen the select for a column nothing will read.
+    """
+    global _PRICE_BE_COL_OK
+    if _PRICE_BE_COL_OK is not None:
+        return _PRICE_BE_COL_OK
+    if _PRICE_BAR_MODE in ('0', '', 'off', 'false'):
+        _PRICE_BE_COL_OK = False
+        return False
+    _PRICE_BE_COL_OK = False
+    if _SB:
+        try:
+            r = requests.get(f'{_SB}/rest/v1/signal_registry',
+                             headers=_H_READ, timeout=15,
+                             params={'select': 'price_breakeven_pct',
+                                     'limit': 1})
+            _PRICE_BE_COL_OK = (r.status_code == 200)
+            if not _PRICE_BE_COL_OK:
+                print('  [ensemble] signal_registry.price_breakeven_pct is '
+                      f'absent ({r.status_code}) -- price bar INACTIVE; '
+                      'apply migration 20261124b')
+        except Exception as e:                                  # noqa: BLE001
+            print(f'  [ensemble] price-bar probe failed '
+                  f'{type(e).__name__}: {e} -- price bar INACTIVE')
+    return _PRICE_BE_COL_OK
+
+
 def _load_registry() -> dict:
     """Load signal_registry keyed by (signal_name, sport) tuple.
 
@@ -717,12 +771,22 @@ def _load_registry() -> dict:
     collisions = 0
     out: dict = {}
     if _SB:
+        # ══ 2026-11-25 · ASK FOR THE PRICE BAR ONLY IF IT EXISTS ══
+        # price_breakeven_pct arrives with migration 20261124b. Naming an
+        # unknown column in a PostgREST select is a 400, and fetch_all_rows
+        # answers a 400 by returning the rows it has -- which is NONE. An
+        # empty registry does not error: every signal falls to
+        # UNMEASURED_FLOOR and the engine prices six sports off a 0.20
+        # constant. So probe once and degrade per column rather than losing
+        # the whole load ([[feedback_fallback_select_must_degrade_per_column]],
+        # [[feedback_zero_rows_is_a_wiring_error]]).
+        _sel = ('signal_name,sport,market_scope,tier,'
+                'recommended_weight,hit_rate,sample_n,'
+                'last_computed_at,updated_at')
+        if _price_be_column_exists():
+            _sel += ',price_breakeven_pct'
         try:
-            for row in fetch_all_rows(
-                    'signal_registry',
-                    {'select': 'signal_name,sport,market_scope,tier,'
-                               'recommended_weight,hit_rate,sample_n,'
-                               'last_computed_at,updated_at'}):
+            for row in fetch_all_rows('signal_registry', {'select': _sel}):
                 # Staleness filter
                 ts_str = row.get('last_computed_at') or row.get('updated_at')
                 if ts_str:
@@ -869,6 +933,24 @@ def _is_recent_signal(source_row: dict) -> bool:
 def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[str]]:
     """Get (hit_rate as fraction, n, tier) for a signal_sources row.
 
+    Thin wrapper over _resolve_weight_row, kept at three elements because
+    other modules and scratch tooling unpack exactly three.
+    """
+    hr, n, tier, _reg = _resolve_weight_row(source_row)
+    return (hr, n, tier)
+
+
+def _resolve_weight_row(
+        source_row: dict
+) -> tuple[Optional[float], int, Optional[str], Optional[dict]]:
+    """As _resolve_weight, plus the registry row the rate came FROM.
+
+    2026-11-25: the price bar has to come off the same row as the hit rate.
+    A second lookup that re-walked the key priority independently would
+    drift the moment that priority changed, and then the bar would belong
+    to a different market scope than the rate it is judging
+    ([[feedback_a_name_check_needs_the_right_row]]).
+
     Priority (in order):
       1. inline hit_rate_pct/sample_n on the row
       2. signal_registry lookup by (weight_registry_key, sport)
@@ -883,7 +965,8 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
     if inline_hr is not None:
         try: hr = float(inline_hr) / 100.0
         except (TypeError, ValueError): hr = None
-        return (hr, int(inline_n or 0), None)
+        # Inline rate: no registry row, so no measured price bar either.
+        return (hr, int(inline_n or 0), None, None)
 
     registry = _load_registry()
     sport = source_row.get('sport') or '*'
@@ -900,7 +983,8 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
                 if hr is not None:
                     try: hr = float(hr) / 100.0
                     except (TypeError, ValueError): hr = None
-                return (hr, int(reg.get('sample_n') or 0), reg.get('tier'))
+                return (hr, int(reg.get('sample_n') or 0), reg.get('tier'),
+                        reg)
         # 2026-08-26: sport-specific ONLY. The `sport='*'` fallback silently
         # borrowed a different sport's weights when the sport-specific row
         # was missing (audit finding — same class of bug as the 8/21 cross-
@@ -913,9 +997,30 @@ def _resolve_weight(source_row: dict) -> tuple[Optional[float], int, Optional[st
             if hr is not None:
                 try: hr = float(hr) / 100.0
                 except (TypeError, ValueError): hr = None
-            return (hr, int(reg.get('sample_n') or 0), reg.get('tier'))
+            return (hr, int(reg.get('sample_n') or 0), reg.get('tier'), reg)
 
-    return (None, 0, None)
+    return (None, 0, None, None)
+
+
+def _price_bar_of(reg: Optional[dict]) -> Optional[float]:
+    """price_breakeven_pct off a registry row, as a FRACTION.
+
+    The column is a PERCENT, like hit_rate and baseline_pct beside it
+    ([[feedback_hit_rate_column_is_a_percent]]). None when the signal has
+    no measured bar -- fewer than 80% of its firings carried a closing
+    price -- and then the caller keeps the flat market breakeven. A bar
+    outside (0, 1) after conversion is a bad row, not a bar.
+    """
+    if not reg:
+        return None
+    v = reg.get('price_breakeven_pct')
+    if v is None:
+        return None
+    try:
+        f = float(v) / 100.0
+    except (TypeError, ValueError):
+        return None
+    return f if 0.0 < f < 1.0 else None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1365,7 +1470,8 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
             base_key = base_key[:-len(suf)]
             break
     prose_tmpl = source_row.get('display_prose_template') or ''
-    hr, n, tier = _resolve_weight(source_row)
+    hr, n, tier, _reg = _resolve_weight_row(source_row)
+    _price_be = _price_bar_of(_reg)
     is_recent = _is_recent_signal(source_row)
 
     out: list[Opinion] = []
@@ -1473,6 +1579,7 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         strength = 0.9 if '_TRIPLE_CONFIRMED' in cls else 0.7 if '_CONFIRMED' in cls else 0.4
         prose = prose_tmpl or f'{cls} on this side'
         out.append(Opinion(
+            price_be=_price_be,
             signal_key=signal_key, signal_class='split', side=cand,
             strength=strength, hit_rate=hr, sample_n=n, tier=tier,
             display_prose=prose, is_recent=is_recent,
@@ -2275,7 +2382,8 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
         if strength <= 0:
             continue
 
-        hr, n, tier = _resolve_weight(source)
+        hr, n, tier, _reg = _resolve_weight_row(source)
+        _price_be = _price_bar_of(_reg)
         is_recent = _is_recent_signal(source)
         prose = render_prose(source.get('display_prose_template') or '', ctx_attr)
 
@@ -2360,10 +2468,21 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
                     side=flipped_side, strength=strength,
                     hit_rate=fade_hr, sample_n=n, tier=fade_tier,
                     display_prose=fade_prose, is_recent=is_recent,
+                    # price_be deliberately NOT carried over. The stored bar
+                    # is the mean breakeven of the prices THIS signal fired
+                    # at -- i.e. of the side being faded. The fade bets the
+                    # other side, which is priced differently, and a bar is
+                    # not symmetric about 0.5: fading a -250 favourite buys
+                    # a +210 dog, bar 32%, not 71%. Reusing it would judge
+                    # the dog against the favourite's bar and zero every
+                    # fade -- the only profitable surface we have
+                    # ([[feedback_check_which_side_a_column_indexes]]).
+                    # None = keep the flat market bar, as today.
                 ))
                 continue  # skip emitting the original (zero-weight) opinion
 
         out.append(Opinion(
+            price_be=_price_be,
             signal_key=source['signal_key'],
             signal_class=cls,
             side=side, strength=strength,
@@ -2618,12 +2737,37 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     #
     # REVERT is one env var: ENSEMBLE_SIDE_BASELINE=0
     _use_side_base = os.environ.get('ENSEMBLE_SIDE_BASELINE', '1') != '0'
+    # ══ 2026-11-25 · THE PRICE BAR, OFF / SHADOW / ON ══
+    # `shadow` computes both weights and records the delta without changing
+    # a single pick, so the rescoring can be measured on live slates before
+    # it reaches a card -- the same way ENSEMBLE_SIDE_BASELINE was landed
+    # ([[feedback_suppression_gate_needs_shadow]]).
+    _pb_mode = _PRICE_BAR_MODE
+    _pb_on = _pb_mode in ('1', 'on', 'true')
+    _pb_shadow = _pb_mode == 'shadow'
     for op in market_ops:
         _base = (side_baseline(sport, market, op.side)
                  if _use_side_base else None)
-        w = edge_weight(op.hit_rate, op.sample_n, op.tier,
-                        is_recent=op.is_recent, baseline=_base,
-                        breakeven=market_breakeven(market))
+        _flat = market_breakeven(market)
+        _w_flat = edge_weight(op.hit_rate, op.sample_n, op.tier,
+                              is_recent=op.is_recent, baseline=_base,
+                              breakeven=_flat)
+        w = _w_flat
+        if (_pb_on or _pb_shadow) and op.price_be is not None:
+            _w_price = edge_weight(op.hit_rate, op.sample_n, op.tier,
+                                   is_recent=op.is_recent, baseline=_base,
+                                   breakeven=op.price_be)
+            if abs(_w_price - _w_flat) > 1e-9:
+                _PRICE_BAR_SHADOW.append({
+                    'sport': sport, 'market': market,
+                    'game_id': ctx.get('game_id'),
+                    'signal_key': op.signal_key, 'side': op.side,
+                    'n': op.sample_n, 'hit_rate': op.hit_rate,
+                    'flat_be': _flat, 'price_be': op.price_be,
+                    'w_flat': _w_flat, 'w_price': _w_price,
+                })
+            if _pb_on:
+                w = _w_price
         if w == 0 and op.strength == 0:
             continue
         c = Contribution(

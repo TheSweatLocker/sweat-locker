@@ -583,15 +583,27 @@ def collect_game_firings(sport: str, days: int) -> dict[str, dict]:
           + (', '.join(f'{m}={_pc[m][0]}/{_pc[m][1]}' for m in sorted(_pc))
              if _pc else 'NONE -- every market keeps the flat fallback'))
     _extra = (',' + ','.join(_pc_cols)) if _pc_cols else ''
-    direct = requests.get(
-        f'{SB}/rest/v1/{results_table}',
-        headers={**H_READ, 'Range-Unit': 'items', 'Range': '0-4999'},
+    # ══ 2026-11-25 · A `Range` HEADER DOES NOT BEAT PostgREST's max-rows ══
+    # This asked for 0-4999 in one shot and got back exactly 1000 rows --
+    # the server cap -- with no error and no warning. MLB has 1232 settled
+    # games in a 150d window, so 232 of them (19%) were invisible to the
+    # only tally that grades ensemble firings, on the sport that carries
+    # most of the history. "Exactly 1000" is the tell, and it is the same
+    # truncation fetch_all_rows was written for one table over
+    # ([[feedback_never_measure_from_truncated_output]],
+    #  [[feedback_deep_offset_paging_times_out]] -- keyset is unnecessary
+    #  here because the page helper orders by game_date and the window is
+    #  bounded, but the PAGING is not optional).
+    _direct_sel = ('game_id,home_score,away_score,close_spread,'
+                   'close_total,primary_play' + _extra)
+    probe = requests.get(
+        f'{SB}/rest/v1/{results_table}', headers=H_READ, timeout=30,
         params={'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
-                'select': 'game_id,home_score,away_score,close_spread,'
-                          'close_total,primary_play' + _extra},
-        timeout=30)
-    if direct.status_code in (200, 206):
-        rows = direct.json() or []
+                'select': _direct_sel, 'limit': 1})
+    if probe.status_code in (200, 206):
+        rows = _page(results_table, {
+            'game_date': f'gte.{cutoff}', 'home_score': 'not.is.null',
+            'select': _direct_sel, 'order': 'game_date.asc,game_id.asc'})
         print(f'  [{sport}] game rows from results.primary_play '
               f'(last {days}d): {len(rows)}')
         return _tally_game_firings(rows, sport, _pc)
@@ -792,7 +804,8 @@ def _mkt_cell(ct: dict, market: str) -> dict:
     bm = ct.setdefault('by_mkt', {})
     return bm.setdefault(str(market), {'right': 0, 'wrong': 0,
                                        'blind_sum': 0.0, 'blind_n': 0,
-                                       'be_sum': 0.0, 'be_n': 0})
+                                       'be_sum': 0.0, 'be_n': 0,
+                                       'pf_sum': 0.0, 'pf_n': 0})
 
 
 def _tally_game_firings(rows: list, sport: Optional[str] = None,
@@ -814,7 +827,8 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None,
         side_baseline = lambda *_a, **_k: None             # noqa: E731
     firings: dict[str, dict] = defaultdict(
         lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
-                 'be_sum': 0.0, 'be_n': 0, 'mkt': Counter()})
+                 'be_sum': 0.0, 'be_n': 0, 'pf_sum': 0.0, 'pf_n': 0,
+                 'mkt': Counter()})
     for row in rows:
         pp = row.get('primary_play') or {}
         if isinstance(pp, str):
@@ -865,6 +879,20 @@ def _tally_game_firings(rows: list, sport: Optional[str] = None,
                 firings[base_key]['be_n'] += 1
                 cell['be_sum'] += _be
                 cell['be_n'] += 1
+                # ══ 2026-11-25 . REALISED UNITS, NOT A WIN RATE ══
+                # A hit rate cannot say whether a signal made money; the
+                # price decides that, and the price is right here. A bet at
+                # implied probability p pays (1/p - 1) on a win and -1 on a
+                # loss, so this is the signal's actual P&L over its own
+                # firings. Accumulated per cell so the bar can be VALIDATED
+                # against money instead of argued about
+                # ([[feedback_slope_is_not_a_betting_rule]],
+                #  [[feedback_the_engine_scores_winners_not_prices]]).
+                _pf = ((1.0 / _be) - 1.0) if correct else -1.0
+                firings[base_key]['pf_sum'] += _pf
+                firings[base_key]['pf_n'] += 1
+                cell['pf_sum'] += _pf
+                cell['pf_n'] += 1
             firings[base_key]['mkt'][market] += 1
     return dict(firings)
 
@@ -1012,7 +1040,8 @@ def merge_firings(*dicts) -> dict[str, dict]:
     out: dict[str, dict] = defaultdict(
         lambda: {'right': 0, 'wrong': 0, 'blind_sum': 0.0, 'blind_n': 0,
                  'pick_right': 0, 'pick_n': 0, 'dis_n': 0, 'dis_right': 0,
-                 'be_sum': 0.0, 'be_n': 0, 'mkt': Counter()})
+                 'be_sum': 0.0, 'be_n': 0, 'pf_sum': 0.0, 'pf_n': 0,
+                 'mkt': Counter()})
     for d in dicts:
         for k, v in d.items():
             out[k]['right'] += v.get('right', 0)
@@ -1021,9 +1050,16 @@ def merge_firings(*dicts) -> dict[str, dict]:
             out[k]['blind_n'] += v.get('blind_n', 0)
             # 2026-10-29: the pick control, per this docstring's own
             # warning about dropping keys the callers just started making.
-            for _k in ('pick_right', 'pick_n', 'dis_n', 'dis_right', 'be_n'):
+            for _k in ('pick_right', 'pick_n', 'dis_n', 'dis_right',
+                       'be_n', 'pf_n'):
                 out[k][_k] += v.get(_k, 0)
-            out[k]['be_sum'] += v.get('be_sum', 0.0)
+            # 2026-11-25: realised units, THIRD instance of the key this
+            # docstring warns about. pf_sum/pf_n are the signal's own P&L
+            # over its firings and are the only thing that can validate the
+            # price bar; dropped here they would have merged to zero and
+            # read as "no signal makes money".
+            for _k in ('be_sum', 'pf_sum'):
+                out[k][_k] += v.get(_k, 0.0)
             # 2026-10-27 F6: carry the market tally, per this docstring's
             # own warning about silently dropping new keys.
             _m = v.get('mkt')
@@ -1035,10 +1071,11 @@ def merge_firings(*dicts) -> dict[str, dict]:
             for _mk, _cell in (v.get('by_mkt') or {}).items():
                 dst = out[k].setdefault('by_mkt', {}).setdefault(
                     str(_mk), {'right': 0, 'wrong': 0, 'blind_sum': 0.0,
-                               'blind_n': 0, 'be_sum': 0.0, 'be_n': 0})
-                for _f in ('right', 'wrong', 'blind_n', 'be_n'):
+                               'blind_n': 0, 'be_sum': 0.0, 'be_n': 0,
+                               'pf_sum': 0.0, 'pf_n': 0})
+                for _f in ('right', 'wrong', 'blind_n', 'be_n', 'pf_n'):
                     dst[_f] += _cell.get(_f, 0)
-                for _f in ('blind_sum', 'be_sum'):
+                for _f in ('blind_sum', 'be_sum', 'pf_sum'):
                     dst[_f] += _cell.get(_f, 0.0)
     return dict(out)
 
