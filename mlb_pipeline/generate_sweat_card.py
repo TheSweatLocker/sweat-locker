@@ -303,24 +303,92 @@ def _card_side_of(pick) -> str:
     return s.strip().lower()
 
 
-def _card_bet_key(pick):
-    """The identity of the BET, or None when it cannot be judged safely."""
-    t = str(pick.get('type') or '').lower()
-    mkt = {'potd': 'ml', 'moneyline': 'ml', 'spread': 'rl'}.get(t, t)
+#: Card SLOT names. A slot is not a market ([[feedback_a_display_label_became_an_identity_key]]).
+_CARD_SLOT_TYPES = ('potd', 'dotd', 'lock', 'dawg')
+
+
+def _card_market_of(pick):
+    """The market this pick actually bets.
+
+    ══ 2026-11-25 · 'potd' IS A SLOT, NOT A MARKET ════════════════════
+    The old map sent 'potd' -> 'ml' unconditionally, so a TOTALS potd was
+    keyed as a moneyline. On 2026-11-24 that put `Under 213.5` in slot 1
+    under ('ml','under') and the identical `Under 213.5` in slot 3 under
+    ('total','under'): two key spaces, never compared, and the card's only
+    winner published twice and counted twice (2W-5L on 7 slots where the
+    five distinct bets went 1W-4L).
+
+    The market is read off the LABEL'S SHAPE for slot items, because that
+    is what the label commits the bettor to
+    ([[feedback_parse_a_pick_by_shape_not_vocabulary]]).
+    """
+    t = str(pick.get('type') or '').strip().lower()
+    base = {'potd': 'ml', 'moneyline': 'ml', 'spread': 'rl'}.get(t, t)
+    if t not in _CARD_SLOT_TYPES:
+        return base
+    lbl = ' '.join(str(pick.get('label') or pick.get('pick') or '').split())
+    lbl = re.sub(r'\s*\([^)]*\)\s*$', '', lbl).strip().lower()
+    if re.match(r'^(over|under)\b', lbl):
+        return 'total'
+    if re.search(r'\bml$', lbl):
+        return 'ml'
+    if re.search(r'[+-]\d+(\.\d+)?$', lbl):
+        return 'rl'
+    return base              # unparseable: behave as before
+
+
+def _card_bet_key(pick, gid_of_game=None):
+    """The identity of the BET, or None when it cannot be judged safely.
+
+    ══ 2026-11-25 · source_key FOR A POTD IS THE DATE ═════════════════
+    The old fallback was `game_id or source_key`, and the POTD/DotD slots
+    set source_key=today_et(). So every POTD keyed on the DATE -- which
+    both fails to match the same bet elsewhere on the card AND would
+    collide two unrelated anchor plays with each other. A key built from a
+    value that does not identify the bet is not a key
+    ([[feedback_a_display_label_became_an_identity_key]]).
+
+    ONE KEY SPACE. The branch ORDER here is load-bearing and I got it
+    wrong twice while writing this. Checking game_id first breaks the
+    2026-10-31 Marshall case (the POTD copy has no game_id and keys on its
+    side, the composite copy has one and keys on the id -- two spaces
+    again). Checking the side first breaks the 2026-11-24 totals case,
+    because a total's side is 'over'/'under', which two different games
+    share.
+    So the GAME is identified by its game_id, and a pick that lacks one
+    has its matchup string resolved to a game_id through `gid_of_game`,
+    built by the caller across the whole list. Only a pick with neither
+    falls back to the side ([[feedback_join_on_resolved_names_not_a_composed_key]],
+    [[feedback_dedupe_key_shape_must_match]]).
+    """
+    mkt = _card_market_of(pick)
     sd = _card_side_of(pick)
-    if mkt in ('ml', 'rl') and sd and sd not in ('over', 'under'):
-        return ('SIDE', str(pick.get('sport') or '').upper(), mkt, sd)
-    gid = pick.get('game_id') or pick.get('source_key')
+    gid = pick.get('game_id')
+    if not gid and gid_of_game:
+        gid = gid_of_game.get(
+            ' '.join(str(pick.get('game') or '').split()).lower())
     if gid:
         return (str(gid), mkt, sd)
+    if mkt in ('ml', 'rl') and sd and sd not in ('over', 'under'):
+        return ('SIDE', str(pick.get('sport') or '').upper(), mkt, sd)
     return None
 
 
 def dedupe_one_bet_per_slot(picks, where=''):
     """Keep the highest-tier copy of each bet, drop the rest."""
+    # Resolve matchup string -> game_id across the WHOLE list first, so a
+    # slot item that carries only `game` ("Detroit Pistons @ Orlando
+    # Magic") keys on the same game_id as the composite copy of that bet.
+    # Without this the two land in different key spaces and survive.
+    gid_of_game = {}
+    for p in picks or []:
+        _g = ' '.join(str(p.get('game') or '').split()).lower()
+        if _g and p.get('game_id'):
+            gid_of_game.setdefault(_g, str(p['game_id']))
+
     groups, order = {}, []
     for p in picks or []:
-        k = _card_bet_key(p)
+        k = _card_bet_key(p, gid_of_game)
         if k is None:
             order.append(('keep', p))      # unjudgeable: never dropped
             continue
@@ -2956,6 +3024,53 @@ _PROP_LABEL_RE = re.compile(
 # NEGATIVE is in FADE_BANNED and never reaches this function at all.
 FADE_CARD_MAX = 2
 
+#: ══ 2026-11-25 · THE DotD SLOT IS OFF THE CARD ════════════════════════
+#: ANDY: "i need chnage something ahs to gove dont gove me anymore lame ass
+#: lies ... its getting bad".
+#:
+#: Measured on published, priced, graded receipts since 2026-10-25:
+#:     dawg / DotD   n= 20   7-13   35.0%   -5.21u   ROI -26.05%
+#:     sweat_card    n=160  77-83   48.1%  -18.54u   ROI -11.58%
+#: and every DotD gets a sweat_card receipt too, so the slot drags the card
+#: directly. It is the worst surface we publish.
+#:
+#: It is not a price problem that can be tuned out -- EVERY DotD is
+#: plus-money by construction -- and it is not carrying engine conviction
+#: either. The convictions on the last 36 DotD/dawg picks run 37, 40, 44,
+#: 47, 50, 50, 50, 50, 51, 51, 51, 52, 53: 50 is the ensemble's floor, i.e.
+#: the engine has no opinion, and several sit BELOW it. The one genuinely
+#: high-conviction dawg in the window (North Carolina ML, conv 85, 11-14)
+#: lost as well. Dogs are separately measured at -37.60% ROI across four of
+#: five live sports ([[feedback_signals_firing_on_dogs_went_2_for_60]]).
+#:
+#: THE SURFACE IS NOT RETIRED. `generate_dawg_multisport.py` still runs,
+#: daily_dawg is still written, the Dawg tile still renders from the card's
+#: own `dawg` block (which is populated separately at the payload level,
+#: not from top_8), and the dawg receipts keep their own denominator. What
+#: changes is that the DotD no longer occupies one of the eight CURATED
+#: card slots, so it stops moving the Sweat Card record.
+#: CARD_INCLUDE_DOTD=1 puts it back with no deploy.
+CARD_INCLUDE_DOTD = os.environ.get(
+    'CARD_INCLUDE_DOTD', '0').strip().lower() in ('1', 'on', 'true', 'yes')
+
+#: ══ 2026-11-25 · AT MOST ONE PROP ON THE CURATED CARD ════════════════
+#: 2026-11-24 spent THREE of seven slots on PRA unders over TWO players
+#: (Daniss Jenkins at 24.5 AND 27.5, plus Neemias Queta), and all three
+#: lost. prop_jerry is the second-worst surface we publish: n=897, 414-483,
+#: 46.2%, -117.45u, ROI -13.09% since 10-25.
+#:
+#: curate_top_8 already diversifies props BY PLAYER, which is why two
+#: Jenkins lines could both land -- a per-player rule cannot bound the
+#: number of props, and the prop pool is deep enough to fill every
+#: remaining slot once the game-side pool thins out. This bounds the
+#: FAMILY, not the player. Props are not retired: prop_jerry keeps its own
+#: surface, its own record and its own tab.
+#: CARD_MAX_PROPS overrides it with no deploy.
+try:
+    CARD_MAX_PROPS = max(0, int(os.environ.get('CARD_MAX_PROPS', '1')))
+except ValueError:
+    CARD_MAX_PROPS = 1
+
 #: evidence -> the tier a fade play may claim on the card
 FADE_EVIDENCE_TIER = {'validated': 'STRONG', 'tracking': 'LEAN'}
 
@@ -3670,8 +3785,15 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             "narrative_hint": (potd.get("narrative") or "")[:200],
         })
 
-    # 2. DotD
-    if dawg:
+    # 2. DotD — OFF the curated card as of 2026-11-25 (CARD_INCLUDE_DOTD).
+    # See the constant for the measurement: the slot runs 35.0% / -26.05%
+    # ROI on n=20 and every DotD also mints a sweat_card receipt, so it
+    # moved the card's record. The Dawg SURFACE is untouched.
+    if dawg and not CARD_INCLUDE_DOTD:
+        print(f'  🚫 [card] DotD {str(dawg.get("pick_label") or "")[:40]!r} '
+              f'NOT on the curated card (CARD_INCLUDE_DOTD=0) — '
+              f'dawg surface and tile unchanged')
+    if dawg and CARD_INCLUDE_DOTD:
         # == 2026-11-10 . THE LABEL READ "LA Clippers ML ML", AND THAT PUT
         # THE SAME PLAY ON THE CARD TWICE ==
         #
@@ -5272,6 +5394,43 @@ def build_card():
     # left `Over 43.5` (tier LEAN, conviction None) on the card after the
     # unified gate had already removed it.
     top_8_curated = _drop_withdrawn(top_8_curated, 'top_8: ')
+
+    # ══ 2026-11-25 · AT MOST CARD_MAX_PROPS PROPS ON THE CURATED CARD ══
+    # Applied HERE, after the 30d/60d/90d/off window loop has already
+    # settled, and deliberately NOT inside curate_top_8. Capping during
+    # curation drops the card under MIN_CARD_PICKS, which makes that loop
+    # LOOSEN the prop suppression gates to backfill -- so a cap meant to
+    # reduce prop exposure would pull in props the 30d gate had just
+    # refused. A guard must not make the thing it guards against worse
+    # ([[feedback_a_guards_blast_radius]]).
+    #
+    # Consequence, stated rather than hidden: on a thin slate the card gets
+    # SHORTER instead of being padded with props. 2026-11-24 would have
+    # published 3 picks, not 7. That is the intended trade -- the three prop
+    # slots it dropped all lost, from a surface running -13.09% on n=897.
+    if CARD_MAX_PROPS >= 0:
+        _props_on = [p for p in (top_8_curated or [])
+                     if str(p.get('type') or '').lower() == 'prop']
+        if len(_props_on) > CARD_MAX_PROPS:
+            _ranked = sorted(
+                _props_on,
+                key=lambda p: (_TIER_RANK_CARD.get(
+                    str(p.get('tier') or '').upper(), 0),
+                    float(p.get('conviction') or 0)), reverse=True)
+            _keep = {id(p) for p in _ranked[:CARD_MAX_PROPS]}
+            _cut = [p for p in _ranked[CARD_MAX_PROPS:]]
+            top_8_curated = [p for p in top_8_curated
+                             if str(p.get('type') or '').lower() != 'prop'
+                             or id(p) in _keep]
+            print(f'  🚫 top_8: prop cap {CARD_MAX_PROPS} — kept '
+                  + ', '.join(repr(str(p.get('label'))) + f' (tier={p.get("tier")})'
+                              for p in _ranked[:CARD_MAX_PROPS])
+                  + ', dropped '
+                  + ', '.join(repr(str(p.get('label'))) + f' (tier={p.get("tier")})'
+                              for p in _cut))
+            print(f'  ℹ top_8: {len(top_8_curated)} picks after the prop cap '
+                  f'(a shorter card is the intended trade, not a failure)')
+
     football_picks = drop_overjuiced_ml(football_picks, 'football: ')
 
     # Sport tag on each pick lets app render sport emoji + drive tap-to-detail.
