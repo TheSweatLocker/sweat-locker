@@ -112,6 +112,39 @@ def market(v):
     return {'potd': 'ml', 'moneyline': 'ml', 'spread': 'rl'}.get(m, m)
 
 
+#: == 2026-11-25 . 'potd' IS A CARD SLOT, NOT A MARKET ====================
+#: `market()` maps 'potd' -> 'ml'. That was right for the 10-31 Marshall
+#: case (an ML POTD beside an ML composite copy) and WRONG in general: it
+#: makes a TOTALS potd key as a moneyline, so `Under 213.5` in slot 1 keyed
+#: ('ml','under') while the identical `Under 213.5` in slot 3 keyed
+#: ('total','under'). Two key spaces, never compared, and on 2026-11-24 the
+#: card's only winner was shown twice and counted twice -- 2W-5L over 7
+#: slots where the five distinct bets went 1W-4L.
+#:
+#: A slot name cannot carry a market. The market is read off the LABEL's
+#: SHAPE instead, which is what the label actually commits to
+#: ([[feedback_parse_a_pick_by_shape_not_vocabulary]],
+#:  [[feedback_a_display_label_became_an_identity_key]]).
+#: `market()` is left untouched for its other callers.
+_SLOT_TYPES = ('potd', 'dotd', 'lock', 'dawg', 'best bet', 'bestbet')
+
+
+def market_of(it):
+    """The market this item actually bets, inferred by shape for slot items."""
+    t = str(it.get('type') or '').strip().lower()
+    lbl = norm_lbl(it.get('pick') or it.get('label'))
+    lbl = re.sub(r'\s*\([^)]*\)\s*$', '', lbl).strip()
+    if t in _SLOT_TYPES:
+        if re.match(r'^(over|under)\b', lbl):
+            return 'total'
+        if re.search(r'\bml$', lbl):
+            return 'ml'
+        if re.search(r'[+-]\d+(\.\d+)?$', lbl):
+            return 'rl'
+        return market(t)          # unparseable: fall back to the old map
+    return market(t)
+
+
 def side(lbl):
     """The team/side at the head of the label, parenthetical stripped."""
     s = ' '.join(str(lbl or '').split())
@@ -155,6 +188,27 @@ def run_date(date: str, apply: bool) -> int:
         items = blob.get(name)
         if not isinstance(items, list):
             continue
+        # == CANONICAL GAME KEY, RESOLVED ACROSS THE WHOLE BLOB ==========
+        # Keying "game_id when present, else the matchup string" is NOT one
+        # key space: if one copy of a bet carries a game_id and the other
+        # only a matchup string, they key differently and the pair survives
+        # -- the same defect this pass already had, reached again. (It cost
+        # the unified_top_picks Jenkins pair on the first attempt at this
+        # fix.)
+        #
+        # So the matchup string is resolved to a game_id FIRST, using the
+        # items in this blob that carry both, and every item is then keyed
+        # on that one id. Only a matchup no item can resolve falls back to
+        # the string itself ([[feedback_join_on_resolved_names_not_a_composed_key]]).
+        gid_of_game = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            g = norm_lbl(it.get('game'))
+            gi = it.get('game_id')
+            if g and gi:
+                gid_of_game.setdefault(g, str(gi))
+
         groups = collections.defaultdict(list)
         for it in items:
             if not isinstance(it, dict):
@@ -174,10 +228,76 @@ def run_date(date: str, apply: bool) -> int:
             # share -- 10-03 carries two 'under 7.0' with distinct
             # source_id hashes: same text, different bets. Those keep the
             # game_id key, which separates them correctly.
-            if mk in ('ml', 'rl') and sd and sd not in ('over', 'under'):
-                groups[('SIDE', str(it.get('sport') or ''), mk, sd)].append(it)
-            elif gid:
-                groups[(str(gid), mk, sd)].append(it)
+            #
+            # == 2026-11-25 . A TOTALS POTD MATCHED NEITHER BRANCH =======
+            # ANDY: "What was the deal yesterday?"
+            #
+            # 2026-11-24 top_8 rendered `Under 213.5` TWICE -- slot 1 as the
+            # POTD and slot 3 as a STRONG total, same game (Detroit Pistons
+            # @ Orlando Magic), and it WON, so the card's one winner was
+            # counted twice. The card read 2W-5L on 7 slots; the five
+            # distinct bets went 1W-4L.
+            #
+            # The SIDE branch above is restricted to ml/rl for a correct
+            # reason (two different games both carry 'under 7.0'), and the
+            # game_id branch needs a game_id the POTD item does not have --
+            # item 1's keys are conviction/game/icon/label/.../type with NO
+            # game_id at all. So a totals POTD fell through BOTH branches
+            # and was never put in a group, which is not a dedupe that
+            # failed to match: it is an item the dedupe never looked at
+            # ([[feedback_a_gate_reading_an_unselected_column_always_passes]]).
+            #
+            # The third branch keys those on the MATCHUP STRING, which both
+            # copies carry identically. It preserves the 10-03 case the
+            # SIDE branch was narrowed for -- two 'under 7.0' in different
+            # games have different `game` strings and stay apart -- and it
+            # only ever fires for an item with no game_id, so it cannot
+            # change how any already-keyed item is grouped.
+            # ONE KEY SPACE. The previous version had three branches, and
+            # two copies of one bet landed in DIFFERENT branches -- slot 3
+            # had a game_id so it keyed (gid, market, side) while the POTD
+            # copy had none and keyed on the side -- so they were never
+            # compared. A dedupe whose key SHAPE varies per item cannot
+            # dedupe ([[feedback_dedupe_key_shape_must_match]],
+            # [[feedback_two_tables_two_key_spaces]]).
+            #
+            # The game is identified by its MATCHUP STRING, which every
+            # card item carries ('Detroit Pistons @ Orlando Magic' on both
+            # copies), falling back to game_id when the string is absent.
+            # This keeps the 10-03 case the old SIDE branch was narrowed
+            # for: two 'under 7.0' in different games have different
+            # matchup strings and stay apart. The doubleheader guard below
+            # still reads game_id, so a team playing twice on one date is
+            # still protected.
+            mk = market_of(it)
+            _g = norm_lbl(it.get('game'))
+            gkey = (str(gid) if gid
+                    else gid_of_game.get(_g) or _g)
+            if not gkey:
+                # == KEEP THE 10-31 SIDE FALLBACK ========================
+                # Replacing the old three branches with one key space
+                # silently removed the SIDE branch's coverage of items
+                # carrying NEITHER a game_id NOR a matchup string. The
+                # 10-03 card has exactly that: 'Chicago White Sox ML' was
+                # grouped by the old code and became UNKEYABLE under the
+                # new key. A fix that repairs totals by un-fixing
+                # moneylines is not a fix
+                # ([[feedback_fix_every_writer_to_the_table]]).
+                #
+                # So an ml/rl item with a team-shaped side still keys on
+                # (sport, market, side), exactly as before. The narrowing
+                # to team-shaped sides is kept for its original reason:
+                # on a TOTAL the side is 'over'/'under', which two
+                # different games share.
+                if mk in ('ml', 'rl') and sd and sd not in ('over', 'under'):
+                    groups[('SIDE', str(it.get('sport') or ''),
+                            mk, sd)].append(it)
+                else:
+                    print('  %s [%s] UNKEYABLE %r -- no matchup string, no '
+                          'game_id, and not a team-shaped side; left alone'
+                          % (date, name, it.get('pick') or it.get('label')))
+                continue
+            groups[(str(it.get('sport') or ''), gkey, mk, sd)].append(it)
         drop = []
         for k, grp in groups.items():
             if len(grp) < 2:
@@ -193,7 +313,21 @@ def run_date(date: str, apply: bool) -> int:
                       'duplicate' % (date, name, k[-1], len(grp), len(gids),
                                      sorted(gids)))
                 continue
-            grp.sort(key=rank, reverse=True)
+            # == THE SLOT COPY IS THE ONE THAT STAYS =====================
+            # Sorting on tier alone dropped the POTD and kept the composite
+            # copy on 2026-11-24 (POTD tier=LEAN, composite tier=STRONG),
+            # which inverts this script's own stated policy: "WHAT IT
+            # KEEPS. The POTD. It is the flagship labelled play, and it has
+            # its own surface and its own receipt lineage. The composite
+            # copy is the redundant one."
+            #
+            # The flagship slot must survive the dedupe or the card loses
+            # its headline play, so a slot item outranks a non-slot item
+            # regardless of tier, and tier only breaks ties within a group
+            # of the same kind.
+            grp.sort(key=lambda x: (
+                str(x.get('type') or '').strip().lower() in _SLOT_TYPES,
+                rank(x)), reverse=True)
             keep, rest = grp[0], grp[1:]
             print('  %s [%s] %s %s %s : %d copies of one bet'
                   % (date, name, k[0], k[1], k[2], len(grp)))

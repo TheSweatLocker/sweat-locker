@@ -577,6 +577,51 @@ jobs:
             --label "apply_ml_juice_cap_to_card.py" \
             python apply_ml_juice_cap_to_card.py --apply || true
 
+      # ══ 2026-11-25 · THE CARD DEDUPE WAS IN NO WORKFLOW ══════════════
+      # ANDY: "What was the deal yesterday?"
+      #
+      # 2026-11-24 top_8 rendered SEVEN slots holding FIVE distinct bets:
+      #
+      #   1. Win   POTD   -110 LEAN     Under 213.5 (Jerry 56/100)
+      #   3. Win   total  -110 STRONG   Under 213.5          <- same bet
+      #   5. Loss  prop   -120 COVERAGE Daniss Jenkins PRA UNDER 24.5
+      #   7. Loss  prop   -108 LEAN     Daniss Jenkins PRA UNDER 27.5  <- same
+      #
+      # The card's ONE winner was shown twice and counted twice, so it
+      # published 2W-5L on 7 when the five distinct bets went 1W-4L.
+      #
+      # dedupe_card_same_bet_twice.py was written 2026-10-31 for exactly
+      # this and has been in NO workflow since, so it only ever ran when
+      # someone remembered to run it by hand
+      # ([[feedback_a_writer_in_no_workflow]],
+      #  [[feedback_run_the_unscheduled_writer_audit]]).
+      #
+      # IT MUST RUN HERE, not later. It voids the dropped copy's receipt,
+      # and it deliberately REFUSES to void a receipt that already carries
+      # a grade ("a decided result is not mine to erase"). So run after the
+      # card is final -- Sweat Card, Dawg and the juice cap have all
+      # written by this point -- and BEFORE "Capture receipts from the
+      # source tables", which is the step that mints the receipts it would
+      # otherwise be too late to correct. Running it after grading fixes
+      # the blob and leaves the duplicate receipt standing, which makes the
+      # two surfaces disagree instead of agreeing on the truth.
+      #
+      # Over the last 30 days it finds 2 dates, both inflating a WIN:
+      #   11-24  2W-5L/7 -> 1W-4L/5
+      #   11-11  3W-6L/9 -> 2W-6L/8
+      # continue-on-error: a duplicate slot is bad, a blocked card is worse.
+      - name: One bet, one slot (dedupe the card before receipts are minted)
+        continue-on-error: true
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh" \
+            --label "dedupe_card_same_bet_twice.py" \
+            python dedupe_card_same_bet_twice.py --apply
+
       # 2026-10-03 · CHECK THE CARD BEFORE ANYONE ACTS ON IT.
       # The 10-02 Sharp shipped three defects at once, all of which this
       # catches: Liberty ML at -300 (past the documented -200 trap),
