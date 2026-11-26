@@ -180,6 +180,45 @@ bash "$RUN_STEP" --label "snapshot_game_context.py (nightly)" \
 # ── 4. GRADERS ──────────────────────────────────────────────────────────
 echo ""
 echo "── graders ──"
+# == 2026-11-26 . THE SAME OMISSION, A FOURTH TIME -- NOW FOR PROPS ==
+# Read the three notes above: NFL had no daily resolver, then NHL did not,
+# then NBA did not. Each time the script existed and was simply never added
+# here. This is that again for the PROP graders, and Andy named props in the
+# very quote the NHL note is built on:
+#
+#   "NHL has to be daily like MLB, grades and resolves games AND PROPS
+#    overnight or in morning run"
+#
+# The game resolvers were added. grade_props.py never was. It runs in exactly
+# one place per sport -- nba_pipeline.yml and nhl_pipeline.yml -- and both
+# fire while the night is still being played:
+#
+#   nba_pipeline  crons 12:13 / 13:13 / 19:10 UTC. The run that covered
+#                 11-25 landed 02:09 UTC on 11-26 = 9:09pm ET, games LIVE.
+#   nhl_pipeline  crons 12:05 / 15:20 UTC. Last ran 23:42 UTC on 11-25,
+#                 before its own slate ended, then not again for 18h.
+#
+# Measured 2026-11-26 17:30 UTC: nba_pipeline_props and nhl_pipeline_props
+# were 100% UNGRADED for 11-25 -- 1,541 and 1,435 rows, final_value NULL on
+# every one -- while 11-16..11-24 all read 100%. The grader was never broken;
+# run by hand it graded 1,404 of 1,541 NBA rows first try. It had simply
+# never run after the slate finished.
+#
+# That strands every receipt that INHERITS from these rows, which is what
+# Andy saw ("Seeing some plays undgraded form eysterday sweat card"):
+# grade_public_receipts resolves a prop receipt by following source_id into
+# <sport>_pipeline_props, so an ungraded source row IS an ungraded receipt.
+# Both prop graders therefore run ABOVE grade_public_receipts, for the same
+# reason the resolvers run above the game graders.
+#
+# This workflow fires at 10:30 and 12:30 UTC (5:30am / 7:30am ET), after
+# every slate in every sport is final -- the property the per-sport crons do
+# not have. --backfill 7 so a missed night self-heals instead of leaving a
+# permanent hole, and a pass over an already-graded date writes nothing.
+for _sp in NBA NHL; do
+  bash "$RUN_STEP" --label "grade_props.py ($_sp, nightly)" \
+    python grade_props.py --sport "$_sp" --backfill 7
+done
 bash "$RUN_STEP" --label "grade_ledger_snapshots.py (nightly)" \
   python grade_ledger_snapshots.py
 # --backfill 7 rather than one date: a game that resolves late, or a night this
