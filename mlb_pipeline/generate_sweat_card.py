@@ -1552,6 +1552,136 @@ _NBA_PROP_MIN_LINE = {'pts_under': 12.0, 'pra_under': 20.0, 'reb_under': 5.5,
 _NBA_PROP_MIN_EDGE = 1.5
 
 
+# == 2026-11-26 . A PROP TABLE'S game_date IS NOT PROOF A GAME IS PLAYED ==
+# Both prop feeders below asked their table for `game_date eq today` and
+# trusted the answer. On 2026-11-26 that put two plays on games that had
+# ALREADY FINISHED, on a day the NBA does not play at all.
+#
+# What happened: nba_generate_props derived its slate date from
+# (now_utc - 4h), which is EDT. The 22:41 UTC cron landed at 04:21 UTC --
+# inside the one hour a day where that constant is a DAY AHEAD in EST --
+# and wrote 210 prop rows under game_date 2026-11-26 for Kings @ Warriors
+# and Spurs @ Blazers, both in progress at that moment and final by
+# morning (110-129 and 111-116, on 11-25). The writer is fixed, but a
+# reader that takes one column as proof of a playable game will be wrong
+# again the next time a writer is: those rows carry an Odds-API event id
+# that appears nowhere in nba_game_context, so the card's kickoff filter
+# had no start time to judge and passed them, and the floor then pulled
+# two onto a live four-item card. [[feedback_a_null_never_reaches_a_gate]]
+#
+# So the slate is resolved from the CONTEXT table, which is what the side
+# plays have always been filtered against, and a prop has to name a game
+# on it. Scope is deliberate: prop `matchup` holds full team names in
+# every per-sport props table, matching the context columns, whereas a
+# POTD label carries abbreviations ("KC @ BUF") that would not join -- so
+# this guards the prop feeders and nothing else.
+# [[feedback_guard_belongs_at_the_chokepoint]]
+_SLATE_CACHE: dict = {}
+
+
+def _norm_mu(s) -> str:
+    """Normalize a matchup for comparison across two tables.
+
+    Lowercase, collapse whitespace, and drop periods. The period is the
+    ONLY difference measured between the two sides: nhl_pipeline_props
+    writes "St Louis Blues" where nhl_game_context writes "St. Louis
+    Blues", which refused one real NHL game of 14 on both 11-21 and
+    11-25. Dropping it cannot merge two distinct teams -- "michigan st"
+    stays distinct from "michigan" -- so the normalization stays this
+    narrow on purpose ([[feedback_prefix_strip_can_name_another_school]]).
+    """
+    return ' '.join(str(s or '').replace('.', '').split()).lower()
+
+
+def tonights_games(sport: str, game_date: str):
+    """Games `sport` actually plays on `game_date`, from its context table.
+
+    Returns (matchups, game_ids) as normalized sets, or (None, None) when
+    the slate could not be read. An EMPTY set and None are different
+    answers: empty means the sport does not play that day, None means we
+    do not know -- and the callers must not treat the second as the first.
+
+    Games whose start time has already passed are EXCLUDED, so a prop on a
+    finished game is off-slate even when the rest of its night is live.
+    """
+    key = (str(sport).upper(), str(game_date))
+    if key in _SLATE_CACHE:
+        return _SLATE_CACHE[key]
+    tbl = _CTX_TABLE.get(key[0])
+    if not tbl:
+        _SLATE_CACHE[key] = (None, None)
+        return _SLATE_CACHE[key]
+    # select='*' on purpose: an explicit list naming a column one context
+    # table lacks answers 400, which sb_get turns into [], and an empty
+    # read here would read as "this sport plays nothing tonight".
+    # [[feedback_explicit_select_silent_blanks]]
+    try:
+        rows = sb_get(tbl, {'game_date': f'eq.{game_date}', 'select': '*',
+                            'limit': '500'})
+    except Exception as e:                                     # noqa: BLE001
+        print(f'  !! {key[0]} slate read failed ({tbl}): {e} — '
+              f'prop slate check cannot run')
+        _SLATE_CACHE[key] = (None, None)
+        return _SLATE_CACHE[key]
+    if rows is None:
+        _SLATE_CACHE[key] = (None, None)
+        return _SLATE_CACHE[key]
+    from datetime import datetime as _d, timezone as _z, timedelta as _t
+    cutoff = _d.now(_z.utc) - _t(minutes=15)
+    mus, gids = set(), set()
+    for r in rows:
+        ks = (r.get('commence_time') or r.get('commence_time_utc')
+              or r.get('kickoff_utc'))
+        if ks:
+            try:
+                ko = _d.fromisoformat(str(ks).replace('Z', '+00:00'))
+                if ko.tzinfo is None:
+                    ko = ko.replace(tzinfo=_z.utc)
+                if ko < cutoff:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        a = _norm_mu(r.get('away_team'))
+        h = _norm_mu(r.get('home_team'))
+        if a and h:
+            mus.add(f'{a} @ {h}')
+        if r.get('game_id'):
+            gids.add(str(r['game_id']))
+    _SLATE_CACHE[key] = (mus, gids)
+    return _SLATE_CACHE[key]
+
+
+def prop_rows_on_slate(rows, sport, game_date, where=''):
+    """Keep only prop rows naming a game `sport` still has to play.
+
+    A row is refused when the slate is KNOWN and its game is not on it.
+    When the slate is unknown the rows pass untouched and the reason is
+    printed -- refusing on an unreadable slate would empty the prop path
+    on any context outage, which is a far bigger blast radius than the
+    defect it guards. [[feedback_a_guards_blast_radius]]
+    """
+    mus, gids = tonights_games(sport, game_date)
+    if mus is None:
+        print(f'  ?? {where}{sport}: slate unknown — {len(rows or [])} prop '
+              f'row(s) pass unchecked')
+        return rows or []
+    keep, off = [], []
+    for r in rows or []:
+        mu = _norm_mu(r.get('matchup'))
+        gid = str(r.get('game_id') or '')
+        if (mu and mu in mus) or (gid and gid in gids):
+            keep.append(r)
+        else:
+            off.append(r)
+    if off:
+        _ex = sorted({' '.join(str(r.get('matchup') or '?').split())
+                      for r in off})[:4]
+        print(f'  🚫 {where}{sport}: {len(off)} prop row(s) dropped — their '
+              f'game is not on the {sport} slate for {game_date} '
+              f'({len(mus)} game(s) still to play): {", ".join(_ex)}')
+    return keep
+
+
 def fetch_nba_prop_floor(game_date, per_game=1):
     """Tonight's NBA under-props that satisfy the measured rule.
 
@@ -1567,6 +1697,9 @@ def fetch_nba_prop_floor(game_date, per_game=1):
         'direction': 'eq.under',
         'limit': '3000',
     })
+    if not rows:
+        return []
+    rows = prop_rows_on_slate(rows, 'NBA', game_date, 'nba_prop_floor: ')
     if not rows:
         return []
     cands = []
@@ -1772,6 +1905,11 @@ def _fetch_non_mlb_props(today):
                   f'id-probe returned {len(_probe)} -- check the select'
                   if _probe else
                   f'  [sweat_card] {su} props: none on the slate today')
+            continue
+        # Same slate check the NBA floor feeder takes: an allowlisted cell
+        # on a game that is finished or not scheduled is still not a bet.
+        src = prop_rows_on_slate(src, su, today, 'non_mlb_props: ')
+        if not src:
             continue
         keep = PCA.eligible(su, src)
         for r in keep:

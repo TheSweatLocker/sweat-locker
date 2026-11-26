@@ -64,7 +64,66 @@ MARKET_MAP = {
 
 
 def _et_today() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
+    """Today's ET date, DST-correct.
+
+    == 2026-11-26 . THE -4 CONSTANT PUT LAST NIGHT'S GAMES ON TODAY ======
+    This returned (now_utc - 4h).date(), which is EDT. In EST the offset
+    is 5h, so every run between 04:00 and 04:59 UTC returned TOMORROW --
+    127 days a year, documented in grade_public_receipts._et_shift_dst
+    and sweat_dates.
+
+    That hour is not idle. The 22:41 UTC props cron landed at 04:21 UTC on
+    2026-11-26 (GitHub cron lateness, documented in nba_props_refresh.yml)
+    and this function returned 2026-11-26 while the ET date was still
+    2026-11-25. Two NBA games were in progress at that moment -- Kings @
+    Warriors and Spurs @ Blazers, which finished 110-129 and 111-116 --
+    and 210 prop rows for them were written under game_date 2026-11-26,
+    a day the NBA does not play at all (Thanksgiving). Their game_id is
+    absent from nba_game_context, so the card kickoff filter had no
+    commence_time to judge and passed them, and the Sweat Card floor then
+    pulled two onto a live card: half of a four-item card was plays on
+    games that had already finished.
+
+    Use the shared helper so one definition of "the ET day" serves the
+    whole pipeline ([[feedback_fix_every_writer_to_the_table]]).
+    """
+    try:
+        from sweat_dates import et_today as _shared_et_today
+        return _shared_et_today()
+    except Exception:
+        # tzdata missing: err toward the PREVIOUS ET day. A slate date that
+        # is a day behind fetches an empty window and says so; a day ahead
+        # silently stamps finished games as upcoming, which is this bug.
+        return (datetime.now(timezone.utc) - timedelta(hours=5)).date().isoformat()
+
+
+def _et_date_of(commence) -> str:
+    """The ET slate date of one event, from its own UTC commence_time.
+
+    The date a row is stamped with must come from the EVENT, not from the
+    clock the runner happened to wake on. Returns '' when unparseable, so
+    the caller falls back to the slate date rather than guessing.
+    """
+    try:
+        from sweat_dates import et_date_of as _shared
+        return _shared(commence) or ''
+    except Exception:
+        pass
+    s = str(commence or '').strip()
+    if not s:
+        return ''
+    try:
+        dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except ValueError:
+        return ''
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+    except Exception:
+        return (dt.astimezone(timezone.utc)
+                - timedelta(hours=5)).strftime('%Y-%m-%d')
 
 
 def fetch_events(game_date: Optional[str] = None) -> list:
@@ -260,9 +319,15 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
     now_iso = datetime.now(timezone.utc).isoformat()
     for ev in events:
         commence = ev.get('commence_time', '')
-        # Rough date filter — commence is UTC, we're looking for ET game_date
-        # Include events commencing on gd OR the calendar-day after (late games).
-        if not (commence.startswith(gd) or commence.startswith((date.fromisoformat(gd) + timedelta(days=1)).isoformat())):
+        # 2026-11-26: this compared the UTC prefix against gd and gd+1, then
+        # stamped every surviving row with the single global `gd`. A late ET
+        # game commences on UTC day gd+1, which is why the second prefix was
+        # there -- but when `gd` itself was a day ahead, both the filter and
+        # the stamp were wrong together. Resolve each event's OWN ET date and
+        # require it to equal the slate: strictly more correct than the two
+        # prefixes, and it cannot inherit an error from the runner's clock.
+        ev_gd = _et_date_of(commence)
+        if (ev_gd or gd) != gd:
             continue
         home = ev.get('home_team'); away = ev.get('away_team')
         matchup = f'{away} @ {home}'
@@ -279,7 +344,7 @@ def run(game_date: Optional[str] = None, dry_run: bool = False):
                 if slot.get(f'{direction}_odds') is None:
                     continue    # that side genuinely was not quoted
                 payload = {
-                    'game_date':      gd,
+                    'game_date':      ev_gd or gd,
                     'game_id':        event_id,
                     'player_name':    slot['display'],
                     'matchup':        matchup,

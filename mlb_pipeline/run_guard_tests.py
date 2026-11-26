@@ -71,6 +71,15 @@ SUITES = [
     # abstention. Both halves pinned here; stubs the model, writes nothing.
     ('LR shadow recorded on abstention',
      [sys.executable, 'test_lr_shadow_recorded.py']),
+    # A prop may only reach the card if its game is still to be played.
+    # On 2026-11-26 two of four card items were NBA props on games that
+    # had finished the night before, on a day the NBA did not play: a
+    # -4h EDT constant in nba_generate_props put 210 rows on the wrong
+    # slate date, and both card readers trusted that column. Pins the
+    # writer's date math and the readers' slate check, including that an
+    # UNREADABLE slate passes rows rather than emptying the prop path.
+    ('prop slate guard + ET slate dates',
+     [sys.executable, 'test_prop_slate_guard.py']),
 ]
 
 
