@@ -1146,6 +1146,13 @@ _PICK_COLS = ('pick_control_pct', 'discrimination_pp', 'disagree_n')
 _PICK_COLS_PRESENT: Optional[bool] = None
 
 
+#: Absolute floor for using a signal's OWN partial price coverage as the
+#: tier/weight bar instead of a cross-sport per-market constant. 25 matches
+#: ensemble_scorer.SAMPLE_MIN_N, the point the engine already treats as
+#: "evidence rather than noise" -- below it the scorer ignores the edge
+#: formula entirely, so a bar derived there would not be consulted anyway.
+PARTIAL_BE_MIN_N = 25
+
 _PRICE_BE_COL = 'price_breakeven_pct'
 _PRICE_BE_PRESENT = None
 
@@ -1296,6 +1303,38 @@ def build_rows(sport: str, firings: dict[str, dict], min_n: int) -> list[dict]:
         if _en >= max(10, int(n * 0.8)):
             be_frac = ct['be_sum'] / _en
             be_measured = be_frac
+        elif _en >= PARTIAL_BE_MIN_N:
+            # ══ 2026-11-26 · A PARTIAL BAR FROM THIS SPORT BEATS A WHOLE
+            #    ONE FROM ANOTHER ════════════════════════════════════════
+            # Below 80% coverage this fell to _MARKET_BE_FALLBACK, whose ml
+            # entry (58.33%) was measured on graded receipts that are
+            # MLB/NHL/NCAAF -- 'per sport: MLB ml 57.81% NHL 57.45% NCAAF
+            # 58.68%', with no NCAAB row. College basketball does not trade
+            # anywhere near there: on the 2026-27 board the favourite side's
+            # median breakeven is 71.43% and the dog side's 32.26%, because
+            # the sport is full of mismatches the pro leagues do not have.
+            #
+            # Measured cost on 2026-11-26, NCAAB, 90d:
+            #   ncaab_home_efficiency_edge  hit 91.38% n=58  be_n=32
+            #       its own prices imply 88.41%; the bar used was 66.60
+            #       (the blind-home baseline), crediting +24.78pp of edge
+            #       where the truth is +2.97pp
+            #   ncaab_confluence_home       hit 73.05% n=167 be_n=132 (79%)
+            #       own prices imply 74.24%; bar used 66.40, crediting
+            #       +6.65pp on a signal that is -1.19pp BELOW its own price
+            #
+            # The second missed the gate by ONE point of coverage and is
+            # money-negative while carrying positive weight. A bar built
+            # from 32 of this signal's own firings is better evidence than a
+            # constant from a different sport, so partial coverage is used
+            # for the TIER/WEIGHT input once it clears an ABSOLUTE floor.
+            #
+            # `be_measured` is deliberately left None, so the stored
+            # price_breakeven_pct column keeps its strict meaning -- "the
+            # prices this signal fired at, at 80% coverage" -- and a reader
+            # still cannot mistake a partial bar for a full one
+            # ([[feedback_a_derived_column_can_hold_two_models]]).
+            be_frac = ct['be_sum'] / _en
         else:
             _mk = ct.get('mkt') or {}
             _dommk = max(_mk.items(), key=lambda z: z[1])[0] if _mk else ''

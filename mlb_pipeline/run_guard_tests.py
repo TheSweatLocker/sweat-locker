@@ -89,6 +89,15 @@ SUITES = [
     # half is asserted by audit_ncaab_name_integrity.py.
     ('NCAAB season + feed names',
      [sys.executable, 'test_ncaab_season_and_names.py']),
+    # A signal's bar must be the price it FIRES at. Below 80% price
+    # coverage the tier bar fell to a cross-sport ml constant (58.33%,
+    # measured on MLB/NHL/NCAAF receipts), which credited
+    # ncaab_home_efficiency_edge with +24.78pp where its own prices say
+    # +2.97pp, and gave ncaab_confluence_home weight 0.670 while it sat
+    # 1.19pp BELOW its own price. Pins the partial-coverage floor, that a
+    # partial bar is never STORED, and that nothing is retired.
+    ('partial price bar (signal bar vs cross-sport constant)',
+     [sys.executable, 'test_partial_price_bar.py']),
 ]
 
 

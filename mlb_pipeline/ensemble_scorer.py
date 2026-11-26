@@ -697,11 +697,52 @@ MAX_REGISTRY_AGE_DAYS = 14
 # implied and returns -0.0% ([[feedback_the_bar_is_never_the_price_the_
 # signal_fires_at]], [[feedback_the_engine_loses_to_the_close]]).
 #
-# DEFAULT OFF. Switching the bar rescores every sport, and the replay says
-# 17 signals lose weight with 5 going to zero. Run with
-# ENSEMBLE_PRICE_BAR=shadow to log what it WOULD do without changing a
-# pick; ENSEMBLE_PRICE_BAR=1 to apply it.
-_PRICE_BAR_MODE = os.environ.get('ENSEMBLE_PRICE_BAR', '0').strip().lower()
+# ══ 2026-11-26 · DEFAULT ON. Andy: "change weitghts lets worok it" ══════
+# This sat at DEFAULT OFF pending a shadow, so the whole price-bar
+# mechanism was dormant in every sport: every weight was computed against
+# max(side_baseline, FLAT per-market breakeven), and on a moneyline that
+# flat figure is 58.33% -- measured on graded receipts that are
+# MLB/NHL/NCAAF. A selector firing at -250 has a real bar of 71.4%.
+#
+# MEASURED BEFORE FLIPPING, over every signal_registry row carrying a bar
+# at n>=25 (21 rows, 5 sports), both sides scored:
+#
+#     sport     UP   DOWN   same   mean delta
+#     MLB        0      0     16       0.000
+#     NHL        0      0      2       0.000
+#     NCAAF      0      8      0      -0.323
+#     NFL        0      6      0      -0.434
+#     NCAAB      0      4      6      -0.447
+#
+# EVERY MOVE IS DOWN -- zero signals gain weight in any sport, and every
+# affected row is `ml`, which is exactly where the flat bar understates
+# the price. MLB and NHL are untouched because their stored bars sit below
+# the bar `max()` already applied. Largest moves:
+#
+#     ncaab_projected_spread       ml  n=201  75.62%  bar 58.33->73.13
+#                                                     w 0.944 -> 0.340
+#     sharp_split_confirmed_ncaaf  ml  n= 80  70.00%  w 0.816 -> 0.257
+#     power_diff_edge (NFL)        ml  n= 46  78.26%  w 0.804 -> 0.366
+#     external:dimers (NFL)        ml  n= 61  73.77%  w 0.826 -> 0.394
+#     ncaaf_confluence_away        ml  n= 35  65.71%  w 0.549 -> 0.000
+#     external:action (NCAAB)      ml  n= 29  65.52%  w 0.515 -> 0.000
+#
+# The three that reach 0.000 sit BELOW the price they fire at, so they were
+# being paid for losing bets. This change can only remove phantom edge; it
+# cannot manufacture any, which is why it ships on an offline replay over
+# the whole registry rather than waiting on live slates. It is the same
+# landing the side baseline took on 2026-10-28.
+#
+# Only 21 rows carry a measured bar at all, because the bar needs 80% price
+# coverage on a signal's firings. Partial-coverage bars now feed the TIER
+# via refit_signal_registry.PARTIAL_BE_MIN_N, but they are deliberately not
+# stored, so they do not reach this weight yet -- that needs a coverage
+# column so one field cannot mean two things
+# ([[feedback_a_derived_column_can_hold_two_models]]).
+#
+# REVERT is one env var: ENSEMBLE_PRICE_BAR=0. `shadow` still logs the
+# delta without changing a pick.
+_PRICE_BAR_MODE = os.environ.get('ENSEMBLE_PRICE_BAR', '1').strip().lower()
 _PRICE_BE_COL_OK: Optional[bool] = None
 _PRICE_BAR_SHADOW: list = []
 
