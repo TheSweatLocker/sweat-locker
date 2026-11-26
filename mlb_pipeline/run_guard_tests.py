@@ -80,6 +80,15 @@ SUITES = [
     # UNREADABLE slate passes rows rather than emptying the prop path.
     ('prop slate guard + ET slate dates',
      [sys.executable, 'test_prop_slate_guard.py']),
+    # An NCAAB result row must carry `season` or it is in NO team record:
+    # the 2026-11-20 fix derived the label and BOTH write paths dropped it,
+    # so 41 scored games went NULL on every date since that commit. Also
+    # pins that the haslam XML feed is entity-decoded at the source --
+    # 'Texas A&amp;M' and 18 other spellings were orphan keys, and the
+    # panel ran 21 teams on 2 of 3 rating systems. Offline; the live alias
+    # half is asserted by audit_ncaab_name_integrity.py.
+    ('NCAAB season + feed names',
+     [sys.executable, 'test_ncaab_season_and_names.py']),
 ]
 
 

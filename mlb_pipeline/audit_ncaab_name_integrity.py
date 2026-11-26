@@ -94,6 +94,33 @@ JOIN_SURFACES = [
     ('ncaab_game_context',  'away_team', '&game_date=gte.2026-11-12'),
     ('ncaab_game_results',  'home_team', '&game_date=gte.2026-11-12'),
     ('ncaab_game_results',  'away_team', '&game_date=gte.2026-11-12'),
+    # ══ 2026-11-26 · THE TABLE THIS AUDIT WAS NOT WATCHING ══════════
+    # This check read clean all morning while ncaab_rating_snapshots held
+    # 19 unresolvable spellings, because the table was not in this list.
+    # haslam is parsed with a regex off an XML feed, so `t="Texas A&amp;M"`
+    # was stored escaped, and ncaab_panel_predictor -- which resolves and
+    # keeps an unresolvable name RAW -- held the orphan as its own team
+    # while the real one ran the panel on 2 of 3 rating systems (21 teams).
+    # The panel is an engine input, so this is a join that decides picks.
+    # A green name check over the wrong surfaces is exactly how the four
+    # defects in the header above shipped
+    # ([[feedback_coverage_pct_hides_dead_code]]).
+    # The requirement here is RESOLVABLE, not canonical -- the audit's two
+    # properties, and attaching the wrong one makes a check that can never
+    # go green. ncaab_panel_predictor resolves every snapshot name before
+    # keying on it (`canon = _resolve(team) or team`), so a non-canonical
+    # spelling joins fine and only an UNRESOLVABLE one becomes an orphan
+    # team. 120 of these names are kenpom/torvik/haslam house styles
+    # ('Utah State', 'W. Michigan', 'USF') that the alias table already
+    # maps; demanding the feeds restyle them would leave this permanently
+    # red, and a check nobody can clear is as dead as one that is always
+    # green ([[feedback_a_detector_can_be_the_defect]]).
+    ('ncaab_rating_snapshots', 'team',    '&season=eq.2026-27', 'resolvable'),
+    # The Situational Records card's own join key. Clean when added
+    # (366 names, 0 unresolvable, 0 non-canonical) -- pinned so it stays
+    # that way, because a non-canonical name here empties an ATS row and
+    # the card HIDES an empty row, which reads as a layout choice.
+    ('team_situational_records', 'team',  '&sport=eq.NCAAB'),
 ]
 
 ODDS_EVENTS_URL = ('https://api.the-odds-api.com/v4/sports/'
@@ -124,7 +151,9 @@ def check_stored() -> list[str]:
     """Assert every stored, join-bearing team name resolves to ITSELF."""
     failures: list[str] = []
     print('── STORED NAMES must be canonical ' + '─' * 36)
-    for table, col, extra in JOIN_SURFACES:
+    for _surface in JOIN_SURFACES:
+        table, col, extra = _surface[0], _surface[1], _surface[2]
+        require = _surface[3] if len(_surface) > 3 else 'canonical'
         names, err = _page_names(table, col, extra)
         if err:
             # A 400 names a column, and a column that moved is a real
@@ -134,17 +163,22 @@ def check_stored() -> list[str]:
             print(f'  ✗ {table}.{col:10s} UNREADABLE — {err}')
             continue
         unresolvable, non_canonical = [], []
+        resolved_alias = 0
         for nm in names:
             hit = R.resolve(nm)
             if hit is None:
                 _, how = R.resolve(nm, with_method=True)
                 unresolvable.append((nm, how))
-            elif hit != nm:
+            elif hit != nm and require == 'canonical':
                 non_canonical.append((nm, hit))
+            elif hit != nm:
+                resolved_alias += 1
         status = '✓' if not (unresolvable or non_canonical) else '✗'
+        _tail = (f'non-canonical {len(non_canonical)}'
+                 if require == 'canonical'
+                 else f'{resolved_alias} via alias (canonical not required)')
         print(f'  {status} {table}.{col:10s} {len(names):4d} distinct | '
-              f'unresolvable {len(unresolvable)} | '
-              f'non-canonical {len(non_canonical)}')
+              f'unresolvable {len(unresolvable)} | {_tail}')
         for nm, how in sorted(unresolvable):
             print(f'        unresolvable {nm!r} [{how}]')
             failures.append(f'{table}.{col}: {nm!r} does not resolve [{how}]')

@@ -39,7 +39,7 @@ historical, snapshot the XML file over time — which is what
 ncaab_rating_snapshots is designed for (append-only history).
 """
 from __future__ import annotations
-import argparse, os, re, sys
+import argparse, html, os, re, sys
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -79,8 +79,20 @@ def fetch_haslam() -> list:
         attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
         try:
             rk = int(attrs['rk'])
-            team = attrs['t']
-            conf = attrs.get('c', '')
+            # ══ 2026-11-26 · XML ATTRIBUTES ARE ENTITY-ENCODED ══════════
+            # This feed is parsed with a regex, so `t` arrives exactly as
+            # it sits in the XML -- and XML escapes `&`. Eight schools were
+            # therefore stored as 'Texas A&amp;M', 'William &amp; Mary',
+            # 'Florida A&amp;M' and so on. None of them resolve, so
+            # ncaab_panel_predictor kept each one as its own raw key and the
+            # real team silently ran the panel on 2 of 3 rating systems.
+            # A real XML parse would unescape for us; unescaping here keeps
+            # the one-regex parser and fixes it at the SOURCE, so the alias
+            # table does not have to carry a spelling no human ever wrote
+            # ([[feedback_prefix_strip_can_name_another_school]] -- aliases
+            # are for real variants, not for our own encoding bugs).
+            team = html.unescape(attrs['t']).strip()
+            conf = html.unescape(attrs.get('c', '')).strip()
             oe = float(attrs['oe'])
             de = float(attrs['de'])
             # Tempo: Haslam has "ou" (offensive pace) and "du" (defensive pace opp)

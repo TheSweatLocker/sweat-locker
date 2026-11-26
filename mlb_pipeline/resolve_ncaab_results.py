@@ -486,7 +486,17 @@ def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
     _owed_date = (str(existing.get('game_date') or '')
                   != str(new.get('game_date') or '')
                   and bool(new.get('game_date')))
-    if _same_score and not _owed_spread and not _owed_total and not _owed_date:
+    # ══ 2026-11-26 · A MISSING `season` IS ALSO WORK TO DO ══════════
+    # The 2026-11-20 fix computed `season` in event_to_outcome and then
+    # neither write path carried it, so the value was derived and thrown
+    # away -- 41 scored games landed with season NULL on every date from
+    # 11-20 to 11-25, i.e. every day since that commit. A fully-scored row
+    # short-circuits above, so without this clause a row that reached the
+    # table with a NULL season could never be repaired by a later run
+    # ([[feedback_green_step_that_writes_nothing]]).
+    _owed_season = (not existing.get('season')) and bool(new.get('season'))
+    if (_same_score and not _owed_spread and not _owed_total
+            and not _owed_date and not _owed_season):
         return None
 
     payload = {
@@ -498,6 +508,10 @@ def compute_outcome_patch(new: dict, existing: dict) -> Optional[dict]:
     }
     if _owed_date:
         payload['game_date'] = new['game_date']
+    # Only ever FILL a missing season; never overwrite a stored one, so a
+    # hand-corrected label cannot be stomped by a resolver re-run.
+    if _owed_season:
+        payload['season'] = new['season']
 
     # NCAAB convention: close_spread negative = home favored.
     # spread_result semantics: home_covered if home_margin > -close_spread.
@@ -526,6 +540,16 @@ def upsert_new_games(new_rows: list, dry_run: bool = False) -> int:
     payload = [{
         'game_id':   n['game_id'],
         'game_date': n['game_date'],
+        # 2026-11-26: THIS is the path the 11-20 season fix was written for
+        # -- "when the odds feed never covered the game, this upserts the
+        # row itself, and it landed with season NULL" -- and it was the one
+        # path that never carried the value. An unlined game has no spread
+        # or total to grade, but its MONEYLINE result needs no line, so
+        # with `season` set it rejoins every team's straight-up record;
+        # without it the game is in NO record at all, because
+        # team_situational_records groups by season and the app queries
+        # season=eq.2026-27 ([[feedback_fix_every_writer_to_the_table]]).
+        'season':    n.get('season'),
         'home_team': n['home_team'],
         'away_team': n['away_team'],
         'home_score': n.get('home_score'),
