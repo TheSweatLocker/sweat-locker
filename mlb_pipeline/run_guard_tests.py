@@ -58,6 +58,12 @@ SUITES = [
     # themselves. Offline; verified to import with .env moved aside.
     ('card dedupe keys + CARD_FLOOR ladder',
      [sys.executable, 'test_card_floor_and_dedupe.py']),
+    # Wager identity in public_receipts and the write screen both scheduled
+    # inserters share. Pins the 2026-11-24 potd/total pair as ONE bet, the
+    # 2026-10-03 two-games-one-label pair as TWO, and that a VOID row no
+    # longer licenses an endless re-mint. Offline, pure functions only.
+    ('receipt bet identity + write screen',
+     [sys.executable, 'test_receipt_bet_identity.py']),
 ]
 
 

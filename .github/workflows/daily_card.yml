@@ -836,6 +836,37 @@ jobs:
             --label "backfill_receipt_prices.py" \
             python backfill_receipt_prices.py --since "$SINCE" --apply
 
+      - name: One wager, one receipt (duplicate detector)
+        working-directory: mlb_pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || secrets.SUPABASE_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          # ══ 2026-11-25 · 46 WAGERS WERE IN THE RECORD TWICE ══
+          # Andy: "fix and ddeup. fix root cause."
+          #
+          # The root cause is fixed at the chokepoint --
+          # public_receipt.screen_for_write, shared by BOTH scheduled
+          # writers (capture() and backfill_public_receipts.py) -- and
+          # pinned offline by test_receipt_bet_identity.py in
+          # run_guard_tests.py. This step exists because
+          # `public_receipts` has FOUR inserters and the next one added
+          # will not know about the screen. A duplicate is invisible on
+          # read: it just makes a surface record say a number that is not
+          # true.
+          #
+          # DRY RUN ONLY, and never --apply from CI. Voiding a published
+          # receipt is a decision about the record, so it stays a
+          # deliberate manual act (feedback_fix_the_cache_not_the_frozen_receipt).
+          #
+          # --detector: exit 1 is RECORDED as a finding and the card still
+          # ships. --since bounds the READ as well as the report, to the
+          # same 14 days backfill_public_receipts rewrites, so this costs
+          # a handful of requests rather than a hundred.
+          SINCE=$(python -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=14)).isoformat())")
+          bash "$GITHUB_WORKSPACE/.github/scripts/run_step.sh"             --detector --label "dedupe_duplicate_receipts.py (detect)"             python dedupe_duplicate_receipts.py --since "$SINCE" --gate
+
       # ══ 2026-10-07 · RESULTS MUST KEEP SETTLING AFTER THE PICK LOCK ══
       # The Sweat Card HARD-LOCKS at noon ET and refuses every republish
       # after it. That is correct for PICKS — a subscriber who acted on the

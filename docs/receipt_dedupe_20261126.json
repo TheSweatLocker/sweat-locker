@@ -1,0 +1,792 @@
+{
+ "ran_at": "2026-11-26T01:27:14.967537+00:00",
+ "voided": 48,
+ "failed": 0,
+ "refused_disagree": [],
+ "groups": [
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-06-20",
+    "ml",
+    "chicagocubsml",
+    "",
+    "toronto blue jays @ chicago cubs"
+   ],
+   "kept": 24453,
+   "voided": [
+    24450
+   ],
+   "result": "LOSS",
+   "label": "Chicago Cubs ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-07-31",
+    "ml",
+    "milwaukeebrewersml",
+    "",
+    "milwaukee brewers @ los angeles angels"
+   ],
+   "kept": 24852,
+   "voided": [
+    24850
+   ],
+   "result": "WIN",
+   "label": "Milwaukee Brewers ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "prop_jerry",
+    "2026-09-26",
+    "prop",
+    "nickylopezunder05hitsunder140",
+    "0.5",
+    "f02fbe7c7bb8a6741f285b306e7d8fa8"
+   ],
+   "kept": 403867,
+   "voided": [
+    454059
+   ],
+   "result": "LOSS",
+   "label": "Nicky Lopez UNDER 0.5 hits_under @ 140"
+  },
+  {
+   "wager": [
+    "MLB",
+    "prop_jerry",
+    "2026-09-26",
+    "prop",
+    "colsonmontgomeryunder05hitsunder105",
+    "0.5",
+    "5e96347a5c09f2be46dc616aa404bf27"
+   ],
+   "kept": 403947,
+   "voided": [
+    454187
+   ],
+   "result": "WIN",
+   "label": "Colson Montgomery UNDER 0.5 hits_under @ 105"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sharp_card",
+    "2026-09-26",
+    "ml",
+    "marylandml",
+    "",
+    "ncaaf_20260926_UCLA_Maryland"
+   ],
+   "kept": 453925,
+   "voided": [
+    403832
+   ],
+   "result": "LOSS",
+   "label": "Maryland ML"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sharp_card",
+    "2026-09-26",
+    "ml",
+    "westvirginiaml",
+    "",
+    "ncaaf_20260926_Oklahoma State_West Virginia"
+   ],
+   "kept": 453926,
+   "voided": [
+    403833
+   ],
+   "result": "LOSS",
+   "label": "West Virginia ML"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sharp_card",
+    "2026-09-26",
+    "rl",
+    "smu345",
+    "-34.5",
+    "ncaaf_20260926_Missouri State_SMU"
+   ],
+   "kept": 453927,
+   "voided": [
+    403834
+   ],
+   "result": "LOSS",
+   "label": "SMU -34.5"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sharp_card",
+    "2026-09-26",
+    "ml",
+    "tcuml",
+    "",
+    "ncaaf_20260926_TCU_UCF"
+   ],
+   "kept": 453928,
+   "voided": [
+    403835
+   ],
+   "result": "LOSS",
+   "label": "TCU ML"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sharp_card",
+    "2026-09-26",
+    "ml",
+    "hawaiiml",
+    "",
+    "ncaaf_20260926_Hawaii_Wyoming"
+   ],
+   "kept": 453929,
+   "voided": [
+    403836
+   ],
+   "result": "LOSS",
+   "label": "Hawaii ML"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "josholiverunder15receptionsunder148",
+    "1.5",
+    "f1724dead3eab61546033032fc782375"
+   ],
+   "kept": 318741,
+   "voided": [
+    493225
+   ],
+   "result": "WIN",
+   "label": "Josh Oliver UNDER 1.5 receptions_under @ -148"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "treharrisover285receptionydsover114",
+    "28.5",
+    "b225458a282e140c44c45651255f2f6c"
+   ],
+   "kept": 318780,
+   "voided": [
+    493253
+   ],
+   "result": "WIN",
+   "label": "Tre Harris OVER 28.5 reception_yds_over @ -114"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "zayflowersunder55receptionsunder157",
+    "5.5",
+    "84cfca14efc21363fd605508404cf1ff"
+   ],
+   "kept": 318831,
+   "voided": [
+    493312
+   ],
+   "result": "WIN",
+   "label": "Zay Flowers UNDER 5.5 receptions_under @ -157"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "jakefergusonunder295receptionydsunder115",
+    "29.5",
+    "84cfca14efc21363fd605508404cf1ff"
+   ],
+   "kept": 318854,
+   "voided": [
+    493314
+   ],
+   "result": "WIN",
+   "label": "Jake Ferguson UNDER 29.5 reception_yds_under @ -115"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "bonixunder15passtdsunder167",
+    "1.5",
+    "3bfd8bfb4b8e9a365a0877879b73b16b"
+   ],
+   "kept": 318959,
+   "voided": [
+    493459
+   ],
+   "result": "LOSS",
+   "label": "Bo Nix UNDER 1.5 pass_tds_under @ -167"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "patbryantover25receptionsover112",
+    "2.5",
+    "3bfd8bfb4b8e9a365a0877879b73b16b"
+   ],
+   "kept": 318965,
+   "voided": [
+    493457
+   ],
+   "result": "LOSS",
+   "label": "Pat Bryant OVER 2.5 receptions_over @ -112"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "kirkcousinsunder315passattemptsunder104",
+    "31.5",
+    "2e523fcb0497aa689473e290eb2b97de"
+   ],
+   "kept": 318982,
+   "voided": [
+    493492
+   ],
+   "result": "LOSS",
+   "label": "Kirk Cousins UNDER 31.5 pass_attempts_under @ -104"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "keenanallenunder345receptionydsunder112",
+    "34.5",
+    "17a730b7d399feeab6a78c30767c29d2"
+   ],
+   "kept": 319061,
+   "voided": [
+    493592
+   ],
+   "result": "LOSS",
+   "label": "Keenan Allen UNDER 34.5 reception_yds_under @ -112"
+  },
+  {
+   "wager": [
+    "NFL",
+    "prop_jerry",
+    "2026-09-27",
+    "prop",
+    "jamesonwilliamsover515receptionydsover109",
+    "51.5",
+    "07f552badfa8a565d1be22123713e4da"
+   ],
+   "kept": 319102,
+   "voided": [
+    493632
+   ],
+   "result": "LOSS",
+   "label": "Jameson Williams OVER 51.5 reception_yds_over @ -109"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-27",
+    "ml",
+    "detroittigersml",
+    "",
+    "pittsburgh pirates @ detroit tigers"
+   ],
+   "kept": 453960,
+   "voided": [
+    453971
+   ],
+   "result": "LOSS",
+   "label": "Detroit Tigers ML (resolver STRONG)"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "ml",
+    "chicagowhitesoxml",
+    "",
+    "chicago white sox @ houston astros"
+   ],
+   "kept": 606767,
+   "voided": [
+    5447514,
+    606776
+   ],
+   "result": "WIN",
+   "label": "Chicago White Sox ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "ml",
+    "sandiegopadresml",
+    "",
+    "chicago cubs @ san diego padres"
+   ],
+   "kept": 606769,
+   "voided": [
+    3996243
+   ],
+   "result": "WIN",
+   "label": "San Diego Padres ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "taylortrammellunder05hits",
+    "",
+    "chicago white sox @ houston astros"
+   ],
+   "kept": 606770,
+   "voided": [
+    3996240
+   ],
+   "result": "WIN",
+   "label": "Taylor Trammell Under 0.5 Hits"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "michaelkingover35hitsallowed",
+    "",
+    "chicago cubs @ san diego padres"
+   ],
+   "kept": 606771,
+   "voided": [
+    3996242
+   ],
+   "result": "LOSS",
+   "label": "Michael King Over 3.5 Hits Allowed"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "jtrealmutounder05hits",
+    "",
+    "philadelphia phillies @ atlanta braves"
+   ],
+   "kept": 606772,
+   "voided": [
+    5447515
+   ],
+   "result": "LOSS",
+   "label": "J.T. Realmuto Under 0.5 Hits"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "camschlittlerunder15earnedruns",
+    "",
+    "boston red sox @ new york yankees"
+   ],
+   "kept": 606773,
+   "voided": [
+    5447516
+   ],
+   "result": "WIN",
+   "label": "Cam Schlittler Under 1.5 Earned Runs"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "chrissaleunder15walks",
+    "",
+    "philadelphia phillies @ atlanta braves"
+   ],
+   "kept": 606810,
+   "voided": [
+    3996244
+   ],
+   "result": "WIN",
+   "label": "Chris Sale Under 1.5 Walks"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "ajblubaughunder55outsrecorded",
+    "",
+    "chicago white sox @ houston astros"
+   ],
+   "kept": 632633,
+   "voided": [
+    3996246
+   ],
+   "result": "WIN",
+   "label": "AJ Blubaugh Under 5.5 Outs Recorded"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "matthewboydover35hitsallowed",
+    "",
+    "chicago cubs @ san diego padres"
+   ],
+   "kept": 632635,
+   "voided": [
+    3996245
+   ],
+   "result": "WIN",
+   "label": "Matthew Boyd Over 3.5 Hits Allowed"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-29",
+    "prop",
+    "haseongkimunder05hits",
+    "",
+    "philadelphia phillies @ atlanta braves"
+   ],
+   "kept": 632662,
+   "voided": [
+    3996247
+   ],
+   "result": "WIN",
+   "label": "Ha-Seong Kim Under 0.5 Hits"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-30",
+    "ml",
+    "newyorkyankeesml",
+    "",
+    "boston red sox @ new york yankees"
+   ],
+   "kept": 684256,
+   "voided": [
+    684265,
+    3996188
+   ],
+   "result": "WIN",
+   "label": "New York Yankees ML (resolver STRONG)"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-09-30",
+    "ml",
+    "houstonastrosml",
+    "",
+    "chicago white sox @ houston astros"
+   ],
+   "kept": 684258,
+   "voided": [
+    5447455
+   ],
+   "result": "LOSS",
+   "label": "Houston Astros ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-10-03",
+    "ml",
+    "chicagowhitesoxml",
+    "",
+    "chicago white sox @ cleveland guardians"
+   ],
+   "kept": 810366,
+   "voided": [
+    5447571
+   ],
+   "result": "WIN",
+   "label": "Chicago White Sox ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-10-03",
+    "prop",
+    "tarikskubalover75ks",
+    "",
+    "atlanta braves @ los angeles dodgers"
+   ],
+   "kept": 810370,
+   "voided": [
+    3982900
+   ],
+   "result": "WIN",
+   "label": "Tarik Skubal Over 7.5 Ks  \u00b7  proj 8.8"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-10-04",
+    "ml",
+    "sandiegopadresml",
+    "",
+    "san diego padres @ milwaukee brewers"
+   ],
+   "kept": 881141,
+   "voided": [
+    3982893
+   ],
+   "result": "LOSS",
+   "label": "San Diego Padres ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-10-07",
+    "ml",
+    "milwaukeebrewersml",
+    "",
+    "milwaukee brewers @ san diego padres"
+   ],
+   "kept": 1107314,
+   "voided": [
+    3982897
+   ],
+   "result": "WIN",
+   "label": "Milwaukee Brewers ML"
+  },
+  {
+   "wager": [
+    "MLB",
+    "sweat_card",
+    "2026-10-24",
+    "ml",
+    "milwaukeebrewersml",
+    "",
+    "tampa bay rays @ milwaukee brewers"
+   ],
+   "kept": 3695947,
+   "voided": [
+    3982896
+   ],
+   "result": "WIN",
+   "label": "Milwaukee Brewers ML"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-10-30",
+    "rl",
+    "orlandomagic55",
+    "5.5",
+    "401909281"
+   ],
+   "kept": 3981856,
+   "voided": [
+    3996275
+   ],
+   "result": "WIN",
+   "label": "Orlando Magic +5.5"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-10-30",
+    "rl",
+    "goldenstatewarriors35",
+    "3.5",
+    "401909285"
+   ],
+   "kept": 3981857,
+   "voided": [
+    3996276
+   ],
+   "result": "WIN",
+   "label": "Golden State Warriors +3.5"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-10-30",
+    "rl",
+    "minnesotatimberwolves75",
+    "-7.5",
+    "401909284"
+   ],
+   "kept": 3981858,
+   "voided": [
+    3996273
+   ],
+   "result": "WIN",
+   "label": "Minnesota Timberwolves -7.5"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sweat_card",
+    "2026-10-31",
+    "rl",
+    "louisville225",
+    "-22.5",
+    "ncaaf_20261031_Stanford_Louisville"
+   ],
+   "kept": 3982404,
+   "voided": [
+    3996205
+   ],
+   "result": "WIN",
+   "label": "Louisville -22.5"
+  },
+  {
+   "wager": [
+    "NCAAF",
+    "sweat_card",
+    "2026-10-31",
+    "rl",
+    "oklahoma35",
+    "-3.5",
+    "ncaaf_20261031_South Carolina_Oklahoma"
+   ],
+   "kept": 3982405,
+   "voided": [
+    3996206
+   ],
+   "result": "LOSS",
+   "label": "Oklahoma -3.5"
+  },
+  {
+   "wager": [
+    "NHL",
+    "sweat_card",
+    "2026-11-04",
+    "potd",
+    "buffalosabresrl",
+    "",
+    "ottawa senators @ buffalo sabres"
+   ],
+   "kept": 4530795,
+   "voided": [
+    4544121
+   ],
+   "result": "LOSS",
+   "label": "Buffalo Sabres RL (NHL LEAN 56/100)"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-11-10",
+    "ml",
+    "laclippersml",
+    "",
+    "401909962"
+   ],
+   "kept": 5490546,
+   "voided": [
+    5492438
+   ],
+   "result": "LOSS",
+   "label": "LA Clippers ML"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-11-11",
+    "ml",
+    "denvernuggetsml",
+    "",
+    "401909970"
+   ],
+   "kept": 5492756,
+   "voided": [
+    5492755
+   ],
+   "result": "WIN",
+   "label": "Denver Nuggets ML"
+  },
+  {
+   "wager": [
+    "NHL",
+    "sweat_card",
+    "2026-11-11",
+    "rl",
+    "edmontonoilers15",
+    "-1.5",
+    "philadelphia flyers @ edmonton oilers"
+   ],
+   "kept": 5492888,
+   "voided": [
+    5495682
+   ],
+   "result": "LOSS",
+   "label": "Edmonton Oilers -1.5"
+  },
+  {
+   "wager": [
+    "NBA",
+    "sweat_card",
+    "2026-11-24",
+    "total",
+    "under2135",
+    "213.5",
+    "401909314"
+   ],
+   "kept": 5525534,
+   "voided": [
+    5525839
+   ],
+   "result": "WIN",
+   "label": "Under 213.5"
+  }
+ ]
+}

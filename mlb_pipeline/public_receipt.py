@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections import namedtuple
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -249,25 +250,143 @@ def _sid(*parts: Any) -> str:
 H_READ = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 
-def _bet_key(sport, surf, gd, row):
-    """One wager's identity, independent of whatever source_id names it.
+#: What _live_keys hands back. NAMED on purpose: this helper already
+#: changed shape once and `backfill_public_receipts` kept the two-value
+#: unpack, so its dedupe was dead for six days
+#: ([[feedback_fix_every_writer_to_the_table]]). A short tuple raises
+#: ValueError loudly; attribute access cannot be read positionally at all.
+LiveKeys = namedtuple('LiveKeys', 'seen bets void_bets '
+                                  'matchup_maps games_of_tuple '
+                                  'void_tuples')
 
-    None when the row carries no game_id: a parlay/ledger slip is identified
-    by its own source_id, and two slips on one night can share a label.
+#: `market` values that name a CARD SLOT rather than a market.
+_SLOT_MARKETS = frozenset({'potd', 'dotd', 'lock', 'dawg',
+                           'bestbet', 'best_bet'})
+#: spellings of one market, so two writers cannot disagree into two keys
+_MARKET_ALIASES = {'spread': 'rl', 'puckline': 'rl', 'pl': 'rl',
+                   'runline': 'rl', 'over/under': 'total'}
+
+
+def canon_market(row) -> str:
+    """The MARKET of a receipt, never a slot name.
+
+    ══ 2026-11-25 · A SLOT NAME IS NOT A MARKET ════════════════════════
+    `market` holds 'potd'/'dotd' for the card's anchor slots, so ONE
+    wager was recorded twice under two markets and no key could see it:
+    2026-11-24 `Under 213.5` as market='total' (id 5525534) and
+    market='potd' (id 5525839), both WIN, so the card's only winner
+    counted twice. Same shape on 2026-11-10, 'ml' beside 'dotd'.
+
+    Read the market off the LABEL SHAPE when the stored value is a slot,
+    which is the same fix `generate_sweat_card._card_market_of` applies
+    to the card itself ([[feedback_parse_a_pick_by_shape_not_vocabulary]]).
     """
-    gid = row.get('game_id')
-    if gid in (None, '', 'None'):
+    m = str(row.get('market') or '').strip().lower()
+    if m not in _SLOT_MARKETS:
+        return _MARKET_ALIASES.get(m, m)
+    lbl = ' '.join(str(row.get('pick_label') or '').split())
+    lbl = re.sub(r'\s*\([^)]*\)\s*$', '', lbl).strip().lower()
+    if re.match(r'^(over|under)\b', lbl):
+        return 'total'
+    if re.search(r'\bml$', lbl):
+        return 'ml'
+    if re.search(r'[+-]\d+(\.\d+)?$', lbl):
+        return 'rl'
+    return m
+
+
+def norm_bet_label(row) -> str:
+    """A receipt label stripped of the decoration writers disagree about."""
+    s = ' '.join(str(row.get('pick_label') or '').split())
+    # "(Jerry 56/100)", "(NHL LEAN 56/100)", "(resolver STRONG)"
+    s = re.sub(r'\s*\((?:jerry|sweat|resolver|ncaab|ncaaf|nfl|nba|nhl|mlb)'
+               r'[^)]*\)\s*$', '', s, flags=re.I)
+    s = re.sub(r'\s*·.*$', '', s)          # "  ·  proj 8.8"
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+
+def _line_token(row) -> str:
+    try:
+        return f'{float(row.get("pick_line")):g}'
+    except (TypeError, ValueError):
+        return ''
+
+
+def _norm_matchup(row) -> str:
+    return ' '.join(str(row.get('matchup') or '').split()).lower()
+
+
+def bet_tuple_no_game(row, sport=None, surf=None, gd=None):
+    """A wager's identity WITHOUT its game: the key for a row that has no
+    game_id and no matchup, which the backfill writes
+    ('ml:|San Diego Padres ML', matchup=None, game_id=None). On its own it
+    cannot distinguish one bet written twice from two games at the same
+    label and line, so screen_for_write only trusts it when the live side
+    holds exactly ONE game for the tuple -- see the use there.
+    """
+    surf = surf if surf is not None else row.get('surface')
+    if str(surf or '') == 'ledger':
         return None
-    lbl = re.sub(r'[^a-z0-9]', '', str(row.get('pick_label') or '').lower())
+    lbl = norm_bet_label(row)
     if not lbl:
         return None
-    line = row.get('pick_line')
-    try:
-        line = f'{float(line):g}'
-    except (TypeError, ValueError):
-        line = ''
-    return (sport, surf, gd, str(gid), str(row.get('market') or ''),
-            lbl, line)
+    return (str(sport if sport is not None else row.get('sport')),
+            str(surf), str(gd if gd is not None else row.get('game_date')),
+            canon_market(row), lbl, _line_token(row))
+
+
+def bet_identity(row, sport=None, surf=None, gd=None, gid_of_matchup=None):
+    """One wager's identity, independent of whatever source_id names it.
+
+    ══ 2026-11-25 · A NULL game_id MADE THIS GUARD DEAD ON THE CARD ════
+    This used to return None whenever `game_id` was NULL, on the stated
+    grounds that such a row is a parlay slip. That is true of `ledger`
+    and false of the Sweat Card, where the potd, dotd, prop and
+    MLB-era total rows ALL carry NULL game_id -- 284 of the 400 newest
+    `sweat_card` receipts. So the bet-level guard was switched off for
+    exactly the rows that duplicate, and 46 wagers are in the table
+    twice ([[feedback_a_null_never_reaches_a_gate]]).
+
+    The game is now resolved in three steps, and the ORDER matters in
+    both directions:
+      1. `game_id` when the row has one.
+      2. else the matchup, resolved through `gid_of_matchup` so a copy
+         carrying only the name lands in the SAME key space as a copy
+         carrying the id -- "game_id when present, else the name" is
+         itself two key spaces, which is the mistake that cost a pair on
+         the card's first fix ([[feedback_dedupe_key_shape_must_match]]).
+      3. else None, and the caller must not judge the row. 2026-10-03
+         published TWO `Under 7.0` bets with NULL game_id on different
+         games; with no discriminator at all they are indistinguishable
+         from one bet written twice, and merging them would delete a
+         real wager. A guard that cannot tell says so.
+
+    `ledger` always returns None: a slip's identity is its own source_id
+    and two slips on one night legitimately share a label.
+    """
+    surf = surf if surf is not None else row.get('surface')
+    if str(surf or '') == 'ledger':
+        return None
+    lbl = norm_bet_label(row)
+    if not lbl:
+        return None
+    game = str(row['game_id']) if row.get('game_id') else None
+    if game is None:
+        mu = _norm_matchup(row)
+        if mu:
+            game = (gid_of_matchup or {}).get(mu) or mu
+    if not game:
+        return None
+    sport = sport if sport is not None else row.get('sport')
+    gd = gd if gd is not None else row.get('game_date')
+    return (str(sport), str(surf), str(gd), canon_market(row),
+            lbl, _line_token(row), game)
+
+
+def _bet_key(sport, surf, gd, row, gid_of_matchup=None):
+    """Back-compatible shim over bet_identity (one identity, one place)."""
+    return bet_identity(row, sport=sport, surf=surf, gd=gd,
+                        gid_of_matchup=gid_of_matchup)
 
 
 def _live_keys(payload: list):
@@ -314,13 +433,18 @@ def _live_keys(payload: list):
     two slips on one night legitimately share a label.
     """
     if not payload:
-        return set(), set()
+        return LiveKeys(set(), set(), set(), {}, {}, set())
     seen = set()
     bets = set()
+    void_bets = set()
+    matchup_maps = {}
+    games_of_tuple = {}
+    void_tuples = set()
     groups = {(str(r.get('sport')), str(r.get('surface')),
                str(r.get('game_date'))) for r in payload}
     for sport, surf, gd in groups:
         off = 0
+        live = []
         while True:
             try:
                 resp = requests.get(
@@ -344,17 +468,61 @@ def _live_keys(payload: list):
                 return None
             if not isinstance(batch, list):
                 return None
-            for row in batch:
-                if str(row.get('result') or '').strip().lower() == 'void':
-                    continue
-                seen.add((sport, surf, gd, str(row.get('source_id'))))
-                bk = _bet_key(sport, surf, gd, row)
-                if bk:
-                    bets.add(bk)
+            live += batch
             if len(batch) < 1000:
                 break
             off += 1000
-    return seen, bets
+        # Resolve matchup -> game_id across EVERY row for this
+        # (sport, surface, date) -- the live rows and the payload both --
+        # before keying anything. A copy carrying only the matchup and a
+        # copy carrying the id must land in ONE key space, or the guard
+        # compares them and finds nothing
+        # ([[feedback_dedupe_key_shape_must_match]]).
+        gid_of_matchup = {}
+        for row in live + [r for r in payload
+                           if (str(r.get('sport')), str(r.get('surface')),
+                               str(r.get('game_date'))) == (sport, surf, gd)]:
+            mu = _norm_matchup(row)
+            if mu and row.get('game_id'):
+                gid_of_matchup.setdefault(mu, str(row['game_id']))
+        matchup_maps[(sport, surf, gd)] = gid_of_matchup
+        for row in live:
+            voided = str(row.get('result') or '').strip().lower() == 'void'
+            if not voided:
+                seen.add((sport, surf, gd, str(row.get('source_id'))))
+            # ══ 2026-11-25 · A VOID ROW LICENSED AN ENDLESS RE-MINT ════
+            # Voided rows used to be skipped here entirely, so the bet was
+            # invisible to the guard and the next capture wrote it again.
+            # Measured today: 28,950 duplicate rows, one wager
+            # ('South Florida @ Saint Joseph's Under 155.5', source_id
+            # 18881) present EIGHTY-EIGHT times, re-minted on every run
+            # for a fortnight.
+            #
+            # Worse, it makes a dedupe impossible to land: voiding a
+            # duplicate is exactly how dedupe_card_same_bet_twice.py and
+            # the receipt cleanup correct the record, and the very next
+            # capture would mint it straight back.
+            #
+            # The exemption existed so a voided receipt could be replaced
+            # by the CORRECT SIDE, and that still works: a replacement
+            # carries a different label or line, so a different bet key.
+            # 297 of the table's void+live groups differ in label (real
+            # replacements, unaffected); 106 are identical (the re-mints
+            # this closes). Only an IDENTICAL wager is refused, and the
+            # skip is logged rather than silent so a case we have not
+            # thought of is visible instead of mysterious.
+            bk = _bet_key(sport, surf, gd, row, gid_of_matchup)
+            if bk:
+                bets.add(bk)
+                if voided:
+                    void_bets.add(bk)
+                bt = bet_tuple_no_game(row, sport, surf, gd)
+                if bt:
+                    games_of_tuple.setdefault(bt, set()).add(bk[-1])
+                    if voided:
+                        void_tuples.add(bt)
+    return LiveKeys(seen, bets, void_bets, matchup_maps,
+                    games_of_tuple, void_tuples)
 
 
 #: markets whose published NUMBER has to be identical across surfaces
@@ -424,6 +592,107 @@ def frozen_quote(sport: str, game_id, market: str, side: str | None = None):
             'published_at': x.get('published_at'),
         }
     return None
+
+def screen_for_write(rows: list, label: str = '', quiet: bool = False):
+    """The rows of `rows` that are not already recorded. (fresh, stats).
+
+    ══ 2026-11-25 · THE GUARD HAS TO LIVE WHERE EVERY WRITER PASSES ════
+    `public_receipts` has four inserters. Two run on a schedule --
+    capture() for all eight surfaces and backfill_public_receipts.py
+    nightly over a FOURTEEN DAY window -- and they screened their rows
+    with two copies of the same logic, which is how one of them kept a
+    two-value unpack of a helper that returns four and silently stopped
+    deduping for six days. The other two (receipt_divergence,
+    replace_bare_spread_receipts) are manual repair tools that void a row
+    and replace it with a DIFFERENT side, which this screen permits.
+
+    Returns None when the live read fails; the caller must then refuse to
+    write, because an empty "already recorded" set reads as "nothing
+    exists yet" and duplicates the whole card.
+    """
+    stats = {'already': 0, 'dup_bet': 0, 'void_blocked': 0, 'in_batch': 0}
+    keys = _live_keys(rows)
+    if keys is None:
+        return None, stats
+    fresh, batch_bets, batch_tuples = [], set(), set()
+    for r in rows:
+        grp = (str(r.get('sport')), str(r.get('surface')),
+               str(r.get('game_date')))
+        if grp + (str(r.get('source_id')),) in keys.seen:
+            stats['already'] += 1
+            continue
+        bk = _bet_key(grp[0], grp[1], grp[2], r, keys.matchup_maps.get(grp))
+        if bk and bk in keys.bets:
+            # the same wager under another source_id — see _live_keys
+            stats['dup_bet'] += 1
+            if bk in keys.void_bets:
+                stats['void_blocked'] += 1
+            continue
+        if bk is None:
+            # ══ NO game_id AND NO matchup: the backfill's own rows ══════
+            # Judge it on the game-less tuple, but ONLY when the live side
+            # holds exactly one game for that tuple. With two it is
+            # genuinely ambiguous -- 2026-10-03 published two `Under 7.0`
+            # bets on different games -- and refusing then would delete a
+            # real wager, which is worse than recording one twice. A guard
+            # that cannot tell says so rather than guessing.
+            bt = bet_tuple_no_game(r, grp[0], grp[1], grp[2])
+            known = keys.games_of_tuple.get(bt) if bt else None
+            if known and len(known) == 1:
+                stats['dup_bet'] += 1
+                if bt in keys.void_tuples:
+                    stats['void_blocked'] += 1
+                continue
+            if known and len(known) > 1:
+                stats['ambiguous'] = stats.get('ambiguous', 0) + 1
+            if bt:
+                if bt in batch_tuples:
+                    stats['in_batch'] += 1
+                    continue
+                batch_tuples.add(bt)
+            fresh.append(r)
+            continue
+        # ══ THE BATCH ITSELF COULD CARRY THE BET TWICE ══════════════════
+        # Every check above compares against rows ALREADY in the table, so
+        # one payload holding the same wager twice inserted it twice --
+        # which is exactly what a card with one bet in two slots hands
+        # this function. 2026-10-03 shows the signature: ids 810367 and
+        # 810368, written in one batch at the same published_at. A guard
+        # that only looks at the database cannot catch its own caller
+        # ([[feedback_guard_belongs_at_the_chokepoint]]).
+        if bk and bk in batch_bets:
+            stats['in_batch'] += 1
+            continue
+        if bk:
+            batch_bets.add(bk)
+        fresh.append(r)
+    if not quiet:
+        tag = f' ({label})' if label else ''
+        if stats['already']:
+            print(f'  receipts{tag}: {stats["already"]} already recorded, '
+                  f'left untouched')
+        if stats['dup_bet']:
+            print(f'  receipts{tag}: {stats["dup_bet"]} row(s) already live '
+                  f'under a different source_id, not duplicated')
+        if stats['void_blocked']:
+            # Stated, never silent: the one case where refusing could be
+            # wrong is a bet we voided and genuinely meant to republish.
+            print(f'  receipts{tag}: {stats["void_blocked"]} of those are '
+                  f'VOID in the table — refusing to re-mint an identical '
+                  f'voided wager; a replacement on another side or line is '
+                  f'unaffected')
+        if stats['in_batch']:
+            print(f'  receipts{tag}: {stats["in_batch"]} row(s) were the '
+                  f'SAME wager twice within one payload, written once')
+        if stats.get('ambiguous'):
+            # Loud on purpose: these are the rows no key can judge, and
+            # they are where a future duplicate would come from.
+            print(f'  ⚠ receipts{tag}: {stats["ambiguous"]} row(s) carry no '
+                  f'game_id and no matchup on a label that already spans '
+                  f'2+ games — written, because refusing could delete a '
+                  f'real wager. Set matchup on these at the source.')
+    return fresh, stats
+
 
 def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             quiet: bool = False, mode: str = 'live') -> dict:
@@ -516,38 +785,19 @@ def capture(rows: Iterable[dict], surface: str, dry_run: bool = False,
             print(f'  [DRY] would capture {len(payload)} {mode} '
                   f'receipt(s) → {surface}')
         return out
-    # First-write-wins enforced in code, not by ON CONFLICT — see _live_keys
-    # for why the partial index of 20261025a cannot be an arbiter here.
-    _keys = _live_keys(payload)
-    if _keys is None:
+    # First-write-wins enforced in code, not by ON CONFLICT — see
+    # _live_keys for why the partial index of 20261025a cannot be an
+    # arbiter here, and screen_for_write for the one screen every writer
+    # shares.
+    fresh, _st = screen_for_write(payload, label=surface, quiet=quiet)
+    if fresh is None:
         print(f'  ⚠ receipts ({surface}): cannot verify what is already '
               f'recorded — refusing to write rather than duplicate the card')
         out['failed'] = len(payload)
         return out
-    existing, live_bets = _keys
-    fresh, dup_bets = [], 0
-    for r in payload:
-        ident = (str(r.get('sport')), str(r.get('surface')),
-                 str(r.get('game_date')), str(r.get('source_id')))
-        if ident in existing:
-            continue
-        bk = _bet_key(str(r.get('sport')), str(r.get('surface')),
-                      str(r.get('game_date')), r)
-        if bk and bk in live_bets:
-            # same wager, different source_id — see _live_keys
-            dup_bets += 1
-            continue
-        fresh.append(r)
-    if dup_bets and not quiet:
-        print(f'  receipts ({surface}): {dup_bets} row(s) already live under '
-              f'a different source_id, not duplicated')
-        out['dup_bet'] = dup_bets
-    already = len(payload) - len(fresh)
-    if already:
-        out['already'] = already
-        if not quiet:
-            print(f'  receipts ({surface}): {already} already recorded, '
-                  f'left untouched')
+    for _k in ('already', 'dup_bet', 'void_blocked', 'in_batch'):
+        if _st.get(_k):
+            out['in_batch_dup' if _k == 'in_batch' else _k] = _st[_k]
     if not fresh:
         return out
 
@@ -641,7 +891,19 @@ def _side_for_receipt(it: dict, market: str, prop_side):
                 return 0
             if head.startswith(t):
                 return 2                      # "Baylor -6" vs home "Baylor"
-            if _re.search(rf'{_re.escape(t)}', head):
+            # ══ 2026-11-25 · THIS \b WAS A LITERAL BACKSPACE ══════════
+            # Written as a real 0x08 byte rather than the regex word
+            # boundary, so `head` could never contain it and this
+            # branch returned 0 for every label. _side_for_receipt
+            # therefore resolved a side ONLY when the label STARTS
+            # with the team name, and scored 0-0 otherwise -- which
+            # falls through to the caller's own fallback instead of
+            # the answer this function had. Found 2026-11-25 by a
+            # test that caught the same corruption in canon_market
+            # one screen above; it is pre-existing, not from that
+            # change. A regex that cannot match is invisible on read
+            # ([[feedback_a_handler_sentinel_is_not_a_dead_expression]]).
+            if _re.search(rf'\b{_re.escape(t)}\b', head):
                 return 1                      # whole word elsewhere
             return 0
         sh, sa = _score(home), _score(away)

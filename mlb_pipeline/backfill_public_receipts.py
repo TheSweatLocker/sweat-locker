@@ -333,33 +333,34 @@ def upsert_batch(rows: list[dict], dry_run: bool = False) -> int:
     # two (feedback_fix_every_writer_to_the_table). The shared helper
     # changed shape and the unpack is the contract; a tuple used as a
     # membership target fails SILENTLY, which is why it ran six days.
-    from public_receipt import _bet_key as _bk, _live_keys as _lk
-    _keys = _lk(rows)
-    if _keys is None:
+    # ══ 2026-11-25 · THE SCREEN IS NOW SHARED, NOT COPIED ═══════════════
+    # This block used to re-implement capture()'s screening, which is how
+    # it kept a TWO-value unpack of a helper that returns four and stopped
+    # deduping for six days (the note above). Both scheduled writers now
+    # call ONE function, so the next shape change cannot leave one of them
+    # behind (feedback_fix_every_writer_to_the_table).
+    #
+    # This writer is also the one that MADE the duplicates. It runs nightly
+    # over a 14-day window and reconstructs rows from card blobs, so its
+    # rows carry game_id=None and matchup=None -- and _bet_key used to
+    # return None for a NULL game_id, so the wager-level check it added
+    # here was dead on precisely the rows it writes. 46 wagers landed in
+    # the table twice, 48 extra graded rows, every one of them this
+    # writer's second copy under a composed source_id
+    # ('ml:|San Diego Padres ML' beside 'ml:6da40e91...').
+    from public_receipt import screen_for_write
+    fresh, _st = screen_for_write(rows, label='backfill')
+    if fresh is None:
         # The dedupe read failed. An empty set would read as "nothing exists"
         # and duplicate every receipt, so refuse instead.
         print('  ⚠ batch write skipped: could not read existing receipts')
         return 0
-    existing, live_bets = _keys
-    fresh, dup_bets = [], 0
-    for r in rows:
-        ident = (str(r.get('sport')), str(r.get('surface')),
-                 str(r.get('game_date')), str(r.get('source_id')))
-        if ident in existing:
-            continue
-        # Same wager under a different source_id is already recorded --
-        # the check capture() makes, which this writer never did.
-        _k = _bk(str(r.get('sport')), str(r.get('surface')),
-                 str(r.get('game_date')), r)
-        if _k and _k in live_bets:
-            dup_bets += 1
-            continue
-        fresh.append(r)
     # Print the denominator, always. A silent `return 0` reads identically
     # whether the dedupe worked or died again
     # (feedback_green_step_that_writes_nothing).
     print(f'  dedupe: {len(rows)} reconstructed, {len(rows) - len(fresh)} '
-          f'already live ({dup_bets} under another source_id), '
+          f'already live ({_st["dup_bet"]} under another source_id, '
+          f'{_st["void_blocked"]} voided, {_st["in_batch"]} dup in batch), '
           f'{len(fresh)} to write')
     if not fresh:
         return 0
