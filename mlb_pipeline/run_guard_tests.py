@@ -64,6 +64,13 @@ SUITES = [
     # longer licenses an endless re-mint. Offline, pure functions only.
     ('receipt bet identity + write screen',
      [sys.executable, 'test_receipt_bet_identity.py']),
+    # The LR shadow must be RECORDED even when the model abstains, or the
+    # POTD's LR-confidence gate reads None and admits the candidate
+    # unchecked -- NBA spreads were blind on 23 of 25. And a recorded
+    # ~0.50 must not be read as a 0.50 verdict, or the gate refuses every
+    # abstention. Both halves pinned here; stubs the model, writes nothing.
+    ('LR shadow recorded on abstention',
+     [sys.executable, 'test_lr_shadow_recorded.py']),
 ]
 
 

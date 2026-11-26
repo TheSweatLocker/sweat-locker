@@ -1206,7 +1206,11 @@ def run(game_date: str | None = None, threshold: int = 70,
     # priced survived the gates. Ranking is otherwise UNCHANGED -- the
     # measurement says the gain is the dog refusal, and every re-ranking
     # that scored higher (F, G) inverted between halves.
-    eligible.sort(key=lambda r: (_potd_price_missing(r),
+    # `_lr_unverified` first: a pick the LR gate could not judge ranks below
+    # one it cleared, for the same reason an unpriced pick does. Both are
+    # demotions, not refusals, so a thin night still produces a POTD.
+    eligible.sort(key=lambda r: (bool(r.get('_lr_unverified')),
+                                 _potd_price_missing(r),
                                  -_cs.rank_key(r.get("sport"),
                                                r.get("conviction"))))
 
@@ -1232,6 +1236,7 @@ def run(game_date: str | None = None, threshold: int = 70,
     # which never existed; real path is pp["_lr_ml_shadow"]["p_home_win"].
     # Gate was silently no-op across entire slate before this fix.
     lr_gated = []
+    lr_unverified = []
     lr_skipped = []
     coherence_skipped = []   # refused for contradicting our own projection
     for r in eligible:
@@ -1314,7 +1319,28 @@ def run(game_date: str | None = None, threshold: int = 70,
         ml_shadow = pp.get("_lr_ml_shadow") or {}
         tot_shadow = pp.get("_lr_total_shadow") or {}
         p_support = None
-        if call_mkt == "ml" and ml_shadow.get("p_home_win") is not None:
+        # ══ 2026-11-26 · AN ABSTENTION IS NOT A 0.50 VERDICT ═════════════
+        # From today the LR shadow is recorded even when the model lands in
+        # its coin-flip band and declines to pick a side, so this gate can
+        # finally see those games -- NBA spreads were 23 of 25 blind.
+        # But a recorded p of ~0.50 must NOT be read as "the model gives
+        # this 50% support" and refused: the rl branch below wants >= 0.55
+        # and the ml branch >= 0.60, so every abstention would be rejected.
+        #
+        # That is the error `defensive_gates` already refuses to make on
+        # the other side of the wall, in Andy's 2026-10-29 ruling: "a coin
+        # flip is not evidence against a measured edge. A second model
+        # landing in [0.45, 0.55] means THAT model has no opinion; it is
+        # not evidence the first one is wrong." Treating it as a verdict
+        # here would re-introduce the same mistake in the POTD
+        # ([[feedback_unmeasured_signal_must_not_outweigh_measured]]).
+        #
+        # So an abstention is UNJUDGED: the candidate is demoted below
+        # every pick the gate actually cleared, exactly like a missing
+        # shadow, and never refused on it.
+        if pp.get("_lr_abstained"):
+            p_support = None
+        elif call_mkt == "ml" and ml_shadow.get("p_home_win") is not None:
             p_home = float(ml_shadow["p_home_win"])
             p_support = p_home if call_side == "HOME" else (1 - p_home)
         elif call_mkt == "total" and tot_shadow.get("p_over") is not None:
@@ -1340,6 +1366,32 @@ def run(game_date: str | None = None, threshold: int = 70,
             ct = (r.get('call_text') or '?')[:30]
             lr_skipped.append(f"{ct} p={p_support:.2f}")
             continue
+        # ══ 2026-11-26 · NO SHADOW MEANT NO GATE, SILENTLY ═══════════════
+        # `p_support` stays None whenever the game carries no LR shadow for
+        # the market being picked, and the line below then admitted the
+        # candidate UNCHECKED with nothing said in the log. That is the
+        # whole shape of a null never reaching a gate
+        # ([[feedback_a_null_never_reaches_a_gate]]), and it is not rare:
+        # measured 2026-11-25, NHL totals carry an applicable shadow on
+        # 0 of 10 picks and NBA spreads on 3 of 20, so on those nights the
+        # POTD's own confidence gate was dark.
+        #
+        # It is NOT fixed by refusing them. NHL has no total model at all
+        # (`_LR_SHADOW_SPORTS` marks total: False), so a fail-closed gate
+        # would refuse every NHL total POTD for a model that does not
+        # exist, and a guard must not have a blast radius wider than what
+        # it guards ([[feedback_a_guards_blast_radius]]).
+        #
+        # So an ungated candidate is DEMOTED, never dropped: it is ranked
+        # below every candidate the gate actually cleared and wins a day
+        # only if nothing verified survived. Same remedy, same function,
+        # as the unpriced demotion of 404e9059
+        # ([[feedback_unmeasured_signal_must_not_outweigh_measured]]).
+        r['_lr_unverified'] = p_support is None
+        if p_support is None:
+            lr_unverified.append(
+                f"{(r.get('call_text') or '?')[:30]} — no "
+                f"{call_mkt or '?'} shadow on this game")
         lr_gated.append(r)
     if coherence_skipped:
         print(f"  🚫 POTD coherence gate: refused {len(coherence_skipped)} "
@@ -1349,6 +1401,15 @@ def run(game_date: str | None = None, threshold: int = 70,
     if lr_skipped:
         print(f"  🚫 POTD LR-confidence gate: skipped {len(lr_skipped)} picks with LR support < 0.60")
         for s in lr_skipped[:5]:
+            print(f"      · {s}")
+    if lr_unverified:
+        # Printed whether or not it changes the pick: the defect this closes
+        # was invisible precisely because nothing was printed.
+        print(f"  ⚠ POTD LR gate could not judge {len(lr_unverified)} of "
+              f"{len(lr_gated)} surviving pick(s) — no shadow for that "
+              f"market on that game. Demoted below every gated pick, not "
+              f"dropped.")
+        for s in lr_unverified[:5]:
             print(f"      · {s}")
     eligible = lr_gated
 

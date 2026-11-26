@@ -1387,6 +1387,36 @@ def _apply_ml_lr_override_impl(pp, ctx, model, sport):
                 old_pp['tier'] = 'COVERAGE'
                 old_pp['audit_note'] = f'{sport} LR sees coin flip (p={pred["p_home_win"]:.2f}) — legacy demoted'
                 return old_pp
+            # ══ 2026-11-26 · ABSTAINING LEFT NO RECORD, AND THAT TURNED
+            #                THE POTD's OWN LR GATE OFF ══════════════════
+            # Returning `pp` here is right about the PICK -- an LR coin
+            # flip must not demote a total or spread, which is the ruling
+            # the long note above records. It was wrong about the RECORD:
+            # nothing was stored, so `primary_play` carried no
+            # `_lr_ml_shadow` at all, and the POTD's LR-confidence gate
+            # reads exactly that key. With it absent the gate computed
+            # `p_support = None` and admitted the candidate UNCHECKED,
+            # silently ([[feedback_a_null_never_reaches_a_gate]]).
+            #
+            # Measured 2026-11-25 over six days: NBA spread picks carried
+            # no shadow on 23 of 25, because NBA throws coin flips often
+            # and every one landed here. NFL was 11 of 11 covered only
+            # because its model more often has an opinion.
+            #
+            # So the shadow is now recorded even when the model abstains,
+            # with `_lr_abstained` to mark WHY. No tier, side or label
+            # changes on this path -- it stores what the model thought and
+            # nothing else. A gate cannot judge what was never written
+            # down ([[feedback_the_guard_was_never_asked]]).
+            if isinstance(old_pp, dict):
+                old_pp['_lr_ml_shadow'] = pred
+                old_pp['_lr_abstained'] = {
+                    'p_home_win': pred.get('p_home_win'),
+                    'why': 'LR in the coin-flip band; the pick is not an ML, '
+                           'so the tier is untouched and only the shadow is '
+                           'recorded',
+                }
+                return old_pp
             return pp
         # 2026-09-03 JUICE CAP (user directive): if LR wants ML but the
         # side's odds are worse than -300, skip the ML override —
