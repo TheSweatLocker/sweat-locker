@@ -415,7 +415,26 @@ def dedupe_one_bet_per_slot(picks, where=''):
                   f'doubleheader not a duplicate')
             out.extend(grp)
             continue
+        # ══ 2026-11-25 · SORTING ON TIER ALONE DROPPED THE POTD ══════
+        # Caught by the floor regression, in the OTHER writer of this same
+        # pair: dedupe_card_same_bet_twice.py got this fix an hour earlier
+        # and the generator did not
+        # ([[feedback_fix_every_writer_to_the_table]]).
+        #
+        # The 2026-11-24 duplicate was `Under 213.5` as the POTD (tier
+        # LEAN) and as a STRONG total. Ranking on tier keeps the STRONG
+        # copy and drops the POTD -- so the card holds the BET but no
+        # item typed `potd`, which is what the dashboard POTD slot and
+        # reconcile_card_recap_to_receipts key on. That reconciler seeds
+        # its `have` set from the LABEL, so a POTD missing from top_8 is
+        # exactly the state that made it append the same play a second
+        # time on 2026-11-10 ('LA Clippers ML ML').
+        #
+        # The flagship play is the copy that stays, whatever tier it
+        # carries. A display tier is not a precedence
+        # ([[feedback_a_display_label_became_a_gating_tier]]).
         grp = sorted(grp, key=lambda p: (
+            str(p.get('type') or '').strip().lower() in _CARD_SLOT_TYPES,
             _TIER_RANK_CARD.get(str(p.get('tier') or '').upper(), 0),
             float(p.get('conviction') or 0)), reverse=True)
         out.append(grp[0])
@@ -426,6 +445,185 @@ def dedupe_one_bet_per_slot(picks, where=''):
               + ', '.join(repr(str(d.get('label') or d.get('pick')))
                           + f' (tier={d.get("tier")})' for d in grp[1:]))
     return out
+
+
+def _card_player_of(pick):
+    """The player a card prop is about, or '' for a game-side pick.
+
+    Card props carry their identity in `source_key` as
+    `player|prop_type|line` (the tuple the resolver grades on); some
+    carry `player_name` as well. Read both, prefer the explicit field.
+    """
+    nm = str(pick.get('player_name') or '').strip()
+    if nm:
+        return nm.lower()
+    sk = str(pick.get('source_key') or '')
+    if '|' in sk:
+        return sk.split('|')[0].strip().lower()
+    return ''
+
+
+def apply_card_floor(picks, floor, bench, validate=None, where='',
+                     weak_floor=None):
+    """Refill a card shortened by the caps, from the bench, best ROI first.
+
+    ══ 2026-11-25 · A CAP THAT ONLY SUBTRACTS IS A DIFFERENT GUESS ══════
+    See CARD_FLOOR. The DotD cut and the prop cap are both right on the
+    evidence, but applied alone they put ten of the last thirty-one cards
+    at 1-3 picks. This puts the slots back from the BENCH -- picks that
+    already cleared every gate -- in the order the surfaces actually
+    return, so the card refills with the best thing available rather than
+    the thing that happened to be in the slot.
+
+    Three refusals, each one a defect we have already shipped:
+
+     * ONE PLAY PER GAME for anything game-side. The fade loop learned
+       this the hard way -- it put Brooklyn +7.5 on the same game whose
+       Pistons -8.5 the card already held, and a card that contradicts
+       itself is worse than a card one play shorter. Props are exempt
+       because two different players in one game are two different bets,
+       which is the rule curate_top_8 already follows.
+     * ONE PROP PER PLAYER, because that is the hole the cap was closing:
+       Daniss Jenkins at 24.5 AND 27.5 on 2026-11-24.
+     * NOTHING A DOWNSTREAM GATE WILL REMOVE. `validate` is handed each
+       candidate and must return it for the fill to stand. The unified
+       floor shipped exactly this bug -- it filled a slot with `Over
+       43.5`, which the withdrawal gate then removed, so the card came
+       back at 2 of a floor of 4 having "filled"
+       ([[feedback_gate_the_stored_row_not_the_inflight_row]]).
+
+    Returns the (possibly longer) list. Never exceeds `floor`, never
+    loosens a gate, and stops when the bench is dry -- a short card is an
+    honest outcome and the log says which rungs it tried.
+    """
+    picks = [p for p in (picks or [])]
+    floor = floor or 0
+    weak_floor = floor if weak_floor is None else min(weak_floor, floor)
+    if not floor or len(picks) >= floor:
+        return picks
+    bench = bench or {}
+    if not any(bench.get(k[0]) for k in CARD_FLOOR_LADDER):
+        print(f'  🪑 {where}{len(picks)} picks, floor {floor}, and the bench '
+              f'is EMPTY — a short card is the honest answer tonight, not a '
+              f'padded one')
+        return picks
+
+    # Resolve matchup -> game_id across the card AND the bench before
+    # keying anything, so "game_id when present, else the matchup string"
+    # cannot open a second key space
+    # ([[feedback_dedupe_key_shape_must_match]]).
+    gid_of_game = {}
+    for p in picks + [c for k, _r, _n, _s in CARD_FLOOR_LADDER
+                      for c in (bench.get(k) or [])]:
+        g = ' '.join(str(p.get('game') or '').split()).lower()
+        if g and p.get('game_id'):
+            gid_of_game.setdefault(g, str(p['game_id']))
+
+    have_keys = {k for k in (_card_bet_key(p, gid_of_game) for p in picks)
+                 if k}
+    have_games = {str(p.get('game_id')) for p in picks if p.get('game_id')}
+    have_players = {n for n in (_card_player_of(p) for p in picks) if n}
+    added, _stage_held = [], set()
+    for key, roi, n, stage in CARD_FLOOR_LADDER:
+        # A rung measured below breakeven stops at CARD_FLOOR_WEAK. This is
+        # the line between RESCUING a card and PADDING one.
+        target = weak_floor if stage == 'weak' else floor
+        if len(picks) >= target:
+            if (bench.get(key) or []) and len(picks) < floor:
+                _stage_held.add(key)
+                print(f'    ↻ {where}floor: {len(bench[key])} '
+                      f'{key.upper()} candidate(s) left on the bench — '
+                      f'that surface measures {roi} on n={n} and the card '
+                      f'is already at {len(picks)} (its limit is '
+                      f'{target}); a shorter card beats a losing slot')
+            continue
+        for cand in (bench.get(key) or []):
+            if len(picks) >= target:
+                break
+            lbl = str(cand.get('label') or cand.get('pick') or '')[:46]
+            is_prop = str(cand.get('type') or '').lower() == 'prop'
+            bk = _card_bet_key(cand, gid_of_game)
+            if bk and bk in have_keys:
+                print(f'    ↻ {where}floor SKIP {lbl!r} — the card already '
+                      f'holds that bet')
+                continue
+            cg = str(cand.get('game_id') or '')
+            if not is_prop and cg and cg in have_games:
+                print(f'    ↻ {where}floor SKIP {lbl!r} — the card already '
+                      f'plays game {cg}')
+                continue
+            pl = _card_player_of(cand)
+            if is_prop and pl and pl in have_players:
+                print(f'    ↻ {where}floor SKIP {lbl!r} — {pl} is already '
+                      f'on the card')
+                continue
+            if _card_market_blocked(cand):
+                print(f'    ↻ {where}floor SKIP {lbl!r} — '
+                      f'CARD_INELIGIBLE_MARKETS')
+                continue
+            # ── the floor takes a STRICTER bar than an earned slot ──
+            # drop_overjuiced_ml below allows down to CARD_ML_JUICE_MAX
+            # (-300), which is the right bar for a pick that WON its slot
+            # on merit. A floor fill is a weaker claim -- it is there
+            # because a slot would otherwise be empty -- so it takes the
+            # unified floor's bar instead, and that comment settles it:
+            # "a -250 ML needs 71.4% to break even. Filling a slot with
+            # one is worse than leaving the slot empty." Same argument,
+            # same number, and nothing about it is surface-specific
+            # ([[feedback_universal_vs_sport_specific]]).
+            _px = cand.get('odds')
+            try:
+                _pxf = float(_px)
+            except (TypeError, ValueError):
+                _pxf = None
+            # An UNPRICED fill cannot be graded for ROI at all, so it
+            # cannot be assessed later -- which is the whole point of the
+            # bench. The unified floor refuses these for the same reason.
+            if _pxf is None or abs(_pxf) < 100:
+                print(f'    ↻ {where}floor SKIP {lbl!r} — no usable price '
+                      f'({_px!r}); an ungradeable fill cannot be assessed')
+                continue
+            if (str(cand.get('type') or '').lower() == 'ml'
+                    and _pxf <= CARD_FLOOR_ML_MAX):
+                print(f'    ↻ {where}floor SKIP {lbl!r} — {_pxf:+.0f} is '
+                      f'past the floor ML bar ({CARD_FLOOR_ML_MAX:+.0f}); '
+                      f'an empty slot beats a heavy favourite')
+                continue
+            kept = drop_overjuiced_ml([cand], f'{where}floor: ')
+            if kept and validate is not None:
+                kept = validate(kept)
+            if not kept:
+                print(f'    ↻ {where}floor SKIP {lbl!r} — a downstream gate '
+                      f'would remove it, so filling with it is not a fill')
+                continue
+            cand = kept[0]
+            picks.append(cand)
+            added.append((key, lbl, roi, n))
+            if bk:
+                have_keys.add(bk)
+            if cg:
+                have_games.add(cg)
+            if pl:
+                have_players.add(pl)
+            print(f'    🪑 {where}floor +{lbl!r} from the {key.upper()} rung '
+                  f'(that surface measures {roi} on n={n})')
+    if not added and _stage_held:
+        print(f'  🪑 {where}{len(picks)} picks, floor {floor} — the bench '
+              f'holds only {"/".join(sorted(_stage_held))} candidates and '
+              f'the card is already at the weak-rung limit '
+              f'({weak_floor}); held back ON PURPOSE, not refused')
+    elif not added:
+        print(f'  🪑 {where}{len(picks)} picks, floor {floor} — every bench '
+              f'candidate was refused by a rule above; card stays short')
+    elif len(picks) < floor:
+        print(f'  🪑 {where}floor filled {len(added)} slot(s) and stopped at '
+              f'{len(picks)} of {floor} (weak-rung limit {weak_floor}) — '
+              f'short on purpose, not by accident')
+    else:
+        print(f'  🪑 {where}floor filled {len(added)} slot(s) to reach '
+              f'{len(picks)}: '
+              + ', '.join(f'{l!r}<-{k}' for k, l, _r, _n in added))
+    return picks
 
 
 def _card_market_blocked(pick):
@@ -3071,6 +3269,101 @@ try:
 except ValueError:
     CARD_MAX_PROPS = 1
 
+#: ══ 2026-11-25 · THE CAPS YIELD TO A FLOOR, THEY DO NOT CUT ═══════════
+#: Andy, on the DotD/prop caps shipped an hour earlier: "I dont wnat it to
+#: be short forever we will asses how short but we cnat just cit it off
+#: either."
+#:
+#: He is right, and the numbers back him. Measured over the 31 published
+#: cards since 2026-10-26, dropping the DotD and capping props at 1 moves
+#: the MEDIAN card from 5 picks to 4 -- but it puts TEN of 31 days at 1-3
+#: picks. A cap that only ever subtracts is a different guess, not a fix.
+#:
+#: So nothing a gate removes is DISCARDED any more: it goes on the BENCH,
+#: and a floor refills the card from the bench in MEASURED order, best
+#: surface first. The rungs are ordered by the ROI each surface actually
+#: returns on published, priced, graded receipts since 2026-10-25 -- the
+#: same table that justified the caps:
+#:
+#:     fade       +6.26%  (n=139, 77-62)   <- the only positive surface
+#:     overflow   -3.17%  (n=1231) game_read / +0.45% (n=95) sharp_card
+#:     prop      -13.09%  (n=897, 414-483)
+#:     DotD      -26.05%  (n=20, 7-13)     <- last resort
+#:
+#: Two things the floor must NOT do, both already learned the hard way:
+#:
+#:  * It must not loosen a GATE. Every bench candidate already passed the
+#:    30d suppression gate, the odds band, the juice gates and the tier
+#:    rules -- an overflow pick is slot 9, not a refused pick. This is the
+#:    distinction that makes the floor safe where the MIN_CARD_PICKS window
+#:    loop is not: that loop reaches for props the 30d gate REFUSED
+#:    ([[feedback_a_guards_blast_radius]]).
+#:  * It must not fill from a cell measured below breakeven just to hit a
+#:    number. The unified floor's own comment settles this -- "a slot
+#:    filled from a cell we have measured below breakeven is worse than a
+#:    short card". So the floor fills from the bench and STOPS. If the
+#:    bench runs dry the card is short, and it says so in the log. On
+#:    2026-11-03 the card was 1 pick because there was 1 pick; no ladder
+#:    can honestly make that 5.
+#:
+#: CARD_FLOOR=0 switches the floor off; CARD_FLOOR=8 fills every slot it
+#: can. Neither needs a deploy.
+try:
+    CARD_FLOOR = max(0, int(os.environ.get('CARD_FLOOR', '5')))
+except ValueError:
+    CARD_FLOOR = 5
+
+#: The heaviest MONEYLINE a FLOOR fill may carry. Deliberately stricter
+#: than CARD_ML_JUICE_MAX (-300), which governs picks that earned their
+#: slot: -200 is the bar the unified floor already applies, and the
+#: heavy-favourite ML trap is named in CLAUDE.md.
+CARD_FLOOR_ML_MAX = -200.0
+
+#: The refill order, worst-to-best ROI reading UP. Each entry is
+#: (bench key, measured ROI, the n it was measured on) and the string is
+#: printed when the rung fires, so the log always states the evidence for
+#: the slot it just filled rather than asserting one
+#: ([[feedback_comment_asserting_a_measurement]]).
+#: How short the card may get before a rung we have measured BELOW
+#: BREAKEVEN is allowed to fill a slot. This is the number that keeps the
+#: floor from undoing the caps: a FLAT floor of 5 would pad a 3-pick night
+#: straight back up with the props and the DotD we just took off, which is
+#: the 48.1% card we started from.
+#:
+#: So the ladder fills in two stages:
+#:   * fade (+6.26%) and overflow (-3.17%/+0.45%) fill all the way to
+#:     CARD_FLOOR -- they are the surfaces worth publishing.
+#:   * prop (-13.09%) and DotD (-26.05%) only fill up to CARD_FLOOR_WEAK,
+#:     i.e. they rescue a card that is genuinely tiny and never pad one
+#:     that is merely short.
+#:
+#: At 5/3 over the last 31 cards that means: nothing drops below 3 unless
+#: the bench is dry, the thin nights sit at 3-4 on their own merits
+#: instead of 5 with two losing slots, and any night with a spare fade or
+#: a slot-9 pick goes to 5. Raise CARD_FLOOR_WEAK when the bench record
+#: says those surfaces have turned; that is what the card_bench key in the
+#: payload is for.
+try:
+    CARD_FLOOR_WEAK = max(0, int(os.environ.get('CARD_FLOOR_WEAK', '3')))
+except ValueError:
+    CARD_FLOOR_WEAK = 3
+
+#: (bench key, measured ROI, the n, which floor this rung may fill to).
+#: 'full' = CARD_FLOOR, 'weak' = CARD_FLOOR_WEAK.
+CARD_FLOOR_LADDER = (
+    ('fade',     '+6.26%',  139, 'full'),
+    ('overflow',  '-3.17%', 1231, 'full'),
+    ('prop',     '-13.09%',  897, 'weak'),
+    ('dotd',     '-26.05%',   20, 'weak'),
+)
+
+#: Populated by curate_top_8 and the post-pass caps; drained by the floor.
+#: Reset at the top of every curate_top_8 call so it always describes the
+#: window that actually produced the returned card -- the window loop calls
+#: curate_top_8 up to four times and a bench left over from the strict 30d
+#: pass would not match the card built by the loosened one.
+_CARD_BENCH = {'fade': [], 'overflow': [], 'prop': [], 'dotd': []}
+
 #: evidence -> the tier a fade play may claim on the card
 FADE_EVIDENCE_TIER = {'validated': 'STRONG', 'tracking': 'LEAN'}
 
@@ -3255,6 +3548,13 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
         gate would also catch it on current data)
       - hits_over @ 0.5 requires conviction >= 95 (price-aware floor)
     """
+    # The bench describes THIS window's card, so it is cleared here: the
+    # fallback loop calls curate_top_8 up to four times (30d/60d/90d/off)
+    # and a bench surviving from a stricter pass would offer the floor
+    # candidates that belong to a card we threw away.
+    global _CARD_BENCH
+    _CARD_BENCH = {'fade': [], 'overflow': [], 'prop': [], 'dotd': []}
+
     # Pre-filter: drop the always-skip cohorts before any logic touches them
     props = [
         p for p in (props or [])
@@ -3789,11 +4089,12 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
     # See the constant for the measurement: the slot runs 35.0% / -26.05%
     # ROI on n=20 and every DotD also mints a sweat_card receipt, so it
     # moved the card's record. The Dawg SURFACE is untouched.
-    if dawg and not CARD_INCLUDE_DOTD:
-        print(f'  🚫 [card] DotD {str(dawg.get("pick_label") or "")[:40]!r} '
-              f'NOT on the curated card (CARD_INCLUDE_DOTD=0) — '
-              f'dawg surface and tile unchanged')
-    if dawg and CARD_INCLUDE_DOTD:
+    # The item is BUILT whether or not it goes on the card, because the
+    # floor may still need it as its last rung. Building it only inside the
+    # include branch is what made the first cut a hard cut: there was
+    # nothing left to put back. It is assembled here and routed at the
+    # bottom of the block -- card, or bench.
+    if dawg:
         # == 2026-11-10 . THE LABEL READ "LA Clippers ML ML", AND THAT PUT
         # THE SAME PLAY ON THE CARD TWICE ==
         #
@@ -3854,7 +4155,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
         # grades a -1.5 needs the number it graded at
         # (feedback_consensus_line_must_be_posted: the displayed number has
         # to be the one we settle).
-        add({
+        _dawg_item = {
             "type": "DotD",
             "icon": "🐕",
             "label": _dawg_label,
@@ -3867,7 +4168,15 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             "source_table": "daily_dawg",
             "source_key": today_et(),  # game_date is the lookup key
             "narrative_hint": (dawg.get("narrative") or "")[:200],
-        })
+        }
+        if CARD_INCLUDE_DOTD:
+            add(_dawg_item)
+        else:
+            _CARD_BENCH['dotd'].append(_dawg_item)
+            print(f'  🚫 [card] DotD {_dawg_label[:40]!r} off the curated '
+                  f'card (CARD_INCLUDE_DOTD=0, -26.05% on n=20) — BENCHED '
+                  f'as the LAST rung of the floor; dawg surface and tile '
+                  f'unchanged')
 
     # 2.5 FADE — see FADE_CARD_MAX. Placed after the POTD/DotD anchors and
     # before the game-side pool so a fade can never displace an anchor, and
@@ -3876,8 +4185,14 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
     # here rather than shown twice.
     _fade_added = 0
     for _fp in (fades or []):
-        if _fade_added >= FADE_CARD_MAX:
-            break
+        # The cap is applied at the ADD, not here. Breaking out of the loop
+        # at the cap threw away every remaining fade candidate -- and fade
+        # is the ONE surface we publish that makes money (+6.26%, n=139).
+        # Those candidates are now the floor's first rung, so a short card
+        # refills from our best surface before it reaches for a prop or the
+        # DotD. They still have to clear every conflict check below first:
+        # a benched fade that contradicts the card is no more publishable
+        # than an added one.
         _ev = str(_fp.get('evidence') or 'tracking').strip().lower()
         _tier = FADE_EVIDENCE_TIER.get(_ev)
         if not _tier:
@@ -3910,7 +4225,7 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             continue
         _pub = _fp.get('public_pct')
         _why = str(_fp.get('reason') or '').strip()
-        if add({
+        _fade_item = {
             "type": str(_fp.get('market') or 'rl').lower(),
             "icon": "🎯",
             "sport": str(_fp.get('sport') or '').upper(),
@@ -3930,7 +4245,13 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
             "_fade": {"evidence": _ev, "public_pct": _pub,
                       "public_side": _fp.get('public_side'),
                       "books": _fp.get('our_price_books')},
-        }):
+        }
+        if _fade_added >= FADE_CARD_MAX:
+            _CARD_BENCH['fade'].append(_fade_item)
+            print(f'    [card] fade {_fp.get("label")!r} over FADE_CARD_MAX'
+                  f'={FADE_CARD_MAX} — BENCHED as the FIRST rung of the floor')
+            continue
+        if add(_fade_item):
             _fade_added += 1
             print(f'    [card] fade added ({_ev} -> {_tier}): '
                   f'{_fp.get("label")} @ {_fp.get("our_price")} '
@@ -4381,6 +4702,23 @@ def curate_top_8(games, props, potd, dawg, total_edges, gate_window="30d",
         seen_players.add(player)
         add(_build_prop_pick(prop))
 
+    # ══ 2026-11-25 · SLOT 9 IS NOT A REFUSED PICK ═══════════════════════
+    # `picks[:8]` silently dropped the tail. Those are picks that cleared
+    # the SAME 30d suppression gate, odds band, juice gates and tier rules
+    # as slot 8 and simply did not fit -- so when a cap later shortens the
+    # card, they are the honest first thing to put back, and they cost
+    # nothing to keep. This is the whole reason the floor can refill
+    # without loosening a gate.
+    _CARD_BENCH['overflow'] = [p for p in picks[8:]
+                               if str(p.get('type') or '').lower() != 'prop']
+    # Overflow PROPS join the prop rung rather than the overflow rung: the
+    # rung order is by measured surface ROI, and a prop is -13.09% whether
+    # it was slot 3 or slot 11.
+    _CARD_BENCH['prop'].extend(p for p in picks[8:]
+                               if str(p.get('type') or '').lower() == 'prop')
+    if len(picks) > 8:
+        print(f'  🪑 [card] {len(picks) - 8} gated pick(s) past slot 8 '
+              f'BENCHED for the floor (were silently discarded before)')
     return picks[:8]
 
 
@@ -5405,9 +5743,15 @@ def build_card():
     # ([[feedback_a_guards_blast_radius]]).
     #
     # Consequence, stated rather than hidden: on a thin slate the card gets
-    # SHORTER instead of being padded with props. 2026-11-24 would have
-    # published 3 picks, not 7. That is the intended trade -- the three prop
-    # slots it dropped all lost, from a surface running -13.09% on n=897.
+    # SHORTER rather than padded with props. 2026-11-24 goes to 5 slots
+    # from 7, and the two it loses are prop slots that lost.
+    #
+    # It does NOT get cut off, though -- the cut props go on the bench and
+    # CARD_FLOOR/CARD_FLOOR_WEAK decide whether any come back. See
+    # apply_card_floor: a card that would otherwise fall under
+    # CARD_FLOOR_WEAK takes the best benched prop rather than publish two
+    # picks, and a card merely short of CARD_FLOOR refills from fade and
+    # slot-9 overflow instead.
     if CARD_MAX_PROPS >= 0:
         _props_on = [p for p in (top_8_curated or [])
                      if str(p.get('type') or '').lower() == 'prop']
@@ -5428,8 +5772,32 @@ def build_card():
                   + ', dropped '
                   + ', '.join(repr(str(p.get('label'))) + f' (tier={p.get("tier")})'
                               for p in _cut))
+            # The cut props go on the BENCH, not in the bin. They cleared
+            # every gate; they lost a ranking contest to a better prop.
+            # If the card is then under CARD_FLOOR the best of them comes
+            # back, because -13.09% in a slot that would otherwise be
+            # EMPTY is a different question from -13.09% taking a slot a
+            # fade or a game-side pick wanted.
+            _CARD_BENCH['prop'] = (
+                [c for c in _cut]
+                + [c for c in (_CARD_BENCH.get('prop') or [])
+                   if id(c) not in {id(x) for x in _cut}])
             print(f'  ℹ top_8: {len(top_8_curated)} picks after the prop cap '
-                  f'(a shorter card is the intended trade, not a failure)')
+                  f'({len(_cut)} prop(s) benched for the floor)')
+
+    # ══ 2026-11-25 · THE FLOOR: REFILL, DO NOT JUST CUT ══════════════════
+    # Runs AFTER every cap and gate, so it can see the card the reader
+    # would actually have got, and fills from the bench in measured-ROI
+    # order. `validate` is the withdrawal gate, passed in rather than
+    # re-implemented, so the floor cannot fill a slot that gate removes.
+    top_8_curated = apply_card_floor(
+        top_8_curated, CARD_FLOOR, _CARD_BENCH,
+        validate=lambda _c: _drop_withdrawn(_c, 'top_8 floor: '),
+        where='top_8: ', weak_floor=CARD_FLOOR_WEAK)
+    # One more dedupe pass: the floor checks each candidate against the
+    # card as it fills, but the belt costs nothing and this is the writer
+    # that put one bet in two slots for 25 days.
+    top_8_curated = dedupe_one_bet_per_slot(top_8_curated, 'top_8 post-floor: ')
 
     football_picks = drop_overjuiced_ml(football_picks, 'football: ')
 
@@ -6018,6 +6386,44 @@ def build_card():
             if dawg else None
         ),
         "top_8": top_8_curated,               # 🎯 Jerry's Best — the curated 8-pick set
+        # ══ 2026-11-25 · WHAT THE CAPS HELD BACK, SO IT CAN BE ASSESSED ══
+        # Andy: "we will asses how short". This is what makes that a
+        # measurement rather than a feeling, and it needs NO new table.
+        #
+        # Every benched surface already mints its OWN graded receipt
+        # independent of card membership -- verified today: `dawg` has one
+        # receipt a day for ten straight days while the same label also
+        # sat in `sweat_card`; prop_jerry carries n=897 and fade n=139 over
+        # the window. So the only thing missing to compute "the card we
+        # published vs the card we would have published" is WHICH picks the
+        # caps held back on which night. That is this key.
+        #
+        # Join it to public_receipts on (game_date, pick_label) per rung,
+        # and the counterfactual grades itself.
+        "card_bench": {
+            "floor": CARD_FLOOR,
+            "weak_floor": CARD_FLOOR_WEAK,
+            "max_props": CARD_MAX_PROPS,
+            "include_dotd": CARD_INCLUDE_DOTD,
+            "held_back": {
+                _k: [{"label": _c.get("label") or _c.get("pick"),
+                      "sport": _c.get("sport"),
+                      "type": _c.get("type"),
+                      "game": _c.get("game"),
+                      "game_id": _c.get("game_id"),
+                      "odds": _c.get("odds"),
+                      "line": _c.get("line"),
+                      "tier": _c.get("tier"),
+                      "conviction": _c.get("conviction"),
+                      "source_table": _c.get("source_table"),
+                      "source_key": _c.get("source_key")}
+                     for _c in (_CARD_BENCH.get(_k) or [])
+                     # anything the floor promoted is ON the card now, so
+                     # it is not "held back" and must not be counted twice
+                     if not any(_c is _p for _p in (top_8_curated or []))]
+                for _k, _roi, _n, _stage in CARD_FLOOR_LADDER
+            },
+        },
         "top_hits_over": top_hits,
         "top_ks_over": top_ks,
         "top_hits_under": top_under_hits,

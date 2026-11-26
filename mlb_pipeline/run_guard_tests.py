@@ -51,6 +51,13 @@ SUITES = [
      [sys.executable, 'test_receipt_line_guard.py']),
     ('published positions / label parser',
      [sys.executable, 'published_positions.py']),
+    # The card's bet-identity keys and the CARD_FLOOR refill ladder. Pins
+    # the 2026-11-24 duplicate (one bet, two slots, the card's only winner
+    # counted twice) and the two-stage floor, whose job is to keep the
+    # DotD/prop caps from either cutting the card off or quietly undoing
+    # themselves. Offline; verified to import with .env moved aside.
+    ('card dedupe keys + CARD_FLOOR ladder',
+     [sys.executable, 'test_card_floor_and_dedupe.py']),
 ]
 
 
