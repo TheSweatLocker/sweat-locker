@@ -43,6 +43,17 @@ CTX_TABLE = {
     'NBA':   'nba_game_context',
 }
 
+#: Where a finished game's score lives, per sport. Used only to refuse
+#: enriching a game that is already over -- see run_for_sport.
+RESULTS_TABLE = {
+    'MLB':   'mlb_game_results',
+    'NFL':   'nfl_game_results',
+    'NCAAF': 'ncaaf_game_results',
+    'NCAAB': 'ncaab_game_results',
+    'NBA':   'nba_game_results',
+    'NHL':   'nhl_game_results',
+}
+
 
 def _norm(name: str) -> str:
     if not name: return ''
@@ -158,12 +169,94 @@ def run_for_sport(sport: str, game_date: str, season: str, dry_run: bool = False
     trends_by_key = {_norm(t['team']): t for t in trends}
 
     # 2. Today's games
+    # select='*' on purpose: the start-time column is named differently per
+    # sport (commence_time / kickoff_utc) and naming a column a table lacks
+    # answers 400, which would read as "no games today"
+    # ([[feedback_select_star_before_concluding_absent]]).
     r = requests.get(f'{SB}/rest/v1/{ctx_tbl}'
-                     f'?game_date=eq.{game_date}&select=game_id,home_team,away_team',
+                     f'?game_date=eq.{game_date}&select=*',
                      headers=H_READ, timeout=15)
     games = r.json() if r.status_code == 200 else []
     if not games:
         print(f'  [{sport}] no games on {game_date}')
+        return 0, 0, 0
+
+    # ══ 2026-11-26 · NEVER STAMP A POST-GAME AGGREGATE ON A PRE-GAME ROW ══
+    # team_season_trends is the team's season record AS OF NOW. Writing it
+    # onto a row whose game has already been played puts the game's OWN
+    # result inside the feature that is supposed to predict it, and the
+    # *_trend_season signals read exactly these columns.
+    #
+    # MEASURED 2026-11-26 on ncaab_game_context, comparing each stored O/U
+    # sample against the games that had actually FINISHED before that date:
+    # 1,030 of 1,583 team-rows (65.1%) were too large.
+    #   * 853 rows over by 1-5 games -- the aggregate includes the game
+    #     itself. Michigan St.'s 11-05 row reads overs+unders=1 with 0 games
+    #     finished before it, team_trends_updated_at=2026-11-06.
+    #   * ~177 rows over by 27-39 on 2026-11-02, i.e. LAST season's whole
+    #     34-game aggregate stamped on opening week
+    #     ([[feedback_a_rolling_window_outlives_the_season]]).
+    #
+    # That is what the four NCAAB *_trend_season signals were measured on,
+    # at 56.2-60.1% and WEIGHT 1.0, while a walk-forward control rebuilt
+    # from prior games only clears 2 SE in none of twelve variants and
+    # inverts outright on the away side (56.5% -> 42.7%)
+    # ([[feedback_walk_forward_misses_feature_leak]]).
+    #
+    # Two refusals, because one does not cover the other: a PAST date can
+    # never be pre-game, and within today a game that has already tipped is
+    # just as finished. The second is what bites, since this runs late in
+    # the ET day while that day's games are ending.
+    _today_et = _et_today()
+    if str(game_date) < _today_et:
+        print(f'  [{sport}] {game_date} is in the PAST (today is '
+              f'{_today_et}) — refusing to enrich {len(games)} finished '
+              f'game(s); a season aggregate taken now contains their own '
+              f'results')
+        return 0, 0, 0
+    # Within today, the question is not what the clock says but whether the
+    # game is OVER, and the results table answers that without any clock
+    # arithmetic. ncaab_game_context stores `game_time_et` carrying a
+    # +00:00 offset -- a name and an offset that disagree -- and reading it
+    # wrong either skips the whole slate or none of it. A stored SCORE is
+    # unambiguous ([[feedback_resolve_the_slate_not_the_clock]]).
+    #
+    # Matched on an UNORDERED team pair: 42 NCAAB neutral-site games this
+    # season are stored in the opposite orientation to the context row, and
+    # an ordered match would miss every one
+    # ([[feedback_orientation_is_not_a_fact_at_a_neutral_site]]).
+    _res_tbl = RESULTS_TABLE.get(sport)
+    _done = set()
+    if _res_tbl:
+        try:
+            _rr = requests.get(f'{SB}/rest/v1/{_res_tbl}'
+                               f'?game_date=eq.{game_date}&select=*'
+                               f'&limit=1000', headers=H_READ, timeout=20)
+            if _rr.status_code == 200:
+                for _row in (_rr.json() or []):
+                    if _row.get('home_score') is None:
+                        continue
+                    _h, _a = _row.get('home_team'), _row.get('away_team')
+                    if _h and _a:
+                        _done.add(frozenset((_norm(_h), _norm(_a))))
+            else:
+                print(f'  [{sport}] results probe {_rr.status_code} — cannot '
+                      f'tell which games are final; enriching none on '
+                      f'{game_date} rather than risk stamping finals')
+                return 0, 0, 0
+        except Exception as _e:                                # noqa: BLE001
+            print(f'  [{sport}] results probe failed ({_e}) — enriching none')
+            return 0, 0, 0
+    _live = [g for g in games
+             if frozenset((_norm(g.get('home_team', '')),
+                           _norm(g.get('away_team', '')))) not in _done]
+    if len(_live) != len(games):
+        print(f'  [{sport}] skipped {len(games) - len(_live)} game(s) already '
+              f'FINAL — a season aggregate taken now contains their own '
+              f'result')
+    games = _live
+    if not games:
+        print(f'  [{sport}] no unplayed games left to enrich on {game_date}')
         return 0, 0, 0
 
     now_iso = datetime.now(timezone.utc).isoformat()

@@ -98,6 +98,14 @@ SUITES = [
     # partial bar is never STORED, and that nothing is retired.
     ('partial price bar (signal bar vs cross-sport constant)',
      [sys.executable, 'test_partial_price_bar.py']),
+    # A team's season aggregate must never be stamped on a game already
+    # played. 1,030 of 1,583 NCAAB context team-rows (65.1%) stored more
+    # O/U games than had actually finished before that date -- the
+    # *_trend_season signals' own input contained the result it predicts,
+    # and they carried WEIGHT 1.0 on it. Pins both refusals, the unordered
+    # neutral-site match, and that the guard fails CLOSED.
+    ('trend enrichment leak (post-game aggregate)',
+     [sys.executable, 'test_trend_enrich_no_leak.py']),
 ]
 
 
