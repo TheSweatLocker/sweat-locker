@@ -44,11 +44,27 @@ months because "a weight change moves every published pick"):
     MLB 0 of 7    NFL 0 of 2    NBA 0 of 4    NHL 0 of 6
     NCAAF 1 of 33   NCAAB 2 of 10        -> 3 of 62 signals
 
-Every one is a DEMOTION; nothing gains weight. That is the shape that
-matters: this change can only remove phantom edge, never manufacture it.
-The NCAAF one is external:oddscrowd rl, 61.40% n=57, bar 52.38% -> 65.83%,
-weight 0.684 -> 0.000 -- its picks were being priced at a flat -110 when
-they fired around -191.
+Every one of those three was a demotion. 2026-11-27 CORRECTION: the line
+that stood here -- "this change can only remove phantom edge, never
+manufacture it" -- was true of that measurement and is NOT a property of
+the mechanism, and asserting it as one is
+[[feedback_comment_asserting_a_measurement]].
+
+The bar is max(side_baseline, breakeven). A signal firing on DOGS has a
+side baseline well under the flat 58.33% AND its own prices imply less than
+58.33%, so its own bar LOWERS the effective bar and its weight RISES.
+Measured on the live registry: NHL away_goalie_elite_gsaa n=63 hit 60.30%,
+side baseline 45.80%, flat 58.33%, own bar 54.97% -> weight 0.2522 to
+0.5305. That rise is correct -- judging a dog signal against a favourite's
+bar was the defect -- but CORRECTNESS is the reason to ship, not direction.
+The one-sided claim that does hold is pinned below: a price bar can never
+drop the bar below the side baseline.
+
+The NCAAF demotion is external:oddscrowd rl, 61.40% n=57, bar 52.38% ->
+65.83%, weight 0.684 -> 0.000 -- its picks were being priced at a flat -110
+when they fired around -191. NOTE though that external:* signals are class
+external_pick, and _handler_external never reads signal_registry, so a
+price bar on an external row does not reach a pick at all.
 
 WHY A PARTIAL BAR IS CONSERVATIVE HERE, not merely closer: the firings
 that CARRY a price are the lined games, i.e. the majors. The unpriced ones
@@ -165,6 +181,18 @@ chk('a price bar under the side baseline cannot lower it',
     ES.edge_weight(0.70, 100, 'VALIDATED', False, 0.666, 0.666))
 chk('and a price bar above it does raise it',
     ES.edge_weight(0.70, 100, 'VALIDATED', False, 0.666, 0.72), 0.0)
+
+print('== A WEIGHT CAN RISE, AND THAT IS NOT A BUG ==============')
+# The direction is NOT one-directional. A dog signal's own bar sits BELOW
+# the flat 58.33% ml figure, so its effective bar falls and its weight
+# rises. Pinned so the "can only remove edge" claim cannot come back.
+_w_flat_dog = ES.edge_weight(0.6030, 63, 'VALIDATED', False, 0.4580,
+                             R._MARKET_BE_FALLBACK['ml'])
+_w_own_dog = ES.edge_weight(0.6030, 63, 'VALIDATED', False, 0.4580, 0.5497)
+chk('a dog signal GAINS weight against its own cheaper bar',
+    _w_own_dog > _w_flat_dog, True)
+chk('and the gain is real, not a rounding artefact',
+    round(_w_own_dog - _w_flat_dog, 3) > 0.2, True)
 
 print('== NOTHING IS RETIRED =====================================')
 # Andy's standing rule. A demotion must leave a signal able to earn its
