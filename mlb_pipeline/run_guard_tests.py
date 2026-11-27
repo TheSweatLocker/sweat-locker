@@ -131,6 +131,20 @@ SUITES = [
     # Offline; drives the real _score_market, no DB.
     ('manual weight override (signal_registry)',
      [sys.executable, 'test_manual_weight_override.py']),
+    # EVERY SPORT'S PROP RUNG MUST RESOLVE, AND A GAP MUST BE LOUD. The
+    # ladder's last graded result was 2026-11-06: five rungs sat NULL while
+    # their source prop rows were settled, one a PRIME conv-97 Mahomes over
+    # that LOST and read in-app as pending. The qualifier went cross-sport
+    # and _grade_prop_rung still queried only mlb_pipeline_props; its
+    # hand-listed token map covered 14 of the 64 prop_type values the four
+    # tables carry; and its token regex could not match a two-word token
+    # like 'PASS TDS'. All three returned None, which is also what "not
+    # graded yet" looks like, and the step exited 0 so no heartbeat fired.
+    # Pins the per-sport table map, the inverse of the label transform in
+    # place of the map, the legacy MLB labels, the Overton case, and that a
+    # --dry-run writes nothing. Offline; stubs requests.
+    ('ladder prop resolution (every sport, and loud when stuck)',
+     [sys.executable, 'test_ladder_prop_resolution.py']),
 ]
 
 
