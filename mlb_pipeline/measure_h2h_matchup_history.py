@@ -416,6 +416,22 @@ def main() -> int:
             continue
         thin = '   THIN - NO VERDICT' if res['n'] < a.min_cell else ''
         print(f'  {sig}')
+        # ── THE TWO CELLS ARE NOT EQUALLY REACHABLE ──────────────────────
+        # A "4-5 wins" cell cannot fire on a 3-game window; a "0-1 wins"
+        # cell can. So the dominant-home and dominant-away cells differ in
+        # n by an order of magnitude from WINDOW LENGTH alone, not from any
+        # difference in the signals. The production signal reads
+        # h2h_last5_home_wins, a raw count over however many meetings
+        # exist, so it carries the same asymmetry -- this is faithful to
+        # the implementation, and printing it stops the bigger n reading as
+        # the stronger signal
+        # ([[feedback_a_record_is_a_count_verify_the_denominator]]).
+        if cells:
+            wl = [e['n_window'] for e in cells]
+            fullw = sum(1 for w in wl if w == a.window)
+            print(f'      window: mean {sum(wl) / len(wl):.2f} of '
+                  f'{a.window}, full on {fullw} of {len(cells)} '
+                  f'({100.0 * fullw / len(cells):.0f}%)')
         print(f'      n={res["n"]:5d}  hit {res["rate"] * 100:5.1f}%   '
               f'implied {res["implied"] * 100:5.1f}%   '
               f'ROI {res["roi"] * 100:+6.2f}%   '
