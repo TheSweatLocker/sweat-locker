@@ -9,20 +9,36 @@ carries NINE signals that have never been measured: every one UNVALIDATED
 at n in {0, 2, 6}, all riding recommended_weight 0.30, which is a PRIOR and
 not a measurement.
 
-THE REASON THEY ARE UNMEASURED IS NOT A LACK OF HISTORY. It is where the
-history was looked for:
+TWO SEPARATE REASONS THEY LOOK UNMEASURED, AND NEITHER IS A BROKEN WRITER.
 
-    ncaab_game_context    1,195 rows, ALL dated 2026-11-01 or later
-                          h2h_last5_games_played >= 3 on TWENTY-ONE rows
-    ncaab_game_results   12,793 settled games back to 2024-11-04
+1. THE CONDITION IS SEASONAL. h2h eligibility needs prior meetings, and
+   November is NON-CONFERENCE season. Measured share of games with >= 3
+   prior meetings, by month:
 
-The `h2h_last5_*` columns live on the context table, which only covers this
-season, so a signal keyed on them can never accumulate a sample. The
-matchup history is sitting in the results table untouched. This script
-derives it there instead: for every game, the prior meetings between those
-two teams STRICTLY BEFORE that game's date. Walk-forward by construction --
-there is no "as of" bookkeeping to get wrong, because a future game cannot
-have a date before the one being scored.
+       2025-11  0.1%     2026-01  15.6%     2026-03  53.2%
+       2025-12  2.7%     2026-02  51.4%     2026-11  2.4%  <- today
+
+   So the refit's default 90-day window, run in November, sees a condition
+   that fires on 2.4% of the slate. By February it fires on more than half.
+   The n in {0, 2, 6} is the calendar, not a defect -- and the corollary is
+   the live risk: an UNMEASURED 0.30 prior is about to start applying to
+   half the board in roughly two months.
+
+2. THE CONTEXT TABLE CANNOT BE MEASURED FROM, though it fires correctly.
+   `ncaab_game_context` holds 1,195 rows, ALL dated 2026-11-01 or later --
+   context rows exist for current and upcoming games only, so there is no
+   historical row to measure against. The FIRING path is fine:
+   `enrich_team_form_universal.compute_h2h` queries the RESULTS table with
+   `game_date lt.<game_date>` and no season bound, so it already looks back
+   across seasons. (An earlier version of this note said the signals should
+   be rewired to read results. They already do. The gap is measurement, not
+   firing.)
+
+So this script derives the history from `ncaab_game_results` -- 12,793
+settled games back to 2024-11-04 -- taking for every game the prior
+meetings between those two teams STRICTLY BEFORE that game's date.
+Walk-forward by construction: there is no "as of" bookkeeping to get wrong,
+because a future game cannot have a date before the one being scored.
 
 == WHAT IT TESTS ========================================================
 The nine NCAAB h2h signals name EXTREME cells, not a median split. A median
@@ -323,6 +339,26 @@ def main() -> int:
                    else 'UNUSABLE -- no stored market')
         print(f'    {seas:10s} {d["e"]:9d} {d["ats"]:7d} {d["tot"]:7d} '
               f'{d["ml"]:8d}  {verdict}')
+    # WHEN the condition fires, which for a matchup signal is the whole
+    # operational story: non-conference months cannot produce prior
+    # meetings, so a refit run in November measures a near-dormant signal
+    # and a prior set in November goes live on half the board in February
+    # ([[feedback_a_rolling_window_outlives_the_season]],
+    #  [[feedback_a_detector_on_an_out_of_season_sport]]).
+    print('\n  WHEN IT FIRES, BY MONTH (eligibility is seasonal)')
+    by_month_all: dict = collections.Counter()
+    by_month_el: dict = collections.Counter()
+    for g in settled:
+        by_month_all[str(g.get('game_date'))[:7]] += 1
+    for e in eligible:
+        by_month_el[str(e['g'].get('game_date'))[:7]] += 1
+    for m in sorted(by_month_all):
+        tot = by_month_all[m]
+        el = by_month_el.get(m, 0)
+        bar = '#' * int(round(40.0 * el / tot)) if tot else ''
+        print(f'    {m}  games {tot:5d}  eligible {el:5d}  '
+              f'{100.0 * el / tot:5.1f}%  {bar}')
+
     lost = sum(d['e'] for d in per.values() if not (d['ml'] or d['ats']))
     if lost:
         pct = 100.0 * lost / max(len(eligible), 1)
