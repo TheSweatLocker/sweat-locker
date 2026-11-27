@@ -490,6 +490,10 @@ class Opinion:
     # off the same registry row as hit_rate. None = not measured, keep the
     # flat market bar. Read only when ENSEMBLE_PRICE_BAR is on.
     price_be: Optional[float] = None
+    # 2026-11-26: a hand-set weight off the same registry row, already
+    # validated and un-expired by _manual_weight_of. None = use the
+    # measured weight, which is every signal until an override is set.
+    manual_weight: Optional[float] = None
 
 
 @dataclass
@@ -714,24 +718,44 @@ MAX_REGISTRY_AGE_DAYS = 14
 #     NFL        0      6      0      -0.434
 #     NCAAB      0      4      6      -0.447
 #
-# EVERY MOVE IS DOWN -- zero signals gain weight in any sport, and every
-# affected row is `ml`, which is exactly where the flat bar understates
-# the price. MLB and NHL are untouched because their stored bars sit below
-# the bar `max()` already applied. Largest moves:
+# Every move in THAT replay was down -- and two days later that is no
+# longer true, so read the table as a snapshot and not as a property.
 #
-#     ncaab_projected_spread       ml  n=201  75.62%  bar 58.33->73.13
-#                                                     w 0.944 -> 0.340
-#     sharp_split_confirmed_ncaaf  ml  n= 80  70.00%  w 0.816 -> 0.257
-#     power_diff_edge (NFL)        ml  n= 46  78.26%  w 0.804 -> 0.366
-#     external:dimers (NFL)        ml  n= 61  73.77%  w 0.826 -> 0.394
-#     ncaaf_confluence_away        ml  n= 35  65.71%  w 0.549 -> 0.000
-#     external:action (NCAAB)      ml  n= 29  65.52%  w 0.515 -> 0.000
+# ══ 2026-11-27 · CORRECTION. THE DIRECTION IS NOT GUARANTEED ═══════════
+# The line that stood here -- "this change can only remove phantom edge; it
+# cannot manufacture any" -- was the argument for shipping on an offline
+# replay. It was true of the 21 rows above on the night it was written. It
+# is NOT a property of the mechanism, and stating it as one was exactly
+# [[feedback_comment_asserting_a_measurement]]: a sentence asserting a
+# measurement becomes the next reader's design constraint.
 #
-# The three that reach 0.000 sit BELOW the price they fire at, so they were
-# being paid for losing bets. This change can only remove phantom edge; it
-# cannot manufacture any, which is why it ships on an offline replay over
-# the whole registry rather than waiting on live slates. It is the same
-# landing the side baseline took on 2026-10-28.
+# WHY A WEIGHT CAN RISE. The bar is max(side_baseline, breakeven). The flat
+# ml figure is 58.33%, measured on MLB/NHL/NCAAF receipts. A signal that
+# fires on DOGS has a side baseline far below that and its own prices imply
+# less than 58.33%, so swapping flat for its own bar LOWERS the effective
+# bar and the weight goes UP. Measured on the registry as it stands today:
+#
+#     NHL   away_goalie_elite_gsaa  ml n= 63 hit 60.30%
+#         side baseline 45.80%  flat bar 58.33%  OWN bar 54.97%
+#         effective bar 58.33 -> 54.97   w 0.2522 -> 0.5305
+#     NCAAB ncaab_confluence_away   ml n=145 hit 57.20%
+#         side baseline 33.40%  flat bar 58.33%  OWN bar 57.05%
+#         effective bar 58.33 -> 57.05   w 0.0000 -> 0.0247
+#
+# That rise is CORRECT -- judging a dog signal against a favourite's bar
+# was the defect -- but correctness, not one-directionality, is the reason
+# this ships. max() still guarantees the one-sided thing worth claiming: a
+# price bar can never drop the bar BELOW the side baseline, which is pinned
+# in test_partial_price_bar.py.
+#
+# AND TWO ROWS IN THE TABLE ABOVE NEVER REACHED A PICK. `external:dimers`
+# and `external:action` are class `external_pick`, and _handler_external
+# builds its own hit rate and tier off external_source_track_record -- it
+# never calls _resolve_weight_row, so op.price_be is always None there. All
+# 7 external signal_sources rows are on that handler; 16 registry
+# `external:*` rows carry a price bar that this scorer does not read. The
+# replay measured the registry, which is a superset of what the engine
+# consumes.
 #
 # Only 21 rows carry a measured bar at all, because the bar needs 80% price
 # coverage on a signal's firings. Partial-coverage bars now feed the TIER
@@ -745,6 +769,26 @@ MAX_REGISTRY_AGE_DAYS = 14
 _PRICE_BAR_MODE = os.environ.get('ENSEMBLE_PRICE_BAR', '1').strip().lower()
 _PRICE_BE_COL_OK: Optional[bool] = None
 _PRICE_BAR_SHADOW: list = []
+
+# ══ 2026-11-26 · THE MANUAL WEIGHT OVERRIDE ═════════════════════
+# Andy 2026-11-26: "hand wigthing stats absed on previous matchups is
+# legit data analytics" -- after I told him hand-setting a weight does
+# nothing. He was right; `recommended_weight` simply was not wired to
+# anything (this file names it ONCE, in the select at _load_registry, and
+# never reads the value). signal_registry.manual_weight is the lever,
+# added by 20261126a and honoured here.
+#
+# DEFAULT ON, because with no override set it cannot change a pick: the
+# branch needs weight_source='manual' AND a non-NULL manual_weight, and
+# zero rows carry either until someone runs set_signal_weight.py.
+# REVERT is one env var: ENSEMBLE_MANUAL_WEIGHT=0.
+_MANUAL_WEIGHT_MODE = os.environ.get(
+    'ENSEMBLE_MANUAL_WEIGHT', '1').strip().lower()
+_MANUAL_W_COL_OK: Optional[bool] = None
+# Every override that actually moved a weight this process, plus every one
+# REFUSED for being ANTI_VALIDATED or expired. A lever nobody can see
+# applied is the shape of [[feedback_a_lens_can_be_dark_behind_a_404]].
+_MANUAL_WEIGHT_APPLIED: list = []
 
 
 def _price_be_column_exists() -> bool:
@@ -776,6 +820,46 @@ def _price_be_column_exists() -> bool:
             print(f'  [ensemble] price-bar probe failed '
                   f'{type(e).__name__}: {e} -- price bar INACTIVE')
     return _PRICE_BE_COL_OK
+
+
+def _manual_weight_column_exists() -> bool:
+    """One probe for signal_registry.manual_weight. Cached per process.
+
+    NOT OPTIONAL, and not defensive habit. Naming an unknown column in a
+    PostgREST select is a 400; fetch_all_rows answers a 400 by returning
+    the rows it HAS, which is none; an empty signal_registry raises
+    nothing. Every signal in all six sports would then fall to
+    UNMEASURED_FLOOR and the engine would price the whole board off a
+    0.20 constant, silently ([[feedback_zero_rows_is_a_wiring_error]],
+    [[feedback_fallback_select_must_degrade_per_column]]).
+
+    Returns False when 20261126a has not been applied, when the probe
+    itself fails, and when the override is switched off -- there is no
+    reason to widen the select for a column nothing will read.
+    """
+    global _MANUAL_W_COL_OK
+    if _MANUAL_W_COL_OK is not None:
+        return _MANUAL_W_COL_OK
+    if _MANUAL_WEIGHT_MODE in ('0', '', 'off', 'false'):
+        _MANUAL_W_COL_OK = False
+        return False
+    _MANUAL_W_COL_OK = False
+    if _SB:
+        try:
+            r = requests.get(f'{_SB}/rest/v1/signal_registry',
+                             headers=_H_READ, timeout=15,
+                             params={'select': 'manual_weight,weight_source,'
+                                               'weight_review_at',
+                                     'limit': 1})
+            _MANUAL_W_COL_OK = (r.status_code == 200)
+            if not _MANUAL_W_COL_OK:
+                print('  [ensemble] signal_registry.manual_weight is absent '
+                      f'({r.status_code}) -- manual weight override '
+                      'INACTIVE; apply migration 20261126a')
+        except Exception as e:                                  # noqa: BLE001
+            print(f'  [ensemble] manual-weight probe failed '
+                  f'{type(e).__name__}: {e} -- override INACTIVE')
+    return _MANUAL_W_COL_OK
 
 
 def _load_registry() -> dict:
@@ -826,6 +910,8 @@ def _load_registry() -> dict:
                 'last_computed_at,updated_at')
         if _price_be_column_exists():
             _sel += ',price_breakeven_pct'
+        if _manual_weight_column_exists():
+            _sel += ',manual_weight,weight_source,weight_review_at'
         try:
             for row in fetch_all_rows('signal_registry', {'select': _sel}):
                 # Staleness filter
@@ -1062,6 +1148,73 @@ def _price_bar_of(reg: Optional[dict]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return f if 0.0 < f < 1.0 else None
+
+
+def _et_today_str() -> str:
+    """Today on the ET day boundary, YYYY-MM-DD, via sweat_dates.
+
+    sweat_dates is the one place in this repo that knows EST from EDT.
+    163 files derive an ET day from a hardcoded timedelta(hours=4),
+    which is an hour wrong for five months of the year
+    ([[feedback_hardcoded_et_offset_breaks_in_est]]); this is not going
+    to be the 164th. No try/except: sweat_dates sits beside this file
+    and an ImportError here should be loud, not silently switch off a
+    lever ([[feedback_swallowed_nameerror_is_a_false_condition]]).
+    """
+    from sweat_dates import et_today
+    return et_today()
+
+
+def _manual_weight_of(reg: Optional[dict]) -> Optional[float]:
+    """A hand-set weight off a registry row, as a FRACTION, or None.
+
+    None -- meaning "use the measured weight" -- unless ALL of:
+      * weight_source == 'manual'  (the explicit opt-in; a bare number
+        with no source is a half-written override, which 20261126a's
+        signal_registry_manual_needs_weight CHECK also refuses);
+      * manual_weight parses into [0, 1] -- the scale edge_weight
+        returns, NOT a percent. 0.0 is a VALID override (deliberately
+        mute this signal) and must not be read as absent, which is
+        [[feedback_falsy_zero_invented_a_tier_and_a_confidence]];
+      * weight_review_at is absent or NOT yet past, on the ET day.
+
+    THE EXPIRY IS ENFORCED HERE, not merely reported. An override with
+    no end date is immortal, and a dead hand-set number pricing live
+    picks is exactly [[feedback_a_dead_value_keyed_on_itself_is_immortal]].
+    Past the review date the measured weight takes over by itself.
+    """
+    if not reg:
+        return None
+    if str(reg.get('weight_source') or '').strip().lower() != 'manual':
+        return None
+    v = reg.get('manual_weight')
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not (0.0 <= f <= 1.0):
+        return None
+    _rev = reg.get('weight_review_at')
+    if _rev:
+        # Compare as ISO dates on the ET day, never on the runner's UTC
+        # clock -- a window taken from the runner is a day ahead for the
+        # evening slate ([[feedback_a_window_from_runner_clock_is_a_day_ahead]]).
+        try:
+            if str(_rev)[:10] < _et_today_str():
+                return None
+        except Exception as e:                                 # noqa: BLE001
+            # Refusing is right -- an override whose expiry cannot be read
+            # must not apply -- but it has to be AUDIBLE. A swallowed
+            # failure here looks identical to "no override set"
+            # ([[feedback_swallowed_nameerror_is_a_false_condition]]).
+            print(f'  [ensemble] manual weight on '
+                  f'{reg.get("signal_name")}/{reg.get("sport")} IGNORED: '
+                  f'unreadable weight_review_at {_rev!r} '
+                  f'({type(e).__name__})')
+            return None
+    return f
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1513,6 +1666,10 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
     prose_tmpl = source_row.get('display_prose_template') or ''
     hr, n, tier, _reg = _resolve_weight_row(source_row)
     _price_be = _price_bar_of(_reg)
+    # Off the SAME row as the hit rate, for the same reason the price bar
+    # is: a second lookup would drift from the market scope it is judging
+    # ([[feedback_a_name_check_needs_the_right_row]]).
+    _manual_w = _manual_weight_of(_reg)
     is_recent = _is_recent_signal(source_row)
 
     out: list[Opinion] = []
@@ -1621,6 +1778,7 @@ def _handler_split(source_row: dict, ctx: dict) -> list[Opinion]:
         prose = prose_tmpl or f'{cls} on this side'
         out.append(Opinion(
             price_be=_price_be,
+            manual_weight=_manual_w,
             signal_key=signal_key, signal_class='split', side=cand,
             strength=strength, hit_rate=hr, sample_n=n, tier=tier,
             display_prose=prose, is_recent=is_recent,
@@ -2425,6 +2583,7 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
 
         hr, n, tier, _reg = _resolve_weight_row(source)
         _price_be = _price_bar_of(_reg)
+        _manual_w = _manual_weight_of(_reg)
         is_recent = _is_recent_signal(source)
         prose = render_prose(source.get('display_prose_template') or '', ctx_attr)
 
@@ -2524,6 +2683,7 @@ def gather_opinions(sport: str, ctx: dict) -> list[Opinion]:
 
         out.append(Opinion(
             price_be=_price_be,
+            manual_weight=_manual_w,
             signal_key=source['signal_key'],
             signal_class=cls,
             side=side, strength=strength,
@@ -2784,6 +2944,7 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
     # it reaches a card -- the same way ENSEMBLE_SIDE_BASELINE was landed
     # ([[feedback_suppression_gate_needs_shadow]]).
     _pb_mode = _PRICE_BAR_MODE
+    _mw_on = _MANUAL_WEIGHT_MODE in ('1', 'on', 'true')
     _pb_on = _pb_mode in ('1', 'on', 'true')
     _pb_shadow = _pb_mode == 'shadow'
     for op in market_ops:
@@ -2809,6 +2970,41 @@ def _score_market(market: str, opinions: list[Opinion], ctx: dict,
                 })
             if _pb_on:
                 w = _w_price
+        # ══ 2026-11-26 · A HAND-SET WEIGHT, LAST WORD BUT NOT EVERY WORD ══
+        # Applied AFTER the price bar so an override is the final say on
+        # the weight -- that is the whole point of a lever. Two things it
+        # deliberately does NOT override:
+        #
+        #   ANTI_VALIDATED. edge_weight hard-zeros a signal measured to be
+        #   actively wrong, and a hand number must not outrank that. The
+        #   case this lever exists for is a signal the measurement cannot
+        #   SEE -- NCAAB h2h at n<=7 sitting on the 0.20 unmeasured floor
+        #   -- not one measured and refuted. Letting it through is
+        #   [[feedback_unmeasured_signal_must_not_outweigh_measured]],
+        #   which has cost money here before. Refusals are RECORDED, not
+        #   dropped, so the audit can show Andy a lever he set that is
+        #   not firing ([[feedback_a_lens_can_be_dark_behind_a_404]]).
+        #
+        #   THE FADE. A faded opinion never carries manual_weight,
+        #   because the fade bets the OTHER side -- the same reason it
+        #   does not inherit price_be
+        #   ([[feedback_check_which_side_a_column_indexes]]).
+        if _mw_on and op.manual_weight is not None:
+            if op.tier == 'ANTI_VALIDATED':
+                _MANUAL_WEIGHT_APPLIED.append({
+                    'sport': sport, 'market': market,
+                    'signal_key': op.signal_key, 'side': op.side,
+                    'w_measured': w, 'w_manual': op.manual_weight,
+                    'applied': False, 'why': 'ANTI_VALIDATED',
+                })
+            else:
+                _MANUAL_WEIGHT_APPLIED.append({
+                    'sport': sport, 'market': market,
+                    'signal_key': op.signal_key, 'side': op.side,
+                    'w_measured': w, 'w_manual': op.manual_weight,
+                    'applied': True, 'why': '',
+                })
+                w = op.manual_weight
         if w == 0 and op.strength == 0:
             continue
         c = Contribution(

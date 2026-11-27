@@ -106,6 +106,20 @@ SUITES = [
     # neutral-site match, and that the guard fails CLOSED.
     ('trend enrichment leak (post-game aggregate)',
      [sys.executable, 'test_trend_enrich_no_leak.py']),
+    # A HAND-SET WEIGHT MUST REACH A PICK, AND ONLY WHERE IT SHOULD.
+    # Andy, 2026-11-26: "hand wigthing stats absed on previous matchups is
+    # legit data analytics" -- after I told him hand-setting a weight does
+    # nothing. He was right; recommended_weight was simply never wired to
+    # the scorer (named once, in a select, value never read). 20261126a
+    # adds manual_weight and this pins the reader: weight_source is the
+    # opt-in rather than the number, a deliberate 0.0 is not an absent
+    # override, the review date is ENFORCED and its boundary day still
+    # applies, ANTI_VALIDATED is refused and the refusal RECORDED, the fade
+    # does not inherit it, a lever cannot escape MAX_CLASS_SHARE, and off
+    # short-circuits the column probe before it can widen the select.
+    # Offline; drives the real _score_market, no DB.
+    ('manual weight override (signal_registry)',
+     [sys.executable, 'test_manual_weight_override.py']),
 ]
 
 
