@@ -49,6 +49,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = [
     ('receipt line guard (public_receipt)',
      [sys.executable, 'test_receipt_line_guard.py']),
+    # The breakeven bar's price parser, which since 11-25 feeds the live
+    # edge_weight bar and not just the stored column. Pins BOTH halves of
+    # the 11-27 finding: a value inside +/-100 is not American odds and
+    # must not price a firing (333 of 4,987 NCAAB 2024-25 pairs carry one;
+    # a stored -81 became a 44.75% bar, a favourite below a coin flip),
+    # AND an extreme price must still price it (452 rows out to -100000
+    # are real -- coherent overround, mean 26.6-point spread, favourite
+    # won 450 of 452; dropping them would flatter every favourite signal).
+    # Offline, pure function.
+    ('american odds guard (breakeven bar)',
+     [sys.executable, 'test_american_odds_guard.py']),
     ('published positions / label parser',
      [sys.executable, 'published_positions.py']),
     # The card's bet-identity keys and the CARD_FLOOR refill ladder. Pins

@@ -758,12 +758,46 @@ def resolve_price_cols(table: str, sample: int = 400) -> dict:
 
 
 def _american_to_be(odds) -> Optional[float]:
-    """Breakeven win rate implied by American odds, as a fraction."""
+    """Breakeven win rate implied by American odds, as a fraction.
+
+    == 2026-11-27 · NOTHING INSIDE +/-100 IS AMERICAN ODDS ==============
+    American odds are |price| >= 100 by definition: -100 and +100 are the
+    same even-money price and there is nothing between them. This used to
+    guard only `o == 0`, so an impossible stored value was converted as if
+    it were a quote. Measured on ncaab_game_results: 333 of 4,987 priced
+    2024-25 pairs (6.7%) carry one, e.g. `-125 / 60`, `-81 / -116`,
+    `15 / -121`, and seven literal zeros.
+
+    THE DIRECTION IS THE DANGEROUS ONE. A stored -81 became a 44.75%
+    breakeven -- a FAVOURITE priced below a coin flip -- and a stored +60
+    became 62.5%. Both land in the be_sum/be_n average that becomes
+    price_breakeven_pct and, since 11-25, the live `edge_weight` bar. A bar
+    pushed DOWN credits edge a signal never had
+    ([[feedback_the_bar_is_never_the_price_the_signal_fires_at]],
+    [[feedback_a_floor_on_a_probability_invents_edge]]).
+
+    Returning None is the correct fallback, not a loss: the one caller
+    already treats None as "this firing has no price", so the game drops
+    out of the average and out of the coverage count, which can move a
+    signal onto the partial-bar or flat-fallback path VISIBLY rather than
+    silently poisoning a measured bar
+    ([[feedback_fallback_select_must_degrade_per_column]]).
+
+    WHAT IS DELIBERATELY *NOT* REJECTED: an EXTREME price. 452 NCAAB rows
+    carry moneylines past +/-5000, out to -100000/+3300. Those are REAL --
+    all 452 have a coherent overround (1.01-1.06), sit on a mean 26.6-point
+    closing spread, and the favourite won 450 of 452. Dropping them would
+    remove exactly the prices a favourite signal cannot beat and flatter
+    every one of them. They stay in the bar. The live NCAAB puller is also
+    already correct here -- `_consensus_ml` takes an actually-quoted price
+    rather than a mean of quotes, which is why the 2026-27 season has ZERO
+    incoherent pairs and this guard is a historical-data defence.
+    """
     try:
         o = float(odds)
     except (TypeError, ValueError):
         return None
-    if o == 0:
+    if -100.0 < o < 100.0:          # includes 0; see the docstring
         return None
     return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
 
