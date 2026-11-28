@@ -421,26 +421,58 @@ def build_scenarios_nhl(row: dict) -> list[tuple[str, str, str, str]]:
 
 
 def build_scenarios_ncaab(row: dict) -> list[tuple[str, str, str, str]]:
-    """NCAAB scenario extractor stub (2026-08-11).
+    """NCAAB scenario extractor stub (2026-08-11) - STILL A STUB, BUT THE
+    BLOCKER IT CITES IS GONE. Re-measured 2026-11-27, do not trust the
+    paragraph this replaced.
 
-    ## Blocker
+    ## The blocker as written (2026-08-11), and what is actually there now
 
-    ncaab_game_results has 5911 rows BUT close_spread / close_total /
-    home_ml_close / home_adj_em / spread_result / total_result are all
-    NULL across the entire table. Only home_win + scores populated.
-    Cannot build actionable scenarios without odds or efficiency data.
+    It said: "ncaab_game_results has 5911 rows BUT close_spread /
+    close_total / home_ml_close / home_adj_em / spread_result /
+    total_result are all NULL across the entire table." Measured live
+    2026-11-27, 12,944 rows:
 
-    Pre-launch backfill needed before this fires:
-      * KenPom historical (see `project_kenpom_pull_no_api_key.md`)
-      * Close spread/total from odds provider (Nov 3 season target)
+        close_spread    11,076   85.6%
+        close_total     11,088   85.7%
+        home_ml_close   10,901   84.2%   (away_ml_close 10,901)
+        spread_result   10,977   84.8%
+        total_result    10,988   84.9%
+        home_win        12,825   99.1%
+        home_adj_em      1,060    8.2%   <- the ONLY one still thin
+        home_ml_open     1,046    8.1%   <- and opens exist only for 2026-27
 
-    Scenarios to add once data lands:
-      * KenPom rank gap × side (favored by X spots historically hits Y%)
-      * Public heavy on home fav × conf/nonconf
-      * Total scenarios at basketball line ranges (135 / 145 / 155)
-      * Q4 comeback / late-game scenarios (basketball-specific)
+    So three of the four scenario families below are buildable today and
+    have been for months. This function returning [] is why NCAAB has no
+    row in scenario_audit, and nothing reported that: a stub keyed on a
+    stale measurement reads exactly like a stub keyed on a live one
+    ([[feedback_a_zero_fill_column_can_have_a_populated_twin]],
+    [[feedback_list_the_columns_before_declaring_data_lost]]).
+
+    ## STILL REAL, read before building
+
+    * `close_home_ml` is 0 of 12,944 on this table while `home_ml_close`
+      carries all 10,901. ncaab_game_results is the one table holding BOTH
+      names, and it fills the opposite one from football: measured
+      2026-11-27, ncaaf_game_results close_home_ml 4,096 of 16,004 and
+      nfl_game_results 5,569 of 7,550, while `home_ml_close` does not
+      exist on either (PostgREST 400/42703). So `build_scenarios_ncaaf`
+      reading `row.get('close_home_ml')` with no fallback is correct FOR
+      FOOTBALL and silently all-None here - copy it and every NCAAB
+      scenario grades at the -110 default with no error
+      ([[feedback_football_and_the_rest_name_columns_differently]],
+      [[feedback_a_zero_fill_column_can_have_a_populated_twin]]).
+      Read `home_ml_close or close_home_ml` and assert non-null.
+    * KenPom gap scenarios are NOT buildable: home_adj_em is 8.2%.
+    * `projected_spread` is anti-predictive vs the close (MAE 11.10 vs
+      9.59, corr -0.0723) - do not build a scenario off it.
+    * Anything priced off this table must show its n and its unpriced
+      share; 84.2% filled means ~16% would grade at an assumed -110.
+
+    Left returning [] deliberately on 2026-11-27 rather than switched on
+    unreviewed: scenario_audit is a published surface and Andy sees it
+    before it carries NCAAB. Tracked as open item 29.
     """
-    return []  # blocked on data backfill
+    return []  # NOT blocked on data any more - blocked on review. Item 29.
 
 
 def american_to_decimal(o) -> float | None:

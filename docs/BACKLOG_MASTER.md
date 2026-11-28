@@ -17,7 +17,7 @@ file is the *what next*, and it fits on a screen.
 - **Tiers** are about order, not importance. T1 is what we do next.
 - An item that is **wrong data in front of users** jumps to T1 regardless of
   effort. An item that is **a claim we cannot support** is the same thing.
-- Next free ID: **B215**. (R-series: next free **R42**.) **Derive this from the table, do not trust this number:** it read B198 while B198 and B213 were both already taken, which is how two different items both became B197 on 11-17 (the 9/22 L5 leak, and the engine rework now renumbered **B214**). Verify before claiming an ID: `grep -oE "B[0-9]+" docs/BACKLOG_MASTER.md | sort -t B -k2 -n | tail -1`
+- Next free ID: **B242**. (R-series: next free **R201**.) **Derive this from the table, do not trust this number:** it read B198 while B198 and B213 were both already taken, which is how two different items both became B197 on 11-17 (the 9/22 L5 leak, and the engine rework now renumbered **B214**). Verify before claiming an ID: `grep -oE "B[0-9]+" docs/BACKLOG_MASTER.md | sort -t B -k2 -n | tail -1`
 
 ---
 
@@ -5461,3 +5461,131 @@ The second is riskier on its own — a null `primary_play` also means "the resol
 has not run yet", and clearing on that would wipe good picks before the daily
 run. The first is unambiguous and is the one I would take
 ([[feedback_late_data_must_invalidate_derived_output]]).
+
+---
+
+## 2026-11-27 (late) — opened from the surface-record read + the ladder repair
+
+Andy: *"Track all of those and lets chekc on results tomorrow. Fix any
+remaining isseu im calling it"*
+
+Two were fixed in the same turn and are listed DONE with their SHA. The rest
+are tracked, not started. Every number below was measured live tonight, not
+recalled — the three that read as surprising (B230, B232, B233) were each
+re-measured against the table before being written down.
+
+### B229 — DONE 2026-11-27 — the ladder graded nothing for 21 days
+`resolve_ladder_results._grade_prop_rung` had three stacked breakpoints, each
+returning `None`, which is also what "not graded yet" looks like: both lookups
+queried `mlb_pipeline_props` only while the qualifier has been cross-sport
+since September; `_PROP_TYPE_MAP` hand-listed 14 of the 64 real `prop_type`
+values; and the token regex could not match a two-word token (`PASS TDS`).
+Also: `--since` bounded the *pending* fetch, so the 11-11 rung had aged out of
+the retry window permanently, and the step exited 0 while printing declined
+rungs, so no `step_failed` row ever existed. Replaced the map with the exact
+inverse of `steam_room_ladder`'s label transform (round-trip verified on all
+64 `(prop_type, direction)` pairs live, 0 failures), keyed the lookup on
+`game_id`, unbounded the pending fetch, and made a rung ungraded past
+`STALE_GRACE_DAYS` exit 1. 5 rungs graded, 0 ungraded.
+Record moved 33-27-1 → **34-31-1, 52.3%, -8.89u, -13.48% ROI**.
+Guard: `test_ladder_prop_resolution.py`. SHA `2c113394`.
+
+### B230 — DONE 2026-11-27 — NCAAB lost its started-game filter silently
+`assert_slate_freshness.TIME_COL['NCAAB']` was `kickoff_utc`.
+`ncaab_game_context` has 117 columns and not that one, so the schema
+intersection set `tcol = None` and every started NCAAB game stayed in the pool
+the block exists to filter — the guard ran green while not guarding. Now
+`game_time_et` (1,237 filled; stores UTC despite the suffix, which is what the
+`t > now` compare wants). The class fix matters more than the instance: a
+configured-but-absent name is now a **finding** via `check_time_col_config`,
+run as its own pass from `main()` because `check_sport` has four early returns
+that would swallow it. Verified by reverting the name in memory — the check
+fires; with no entry at all it stays silent, since that is a declared gap.
+Guard: 5 cases in `test_ncaab_season_and_names.py`.
+VERIFY: `python assert_slate_freshness.py --sport NCAAB --warn-only`
+
+### B231 — OPEN — `build_scenarios_ncaab` returns [] on a blocker that is gone
+The stub's docstring (2026-08-11) says `close_spread` / `close_total` /
+`home_ml_close` / `home_adj_em` / `spread_result` / `total_result` are "all
+NULL across the entire table" at 5,911 rows. Measured 2026-11-27 over 12,944
+rows: `close_spread` **11,076**, `close_total` **11,088**, `home_ml_close`
+**10,901**, `spread_result` **10,977**, `total_result` **10,988**,
+`home_win` 12,825. Only `home_adj_em` (1,060, 8.2%) is still thin. Three of
+the four scenario families named in that docstring have been buildable for
+months and NCAAB has no row in `scenario_audit` because of a stale
+measurement. Docstring corrected with the live fill and the `return []` left
+in place deliberately — `scenario_audit` is a published surface and Andy sees
+it before it carries NCAAB. **This is the decision to make, not a bug to fix.**
+Do not copy `build_scenarios_ncaaf`: see B232.
+VERIFY: fill counts via `PostgREST count=exact` on `ncaab_game_results`.
+
+### B232 — OPEN — one column name, opposite fill, and no fallback in the copy-source
+`ncaab_game_results` is the only results table carrying BOTH names, and it
+fills the opposite one from football:
+
+```
+ncaab_game_results   close_home_ml      0 / 12,944   home_ml_close  10,901
+ncaaf_game_results   close_home_ml  4,096 / 16,004   home_ml_close  400/42703
+nfl_game_results     close_home_ml  5,569 /  7,550   home_ml_close  400/42703
+```
+
+`build_scenarios_ncaaf` reads `row.get('close_home_ml')` with no fallback.
+That is correct for football and silently all-None on NCAAB, so any copy of it
+grades every NCAAB scenario at the -110 default with no error raised. Readers
+across the repo mostly use a `close_home_ml or home_ml_close` chain and are
+fine; the no-fallback single-name uses worth auditing before they touch NCAAB
+are `compute_scenario_audit`, `compute_scenario_audit:521`'s accumulator, and
+`assess_football_engine`. Blocked on nothing — it is an audit, not a fix.
+
+### B233 — OPEN — 28 of 64 NCAAB games inside 30h have no context row
+Surfaced by B230's fix the moment the guard started working. All 28 are
+2026-11-28 (Arizona @ Mississippi, Providence @ BYU, Alcorn St. @ Georgia
+Tech, …). The context builder runs in the morning, so this is very likely the
+30-hour window reaching into a slate that has not been built yet rather than a
+failure — which is exactly the cry-wolf shape `assert_slate_freshness`'s own
+header warns about. **Decide after tomorrow's builder run**: if the 11-28 rows
+exist by mid-morning, the window needs a "not before the builder's own hour"
+bound; if they do not, it is a real gap.
+
+### B234 — OPEN — the ladder qualifier is firing one day in five
+13 rungs in August, 29 in September, 19 in October, **6 in November**, against
+a one-per-day design. Separate from B229 — selection was never broken, it is
+under-firing. Needs the qualifier's own gate audited against the November
+board, not the resolver.
+
+### B235 — OPEN — a read's ML price and its context's close disagree
+On tonight's NCAAB board, three post-8pm games where the `game_read` snapshot
+and `ncaab_game_context.{home,away}_ml_close` carry different prices:
+Jacksonville St. read **-258** vs context **-225**; North Texas **-265** vs
+**-250**; Pacific **-220** vs **-275**. Pacific moves the other way, so this
+is not a uniform staleness offset. Until it is explained, quote the context
+close for anything user-facing and say which column it came from.
+Family: `[[feedback_a_stale_line_beside_a_current_price]]`,
+`[[feedback_market_refreshes_the_pick_does_not]]`.
+
+### B236 — OPEN — `test_closing_line_value.py` is an analysis script named `test_*`
+It exits 1 when its feature cache is empty ("closing lines available for 0
+game/sport keys — run `extract_line_features.py` first"), which is honest for a
+script and wrong for a test. It is NOT registered in `run_guard_tests.py`, so
+CI is unaffected, but any `test_*.py` sweep reports it failing forever and
+trains the reader to ignore a red line. Either rename it to `clv_report.py`
+(grep first — the docstring is referenced by name in notes) or have it exit 0
+with a "no data yet" note and keep exit 1 for a real CLV regression.
+
+### Carried, unchanged tonight — the data gaps behind several of the above
+- **B237 — OPEN — NCAAB stores no spread/total juice.** `close_total` /
+  `close_spread` with no odds column anywhere. This is the blocker on a
+  priced NCAAB total edge *and* on verifying any teaser price, which is why
+  tonight's parlay request could only be answered on moneylines.
+- **B238 — OPEN — `projected_spread` is anti-predictive vs the close.**
+  MAE 11.10 vs the line's 9.59, corr **-0.0723**, t -2.25. Do not build a
+  scenario or a signal off it (bears directly on B231).
+- **B239 — OPEN — NCAAB opening lines exist only for 2026-27.**
+  `home_ml_open` 1,046 of 12,944 (8.1%). No open-to-close move can be
+  measured before this season.
+- **B240 — OPEN — `nhl_game_results` has no `close_spread` at all.**
+- **B241 — OPEN — MLB money flow is unmeasurable.** 298,448 `public_splits_v2`
+  rows, the most of any sport, and no start-time column on
+  `mlb_game_context` or `mlb_game_results`, plus zero MLB rows in
+  `line_history`. Adding a start time unlocks the largest block of splits
+  history we hold.

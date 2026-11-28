@@ -213,6 +213,33 @@ _surfaces = _src('audit_ncaab_name_integrity.py').split(
 for tbl in ('ncaab_rating_snapshots', 'team_situational_records'):
     chk('audit covers %s' % tbl, tbl in _surfaces, True)
 
+print('== THE STARTED-GAME FILTER MUST NAME A COLUMN NCAAB ACTUALLY HAS ===')
+# 2026-11-27: TIME_COL['NCAAB'] was 'kickoff_utc'. ncaab_game_context has 117
+# columns and not that one, so the schema intersection in check_sport set
+# tcol=None and NCAAB silently lost the started-game filter the block exists
+# to provide -- the guard ran green while not guarding
+# ([[feedback_absent_key_makes_a_gate_dead]]).
+#
+# Offline: assert the configured NAME, and assert the fail-loud branch. The
+# live column check belongs to check_time_col_config, which runs every time
+# assert_slate_freshness does.
+_asf = _src('assert_slate_freshness.py')
+chk('NCAAB start-time column is game_time_et',
+    "'NCAAB': 'game_time_et'" in _asf, True)
+chk('kickoff_utc is no longer claimed for NCAAB',
+    "'NCAAB': 'kickoff_utc'" in _asf, False)
+# A configured-but-absent name must be a FINDING, not a silent skip. The old
+# shape was `else: tcol = None` and that is the whole defect.
+chk('a configured-but-absent column is reported',
+    'started games are NOT being excluded' in _asf, True)
+chk('the config check is its own pass, not inside check_sport',
+    'def check_time_col_config' in _asf, True)
+# check_sport has four early returns; a config fault reported from its bottom
+# is lost down any of them, which is why the pass is separate and main() runs
+# it before the per-sport loop.
+chk('main runs the config pass first',
+    'all_fails = check_time_col_config(sports)' in _asf, True)
+
 print()
 if fails:
     print('*** %d CASE(S) FAILED: %s ***' % (len(fails), ', '.join(fails)))

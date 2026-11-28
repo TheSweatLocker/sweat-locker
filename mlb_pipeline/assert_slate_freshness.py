@@ -179,8 +179,16 @@ NO_WEATHER = {'MLB', 'NHL', 'NBA', 'NCAAB'}
 # game's row, so asserting on one only teaches us to ignore this script.
 # Where the sport has a start-time column, rows that have already begun are
 # dropped and the next slate is taken from what is left.
+# 2026-11-27 · NCAAB NAMED IT `game_time_et` AND HAD NO `kickoff_utc` AT ALL.
+# `ncaab_game_context` answers 400/42703 for kickoff_utc (117 columns, none of
+# them that one), so the schema intersection below set tcol=None and NCAAB
+# silently lost its started-game filter — the filter this whole block exists
+# to provide. A configured-but-absent name is now a FINDING, not a skip; see
+# `_time_col_for`. The column stores UTC despite the `_et` suffix (a row with
+# game_date 2026-11-27 carries game_time_et 2026-11-28T04:30, and 04:30 is
+# not a possible ET tip), which is exactly what the `t > now` compare wants.
 TIME_COL = {'NFL': 'kickoff_utc', 'NCAAF': 'kickoff_utc',
-            'NCAAB': 'kickoff_utc', 'NHL': 'commence_time'}
+            'NCAAB': 'game_time_et', 'NHL': 'commence_time'}
 
 TABLE = {s: f'{s.lower()}_game_context'
          for s in ('MLB', 'NFL', 'NCAAF', 'NHL', 'NBA', 'NCAAB')}
@@ -291,6 +299,51 @@ def outdoor(row: dict) -> bool:
     return True
 
 
+def _time_col_for(sport: str, cols: set) -> tuple:
+    """The start-time column to filter started games by, and a problem string
+    when one is CONFIGURED BUT ABSENT from the live schema.
+
+    2026-11-27: this used to be `if tcol and tcol in cols: ... else: tcol=None`.
+    That is fail-quiet in the one direction that matters. NCAAB was configured
+    as `kickoff_utc`, `ncaab_game_context` has no such column, so tcol went
+    None and every started NCAAB game stayed in the pool it was meant to be
+    filtered out of - the guard kept running and quietly stopped guarding
+    ([[feedback_absent_key_makes_a_gate_dead]]). A sport with NO entry in
+    TIME_COL is a different thing and stays silent: that is a declared gap,
+    not drift.
+    """
+    tcol = TIME_COL.get(sport)
+    if not tcol:
+        return None, None
+    if tcol in cols:
+        return tcol, None
+    return None, (f'{sport}: TIME_COL names {tcol!r} but {TABLE[sport]} has '
+                  f'no such column — started games are NOT being excluded. '
+                  f'Fix the name in TIME_COL; do not leave it absent.')
+
+
+def check_time_col_config(sports: list) -> list:
+    """Every TIME_COL name must exist on that sport's context table.
+
+    Run as its own pass rather than inside check_sport: check_sport has four
+    early returns (dead week, no rows, slate entirely underway) and a config
+    fault reported from the bottom of it is lost down any of them. A guard's
+    own configuration is not slate-dependent, so it is not checked on the
+    slate's path.
+    """
+    out = []
+    for sport in sports:
+        if sport not in TABLE:
+            continue
+        cols = live_columns(TABLE[sport])
+        if not cols:
+            continue                      # unreadable table is its own finding
+        _, problem = _time_col_for(sport, cols)
+        if problem:
+            out.append(problem)
+    return out
+
+
 def check_sport(sport: str) -> tuple:
     """Returns (fails, notes) — fails are dark columns on the next slate."""
     table = TABLE[sport]
@@ -307,11 +360,9 @@ def check_sport(sport: str) -> tuple:
     for c in ('dome', 'roof'):
         if c in cols:
             wanted.append(c)
-    tcol = TIME_COL.get(sport)
-    if tcol and tcol in cols:
+    tcol, _ = _time_col_for(sport, cols)
+    if tcol:
         wanted.append(tcol)
-    else:
-        tcol = None
     wanted = list(dict.fromkeys(wanted))
 
     today = et_today()
@@ -769,7 +820,12 @@ def main() -> int:
     sports = [a.sport.upper()] if a.sport else in_season_sports()
     print(f'  checking: {", ".join(sports)}\n')
 
-    all_fails = []
+    all_fails = check_time_col_config(sports)
+    for _p in all_fails:
+        print(_p)
+    if all_fails:
+        print()
+
     for s in sports:
         if s not in TABLE and s != 'UFC':
             print(f'{s}: no context table mapped — skipped')
